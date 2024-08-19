@@ -1,0 +1,38 @@
+.bottom-bar {
+  display: flex;
+  position: fixed;
+  bottom: 0;
+  width: 100%;
+
+  .bottom-input {
+    flex: 1
+  }
+}
+
+.chat-list {
+  min-height: 100vh;
+  background: #cccccc;
+}
+
+.chat-list-item-wrapper {
+  display: flex;
+
+  &.chat-self {
+    justify-content: right;
+  }
+
+  &.chat-friends {
+    justify-content: left;
+  }
+
+  .chat-list-item {
+
+    &.chat-self {
+      background: green;
+    }
+
+    &.chat-friends {
+      background: white;
+    }
+  }
+}

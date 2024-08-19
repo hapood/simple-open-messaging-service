@@ -1,0 +1,9 @@
+<div>
+  <div>
+    用户名：<input type="text" [(ngModel)]="uniqName" />
+  </div>
+  <button (click)="addFriend()">新增好友</button>
+  @for (user of userList; track user.id) {
+  <div (click)="setFirendName(user)">name:{{ user.uniqName }};{{user.password}}</div>
+  }
+</div>

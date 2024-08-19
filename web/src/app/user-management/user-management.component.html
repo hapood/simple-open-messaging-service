@@ -1,0 +1,12 @@
+<div>
+  <div>
+    用户名：<input type="text" [(ngModel)]="uniqName" />
+  </div>
+  <div>
+    密码：<input type="text" [(ngModel)]="password" />
+  </div>
+  <button (click)="addUser()">新增用户</button>
+  @for (user of userList; track user.id) {
+  <div>name:{{ user.uniqName }};{{user.password}}</div>
+  }
+</div>

@@ -1,0 +1,75 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["relationJoins"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id          Int      @id @default(autoincrement())
+  uniqName    String   @unique @db.VarChar(31)
+  password    String?  @db.VarChar(31)
+  isForeigner Boolean
+  domain      String   @db.VarChar(63)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  Friend      Friend[]
+}
+
+model Friend {
+  id           Int      @id @default(autoincrement())
+  hostUserId   Int
+  friendUserId Int
+  friendUser   User     @relation(fields: [friendUserId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([hostUserId, friendUserId])
+}
+
+model UserChatThread {
+  id         Int        @id @default(autoincrement())
+  userId     Int
+  threadId   Int
+  threadItem ChatThread @relation(fields: [threadId], references: [id])
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+}
+
+enum ChatThreadType {
+  SINGLE_CHAT
+}
+
+model ChatThread {
+  id             Int              @id @default(autoincrement())
+  type           ChatThreadType
+  info           Json
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  UserChatThread UserChatThread[]
+  Message        Message[]
+}
+
+enum ContentType {
+  PURE_STRING
+}
+
+model Message {
+  id          BigInt      @id @default(autoincrement())
+  contentType ContentType
+  content     String
+  threadId    Int
+  creator     Int
+  threadItem  ChatThread  @relation(fields: [threadId], references: [id])
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}

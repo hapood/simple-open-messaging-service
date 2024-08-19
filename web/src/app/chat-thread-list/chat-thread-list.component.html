@@ -1,0 +1,5 @@
+<div> @for (item of threadList; track item.id) {
+  <li><a [routerLink]="['/chat-thread/', item.threadItem.id]">
+      name:{{getUserName(item)}}</a></li>
+  }
+</div>
