@@ -21,17 +21,19 @@
     justify-content: right;
   }
 
-  &.chat-friends {
+  &.chat-friend {
     justify-content: left;
   }
 
   .chat-list-item {
+    margin-top: 10px;
+    border: 1px solid #66ccff;
 
     &.chat-self {
       background: green;
     }
 
-    &.chat-friends {
+    &.chat-friend {
       background: white;
     }
   }

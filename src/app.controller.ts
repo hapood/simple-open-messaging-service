@@ -124,7 +124,7 @@ export class AppController {
         id: params.lastId,
       }
     }
-    return await this.userService.queryReversedMessage(params)
+    return await this.userService.queryReversedMessage(newParams)
   }
 
   @UseGuards(LocalAuthGuard)

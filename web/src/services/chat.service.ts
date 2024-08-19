@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { User, ChatThread, Message } from './Interfaces'
+import { User, ChatThread, Message, Friend } from './Interfaces'
 
 @Injectable({
   providedIn: 'root'
@@ -42,6 +42,6 @@ export class ChatService {
   }
 
   queryFriendInfo(params: { userId: number }) {
-    return this.http.post<User>(`${this.prefix}/query-friend-info`, params)
+    return this.http.post<Friend>(`${this.prefix}/query-friend-info`, params)
   }
 }
