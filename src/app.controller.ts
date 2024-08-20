@@ -105,26 +105,28 @@ export class AppController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('query-reversed-message')
-  async queryReversedMessage(@Request() req,
+  @Post('query-chat-messages')
+  async queryChatMessages(@Request() req,
     @Body() params: {
       threadId: number,
       skip: number;
       take: number;
       lastId?: number;
+      orderBy: 'desc' | 'asc'
     },
   ) {
     const newParams = {
       threadId: params.threadId,
       skip: params.skip,
       take: params.take,
+      orderBy: params.orderBy,
     }
     if (params.lastId) {
       (newParams as any).cursor = {
         id: params.lastId,
       }
     }
-    return await this.userService.queryReversedMessage(newParams)
+    return await this.userService.queryChatMessages(newParams)
   }
 
   @UseGuards(LocalAuthGuard)

@@ -27,9 +27,11 @@ export class ChatThreadComponent {
   userChatThread: ChatThread | Record<string, undefined> = {}
   isReady = false
   isChatScrollerSet = false
+  oldestChatId: number | undefined = undefined
+  hasMoreOldChat = true
+  isLoadingOld = false
+  isLoadingNew = false
   latestChatId: number | undefined = undefined
-  isNoMoreChat = false
-  isLoading = false
 
   send() {
     const content = this.inputTextControl.value
@@ -44,22 +46,56 @@ export class ChatThreadComponent {
     }
   }
 
-  initChatLog() {
-    this.isLoading = true;
-    return this.chatService.queryMessageLog({ threadId: parseInt(this.id), take: TAKE_NUM, skip: 0 })
+  syncNewChatLog() {
+    if (this.isLoadingNew) return
+    this.isLoadingNew = true;
+    const params = {
+      threadId: parseInt(this.id),
+      orderBy: 'asc' as 'asc',
+      take: TAKE_NUM,
+      skip: 1,
+      lastId: this.latestChatId
+    }
+    if (!this.latestChatId) {
+      params.skip = 0;
+    }
+    return this.chatService.queryMessageLog(params)
       .pipe(
         timeout(2500)
       ).pipe(
-        finalize(() => this.isLoading = false),
+        finalize(() => this.isLoadingNew = false),
       )
       .subscribe({
         next: list => {
-          const rList = list.reverse();
-          const latestChat = rList[0];
-          this.latestChatId = latestChat.id;
-          this.messageList = rList;
+          this.latestChatId = list[list.length - 1].id
+          this.messageList = this.messageList.concat(list)
+        }, error: err => console.error(err)
+      })
+  }
+
+  initChatLog() {
+    this.isLoadingOld = true;
+    return this.chatService.queryMessageLog({
+      threadId: parseInt(this.id), orderBy: 'desc',
+      take: TAKE_NUM, skip: 0
+    })
+      .pipe(
+        timeout(2500)
+      ).pipe(
+        finalize(() => this.isLoadingOld = false),
+      )
+      .subscribe({
+        next: list => {
+          if (list.length > 0) {
+            const latestChat = list[0];
+            this.latestChatId = latestChat.id;
+            const rList = list.reverse();
+            const oldestChat = rList[0];
+            this.oldestChatId = oldestChat.id;
+            this.messageList = rList;
+          }
           if (list.length < TAKE_NUM) {
-            this.isNoMoreChat = true
+            this.hasMoreOldChat = false
           }
         }, error: err => console.error(err)
       })
@@ -103,25 +139,25 @@ export class ChatThreadComponent {
     this.initChatLog()
   }
 
-  loadMoreChat() {
-    if (this.isLoading || this.isNoMoreChat) return
-    this.isLoading = true;
+  loadMoreOldChat() {
+    if (this.isLoadingOld || !this.hasMoreOldChat) return
+    this.isLoadingOld = true;
     return this.chatService.queryMessageLog({
       threadId: parseInt(this.id), take: TAKE_NUM, skip: 1,
-      lastId: this.latestChatId
+      lastId: this.oldestChatId, orderBy: 'desc'
     }).pipe(
       timeout(2500)
     )
       .pipe(
-        finalize(() => this.isLoading = false),
+        finalize(() => this.isLoadingOld = false),
       )
       .subscribe(list => {
         const rList = list.reverse();
         const latestChat = rList[0];
-        this.latestChatId = latestChat.id;
+        this.oldestChatId = latestChat.id;
         this.messageList = rList.concat(this.messageList)
         if (list.length < TAKE_NUM) {
-          this.isNoMoreChat = true
+          this.hasMoreOldChat = false
         }
       })
   }
@@ -129,7 +165,7 @@ export class ChatThreadComponent {
   @HostListener('window:scroll', ['$event'])
   onScroll(event: any) {
     if (window.scrollY < 20) {
-      this.loadMoreChat()
+      this.loadMoreOldChat()
     }
   }
 

@@ -37,8 +37,11 @@ export class ChatService {
     return this.http.post(`${this.prefix}/send-message`, params)
   }
 
-  queryMessageLog(params: { threadId: number, take: number, skip: number, lastId?: number }) {
-    return this.http.post<Message[]>(`${this.prefix}/query-reversed-message`, params)
+  queryMessageLog(params: {
+    threadId: number, take: number, skip: number,
+    orderBy: 'asc' | 'desc', lastId?: number
+  }) {
+    return this.http.post<Message[]>(`${this.prefix}/query-chat-messages`, params)
   }
 
   queryFriendInfo(params: { userId: number }) {

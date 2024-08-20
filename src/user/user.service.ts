@@ -137,13 +137,14 @@ export class UserService implements OnModuleInit {
     }
   }
 
-  async queryReversedMessage(params: {
+  async queryChatMessages(params: {
     threadId: number,
     skip?: number;
     take?: number;
     cursor?: Prisma.MessageWhereUniqueInput;
+    orderBy: 'desc' | 'asc'
   }): Promise<Message[]> {
-    const { skip, take, cursor, threadId } = params;
+    const { skip, take, cursor, threadId, orderBy } = params;
     const res = await this.prisma.message.findMany({
       skip,
       take,
@@ -152,7 +153,7 @@ export class UserService implements OnModuleInit {
         threadId,
       },
       orderBy: {
-        id: 'desc',
+        id: orderBy,
       },
     });
     return json(res)
