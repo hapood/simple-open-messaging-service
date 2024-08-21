@@ -3,10 +3,14 @@ import { NgClass } from '@angular/common';
 import { FormsModule, FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ChatService, } from '../../services/chat.service'
 import { Input as RouterInput } from '@angular/core'
-import { Message, User, ChatThread, } from '../../services/Interfaces';
-import { forkJoin, timeout, finalize } from "rxjs";
+import { Message, User, ChatThread, QueryMessageLogParams, } from '../../services/Interfaces';
+import { forkJoin, timeout, finalize, Subject, filter, mergeMap, tap, switchMap } from "rxjs";
+import { SendingMessage, SentMessage, SendingMessageStatus } from './interfaces';
+import { arrayToDictIndex } from '../../utils'
 
 const TAKE_NUM = 10;
+const LOAD_MORE_TRIGGER_OFFSET = innerHeight / 10;
+
 @Component({
   selector: 'app-chat-thread',
   standalone: true,
@@ -14,90 +18,135 @@ const TAKE_NUM = 10;
   templateUrl: './chat-thread.component.html',
   styleUrl: './chat-thread.component.scss'
 })
+
 export class ChatThreadComponent {
-  inputTextControl = new FormControl('');
+  constructor(private chatService: ChatService) { }
 
   @RouterInput() id!: string;
 
-  messageList: Message[] = []
-  constructor(private chatService: ChatService) { }
-
-  profile: User | Record<string, undefined> = {}
-  friendProfile: User | Record<string, undefined> = {}
-  userChatThread: ChatThread | Record<string, undefined> = {}
+  inputTextControl = new FormControl<string>('');
+  messageList: Message[] = [];
+  sendingMessageList: SendingMessage[] = []
+  sentMessageList: SentMessage[] = []
+  failedMessageList: SendingMessage[] = []
   isReady = false
-  isChatScrollerSet = false
-  oldestChatId: number | undefined = undefined
   hasMoreOldChat = true
-  isLoadingOld = false
   isLoadingNew = false
-  latestChatId: number | undefined = undefined
+  isLoadingOld = false
+
+  private userChatThread: ChatThread | Record<string, undefined> = {}
+  private queryOldMessages = new Subject<QueryMessageLogParams>()
+  private queryNewMessages = new Subject<QueryMessageLogParams>()
+  private newestChatId: number | undefined = undefined
+  private oldestChatId: number | undefined = undefined
+  private profile: User | Record<string, undefined> = {}
+  private friendProfile: User | Record<string, undefined> = {}
+  private isBottom = true
+  private hasMoreNewChat = false
+  private sentTempId = 0;
 
   send() {
     const content = this.inputTextControl.value
     if (content) {
-      return this.chatService.sendMessage({ threadId: parseInt(this.id), content })
-        .subscribe(res => {
+      const currentId = this.sentTempId
+      return this.chatService.sendMessage({ threadId: parseInt(this.id), content }).pipe(
+        tap(() => {
+          this.sendingMessageList.push({
+            id: currentId,
+            content: this.inputTextControl.value as string
+          })
           this.inputTextControl.setValue('')
-        })
+          this.sentTempId++
+        }))
+        .subscribe(
+          {
+            next: (res) => {
+              this.updateSendMessageStatus(currentId, SendingMessageStatus.SENT, { dbId: res.id })
+              this.hasMoreNewChat = true
+              this.loadMoreNewChat()
+            },
+            error: (error) => {
+              console.error(error)
+              this.updateSendMessageStatus(currentId, SendingMessageStatus.FAILED)
+            }
+          })
     } else {
-      alert('can not send empty')
       return false
     }
   }
 
-  syncNewChatLog() {
-    if (this.isLoadingNew) return
-    this.isLoadingNew = true;
-    const params = {
+  updateSendMessageStatus(sendId: number, status: SendingMessageStatus, options?: { dbId?: string }) {
+    let index = this.sendingMessageList.findIndex(item => item.id === sendId);
+    if (index) {
+      const msg = this.sendingMessageList[index]
+      this.sendingMessageList.splice(index)
+      switch (status) {
+        case SendingMessageStatus.FAILED:
+          this.failedMessageList.push(msg)
+          break;
+        case SendingMessageStatus.SENT:
+          this.sentMessageList.push({ ...msg, dbId: (options as any).dbId })
+          break;
+      }
+    }
+  }
+
+  mergeSentMessages(list: Message[]) {
+    const dict = arrayToDictIndex(this.sentMessageList.
+      map((stMsg, index) => ({ dbId: stMsg.dbId, index })), 'dbId')
+    const filterDict: Record<number, true> = {}
+    list.forEach(item => {
+      const dictItem = dict[item.id]
+      if (dictItem) {
+        filterDict[dictItem.index] = true
+      }
+    })
+    this.sentMessageList = this.sentMessageList.filter((_, index) => !filterDict[index])
+  }
+
+  loadMoreNewChat() {
+    this.queryNewMessages.next({
       threadId: parseInt(this.id),
       orderBy: 'asc' as 'asc',
       take: TAKE_NUM,
       skip: 1,
-      lastId: this.latestChatId
-    }
-    if (!this.latestChatId) {
-      params.skip = 0;
-    }
-    return this.chatService.queryMessageLog(params)
-      .pipe(
-        timeout(2500)
-      ).pipe(
-        finalize(() => this.isLoadingNew = false),
-      )
-      .subscribe({
-        next: list => {
-          this.latestChatId = list[list.length - 1].id
-          this.messageList = this.messageList.concat(list)
-        }, error: err => console.error(err)
-      })
+      lastId: this.newestChatId
+    })
+  }
+
+  loadMoreOldChat() {
+    this.queryOldMessages.next({
+      threadId: parseInt(this.id), take: TAKE_NUM, skip: 1,
+      lastId: this.oldestChatId, orderBy: 'desc'
+    })
   }
 
   initChatLog() {
-    this.isLoadingOld = true;
     return this.chatService.queryMessageLog({
       threadId: parseInt(this.id), orderBy: 'desc',
       take: TAKE_NUM, skip: 0
     })
       .pipe(
-        timeout(2500)
-      ).pipe(
+        tap(() => this.isLoadingOld = true),
         finalize(() => this.isLoadingOld = false),
+        timeout(2500)
       )
       .subscribe({
         next: list => {
           if (list.length > 0) {
             const latestChat = list[0];
-            this.latestChatId = latestChat.id;
+            this.newestChatId = latestChat.id;
             const rList = list.reverse();
             const oldestChat = rList[0];
             this.oldestChatId = oldestChat.id;
             this.messageList = rList;
+            this.mergeSentMessages(list)
           }
           if (list.length < TAKE_NUM) {
             this.hasMoreOldChat = false
           }
-        }, error: err => console.error(err)
+        },
+        error: err => console.error(err)
       })
   }
 
@@ -117,40 +166,33 @@ export class ChatThreadComponent {
     }
   }
   initThreadInfo() {
-    const getChatThreadInfo$ = this.chatService.getChatThreadInfo({
+    const getChatThreadInfo = this.chatService.getChatThreadInfo({
       threadId: parseInt(this.id)
     })
-    const getMyInfo$ = this.chatService.getMyProfile()
-    forkJoin([getChatThreadInfo$, getMyInfo$])
-      .subscribe(([chatThread, profile]) => {
-        this.userChatThread = chatThread
-        this.profile = profile
-        const { userId1, userId2 } = chatThread.threadItem.info
-        const friendId = userId1 === profile.id ? userId2 : userId1
-        this.chatService.queryFriendInfo({ userId: friendId }).subscribe(res => {
-          this.friendProfile = res.friendUser
-          this.isReady = true
-        })
-      })
+    const getMyInfo = this.chatService.getMyProfile()
+    forkJoin([getChatThreadInfo, getMyInfo]).pipe(mergeMap(([chatThread, profile]) => {
+      this.userChatThread = chatThread
+      this.profile = profile
+      const { userId1, userId2 } = chatThread.threadItem.info
+      const friendId = userId1 === profile.id ? userId2 : userId1
+      return this.chatService.queryFriendInfo({ userId: friendId })
+    })).subscribe(res => {
+      this.friendProfile = res.friendUser
+      this.isReady = true
+    })
   }
 
   ngOnInit() {
     this.initThreadInfo()
     this.initChatLog()
-  }
-
-  loadMoreOldChat() {
-    if (this.isLoadingOld || !this.hasMoreOldChat) return
-    this.isLoadingOld = true;
-    return this.chatService.queryMessageLog({
-      threadId: parseInt(this.id), take: TAKE_NUM, skip: 1,
-      lastId: this.oldestChatId, orderBy: 'desc'
-    }).pipe(
-      timeout(2500)
-    )
+    this.queryOldMessages
       .pipe(
+        filter(() => !this.isLoadingOld),
+        tap(() => this.isLoadingOld = true),
+        timeout(2500),
         finalize(() => this.isLoadingOld = false),
-      )
+        mergeMap((params) => this.chatService.queryMessageLog(params)
+        ))
       .subscribe(list => {
         const rList = list.reverse();
         const latestChat = rList[0];
@@ -160,19 +202,49 @@ export class ChatThreadComponent {
           this.hasMoreOldChat = false
         }
       })
+    this.queryOldMessages
+      .pipe(
+        filter(() => !this.isLoadingNew),
+        tap(() => this.isLoadingNew = true),
+        finalize(() => this.isLoadingNew = false),
+        timeout(2500),
+        switchMap((params) => this.chatService.queryMessageLog(params)
+        ))
+      .subscribe({
+        next: list => {
+          this.newestChatId = list[list.length - 1].id
+          this.messageList = this.messageList.concat(list)
+          if (list.length < TAKE_NUM) {
+            this.hasMoreNewChat = false
+          } else {
+            this.hasMoreNewChat = true
+          }
+        }, error: err => console.error(err)
+      })
   }
 
   @HostListener('window:scroll', ['$event'])
   onScroll(event: any) {
-    if (window.scrollY < 20) {
+    if (window.scrollY < LOAD_MORE_TRIGGER_OFFSET && this.hasMoreOldChat) {
       this.loadMoreOldChat()
+    } else if (window.scrollY > document.body.scrollHeight - LOAD_MORE_TRIGGER_OFFSET && this.hasMoreNewChat) {
+      this.loadMoreNewChat()
+    }
+    if ((innerHeight + scrollY) >= document.body.scrollHeight) {
+      this.isBottom = true;
+    } else {
+      this.isBottom = false;
     }
   }
 
+  scrollToBottom() {
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
   ngAfterViewChecked() {
-    if (!this.isChatScrollerSet && this.messageList.length > 0) {
-      this.isChatScrollerSet = true;
-      window.scrollTo(0, document.body.scrollHeight);
+    if (!this.isBottom && this.messageList.length > 0) {
+      this.scrollToBottom()
+      this.isBottom = true;
     }
   }
 

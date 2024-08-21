@@ -14,7 +14,21 @@ import { User as UserModel, Friend as FriendModel, Message as MessageModal, Cont
 import { LocalAuthGuard } from './auth/local-auth.guard';
 import { AuthService } from './auth/auth.service';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
-import { request } from 'http';
+
+const json = (param: any): any => {
+  return JSON.stringify(
+    param,
+    (key, value) => {
+      if (typeof value === "bigint") {
+        return value.toString()
+      } else if (value instanceof Date) {
+        return value.getTime()
+      } {
+        return value
+      }
+    }
+  );
+};
 
 @Controller()
 export class AppController {
@@ -101,7 +115,10 @@ export class AppController {
   async sendMessage(@Request() req,
     @Body() params: { threadId: number, content: string },
   ) {
-    await this.userService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_STRING)
+    if (!params.content) {
+      return
+    }
+    return json(await this.userService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_STRING))
   }
 
   @UseGuards(JwtAuthGuard)
@@ -120,13 +137,9 @@ export class AppController {
       skip: params.skip,
       take: params.take,
       orderBy: params.orderBy,
+      id: params.lastId,
     }
-    if (params.lastId) {
-      (newParams as any).cursor = {
-        id: params.lastId,
-      }
-    }
-    return await this.userService.queryChatMessages(newParams)
+    return json(await this.userService.queryChatMessages(newParams))
   }
 
   @UseGuards(LocalAuthGuard)

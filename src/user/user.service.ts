@@ -2,13 +2,6 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { User, ContentType, Prisma, Message, UserChatThread, ChatThreadType, Friend } from '@prisma/client';
 
-const json = (param: any): any => {
-  return JSON.stringify(
-    param,
-    (key, value) => (typeof value === "bigint" ? value.toString() : value) // return everything else unchanged
-  );
-};
-
 @Injectable()
 export class UserService implements OnModuleInit {
   constructor(private prisma: PrismaService) { }
@@ -133,7 +126,11 @@ export class UserService implements OnModuleInit {
         threadId,
         creator: userId
       }
-      return await this.prisma.message.create({ data: newData });
+      const data = await this.prisma.message.create({ data: newData });
+      return {
+        id: data.id,
+        createdAt: data.createdAt
+      }
     }
   }
 
@@ -156,7 +153,7 @@ export class UserService implements OnModuleInit {
         id: orderBy,
       },
     });
-    return json(res)
+    return res
   }
 
   async getFriendList(userId: number) {

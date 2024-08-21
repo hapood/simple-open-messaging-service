@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { User, ChatThread, Message, Friend } from './Interfaces'
+import { User, ChatThread, Message, Friend, QueryMessageLogParams } from './Interfaces'
 
 @Injectable({
   providedIn: 'root'
@@ -34,13 +34,10 @@ export class ChatService {
   }
 
   sendMessage(params: { threadId: number, content: string }) {
-    return this.http.post(`${this.prefix}/send-message`, params)
+    return this.http.post<{ id: string, createAt: string }>(`${this.prefix}/send-message`, params)
   }
 
-  queryMessageLog(params: {
-    threadId: number, take: number, skip: number,
-    orderBy: 'asc' | 'desc', lastId?: number
-  }) {
+  queryMessageLog(params: QueryMessageLogParams) {
     return this.http.post<Message[]>(`${this.prefix}/query-chat-messages`, params)
   }
 
