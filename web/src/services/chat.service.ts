@@ -6,7 +6,7 @@ import { User, ChatThread, Message, Friend, QueryMessageLogParams } from './Inte
   providedIn: 'root'
 })
 export class ChatService {
-  prefix = 'http://127.0.0.1:3000'
+  prefix = 'http://10.176.80.28:3000'
   constructor(private http: HttpClient) { }
 
   getUserList() {

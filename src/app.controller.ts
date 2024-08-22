@@ -132,12 +132,18 @@ export class AppController {
       orderBy: 'desc' | 'asc'
     },
   ) {
-    const newParams = {
-      threadId: params.threadId,
+    const newParams: Prisma.MessageFindManyArgs = {
       skip: params.skip,
       take: params.take,
-      orderBy: params.orderBy,
-      id: params.lastId,
+      where: {
+        threadId: params.threadId,
+      },
+      orderBy: {
+        id: params.orderBy,
+      },
+    };
+    if (params.lastId) {
+      newParams.cursor = { id: params.lastId }
     }
     return json(await this.userService.queryChatMessages(newParams))
   }

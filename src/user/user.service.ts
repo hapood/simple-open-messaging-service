@@ -134,25 +134,8 @@ export class UserService implements OnModuleInit {
     }
   }
 
-  async queryChatMessages(params: {
-    threadId: number,
-    skip?: number;
-    take?: number;
-    cursor?: Prisma.MessageWhereUniqueInput;
-    orderBy: 'desc' | 'asc'
-  }): Promise<Message[]> {
-    const { skip, take, cursor, threadId, orderBy } = params;
-    const res = await this.prisma.message.findMany({
-      skip,
-      take,
-      cursor,
-      where: {
-        threadId,
-      },
-      orderBy: {
-        id: orderBy,
-      },
-    });
+  async queryChatMessages(params: Prisma.MessageFindManyArgs): Promise<Message[]> {
+    const res = await this.prisma.message.findMany(params);
     return res
   }
 

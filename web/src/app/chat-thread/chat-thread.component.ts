@@ -4,12 +4,13 @@ import { FormsModule, FormControl, ReactiveFormsModule } from '@angular/forms';
 import { ChatService, } from '../../services/chat.service'
 import { Input as RouterInput } from '@angular/core'
 import { Message, User, ChatThread, QueryMessageLogParams, } from '../../services/Interfaces';
-import { forkJoin, timeout, finalize, Subject, filter, mergeMap, tap, switchMap } from "rxjs";
+import { Subscription, forkJoin, timeout, finalize, Subject, filter, mergeMap, tap, switchMap, catchError, of } from "rxjs";
 import { SendingMessage, SentMessage, SendingMessageStatus } from './interfaces';
 import { arrayToDictIndex } from '../../utils'
 
 const TAKE_NUM = 10;
 const LOAD_MORE_TRIGGER_OFFSET = innerHeight / 10;
+const WAIT_FOR_RENDER_INTERVAL = 10;
 
 @Component({
   selector: 'app-chat-thread',
@@ -20,7 +21,8 @@ const LOAD_MORE_TRIGGER_OFFSET = innerHeight / 10;
 })
 
 export class ChatThreadComponent {
-  constructor(private chatService: ChatService) { }
+  constructor(private chatService: ChatService) {
+  }
 
   @RouterInput() id!: string;
 
@@ -36,7 +38,9 @@ export class ChatThreadComponent {
 
   private userChatThread: ChatThread | Record<string, undefined> = {}
   private queryOldMessages = new Subject<QueryMessageLogParams>()
+  private subOldMessages!: Subscription;
   private queryNewMessages = new Subject<QueryMessageLogParams>()
+  private subNewMessages!: Subscription;
   private newestChatId: number | undefined = undefined
   private oldestChatId: number | undefined = undefined
   private profile: User | Record<string, undefined> = {}
@@ -145,6 +149,7 @@ export class ChatThreadComponent {
           if (list.length < TAKE_NUM) {
             this.hasMoreOldChat = false
           }
+          setTimeout(this.scrollToBottom, WAIT_FOR_RENDER_INTERVAL)
         },
         error: err => console.error(err)
       })
@@ -185,13 +190,17 @@ export class ChatThreadComponent {
   ngOnInit() {
     this.initThreadInfo()
     this.initChatLog()
-    this.queryOldMessages
+    this.subOldMessages = this.queryOldMessages
       .pipe(
         filter(() => !this.isLoadingOld),
-        tap(() => this.isLoadingOld = true),
-        timeout(2500),
-        finalize(() => this.isLoadingOld = false),
-        mergeMap((params) => this.chatService.queryMessageLog(params)
+        switchMap((params) => this.chatService.queryMessageLog(params).pipe(
+          tap(() => this.isLoadingOld = true),
+          timeout(2500),
+          finalize(() => this.isLoadingOld = false),
+          catchError((error) => {
+            console.log(error)
+            return of([])
+          }))
         ))
       .subscribe(list => {
         const rList = list.reverse();
@@ -202,14 +211,19 @@ export class ChatThreadComponent {
           this.hasMoreOldChat = false
         }
       })
-    this.queryOldMessages
+    this.subNewMessages = this.queryNewMessages
       .pipe(
         filter(() => !this.isLoadingNew),
-        tap(() => this.isLoadingNew = true),
-        finalize(() => this.isLoadingNew = false),
-        timeout(2500),
-        switchMap((params) => this.chatService.queryMessageLog(params)
-        ))
+        switchMap((params) => this.chatService.queryMessageLog(params).pipe(
+          timeout(2500),
+          tap(() => this.isLoadingNew = true),
+          finalize(() => this.isLoadingNew = false),
+          catchError((error) => {
+            console.log(error)
+            return of([])
+          }))
+        ),
+        filter((list) => list.length > 0))
       .subscribe({
         next: list => {
           this.newestChatId = list[list.length - 1].id
@@ -219,8 +233,17 @@ export class ChatThreadComponent {
           } else {
             this.hasMoreNewChat = true
           }
-        }, error: err => console.error(err)
+          this.isLoadingNew = false
+          if (this.isBottom) {
+            setTimeout(this.scrollToBottom, WAIT_FOR_RENDER_INTERVAL)
+          }
+        }
       })
+  }
+
+  ngOnDestroy() {
+    this.subNewMessages.unsubscribe();
+    this.subOldMessages.unsubscribe();
   }
 
   @HostListener('window:scroll', ['$event'])
@@ -239,13 +262,6 @@ export class ChatThreadComponent {
 
   scrollToBottom() {
     window.scrollTo(0, document.body.scrollHeight);
-  }
-
-  ngAfterViewChecked() {
-    if (!this.isBottom && this.messageList.length > 0) {
-      this.scrollToBottom()
-      this.isBottom = true;
-    }
   }
 
 }
