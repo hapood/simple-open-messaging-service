@@ -1,0 +1,8 @@
+@for (item of displayList(); track item.id){<div [ngClass]="['msg-list-wrapper',item.isSelf?'msg-self':'msg-friend']">
+  <div [ngClass]="['msg-list-item',item.isSelf?'msg-self':'msg-friend']">
+    <div>id:{{item.id}}|name:{{item.creator}}</div>
+    <div>text:{{item.content}}</div>
+    <div>datetime:{{item.createdAt}}</div>
+  </div>
+</div>
+}

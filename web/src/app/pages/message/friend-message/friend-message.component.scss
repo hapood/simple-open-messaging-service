@@ -21,31 +21,5 @@
   }
 }
 
-.msg-list-item-wrapper {
-  display: flex;
-  position: relative;
-  top: 1000px;
-  &.msg-self {
-    justify-content: right;
-  }
-
-  &.msg-friend {
-    justify-content: left;
-  }
-
-  .msg-list-item {
-    margin-top: 10px;
-    border: 1px solid #66ccff;
-
-    &.msg-self {
-      background: green;
-    }
-
-    &.msg-friend {
-      background: white;
-    }
-  }
-}
-.msg-scroll-padding-top {
-  height: 1000px;
+.msg-group-wrapper {
 }

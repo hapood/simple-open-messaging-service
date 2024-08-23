@@ -10,5 +10,5 @@ export const routes: Routes = [
   { path: "login", component: LoginComponent },
   { path: "my-friends", component: MyFriendsComponent },
   { path: "thread-list", component: ThreadListComponent },
-  { path: "friend-message/:id", component: FriendMessageComponent }
+  { path: "friend-message/:id/:startId?", component: FriendMessageComponent }
 ];

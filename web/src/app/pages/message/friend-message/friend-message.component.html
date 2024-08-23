@@ -2,23 +2,9 @@
   <div class="page-container">
     <div>Header</div>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
-      @for (item of topMessageList(); track item.id){
-      <div [ngClass]="['msg-list-item-wrapper',getClassName(item.creator)]">
-        <div [ngClass]="['msg-list-item',getClassName(item.creator)]">
-          <div>id:{{item.id}}|name:{{getName(item.creator)}}</div>
-          <div>text:{{item.content}}</div>
-          <div>datetime:{{item.createdAt}}</div>
-        </div>
-      </div>
-      }
-      <div class="msg-scroll-padding-top">padding top for insert</div>
-      @for (item of messageList(); track item.id){
-      <div [ngClass]="['msg-list-item-wrapper',getClassName(item.creator)]">
-        <div [ngClass]="['msg-list-item',getClassName(item.creator)]">
-          <div>id:{{item.id}}|name:{{getName(item.creator)}}</div>
-          <div>text:{{item.content}}</div>
-          <div>datetime:{{item.createdAt}}</div>
-        </div>
+      @for (item of groupList(); track item.id){
+      <div class="msg-group-wrapper">
+        <app-msg-group [list]="item.list" [profileRecord]="profileRecord()"></app-msg-group>
       </div>
       }
     </div>

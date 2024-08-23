@@ -1,36 +1,37 @@
-import { Component, HostBinding, ElementRef, model, signal, viewChild, Input } from '@angular/core';
-import { CommonModule, NgClass } from '@angular/common';
+import { Component, ElementRef, model, signal, viewChild, Input, computed, effect } from '@angular/core';
+import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MsgService, } from '../../../common/services/message.service'
 import { Input as RouterInput } from '@angular/core'
-import { Message, User, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
+import { Message, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
 import {
   Subscription, forkJoin, timeout, finalize,
-  Subject, filter, mergeMap, tap, switchMap, catchError, of,
-  delay
+  Subject, filter, mergeMap, tap, switchMap, catchError, of
 } from "rxjs";
-import { SendingMessage, SentMessage, SendingMessageStatus } from './interfaces';
-import { arrayToDictIndex, arraySignal } from '../../../../utils'
+import { SendingMessage, SentMessage, SendingMessageStatus, MsgGroup } from './modal';
+import { arrayToDictIndex, arraySignal, recordSignal } from '../../../../utils'
+import { MsgGroupComponent } from './msg-group/msg-group.component'
+import { UserProfile } from './msg-group/modal';
 
 const TAKE_NUM = 10;
+const GROUP_NUM = 10;
 const WAIT_FOR_RENDER_INTERVAL = 100;
 const LOAD_MORE_TRIGGER_OFFSET = 100;
+const MaxScrollHeight = 1000;
 
 @Component({
   selector: 'app-friend-message',
   standalone: true,
-  imports: [CommonModule, FormsModule, NgClass],
+  imports: [FormsModule, NgClass, MsgGroupComponent],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss'
 })
 
 export class FriendMessageComponent {
-  constructor(private msgService: MsgService) {
-  }
-  @HostBinding("style.--color")
-  @Input() color: string;
 
   @RouterInput() id!: string;
+  @RouterInput() startId!: string;
+
   readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
 
@@ -39,26 +40,37 @@ export class FriendMessageComponent {
   readonly sendingMessageList = arraySignal<SendingMessage>([])
   readonly sentMessageList = arraySignal<SentMessage>([])
   readonly failedMessageList = arraySignal<SendingMessage>([])
-  readonly topMessageList = arraySignal<Message>([])
   readonly isReady = signal(false)
+  readonly hasMoreNewMsg = signal(false)
   readonly hasMoreOldMsg = signal(true)
   readonly isLoadingNew = signal(false)
   readonly isLoadingOld = signal(false)
+  readonly scrollTop = signal(0)
+  readonly scrollHeight = signal(0)
+  readonly groupList = arraySignal<MsgGroup>([])
+  readonly profileRecord = recordSignal<UserProfile>({})
 
   private msgThread: MsgThread | Record<string, undefined> = {}
   private queryOldMessages = new Subject<QueryMessageLogParams>()
   private subOldMessages!: Subscription;
   private queryNewMessages = new Subject<QueryMessageLogParams>()
   private subNewMessages!: Subscription;
-  private newestMsgId: number | undefined = undefined
-  private oldestMsgId: number | undefined = undefined
-  private profile: User | Record<string, undefined> = {}
-  private friendProfile: User | Record<string, undefined> = {}
+  private newestMsgId: string | undefined = undefined
+  private oldestMsgId: string | undefined = undefined
   private isBottom = true
-  private hasMoreNewMsg = false
   private sentTempId = 0;
   private inputObserver!: ResizeObserver;
   private scrollObserver!: MutationObserver;
+  private groupHeightDict: Record<string, number> = {}
+
+  constructor(private msgService: MsgService) {
+    effect(() => {
+      const msgs = this.messageList();
+      if (msgs.length > 0) {
+        this.oldestMsgId = msgs[0].id; this.newestMsgId = msgs[msgs.length - 1].id
+      }
+    })
+  }
 
   send() {
     const content = this.inputText()
@@ -77,8 +89,8 @@ export class FriendMessageComponent {
           {
             next: (res) => {
               this.updateSendMessageStatus(currentId, SendingMessageStatus.SENT, { dbId: res.id })
-              this.hasMoreNewMsg = true
-              this.loadMoreNewMsg()
+              this.hasMoreNewMsg.set(true)
+              this.showMoreNewMsg()
             },
             error: (error) => {
               console.error(error)
@@ -120,7 +132,7 @@ export class FriendMessageComponent {
     this.sentMessageList.filter((_, index) => !filterDict[index])
   }
 
-  loadMoreNewMsg() {
+  showMoreNewMsg() {
     this.queryNewMessages.next({
       threadId: parseInt(this.id),
       orderBy: 'asc' as 'asc',
@@ -130,55 +142,75 @@ export class FriendMessageComponent {
     })
   }
 
-  loadMoreOldMsg() {
-    this.queryOldMessages.next({
-      threadId: parseInt(this.id), take: TAKE_NUM, skip: 1,
-      lastId: this.oldestMsgId, orderBy: 'desc'
-    })
-  }
-
-  initMsgLog() {
-    return this.msgService.queryMessageLog({
-      threadId: parseInt(this.id), orderBy: 'desc',
-      take: TAKE_NUM, skip: 0
-    })
-      .pipe(
-        tap(() => this.isLoadingOld.set(true)),
-        finalize(() => this.isLoadingOld.set(false)),
-        timeout(2500)
-      )
-      .subscribe({
-        next: list => {
-          if (list.length > 0) {
-            const latestMsg = list[0];
-            this.newestMsgId = latestMsg.id;
-            const rList = list.reverse();
-            const oldestMsg = rList[0];
-            this.oldestMsgId = oldestMsg.id;
-            this.topMessageList.set(rList)
-            this.mergeSentMessages(list)
-          }
-          if (list.length < TAKE_NUM) {
-            this.hasMoreOldMsg.set(false)
-          }
-        },
-        error: err => console.error(err)
-      })
-  }
-
-  getName(userId: number) {
-    if (this.profile.id === userId) {
-      return this.profile.uniqName
+  tryGenerateGroup(derection: 0 | 1): boolean {
+    const list = this.groupList();
+    if (list.length === 0) {
+      return false
     } else {
-      return this.friendProfile.uniqName;
+      if (derection === 0) {
+        const topIndex = list[0].startIndex
+        let startIndex = topIndex - GROUP_NUM, takeNum = GROUP_NUM;
+        if (startIndex < 0) {
+          takeNum += startIndex;
+          startIndex = 0;
+        }
+        const topList = this.messageList().slice(startIndex, takeNum)
+        if (topList.length > 0) {
+          this.groupList.push({
+            id: topList[0].id,
+            startIndex: startIndex,
+            endIndex: startIndex + takeNum,
+            list: topList
+          })
+        } else {
+          return false
+        }
+      } else {
+        const botIndex = list[list.length - 1].startIndex
+        const botList = this.messageList().slice(botIndex, GROUP_NUM)
+        if (botList.length > 0) {
+          this.groupList.push({
+            id: botList[0].id,
+            startIndex: botIndex,
+            endIndex: botIndex + botList.length,
+            list: botList
+          })
+        } else {
+          return false
+        }
+      }
+      return true
     }
   }
 
-  getClassName(userId: number) {
-    if (this.profile.id === userId) {
-      return 'msg-self'
+  showMoreOldMsg() {
+    if (!this.hasMoreOldMsg) {
+      return
+    }
+    if (!this.tryGenerateGroup(0)) {
+      this.queryOldMessages.next({
+        threadId: parseInt(this.id), take: TAKE_NUM, skip: 1,
+        lastId: this.oldestMsgId, orderBy: 'desc'
+      })
+    }
+  }
+
+  initMsgLog() {
+    if (this.startId) {
+      this.queryOldMessages.next({
+        threadId: parseInt(this.id), orderBy: 'desc',
+        take: TAKE_NUM, skip: 1
+      })
+
+      this.queryNewMessages.next({
+        threadId: parseInt(this.startId), orderBy: 'asc',
+        take: TAKE_NUM, skip: 0
+      })
     } else {
-      return 'msg-friend'
+      this.queryOldMessages.next({
+        threadId: parseInt(this.id), orderBy: 'desc',
+        take: TAKE_NUM, skip: 0
+      })
     }
   }
 
@@ -189,13 +221,14 @@ export class FriendMessageComponent {
     const getMyInfo = this.msgService.getMyProfile()
     forkJoin([getThreadInfo, getMyInfo]).pipe(mergeMap(([thread, profile]) => {
       this.msgThread = thread
-      this.profile = profile
+      this.profileRecord.set(profile.id, { id: profile.id, uniqName: profile.uniqName, isSelf: true })
       const { userId1, userId2 } = thread.threadItem.info
       const friendId = userId1 === profile.id ? userId2 : userId1
       return this.msgService.queryFriendInfo({ userId: friendId })
     }))
       .subscribe(res => {
-        this.friendProfile = res.friendUser
+        const friendProfile = res.friendUser
+        this.profileRecord.set(friendProfile.id, { id: friendProfile.id, uniqName: friendProfile.uniqName, isSelf: false })
         this.isReady.set(true)
       })
   }
@@ -231,10 +264,11 @@ export class FriendMessageComponent {
         const rList = list.reverse();
         const latestMsg = rList[0];
         this.oldestMsgId = latestMsg.id;
-        this.topMessageList.set(rList.concat(this.topMessageList()))
+        this.messageList.set(rList.concat(this.messageList()))
         if (list.length < TAKE_NUM) {
           this.hasMoreOldMsg.set(false)
         }
+        this.tryGenerateGroup(0)
       })
     this.subNewMessages = this.queryNewMessages
       .pipe(
@@ -254,9 +288,9 @@ export class FriendMessageComponent {
           this.newestMsgId = list[list.length - 1].id
           this.messageList.set(this.messageList().concat(list))
           if (list.length < TAKE_NUM) {
-            this.hasMoreNewMsg = false
+            this.hasMoreNewMsg.set(false)
           } else {
-            this.hasMoreNewMsg = true
+            this.hasMoreNewMsg.set(true)
           }
           this.isLoadingNew.set(false)
           if (this.isBottom) {
@@ -277,14 +311,11 @@ export class FriendMessageComponent {
     // const elm = event.target as HTMLDivElement;
     const elm = (this.msgScroller() as any).nativeElement
     const { scrollHeight, scrollTop, clientHeight } = elm
-    if (scrollTop < 1000) {
-      console.log(2)
-      elm.scrollTo(0, 1000)
-    } else if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET + 1000) && this.hasMoreOldMsg()) {
-      console.log(1)
-      this.loadMoreOldMsg()
-    } else if (scrollTop > scrollHeight - LOAD_MORE_TRIGGER_OFFSET && this.hasMoreNewMsg) {
-      this.loadMoreNewMsg()
+    this.scrollTop.set(scrollTop)
+    if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET) && this.hasMoreOldMsg()) {
+      this.showMoreOldMsg()
+    } else if (scrollTop > scrollHeight - LOAD_MORE_TRIGGER_OFFSET && this.hasMoreNewMsg()) {
+      this.showMoreNewMsg()
     }
     if ((clientHeight + scrollTop) >= scrollHeight) {
       this.isBottom = true;
