@@ -1,4 +1,4 @@
-import { Component, ViewChild, ElementRef, model, signal, viewChild } from '@angular/core';
+import { Component, HostBinding, ElementRef, model, signal, viewChild, Input } from '@angular/core';
 import { CommonModule, NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MsgService, } from '../../../common/services/message.service'
@@ -6,14 +6,15 @@ import { Input as RouterInput } from '@angular/core'
 import { Message, User, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
 import {
   Subscription, forkJoin, timeout, finalize,
-  Subject, filter, mergeMap, tap, switchMap, catchError, of
+  Subject, filter, mergeMap, tap, switchMap, catchError, of,
+  delay
 } from "rxjs";
 import { SendingMessage, SentMessage, SendingMessageStatus } from './interfaces';
 import { arrayToDictIndex, arraySignal } from '../../../../utils'
 
 const TAKE_NUM = 10;
-const LOAD_MORE_TRIGGER_OFFSET = innerHeight / 10;
 const WAIT_FOR_RENDER_INTERVAL = 100;
+const LOAD_MORE_TRIGGER_OFFSET = 100;
 
 @Component({
   selector: 'app-friend-message',
@@ -26,6 +27,8 @@ const WAIT_FOR_RENDER_INTERVAL = 100;
 export class FriendMessageComponent {
   constructor(private msgService: MsgService) {
   }
+  @HostBinding("style.--color")
+  @Input() color: string;
 
   @RouterInput() id!: string;
   readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
@@ -36,6 +39,7 @@ export class FriendMessageComponent {
   readonly sendingMessageList = arraySignal<SendingMessage>([])
   readonly sentMessageList = arraySignal<SentMessage>([])
   readonly failedMessageList = arraySignal<SendingMessage>([])
+  readonly topMessageList = arraySignal<Message>([])
   readonly isReady = signal(false)
   readonly hasMoreOldMsg = signal(true)
   readonly isLoadingNew = signal(false)
@@ -54,6 +58,7 @@ export class FriendMessageComponent {
   private hasMoreNewMsg = false
   private sentTempId = 0;
   private inputObserver!: ResizeObserver;
+  private scrollObserver!: MutationObserver;
 
   send() {
     const content = this.inputText()
@@ -126,7 +131,6 @@ export class FriendMessageComponent {
   }
 
   loadMoreOldMsg() {
-    console.log('loadMoreOldMsg')
     this.queryOldMessages.next({
       threadId: parseInt(this.id), take: TAKE_NUM, skip: 1,
       lastId: this.oldestMsgId, orderBy: 'desc'
@@ -151,13 +155,12 @@ export class FriendMessageComponent {
             const rList = list.reverse();
             const oldestMsg = rList[0];
             this.oldestMsgId = oldestMsg.id;
-            this.messageList.set(rList);
+            this.topMessageList.set(rList)
             this.mergeSentMessages(list)
           }
           if (list.length < TAKE_NUM) {
             this.hasMoreOldMsg.set(false)
           }
-          setTimeout(() => this.scrollToBottom(), WAIT_FOR_RENDER_INTERVAL)
         },
         error: err => console.error(err)
       })
@@ -202,6 +205,9 @@ export class FriendMessageComponent {
       const height = entries[0].contentRect.width;
     })
     this.inputObserver.observe((this.userInput() as any).nativeElement);
+    this.scrollObserver = new MutationObserver(entries => {
+    })
+    this.scrollObserver.observe((this.msgScroller() as any).nativeElement, { childList: true });
   }
 
   ngOnInit() {
@@ -221,11 +227,11 @@ export class FriendMessageComponent {
         ),
         filter(list => list.length > 0))
       .subscribe(list => {
-        console.log(list,22)
+        console.log(list, 22)
         const rList = list.reverse();
         const latestMsg = rList[0];
         this.oldestMsgId = latestMsg.id;
-        this.messageList.set(rList.concat(this.messageList()))
+        this.topMessageList.set(rList.concat(this.topMessageList()))
         if (list.length < TAKE_NUM) {
           this.hasMoreOldMsg.set(false)
         }
@@ -263,14 +269,19 @@ export class FriendMessageComponent {
   ngOnDestroy() {
     this.subNewMessages.unsubscribe();
     this.subOldMessages.unsubscribe();
-    this.inputObserver.unobserve((this.userInput as any).nativeElement)
+    this.inputObserver.disconnect()
+    this.scrollObserver.disconnect()
   }
 
   onMsgScroll(event: Event) {
     // const elm = event.target as HTMLDivElement;
     const elm = (this.msgScroller() as any).nativeElement
     const { scrollHeight, scrollTop, clientHeight } = elm
-    if (scrollTop < LOAD_MORE_TRIGGER_OFFSET && this.hasMoreOldMsg()) {
+    if (scrollTop < 1000) {
+      console.log(2)
+      elm.scrollTo(0, 1000)
+    } else if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET + 1000) && this.hasMoreOldMsg()) {
+      console.log(1)
       this.loadMoreOldMsg()
     } else if (scrollTop > scrollHeight - LOAD_MORE_TRIGGER_OFFSET && this.hasMoreNewMsg) {
       this.loadMoreNewMsg()
@@ -284,6 +295,7 @@ export class FriendMessageComponent {
 
   scrollToBottom() {
     const elm = (this.msgScroller() as any).nativeElement
+    console.log(elm)
     elm.scrollTo(0, elm.scrollHeight);
   }
 

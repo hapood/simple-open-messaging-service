@@ -2,17 +2,25 @@
   <div class="page-container">
     <div>Header</div>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
-      @if(isReady()){<div class="msg-list">
-        @for (item of messageList(); track item.id){
-        <div [ngClass]="['msg-list-item-wrapper',getClassName(item.creator)]">
-          <div [ngClass]="['msg-list-item',getClassName(item.creator)]">
-            <div>id:{{item.id}}|name:{{getName(item.creator)}}</div>
-            <div>text:{{item.content}}</div>
-            <div>datetime:{{item.createdAt}}</div>
-          </div>
+      @for (item of topMessageList(); track item.id){
+      <div [ngClass]="['msg-list-item-wrapper',getClassName(item.creator)]">
+        <div [ngClass]="['msg-list-item',getClassName(item.creator)]">
+          <div>id:{{item.id}}|name:{{getName(item.creator)}}</div>
+          <div>text:{{item.content}}</div>
+          <div>datetime:{{item.createdAt}}</div>
         </div>
-        }
-      </div>}
+      </div>
+      }
+      <div class="msg-scroll-padding-top">padding top for insert</div>
+      @for (item of messageList(); track item.id){
+      <div [ngClass]="['msg-list-item-wrapper',getClassName(item.creator)]">
+        <div [ngClass]="['msg-list-item',getClassName(item.creator)]">
+          <div>id:{{item.id}}|name:{{getName(item.creator)}}</div>
+          <div>text:{{item.content}}</div>
+          <div>datetime:{{item.createdAt}}</div>
+        </div>
+      </div>
+      }
     </div>
     <div class="bottom-bar">
       <textarea #userInput [(ngModel)]="inputText" class="bottom-input" type="text" #input
