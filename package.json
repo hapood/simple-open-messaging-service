@@ -1,7 +1,7 @@
 {
-  "name": "simple-open-chat-service",
+  "name": "simple-open-s-service",
   "version": "0.0.1",
-  "description": "a simple chat service , easy to connect by third part apps.",
+  "description": "a simple message service , easy to connect by third part apps.",
   "author": "",
   "private": true,
   "license": "UNLICENSED",

@@ -1,0 +1,23 @@
+<div>
+  <div class="page-container">
+    <div>Header</div>
+    <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
+      @if(isReady()){<div class="msg-list">
+        @for (item of messageList(); track item.id){
+        <div [ngClass]="['msg-list-item-wrapper',getClassName(item.creator)]">
+          <div [ngClass]="['msg-list-item',getClassName(item.creator)]">
+            <div>id:{{item.id}}|name:{{getName(item.creator)}}</div>
+            <div>text:{{item.content}}</div>
+            <div>datetime:{{item.createdAt}}</div>
+          </div>
+        </div>
+        }
+      </div>}
+    </div>
+    <div class="bottom-bar">
+      <textarea #userInput [(ngModel)]="inputText" class="bottom-input" type="text" #input
+        (keydown.control.enter)="send()"></textarea>
+      <button (click)="send()">发送</button>
+    </div>
+  </div>
+</div>

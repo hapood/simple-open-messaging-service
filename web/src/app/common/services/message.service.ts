@@ -1,11 +1,11 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { User, ChatThread, Message, Friend, QueryMessageLogParams } from './Interfaces'
+import { User, MsgThread, Message, Friend, QueryMessageLogParams } from './Interfaces'
 
 @Injectable({
   providedIn: 'root'
 })
-export class ChatService {
+export class MsgService {
   prefix = 'http://10.176.80.28:3000'
   constructor(private http: HttpClient) { }
 
@@ -13,12 +13,12 @@ export class ChatService {
     return this.http.get<User[]>(`${this.prefix}/get-user-list`)
   }
 
-  getChatThreadList() {
-    return this.http.post<ChatThread[]>(`${this.prefix}/get-chat-thread-list`, {})
+  getThreadList() {
+    return this.http.post<MsgThread[]>(`${this.prefix}/get-thread-list`, {})
   }
 
-  getChatThreadInfo(params: { threadId: number }) {
-    return this.http.post<ChatThread>(`${this.prefix}/query-chat-thread-info`, params)
+  getThreadInfo(params: { threadId: number }) {
+    return this.http.post<MsgThread>(`${this.prefix}/query-thread-info`, params)
   }
 
   addUser(params: { uniqName: string, password: string }) {
@@ -38,7 +38,7 @@ export class ChatService {
   }
 
   queryMessageLog(params: QueryMessageLogParams) {
-    return this.http.post<Message[]>(`${this.prefix}/query-chat-messages`, params)
+    return this.http.post<Message[]>(`${this.prefix}/query-messages`, params)
   }
 
   queryFriendInfo(params: { userId: number }) {

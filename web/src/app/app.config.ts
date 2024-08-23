@@ -1,12 +1,12 @@
-import { ApplicationConfig, provideZoneChangeDetection } from '@angular/core';
+import { ApplicationConfig, provideExperimentalZonelessChangeDetection } from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideHttpClient, withInterceptors } from '@angular/common/http';
 import { jwtInterceptor } from './jwt.interceptor';
 import { routes } from './app.routes';
-import { ChatService } from '../services/chat.service'
+import { MsgService } from './common/services/message.service'
 
 export const appConfig: ApplicationConfig = {
-  providers: [provideZoneChangeDetection({ eventCoalescing: true },), ChatService,
+  providers: [provideExperimentalZonelessChangeDetection(), MsgService,
   provideRouter(routes, withComponentInputBinding()),
   provideHttpClient(withInterceptors([jwtInterceptor]))]
 };

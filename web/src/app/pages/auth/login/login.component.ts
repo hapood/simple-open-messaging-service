@@ -1,16 +1,16 @@
 import { Component } from '@angular/core';
-import { UserLoginService } from '../../services/user-login.service'
+import { UserLoginService } from '../../../common/services/user-login.service'
 import { FormsModule } from '@angular/forms';
 
 @Component({
-  selector: 'app-user-login',
+  selector: 'app-login',
   standalone: true,
   imports: [FormsModule],
   providers: [UserLoginService],
-  templateUrl: './user-login.component.html',
-  styleUrl: './user-login.component.scss'
+  templateUrl: './login.component.html',
+  styleUrl: './login.component.scss'
 })
-export class UserLoginComponent {
+export class LoginComponent {
   uniqName = "hapood"
   password = "512512";
   resp = ""

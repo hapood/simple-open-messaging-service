@@ -54,8 +54,8 @@ export class AppController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('query-chat-thread-info')
-  async queryChatThreadInfo(
+  @Post('query-thread-info')
+  async queryThreadInfo(
     @Request() req,
     @Body() params: { threadId: number },
   ): Promise<UserChatThread> {
@@ -104,7 +104,7 @@ export class AppController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('get-chat-thread-list')
+  @Post('get-thread-list')
   async getChatThreadList(@Request() req,
   ) {
     return await this.userService.getChatThreadList(req.user.userId)
@@ -122,8 +122,8 @@ export class AppController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('query-chat-messages')
-  async queryChatMessages(@Request() req,
+  @Post('query-messages')
+  async queryMessages(@Request() req,
     @Body() params: {
       threadId: number,
       skip: number;

@@ -1,30 +1,30 @@
 import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { ChatService } from '../../services/chat.service'
-import { ChatThread, User } from '../../services/Interfaces'
+import { MsgService } from '../../../common/services/message.service'
+import { MsgThread, User } from '../../../common/services/Interfaces'
 
 @Component({
-  selector: 'app-chat-thread-list',
+  selector: 'app-thread-list',
   standalone: true,
   imports: [RouterLink],
-  templateUrl: './chat-thread-list.component.html',
-  styleUrl: './chat-thread-list.component.scss'
+  templateUrl: './thread-list.component.html',
+  styleUrl: './thread-list.component.scss'
 })
-export class ChatThreadListComponent {
-  threadList: ChatThread[] = []
+export class ThreadListComponent {
+  threadList: MsgThread[] = []
   userInfoDict: Record<string, User> = {}
   profile: User = {} as User
 
-  constructor(private chatService: ChatService) { }
+  constructor(private msgService: MsgService) { }
 
   getThreadList() {
-    return this.chatService.getChatThreadList().subscribe(threadList => {
+    return this.msgService.getThreadList().subscribe(threadList => {
       this.threadList = threadList
     })
   }
 
   getUserList() {
-    return this.chatService.getUserList().subscribe(userList => {
+    return this.msgService.getUserList().subscribe(userList => {
       userList.map(item => {
         this.userInfoDict[item.id] = item
       })
@@ -32,12 +32,12 @@ export class ChatThreadListComponent {
   }
 
   getMyInfo() {
-    return this.chatService.getMyProfile().subscribe(profile => {
+    return this.msgService.getMyProfile().subscribe(profile => {
       this.profile = profile
     })
   }
 
-  getUserName(item: ChatThread) {
+  getUserName(item: MsgThread) {
     const { userId1, userId2 } = item.threadItem.info;
     let userId = userId1;
     if (userId1 === this.profile.id) {

@@ -1,14 +1,14 @@
 import { Routes } from '@angular/router';
-import { UserManagementComponent } from './user-management/user-management.component';
-import { UserLoginComponent } from './user-login/user-login.component';
-import { UserAddFriendComponent } from './user-add-friend/user-add-friend.component';
-import { ChatThreadListComponent } from './chat-thread-list/chat-thread-list.component';
-import { ChatThreadComponent } from './chat-thread/chat-thread.component';
+import { UserManageComponent } from './pages/server-manage/user-manage/user-manage.component';
+import { LoginComponent } from './pages/auth/login/login.component';
+import { MyFriendsComponent } from './pages/relation/my-firends/my-friends.component';
+import { ThreadListComponent } from './pages/home/thread-list/thread-list.component';
+import { FriendMessageComponent } from './pages/message/friend-message/friend-message.component';
 
 export const routes: Routes = [
-  { path: "user-management", component: UserManagementComponent },
-  { path: "login", component: UserLoginComponent },
-  { path: "add-friend", component: UserAddFriendComponent },
-  { path: "chat-thread-list", component: ChatThreadListComponent },
-  { path: "chat-thread/:id", component: ChatThreadComponent }
+  { path: "user-manage", component: UserManageComponent },
+  { path: "login", component: LoginComponent },
+  { path: "my-friends", component: MyFriendsComponent },
+  { path: "thread-list", component: ThreadListComponent },
+  { path: "friend-message/:id", component: FriendMessageComponent }
 ];
