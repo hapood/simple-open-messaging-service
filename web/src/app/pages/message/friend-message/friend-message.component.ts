@@ -1,7 +1,8 @@
 import { Component, ElementRef, model, signal, viewChild, Input, computed, effect } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { MsgService, } from '../../../common/services/message.service'
+import { MsgService } from '../../../common/services/message.service'
+import { WebsocketService } from '../../../common/services/websocket.service';
 import { Input as RouterInput } from '@angular/core'
 import { Message, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
 import {
@@ -63,12 +64,15 @@ export class FriendMessageComponent {
   private scrollObserver!: MutationObserver;
   private groupHeightDict: Record<string, number> = {}
 
-  constructor(private msgService: MsgService) {
+  constructor(private msgService: MsgService, private wsService: WebsocketService) {
     effect(() => {
       const msgs = this.messageList();
       if (msgs.length > 0) {
         this.oldestMsgId = msgs[0].id; this.newestMsgId = msgs[msgs.length - 1].id
       }
+    })
+    this.wsService.eventSubject.subscribe({
+      next: (msg) => { console.log('on message', msg) }
     })
   }
 

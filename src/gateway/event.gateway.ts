@@ -1,29 +1,21 @@
-import { SubscribeMessage, WebSocketGateway, MessageBody, ConnectedSocket, WsResponse } from '@nestjs/websockets';
-import { Socket, Server } from "socket.io";
+import {
+  SubscribeMessage,
+  WebSocketGateway,
+  WebSocketServer,
+  WsResponse,
+} from '@nestjs/websockets';
+import { from, Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+import { Server } from 'ws';
 
-@WebSocketGateway(null, { cors: '*' })
+@WebSocketGateway(0)
 export class EventGateway {
-  @SubscribeMessage('newMessage')
-  handleMessage(@MessageBody() body: any, @ConnectedSocket() client: Socket): WsResponse<unknown> {
-    console.log(body)
-    return {
-      event: '1233', data: { a: 1 }
-    }
-  }
-  private clients: Set<Socket> = new Set();
+  @WebSocketServer()
+  server: Server;
 
-  afterInit(server: Server) {
-    console.log('WebSocket Gateway initialized');
+  @SubscribeMessage('events')
+  onEvent(client: any, data: any): Observable<WsResponse<number>> {
+    console.log(data)
+    return from([1, 2, 3]).pipe(map(item => ({ event: 'events', data: item })));
   }
-
-  handleConnection(client: Socket) {
-    console.log(`Client connected: ${client.id}`);
-    this.clients.add(client);
-  }
-
-  handleDisconnect(client: Socket) {
-    console.log(`Client disconnected: ${client.id}`);
-    this.clients.delete(client);
-  }
-
 }

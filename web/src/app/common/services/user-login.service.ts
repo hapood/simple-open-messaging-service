@@ -5,7 +5,7 @@ import { HttpClient } from '@angular/common/http';
   providedIn: 'root'
 })
 export class UserLoginService {
-  prefix = 'http://10.176.80.28:3000'
+  prefix = 'http://127.0.0.1:3000'
   constructor(private http: HttpClient) {
   }
 

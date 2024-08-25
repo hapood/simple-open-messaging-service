@@ -6,7 +6,7 @@ import { User, MsgThread, Message, Friend, QueryMessageLogParams } from './Inter
   providedIn: 'root'
 })
 export class MsgService {
-  prefix = 'http://10.176.80.28:3000'
+  prefix = 'http://127.0.0.1:3000'
   constructor(private http: HttpClient) { }
 
   getUserList() {
