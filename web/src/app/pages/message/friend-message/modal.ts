@@ -9,8 +9,16 @@ export interface SentMessage {
   id: number, content: string, dbId: string
 }
 export interface MsgGroup {
-  id: string,
+  id: string
   list: Message[],
+}
+
+export enum MsgGroupStatus {
+  CALCING, PREPARED, STABLE, REMOVING
+}
+export interface MsgGroupInfo {
+  id: string,
   startIndex: number,
-  endIndex: number
+  endIndex: number,
+  status: MsgGroupStatus,
 }

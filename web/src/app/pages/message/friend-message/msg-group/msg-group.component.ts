@@ -1,4 +1,4 @@
-import { Component, computed, input } from '@angular/core';
+import { Component, computed, input, Output, EventEmitter, viewChild, ElementRef } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { Message } from '../../../../common/services/Interfaces';
 import { UserProfile, displayMsg } from './modal'
@@ -10,6 +10,9 @@ import { UserProfile, displayMsg } from './modal'
   styleUrl: './msg-group.component.scss'
 })
 export class MsgGroupComponent {
+  @Output() onStatusChange = new EventEmitter<{ height: number }>();
+  readonly groupWrapper = viewChild<ElementRef<HTMLDivElement>>('groupWrapper');
+
   readonly list = input<Message[]>([])
   readonly profileRecord = input<Record<string, UserProfile>>({})
   readonly displayList = computed(() => {
@@ -23,4 +26,15 @@ export class MsgGroupComponent {
       } as displayMsg
     })
   })
+
+  private groupObserver!: ResizeObserver;
+
+  ngAfterViewInit() {
+    this.groupObserver = new ResizeObserver(entries => {
+      const height = entries[0].contentRect.width;
+      this.onStatusChange.emit({ height })
+    })
+    this.groupObserver.observe((this.groupWrapper() as any).nativeElement);
+  }
+
 }
