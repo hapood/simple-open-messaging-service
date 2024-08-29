@@ -15,9 +15,10 @@ import { MsgGroupStatus } from '../modal'
   styleUrl: './msg-group.component.scss'
 })
 export class MsgGroupComponent {
-  @Output() onStatusChange = new EventEmitter<{ height: number }>();
+  @Output() onStatusChange = new EventEmitter<{ index: number, status: MsgGroupStatus, height: number }>();
   readonly groupWrapper = viewChild<ElementRef<HTMLDivElement>>('groupWrapper');
 
+  readonly index = input<number>(-1)
   readonly list = input<Message[]>([])
   readonly status = input<MsgGroupStatus>(MsgGroupStatus.CALCING)
   readonly profileRecord = input<Record<string, UserProfile>>({})
@@ -47,7 +48,7 @@ export class MsgGroupComponent {
   ngAfterViewInit() {
     this.groupObserver = new ResizeObserver(entries => {
       const height = entries[0].contentRect.width;
-      this.onStatusChange.emit({ height })
+      this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
     })
     this.groupObserver.observe((this.groupWrapper() as any).nativeElement);
   }

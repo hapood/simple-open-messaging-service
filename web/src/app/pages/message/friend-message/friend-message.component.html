@@ -2,12 +2,15 @@
   <div class="page-container">
     <div>Header</div>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
-      @for (item of groupList(); track item.id){
-      <div class="msg-group-wrapper">
-        <app-msg-group [list]="item.list" [profileRecord]="profileRecord()" [status]="groupInfoArray[$index].status"
-          (onStatusChange)="onGroupComStatusChange($event)"></app-msg-group>
+      <div class="msg-group-list" #groupPadding>
+        @for (item of groupList(); track item.id){
+        <div class="msg-group-wrapper">
+          <app-msg-group [list]="item.list" [profileRecord]="profileRecord()"
+            [status]="groupStatusArray()[$index].status" (onStatusChange)="onGroupComStatusChange($event)"
+            [index]="$index"></app-msg-group>
+        </div>
+        }
       </div>
-      }
     </div>
     <div class="bottom-bar">
       <textarea #userInput [(ngModel)]="inputText" class="bottom-input" type="text" #input

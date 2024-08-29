@@ -15,8 +15,8 @@ export const routes: Routes = [
   { path: "user-manage", component: UserManageComponent, canActivate: [authGuard] },
   { path: "my-friends", component: MyFriendsComponent, canActivate: [authGuard] },
   { path: "thread-list", component: ThreadListComponent, canActivate: [authGuard] },
-  { path: "friend-message/:id", component: FriendMessageComponent, canActivate: [authGuard] },
-  { path: "friend-message/:id/:startId", component: FriendMessageComponent, canActivate: [authGuard] },
+  { path: "friend-message/:threadId", component: FriendMessageComponent, canActivate: [authGuard] },
+  { path: "friend-message/:threadId/:startMsgId", component: FriendMessageComponent, canActivate: [authGuard] },
   { path: 'forbidden', component: ForbiddenComponent },
   { path: '**', component: PageNotFoundComponent }
 ];
