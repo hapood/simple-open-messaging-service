@@ -4,7 +4,7 @@
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       @for (item of groupList(); track item.id){
       <div class="msg-group-wrapper">
-        <app-msg-group [list]="item.list" [profileRecord]="profileRecord()"
+        <app-msg-group [list]="item.list" [profileRecord]="profileRecord()" [status]="groupInfoArray[$index].status"
           (onStatusChange)="onGroupComStatusChange($event)"></app-msg-group>
       </div>
       }

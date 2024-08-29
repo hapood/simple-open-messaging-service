@@ -11,6 +11,7 @@ export function arrayToDictIndex<T extends string, U>(arr: (Record<T, string> & 
 interface ArraySignal<T> {
   (): T[];
   push: (item: T) => void;
+  unshift: (item: T) => void;
   set(arr: T[]): void;
   filter<S extends T>(predicate: (value: T, index: number, array: T[]) => value is S, thisArg?: any): void;
   filter(predicate: (value: T, index: number, array: T[]) => unknown, thisArg?: any): void;
@@ -22,10 +23,11 @@ export function arraySignal<T>(arr: T[]): ArraySignal<T> {
     () => _signal(),
     {
       set: (arr: T[]) => { _signal.set(arr) },
+      unshift: (item: T) => _signal.update(arr => [item].concat(arr)),
       push: (item: T) => _signal.update(arr => arr.concat(item)),
       filter: ((predicate: any, thisArg?: any) => {
         return _signal.set(_signal().filter(predicate, thisArg))
-      })
+      }),
     }
   )
 }

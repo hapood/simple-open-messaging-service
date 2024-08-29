@@ -1,7 +1,12 @@
-import { Component, computed, input, Output, EventEmitter, viewChild, ElementRef } from '@angular/core';
+import {
+  Component, computed, input, Output,
+  EventEmitter, viewChild, effect,
+  ElementRef
+} from '@angular/core';
 import { NgClass } from '@angular/common';
 import { Message } from '../../../../common/services/Interfaces';
 import { UserProfile, displayMsg } from './modal'
+import { MsgGroupStatus } from '../modal'
 @Component({
   selector: 'app-msg-group',
   standalone: true,
@@ -14,6 +19,7 @@ export class MsgGroupComponent {
   readonly groupWrapper = viewChild<ElementRef<HTMLDivElement>>('groupWrapper');
 
   readonly list = input<Message[]>([])
+  readonly status = input<MsgGroupStatus>(MsgGroupStatus.CALCING)
   readonly profileRecord = input<Record<string, UserProfile>>({})
   readonly displayList = computed(() => {
     const profileDict = this.profileRecord();
@@ -28,6 +34,15 @@ export class MsgGroupComponent {
   })
 
   private groupObserver!: ResizeObserver;
+
+  constructor() {
+    effect(() => {
+      const status = this.status()
+      if (status === MsgGroupStatus.PREPARED) {
+
+      }
+    })
+  }
 
   ngAfterViewInit() {
     this.groupObserver = new ResizeObserver(entries => {

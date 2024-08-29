@@ -20,5 +20,4 @@ export interface MsgGroupInfo {
   id: string,
   startIndex: number,
   endIndex: number,
-  status: MsgGroupStatus,
 }
