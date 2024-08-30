@@ -290,7 +290,7 @@ export class FriendMessageComponent {
         this._generateOldGroup(index - 1)
         return true
       } else {
-        return this._generateOldGroup(this._oldGrpMsgIdx - 1)
+        return this._generateOldGroup(this._oldGrpMsgIdx)
       }
     } else if (derection === 0) {
       return this._generateOldGroup(this._oldGrpMsgIdx)
