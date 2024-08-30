@@ -33,6 +33,20 @@ export class MsgGroupComponent {
       } as displayMsg
     })
   })
+  readonly groupWrapperClass = computed(() => {
+    let className!: string
+    switch (this.status()) {
+      case MsgGroupStatus.CALCING:
+        className = "calc"
+        break
+      case MsgGroupStatus.PREPARED:
+        className = "prepared"
+        break
+      default:
+        className = ""
+    }
+    return className
+  })
 
   private groupObserver!: ResizeObserver;
 
@@ -47,7 +61,7 @@ export class MsgGroupComponent {
 
   ngAfterViewInit() {
     this.groupObserver = new ResizeObserver(entries => {
-      const height = entries[0].contentRect.width;
+      const height = entries[0].contentRect.height;
       this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
     })
     this.groupObserver.observe((this.groupWrapper() as any).nativeElement);

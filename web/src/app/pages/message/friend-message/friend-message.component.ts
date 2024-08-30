@@ -13,7 +13,7 @@ import {
   Subject, filter, mergeMap, tap,
   switchMap, catchError, of
 } from "rxjs";
-import { SendingMessage, SentMessage, SendingMessageStatus, MsgGroup, MsgGroupInfo, MsgGroupStatus } from './modal';
+import { SendingMessage, SentMessage, SendingMessageStatus, MsgGroup, MsgGroupStatus } from './modal';
 import { arrayToDictIndex, arraySignal, recordSignal } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { UserProfile } from './msg-group/modal';
@@ -65,7 +65,6 @@ export class FriendMessageComponent {
   private sentTempId = 0;
   private inputObserver!: ResizeObserver;
   private scrollObserver!: ResizeObserver;
-  private groupInfoArray: MsgGroupInfo[] = []
   private messageList: Message[] = [];
   private threshold = { up: 0, down: 0 }
   private _threadId!: number
@@ -73,6 +72,8 @@ export class FriendMessageComponent {
   private _lastSeenMsgId: string | undefined
   private _oldUnstableIndex = 0
   private _newUnstableIndex = 0
+  private _oldGrpIndex = 0
+  private _newGrpIndex = 0
 
   constructor(private msgService: MsgService, private wsService: WebsocketService) {
     effect(() => {
@@ -107,6 +108,8 @@ export class FriendMessageComponent {
         const latestMsg = rList[0];
         this.oldestMsgId = latestMsg.id;
         this.messageList = rList.concat(this.messageList)
+        this._newGrpIndex += rList.length
+        this._oldGrpIndex += rList.length
         if (list.length < TAKE_NUM) {
           this.hasMoreOldMsg.set(false)
         }
@@ -248,13 +251,9 @@ export class FriendMessageComponent {
     if (takeNum < 0) {
       return false
     }
-    const topList = this.messageList.slice(startIndex, takeNum)
+    const topList = this.messageList.slice(startIndex, startIndex + takeNum)
     if (topList.length > 0) {
-      this.groupInfoArray = this.groupInfoArray.concat({
-        id: topList[0].id,
-        startIndex: startIndex,
-        endIndex: startIndex + takeNum,
-      })
+      this._oldGrpIndex = startIndex
       this._oldUnstableIndex++
       this._newUnstableIndex++
       this.groupStatusArray.unshift({ status: MsgGroupStatus.CALCING, height: 0 })
@@ -268,13 +267,9 @@ export class FriendMessageComponent {
 
   _generateNewerGroup(startIndex: number) {
     console.log(`_generateNewerGroup${startIndex}`)
-    const botList = this.messageList.slice(startIndex, GROUP_NUM)
+    const botList = this.messageList.slice(startIndex, startIndex + GROUP_NUM)
     if (botList.length > 0) {
-      this.groupInfoArray.push({
-        id: botList[0].id,
-        startIndex: startIndex,
-        endIndex: startIndex + botList.length,
-      })
+      this._newGrpIndex = startIndex + botList.length
       this.groupStatusArray.push({ status: MsgGroupStatus.CALCING, height: 0 })
       this.groupList.push({
         id: botList[0].id,
@@ -288,8 +283,8 @@ export class FriendMessageComponent {
 
   tryGenerateGroup(derection: 0 | 1): boolean {
     console.log(`tryGenerateGroup(${derection})`)
-    const groupInfolist = this.groupInfoArray;
-    if (groupInfolist.length === 0) {
+    const groupStatusArray = this.groupStatusArray;
+    if (groupStatusArray.length === 0) {
       let startId = this.startMsgId
       const msgList = this.messageList;
       if (startId) {
@@ -301,10 +296,10 @@ export class FriendMessageComponent {
         return this._generateOlderGroup(msgList.length - 1)
       }
     } else if (derection === 0) {
-      const topIndex = groupInfolist[0].startIndex
+      const topIndex = this._oldGrpIndex
       return this._generateOlderGroup(topIndex - 1)
     } else {
-      const botIndex = groupInfolist[groupInfolist.length - 1].endIndex
+      const botIndex = this._newGrpIndex
       return this._generateNewerGroup(botIndex + 1)
     }
   }
@@ -456,7 +451,11 @@ export class FriendMessageComponent {
             if (downsideGroupHeight < clientHeight) {
               this._scrollerElm.scrollTop = newScrollHeight - clientHeight;
             } else {
-              this._scrollerElm.scrollTop + clientHeight - UNREAD_INITIAL_PADDING_TOP
+              let scrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
+              if (scrollTop < 0) {
+                scrollTop = 0
+              }
+              this._scrollerElm.scrollTop = scrollTop
             }
           } else {
             this._scrollerElm.scrollTop = scrollTop + upsideGroupHeight
@@ -486,6 +485,10 @@ export class FriendMessageComponent {
             this._scrollerElm.scrollTop = newScrollTop;
           } else {
             this._scrollerElm.scrollTop = 0
+          }
+          const newestMsgIdInGrp = this.messageList[this._newGrpIndex].id
+          if (this._lastSeenMsgId && newestMsgIdInGrp > this._lastSeenMsgId) {
+            this._lastSeenMsgId = newestMsgIdInGrp
           }
           this.isBottom = true
         }

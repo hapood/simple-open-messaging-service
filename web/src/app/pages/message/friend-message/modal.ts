@@ -16,8 +16,3 @@ export interface MsgGroup {
 export enum MsgGroupStatus {
   CALCING, PREPARED, STABLE, REMOVING
 }
-export interface MsgGroupInfo {
-  id: string,
-  startIndex: number,
-  endIndex: number,
-}
