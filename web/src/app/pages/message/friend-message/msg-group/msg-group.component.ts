@@ -42,6 +42,9 @@ export class MsgGroupComponent {
       case MsgGroupStatus.PREPARED:
         className = "prepared"
         break
+      case MsgGroupStatus.STABLE:
+        className = "stable"
+        break
       default:
         className = ""
     }
@@ -60,11 +63,15 @@ export class MsgGroupComponent {
   }
 
   ngAfterViewInit() {
-    this.groupObserver = new ResizeObserver(entries => {
-      const height = entries[0].contentRect.height;
+    const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
+    // this.groupObserver = new ResizeObserver(entries => {
+    //   this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height: elm.offsetHeight })
+    // })
+    const height = elm.offsetHeight
+    if (height > 0) {
       this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
-    })
-    this.groupObserver.observe((this.groupWrapper() as any).nativeElement);
+    }
+    // this.groupObserver.observe(elm);
   }
 
 }

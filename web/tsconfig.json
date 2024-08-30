@@ -21,7 +21,8 @@
     "module": "ES2022",
     "lib": [
       "ES2022",
-      "dom"
+      "dom",
+      "ES2023.Array"
     ]
   },
   "angularCompilerOptions": {

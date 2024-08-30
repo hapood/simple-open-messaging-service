@@ -1,7 +1,6 @@
 .msg-list-wrapper {
   display: flex;
   position: relative;
-  top: 1000px;
 
   &.msg-self {
     justify-content: right;
@@ -25,12 +24,13 @@
   }
 }
 
-.calc {
+.calc,
+.prepared {
   position: absolute;
   opacity: 0;
   z-index: -1;
 }
 
-.prepared {
+.stable {
   position: relative;
 }

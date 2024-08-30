@@ -5,7 +5,7 @@ import { Subject } from 'rxjs';
   providedIn: 'root'
 })
 export class WebsocketService {
-  private readonly url = 'ws://127.0.0.1:3000'
+  private readonly url = 'ws://127.0.0.1:3001'
   private _ws: WebSocket | null = null
   readonly eventSubject = new Subject<MessageEvent>();
 

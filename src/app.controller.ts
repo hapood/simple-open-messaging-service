@@ -145,7 +145,7 @@ export class AppController {
     if (params.lastId) {
       newParams.cursor = { id: params.lastId }
     }
-    return json(await this.userService.queryChatMessages(newParams))
+    return json(await this.userService.queryMessages(newParams))
   }
 
   @UseGuards(LocalAuthGuard)

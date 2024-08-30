@@ -1,12 +1,11 @@
 import {
-  Component, ElementRef, model,
-  signal, viewChild, effect
+  Component, ElementRef, model, ChangeDetectorRef,
+  signal, viewChild, input
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { MsgService } from '../../../common/services/message.service'
 import { WebsocketService } from '../../../common/services/websocket.service';
-import { Input as RouterInput } from '@angular/core'
 import { Message, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
 import {
   Subscription, forkJoin, timeout, finalize,
@@ -17,9 +16,10 @@ import { SendingMessage, SentMessage, SendingMessageStatus, MsgGroup, MsgGroupSt
 import { arrayToDictIndex, arraySignal, recordSignal } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { UserProfile } from './msg-group/modal';
+import e from 'express';
 
 const TAKE_NUM = 10;
-const GROUP_NUM = 10;
+const GROUP_NUM = TAKE_NUM;
 const WAIT_FOR_RENDER_INTERVAL = 100;
 const LOAD_MORE_TRIGGER_OFFSET = 100;
 const UNREAD_INITIAL_PADDING_TOP = 100;
@@ -34,8 +34,8 @@ const SCROLL_HEIGHT_THRESHOLD = 1000;
 })
 export class FriendMessageComponent {
 
-  @RouterInput() threadId!: string;
-  @RouterInput() startMsgId: string | undefined;
+  threadId = input<string>();
+  startMsgId = input<string>();
 
   readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
@@ -66,29 +66,22 @@ export class FriendMessageComponent {
   private inputObserver!: ResizeObserver;
   private scrollObserver!: ResizeObserver;
   private messageList: Message[] = [];
-  private threshold = { up: 0, down: 0 }
+  private threshold: { up: number, down: number } | undefined = undefined
   private _threadId!: number
+  private _startMsgId: string | undefined
   private _scrollerElm!: HTMLDivElement
-  private _lastSeenMsgId: string | undefined
-  private _oldUnstableIndex = 0
-  private _newUnstableIndex = 0
-  private _oldGrpIndex = 0
-  private _newGrpIndex = 0
+  private _oldGrpMsgIdx = 0 //index of messageList point to oldest message in current groups
+  private _newGrpMsgIdx = 0
 
-  constructor(private msgService: MsgService, private wsService: WebsocketService) {
-    effect(() => {
-      const msgs = this.messageList;
-      if (msgs.length > 0) {
-        this.oldestMsgId = msgs[0].id; this.newestMsgId = msgs[msgs.length - 1].id
-      }
-    })
+  constructor(private msgService: MsgService, private wsService: WebsocketService, private changeDetectorRef: ChangeDetectorRef) {
     this.wsService.eventSubject.subscribe({
-      next: (msg) => { console.log('on message', msg) }
+      next: (msg) => { console.info('on message', msg) }
     })
-    this._threadId = parseInt(this.threadId)
   }
 
   ngOnInit() {
+    this._threadId = parseInt(this.threadId() as string)
+    this._startMsgId = this.startMsgId()
     this.initThreadInfo()
     this.subOldMessages = this.queryOldMessages
       .pipe(
@@ -98,7 +91,7 @@ export class FriendMessageComponent {
           timeout(2500),
           finalize(() => this.isLoadingOld.set(false)),
           catchError((error) => {
-            console.log(error)
+            console.info(error)
             return of([])
           }))
         ),
@@ -108,9 +101,11 @@ export class FriendMessageComponent {
         const latestMsg = rList[0];
         this.oldestMsgId = latestMsg.id;
         this.messageList = rList.concat(this.messageList)
-        this._newGrpIndex += rList.length
-        this._oldGrpIndex += rList.length
+        const index = rList.length
+        this._oldGrpMsgIdx += index
+        this._newGrpMsgIdx += index
         if (list.length < TAKE_NUM) {
+          console.info('no more old message to load')
           this.hasMoreOldMsg.set(false)
         }
         this.checkAndBuildGroup()
@@ -123,7 +118,7 @@ export class FriendMessageComponent {
           timeout(2500),
           finalize(() => this.isLoadingNew.set(false)),
           catchError((error) => {
-            console.log(error)
+            console.info(error)
             return of([])
           }))
         ),
@@ -141,22 +136,20 @@ export class FriendMessageComponent {
           this.checkAndBuildGroup()
         }
       })
-    if (this.startMsgId) {
-      console.log('set show specific id scroll group threshold')
+    if (this._startMsgId) {
+      console.info('set show specific id scroll group threshold')
       this.threshold = {
         up: SCROLL_HEIGHT_THRESHOLD,
         down: SCROLL_HEIGHT_THRESHOLD - UNREAD_INITIAL_PADDING_TOP,
       }
-      this.showMoreOldMsg()
-      this.showMoreNewMsg()
     } else {
-      console.log('set show old group scroll group threshold')
+      console.info('set show old group scroll group threshold')
       this.threshold = {
         up: SCROLL_HEIGHT_THRESHOLD,
         down: 0,
       }
-      this.showMoreOldMsg()
     }
+    this.checkAndBuildGroup()
   }
 
   ngAfterViewInit() {
@@ -199,7 +192,7 @@ export class FriendMessageComponent {
             next: (res) => {
               this.updateSendMessageStatus(currentId, SendingMessageStatus.SENT, { dbId: res.id })
               this.hasMoreNewMsg.set(true)
-              this.showMoreNewMsg()
+              this.loadMoreNewMsg()
             },
             error: (error) => {
               console.error(error)
@@ -241,35 +234,38 @@ export class FriendMessageComponent {
     this.sentMessageList.filter((_, index) => !filterDict[index])
   }
 
-  _generateOlderGroup(endIndex: number) {
-    console.log(`_generateOlderGroup${endIndex}`)
+  _generateOldGroup(endIndex: number) {
+    console.info(`_generateOldGroup(${endIndex})`)
     let startIndex = endIndex - GROUP_NUM, takeNum = GROUP_NUM;
     if (startIndex < 0) {
       takeNum += startIndex;
       startIndex = 0;
     }
-    if (takeNum < 0) {
+    if (takeNum < 1) {
+      console.info('no more old message to take, try load')
+      this.loadMoreOldMsg()
       return false
     }
     const topList = this.messageList.slice(startIndex, startIndex + takeNum)
     if (topList.length > 0) {
-      this._oldGrpIndex = startIndex
-      this._oldUnstableIndex++
-      this._newUnstableIndex++
+      this._oldGrpMsgIdx = startIndex
       this.groupStatusArray.unshift({ status: MsgGroupStatus.CALCING, height: 0 })
-      this.groupList.set(this.groupList().concat({
+      this.groupList.set([{
         id: topList[0].id,
         list: topList
-      }))
+      }].concat(this.groupList()))
+      return true
+    } else {
+      console.info('no more old message to take, return')
+      return false
     }
-    return false
   }
 
-  _generateNewerGroup(startIndex: number) {
-    console.log(`_generateNewerGroup${startIndex}`)
+  _generateNewGroup(startIndex: number) {
+    console.info(`_generateNewGroup(${startIndex})`)
     const botList = this.messageList.slice(startIndex, startIndex + GROUP_NUM)
     if (botList.length > 0) {
-      this._newGrpIndex = startIndex + botList.length
+      this._newGrpMsgIdx = startIndex + botList.length - 1
       this.groupStatusArray.push({ status: MsgGroupStatus.CALCING, height: 0 })
       this.groupList.push({
         id: botList[0].id,
@@ -277,89 +273,85 @@ export class FriendMessageComponent {
       })
       return true
     } else {
+      console.info('no more new message to take, try load')
+      this.loadMoreNewMsg()
       return false
     }
   }
 
   tryGenerateGroup(derection: 0 | 1): boolean {
-    console.log(`tryGenerateGroup(${derection})`)
-    const groupStatusArray = this.groupStatusArray;
+    console.info(`tryGenerateGroup(${derection})`)
+    const groupStatusArray = this.groupStatusArray();
     if (groupStatusArray.length === 0) {
-      let startId = this.startMsgId
-      const msgList = this.messageList;
+      let startId = this._startMsgId
       if (startId) {
-        const index = this.messageList.findIndex(msg => msg.id === this.startMsgId)
-        this._generateNewerGroup(index)
-        this._generateOlderGroup(index - 1)
+        const index = this.messageList.findIndex(msg => msg.id === this._startMsgId)
+        this._generateNewGroup(index)
+        this._generateOldGroup(index - 1)
         return true
       } else {
-        return this._generateOlderGroup(msgList.length - 1)
+        return this._generateOldGroup(this._oldGrpMsgIdx - 1)
       }
     } else if (derection === 0) {
-      const topIndex = this._oldGrpIndex
-      return this._generateOlderGroup(topIndex - 1)
+      return this._generateOldGroup(this._oldGrpMsgIdx)
     } else {
-      const botIndex = this._newGrpIndex
-      return this._generateNewerGroup(botIndex + 1)
+      return this._generateNewGroup(this._newGrpMsgIdx + 1)
     }
   }
 
-  showMoreOldMsg() {
-    console.log('showMoreOldMsg')
-    if (!this.tryGenerateGroup(0)) {
-      const startId = this.startMsgId
-      if (this.newestMsgId) {
-        console.log('delta query more old data')
+  loadMoreOldMsg() {
+    console.info('loadMoreOldMsg')
+    const startId = this._startMsgId
+    if (this.oldestMsgId) {
+      console.info('delta query more old data')
+      this.queryOldMessages.next({
+        threadId: this._threadId, take: TAKE_NUM, skip: 1,
+        lastId: this.oldestMsgId, orderBy: 'desc'
+      })
+    }
+    else {
+      if (startId) {
+        console.info('first query old group with startId')
         this.queryOldMessages.next({
           threadId: this._threadId, take: TAKE_NUM, skip: 1,
-          lastId: this.oldestMsgId, orderBy: 'desc'
+          lastId: startId, orderBy: 'desc'
         })
-      }
-      else {
-        if (startId) {
-          console.log('first query old group with startId')
-          this.queryOldMessages.next({
-            threadId: this._threadId, take: TAKE_NUM, skip: 1,
-            lastId: startId, orderBy: 'desc'
-          })
-        } else {
-          console.log('first query old group')
-          this.queryOldMessages.next({
-            threadId: this._threadId, take: TAKE_NUM, skip: 0,
-            orderBy: 'desc'
-          })
-        }
+      } else {
+        console.info('first query old group')
+        this.queryOldMessages.next({
+          threadId: this._threadId, take: TAKE_NUM, skip: 0,
+          orderBy: 'desc'
+        })
       }
     }
   }
 
-  showMoreNewMsg() {
-    console.log('showMoreNewMsg')
-    if (!this.tryGenerateGroup(1)) {
-      const startId = this.startMsgId
-      if (this.newestMsgId) {
-        console.log('delta query more new data')
+  loadMoreNewMsg() {
+    console.info('loadMoreNewMsg')
+    const startId = this._startMsgId
+    if (this.newestMsgId) {
+      console.info('delta query more new data')
+      this.queryNewMessages.next({
+        threadId: this._threadId,
+        orderBy: 'asc',
+        take: TAKE_NUM,
+        skip: 1,
+        lastId: this.newestMsgId
+      })
+    } else {
+      if (startId) {
+        console.info('first query new group with startId')
         this.queryNewMessages.next({
           threadId: this._threadId,
           orderBy: 'asc',
           take: TAKE_NUM,
-          skip: 1,
-          lastId: this.newestMsgId
+          skip: 0,
+          lastId: startId
         })
-      } else {
-        if (startId) {
-          console.log('first query new group with startId')
-          this.queryNewMessages.next({
-            threadId: this._threadId,
-            orderBy: 'asc',
-            take: TAKE_NUM,
-            skip: 0,
-            lastId: startId
-          })
-        }
       }
     }
   }
+
 
   initThreadInfo() {
     const getThreadInfo = this.msgService.getThreadInfo({
@@ -383,10 +375,10 @@ export class FriendMessageComponent {
   buildGroupOnScroll() {
     const { scrollTop, scrollHeight } = this._scrollerElm
     if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
-      console.log('scroll reached top, try load more old group')
+      console.info('scroll reached top, try load more old group')
       this.tryGenerateGroup(0)
     } else if (scrollTop > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
-      console.log('scroll reached bottom, try load more new group')
+      console.info('scroll reached bottom, try load more new group')
       this.tryGenerateGroup(1)
     }
   }
@@ -394,138 +386,141 @@ export class FriendMessageComponent {
   checkAndBuildGroup() {
     const statusList = this.groupStatusArray()
     if (statusList.findIndex(item => item.status === MsgGroupStatus.CALCING) > -1) {
-      console.log('still calculating group, waiting for it')
+      console.info('still calculating group, waiting for it')
       return
     }
-    let isUpsideFinished = true, isDownsideFinished = true,
-      upsideGroupHeight = 0, downsideGroupHeight = 0
-    if (this.threshold.up > 0) {
-      const oldIndex = this._oldUnstableIndex
-      if (oldIndex < 1) {
-        if (this.hasMoreOldMsg()) {
-          console.log('waiting for new upside data')
-          isUpsideFinished = false
-        } else {
-          console.log('no upside group exist')
-        }
-      } else {
-        upsideGroupHeight = statusList.slice(0, oldIndex).reduce((prev, cur) => prev + cur.height, 0)
-        if (upsideGroupHeight < this.threshold.up) {
-          console.log('try to add upside group')
-          isUpsideFinished = false
+    let upsideGroupHeight = 0, downsideGroupHeight = 0
+    const newScrollHeight = statusList.reduce((prev, cur) => prev + cur.height, 0)
+
+    //upside
+    const firstStableIndex = statusList.findIndex(item => item.status === MsgGroupStatus.STABLE) - 1
+
+    if (this.threshold !== undefined) {
+      upsideGroupHeight = newScrollHeight
+    } else if (firstStableIndex < 1) {
+      upsideGroupHeight = 0
+    } else {
+      upsideGroupHeight = statusList.slice(0, firstStableIndex - 1).reduce((prev, cur) => prev + cur.height, 0)
+    }
+
+    //downside
+    const lastStableIndex = statusList.findLastIndex(item => item.status === MsgGroupStatus.STABLE)
+    if (this.threshold !== undefined && (lastStableIndex < 0 || lastStableIndex === statusList.length - 1)) {
+      downsideGroupHeight = 0
+    } else {
+      downsideGroupHeight = statusList.slice(lastStableIndex + 1).reduce((prev, cur) => prev + cur.height, 0)
+    }
+
+    //initial generating groups
+    if (this.threshold !== undefined) {
+      const up = this.threshold.up, hasMoreOldMsg = this.hasMoreOldMsg(), hasMoreNewMsg = this.hasMoreNewMsg()
+      if (upsideGroupHeight < up) {
+        if (hasMoreOldMsg || (!hasMoreOldMsg && this._oldGrpMsgIdx > 0)) {
+          console.info('upside group not satisfied threshold, try add group')
           this.tryGenerateGroup(0)
-        } else {
-          console.log('upside group is prepared')
+          return
+        }
+      }
+      if (downsideGroupHeight < this.threshold.down) {
+        if (hasMoreNewMsg || (!hasMoreNewMsg && this._newGrpMsgIdx < this.messageList.length)) {
+          console.info('downside group not satisfied threshold, try add group')
+          this.tryGenerateGroup(1)
+          return
         }
       }
     }
-    //downside
-    const newIndex = this._newUnstableIndex
-    if (newIndex < statusList.length) {
-      downsideGroupHeight = statusList.slice(newIndex).reduce((prev, cur) => prev + cur.height, 0)
-      if (downsideGroupHeight < this.threshold.down) {
-        console.log('try to add downside group')
-        isDownsideFinished = false
-        this.tryGenerateGroup(1)
+
+    //calc height and scrollTop 
+    console.info('upside and downside are both ready, show it!')
+    const { scrollTop, clientHeight } = this._scrollerElm
+    const elm = (this.groupPadding() as any).nativeElement
+    elm.style.height = newScrollHeight + 'px';
+    if (this.threshold === null) {
+      console.info('delta setting scrollHeight')
+      if (newScrollHeight > clientHeight) {
+        if (this.isBottom) {
+          if (downsideGroupHeight < clientHeight) {
+            this._scrollerElm.scrollTop = newScrollHeight - clientHeight;
+          } else {
+            let scrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
+            if (scrollTop < 0) {
+              scrollTop = 0
+            }
+            this._scrollerElm.scrollTop = scrollTop
+          }
+        } else {
+          this._scrollerElm.scrollTop = scrollTop + upsideGroupHeight
+        }
       } else {
-        console.log('downside group is prepared')
+        this._scrollerElm.scrollTop = 0
+        this.isBottom = true
       }
     } else {
-      if (this.hasMoreNewMsg()) {
-        console.log('waiting for new upside data')
-        isDownsideFinished = false
-      } else {
-        console.log('no downside group exist')
-      }
-    }
-    if (isDownsideFinished && isUpsideFinished) {
-      console.log('upside and downside are both ready, show it!')
-      const { scrollTop, clientHeight } = this._scrollerElm
-      const elm = (this.groupPadding() as any).nativeElement
-      const newScrollHeight = statusList.reduce((prev, cur) => prev + cur.height, 0)
-      elm.style.height = newScrollHeight + 'px';
-      if (this._lastSeenMsgId) {
-        console.log('delta setting scrollHeight')
+      console.info('initial setting scrollHeight')
+      if (this._startMsgId) {
         if (newScrollHeight > clientHeight) {
-          if (this.isBottom) {
-            if (downsideGroupHeight < clientHeight) {
-              this._scrollerElm.scrollTop = newScrollHeight - clientHeight;
-            } else {
-              let scrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
-              if (scrollTop < 0) {
-                scrollTop = 0
-              }
-              this._scrollerElm.scrollTop = scrollTop
-            }
+          const newScrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
+          if (newScrollTop > 0) {
+            this._scrollerElm.scrollTop = newScrollTop;
           } else {
-            this._scrollerElm.scrollTop = scrollTop + upsideGroupHeight
+            this._scrollerElm.scrollTop = 0
           }
         } else {
           this._scrollerElm.scrollTop = 0
           this.isBottom = true
         }
       } else {
-        console.log('initial setting scrollHeight')
-        if (this.startMsgId) {
-          if (newScrollHeight > clientHeight) {
-            const newScrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
-            if (newScrollTop > 0) {
-              this._scrollerElm.scrollTop = newScrollTop;
-            } else {
-              this._scrollerElm.scrollTop = 0
-            }
-          } else {
-            this._scrollerElm.scrollTop = 0
-            this.isBottom = true
-          }
-          this._lastSeenMsgId = this.startMsgId
+        const newScrollTop = newScrollHeight - downsideGroupHeight
+        if (newScrollTop > 0) {
+          this._scrollerElm.scrollTop = newScrollTop;
         } else {
-          const newScrollTop = newScrollHeight - downsideGroupHeight
-          if (newScrollTop > 0) {
-            this._scrollerElm.scrollTop = newScrollTop;
-          } else {
-            this._scrollerElm.scrollTop = 0
-          }
-          const newestMsgIdInGrp = this.messageList[this._newGrpIndex].id
-          if (this._lastSeenMsgId && newestMsgIdInGrp > this._lastSeenMsgId) {
-            this._lastSeenMsgId = newestMsgIdInGrp
-          }
-          this.isBottom = true
+          this._scrollerElm.scrollTop = 0
         }
+        this.isBottom = true
       }
-      this._newUnstableIndex = statusList.length
-      this._oldUnstableIndex = 0
-      this.groupStatusArray.set(statusList.map(item =>
-        ({ status: MsgGroupStatus.STABLE, height: item.height })))
+      this.threshold = undefined
     }
+    this.groupStatusArray.set(statusList.map(item => {
+      if (item.status !== MsgGroupStatus.PREPARED) {
+        return item
+      } else {
+        return { status: MsgGroupStatus.STABLE, height: item.height }
+      }
+    }
+    ))
   }
 
   onMsgScroll(event: Event) {
     // const elm = event.target as HTMLDivElement;
-    const elm = (this.msgScroller() as any).nativeElement as HTMLDivElement;
-    const { scrollHeight, scrollTop, clientHeight } = elm
-    this.buildGroupOnScroll()
-    if ((clientHeight + scrollTop) >= scrollHeight) {
-      this.isBottom = true;
-    } else {
-      this.isBottom = false;
-    }
+    // const elm = (this.msgScroller() as any).nativeElement as HTMLDivElement;
+    // const { scrollHeight, scrollTop, clientHeight } = elm
+    // this.buildGroupOnScroll()
+    // if ((clientHeight + scrollTop) >= scrollHeight) {
+    //   this.isBottom = true;
+    // } else {
+    //   this.isBottom = false;
+    // }
   }
 
   scrollToBottom() {
     const elm = (this.msgScroller() as any).nativeElement
-    console.log(elm)
     elm.scrollTo(0, elm.scrollHeight);
   }
 
   onGroupComStatusChange({ index, status, height }: { index: number, status: MsgGroupStatus, height: number }) {
-    const array = this.groupStatusArray()
-    const newItem = {
-      status: status,
-      height: height
+
+    if (status === MsgGroupStatus.PREPARED) {
+      console.info(`new group[${index}] prepared, start checkAndBuildGroup`)
+      const array = this.groupStatusArray()
+      const newItem = {
+        status: status,
+        height: height
+      }
+      const newArr = array.slice(0, index).concat(newItem).concat(array.slice(index + 1))
+      this.groupStatusArray.set(newArr)
+      this.checkAndBuildGroup()
     }
-    const newArr = array.slice(0, index).concat(newItem).concat(array.slice(index + 1))
-    this.groupStatusArray.set(newArr)
+
   }
 
 }
