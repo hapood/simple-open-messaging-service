@@ -155,6 +155,7 @@ export class FriendMessageComponent {
       console.log('scroller height change, sync with it')
       const { clientHeight: lastClientHeight, disToBot } = this._scrollerInfo
       const delta = lastClientHeight - clientHeight
+      console.log(this.isBottom, delta, disToBot)
       if ((this.isBottom && delta > 0) || (!this.isBottom && delta < disToBot)) {
         elm.scrollTop += delta
       }
@@ -486,7 +487,17 @@ export class FriendMessageComponent {
   }
 
   onMsgScroll(event: Event) {
+    console.info('onMsgScroll')
     const { scrollTop, scrollHeight, clientHeight } = this._scrollerElm
+    if ((clientHeight + scrollTop) >= scrollHeight - 1) {
+      this.isBottom = true;
+    } else {
+      this.isBottom = false;
+    }
+    this._scrollerInfo = {
+      clientHeight,
+      disToBot: scrollHeight - (clientHeight + scrollTop)
+    }
     if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
       console.info('scroll reached top, try load more old group')
       this.tryGenerateGroup(0)
@@ -494,13 +505,7 @@ export class FriendMessageComponent {
       console.info('scroll reached bottom, try load more new group')
       this.tryGenerateGroup(1)
     };
-    console.info('onMsgScroll')
     this.checkAndBuildGroup()
-    if ((clientHeight + scrollTop) >= scrollHeight - 1) {
-      this.isBottom = true;
-    } else {
-      this.isBottom = false;
-    }
   }
 
   scrollToBottom() {
