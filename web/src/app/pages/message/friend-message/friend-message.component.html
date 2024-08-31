@@ -13,8 +13,8 @@
       </div>
     </div>
     <div class="bottom-bar">
-      <textarea #userInput [(ngModel)]="inputText" class="bottom-input" type="text" #input
-        (keydown.control.enter)="send()"></textarea>
+      <div contenteditable="true" #userInput (input)="onUserInput($event)" class="bottom-input" #input
+        placeholder="请输入文字" (keydown.control.enter)="send()"></div>
       <button (click)="send()">发送</button>
     </div>
   </div>
