@@ -7,10 +7,13 @@ import { NgClass } from '@angular/common';
 import { Message } from '../../../../common/services/Interfaces';
 import { UserProfile, displayMsg } from './modal'
 import { MsgGroupStatus } from '../modal'
+import { UserAvatarComponent } from '../../../../components/user-avatar/user-avatar.component';
+import { UserAvatarType } from '../../../../components/user-avatar/modal';
+
 @Component({
   selector: 'app-msg-group',
   standalone: true,
-  imports: [NgClass],
+  imports: [NgClass, UserAvatarComponent],
   templateUrl: './msg-group.component.html',
   styleUrl: './msg-group.component.scss'
 })
@@ -18,6 +21,7 @@ export class MsgGroupComponent {
   @Output() onStatusChange = new EventEmitter<{ index: number, status: MsgGroupStatus, height: number }>();
   readonly groupWrapper = viewChild<ElementRef<HTMLDivElement>>('groupWrapper');
 
+  readonly UserAvatarType=UserAvatarType
   readonly index = input<number>(-1)
   readonly list = input<Message[]>([])
   readonly status = input<MsgGroupStatus>(MsgGroupStatus.CALCING)

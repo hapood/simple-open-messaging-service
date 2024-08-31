@@ -16,6 +16,7 @@ import { SendingMessage, SentMessage, SendingMessageStatus, MsgGroup, MsgGroupSt
 import { arrayToDictIndex, arraySignal, recordSignal } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { UserProfile } from './msg-group/modal';
+import { MessageHeaderComponent } from '../../../components/message-header/message-header.component';
 
 const TAKE_NUM = 10;
 const GROUP_NUM = TAKE_NUM;
@@ -26,7 +27,7 @@ const SCROLL_HEIGHT_THRESHOLD = 1000;
 @Component({
   selector: 'app-friend-message',
   standalone: true,
-  imports: [FormsModule, NgClass, MsgGroupComponent],
+  imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss'
 })
@@ -50,6 +51,7 @@ export class FriendMessageComponent {
   readonly groupList = arraySignal<MsgGroup>([])
   readonly profileRecord = recordSignal<UserProfile>({})
   readonly groupStatusArray = arraySignal<{ status: MsgGroupStatus, height: number }>([])
+  readonly friendName = signal('')
 
   private msgThread: MsgThread | Record<string, undefined> = {}
   private queryOldMessages = new Subject<QueryMessageLogParams>()
@@ -359,6 +361,7 @@ export class FriendMessageComponent {
       .subscribe(res => {
         const friendProfile = res.friendUser
         this.profileRecord.set(friendProfile.id, { id: friendProfile.id, uniqName: friendProfile.uniqName, isSelf: false })
+        this.friendName.set(friendProfile.uniqName)
         this.isReady.set(true)
       })
   }

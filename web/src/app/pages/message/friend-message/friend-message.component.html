@@ -1,6 +1,6 @@
 <div>
-  <div class="page-container">
-    <div>Header</div>
+  <div class="msg-container">
+    <app-message-header [name]="friendName()"></app-message-header>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       <div class="msg-group-list" #groupPadding>
         @for (item of groupList(); track item.id){

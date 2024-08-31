@@ -10,10 +10,14 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { UserService } from './user/user.service';
-import { User as UserModel, Friend as FriendModel, Message as MessageModal, ContentType, Prisma, UserChatThread } from '@prisma/client';
+import { User as UserModel, Friend as FriendModel, ContentType, Prisma, UserChatThread } from '@prisma/client';
 import { LocalAuthGuard } from './auth/local-auth.guard';
 import { AuthService } from './auth/auth.service';
 import { JwtAuthGuard } from './auth/jwt-auth.guard';
+
+Date.prototype.toJSON = function () {
+  return this.getTime()
+}
 
 const json = (param: any): any => {
   return JSON.stringify(
@@ -21,9 +25,7 @@ const json = (param: any): any => {
     (key, value) => {
       if (typeof value === "bigint") {
         return value.toString()
-      } else if (value instanceof Date) {
-        return value.getTime()
-      } {
+      } else {
         return value
       }
     }
@@ -118,7 +120,8 @@ export class AppController {
     if (!params.content) {
       return
     }
-    return json(await this.userService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_STRING))
+    const list = await this.userService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_STRING)
+    return json(list)
   }
 
   @UseGuards(JwtAuthGuard)
@@ -145,7 +148,9 @@ export class AppController {
     if (params.lastId) {
       newParams.cursor = { id: params.lastId }
     }
-    return json(await this.userService.queryMessages(newParams))
+    console.log(new Date().getTime())
+    const list = await this.userService.queryMessages(newParams)
+    return json(list)
   }
 
   @UseGuards(LocalAuthGuard)
