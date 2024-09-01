@@ -4,9 +4,7 @@ import {
   ElementRef
 } from '@angular/core';
 import { NgClass } from '@angular/common';
-import { Message } from '../../../../common/services/Interfaces';
-import { UserProfile, displayMsg } from './modal'
-import { MsgGroupStatus } from '../modal'
+import { MsgGroupStatus, DisplayMsg } from '../modal'
 import { UserAvatarComponent } from '../../../../components/user-avatar/user-avatar.component';
 import { UserAvatarType } from '../../../../components/user-avatar/modal';
 
@@ -23,26 +21,15 @@ export class MsgGroupComponent {
 
   readonly UserAvatarType = UserAvatarType
   readonly index = input<number>(-1)
-  readonly list = input<Message[]>([])
-  readonly status = input<MsgGroupStatus>(MsgGroupStatus.CALCING)
-  readonly profileRecord = input<Record<string, UserProfile>>({})
-  readonly displayList = computed(() => {
-    const profileDict = this.profileRecord();
-    const list = this.list()
-    console.log(list)
-    return list.map(item => {
-      return {
-        ...item,
-        lines: item.content.split('\n'),
-        creatorName: profileDict[item.creator]?.uniqName,
-        isSelf: profileDict[item.creator]?.isSelf ?? false,
-      } as displayMsg
-    })
-  })
+  readonly list = input<DisplayMsg[]>([])
+  readonly status = input<MsgGroupStatus>(MsgGroupStatus.RENDERING)
+  MsgGroupStatus = MsgGroupStatus
+  private groupObserver!: ResizeObserver;
+
   readonly groupWrapperClass = computed(() => {
     let className!: string
     switch (this.status()) {
-      case MsgGroupStatus.CALCING:
+      case MsgGroupStatus.RENDERING:
         className = "calc"
         break
       case MsgGroupStatus.PREPARED:
@@ -56,8 +43,6 @@ export class MsgGroupComponent {
     }
     return className
   })
-
-  private groupObserver!: ResizeObserver;
 
   constructor() {
     effect(() => {
@@ -75,10 +60,9 @@ export class MsgGroupComponent {
     // })
     const height = elm.offsetHeight
     if (height > 0) {
+      console.log({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
       this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
     }
-    console.log(this.index(), height)
-
     // this.groupObserver.observe(elm);
   }
 

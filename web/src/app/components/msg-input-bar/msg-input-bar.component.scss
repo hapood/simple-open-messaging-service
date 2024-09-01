@@ -10,6 +10,18 @@
   box-sizing: border-box;
   background: #eee;
 
+  .left-btn {
+    @include styless-button;
+    width: 24px;
+    height: 24px;
+    margin-right: 6px;
+
+    .left-btn-svg {
+      width: 100%;
+      height: 100%;
+    }
+  }
+
   .bottom-input-wrapper {
     flex: 1;
     box-sizing: border-box;

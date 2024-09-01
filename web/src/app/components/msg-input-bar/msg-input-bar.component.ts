@@ -1,4 +1,4 @@
-import { Component, input, viewChild, ElementRef, Output, EventEmitter } from '@angular/core';
+import { Component, input, viewChild, ElementRef, Output, EventEmitter, signal } from '@angular/core';
 import { IconComponent } from "../icon/icon.component";
 import { AppIconType } from '../icon/modal';
 import { tap } from 'rxjs';
@@ -15,15 +15,17 @@ export class MsgInputBarComponent {
 
   readonly threadId = input<number>()
   @Output() onAfterSent = new EventEmitter();
-
   readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
   readonly AppIconType = AppIconType
+  readonly isEditing = signal(false)
+
   onUserInput(event: Event) {
     console.log((event as InputEvent).data)
   }
 
   constructor(private msgService: MsgService) {
   }
+
   clearTextInput() {
     const elm = (this.userInput() as any).nativeElement as HTMLDivElement
     elm.innerHTML = ''
@@ -34,11 +36,15 @@ export class MsgInputBarComponent {
     return elm.innerText;
   }
 
-  onClickIptWrp(event:Event) {
+  onClickIptWrp(event: Event) {
     event.stopPropagation()
     console.log(event)
     const elm = (this.userInput() as any).nativeElement as HTMLDivElement
     elm.focus()
+  }
+
+  onLeftBtnClk(event: Event) {
+    event.stopPropagation()
   }
 
   send(): void {

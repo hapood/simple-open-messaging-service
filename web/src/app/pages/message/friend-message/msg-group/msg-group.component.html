@@ -1,16 +1,17 @@
 <div #groupWrapper [ngClass]="groupWrapperClass()">
-  @for (item of displayList(); track item.id){
+  @if(status()!==MsgGroupStatus.GENERATING){
+  @for (item of list(); track item.id){
   @if(item.isSelf){
 
   <div [ngClass]="['msg-list-wrapper','msg-self']">
     <div [ngClass]="['msg-list-item','msg-self']">
-      <div>id:{{item.id}}|name:{{item.creator}}</div>
+      <div>id:{{item.id}}|name:{{item.creatorName}}</div>
       <div>
         @for(line of item.lines; track $index){
         <p class="msg-p">{{line}}</p>
         }
       </div>
-      <div>datetime:{{item.createdAt}}</div>
+      <div>{{item.createdAt}}</div>
     </div>
     <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
   </div>
@@ -18,15 +19,15 @@
   <div [ngClass]="['msg-list-wrapper','msg-friend']">
     <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
     <div [ngClass]="['msg-list-item','msg-friend']">
-      <div>id:{{item.id}}|name:{{item.creator}}</div>
+      <div>id:{{item.id}}|name:{{item.creatorName}}</div>
       <div class="msg-content">
         @for(line of item.lines; track $index){
         <p class="msg-p">{{line}}</p>
         }
       </div>
-      <div>datetime:{{item.createdAt}}</div>
+      <div>{{item.createdAt}}</div>
     </div>
   </div>
   }
-  }
+  }}
 </div>

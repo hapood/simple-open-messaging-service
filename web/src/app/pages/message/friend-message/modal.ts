@@ -1,4 +1,3 @@
-import { Message } from "../../../common/services/Interfaces"
 export enum SendingMessageStatus {
   SENDING, SENT, FAILED
 }
@@ -10,9 +9,17 @@ export interface SentMessage {
 }
 export interface MsgGroup {
   id: string
-  list: Message[],
+  list: DisplayMsg[],
 }
 
 export enum MsgGroupStatus {
-  CALCING, PREPARED, STABLE, REMOVING
+  GENERATING, RENDERING, PREPARED, STABLE, REMOVING
+}
+
+export interface DisplayMsg {
+  id: string,
+  creatorName: string,
+  isSelf: boolean
+  lines: string[],
+  createdAt: string
 }

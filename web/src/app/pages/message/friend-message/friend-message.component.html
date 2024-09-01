@@ -1,17 +1,16 @@
 <div>
   <div class="msg-container">
-    <app-message-header [name]="friendName()"></app-message-header>
+    <app-message-header [name]="title()"></app-message-header>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       <div class="msg-group-list" #groupPadding>
         @for (item of groupList(); track item.id){
         <div class="msg-group-wrapper">
-          <app-msg-group [list]="item.list" [profileRecord]="profileRecord()"
-            [status]="groupStatusArray()[$index].status" (onStatusChange)="onGroupComStatusChange($event)"
-            [index]="$index"></app-msg-group>
+          <app-msg-group [list]="item.list" [status]="groupStatusArray()[$index].status"
+            (onStatusChange)="onGroupComStatusChange($event)" [index]="$index"></app-msg-group>
         </div>
         }
       </div>
     </div>
-    <app-msg-input-bar (onAfterSent)="onAfterSent()" [threadId]="threadIdNum()"></app-msg-input-bar>
+    <app-msg-input-bar (onAfterSent)="onAfterSent()" [threadId]="threadIdNum"></app-msg-input-bar>
   </div>
 </div>
