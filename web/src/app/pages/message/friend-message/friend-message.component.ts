@@ -1,6 +1,6 @@
 import {
-  Component, ElementRef, ChangeDetectorRef,
-  signal, viewChild, input
+  Component, ElementRef, signal, viewChild, input,
+  computed
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -12,11 +12,12 @@ import {
   Subject, filter, mergeMap, tap,
   switchMap, catchError, of
 } from "rxjs";
-import { SendingMessage, SentMessage, SendingMessageStatus, MsgGroup, MsgGroupStatus } from './modal';
+import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus } from './modal';
 import { arrayToDictIndex, arraySignal, recordSignal } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { UserProfile } from './msg-group/modal';
 import { MessageHeaderComponent } from '../../../components/message-header/message-header.component';
+import { MsgInputBarComponent } from '../../../components/msg-input-bar/msg-input-bar.component';
 
 const TAKE_NUM = 10;
 const GROUP_NUM = TAKE_NUM;
@@ -27,7 +28,7 @@ const SCROLL_HEIGHT_THRESHOLD = 1000;
 @Component({
   selector: 'app-friend-message',
   standalone: true,
-  imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent],
+  imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent, MsgInputBarComponent],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss'
 })
@@ -36,11 +37,16 @@ export class FriendMessageComponent {
   threadId = input<string>();
   startMsgId = input<string>();
 
-  readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
 
-  readonly sendingCnt = signal(0)
+  readonly threadIdNum = computed(() => {
+    let threadId = this.threadId()
+    if (threadId) {
+      return parseInt(threadId)
+    }
+    return undefined
+  })
   readonly sentMessageList = arraySignal<SentMessage>([])
   readonly failedMessageList = arraySignal<SendingMessage>([])
   readonly isReady = signal(false)
@@ -62,21 +68,19 @@ export class FriendMessageComponent {
   private scrollObserver!: ResizeObserver;
   private messageList: Message[] = [];
   private threshold: { up: number, down: number } | undefined = undefined
-  private _threadId!: number
   private _startMsgId: string | undefined
   private _scrollerElm!: HTMLDivElement
   private _oldGrpMsgIdx = 0 //index of messageList point to oldest message in current groups
   private _newGrpMsgIdx = 0
   private _scrollerInfo !: { clientHeight: number, disToBot: number };
 
-  constructor(private msgService: MsgService, private wsService: WebsocketService, private changeDetectorRef: ChangeDetectorRef) {
+  constructor(private msgService: MsgService, private wsService: WebsocketService) {
     this.wsService.eventSubject.subscribe({
       next: (msg) => { console.info('on message', msg) }
     })
   }
 
   ngOnInit() {
-    this._threadId = parseInt(this.threadId() as string)
     this._startMsgId = this.startMsgId()
     this.initThreadInfo()
     this.subOldMessages = this.queryOldMessages
@@ -180,27 +184,8 @@ export class FriendMessageComponent {
     this.scrollObserver.disconnect()
   }
 
-  send() {
-    const content = this.getInputText()
-    console.info(`send content: ${content}`)
-    if (content) {
-      return this.msgService.sendMessage({ threadId: this._threadId, content }).pipe(
-        tap(() => {
-          this.clearTextInput()
-          this.sendingCnt.set(this.sendingCnt() + 1)
-        }))
-        .subscribe(
-          {
-            next: (res) => {
-              this.afterMsgSent()
-            },
-            error: (error) => {
-              console.error(error)
-            }
-          })
-    } else {
-      return false
-    }
+  onAfterSent() {
+    this.afterMsgSent()
   }
 
   mergeSentMessages(list: Message[]) {
@@ -287,11 +272,16 @@ export class FriendMessageComponent {
       console.info('has no more old message, shold not load.')
       return
     }
+    let threadIdNum = this.threadIdNum()
+    if (threadIdNum === undefined) {
+      console.info('no thread id, exit')
+      return
+    }
     const startId = this._startMsgId, oldestMsg = this.messageList[0]
     if (oldestMsg) {
       console.info('delta query more old data')
       this.queryOldMessages.next({
-        threadId: this._threadId, take: TAKE_NUM, skip: 1,
+        threadId: threadIdNum, take: TAKE_NUM, skip: 1,
         lastId: oldestMsg.id, orderBy: 'desc'
       })
     }
@@ -299,13 +289,13 @@ export class FriendMessageComponent {
       if (startId) {
         console.info('first query old group with startId')
         this.queryOldMessages.next({
-          threadId: this._threadId, take: TAKE_NUM, skip: 1,
+          threadId: threadIdNum, take: TAKE_NUM, skip: 1,
           lastId: startId, orderBy: 'desc'
         })
       } else {
         console.info('first query old group')
         this.queryOldMessages.next({
-          threadId: this._threadId, take: TAKE_NUM, skip: 0,
+          threadId: threadIdNum, take: TAKE_NUM, skip: 0,
           orderBy: 'desc'
         })
       }
@@ -318,12 +308,17 @@ export class FriendMessageComponent {
       console.info('has no more new message, shold not load.')
       return
     }
+    let threadIdNum = this.threadIdNum()
+    if (threadIdNum === undefined) {
+      console.info('no thread id, exit')
+      return
+    }
     const startId = this._startMsgId, messageList = this.messageList
     const newestMsg = messageList[messageList.length - 1]
     if (newestMsg) {
       console.info('delta query more new data')
       this.queryNewMessages.next({
-        threadId: this._threadId,
+        threadId: threadIdNum,
         orderBy: 'asc',
         take: TAKE_NUM,
         skip: 1,
@@ -333,7 +328,7 @@ export class FriendMessageComponent {
       if (startId) {
         console.info('first query new group with startId')
         this.queryNewMessages.next({
-          threadId: this._threadId,
+          threadId: threadIdNum,
           orderBy: 'asc',
           take: TAKE_NUM,
           skip: 0,
@@ -347,8 +342,13 @@ export class FriendMessageComponent {
 
 
   initThreadInfo() {
+    let threadIdNum = this.threadIdNum()
+    if (threadIdNum === undefined) {
+      console.info('no thread id, failed to init')
+      return
+    }
     const getThreadInfo = this.msgService.getThreadInfo({
-      threadId: this._threadId
+      threadId: threadIdNum
     })
     const getMyInfo = this.msgService.getMyProfile()
     forkJoin([getThreadInfo, getMyInfo]).pipe(mergeMap(([thread, profile]) => {
@@ -469,9 +469,9 @@ export class FriendMessageComponent {
           this.isBottom = true
         }
       } else {
-        const newScrollTop = newScrollHeight - downsideGroupHeight
+        const newScrollTop = newScrollHeight - downsideGroupHeight - clientHeight
         if (newScrollTop > 0) {
-          this._scrollerElm.scrollTop = newScrollTop;
+          this._scrollerElm.scrollTop = newScrollTop
         } else {
           this._scrollerElm.scrollTop = 0
         }
@@ -528,20 +528,6 @@ export class FriendMessageComponent {
       this.groupStatusArray.set(newArr)
       this.checkAndBuildGroup()
     }
-  }
-
-  onUserInput(event: Event) {
-    console.log((event as InputEvent).data)
-  }
-
-  getInputText() {
-    const elm = (this.userInput() as any).nativeElement as HTMLDivElement
-    return elm.textContent;
-  }
-
-  clearTextInput() {
-    const elm = (this.userInput() as any).nativeElement as HTMLDivElement
-    elm.innerHTML = ''
   }
 
   afterMsgSent() {

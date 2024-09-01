@@ -148,7 +148,6 @@ export class AppController {
     if (params.lastId) {
       newParams.cursor = { id: params.lastId }
     }
-    console.log(new Date().getTime())
     const list = await this.userService.queryMessages(newParams)
     return json(list)
   }

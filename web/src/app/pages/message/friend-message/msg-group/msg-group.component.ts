@@ -21,7 +21,7 @@ export class MsgGroupComponent {
   @Output() onStatusChange = new EventEmitter<{ index: number, status: MsgGroupStatus, height: number }>();
   readonly groupWrapper = viewChild<ElementRef<HTMLDivElement>>('groupWrapper');
 
-  readonly UserAvatarType=UserAvatarType
+  readonly UserAvatarType = UserAvatarType
   readonly index = input<number>(-1)
   readonly list = input<Message[]>([])
   readonly status = input<MsgGroupStatus>(MsgGroupStatus.CALCING)
@@ -29,9 +29,11 @@ export class MsgGroupComponent {
   readonly displayList = computed(() => {
     const profileDict = this.profileRecord();
     const list = this.list()
+    console.log(list)
     return list.map(item => {
       return {
         ...item,
+        lines: item.content.split('\n'),
         creatorName: profileDict[item.creator]?.uniqName,
         isSelf: profileDict[item.creator]?.isSelf ?? false,
       } as displayMsg
@@ -75,6 +77,8 @@ export class MsgGroupComponent {
     if (height > 0) {
       this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
     }
+    console.log(this.index(), height)
+
     // this.groupObserver.observe(elm);
   }
 

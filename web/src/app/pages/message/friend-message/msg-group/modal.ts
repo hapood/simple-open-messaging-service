@@ -9,4 +9,5 @@ export interface UserProfile {
 export interface displayMsg extends Message {
   creatorName: string,
   isSelf: boolean
+  lines: string[]
 }
