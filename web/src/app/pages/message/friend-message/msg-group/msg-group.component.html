@@ -13,11 +13,15 @@
       </div>
       <div>{{item.createdAt}}</div>
     </div>
-    <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
+    <div class="avatar-wrapper">
+      <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
+    </div>
   </div>
   }@else {
   <div [ngClass]="['msg-list-wrapper','msg-friend']">
-    <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+    <div class="avatar-wrapper">
+      <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+    </div>
     <div [ngClass]="['msg-list-item','msg-friend']">
       <div>id:{{item.id}}|name:{{item.creatorName}}</div>
       <div class="msg-content">

@@ -1,10 +1,13 @@
-<div>
-  <div>
-    用户名：<input type="text" [(ngModel)]="uniqName" />
+<div class="login-wrapper">
+  <div class="avatar-hero">
+    <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
   </div>
   <div>
-    密码：<input type="text" [(ngModel)]="password" />
+    用户名：<input type="text" [ngModel]="uniqName()" (ngModelChange)="uniqName.set($event);" />
+  </div>
+  <div>
+    密码：<input type="text" [ngModel]="password()" (ngModelChange)="password.set($event);" />
   </div>
   <button (click)="login()">登录</button>
-  <div>resp:{{resp}}</div>
+  <div>resp:{{resp()}}</div>
 </div>
