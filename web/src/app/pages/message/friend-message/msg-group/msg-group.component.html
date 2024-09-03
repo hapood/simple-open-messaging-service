@@ -2,36 +2,48 @@
   @if(nextStatus()!==MsgGroupStatus.GENERATING){
   @for (item of list(); track item.id){
   @if(item.isSelf){
-
   <div [ngClass]="['msg-list-wrapper','msg-self']">
-    <div>
+    <div [ngClass]="['msg-time-wrapper','msg-self',item.isDateShrink?'small-gap':'normal-gap']">
+      @if(item.isShowHead){
+      <div class="msg-name-wrapper msg-self">{{item.creatorName}}</div>
+      }
       <div [ngClass]="['msg-list-item','msg-self']">
-        <div>id:{{item.id}}|name:{{item.creatorName}}</div>
         <div>
           @for(line of item.lines; track $index){
           <p class="msg-p">{{line}}</p>
           }
         </div>
       </div>
+      @if(!item.isDateShrink){
       <div class="msg-time msg-time-self">{{item.createdAt}}</div>
+      }
     </div>
-    <div class="avatar-wrapper">
+    <div [ngClass]="['msg-avatar-wrapper',item.isShowHead?'with-name':'']">
+      @if(item.isShowHead){
       <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
+      }
     </div>
   </div>
   }@else {
   <div [ngClass]="['msg-list-wrapper','msg-other']">
-    <div class="avatar-wrapper">
-      <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+    <div [ngClass]="['msg-avatar-wrapper',item.isShowHead?'with-name':'']">
+      @if(item.isShowHead){
+      <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>}
     </div>
-    <div [ngClass]="['msg-list-item','msg-other']">
-      <div>id:{{item.id}}|name:{{item.creatorName}}</div>
-      <div class="msg-content">
-        @for(line of item.lines; track $index){
-        <p class="msg-p">{{line}}</p>
-        }
+    <div [ngClass]="['msg-time-wrapper','msg-other',item.isDateShrink?'small-gap':'normal-gap']">
+      @if(item.isShowHead){
+      <div class="msg-name-wrapper msg-other">{{item.creatorName}}</div>
+      }
+      <div [ngClass]="['msg-list-item','msg-other']">
+        <div class="msg-content">
+          @for(line of item.lines; track $index){
+          <p class="msg-p">{{line}}</p>
+          }
+        </div>
       </div>
+      @if(!item.isDateShrink){
       <div class="msg-time msg-time-other">{{item.createdAt}}</div>
+      }
     </div>
   </div>
   }

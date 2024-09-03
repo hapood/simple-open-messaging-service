@@ -2,6 +2,23 @@
   display: flex;
   position: relative;
 
+  .msg-name-wrapper {
+    color: #000000;
+    font-size: 14px;
+    line-height: 14px;
+    ;
+    padding-bottom: 2px;
+    font-weight: 600;
+
+    &.msg-self {
+      text-align: right;
+    }
+
+    &.msg-other {
+      text-align: left;
+    }
+  }
+
   &.msg-self {
     justify-content: right;
   }
@@ -10,22 +27,46 @@
     justify-content: left;
   }
 
-  .avatar-wrapper {
+  .msg-avatar-wrapper {
     width: 40px;
     height: 40px;
+    flex-grow: 0;
+    flex-shrink: 0;
+    padding-bottom: 2px;
+
+    &.with-name {
+      margin-top: 14px;
+    }
+  }
+
+  .msg-time-wrapper {
+    max-width: 480px;
+
+    &.msg-self {
+      padding-left: 40px;
+    }
+
+    &.msg-other {
+      padding-right: 40px;
+    }
+  }
+
+  .small-gap {
+    margin-bottom: 3px;
+  }
+
+  .normal-gap {
+    margin-bottom: 8px;
   }
 
   .msg-list-item {
-    margin-top: 10px;
-    max-width: 480px;
-    border-radius: 20px;
+    border-radius: 8px;
     padding: 10px;
     box-sizing: border-box;
 
     &.msg-self {
       background: #448aff;
       color: #ffffff;
-      margin-left: 30px;
     }
 
     &.msg-other {
@@ -39,15 +80,19 @@
       line-height: 18px;
       padding: 0;
       margin: 0;
+      word-break: break-all;
     }
   }
+
   .msg-time {
     color: #898989;
     font-size: 10px;
   }
+
   .msg-time-self {
     text-align: right;
   }
+
   .msg-time-other {
     text-align: left;
   }

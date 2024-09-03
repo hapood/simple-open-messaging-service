@@ -380,8 +380,8 @@ export class MsgGroupFactory {
         lines: msg.content.split('\n'),
         creatorName: profile.uniqName,
         isSelf: profile.isSelf,
-        createdAt: isToday ? day.format('hh:mm') : isSameYear ?
-          day.format('MM-DD hh:mm') : day.format('YYYY-MM-DD hh:mm')
+        createdAt: isToday ? day.format('HH:mm') : isSameYear ?
+          day.format('MM-DD HH:mm') : day.format('YYYY-MM-DD HH:mm')
       }
     }
 
@@ -393,11 +393,17 @@ export class MsgGroupFactory {
         userIdSet.add(msg.creator)
       } else if (isFullfill || isForce) {
         const newItem = generateItem(msg, profile) as DisplayMsg
-        const nextItem = this.messageList[grp.eIndex]
-        newItem.isDateShrink = (nextItem !== undefined) && dayjs(nextItem.createdAt).isSame(msg.createdAt)
-        const prevItem = this.messageList[grp.sIndex - 1]
-        newItem.isShowHead = prevItem?.creator !== msg.creator
-        newItem.isDateShrink = false
+        let nextItem = list[i + 1];
+        if (nextItem === undefined) {
+          nextItem = this.messageList[grp.eIndex]
+        }
+        let prevItem = list[i - 1]
+        if (prevItem === undefined) {
+          prevItem = this.messageList[grp.sIndex - 1]
+        }
+        const isDiffUser = prevItem?.creator !== msg.creator
+        newItem.isDateShrink = false && isDiffUser || (nextItem !== undefined) && dayjs(nextItem.createdAt).isSame(dayjs(msg.createdAt), 'minute')
+        newItem.isShowHead = isDiffUser || prevItem === undefined || !dayjs(prevItem.createdAt).isSame(dayjs(msg.createdAt), 'minute')
         dispList.push(newItem)
       }
     }
@@ -448,6 +454,8 @@ export class MsgGroupFactory {
           if (e.grpIdx !== undefined) {
             this._removeGrp(e.grpIdx)
           }
+        } else {
+          console.error(e)
         }
       }
     })
