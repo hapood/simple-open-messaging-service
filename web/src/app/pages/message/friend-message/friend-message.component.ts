@@ -6,11 +6,11 @@ import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../../common/services/websocket.service';
 import { Message } from '../../../common/services/Interfaces';
 import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus } from './modal';
-import { arrayToDictIndex, arraySignal, recordSignal } from '../../../../utils'
+import { arrayToDictIndex, arraySignal } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { MessageHeaderComponent } from '../../../components/message-header/message-header.component';
 import { MsgInputBarComponent } from '../../../components/msg-input-bar/msg-input-bar.component';
-import { MsgGroupFactory, GrpAddInfo } from './MsgGroupFactory';
+import { MsgGroupFactory } from './MsgGroupFactory';
 import { MsgService } from '../../../common/services/message.service'
 
 
@@ -31,8 +31,8 @@ export class FriendMessageComponent {
   startMsgId = input<string>();
   threadIdNum!: number
 
-  groupList!: Signal<MsgGroup[]>
-  groupStatusArray !: Signal<{ status: MsgGroupStatus, height: number }[]>
+  groupList!: MsgGroup[]
+  grpStatArrSig !: Signal<MsgGroupStatus[]>
 
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
@@ -64,9 +64,15 @@ export class FriendMessageComponent {
     this.threadIdNum = threadIdNum
     const grpFactory = new MsgGroupFactory({
       cb: {
-        onMessageLoad: () => this.checkAndBuildGroup(),
         onThreadInit: ({ title }) => {
           this.title.set(title)
+        },
+        beforeGrpRemoved: () => { },
+        afterMsgListAdd: (direction) => {
+          this.checkAndBuildGroup()
+        },
+        afterGrpReady: () => {
+          this.checkAndBuildGroup()
         }
       }
       , startMsgId,
@@ -74,7 +80,7 @@ export class FriendMessageComponent {
       msgService: this.msgService
     })
     this.groupList = grpFactory.groupList
-    this.groupStatusArray = grpFactory.groupStatusArray
+    this.grpStatArrSig = grpFactory.grpStatArrSig
     this.grpFactory = grpFactory
     if (startMsgId) {
       console.info('set show specific id scroll group threshold')
@@ -117,7 +123,6 @@ export class FriendMessageComponent {
   }
 
   ngOnDestroy() {
-    this.grpFactory.destroy()
     this.scrollObserver.disconnect()
   }
 
@@ -154,27 +159,27 @@ export class FriendMessageComponent {
     if (isAllStable) {
       console.info("all groups are stable, check to load more groups")
       if (this.threshold === undefined) {
-        console.info("delta generating groups")
+        console.info("try delta generating groups")
         const { scrollTop, clientHeight, scrollHeight } = this._scrollerElm
         if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
           console.info('scroll reached top, try load more old group')
-          grpFactory.tryGenerateGroup(0)
+          grpFactory.startBuild(0)
         } else if (scrollTop + clientHeight > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
           console.info('scroll reached bottom, try load more new group')
-          grpFactory.tryGenerateGroup(1)
+          grpFactory.startBuild(1)
         }
         return
       } else {
-        console.info("initial generating groups")
+        console.info("try initial generating groups")
         const up = this.threshold.up
         if (upsideGroupHeight < up) {
           console.info('upside group not satisfied threshold, try add group')
-          grpFactory.tryGenerateGroup(0)
+          grpFactory.startBuild(0)
           return
         }
         if (downsideGroupHeight < this.threshold.down) {
           console.info('downside group not satisfied threshold, try add group')
-          grpFactory.tryGenerateGroup(1)
+          grpFactory.startBuild(1)
           return
         }
       }
@@ -245,24 +250,12 @@ export class FriendMessageComponent {
       clientHeight,
       disToBot: scrollHeight - (clientHeight + scrollTop)
     }
-    if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
-      console.info('scroll reached top, try load more old group')
-      this.grpFactory.tryGenerateGroup(0)
-    } else if (scrollTop > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
-      console.info('scroll reached bottom, try load more new group')
-      this.grpFactory.tryGenerateGroup(1)
-    };
     this.checkAndBuildGroup()
   }
 
   scrollToBottom() {
     const elm = this._scrollerElm
     elm.scrollTo(0, elm.scrollHeight);
-  }
-
-  onGroupComStatusChange(params: { index: number, status: MsgGroupStatus, height: number }) {
-    this.grpFactory.updateGrpStatus(params)
-    this.checkAndBuildGroup()
   }
 
   afterMsgSent() {

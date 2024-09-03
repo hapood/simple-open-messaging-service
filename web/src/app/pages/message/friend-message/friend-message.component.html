@@ -3,10 +3,10 @@
     <app-message-header [name]="title()"></app-message-header>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       <div class="msg-group-list" #groupPadding>
-        @for (item of groupList(); track item.id){
+        @for (status of grpStatArrSig(); track groupList[$index].id){
         <div class="msg-group-wrapper">
-          <app-msg-group [list]="item.list" [status]="groupStatusArray()[$index].status"
-            (onStatusChange)="onGroupComStatusChange($event)" [index]="$index"></app-msg-group>
+          <app-msg-group [list]="groupList[$index].list" [nextStatus]="status" [nextHeight]="groupList[$index].height"
+            [index]="$index"></app-msg-group>
         </div>
         }
       </div>

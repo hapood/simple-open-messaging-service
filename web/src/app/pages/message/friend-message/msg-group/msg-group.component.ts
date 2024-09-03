@@ -16,19 +16,21 @@ import { UserAvatarType } from '../../../../components/user-avatar/modal';
   styleUrl: './msg-group.component.scss'
 })
 export class MsgGroupComponent {
-  @Output() onStatusChange = new EventEmitter<{ index: number, status: MsgGroupStatus, height: number }>();
+  @Output() onHeightChange = new EventEmitter<{ index: number, height: number }>();
   readonly groupWrapper = viewChild<ElementRef<HTMLDivElement>>('groupWrapper');
 
   readonly UserAvatarType = UserAvatarType
   readonly index = input<number>(-1)
   readonly list = input<DisplayMsg[]>([])
-  readonly status = input<MsgGroupStatus>(MsgGroupStatus.RENDERING)
+  readonly nextStatus = input<MsgGroupStatus>(MsgGroupStatus.GENERATING)
+  readonly nextHeight = input<MsgGroupStatus>(0)
   MsgGroupStatus = MsgGroupStatus
   private groupObserver!: ResizeObserver;
+  private latestheight = 0
 
   readonly groupWrapperClass = computed(() => {
     let className!: string
-    switch (this.status()) {
+    switch (this.nextStatus()) {
       case MsgGroupStatus.RENDERING:
         className = "calc"
         break
@@ -46,24 +48,31 @@ export class MsgGroupComponent {
 
   constructor() {
     effect(() => {
-      const status = this.status()
+      const status = this.nextStatus()
       if (status === MsgGroupStatus.PREPARED) {
 
       }
     })
   }
 
+  checkHeightChange() {
+    const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
+    const latestheight = elm.offsetHeight
+    if (latestheight !== this.nextHeight()) {
+      console.info(`group index [${this.index()}] height changed from \
+      [${this.latestheight}] to [${latestheight}], id:[${this.list()[0].id}]`)
+      this.onHeightChange.emit({ index: this.index(), height: latestheight })
+      this.latestheight = latestheight
+    }
+  }
+
   ngAfterViewInit() {
     const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
-    // this.groupObserver = new ResizeObserver(entries => {
-    //   this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height: elm.offsetHeight })
-    // })
-    const height = elm.offsetHeight
-    if (height > 0) {
-      console.log({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
-      this.onStatusChange.emit({ index: this.index(), status: MsgGroupStatus.PREPARED, height })
-    }
-    // this.groupObserver.observe(elm);
+    this.groupObserver = new ResizeObserver(entries => {
+      this.checkHeightChange()
+    })
+    this.checkHeightChange()
+    this.groupObserver.observe(elm);
   }
 
 }

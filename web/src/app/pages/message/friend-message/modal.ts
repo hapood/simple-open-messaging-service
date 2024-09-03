@@ -10,6 +10,9 @@ export interface SentMessage {
 export interface MsgGroup {
   id: string
   list: DisplayMsg[],
+  height: number,
+  sIndex: number, //can not outof range
+  eIndex: number //indicate msg's index in messageList and +1, maybe out of range
 }
 
 export enum MsgGroupStatus {
@@ -21,5 +24,7 @@ export interface DisplayMsg {
   creatorName: string,
   isSelf: boolean
   lines: string[],
-  createdAt: string
+  createdAt: string,
+  isDateShrink: boolean,
+  isShowHead: boolean
 }
