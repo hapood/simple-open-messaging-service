@@ -159,18 +159,19 @@ export class FriendMessageComponent {
     if (isAllStable) {
       console.info("all groups are stable, check to load more groups")
       if (this.threshold === undefined) {
-        console.info("try delta generating groups")
         const { scrollTop, clientHeight, scrollHeight } = this._scrollerElm
         if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
           console.info('scroll reached top, try load more old group')
           grpFactory.startBuild(0)
+          return
         } else if (scrollTop + clientHeight > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
           console.info('scroll reached bottom, try load more new group')
           grpFactory.startBuild(1)
+          return
         }
+        console.info("no need for delta generating")
         return
       } else {
-        console.info("try initial generating groups")
         const up = this.threshold.up
         if (upsideGroupHeight < up) {
           console.info('upside group not satisfied threshold, try add group')
@@ -182,6 +183,7 @@ export class FriendMessageComponent {
           grpFactory.startBuild(1)
           return
         }
+        console.info("initial generating finished")
       }
     }
 
@@ -204,6 +206,9 @@ export class FriendMessageComponent {
             this._scrollerElm.scrollTop = scrollTop
           }
         } else {
+          elm.style.display = "flex"
+          elm.style.flexDirection = "column"
+          elm.style.justifyContent = "flex-end"
           this._scrollerElm.scrollTop = scrollTop + upsideGroupHeight
         }
       } else {
@@ -256,6 +261,11 @@ export class FriendMessageComponent {
   scrollToBottom() {
     const elm = this._scrollerElm
     elm.scrollTo(0, elm.scrollHeight);
+  }
+
+  onGroupHeightChange(params: { index: number, height: number }) {
+    this.grpFactory.updateGrpheight(params)
+    this.checkAndBuildGroup()
   }
 
   afterMsgSent() {

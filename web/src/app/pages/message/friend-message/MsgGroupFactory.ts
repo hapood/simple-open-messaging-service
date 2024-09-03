@@ -3,7 +3,7 @@ import { MsgService } from '../../../common/services/message.service'
 import { Message, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
 import {
   forkJoin, mergeMap, Observable, shareReplay, of, from,
-  firstValueFrom, Subscription, Subject, concatMap
+  firstValueFrom, concatMap
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
 import { UserProfile } from './msg-group/modal';
@@ -65,8 +65,6 @@ export class MsgGroupFactory {
   private msgThread: MsgThread | Record<string, undefined> = {}
   private profileRecord: Record<string, UserProfile> = {}
   private messageList: Message[] = [];
-  private bldGrpWorkflow = new Subject<0 | 1>()
-  private subBldGrpWrkFlw!: Subscription;
   //_oldGrpMsgIdx+1 is the index of messageList, whitch point to oldest message
   // in current groups, maybe out of range, means message group is empty
   private _oldGrpMsgIdx = 0
@@ -77,6 +75,8 @@ export class MsgGroupFactory {
   private cb: MsgFactCallback
   private threadIdNum: number
   private initSglUsrPf$!: Observable<any>
+  private isQueryingOld = false
+  private isQueryingNew = false
 
   constructor({ cb, startMsgId, threadIdNum, msgService }:
     { cb: MsgFactCallback, startMsgId?: string, threadIdNum: number, msgService: MsgService }) {
@@ -85,30 +85,6 @@ export class MsgGroupFactory {
     this.threadIdNum = threadIdNum
     this.msgService = msgService
     this._initThreadInfo()
-    this.subBldGrpWrkFlw = this.bldGrpWorkflow.pipe(
-      concatMap((direction) => this._calcStartPosition(direction)),
-      concatMap(({ drct, index }) => {
-        if (drct === 0) {
-          return this._startToBldOldGrp(index)
-        } else {
-          return this._startToBldNewGrp(index)
-        }
-      }),
-      concatMap((params) => this._procGenGrp(params)),
-      concatMap(params => this._undateGrp(params))
-    ).subscribe({
-      next: (index) => {
-        this.cb.afterGrpReady(index)
-      },
-      error: (e) => {
-        if (e instanceof GrpWrkFlwErr) {
-          console.info(e)
-          if (e.grpIdx !== undefined) {
-            this._removeGrp(e.grpIdx)
-          }
-        }
-      }
-    })
   }
 
   private _removeGrp(index: number) {
@@ -119,6 +95,11 @@ export class MsgGroupFactory {
   }
 
   private _queryOldMsgs(params: QueryMessageLogParams) {
+    if (this.isQueryingOld) {
+      console.info('already querying old message, stop for it')
+      return
+    }
+    this.isQueryingOld = true
     this.msgService.queryMessageLog(params).subscribe({
       next: (list) => {
         if (list.length === 0) {
@@ -135,11 +116,19 @@ export class MsgGroupFactory {
         }
         console.info('old messages added to messageList')
         this.cb.afterMsgListAdd(0)
+      },
+      complete: () => {
+        this.isQueryingOld = false
       }
     })
   }
 
   private _queryNewMsgs(params: QueryMessageLogParams) {
+    if (this.isQueryingNew) {
+      console.info('already querying new message, stop for it')
+      return
+    }
+    this.isQueryingNew = true
     this.msgService.queryMessageLog(params).subscribe({
       next: (list) => {
         if (list.length === 0) {
@@ -152,6 +141,9 @@ export class MsgGroupFactory {
         }
         console.info('new messages added to messageList')
         this.cb.afterMsgListAdd(1)
+      },
+      complete: () => {
+        this.isQueryingNew = false
       }
     })
   }
@@ -404,7 +396,30 @@ export class MsgGroupFactory {
   }
 
   startBuild(direction: 0 | 1) {
-    this.bldGrpWorkflow.next(direction)
+    of(direction).pipe(
+      concatMap((direction) => this._calcStartPosition(direction)),
+      concatMap(({ drct, index }) => {
+        if (drct === 0) {
+          return this._startToBldOldGrp(index)
+        } else {
+          return this._startToBldNewGrp(index)
+        }
+      }),
+      concatMap((params) => this._procGenGrp(params)),
+      concatMap(params => this._undateGrp(params)),
+    ).subscribe({
+      next: (index) => {
+        this.cb.afterGrpReady(index)
+      },
+      error: (e) => {
+        if (e instanceof GrpWrkFlwErr) {
+          console.info(`[GrpWrkFlwErr]:${e.message}`)
+          if (e.grpIdx !== undefined) {
+            this._removeGrp(e.grpIdx)
+          }
+        }
+      }
+    })
   }
 
   calcPreparedHeight() {
@@ -445,6 +460,15 @@ export class MsgGroupFactory {
       }
     }
     ))
+  }
+
+  updateGrpheight({ index, height }: { index: number, height: number }) {
+    console.info(`group index [${index}] height changed from [${this.groupList[index].height}] to [${height}]`)
+    this.groupList[index].height = height
+    const statusArr = this.grpStatArrSig()
+    if (height > 0 && statusArr[index] === MsgGroupStatus.RENDERING) {
+      this.grpStatArrSig.set(statusArr.slice(0, index).concat([MsgGroupStatus.PREPARED]).concat(statusArr.slice(index + 1)))
+    }
   }
 
   newMessageNotify() {

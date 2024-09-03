@@ -4,10 +4,8 @@
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       <div class="msg-group-list" #groupPadding>
         @for (status of grpStatArrSig(); track groupList[$index].id){
-        <div class="msg-group-wrapper">
-          <app-msg-group [list]="groupList[$index].list" [nextStatus]="status" [nextHeight]="groupList[$index].height"
-            [index]="$index"></app-msg-group>
-        </div>
+        <app-msg-group [list]="groupList[$index].list" [nextStatus]="status" [nextHeight]="groupList[$index].height"
+          (onHeightChange)="onGroupHeightChange($event)" [index]="$index"></app-msg-group>
         }
       </div>
     </div>

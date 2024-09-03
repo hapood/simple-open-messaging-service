@@ -23,10 +23,9 @@ export class MsgGroupComponent {
   readonly index = input<number>(-1)
   readonly list = input<DisplayMsg[]>([])
   readonly nextStatus = input<MsgGroupStatus>(MsgGroupStatus.GENERATING)
-  readonly nextHeight = input<MsgGroupStatus>(0)
+  readonly nextHeight = input(0)
   MsgGroupStatus = MsgGroupStatus
   private groupObserver!: ResizeObserver;
-  private latestheight = 0
 
   readonly groupWrapperClass = computed(() => {
     let className!: string
@@ -47,22 +46,13 @@ export class MsgGroupComponent {
   })
 
   constructor() {
-    effect(() => {
-      const status = this.nextStatus()
-      if (status === MsgGroupStatus.PREPARED) {
-
-      }
-    })
   }
 
   checkHeightChange() {
     const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
     const latestheight = elm.offsetHeight
     if (latestheight !== this.nextHeight()) {
-      console.info(`group index [${this.index()}] height changed from \
-      [${this.latestheight}] to [${latestheight}], id:[${this.list()[0].id}]`)
       this.onHeightChange.emit({ index: this.index(), height: latestheight })
-      this.latestheight = latestheight
     }
   }
 

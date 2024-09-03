@@ -47,6 +47,13 @@ export class MsgInputBarComponent {
     event.stopPropagation()
   }
 
+  checkSend(event: KeyboardEvent): void {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      this.send()
+    }
+  }
+  
   send(): void {
     let threadId = this.threadId()
     if (threadId) {
