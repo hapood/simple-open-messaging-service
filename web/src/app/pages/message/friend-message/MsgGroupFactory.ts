@@ -110,9 +110,13 @@ export class MsgGroupFactory {
         }
         const rList = list.reverse();
         this.messageList = rList.concat(this.messageList)
-        const index = rList.length
-        this._oldGrpMsgIdx += index
-        this._newGrpMsgIdx += index
+        const delta = rList.length
+        this._oldGrpMsgIdx += delta
+        this._newGrpMsgIdx += delta
+        this._groupList.forEach(grp => {
+          grp.sIndex += delta
+          grp.eIndex += delta
+        })
         if (list.length < params.take) {
           console.info('no more old message to load, set hasMoreOldMsg false')
           this.hasMoreOldMsg = false
@@ -158,7 +162,9 @@ export class MsgGroupFactory {
     }
     const messageList = this.messageList
     console.info(`_startToBldOldGrp to index [${endIndex}]`)
-    let startIndex = endIndex - GROUP_MSG_NUM, takeNum = GROUP_MSG_NUM;
+    // for keeping group style stable, addition one take and may be droped after
+    let takeNum = GROUP_MSG_NUM + 1
+    let startIndex = endIndex - takeNum;
     if (endIndex < 1) {
       this._loadMoreOldMsg()
       throw new GrpWrkFlwErr('no more old message, quit workflow and turn to load')
@@ -178,7 +184,7 @@ export class MsgGroupFactory {
         throw new GrpWrkFlwErr('for keeping group style stable, must quit workflow and turn to load')
       }
     }
-    this._oldGrpMsgIdx = startIndex - 1
+    this._oldGrpMsgIdx = startIndex
     const grpStatArrSig = this.grpStatArrSig, dispGrpList = this.dispGrpList()
     grpStatArrSig.set([MsgGroupStatus.GENERATING].concat(grpStatArrSig()))
     const grp = {
