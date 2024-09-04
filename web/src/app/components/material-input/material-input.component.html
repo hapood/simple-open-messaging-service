@@ -1,0 +1,7 @@
+<div class="form-field" [ngClass]="{'form-field--is-active':isFocus(),'form-field--is-filled':text()!==''}">
+  <div class="form-field__control">
+    <label (click)="focusInput($event)" class="form-field__label">{{placeholder()}}</label>
+    <input [type]="type()" #userInput [(ngModel)]="text" type="text" (focus)="onFocus()" (blur)="onBlur()"
+      class="form-field__input" />
+  </div>
+</div>

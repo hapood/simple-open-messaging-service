@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
-import { MsgService } from '../../../common/services/message.service'
-import { Message, MsgThread, QueryMessageLogParams, } from '../../../common/services/Interfaces';
+import { MsgService } from '../../../services/message.service'
+import { Message, MsgThread, QueryMessageLogParams, } from '../../../services/Interfaces';
 import {
   forkJoin, mergeMap, Observable, shareReplay, of, from,
   firstValueFrom, concatMap

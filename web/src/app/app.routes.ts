@@ -1,6 +1,6 @@
 import { Routes } from '@angular/router';
 import { UserManageComponent } from './pages/server-manage/user-manage/user-manage.component';
-import { LoginComponent } from './pages/auth/login/login.component';
+import { LoginPageComponent } from './pages/auth/login/login-page.component';
 import { MyFriendsComponent } from './pages/relation/my-firends/my-friends.component';
 import { ThreadListComponent } from './pages/home/thread-list/thread-list.component';
 import { FriendMessageComponent } from './pages/message/friend-message/friend-message.component';
@@ -11,7 +11,7 @@ import { authGuard } from './auth.guard';
 
 export const routes: Routes = [
   { path: "", component: PageNavgatorComponent },
-  { path: "login", component: LoginComponent },
+  { path: "login", component: LoginPageComponent },
   { path: "user-manage", component: UserManageComponent, canActivate: [authGuard] },
   { path: "my-friends", component: MyFriendsComponent, canActivate: [authGuard] },
   { path: "thread-list", component: ThreadListComponent, canActivate: [authGuard] },

@@ -1,4 +1,4 @@
-import { MsgGroup } from "../../pages/message/friend-message/modal";
+import { MsgGroup } from "../pages/message/friend-message/modal";
 
 export interface User { id: number; uniqName: string; password: string }
 export interface MsgThread { id: number, threadItem: ThreadItem }

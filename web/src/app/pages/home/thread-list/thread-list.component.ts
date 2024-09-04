@@ -1,7 +1,7 @@
 import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { MsgService } from '../../../common/services/message.service'
-import { MsgThread, User } from '../../../common/services/Interfaces'
+import { MsgService } from '../../../services/message.service'
+import { MsgThread, User } from '../../../services/Interfaces'
 
 @Component({
   selector: 'app-thread-list',

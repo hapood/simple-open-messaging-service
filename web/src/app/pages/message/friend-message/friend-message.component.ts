@@ -3,15 +3,15 @@ import {
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { WebsocketService } from '../../../common/services/websocket.service';
-import { Message } from '../../../common/services/Interfaces';
+import { WebsocketService } from '../../../services/websocket.service';
+import { Message } from '../../../services/Interfaces';
 import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus, DisMsgGrp } from './modal';
 import { arrayToDictIndex } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { MessageHeaderComponent } from '../../../components/message-header/message-header.component';
 import { MsgInputBarComponent } from '../../../components/msg-input-bar/msg-input-bar.component';
 import { MsgGroupFactory } from './MsgGroupFactory';
-import { MsgService } from '../../../common/services/message.service'
+import { MsgService } from '../../../services/message.service'
 
 
 const LOAD_MORE_TRIGGER_OFFSET = 100;

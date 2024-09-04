@@ -2,7 +2,7 @@ import { Component, input, viewChild, ElementRef, Output, EventEmitter, signal }
 import { IconComponent } from "../icon/icon.component";
 import { AppIconType } from '../icon/modal';
 import { tap } from 'rxjs';
-import { MsgService } from '../../common/services/message.service'
+import { MsgService } from '../../services/message.service'
 
 @Component({
   selector: 'app-msg-input-bar',

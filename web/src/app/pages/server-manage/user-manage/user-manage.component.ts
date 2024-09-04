@@ -1,7 +1,7 @@
 import { Component } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { MsgService } from '../../../common/services/message.service'
-import { User } from '../../../common/services/Interfaces'
+import { MsgService } from '../../../services/message.service'
+import { User } from '../../../services/Interfaces'
 
 @Component({
   selector: 'app-user-manage',
