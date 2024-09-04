@@ -1,0 +1,10 @@
+<div class="page-wrapper">
+  <app-home-header>
+    <div>SOMS</div>
+  </app-home-header>
+  <div class="thread-wrapper"> @for (item of threadList; track item.id) {
+    <div><a [routerLink]="['/friend-message/', item.threadItem.id]">
+        name:{{getUserName(item)}}</a></div>
+    }
+  </div>
+</div>

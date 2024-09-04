@@ -1,3 +1,3 @@
 export enum AppIconType {
-  BACK, MORE,SEND
+  BACK, MORE, SEND, SEARCH, MENU
 }

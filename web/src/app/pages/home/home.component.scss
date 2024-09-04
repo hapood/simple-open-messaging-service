@@ -1,0 +1,9 @@
+.page-wrapper {
+  height: 100vh;
+  overflow: hidden;
+
+  .thread-wrapper {
+    height: (100% - 56px);
+    overflow-y: auto;
+  }
+}

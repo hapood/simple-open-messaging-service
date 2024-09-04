@@ -1,16 +1,16 @@
 import { Component } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { MsgService } from '../../../services/message.service'
-import { MsgThread, User } from '../../../services/Interfaces'
-
+import { MsgService } from '../../services/message.service'
+import { MsgThread, User } from '../../services/Interfaces'
+import { HomeHeaderComponent } from '../../components/home-header/home-header.component';
 @Component({
-  selector: 'app-thread-list',
+  selector: 'app-home',
   standalone: true,
-  imports: [RouterLink],
-  templateUrl: './thread-list.component.html',
-  styleUrl: './thread-list.component.scss'
+  imports: [RouterLink, HomeHeaderComponent],
+  templateUrl: './home.component.html',
+  styleUrl: './home.component.scss'
 })
-export class ThreadListComponent {
+export class HomeComponent {
   threadList: MsgThread[] = []
   userInfoDict: Record<string, User> = {}
   profile: User = {} as User
