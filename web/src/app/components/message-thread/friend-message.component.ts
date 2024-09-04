@@ -3,15 +3,15 @@ import {
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { WebsocketService } from '../../../services/websocket.service';
-import { Message } from '../../../services/Interfaces';
+import { WebsocketService } from '../../services/websocket.service';
+import { Message } from '../../services/Interfaces';
 import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus, DisMsgGrp } from './modal';
-import { arrayToDictIndex } from '../../../../utils'
-import { MsgGroupComponent } from './msg-group/msg-group.component'
-import { MessageHeaderComponent } from '../../../components/message-header/message-header.component';
-import { MsgInputBarComponent } from '../../../components/msg-input-bar/msg-input-bar.component';
+import { arrayToDictIndex } from '../../../utils'
+import { MsgGroupComponent } from '../msg-group/msg-group.component'
+import { MessageHeaderComponent } from '../message-header/message-header.component';
+import { MsgInputBarComponent } from '../msg-input-bar/msg-input-bar.component';
 import { MsgGroupFactory } from './MsgGroupFactory';
-import { MsgService } from '../../../services/message.service'
+import { MsgService } from '../../services/message.service'
 
 
 const LOAD_MORE_TRIGGER_OFFSET = 100;
@@ -19,13 +19,13 @@ const UNREAD_INITIAL_PADDING_TOP = 100;
 const SCROLL_HEIGHT_THRESHOLD = 1000;
 
 @Component({
-  selector: 'app-friend-message',
+  selector: 'app-message-thread',
   standalone: true,
   imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent, MsgInputBarComponent],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss'
 })
-export class FriendMessageComponent {
+export class MessageThreadComponent {
 
   threadId = input<string>();
   startMsgId = input<string>();

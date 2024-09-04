@@ -1,7 +1,6 @@
 import { Component, signal, Output, EventEmitter } from '@angular/core';
 import { UserLoginService } from '../../services/user-login.service'
-import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
-import { UserAvatarType } from '../../components/user-avatar/modal';
+import { UserAvatarComponent, UserAvatarType } from '../../components/user-avatar/user-avatar.component';
 import { MaterialInputComponent } from '../material-input/material-input.component';
 import { MaterialButtonComponent } from "../material-button/material-button.component";
 @Component({

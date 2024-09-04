@@ -1,5 +1,6 @@
 import { Component, input } from '@angular/core';
 import { UserAvatarType } from './modal'
+
 @Component({
   selector: 'app-user-avatar',
   standalone: true,
@@ -12,3 +13,5 @@ export class UserAvatarComponent {
   readonly type = input<UserAvatarType>()
   readonly UserAvatarType = UserAvatarType
 }
+
+export { UserAvatarType } from './modal'

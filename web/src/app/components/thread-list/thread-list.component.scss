@@ -1,0 +1,38 @@
+.thread-item {
+  height: 72px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+
+  .thread-avatar {
+    width: 54px;
+    height: 54px;
+    flex-grow: 0;
+    flex-shrink: 0;
+  }
+
+  .thread-info {
+    flex: 1;
+    padding-left: 8px;
+    border-bottom: 1px solid #dddddd;
+    height: 100%;
+    justify-content: center;
+    display: flex;
+    flex-direction: column;
+
+    .thread-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: #000000;
+      line-height: 16px;
+      height: 16px;
+    }
+
+    .thread-msg {
+      font-size: 14px;
+      color: #707579;
+      margin-top: 4px;
+    }
+  }
+}

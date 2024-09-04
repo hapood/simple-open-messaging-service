@@ -1,12 +1,12 @@
 import { signal } from '@angular/core';
-import { MsgService } from '../../../services/message.service'
-import { Message, MsgThread, QueryMessageLogParams, } from '../../../services/Interfaces';
+import { MsgService } from '../../services/message.service'
+import { Message, MsgThread, QueryMessageLogParams, } from '../../services/Interfaces';
 import {
   forkJoin, mergeMap, Observable, shareReplay, of, from,
   firstValueFrom, concatMap
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
-import { UserProfile } from './msg-group/modal';
+import { UserProfile } from '../msg-group/modal';
 import { MsgGroup, MsgGroupStatus, DisplayMsg, DisMsgGrp } from './modal';
 
 //must bigger than 0

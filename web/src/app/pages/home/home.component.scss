@@ -1,9 +1,21 @@
 .page-wrapper {
+  width: 100vw;
   height: 100vh;
-  overflow: hidden;
 
-  .thread-wrapper {
-    height: (100% - 56px);
+  .thread-list-wrapper {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .thread-list {
+    height: calc(100% - 56px);
     overflow-y: auto;
+  }
+
+  .message-thread-wrapper {
+    height: 100%;
+    width: 100%;
+    overflow: hidden;
   }
 }

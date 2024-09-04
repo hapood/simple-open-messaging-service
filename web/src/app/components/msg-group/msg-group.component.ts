@@ -4,9 +4,8 @@ import {
   ElementRef
 } from '@angular/core';
 import { NgClass } from '@angular/common';
-import { MsgGroupStatus, DisplayMsg } from '../modal'
-import { UserAvatarComponent } from '../../../../components/user-avatar/user-avatar.component';
-import { UserAvatarType } from '../../../../components/user-avatar/modal';
+import { MsgGroupStatus, DisplayMsg } from '../message-thread/modal'
+import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 @Component({
   selector: 'app-msg-group',

@@ -1,54 +1,30 @@
-import { Component } from '@angular/core';
-import { RouterLink } from '@angular/router';
-import { MsgService } from '../../services/message.service'
-import { MsgThread, User } from '../../services/Interfaces'
+import { Component, signal } from '@angular/core';
+import { User } from '../../services/Interfaces'
 import { HomeHeaderComponent } from '../../components/home-header/home-header.component';
+import { MsgService } from '../../services/message.service'
+import { ThreadListComponent } from '../../components/thread-list/thread-list.component';
+import { MessageThreadComponent } from '../../components/message-thread/friend-message.component';
+
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [RouterLink, HomeHeaderComponent],
+  imports: [HomeHeaderComponent, ThreadListComponent, MessageThreadComponent],
   templateUrl: './home.component.html',
   styleUrl: './home.component.scss'
 })
+
 export class HomeComponent {
-  threadList: MsgThread[] = []
-  userInfoDict: Record<string, User> = {}
-  profile: User = {} as User
+  readonly profile = signal<User | undefined>(undefined)
 
   constructor(private msgService: MsgService) { }
 
-  getThreadList() {
-    return this.msgService.getThreadList().subscribe(threadList => {
-      this.threadList = threadList
-    })
-  }
-
-  getUserList() {
-    return this.msgService.getUserList().subscribe(userList => {
-      userList.map(item => {
-        this.userInfoDict[item.id] = item
-      })
-    })
+  ngOnInit() {
+    this.getMyInfo();
   }
 
   getMyInfo() {
     return this.msgService.getMyProfile().subscribe(profile => {
-      this.profile = profile
+      this.profile.set(profile)
     })
-  }
-
-  getUserName(item: MsgThread) {
-    const { userId1, userId2 } = item.threadItem.info;
-    let userId = userId1;
-    if (userId1 === this.profile.id) {
-      userId = userId2;
-    }
-    return this.userInfoDict[userId]?.uniqName
-  }
-
-  ngOnInit() {
-    this.getThreadList();
-    this.getUserList();
-    this.getMyInfo();
   }
 }

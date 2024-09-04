@@ -3,7 +3,7 @@ import { UserManageComponent } from './pages/server-manage/user-manage/user-mana
 import { LoginPageComponent } from './pages/auth/login/login-page.component';
 import { MyFriendsComponent } from './pages/relation/my-firends/my-friends.component';
 import { HomeComponent } from './pages/home/home.component';
-import { FriendMessageComponent } from './pages/message/friend-message/friend-message.component';
+import { MessageThreadComponent } from './components/message-thread/friend-message.component';
 import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.component';
 import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.component';
 import { ForbiddenComponent } from './pages/auth/forbidden/forbidden.component';
@@ -15,8 +15,8 @@ export const routes: Routes = [
   { path: "login", component: LoginPageComponent },
   { path: "user-manage", component: UserManageComponent, },
   { path: "my-friends", component: MyFriendsComponent, },
-  { path: "friend-message/:threadId", component: FriendMessageComponent, },
-  { path: "friend-message/:threadId/:startMsgId", component: FriendMessageComponent, },
+  { path: "friend-message/:threadId", component: MessageThreadComponent, },
+  { path: "friend-message/:threadId/:startMsgId", component: MessageThreadComponent, },
   { path: 'forbidden', component: ForbiddenComponent },
   { path: '**', component: PageNotFoundComponent }
 ];

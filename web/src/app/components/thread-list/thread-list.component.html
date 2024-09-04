@@ -1,0 +1,12 @@
+<div>@for (thread of threadList(); track thread.id) {
+  <div class="thread-item" (click)="onThreadClick(thread)">
+    <div class="thread-avatar">
+      <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+    </div>
+    <div class="thread-info">
+      <div class="thread-name">{{getUserName(thread)}}</div>
+      <div class="thread-msg">last message</div>
+    </div>
+  </div>
+  }
+</div>
