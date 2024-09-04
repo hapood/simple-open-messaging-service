@@ -5,8 +5,8 @@ import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../../common/services/websocket.service';
 import { Message } from '../../../common/services/Interfaces';
-import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus } from './modal';
-import { arrayToDictIndex, arraySignal } from '../../../../utils'
+import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus, DisMsgGrp } from './modal';
+import { arrayToDictIndex } from '../../../../utils'
 import { MsgGroupComponent } from './msg-group/msg-group.component'
 import { MessageHeaderComponent } from '../../../components/message-header/message-header.component';
 import { MsgInputBarComponent } from '../../../components/msg-input-bar/msg-input-bar.component';
@@ -31,14 +31,12 @@ export class FriendMessageComponent {
   startMsgId = input<string>();
   threadIdNum!: number
 
-  groupList!: MsgGroup[]
   grpStatArrSig !: Signal<MsgGroupStatus[]>
+  dispGrpList !: Signal<DisMsgGrp[]>
 
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
 
-  readonly sentMessageList = arraySignal<SentMessage>([])
-  readonly failedMessageList = arraySignal<SendingMessage>([])
   readonly title = signal('')
 
   private isBottom = false
@@ -79,8 +77,8 @@ export class FriendMessageComponent {
       threadIdNum,
       msgService: this.msgService
     })
-    this.groupList = grpFactory.groupList
     this.grpStatArrSig = grpFactory.grpStatArrSig
+    this.dispGrpList = grpFactory.dispGrpList
     this.grpFactory = grpFactory
     if (startMsgId) {
       console.info('set show specific id scroll group threshold')
@@ -128,19 +126,6 @@ export class FriendMessageComponent {
 
   onAfterSent() {
     this.afterMsgSent()
-  }
-
-  mergeSentMessages(list: Message[]) {
-    const dict = arrayToDictIndex(this.sentMessageList().
-      map((stMsg, index) => ({ dbId: stMsg.dbId, index })), 'dbId')
-    const filterDict: Record<number, true> = {}
-    list.forEach(item => {
-      const dictItem = dict[item.id]
-      if (dictItem) {
-        filterDict[dictItem.index] = true
-      }
-    })
-    this.sentMessageList.filter((_, index) => !filterDict[index])
   }
 
   checkAndBuildGroup() {

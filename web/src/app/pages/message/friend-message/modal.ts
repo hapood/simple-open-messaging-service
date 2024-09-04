@@ -9,10 +9,14 @@ export interface SentMessage {
 }
 export interface MsgGroup {
   id: string
-  list: DisplayMsg[],
   height: number,
   sIndex: number, //can not outof range
   eIndex: number //indicate msg's index in messageList and +1, maybe out of range
+}
+
+export interface DisMsgGrp {
+  id: string
+  list: DisplayMsg[]
 }
 
 export enum MsgGroupStatus {

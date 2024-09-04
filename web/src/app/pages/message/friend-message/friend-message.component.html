@@ -3,8 +3,8 @@
     <app-message-header [name]="title()"></app-message-header>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       <div class="msg-group-list" #groupPadding>
-        @for (status of grpStatArrSig(); track groupList[$index].id){
-        <app-msg-group [list]="groupList[$index].list" [nextStatus]="status" [nextHeight]="groupList[$index].height"
+        @for (dispGrp of dispGrpList(); track dispGrp.id){
+        <app-msg-group [list]="dispGrp.list" [nextStatus]="grpStatArrSig()[$index]"
           (onHeightChange)="onGroupHeightChange($event)" [index]="$index"></app-msg-group>
         }
       </div>

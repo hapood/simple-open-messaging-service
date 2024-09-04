@@ -23,7 +23,6 @@ export class MsgGroupComponent {
   readonly index = input<number>(-1)
   readonly list = input<DisplayMsg[]>([])
   readonly nextStatus = input<MsgGroupStatus>(MsgGroupStatus.GENERATING)
-  readonly nextHeight = input(0)
   MsgGroupStatus = MsgGroupStatus
   private groupObserver!: ResizeObserver;
 
@@ -51,9 +50,7 @@ export class MsgGroupComponent {
   checkHeightChange() {
     const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
     const latestheight = elm.offsetHeight
-    if (latestheight !== this.nextHeight()) {
-      this.onHeightChange.emit({ index: this.index(), height: latestheight })
-    }
+    this.onHeightChange.emit({ index: this.index(), height: latestheight })
   }
 
   ngAfterViewInit() {

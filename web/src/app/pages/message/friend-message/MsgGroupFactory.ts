@@ -7,10 +7,10 @@ import {
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
 import { UserProfile } from './msg-group/modal';
-import { MsgGroup, MsgGroupStatus, DisplayMsg } from './modal';
+import { MsgGroup, MsgGroupStatus, DisplayMsg, DisMsgGrp } from './modal';
 
-const TAKE_NUM = 10;
-const GROUP_NUM = TAKE_NUM;
+//must bigger than 0
+const GROUP_MSG_NUM = 10;
 
 export class GrpWrkFlwErr extends Error {
   grpIdx: number | undefined
@@ -52,16 +52,18 @@ type WorkflowGenerateResult = {
 type UpdateGroupParams = {
   index: number;
   grp: MsgGroup;
-  status: MsgGroupStatus
+  status: MsgGroupStatus;
+  dispList: DisplayMsg[]
 }
 
 
 export class MsgGroupFactory {
   private msgService: MsgService;
 
-  groupList: MsgGroup[] = []
   readonly grpStatArrSig = signal<MsgGroupStatus[]>([])
+  readonly dispGrpList = signal<DisMsgGrp[]>([])
 
+  _groupList: MsgGroup[] = []
   private msgThread: MsgThread | Record<string, undefined> = {}
   private profileRecord: Record<string, UserProfile> = {}
   private messageList: Message[] = [];
@@ -89,8 +91,9 @@ export class MsgGroupFactory {
 
   private _removeGrp(index: number) {
     this.cb.beforeGrpRemoved(index)
-    const list = this.groupList, statusArr = this.grpStatArrSig()
-    this.groupList = list.slice(0, index).concat(list.slice(index + 1))
+    const grpList = this._groupList, statusArr = this.grpStatArrSig(), dispGrpList = this.dispGrpList()
+    this._groupList = grpList.slice(0, index).concat(grpList.slice(index + 1))
+    this.dispGrpList.set(dispGrpList.slice(0, index).concat(dispGrpList.slice(index + 1)))
     this.grpStatArrSig.set(statusArr.slice(0, index).concat(statusArr.slice(index + 1)))
   }
 
@@ -110,7 +113,7 @@ export class MsgGroupFactory {
         const index = rList.length
         this._oldGrpMsgIdx += index
         this._newGrpMsgIdx += index
-        if (list.length < TAKE_NUM) {
+        if (list.length < params.take) {
           console.info('no more old message to load, set hasMoreOldMsg false')
           this.hasMoreOldMsg = false
         }
@@ -135,7 +138,7 @@ export class MsgGroupFactory {
           return
         }
         this.messageList = this.messageList.concat(list)
-        if (list.length < TAKE_NUM) {
+        if (list.length < params.take) {
           console.info('no more new message to load, set hasMoreNewMsg false')
           this.hasMoreNewMsg = false
         }
@@ -150,54 +153,70 @@ export class MsgGroupFactory {
 
   private _startToBldOldGrp(endIndex: number): Observable<WorkflowGenerateResult> {
     //endIndex message will not appeared in generated group
+    if (!this.hasMoreOldMsg && this._oldGrpMsgIdx < 0) {
+      throw new GrpWrkFlwErr('no more old message to build')
+    }
     const messageList = this.messageList
     console.info(`_startToBldOldGrp to index [${endIndex}]`)
-    let startIndex = endIndex - GROUP_NUM, takeNum = GROUP_NUM;
+    let startIndex = endIndex - GROUP_MSG_NUM, takeNum = GROUP_MSG_NUM;
     if (endIndex < 1) {
       this._loadMoreOldMsg()
-      throw new GrpWrkFlwErr('no more old message to take, turn to load')
+      throw new GrpWrkFlwErr('no more old message, quit workflow and turn to load')
     }
     if (startIndex < 0) {
       takeNum += startIndex;
       startIndex = 0;
     }
-    const topList = messageList.slice(startIndex, startIndex + takeNum)
+    let topList = messageList.slice(startIndex, startIndex + takeNum)
+    // for keeping group style stable, when has more unloaded old message, first message do not display
+    if (topList.length > 1) {
+      topList = topList.slice(1)
+      startIndex += 1
+    } else {
+      if (this.hasMoreOldMsg) {
+        this._loadMoreOldMsg()
+        throw new GrpWrkFlwErr('for keeping group style stable, must quit workflow and turn to load')
+      }
+    }
     this._oldGrpMsgIdx = startIndex - 1
-    const grpStatArrSig = this.grpStatArrSig
+    const grpStatArrSig = this.grpStatArrSig, dispGrpList = this.dispGrpList()
     grpStatArrSig.set([MsgGroupStatus.GENERATING].concat(grpStatArrSig()))
     const grp = {
       id: topList[0].id,
       sIndex: startIndex,
       eIndex: startIndex + topList.length,
-      list: [],
       height: 0
     }
-    this.groupList.unshift(grp)
+    this.dispGrpList.set([{ id: topList[0].id, list: [] as DisplayMsg[] }].concat(dispGrpList))
+    this._groupList.unshift(grp)
     return of({ drct: 0, grp: grp, list: topList })
   }
 
   private _startToBldNewGrp(startIndex: number): Observable<WorkflowGenerateResult> {
+    if (!this.hasMoreNewMsg && this._newGrpMsgIdx > this.messageList.length - 1) {
+      throw new GrpWrkFlwErr('no more new message to build')
+    }
     //startIndex message will not appeared in generated group
     console.info(`_startToBldNewGrp from index [${startIndex}]`)
     const messageList = this.messageList
-    const botList = messageList.slice(startIndex, startIndex + GROUP_NUM)
+    const botList = messageList.slice(startIndex, startIndex + GROUP_MSG_NUM)
     if (botList.length > 0) {
       const eIndex = startIndex + botList.length
       this._newGrpMsgIdx = eIndex
-      const grpStatArrSig = this.grpStatArrSig
+      const grpStatArrSig = this.grpStatArrSig, dispGrpList = this.dispGrpList()
       grpStatArrSig.set(grpStatArrSig().concat([MsgGroupStatus.GENERATING]))
       const grp = {
         id: botList[0].id,
         sIndex: startIndex,
         eIndex: eIndex,
-        list: [],
         height: 0
       }
-      this.groupList.push(grp)
+      this.dispGrpList.set(dispGrpList.concat([{ id: botList[0].id, list: [] as DisplayMsg[] }]))
+      this._groupList.push(grp)
       return of({ drct: 1, grp: grp, list: botList })
     } else {
       this._loadMoreNewMsg()
-      throw new GrpWrkFlwErr('no more new message to take, turn to load')
+      throw new GrpWrkFlwErr('no more new message, quit workflow and turn to load')
     }
   }
 
@@ -205,8 +224,8 @@ export class MsgGroupFactory {
     console.info(`calculating start position, derection[${derection}]`)
     const grpStatArrSig = this.grpStatArrSig();
     const lastGrpSts = grpStatArrSig[grpStatArrSig.length - 1]
-    const firstGrpSts = grpStatArrSig[0]
-    if (derection === 0 && firstGrpSts === MsgGroupStatus.GENERATING) {
+    const fstGrpSts = grpStatArrSig[0]
+    if (derection === 0 && fstGrpSts === MsgGroupStatus.GENERATING) {
       throw new GrpWrkFlwErr('one upside group generating, can not build more')
     } else if (derection === 1 && lastGrpSts === MsgGroupStatus.GENERATING) {
       throw new GrpWrkFlwErr('one downside group generating, can not build more')
@@ -214,23 +233,16 @@ export class MsgGroupFactory {
     if (grpStatArrSig.length === 0) {
       let startId = this._startMsgId
       if (startId) {
+        // when start form middle, both direction are generating
         const index = this.messageList.findIndex(msg => msg.id === this._startMsgId)
         return of({ drct: 0, index: index } as WorkflowPositionResult, { drct: 1, index: index } as WorkflowPositionResult)
       } else {
         return of({ drct: 0, index: this._oldGrpMsgIdx })
       }
     } else if (derection === 0) {
-      if (this.hasMoreOldMsg || (!this.hasMoreOldMsg && this._oldGrpMsgIdx > 0)) {
-        return of({ drct: 0, index: this._oldGrpMsgIdx })
-      } else {
-        throw new GrpWrkFlwErr('no more old message to build')
-      }
+      return of({ drct: 0, index: this._oldGrpMsgIdx })
     } else {
-      if (this.hasMoreNewMsg || (!this.hasMoreNewMsg && this._newGrpMsgIdx < this.messageList.length)) {
-        return of({ drct: 1, index: this._newGrpMsgIdx })
-      } else {
-        throw new GrpWrkFlwErr('no more new message to build')
-      }
+      return of({ drct: 1, index: this._newGrpMsgIdx })
     }
   }
 
@@ -245,22 +257,23 @@ export class MsgGroupFactory {
     if (oldestMsg) {
       console.info('delta query more old data')
       this._queryOldMsgs({
-        threadId: threadIdNum, take: TAKE_NUM, skip: 1,
+        threadId: threadIdNum, take: GROUP_MSG_NUM, skip: 1,
         lastId: oldestMsg.id, orderBy: 'desc'
       })
     }
     else {
+      //when first query old message, get one more item to keep group style stable
       if (startId) {
         console.info('first query old group with startId')
         this._queryOldMsgs({
-          threadId: threadIdNum, take: TAKE_NUM, skip: 1,
+          threadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 1,
           lastId: startId, orderBy: 'desc'
 
         })
       } else {
         console.info('first query old group')
         this._queryOldMsgs({
-          threadId: threadIdNum, take: TAKE_NUM, skip: 0,
+          threadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 0,
           orderBy: 'desc'
         })
       }
@@ -281,7 +294,7 @@ export class MsgGroupFactory {
       this._queryNewMsgs({
         threadId: threadIdNum,
         orderBy: 'asc',
-        take: TAKE_NUM,
+        take: GROUP_MSG_NUM,
         skip: 1,
         lastId: newestMsg.id
 
@@ -292,7 +305,7 @@ export class MsgGroupFactory {
         this._queryNewMsgs({
           threadId: threadIdNum,
           orderBy: 'asc',
-          take: TAKE_NUM,
+          take: GROUP_MSG_NUM,
           skip: 0,
           lastId: startId
         })
@@ -326,19 +339,17 @@ export class MsgGroupFactory {
   _procGenGrp({ drct, grp, list }: WorkflowGenerateResult): Observable<UpdateGroupParams> {
     let index = 0
     if (drct === 1) {
-      index = this.groupList.length - 1
+      index = this._groupList.length - 1
     }
     console.info(`process generating group[${index}]`)
     const { isFullfill, dispList, userIdSet } = this._buildDispDict(grp, list)
     if (isFullfill) {
-      grp.list = dispList
-      return of({ index, grp: grp, status: MsgGroupStatus.RENDERING })
+      return of({ index, grp: grp, status: MsgGroupStatus.RENDERING, dispList })
     } else {
       return from(
         this._qryMisProf(Array.from(userIdSet)).then(() => {
           const { dispList } = this._buildDispDict(grp, list, true)
-          grp.list = dispList
-          return { index, grp: grp, status: MsgGroupStatus.RENDERING }
+          return { index, grp: grp, status: MsgGroupStatus.RENDERING, dispList }
         }).catch(e => {
           throw new GrpWrkFlwErr('error occured while querying missing user profile', index)
         }))
@@ -387,12 +398,26 @@ export class MsgGroupFactory {
     return { dispList, isFullfill, userIdSet }
   }
 
-  private _undateGrp({ index, grp, status }: UpdateGroupParams) {
-    const groupList = this.groupList
-    const grpStatArrSig = this.grpStatArrSig()
-    groupList[index] = grp
-    this.grpStatArrSig.set(grpStatArrSig.slice(0, index).concat([status]).concat(grpStatArrSig.slice(index + 1)))
-    return of(index)
+  private _undateGrp({ index, grp, status, dispList }: UpdateGroupParams) {
+    const groupList = this._groupList, dispGrpList = this.dispGrpList()
+    if (groupList[index] === grp) {
+      const prevDipGrp = dispGrpList[index - 1], nextDipGrp = dispGrpList[index + 1];
+      //only new group will affect old group, old group never affect mew one
+      if (prevDipGrp !== undefined) {
+        const isDirty = false
+        const prevDipList = prevDipGrp.list
+        //TODO
+        if (isDirty) {
+          dispGrpList[index - 1] = { id: prevDipGrp.id, list: prevDipList }
+        }
+      }
+      const grpStatArrSig = this.grpStatArrSig()
+      this.dispGrpList.set(dispGrpList.slice(0, index).concat([{ id: grp.id, list: dispList }]).concat(dispGrpList.slice(index + 1)))
+      this.grpStatArrSig.set(grpStatArrSig.slice(0, index).concat([status]).concat(grpStatArrSig.slice(index + 1)))
+      return of(index)
+    } else {
+      throw new GrpWrkFlwErr('old group had been removed, quit workflow.')
+    }
   }
 
   startBuild(direction: 0 | 1) {
@@ -440,7 +465,7 @@ export class MsgGroupFactory {
           isDownsideHeightBegin = true
         }
       }
-      const grp = this.groupList[i]
+      const grp = this._groupList[i]
       if (!isUpsideHeightEnd) {
         upsideGroupHeight += grp.height
       } else if (isDownsideHeightBegin) {
@@ -463,11 +488,17 @@ export class MsgGroupFactory {
   }
 
   updateGrpheight({ index, height }: { index: number, height: number }) {
-    console.info(`group index [${index}] height changed from [${this.groupList[index].height}] to [${height}]`)
-    this.groupList[index].height = height
-    const statusArr = this.grpStatArrSig()
-    if (height > 0 && statusArr[index] === MsgGroupStatus.RENDERING) {
-      this.grpStatArrSig.set(statusArr.slice(0, index).concat([MsgGroupStatus.PREPARED]).concat(statusArr.slice(index + 1)))
+    const lastHeight = this._groupList[index].height
+    if (lastHeight !== height) {
+      console.info(`group index [${index}] height changed from [${lastHeight}] to [${height}]`)
+      const statusArr = this.grpStatArrSig()
+      const curStatus = statusArr[index]
+      if (curStatus === MsgGroupStatus.RENDERING) {
+        if (height > 0) {
+          this.grpStatArrSig.set(statusArr.slice(0, index).concat([MsgGroupStatus.PREPARED]).concat(statusArr.slice(index + 1)))
+        }
+      }
+      this._groupList[index].height = height
     }
   }
 
