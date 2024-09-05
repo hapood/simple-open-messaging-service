@@ -1,5 +1,5 @@
 import { Component, signal, input } from '@angular/core';
-import { UserLoginService } from '../../services/user-login.service'
+import { AuthService } from '../../services/auth.service'
 import { UserAvatarComponent, UserAvatarType } from '../../components/user-avatar/user-avatar.component';
 import { MaterialInputComponent } from '../material-input/material-input.component';
 import { MaterialButtonComponent } from "../material-button/material-button.component";
@@ -13,7 +13,7 @@ export enum LoginEvent {
   selector: 'app-login',
   standalone: true,
   imports: [UserAvatarComponent, MaterialInputComponent, MaterialButtonComponent],
-  providers: [UserLoginService],
+  providers: [AuthService],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss'
 })
@@ -24,7 +24,7 @@ export class LoginComponent {
   resp = signal('');
   UserAvatarType = UserAvatarType
 
-  constructor(private userLoginService: UserLoginService) {
+  constructor(private userLoginService: AuthService) {
   }
 
   login() {

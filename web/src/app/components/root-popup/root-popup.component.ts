@@ -19,7 +19,7 @@ export class RootPopupComponent {
   readonly popupType = signal<PopupType | undefined>(undefined)
   curSubject = signal<Subject<ComponentEventSubject<any>> | undefined>(undefined) //won't be undefined when template call it
   lastPopupType: PopupType | undefined
-  
+
   constructor(private popupService: PopupService) {
     popupService.subject.subscribe({
       next: (cmd) => {
@@ -38,6 +38,7 @@ export class RootPopupComponent {
   }
 
   clearLastSubject() {
+    this.popupService.cbSubject.next({ isShow: false, popupType: this.popupType() })
     const subj = this.curSubject()
     if (subj !== undefined) {
       subj.complete()

@@ -1,12 +1,12 @@
 import { Component, signal } from '@angular/core';
-import { UserLoginService } from '../../../services/user-login.service'
+import { AuthService } from '../../../services/auth.service'
 import { LoginComponent } from '../../../components/login/login.component';
 
 @Component({
   selector: 'app-login-page',
   standalone: true,
   imports: [LoginComponent],
-  providers: [UserLoginService],
+  providers: [AuthService],
   templateUrl: './login-page.component.html',
   styleUrl: './login-page.component.scss'
 })
