@@ -1,1 +1,3 @@
-<button class="pure-material-button-contained" (click)="onClick($event)"><ng-content></ng-content></button>
+<button [ngClass]="[type()===MaterialButtonType.OUTLINED?
+'matter-button-outlined':type()===MaterialButtonType.TEXT?
+  'matter-button-text':'matter-button-contained']" (click)="onClick($event)"><ng-content></ng-content></button>

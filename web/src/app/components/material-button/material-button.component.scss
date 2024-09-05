@@ -1,4 +1,6 @@
-.pure-material-button-contained {
+.matter-button-contained {
+  --matter-helper-theme: var(--matter-theme-rgb, var(--matter-primary-rgb, 33, 150, 243));
+  --matter-helper-ontheme: var(--matter-ontheme-rgb, var(--matter-onprimary-rgb, 255, 255, 255));
   position: relative;
   display: inline-block;
   box-sizing: border-box;
@@ -10,105 +12,265 @@
   vertical-align: middle;
   text-align: center;
   text-overflow: ellipsis;
-  text-transform: uppercase;
-  color: rgb(var(--pure-material-onprimary-rgb, 255, 255, 255));
-  background-color: rgb(var(--pure-material-primary-rgb, 33, 150, 243));
+  color: rgb(var(--matter-helper-ontheme));
+  background-color: rgb(var(--matter-helper-theme));
   box-shadow:
     0 3px 1px -2px rgba(0, 0, 0, 0.2),
     0 2px 2px 0 rgba(0, 0, 0, 0.14),
     0 1px 5px 0 rgba(0, 0, 0, 0.12);
-  font-family: var(--pure-material-font, "Roboto", "Segoe UI", BlinkMacSystemFont, system-ui, -apple-system);
+  font-family: var(--matter-font-family, "Roboto", "Segoe UI", BlinkMacSystemFont, system-ui, -apple-system);
   font-size: 14px;
   font-weight: 500;
   line-height: 36px;
-  overflow: hidden;
   outline: none;
   cursor: pointer;
   transition: box-shadow 0.2s;
 }
 
-.pure-material-button-contained::-moz-focus-inner {
+.matter-button-contained::-moz-focus-inner {
   border: none;
 }
 
-/* Overlay */
-.pure-material-button-contained::before {
+/* Highlight, Ripple */
+.matter-button-contained::before,
+.matter-button-contained::after {
   content: "";
   position: absolute;
   top: 0;
-  bottom: 0;
   left: 0;
   right: 0;
-  background-color: rgb(var(--pure-material-onprimary-rgb, 255, 255, 255));
+  bottom: 0;
+  border-radius: inherit;
   opacity: 0;
+}
+
+.matter-button-contained::before {
+  background-color: rgb(var(--matter-helper-ontheme));
   transition: opacity 0.2s;
 }
 
-/* Ripple */
-.pure-material-button-contained::after {
-  content: "";
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  border-radius: 50%;
-  padding: 50%;
-  width: 32px; /* Safari */
-  height: 32px; /* Safari */
-  background-color: rgb(var(--pure-material-onprimary-rgb, 255, 255, 255));
-  opacity: 0;
-  transform: translate(-50%, -50%) scale(1);
+.matter-button-contained::after {
+  background: radial-gradient(circle at center, currentColor 1%, transparent 1%) center/10000% 10000% no-repeat;
   transition:
     opacity 1s,
-    transform 0.5s;
+    background-size 0.5s;
 }
 
 /* Hover, Focus */
-.pure-material-button-contained:hover,
-.pure-material-button-contained:focus {
+.matter-button-contained:hover,
+.matter-button-contained:focus {
   box-shadow:
     0 2px 4px -1px rgba(0, 0, 0, 0.2),
     0 4px 5px 0 rgba(0, 0, 0, 0.14),
     0 1px 10px 0 rgba(0, 0, 0, 0.12);
 }
 
-.pure-material-button-contained:hover::before {
+.matter-button-contained:hover::before {
   opacity: 0.08;
 }
 
-.pure-material-button-contained:focus::before {
+.matter-button-contained:focus::before {
   opacity: 0.24;
 }
 
-.pure-material-button-contained:hover:focus::before {
-  opacity: 0.3;
+.matter-button-contained:hover:focus::before {
+  opacity: 0.32;
 }
 
 /* Active */
-.pure-material-button-contained:active {
+.matter-button-contained:active {
   box-shadow:
     0 5px 5px -3px rgba(0, 0, 0, 0.2),
     0 8px 10px 1px rgba(0, 0, 0, 0.14),
     0 3px 14px 2px rgba(0, 0, 0, 0.12);
 }
 
-.pure-material-button-contained:active::after {
+.matter-button-contained:active::after {
   opacity: 0.32;
-  transform: translate(-50%, -50%) scale(0);
-  transition: transform 0s;
+  background-size: 100% 100%;
+  transition: background-size 0s;
 }
 
 /* Disabled */
-.pure-material-button-contained:disabled {
-  color: rgba(var(--pure-material-onsurface-rgb, 0, 0, 0), 0.38);
-  background-color: rgba(var(--pure-material-onsurface-rgb, 0, 0, 0), 0.12);
+.matter-button-contained:disabled {
+  color: rgba(var(--matter-onsurface-rgb, 0, 0, 0), 0.38);
+  background-color: rgba(var(--matter-onsurface-rgb, 0, 0, 0), 0.12);
   box-shadow: none;
   cursor: initial;
 }
 
-.pure-material-button-contained:disabled::before {
+.matter-button-contained:disabled::before,
+.matter-button-contained:disabled::after {
   opacity: 0;
 }
 
-.pure-material-button-contained:disabled::after {
+.matter-button-outlined {
+  --matter-helper-theme: var(--matter-theme-rgb, var(--matter-primary-rgb, 33, 150, 243));
+  position: relative;
+  display: inline-block;
+  box-sizing: border-box;
+  margin: 0;
+  border: solid 1px; /* Safari */
+  border-color: rgba(var(--matter-onsurface-rgb, 0, 0, 0), 0.24);
+  border-radius: 4px;
+  padding: 0 16px;
+  min-width: 64px;
+  height: 36px;
+  vertical-align: middle;
+  text-align: center;
+  text-overflow: ellipsis;
+  color: rgb(var(--matter-helper-theme));
+  background-color: transparent;
+  font-family: var(--matter-font-family, "Roboto", "Segoe UI", BlinkMacSystemFont, system-ui, -apple-system);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 34px;
+  outline: none;
+  cursor: pointer;
+}
+
+.matter-button-outlined::-moz-focus-inner {
+  border: none;
+}
+
+/* Highlight, Ripple */
+.matter-button-outlined::before,
+.matter-button-outlined::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 3px;
+  opacity: 0;
+}
+
+.matter-button-outlined::before {
+  background-color: rgb(var(--matter-helper-theme));
+  transition: opacity 0.2s;
+}
+
+.matter-button-outlined::after {
+  background: radial-gradient(circle at center, currentColor 1%, transparent 1%) center/10000% 10000% no-repeat;
+  transition:
+    opacity 1s,
+    background-size 0.5s;
+}
+
+/* Hover, Focus */
+.matter-button-outlined:hover::before {
+  opacity: 0.04;
+}
+
+.matter-button-outlined:focus::before {
+  opacity: 0.12;
+}
+
+.matter-button-outlined:hover:focus::before {
+  opacity: 0.16;
+}
+
+/* Active */
+.matter-button-outlined:active::after {
+  opacity: 0.16;
+  background-size: 100% 100%;
+  transition: background-size 0s;
+}
+
+/* Disabled */
+.matter-button-outlined:disabled {
+  color: rgba(var(--matter-onsurface-rgb, 0, 0, 0), 0.38);
+  background-color: transparent;
+  cursor: initial;
+}
+
+.matter-button-outlined:disabled::before,
+.matter-button-outlined:disabled::after {
+  opacity: 0;
+}
+
+.matter-button-text {
+  --matter-helper-theme: var(--matter-theme-rgb, var(--matter-primary-rgb, 33, 150, 243));
+  position: relative;
+  display: inline-block;
+  box-sizing: border-box;
+  margin: 0;
+  border: none;
+  border-radius: 4px;
+  padding: 0 8px;
+  min-width: 64px;
+  height: 36px;
+  vertical-align: middle;
+  text-align: center;
+  text-overflow: ellipsis;
+  color: rgb(var(--matter-helper-theme));
+  background-color: transparent;
+  font-family: var(--matter-font-family, "Roboto", "Segoe UI", BlinkMacSystemFont, system-ui, -apple-system);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 36px;
+  outline: none;
+  cursor: pointer;
+}
+
+.matter-button-text::-moz-focus-inner {
+  border: none;
+}
+
+/* Highlight, Ripple */
+.matter-button-text::before,
+.matter-button-text::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: inherit;
+  opacity: 0;
+}
+
+.matter-button-text::before {
+  background-color: rgb(var(--matter-helper-theme));
+  transition: opacity 0.2s;
+}
+
+.matter-button-text::after {
+  background: radial-gradient(circle at center, currentColor 1%, transparent 1%) center/10000% 10000% no-repeat;
+  transition:
+    opacity 1s,
+    background-size 0.5s;
+}
+
+/* Hover, Focus */
+.matter-button-text:hover::before {
+  opacity: 0.04;
+}
+
+.matter-button-text:focus::before {
+  opacity: 0.12;
+}
+
+.matter-button-text:hover:focus::before {
+  opacity: 0.16;
+}
+
+/* Active */
+.matter-button-text:active::after {
+  opacity: 0.16;
+  background-size: 100% 100%;
+  transition: background-size 0s;
+}
+
+/* Disabled */
+.matter-button-text:disabled {
+  color: rgba(var(--matter-onsurface-rgb, 0, 0, 0), 0.38);
+  background-color: transparent;
+  cursor: initial;
+}
+
+.matter-button-text:disabled::before,
+.matter-button-text:disabled::after {
   opacity: 0;
 }

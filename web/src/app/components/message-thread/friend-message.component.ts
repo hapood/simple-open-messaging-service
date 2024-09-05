@@ -1,18 +1,20 @@
 import {
-  Component, ElementRef, signal, viewChild, input, Signal
+  Component, ElementRef, signal, viewChild, input, Signal,
+  effect
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
-import { Message } from '../../services/Interfaces';
-import { SendingMessage, SentMessage, MsgGroup, MsgGroupStatus, DisMsgGrp } from './modal';
-import { arrayToDictIndex } from '../../../utils'
+import { MsgGroupStatus, DisMsgGrp } from './modal';
 import { MsgGroupComponent } from '../msg-group/msg-group.component'
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { MsgInputBarComponent } from '../msg-input-bar/msg-input-bar.component';
 import { MsgGroupFactory } from './MsgGroupFactory';
 import { MsgService } from '../../services/message.service'
 
+enum MessageThreadStatus {
+  EMPTY, LOADING, SHOW
+}
 
 const LOAD_MORE_TRIGGER_OFFSET = 100;
 const UNREAD_INITIAL_PADDING_TOP = 100;
@@ -27,13 +29,14 @@ const SCROLL_HEIGHT_THRESHOLD = 1000;
 })
 export class MessageThreadComponent {
 
-  threadId = input<string>();
+  threadId = input<number>();
   startMsgId = input<string>();
-  threadIdNum!: number
 
+  status = signal(MessageThreadStatus.EMPTY)
   grpStatArrSig !: Signal<MsgGroupStatus[]>
-  dispGrpList !: Signal<DisMsgGrp[]>
-
+  dispGrpList!: Signal<DisMsgGrp[]>
+  MessageThreadStatus = MessageThreadStatus
+  
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
 
@@ -44,22 +47,28 @@ export class MessageThreadComponent {
   private threshold: { up: number, down: number } | undefined = undefined
   private _startMsgId: string | undefined
   private _scrollerElm!: HTMLDivElement
-  private _scrollerInfo !: { clientHeight: number, disToBot: number };
+  private _scrollerInfo!: { clientHeight: number, disToBot: number };
   private grpFactory!: MsgGroupFactory
+  private _lastThreadId: number | undefined
 
   constructor(private wsService: WebsocketService, private msgService: MsgService) {
     this.wsService.eventSubject.subscribe({
       next: (msg) => { console.info('on message', msg) }
     })
+
+    effect(() => {
+      const threadIdNum = this.threadId(), startMsgId = this.startMsgId()
+      if (this._lastThreadId !== threadIdNum) {
+        this._lastThreadId = threadIdNum
+      }
+      if (threadIdNum) {
+        this.initialize(threadIdNum, startMsgId)
+      }
+    })
   }
 
-  ngOnInit() {
-    const startMsgId = this.startMsgId()
+  initialize(threadIdNum: number, startMsgId: string | undefined) {
     this._startMsgId = startMsgId
-    const threadIdStr = this.threadId()
-
-    let threadIdNum = parseInt(threadIdStr as string)
-    this.threadIdNum = threadIdNum
     const grpFactory = new MsgGroupFactory({
       cb: {
         onThreadInit: ({ title }) => {

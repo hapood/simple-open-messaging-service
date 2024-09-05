@@ -1,4 +1,5 @@
 import { Component, input, signal } from '@angular/core';
+import { NgClass } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { MsgService } from '../../services/message.service'
 import { MsgThread, User } from '../../services/Interfaces'
@@ -6,7 +7,7 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
 @Component({
   selector: 'app-thread-list',
   standalone: true,
-  imports: [UserAvatarComponent],
+  imports: [UserAvatarComponent, NgClass],
   templateUrl: './thread-list.component.html',
   styleUrl: './thread-list.component.scss'
 })
@@ -15,6 +16,8 @@ export class ThreadListComponent {
   readonly profile = input<User>()
 
   readonly threadList = signal<MsgThread[]>([])
+  readonly selectedId = signal<number | undefined>(undefined)
+
   userInfoDict = signal<Record<string, User>>({})
 
   constructor(private msgService: MsgService, private route: ActivatedRoute, private router: Router) { }
@@ -36,6 +39,7 @@ export class ThreadListComponent {
   }
 
   onThreadClick(thread: MsgThread) {
+    this.selectedId.set(thread.id)
     this.route.url.subscribe(urls => {
       let replaceUrl = true
       if (urls.length === 0) {

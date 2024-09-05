@@ -15,7 +15,8 @@ import { MessageThreadComponent } from '../../components/message-thread/friend-m
 
 export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
-
+  curThreadId = signal<number | undefined>(undefined)
+  
   constructor(private msgService: MsgService) { }
 
   ngOnInit() {
@@ -23,8 +24,14 @@ export class HomeComponent {
   }
 
   getMyInfo() {
-    return this.msgService.getMyProfile().subscribe(profile => {
-      this.profile.set(profile)
+    return this.msgService.getMyProfile().subscribe({
+      next: profile => {
+        this.profile.set(profile)
+      },
+      error: (err) => {
+
+        console.error(err)
+      }
     })
   }
 }

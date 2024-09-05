@@ -2,13 +2,16 @@
   <div class="msg-container">
     <app-message-header [name]="title()"></app-message-header>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
+      @if(status()===MessageThreadStatus.EMPTY){
+      <div>Empty</div>
+      }@else{
       <div class="msg-group-list" #groupPadding>
         @for (dispGrp of dispGrpList(); track dispGrp.id){
         <app-msg-group [list]="dispGrp.list" [nextStatus]="grpStatArrSig()[$index]"
           (onHeightChange)="onGroupHeightChange($event)" [index]="$index"></app-msg-group>
         }
-      </div>
+      </div>}
     </div>
-    <app-msg-input-bar (onAfterSent)="onAfterSent()" [threadId]="threadIdNum"></app-msg-input-bar>
+    <app-msg-input-bar (onAfterSent)="onAfterSent()" [threadId]="threadId()"></app-msg-input-bar>
   </div>
 </div>

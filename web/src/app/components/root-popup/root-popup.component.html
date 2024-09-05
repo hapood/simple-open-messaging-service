@@ -1,0 +1,7 @@
+<app-material-modal [isShow]="popupType()!==undefined">
+  @switch (popupType()) {
+  @case(PopupType.LOGIN){
+  <app-login [subject]="curSubject()"></app-login>
+  }
+  }
+</app-material-modal>
