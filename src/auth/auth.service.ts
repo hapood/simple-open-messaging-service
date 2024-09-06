@@ -5,20 +5,41 @@ import { User as UserModel } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
-
-const refreshTokenDict: Record<number, string[]> = {}
 @Injectable()
 export class AuthService {
+  private readonly _refreshTokenDict: Record<string, number> = {}
+  private _tokenRecordList: { userId: number, date: number, token: string }[] = []
+  private _timer: NodeJS.Timeout | undefined
   constructor(private userService: UserService, private prisma: PrismaService,
-    private jwtService: JwtService) { }
+    private jwtService: JwtService) {
+    this._timer = setInterval(() => {
+      const now = new Date().getTime(), tokenRecordList = this._tokenRecordList, refreshTokenDict = this._tokenRecordList
+      let i = 0
+      for (; i < tokenRecordList.length; i++) {
+        let item = tokenRecordList[i]
+        if (now - item.date > 15 * 24 * 60 * 60 * 1000) {
+          //too old
+          delete refreshTokenDict[item.token]
+          continue
+        } else {
+          break
+        }
+      }
+      this._tokenRecordList = tokenRecordList.slice(i)
+    }, 1000 * 60 * 60 * 24)
+  }
+  
+  async onModuleDestroy() {
+    clearInterval(this._timer)
+  }
 
-  async validateUser(uniqName: string, password: string): Promise<any> {
+  async validateUser(uniqName: string, password: string): Promise<UserModel | undefined> {
     const user = await this.userService.findOne({ uniqName });
     const match = await argon2.verify(user.password, password);
     if (match === true) {
       return user;
     }
-    return null;
+    return undefined;
   }
 
   async hashStr(str: string) {
@@ -37,28 +58,19 @@ export class AuthService {
   }
 
   async bindRefreshTokenToUser(userId: number, refreshToken: string) {
-    let list = refreshTokenDict[userId];
-    if (list === undefined) {
-      list = refreshTokenDict[userId] = []
-    }
-    list.push(refreshToken)
+    this._refreshTokenDict[refreshToken] = userId
+    this._tokenRecordList.push({ userId, date: new Date().getTime(), token: refreshToken })
     return true
   }
 
   checkRefreshTokenValid(userId: number, refreshToken: string) {
-    let token = refreshTokenDict[userId]?.find(token => token === refreshToken)
-    return token !== undefined
+    return this._refreshTokenDict[refreshToken] === userId
   }
 
   removeRefreshToken(userId: number, refreshToken: string) {
-    let list = refreshTokenDict[userId]
+    let list = this._refreshTokenDict[userId]
     if (list) {
-      const newList = refreshTokenDict[userId].filter(token => token !== refreshToken)
-      if (list.length > 0) {
-        refreshTokenDict[userId] = newList
-      } else {
-        delete refreshTokenDict[userId]
-      }
+      delete this._refreshTokenDict[refreshToken]
     }
   }
 

@@ -3,16 +3,6 @@ import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse
 import { BehaviorSubject, Observable, catchError, switchMap, filter, take } from 'rxjs';
 import { AuthService } from './services/auth.service';
 import { PopupService, PopupType } from './services/popup.service';
-// export const jwtInterceptor: HttpInterceptorFn = (req, next) => {
-
-//   req = req.clone({
-//     setHeaders: {
-//       Authorization: 'Bearer ' + token
-//     }
-//   });
-//   return next(req);
-// };
-
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
   private isRefreshing = false;
@@ -28,8 +18,7 @@ export class AuthInterceptor implements HttpInterceptor {
     }
 
     return next.handle(authReq).pipe(catchError(error => {
-      if (error instanceof HttpErrorResponse &&
-        this.popupService.getCurrentPopupType() !== PopupType.LOGIN && error.status === 401) {
+      if (error instanceof HttpErrorResponse && error.status === 401) {
         return this.handle401Error(authReq, next);
       }
 
