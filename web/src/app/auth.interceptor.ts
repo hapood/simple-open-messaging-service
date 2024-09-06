@@ -1,12 +1,13 @@
 import { Injectable } from '@angular/core';
 import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse, } from '@angular/common/http';
-import { BehaviorSubject, Observable, catchError, switchMap, filter, take } from 'rxjs';
+import { Subject, Observable, catchError, switchMap, filter, take } from 'rxjs';
 import { AuthService } from './services/auth.service';
 import { PopupService, PopupType } from './services/popup.service';
+import { LoginEvent } from './components/login/login.component';
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
   private isRefreshing = false;
-  private refreshTokenSubject: BehaviorSubject<any> = new BehaviorSubject<any>(null);
+  private newTokenSubject: Subject<any> = new Subject<string>();
 
   constructor(private authService: AuthService, private popupService: PopupService) { }
 
@@ -21,7 +22,6 @@ export class AuthInterceptor implements HttpInterceptor {
       if (error instanceof HttpErrorResponse && error.status === 401) {
         return this.handle401Error(authReq, next);
       }
-
       throw error;
     }));
   }
@@ -29,30 +29,36 @@ export class AuthInterceptor implements HttpInterceptor {
   private handle401Error(request: HttpRequest<any>, next: HttpHandler) {
     if (!this.isRefreshing) {
       this.isRefreshing = true;
-      this.refreshTokenSubject.next(null);
 
       const token = this.authService.getRefreshToken();
 
       if (token)
-        return this.authService.refreshToken(token).pipe(
+        return this.authService.renewAccessToken().pipe(
           switchMap((newToken: any) => {
             this.isRefreshing = false;
-
-            this.authService.saveToken(newToken.accessToken);
-            this.refreshTokenSubject.next(newToken.accessToken);
-
-            return next.handle(this.addTokenHeader(request, newToken.accessToken));
+            this.newTokenSubject.next(newToken)
+            return next.handle(this.addTokenHeader(request, newToken));
           }),
           catchError((err) => {
             this.isRefreshing = false;
-            this.authService.logOut();
+            this.authService.clearToken();
+            let subject = new Subject<{ event: LoginEvent }>();
+            subject.subscribe(() => {
+              const newToken = this.authService.getToken() as string
+              this.newTokenSubject.next(newToken)
+              return next.handle(this.addTokenHeader(request, newToken));
+            })
+            this.popupService.subject.next({
+              isShow: true,
+              popupType: PopupType.LOGIN,
+              subject
+            })
             throw err;
           })
         );
     }
 
-    return this.refreshTokenSubject.pipe(
-      filter(token => token !== null),
+    return this.newTokenSubject.pipe(
       take(1),
       switchMap((token) => next.handle(this.addTokenHeader(request, token)))
     );

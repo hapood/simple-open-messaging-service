@@ -1,12 +1,11 @@
 import { Component } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { MsgService } from '../../../services/message.service'
 import { User } from '../../../services/Interfaces'
 
 @Component({
   selector: 'app-my-friends',
   standalone: true,
-  imports: [FormsModule],
+  imports: [],
   templateUrl: './my-friends.component.html',
   styleUrl: './my-friends.component.scss'
 })

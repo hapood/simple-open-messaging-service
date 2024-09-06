@@ -10,7 +10,7 @@
     <app-material-input type="password" [(text)]="password" placeholder="Password" />
   </div>
   <div class="error">{{resp()}}</div>
-  <div>keep me logged in</div>
+  <app-material-checkbox [(checked)]="isKeepLogin">keep me logged in</app-material-checkbox>
   <app-material-button (click)="login()">Login</app-material-button>
   <app-material-button [styleType]="MaterialButtonType.TEXT" (click)="register()">Register</app-material-button>
 </div>

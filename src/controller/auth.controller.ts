@@ -18,25 +18,9 @@ export class AuthController {
   @UseGuards(LocalAuthGuard)
   @Post('auth/login')
   async login(@Request() req) {
-    return await this.authService.login(req.user as UserModel)
-  }
-
-  @UseGuards(JwtRefreshGuard)
-  @Post('auth/renew')
-  async refreshTokens(@Request() req) {
     const authInfo: LoginAuthInfo = req.user;
     if (authInfo.status === 0) {
-      const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
-      const isValid = this.authService.checkRefreshTokenValid(userId, refreshToken)
-      this.authService.removeRefreshToken(userId, refreshToken)
-      if (isValid) {
-        const [access_token, refresh_token] = await this.authService.getTokens(userId);
-        return {
-          code: 0,
-          message: 'success',
-          data: { access_token, refresh_token }
-        }
-      }
+      return await this.authService.login(req.user as UserModel)
     } else {
       if (authInfo.bannedUntil !== undefined) {
         return {
@@ -50,6 +34,41 @@ export class AuthController {
         return {
           code: 1,
           message: 'error username/password'
+        }
+      }
+    }
+  }
+
+  @UseGuards(JwtRefreshGuard)
+  @Post('auth/renew-access')
+  async renewaccessTokens(@Request() req) {
+    const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
+    const isValid = this.authService.checkRefreshTokenValid(userId, refreshToken)
+    this.authService.removeRefreshToken(userId, refreshToken)
+    if (isValid) {
+      return {
+        code: 0,
+        message: 'success',
+        data: {
+          access_token: this.authService.getAccessToken(userId)
+        }
+      }
+    }
+  }
+
+  @UseGuards(JwtRefreshGuard)
+  @Post('auth/renew-refresh')
+  async renewRefreshTokens(@Request() req) {
+    const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
+    const isValid = this.authService.checkRefreshTokenValid(userId, refreshToken)
+    this.authService.removeRefreshToken(userId, refreshToken)
+    if (isValid) {
+      return {
+        code: 0,
+        message: 'success',
+        data: {
+          access_token: this.authService.getAccessToken(userId),
+          refresh_token: this.authService.getRefreshToken(userId)
         }
       }
     }

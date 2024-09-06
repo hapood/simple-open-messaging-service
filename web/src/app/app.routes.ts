@@ -1,5 +1,4 @@
 import { Routes } from '@angular/router';
-import { UserManageComponent } from './pages/server-manage/user-manage/user-manage.component';
 import { LoginPageComponent } from './pages/auth/login/login-page.component';
 import { MyFriendsComponent } from './pages/relation/my-firends/my-friends.component';
 import { HomeComponent } from './pages/home/home.component';
@@ -13,7 +12,6 @@ export const routes: Routes = [
   { path: "thread/:threadId", component: HomeComponent },
   { path: "nav", component: PageNavgatorComponent },
   { path: "login", component: LoginPageComponent },
-  { path: "user-manage", component: UserManageComponent, },
   { path: "my-friends", component: MyFriendsComponent, },
   { path: "friend-message/:threadId", component: MessageThreadComponent, },
   { path: "friend-message/:threadId/:startMsgId", component: MessageThreadComponent, },

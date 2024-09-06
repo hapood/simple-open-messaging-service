@@ -6,14 +6,15 @@ import { MaterialButtonComponent, MaterialButtonType } from "../material-button/
 import { Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../../utils'
 import { HttpErrorResponse } from '@angular/common/http'
-
+import { MaterialCheckboxComponent } from '../material-checkbox/material-checkbox.component';
 export enum LoginEvent {
   SUCCESS, INVALID, ERROR
 }
 @Component({
   selector: 'app-login',
   standalone: true,
-  imports: [UserAvatarComponent, MaterialInputComponent, MaterialButtonComponent],
+  imports: [UserAvatarComponent, MaterialInputComponent, MaterialCheckboxComponent,
+    MaterialButtonComponent],
   providers: [AuthService],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss'
@@ -25,15 +26,16 @@ export class LoginComponent {
   resp = signal('');
   UserAvatarType = UserAvatarType
   MaterialButtonType = MaterialButtonType
+  isKeepLogin = signal(true)
 
-  constructor(private userLoginService: AuthService) {
+  constructor(private authService: AuthService) {
   }
 
   login() {
-    this.userLoginService.login({ username: this.uniqName(), password: this.password() })
+    this.authService.login({ username: this.uniqName(), password: this.password() })
       .subscribe({
         next: res => {
-          this.resp.set(res.access_token); localStorage.setItem('token', res.access_token)
+          this.authService.setToken(res.access_token, res.refresh_token, this.isKeepLogin())
           this.subject()?.next({
             event: LoginEvent.SUCCESS,
           })
@@ -50,7 +52,7 @@ export class LoginComponent {
   }
 
   register() {
-    this.userLoginService.register({ username: this.uniqName(), password: this.password() })
+    this.authService.register({ username: this.uniqName(), password: this.password() })
       .subscribe({
         next: res => {
           this.resp.set(res.access_token); localStorage.setItem('token', res.access_token)

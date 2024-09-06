@@ -5,6 +5,7 @@ import { User as UserModel } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { PrismaService } from '../prisma.service';
 import { Prisma } from '@prisma/client';
+
 @Injectable()
 export class AuthService {
   private readonly _refreshTokenDict: Record<string, number> = {}
@@ -28,7 +29,7 @@ export class AuthService {
       this._tokenRecordList = tokenRecordList.slice(i)
     }, 1000 * 60 * 60 * 24)
   }
-  
+
   async onModuleDestroy() {
     clearInterval(this._timer)
   }
@@ -47,10 +48,9 @@ export class AuthService {
   }
 
   async login(user: UserModel) {
-    const [access_token, refreshToken] = await this.getTokens(user.id);
-    await this.bindRefreshTokenToUser(user.id, refreshToken);
     return {
-      access_token, refreshToken
+      access_token: this.getAccessToken(user.id),
+      refresh_token: this.getRefreshToken(user.id)
     };
   }
 
@@ -86,39 +86,38 @@ export class AuthService {
       const newUser = await prisma.user.create({
         data,
       });
-      const [access_token, refresh_token] = await this.getTokens(newUser.id)
       return {
         id: newUser.id,
         uniqName: newUser.uniqName,
-        access_token,
-        refresh_token
+        access_token: this.getAccessToken(newUser.id),
+        refresh_token: this.getRefreshToken(newUser.id)
       }
     })
   }
 
-  async getTokens(userId: number) {
-    const [accessToken, refreshToken] = await Promise.all([
-      this.jwtService.signAsync(
-        {
-          sub: userId,
-        },
-        {
-          expiresIn: '15m',
-        },
-      ),
-      this.jwtService.signAsync(
+  getAccessToken(userId: number) {
+    return this.jwtService.sign(
+      {
+        sub: userId,
+      },
+      {
+        expiresIn: '15m',
+      },
+    )
+  }
+
+  getRefreshToken(userId: number) {
+    const refreshToken =
+      this.jwtService.sign(
         {
           sub: userId,
         },
         {
           expiresIn: '14d',
         },
-      ),
-    ]);
+      )
     this.bindRefreshTokenToUser(userId, refreshToken)
-    return [
-      accessToken,
-      refreshToken,
-    ]
+    return refreshToken
+
   }
 }
