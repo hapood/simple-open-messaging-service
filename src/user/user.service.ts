@@ -1,10 +1,11 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, ContentType, Prisma, Message, UserChatThread, ChatThreadType, Friend } from '@prisma/client';
-
+import { User, Prisma, ChatThreadType, Friend } from '@prisma/client';
+import { AuthService } from 'src/auth/auth.service';
 @Injectable()
 export class UserService implements OnModuleInit {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService, private auth: AuthService) { }
+
   async onModuleInit() {
     if (!await this.findOne({ uniqName: "hapood" })) {
       console.log("add initial user happod.")
@@ -16,6 +17,7 @@ export class UserService implements OnModuleInit {
       })
     }
   }
+
   async createFriend(hostUserId: number, friendUserId: number) {
     const newData1 = {
       hostUserId: hostUserId,
@@ -25,23 +27,26 @@ export class UserService implements OnModuleInit {
       hostUserId: friendUserId,
       friendUserId: hostUserId
     }
-    await this.prisma.friend.createMany({ data: [newData1, newData2] })
-    const threadData = await this.prisma.chatThread.create({
-      data: {
-        type: ChatThreadType.SINGLE_CHAT, info: {
-          userId1: hostUserId,
-          userId2: friendUserId
+
+    await this.prisma.$transaction(async (prisma) => {
+      prisma.friend.createMany({ data: [newData1, newData2] })
+      const threadData = await this.prisma.chatThread.create({
+        data: {
+          type: ChatThreadType.SINGLE_CHAT, info: {
+            userId1: hostUserId,
+            userId2: friendUserId
+          }
         }
-      }
+      })
+      prisma.userChatThread.createMany({
+        data: [{
+          threadId: threadData.id, userId: hostUserId
+        }, {
+          threadId: threadData.id, userId: friendUserId
+        }]
+      })
     })
 
-    const res = await this.prisma.userChatThread.createMany({
-      data: [{
-        threadId: threadData.id, userId: hostUserId
-      }, {
-        threadId: threadData.id, userId: friendUserId
-      }]
-    });
     return true
   }
 
@@ -63,16 +68,6 @@ export class UserService implements OnModuleInit {
       }
     });
   }
-  async findUserThread(
-    params: Prisma.UserChatThreadWhereInput,
-  ): Promise<UserChatThread | null> {
-    return await this.prisma.userChatThread.findFirst({
-      where: params,
-      include: {
-        threadItem: true
-      }
-    });
-  }
   async getUserList(params: {
     skip?: number;
     take?: number;
@@ -90,10 +85,23 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  async createUser(data: Prisma.UserCreateInput): Promise<User> {
-    return this.prisma.user.create({
-      data,
-    });
+  async createUser(data: Prisma.UserCreateInput) {
+    return await this.prisma.$transaction(async (prisma) => {
+      const user = await prisma.user.findFirst({
+        where: { uniqName: data.uniqName },
+      });
+      if (user !== undefined) {
+        new ConflictException(`User ${data.uniqName} already exists`);
+      }
+      data.password = await this.auth.hashStr(data.password)
+      const newUser = await prisma.user.create({
+        data,
+      });
+      return {
+        id: newUser.id,
+        uniqName: newUser.uniqName
+      }
+    })
   }
 
   async updateUser(params: {
@@ -113,32 +121,6 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  async sendMessageToThread(userId: number, threadId: number, content: string, type: ContentType) {
-    const userChat = await this.prisma.userChatThread.findFirst({
-      where: {
-        userId, threadId
-      }
-    });
-    if (userChat) {
-      const newData = {
-        content,
-        contentType: type,
-        threadId,
-        creator: userId
-      }
-      const data = await this.prisma.message.create({ data: newData });
-      return {
-        id: data.id,
-        createdAt: data.createdAt
-      }
-    }
-  }
-
-  async queryMessages(params: Prisma.MessageFindManyArgs): Promise<Message[]> {
-    const res = await this.prisma.message.findMany(params);
-    return res
-  }
-
   async getFriendList(userId: number) {
     return this.prisma.friend.findMany({
       where: {
@@ -147,14 +129,4 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  async getChatThreadList(userId: number): Promise<UserChatThread[]> {
-    return await this.prisma.userChatThread.findMany({
-      where: {
-        userId: userId
-      },
-      include: {
-        threadItem: true
-      }
-    });
-  }
 }
