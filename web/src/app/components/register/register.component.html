@@ -1,1 +1,14 @@
-<p>register works!</p>
+<div class="register-wrapper">
+  <div class="avatar-hero">
+    <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
+  </div>
+  <div class="title">Login to SOMS</div>
+  <div class="input-line">
+    <app-material-input [(text)]="uniqName" placeholder="Username"></app-material-input>
+  </div>
+  <div class="input-line">
+    <app-material-input type="password" [(text)]="password" placeholder="Password" />
+  </div>
+  <app-material-button (click)="login()">Login</app-material-button>
+  <div class="error">{{resp()}}</div>
+</div>

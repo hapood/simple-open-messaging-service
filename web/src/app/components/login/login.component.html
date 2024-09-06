@@ -9,6 +9,8 @@
   <div class="input-line">
     <app-material-input type="password" [(text)]="password" placeholder="Password" />
   </div>
+  <div class="error">{{resp()}}</div>
+  <div>keep me logged in</div>
   <app-material-button (click)="login()">Login</app-material-button>
-  <div>resp:{{resp()}}</div>
+  <app-material-button [styleType]="MaterialButtonType.TEXT" (click)="register()">Register</app-material-button>
 </div>

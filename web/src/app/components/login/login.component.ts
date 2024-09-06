@@ -2,7 +2,7 @@ import { Component, signal, input } from '@angular/core';
 import { AuthService } from '../../services/auth.service'
 import { UserAvatarComponent, UserAvatarType } from '../../components/user-avatar/user-avatar.component';
 import { MaterialInputComponent } from '../material-input/material-input.component';
-import { MaterialButtonComponent } from "../material-button/material-button.component";
+import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
 import { Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../../utils'
 import { HttpErrorResponse } from '@angular/common/http'
@@ -24,6 +24,7 @@ export class LoginComponent {
   password = signal('');
   resp = signal('');
   UserAvatarType = UserAvatarType
+  MaterialButtonType = MaterialButtonType
 
   constructor(private userLoginService: AuthService) {
   }
@@ -46,5 +47,26 @@ export class LoginComponent {
           }
         }
       })
+  }
+
+  register() {
+    this.userLoginService.register({ username: this.uniqName(), password: this.password() })
+      .subscribe({
+        next: res => {
+          this.resp.set(res.access_token); localStorage.setItem('token', res.access_token)
+          this.subject()?.next({
+            event: LoginEvent.SUCCESS,
+          })
+        },
+        error: (err) => {
+          if (err instanceof HttpErrorResponse && err.status === 401) {
+            this.resp.set('error username/password')
+          } else {
+            console.error(err)
+            this.resp.set('error occured')
+          }
+        }
+      })
+
   }
 }

@@ -34,4 +34,8 @@ export class AuthService {
   logOut() {
     localStorage.setItem("token", '');
   }
+
+  register(params: { username: string, password: string }) {
+    return this.http.post<{ access_token: string }>(`${this.prefix}/auth/login`, params)
+  }
 }

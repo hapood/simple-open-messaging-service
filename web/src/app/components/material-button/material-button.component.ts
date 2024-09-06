@@ -15,7 +15,7 @@ export enum MaterialButtonType {
 
 export class MaterialButtonComponent {
   MaterialButtonType = MaterialButtonType
-  type = input(MaterialButtonType.CONTAINTED)
+  styleType = input(MaterialButtonType.CONTAINTED)
   @Output() click = new EventEmitter();
 
   onClick(event: MouseEvent) {
