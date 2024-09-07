@@ -1,7 +1,8 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, EMPTY, of, tap } from 'rxjs';
+import { BehaviorSubject, EMPTY, of, Subject, tap } from 'rxjs';
 import { PopupService, PopupType } from './popup.service';
+import { LoginEvent } from '../components/login/login.component';
 
 const TOKEN_CREATE_TIME = "token_create_time",
   REFRESH_TOKEN = 'refresh_token', SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000,
@@ -47,9 +48,19 @@ export class AuthService {
   }
 
   redoLoginAuth() {
+    const subject = new Subject<{ event: LoginEvent }>()
     this.popupService.subject.next({
       isShow: true,
       popupType: PopupType.LOGIN,
+      subject
+    })
+    subject.subscribe(({ event }) => {
+      if (event === LoginEvent.SUCCESS) {
+        this.popupService.subject.next({
+          isShow: false,
+          popupType: undefined
+        })
+      }
     })
   }
 

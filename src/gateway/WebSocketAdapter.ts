@@ -81,6 +81,7 @@ class AuthWsAdapter
  * to know who is connected to each socket.
  */
 class Client {
+  
   constructor(public readonly ws: WebSocket, public readonly claims: any) { }
 
   public send(message: Object) {

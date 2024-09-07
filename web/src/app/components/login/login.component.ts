@@ -5,7 +5,6 @@ import { MaterialInputComponent } from '../material-input/material-input.compone
 import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
 import { Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../../utils'
-import { HttpErrorResponse } from '@angular/common/http'
 import { MaterialCheckboxComponent } from '../material-checkbox/material-checkbox.component';
 export enum LoginEvent {
   SUCCESS, INVALID, ERROR, JUMP_TO_REGISTER
@@ -28,11 +27,16 @@ export class LoginComponent {
   UserAvatarType = UserAvatarType
   MaterialButtonType = MaterialButtonType
   isKeepLogin = signal(true)
+  isLoging = signal(false)
 
   constructor(private authService: AuthService) {
   }
 
   login() {
+    if (this.isLoging()) {
+      return
+    }
+    this.isLoging.set(true)
     this.authService.login({ uniqName: this.uniqName(), password: this.password(), isKeep: this.isKeepLogin() })
       .subscribe({
         next: ({ status, message }) => {
@@ -53,6 +57,9 @@ export class LoginComponent {
           this.subject()?.next({
             event: LoginEvent.ERROR,
           })
+        }
+        , complete: () => {
+          this.isLoging.set(false)
         }
       })
   }

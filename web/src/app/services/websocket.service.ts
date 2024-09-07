@@ -8,7 +8,6 @@ import { AuthService } from './auth.service';
 export class WebsocketService {
   private readonly url = 'ws://127.0.0.1:3000'
   private _ws: WebSocket | null = null
-  private _token: string | undefined
   private _isConning = false
   readonly eventSubject = new Subject<MessageEvent>();
 

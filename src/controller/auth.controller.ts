@@ -88,4 +88,8 @@ export class AuthController {
     return true
   }
 
+  @Post('auth/register')
+  async register(@Request() req){
+    
+  }
 }
