@@ -27,19 +27,19 @@ export class MsgInputBarComponent {
   }
 
   clearTextInput() {
-    const elm = (this.userInput() as any).nativeElement as HTMLDivElement
+    const elm = this.userInput()!.nativeElement
     elm.innerHTML = ''
   }
 
   getInputText() {
-    const elm = (this.userInput() as any).nativeElement as HTMLDivElement
+    const elm = this.userInput()!.nativeElement
     return elm.innerText;
   }
 
   onClickIptWrp(event: Event) {
     event.stopPropagation()
     console.log(event)
-    const elm = (this.userInput() as any).nativeElement as HTMLDivElement
+    const elm = this.userInput()!.nativeElement
     elm.focus()
   }
 
@@ -53,7 +53,7 @@ export class MsgInputBarComponent {
       this.send()
     }
   }
-  
+
   send(): void {
     let threadId = this.threadId()
     if (threadId) {

@@ -1,23 +1,28 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { catchError, of, switchMap, tap } from 'rxjs';
+import { BehaviorSubject, EMPTY, of, tap } from 'rxjs';
+import { PopupService, PopupType } from './popup.service';
 
 const TOKEN_CREATE_TIME = "token_create_time",
-  REFRESH_TOKEN = 'refresh_token', ACCESS_TOKEN = 'access_token',
-  SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000
+  REFRESH_TOKEN = 'refresh_token', SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000,
+  IS_KEEP_LOGIN = "is_keep_login"
+
+type RefreshTokenRes = { status: number, message: string, data?: { access_token: string, resfresh_token: string } }
+type AccessTokenRes = { status: number, message: string, data?: { access_token: string } }
 
 @Injectable({
   providedIn: 'root'
 })
 export class AuthService {
   prefix = 'http://127.0.0.1:3000'
-  private _token = sessionStorage.getItem(ACCESS_TOKEN) || localStorage.getItem(ACCESS_TOKEN)
   private _tokenCreateTime = localStorage.getItem(TOKEN_CREATE_TIME)
-  private _isKeep = false
-  private _isRefresh = false
+  private _isKeep = localStorage.getItem(IS_KEEP_LOGIN) === '1' || false
+  private _isReReTk = false
+  private _isReACTk = false
   private _timerHandler: ReturnType<typeof setTimeout> | undefined = undefined
+  public acTkSub = new BehaviorSubject<string | undefined>(undefined)
 
-  constructor(private http: HttpClient) {
+  constructor(private http: HttpClient, private popupService: PopupService) {
     const tkCrtTm = this._tokenCreateTime
     if (tkCrtTm !== null) {
       const leftTime = new Date().getTime() - parseInt(tkCrtTm)
@@ -25,59 +30,106 @@ export class AuthService {
         this.setTimerToRefresh(leftTime)
       }
     }
+    this.renewAccessToken()
   }
 
-  login(params: { username: string, password: string }) {
-    return this.http.post<{ access_token: string, refresh_token: string }>
-      (`${this.prefix}/auth/login`, params)
+  login(params: { uniqName: string, password: string, isKeep: boolean }) {
+    return this.http.post<RefreshTokenRes>
+      (`${this.prefix}/auth/login`, params).pipe(tap((res) => {
+        if (res.status === 0) {
+          const data = res.data
+          this._isKeep = params.isKeep
+          this.clearToken()
+          this.setAcToken(data!.resfresh_token)
+          this.setReToken(data!.resfresh_token, params.isKeep)
+        }
+      }))
+  }
+
+  redoLoginAuth() {
+    this.popupService.subject.next({
+      isShow: true,
+      popupType: PopupType.LOGIN,
+    })
   }
 
   renewAccessToken() {
-    return this.http.post<{ access_token: string }>
-      (`${this.prefix}/auth/renew-access`, {
-        refreshToken: this.getRefreshToken()
-      }).pipe(tap(res => {
-        this.setToken(res.access_token)
-      }), switchMap(res => res.access_token))
+    if (this._isReACTk === true) {
+      return
+    }
+    this.acTkSub.next(undefined)
+    const rfToken = this.getRefreshToken()
+    if (rfToken === undefined) {
+      this.redoLoginAuth()
+    } else {
+      this.http.post<AccessTokenRes>
+        (`${this.prefix}/auth/renew-access`, {
+          refreshToken: rfToken
+        }).subscribe({
+          next: ({ status, message, data }) => {
+            if (status === 0) {
+              this.setAcToken(data!.access_token)
+            } else {
+              console.info(message)
+              this.redoLoginAuth()
+            }
+          }, complete: () => {
+            this._isReACTk = false
+          }
+        })
+    }
   }
 
   renewRefreshToken() {
-    if (this._isRefresh !== true) {
-      return this.http.post<{ access_token: string, refresh_token: string }>
-        (`${this.prefix}/auth/renew-refresh`, {
-          refreshToken: this.getRefreshToken()
-        })
-        .pipe(tap(res => {
-          this.setToken(res.access_token, res.refresh_token)
-        }), catchError(err => {
-          console.error(err)
-          this.clearToken()
-          this._isRefresh = false
-          return of(null)
-        }))
+    if (this._isReReTk === true) {
+      return
+    }
+    this.acTkSub.next(undefined)
+    const rfToken = this.getRefreshToken()
+    if (rfToken === undefined) {
+      this.redoLoginAuth()
     } else {
-      return of(null)
+      this.http.post<RefreshTokenRes>
+        (`${this.prefix}/auth/renew-refresh`, {
+          refreshToken: rfToken
+        }).subscribe({
+          next: ({ status, message, data }) => {
+            if (status === 0) {
+              this.setAcToken(data!.resfresh_token)
+              this.setReToken(data!.resfresh_token)
+            } else {
+              console.info(message)
+              this.redoLoginAuth()
+            }
+          }, complete: () => {
+            this._isReReTk = false
+          }
+        }
+        )
     }
   }
 
-  setToken(accessToken: string, refreshToken?: string, isKeep?: boolean) {
+  setAcToken(accessToken: string) {
+    this.acTkSub.next(accessToken)
+  }
+
+  setReToken(refreshToken: string, isKeep?: boolean) {
     this.clearToken()
-    this._token = accessToken
-    if (isKeep || this._isKeep === true) {
+    if (isKeep === true) {
       this._isKeep = true
-      localStorage.setItem(ACCESS_TOKEN, accessToken)
-      if (refreshToken !== undefined) {
-        this.setTimerToRefresh(SEVEN_DAY_TIME)
-        localStorage.setItem(REFRESH_TOKEN, refreshToken)
-        localStorage.setItem(TOKEN_CREATE_TIME, new Date().getTime().toString())
-      }
-    } else {
-      sessionStorage.setItem(ACCESS_TOKEN, accessToken)
-      if (refreshToken !== undefined) {
-        this.setTimerToRefresh(SEVEN_DAY_TIME)
-        sessionStorage.setItem(REFRESH_TOKEN, refreshToken)
-      }
+      localStorage.setItem(IS_KEEP_LOGIN, '1')
+    } else if (isKeep === false) {
+      this._isKeep = false
+      localStorage.removeItem(IS_KEEP_LOGIN)
     }
+    const curIsKeep = this._isKeep
+    if (curIsKeep) {
+      localStorage.setItem(REFRESH_TOKEN, refreshToken)
+      localStorage.setItem(TOKEN_CREATE_TIME, new Date().getTime().toString())
+    } else {
+      sessionStorage.setItem(REFRESH_TOKEN, refreshToken)
+    }
+    this.setTimerToRefresh(SEVEN_DAY_TIME)
   }
 
   setTimerToRefresh(leftTime: number) {
@@ -85,22 +137,17 @@ export class AuthService {
       clearTimeout(this._timerHandler)
     }
     this._timerHandler = setTimeout(() => {
-      this.renewRefreshToken().subscribe()
+      this.renewRefreshToken()
     }, leftTime)
   }
 
-  getToken() {
-    return this._token
-  }
-
-  getRefreshToken(): string | null {
-    return sessionStorage.getItem(REFRESH_TOKEN) || localStorage.getItem(REFRESH_TOKEN)
+  getRefreshToken(): string | undefined {
+    return sessionStorage.getItem(REFRESH_TOKEN) || localStorage.getItem(REFRESH_TOKEN) || undefined
   }
 
   clearToken() {
-    sessionStorage.removeItem(ACCESS_TOKEN)
+    this.acTkSub.next(undefined)
     sessionStorage.removeItem(REFRESH_TOKEN)
-    localStorage.removeItem(ACCESS_TOKEN)
     localStorage.removeItem(TOKEN_CREATE_TIME)
     if (this._timerHandler !== undefined) {
       clearTimeout(this._timerHandler)
@@ -108,7 +155,18 @@ export class AuthService {
     }
   }
 
-  register(params: { username: string, password: string }) {
-    return this.http.post<{ access_token: string }>(`${this.prefix}/auth/login`, params)
+  logout() {
+    const refreshToken = this.getRefreshToken()
+    if (refreshToken) {
+      this.clearToken()
+      return this.http.post<{ access_token: string }>(`${this.prefix}/auth/logout`, {
+        refreshToken
+      })
+    }
+    return of(EMPTY)
+  }
+
+  register(params: { uniqName: string, password: string }) {
+    return this.http.post<{ id: number, uniqName: string }>(`${this.prefix}/auth/register`, params)
   }
 }

@@ -20,7 +20,7 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
 
   constructor(private authService: AuthService) {
     super({
-      usernameField: 'username',
+      usernameField: 'uniqName',
       passwordField: 'password',
       passReqToCallback: true
     });

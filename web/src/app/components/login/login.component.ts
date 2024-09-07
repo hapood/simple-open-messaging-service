@@ -8,8 +8,9 @@ import { ComponentEventSubject } from '../../../utils'
 import { HttpErrorResponse } from '@angular/common/http'
 import { MaterialCheckboxComponent } from '../material-checkbox/material-checkbox.component';
 export enum LoginEvent {
-  SUCCESS, INVALID, ERROR
+  SUCCESS, INVALID, ERROR, JUMP_TO_REGISTER
 }
+
 @Component({
   selector: 'app-login',
   standalone: true,
@@ -32,43 +33,33 @@ export class LoginComponent {
   }
 
   login() {
-    this.authService.login({ username: this.uniqName(), password: this.password() })
+    this.authService.login({ uniqName: this.uniqName(), password: this.password(), isKeep: this.isKeepLogin() })
       .subscribe({
-        next: res => {
-          this.authService.setToken(res.access_token, res.refresh_token, this.isKeepLogin())
-          this.subject()?.next({
-            event: LoginEvent.SUCCESS,
-          })
+        next: ({ status, message }) => {
+          if (status === 0) {
+            this.subject()?.next({
+              event: LoginEvent.SUCCESS,
+            })
+          } else {
+            this.resp.set(message)
+            this.subject()?.next({
+              event: LoginEvent.INVALID,
+            })
+          }
         },
         error: (err) => {
-          if (err instanceof HttpErrorResponse && err.status === 401) {
-            this.resp.set('error username/password')
-          } else {
-            console.error(err)
-            this.resp.set('error occured')
-          }
+          console.error(err)
+          this.resp.set('error occured')
+          this.subject()?.next({
+            event: LoginEvent.ERROR,
+          })
         }
       })
   }
 
-  register() {
-    this.authService.register({ username: this.uniqName(), password: this.password() })
-      .subscribe({
-        next: res => {
-          this.resp.set(res.access_token); localStorage.setItem('token', res.access_token)
-          this.subject()?.next({
-            event: LoginEvent.SUCCESS,
-          })
-        },
-        error: (err) => {
-          if (err instanceof HttpErrorResponse && err.status === 401) {
-            this.resp.set('error username/password')
-          } else {
-            console.error(err)
-            this.resp.set('error occured')
-          }
-        }
-      })
-
+  jumpToRegister() {
+    this.subject()?.next({
+      event: LoginEvent.JUMP_TO_REGISTER,
+    })
   }
 }

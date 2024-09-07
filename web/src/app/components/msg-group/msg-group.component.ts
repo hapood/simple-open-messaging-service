@@ -47,13 +47,13 @@ export class MsgGroupComponent {
   }
 
   checkHeightChange() {
-    const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
+    const elm = this.groupWrapper()!.nativeElement;
     const latestheight = elm.offsetHeight
     this.onHeightChange.emit({ index: this.index(), height: latestheight })
   }
 
   ngAfterViewInit() {
-    const elm = (this.groupWrapper() as any).nativeElement as HTMLDivElement;
+    const elm = this.groupWrapper()!.nativeElement;
     this.groupObserver = new ResizeObserver(entries => {
       this.checkHeightChange()
     })

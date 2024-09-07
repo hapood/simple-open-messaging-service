@@ -36,7 +36,7 @@ export class MessageThreadComponent {
   grpStatArrSig !: Signal<MsgGroupStatus[]>
   dispGrpList!: Signal<DisMsgGrp[]>
   MessageThreadStatus = MessageThreadStatus
-  
+
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
 
@@ -106,7 +106,7 @@ export class MessageThreadComponent {
   }
 
   ngAfterViewInit() {
-    const elm = (this.msgScroller() as any).nativeElement as HTMLDivElement;
+    const elm = this.msgScroller()!.nativeElement;
     this._scrollerElm = elm;
     this.scrollObserver = new ResizeObserver(entries => {
       const { clientHeight, scrollTop, scrollHeight } = elm
@@ -184,7 +184,7 @@ export class MessageThreadComponent {
     //calc height and scrollTop 
     console.info('upside and downside are both ready, show it!')
     const { scrollTop, clientHeight } = this._scrollerElm
-    const elm = (this.groupPadding() as any).nativeElement
+    const elm = this.groupPadding()!.nativeElement
     elm.style.height = newScrollHeight + 'px';
     if (this.threshold === undefined) {
       console.info('delta setting scrollHeight')

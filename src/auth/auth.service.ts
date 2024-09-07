@@ -89,8 +89,6 @@ export class AuthService {
       return {
         id: newUser.id,
         uniqName: newUser.uniqName,
-        access_token: this.getAccessToken(newUser.id),
-        refresh_token: this.getRefreshToken(newUser.id)
       }
     })
   }

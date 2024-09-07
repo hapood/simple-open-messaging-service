@@ -17,7 +17,7 @@ export class MaterialInputComponent {
   pattern = input<string | RegExp>('')
   type = input<'text' | 'password'>('text')
   isFocus = signal(false)
-  
+
   readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
 
   onFocus() {
@@ -29,7 +29,7 @@ export class MaterialInputComponent {
   }
 
   focusInput(event: Event) {
-    const elm = (this.userInput() as any).nativeElement as HTMLDivElement
+    const elm = this.userInput()!.nativeElement
     elm.focus()
     // event.stopPropagation()
   }

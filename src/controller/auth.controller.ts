@@ -7,7 +7,6 @@ import {
 import { User as UserModel } from '@prisma/client';
 import { LocalAuthGuard } from '../auth/local-auth.guard';
 import { AuthService } from '../auth/auth.service';
-import { JwtRefreshGuard } from 'src/auth/jwt-refresh.guard';
 import { LoginAuthInfo } from 'src/auth/local.strategy';
 @Controller()
 export class AuthController {
@@ -39,7 +38,6 @@ export class AuthController {
     }
   }
 
-  @UseGuards(JwtRefreshGuard)
   @Post('auth/renew-access')
   async renewaccessTokens(@Request() req) {
     const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
@@ -53,10 +51,14 @@ export class AuthController {
           access_token: this.authService.getAccessToken(userId)
         }
       }
+    } else {
+      return {
+        code: 1,
+        message: 'refresh_token is invalid',
+      }
     }
   }
 
-  @UseGuards(JwtRefreshGuard)
   @Post('auth/renew-refresh')
   async renewRefreshTokens(@Request() req) {
     const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
@@ -71,10 +73,14 @@ export class AuthController {
           refresh_token: this.authService.getRefreshToken(userId)
         }
       }
+    } else {
+      return {
+        code: 1,
+        message: 'refresh_token is invalid',
+      }
     }
   }
 
-  @UseGuards(JwtRefreshGuard)
   @Post('auth/logout')
   async logout(@Request() req) {
     const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
