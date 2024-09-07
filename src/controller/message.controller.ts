@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { MessageService } from '../message/message.service';
-import { User as UserModel, Friend as FriendModel, ContentType, Prisma, UserChatThread } from '@prisma/client';
+import { User as UserModel, Friend as FriendModel, ContentType, Prisma, UserMessageThread } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { toJson } from './utils';
 
@@ -24,15 +24,15 @@ export class MessageController {
   async queryThreadInfo(
     @Request() req,
     @Body() params: { threadId: number },
-  ): Promise<UserChatThread> {
+  ): Promise<UserMessageThread> {
     return await this.messageService.findUserThread({ userId: req.user.userId, threadId: params.threadId })
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('get-thread-list')
-  async getChatThreadList(@Request() req,
+  async getMsgThreadList(@Request() req,
   ) {
-    return await this.messageService.getChatThreadList(req.user.userId)
+    return await this.messageService.getMsgThreadList(req.user.userId)
   }
 
   @UseGuards(JwtAuthGuard)
@@ -43,7 +43,7 @@ export class MessageController {
     if (!params.content) {
       return
     }
-    const list = await this.messageService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_STRING)
+    const list = await this.messageService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_TEXT)
     return toJson(list)
   }
 

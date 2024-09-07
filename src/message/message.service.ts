@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, ContentType, Prisma, Message, UserChatThread } from '@prisma/client';
+import { User, ContentType, Prisma, Message, UserMessageThread } from '@prisma/client';
 import { AuthService } from 'src/auth/auth.service';
 @Injectable()
 export class MessageService implements OnModuleInit {
@@ -10,9 +10,9 @@ export class MessageService implements OnModuleInit {
   }
 
   async findUserThread(
-    params: Prisma.UserChatThreadWhereInput,
-  ): Promise<UserChatThread | null> {
-    return await this.prisma.userChatThread.findFirst({
+    params: Prisma.UserMessageThreadWhereInput,
+  ): Promise<UserMessageThread | null> {
+    return await this.prisma.UserMessageThread.findFirst({
       where: params,
       include: {
         threadItem: true
@@ -20,12 +20,12 @@ export class MessageService implements OnModuleInit {
     });
   }
   async sendMessageToThread(userId: number, threadId: number, content: string, type: ContentType) {
-    const userChat = await this.prisma.userChatThread.findFirst({
+    const userMsg = await this.prisma.UserMessageThread.findFirst({
       where: {
         userId, threadId
       }
     });
-    if (userChat) {
+    if (userMsg) {
       const newData = {
         content,
         contentType: type,
@@ -45,8 +45,8 @@ export class MessageService implements OnModuleInit {
     return res
   }
 
-  async getChatThreadList(userId: number): Promise<UserChatThread[]> {
-    return await this.prisma.userChatThread.findMany({
+  async getMsgThreadList(userId: number): Promise<UserMessageThread[]> {
+    return await this.prisma.UserMessageThread.findMany({
       where: {
         userId: userId
       },

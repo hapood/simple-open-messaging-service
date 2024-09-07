@@ -1,48 +1,45 @@
 import { Injectable, OnModuleInit, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, Prisma, ChatThreadType, Friend } from '@prisma/client';
+import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
 import { AuthService } from 'src/auth/auth.service';
 @Injectable()
 export class UserService implements OnModuleInit {
   constructor(private prisma: PrismaService, private auth: AuthService) { }
 
   async onModuleInit() {
-    if (!await this.findOne({ uniqName: "hapood" })) {
-      console.log("add initial user happod.")
-      this.createUser({
-        uniqName: "hapood",
-        password: "512512",
-        isForeigner: false,
-        domain: "qifa.io"
-      })
-    }
   }
 
-  async createFriend(hostUserId: number, friendUserId: number) {
-    const newData1 = {
-      hostUserId: hostUserId,
-      friendUserId: friendUserId
-    }
-    const newData2 = {
-      hostUserId: friendUserId,
-      friendUserId: hostUserId
-    }
-
+  async makeFriendRequest(hostUserId: number, friendUserId: number) {
     await this.prisma.$transaction(async (prisma) => {
-      prisma.friend.createMany({ data: [newData1, newData2] })
-      const threadData = await this.prisma.chatThread.create({
+      prisma.userMessageThread.createMany({
+        data: [{
+          threadId: null, userId: hostUserId, toObjId: friendUserId,
+          toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
+        }, {
+          threadId: null, userId: friendUserId, toObjId: hostUserId,
+          toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
+        }]
+      })
+    })
+
+    return true
+  }
+
+  async acceptFriendRequest(hostUserId: number, friendUserId: number) {
+    await this.prisma.$transaction(async (prisma) => {
+      const threadData = await this.prisma.messageThread.create({
         data: {
-          type: ChatThreadType.SINGLE_CHAT, info: {
+          type: MessageThreadType.P2P_MESSAGE, info: {
             userId1: hostUserId,
             userId2: friendUserId
           }
         }
       })
-      prisma.userChatThread.createMany({
+      prisma.userMessageThread.updateMany({
         data: [{
-          threadId: threadData.id, userId: hostUserId
+          threadId: threadData.id, userId: hostUserId, status: UserMessageThreadStatus.APPROVED
         }, {
-          threadId: threadData.id, userId: friendUserId
+          threadId: threadData.id, userId: friendUserId, status: UserMessageThreadStatus.APPROVED
         }]
       })
     })

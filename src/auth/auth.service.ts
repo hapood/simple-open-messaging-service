@@ -36,7 +36,7 @@ export class AuthService {
 
   async validateUser(uniqName: string, password: string): Promise<UserModel | undefined> {
     const user = await this.userService.findOne({ uniqName });
-    const match = await argon2.verify(user.password, password);
+    const match = await argon2.verify(user.hashPwd, password);
     if (match === true) {
       return user;
     }
@@ -82,7 +82,7 @@ export class AuthService {
       if (user !== undefined) {
         new ConflictException(`User ${data.uniqName} already exists`);
       }
-      data.password = await this.hashStr(data.password)
+      data.hashPwd = await this.hashStr(data.password)
       const newUser = await prisma.user.create({
         data,
       });
