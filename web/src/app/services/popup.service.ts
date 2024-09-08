@@ -1,18 +1,14 @@
 import { Injectable, signal } from '@angular/core';
-import { Subject } from 'rxjs';
+import { BehaviorSubject, Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../utils'
 
 export enum PopupType { LOGIN }
 
 interface Command {
+  caller: string,
   isShow: boolean,
   popupType: PopupType | undefined,
   subject?: Subject<ComponentEventSubject<any>>
-}
-
-interface CbCommand {
-  isShow: boolean,
-  popupType: PopupType | undefined,
 }
 
 @Injectable({
@@ -20,12 +16,12 @@ interface CbCommand {
 })
 export class PopupService {
   private _popupType: PopupType | undefined
-
-  subject = new Subject<Command>()
-  cbSubject = new Subject<CbCommand>()
+  subject = new BehaviorSubject<Command>({ caller: 'self-init', isShow: false, popupType: undefined })
   constructor() {
-    this.cbSubject.subscribe({
+    console.log('init!!!!')
+    this.subject.subscribe({
       next: (cmd) => {
+        console.log('12',cmd)
         if (cmd.isShow === true) {
           this._popupType = cmd.popupType
         } else {

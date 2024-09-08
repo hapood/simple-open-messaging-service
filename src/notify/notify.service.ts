@@ -4,7 +4,7 @@ import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prism
 import { AuthService } from 'src/auth/auth.service';
 
 @Injectable()
-export class UserService implements OnModuleInit {
+export class NotifyService implements OnModuleInit {
   constructor(private prisma: PrismaService, private auth: AuthService) { }
 
   async onModuleInit() {

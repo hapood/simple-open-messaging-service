@@ -87,9 +87,4 @@ export class AuthController {
     this.authService.removeRefreshToken(userId, refreshToken)
     return true
   }
-
-  @Post('auth/register')
-  async register(@Request() req){
-    
-  }
 }

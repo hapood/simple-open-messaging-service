@@ -7,7 +7,7 @@ import { AuthModule } from './auth/auth.module';
 import { GatewayModule } from './gateway/gateway.module';
 
 @Module({
-  imports: [UserModule, AuthModule, GatewayModule, MessageModule],
+  imports: [AuthModule, UserModule, GatewayModule, MessageModule],
   controllers: [MessageController, AuthController],
   providers: [],
 })

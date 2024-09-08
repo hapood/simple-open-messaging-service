@@ -6,7 +6,8 @@ import { StandardResponse } from 'src/model';
 
 @Injectable()
 export class UserService implements OnModuleInit {
-  constructor(private prisma: PrismaService, private auth: AuthService) { }
+  constructor(private prisma: PrismaService,
+    private auth: AuthService) { }
 
   async onModuleInit() {
   }

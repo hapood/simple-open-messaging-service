@@ -73,6 +73,7 @@ model UserMessageThread {
   status     UserMessageThreadStatus
   toObjType  MessageThreadType
   toObjId    Int
+  reqMessage String
   threadId   Int
   threadItem MessageThread           @relation(fields: [threadId], references: [id])
   createdAt  DateTime                @default(now())

@@ -22,8 +22,8 @@ export class WebsocketService {
     return this.authService.acTkSub.pipe(filter(token => token !== undefined),
       take(1)
     ).subscribe({
-      next: (token => {
-        let ws = new WebSocket(this.url, [token]);
+      next: (({ nextToken }) => {
+        let ws = new WebSocket(this.url, [nextToken]);
         ws.onerror = (error) => {
           this._ws = null
           console.error(error)

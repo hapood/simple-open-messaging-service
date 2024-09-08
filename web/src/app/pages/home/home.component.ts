@@ -4,11 +4,12 @@ import { HomeHeaderComponent } from '../../components/home-header/home-header.co
 import { MsgService } from '../../services/message.service'
 import { ThreadListComponent } from '../../components/thread-list/thread-list.component';
 import { MessageThreadComponent } from '../../components/message-thread/friend-message.component';
+import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
 
 @Component({
   selector: 'app-home',
   standalone: true,
-  imports: [HomeHeaderComponent, ThreadListComponent, MessageThreadComponent],
+  imports: [HomeHeaderComponent, ThreadListComponent, MessageThreadComponent, RootPopupComponent],
   templateUrl: './home.component.html',
   styleUrl: './home.component.scss'
 })
@@ -16,7 +17,7 @@ import { MessageThreadComponent } from '../../components/message-thread/friend-m
 export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
   curThreadId = signal<number | undefined>(undefined)
-  
+
   constructor(private msgService: MsgService) { }
 
   ngOnInit() {

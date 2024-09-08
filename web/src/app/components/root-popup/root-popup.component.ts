@@ -5,6 +5,7 @@ import { LoginComponent } from '../login/login.component';
 import { LoginPageComponent } from "../../pages/auth/login/login-page.component";
 import { Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../../utils'
+import { AuthService } from '../../services/auth.service';
 
 @Component({
   selector: 'app-root-popup',
@@ -20,25 +21,40 @@ export class RootPopupComponent {
   curSubject = signal<Subject<ComponentEventSubject<any>> | undefined>(undefined) //won't be undefined when template call it
   lastPopupType: PopupType | undefined
 
-  constructor(private popupService: PopupService) {
-    popupService.subject.subscribe({
+  constructor(private popupService: PopupService, private authService: AuthService) {
+    this.popupService.subject.subscribe({
       next: (cmd) => {
+        console.log(111, cmd)
         if (cmd.isShow === true) {
-          this.clearLastSubject()
-          this.curSubject.set(cmd.subject)
-          if (cmd.popupType === PopupType.LOGIN) {
-            this.popupType.set(PopupType.LOGIN)
+          console.log(this.popupType() === PopupType.LOGIN)
+          if (this.popupType() === PopupType.LOGIN) {
+            cmd.subject?.complete()
+            cmd.subject?.unsubscribe()
+          } else {
+            this.clearLastSubject()
+            this.curSubject.set(cmd.subject)
+            if (cmd.popupType === PopupType.LOGIN) {
+              this.popupType.set(PopupType.LOGIN)
+            }
           }
         } else {
           this.clearLastSubject();
           this.curSubject.set(undefined)
+          this.popupType.set(undefined)
         }
-      }
+      },
+      complete: (() => {
+        console.log('complete')
+      })
     })
   }
 
+  ngOnInit() {
+    this.authService.setPopupService(this.popupService)
+    this.authService.renewAccessToken()
+  }
+
   clearLastSubject() {
-    this.popupService.cbSubject.next({ isShow: false, popupType: this.popupType() })
     const subj = this.curSubject()
     if (subj !== undefined) {
       subj.complete()

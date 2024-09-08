@@ -1,8 +1,8 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, EMPTY, of, Subject, tap } from 'rxjs';
-import { PopupService, PopupType } from './popup.service';
 import { LoginEvent } from '../components/login/login.component';
+import { PopupService, PopupType } from './popup.service';
 
 const TOKEN_CREATE_TIME = "token_create_time",
   REFRESH_TOKEN = 'refresh_token', SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000,
@@ -12,7 +12,7 @@ type RefreshTokenRes = { status: number, message: string, data?: { access_token:
 type AccessTokenRes = { status: number, message: string, data?: { access_token: string } }
 
 @Injectable({
-  providedIn: 'root'
+  providedIn: 'root',
 })
 export class AuthService {
   prefix = 'http://127.0.0.1:3000'
@@ -21,9 +21,11 @@ export class AuthService {
   private _isReReTk = false
   private _isReACTk = false
   private _timerHandler: ReturnType<typeof setTimeout> | undefined = undefined
-  public acTkSub = new BehaviorSubject<string | undefined>(undefined)
+  private _lastAccTok: string | undefined
+  public acTkSub = new BehaviorSubject<{ lastToken: string | undefined, nextToken: string } | undefined>(undefined)
+  private _popupService!: PopupService
 
-  constructor(private http: HttpClient, private popupService: PopupService) {
+  constructor(private http: HttpClient) {
     const tkCrtTm = this._tokenCreateTime
     if (tkCrtTm !== null) {
       const leftTime = new Date().getTime() - parseInt(tkCrtTm)
@@ -31,32 +33,38 @@ export class AuthService {
         this.setTimerToRefresh(leftTime)
       }
     }
-    this.renewAccessToken()
+  }
+
+  public setPopupService(service: PopupService) {
+    this._popupService = service
   }
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
     return this.http.post<RefreshTokenRes>
-      (`${this.prefix}/auth/login`, params).pipe(tap((res) => {
+      (`${this.prefix}/auth/login`, params, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
         if (res.status === 0) {
           const data = res.data
           this._isKeep = params.isKeep
           this.clearToken()
-          this.setAcToken(data!.resfresh_token)
           this.setReToken(data!.resfresh_token, params.isKeep)
+          this.setAcToken(data!.resfresh_token)
         }
       }))
   }
 
   redoLoginAuth() {
+    this.clearToken()
     const subject = new Subject<{ event: LoginEvent }>()
-    this.popupService.subject.next({
+    this._popupService.subject.next({
+      caller: 'auth-service',
       isShow: true,
       popupType: PopupType.LOGIN,
       subject
     })
     subject.subscribe(({ event }) => {
       if (event === LoginEvent.SUCCESS) {
-        this.popupService.subject.next({
+        this._popupService.subject.next({
+          caller: 'auth-service',
           isShow: false,
           popupType: undefined
         })
@@ -76,7 +84,7 @@ export class AuthService {
       this.http.post<AccessTokenRes>
         (`${this.prefix}/auth/renew-access`, {
           refreshToken: rfToken
-        }).subscribe({
+        }, { 'headers': { Authorization: 'public' } }).subscribe({
           next: ({ status, message, data }) => {
             if (status === 0) {
               this.setAcToken(data!.access_token)
@@ -103,7 +111,7 @@ export class AuthService {
       this.http.post<RefreshTokenRes>
         (`${this.prefix}/auth/renew-refresh`, {
           refreshToken: rfToken
-        }).subscribe({
+        }, { 'headers': { Authorization: 'public' } }).subscribe({
           next: ({ status, message, data }) => {
             if (status === 0) {
               this.setAcToken(data!.resfresh_token)
@@ -121,7 +129,8 @@ export class AuthService {
   }
 
   setAcToken(accessToken: string) {
-    this.acTkSub.next(accessToken)
+    this.acTkSub.next({ lastToken: this._lastAccTok, nextToken: accessToken })
+    this._lastAccTok = accessToken
   }
 
   setReToken(refreshToken: string, isKeep?: boolean) {
@@ -157,6 +166,7 @@ export class AuthService {
   }
 
   clearToken() {
+    this._lastAccTok = undefined
     this.acTkSub.next(undefined)
     sessionStorage.removeItem(REFRESH_TOKEN)
     localStorage.removeItem(TOKEN_CREATE_TIME)
@@ -172,12 +182,13 @@ export class AuthService {
       this.clearToken()
       return this.http.post<{ access_token: string }>(`${this.prefix}/auth/logout`, {
         refreshToken
-      })
+      }, { 'headers': { Authorization: 'public' } })
     }
     return of(EMPTY)
   }
 
   register(params: { uniqName: string, password: string }) {
-    return this.http.post<{ id: number, uniqName: string }>(`${this.prefix}/auth/register`, params)
+    return this.http.post<{ id: number, uniqName: string }>(`${this.prefix}/auth/register`,
+      params, { 'headers': { Authorization: 'public' } })
   }
 }

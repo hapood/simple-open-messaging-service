@@ -1,11 +1,10 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { User, ContentType, Prisma, Message, UserMessageThread } from '@prisma/client';
-import { AuthService } from 'src/auth/auth.service';
 import { StandardResponse } from 'src/model';
 @Injectable()
 export class MessageService implements OnModuleInit {
-  constructor(private prisma: PrismaService, private auth: AuthService) { }
+  constructor(private prisma: PrismaService) { }
 
   async onModuleInit() {
   }

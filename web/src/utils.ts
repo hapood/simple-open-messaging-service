@@ -6,7 +6,7 @@ export function arrayToDictIndex<T extends string, U>(arr: (Record<T, string> & 
   return dict
 }
 
-export interface ComponentEventSubject<T, U = any> {
+export type ComponentEventSubject<T, U = any> = {
   event: T,
   payload?: U
 }

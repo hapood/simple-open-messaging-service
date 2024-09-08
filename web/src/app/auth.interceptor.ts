@@ -10,18 +10,26 @@ export class AuthInterceptor implements HttpInterceptor {
 
   intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<Object>> {
     let authReq = req;
-    return this.authService.acTkSub.pipe(filter(token => token !== undefined),
-      take(1),
-      switchMap(token => {
-        authReq = this.addTokenHeader(req, token);
-        return next.handle(authReq).pipe(catchError(error => {
-          if (error instanceof HttpErrorResponse && error.status === 401) {
-            return this.handle401Error(authReq, next);
-          } else {
-            throw error;
+    if ((req.headers as any).Authorization !== 'public') {
+      return this.authService.acTkSub.pipe(filter(data => data !== undefined),
+        take(1),
+        switchMap(({ lastToken, nextToken }) => {
+          if ((req.headers as any).Authorization !== 'Bearer ' + lastToken) {
+            throw new Error('obsolete http request')
           }
-        }));
-      }))
+          authReq = this.addTokenHeader(req, nextToken);
+          return next.handle(authReq).pipe(catchError(error => {
+            if (error instanceof HttpErrorResponse && error.status === 401) {
+              return this.handle401Error(authReq, next);
+            } else {
+              throw error;
+            }
+          }));
+        }))
+    } else {
+      //with out auth
+      return next.handle(req)
+    }
   }
 
   private handle401Error(request: HttpRequest<any>, next: HttpHandler) {

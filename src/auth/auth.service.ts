@@ -1,18 +1,16 @@
-import { Injectable, ConflictException } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy, forwardRef, Inject } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { JwtService } from '@nestjs/jwt';
 import { User as UserModel } from '@prisma/client';
 import * as argon2 from 'argon2';
-import { PrismaService } from '../prisma.service';
-import { Prisma } from '@prisma/client';
 
 @Injectable()
-export class AuthService {
+export class AuthService implements OnModuleInit, OnModuleDestroy {
   private readonly _refreshTokenDict: Record<string, number> = {}
   private _tokenRecordList: { userId: number, date: number, token: string }[] = []
   private _timer: NodeJS.Timeout | undefined
-  constructor(private userService: UserService, private prisma: PrismaService,
-    private jwtService: JwtService) {
+  constructor(
+    @Inject(forwardRef(() => UserService)) private userService: UserService, private jwtService: JwtService) {
     this._timer = setInterval(() => {
       const now = new Date().getTime(), tokenRecordList = this._tokenRecordList, refreshTokenDict = this._tokenRecordList
       let i = 0
@@ -30,12 +28,15 @@ export class AuthService {
     }, 1000 * 60 * 60 * 24)
   }
 
+  async onModuleInit() {
+  }
+
   async onModuleDestroy() {
     clearInterval(this._timer)
   }
 
   async validateUser(uniqName: string, password: string): Promise<UserModel | undefined> {
-    const user = await this.userService.findOne({ uniqName });
+    const user = await this.userService.findUniqueUser({ uniqName });
     const match = await argon2.verify(user.hashPwd, password);
     if (match === true) {
       return user;
@@ -72,25 +73,6 @@ export class AuthService {
     if (list) {
       delete this._refreshTokenDict[refreshToken]
     }
-  }
-
-  async register(data: Prisma.UserCreateInput) {
-    return await this.prisma.$transaction(async (prisma) => {
-      const user = await prisma.user.findUnique({
-        where: { uniqName: data.uniqName },
-      });
-      if (user !== undefined) {
-        new ConflictException(`User ${data.uniqName} already exists`);
-      }
-      data.hashPwd = await this.hashStr(data.password)
-      const newUser = await prisma.user.create({
-        data,
-      });
-      return {
-        id: newUser.id,
-        uniqName: newUser.uniqName,
-      }
-    })
   }
 
   getAccessToken(userId: number) {

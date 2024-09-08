@@ -19,14 +19,14 @@ export class UserController {
 
 
   @UseGuards(JwtAuthGuard)
-  @Get('my-profile')
+  @Get('user/my-profile')
   async getMyProfile(@Request() req,
   ) {
     return await this.userService.findUniqueUser({ id: req.user.userId })
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('query-thread/valid')
+  @Post('user/query-thread/valid')
   async queryValidThread(
     @Request() req,
     @Body() params: {
@@ -52,7 +52,7 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('query-thread/from-pending')
+  @Post('user/query-thread/from-pending')
   async queryPendingThread(
     @Request() req,
     @Body() params: {
@@ -78,7 +78,7 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('make-friend-request')
+  @Post('user/make-friend-request')
   async makeFriendRequest(@Request() req,
     @Body() params: { uniqName: string; },
   ) {
@@ -101,10 +101,15 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('accept-friend-request')
+  @Post('user/accept-friend-request')
   async acceptFriendRequest(@Request() req,
     @Body() params: { userId: number; },
   ) {
     return this.userService.acceptFriendRequest(params.userId, req.user.userId)
+  }
+
+  @Post('user/register')
+  registerLocal(@Body() params: { uniqName: string; password: string },) {
+    return this.userService.registerLocal(params)
   }
 }
