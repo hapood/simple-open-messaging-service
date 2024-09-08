@@ -12,17 +12,19 @@ export class MessageService implements OnModuleInit {
   async findUserThread(
     params: Prisma.UserMessageThreadWhereInput,
   ): Promise<UserMessageThread | null> {
-    return await this.prisma.UserMessageThread.findFirst({
+    return await this.prisma.UserMessageThread.findUnique({
       where: params,
       include: {
         threadItem: true
       }
     });
   }
+
   async sendMessageToThread(userId: number, threadId: number, content: string, type: ContentType) {
-    const userMsg = await this.prisma.UserMessageThread.findFirst({
+    const userMsg = await this.prisma.userMessageThread.findUniqueOrThrow({
       where: {
-        userId, threadId
+        userId,
+        threadId
       }
     });
     if (userMsg) {

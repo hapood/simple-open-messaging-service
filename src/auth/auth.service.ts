@@ -76,7 +76,7 @@ export class AuthService {
 
   async register(data: Prisma.UserCreateInput) {
     return await this.prisma.$transaction(async (prisma) => {
-      const user = await prisma.user.findFirst({
+      const user = await prisma.user.findUnique({
         where: { uniqName: data.uniqName },
       });
       if (user !== undefined) {

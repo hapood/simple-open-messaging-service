@@ -11,6 +11,11 @@ export class UserService implements OnModuleInit {
 
   async makeFriendRequest(hostUserId: number, friendUserId: number) {
     await this.prisma.$transaction(async (prisma) => {
+      prisma.userMessageThread.findUnique({
+        where:{
+          id
+        }
+      })
       prisma.userMessageThread.createMany({
         data: [{
           threadId: null, userId: hostUserId, toObjId: friendUserId,
@@ -50,7 +55,7 @@ export class UserService implements OnModuleInit {
   async findOne(
     userWhereUniqueInput: any,
   ): Promise<User | null> {
-    return this.prisma.user.findFirst({
+    return this.prisma.user.findUniqueOrThrow({
       where: userWhereUniqueInput,
     });
   }
@@ -58,7 +63,7 @@ export class UserService implements OnModuleInit {
   async findFriend(
     params: Prisma.FriendWhereInput,
   ): Promise<Friend | null> {
-    return await this.prisma.friend.findFirst({
+    return await this.prisma.friend.findUniqueOrThrow({
       where: params,
       include: {
         friendUser: true
@@ -84,8 +89,8 @@ export class UserService implements OnModuleInit {
 
   async createUser(data: Prisma.UserCreateInput) {
     return await this.prisma.$transaction(async (prisma) => {
-      const user = await prisma.user.findFirst({
-        where: { uniqName: data.uniqName },
+      const user = await prisma.user.findUnique({
+        where: { uniqName: data.uniqName, domain: null },
       });
       if (user !== undefined) {
         new ConflictException(`User ${data.uniqName} already exists`);
@@ -112,13 +117,26 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  async deleteUser(where: Prisma.UserWhereUniqueInput): Promise<User> {
-    return this.prisma.user.delete({
+  async updateUserExtra(params: {
+    where: Prisma.UserWhereUniqueInput;
+    data: Prisma.UserUpdateInput;
+  }): Promise<User> {
+    const { where, data } = params;
+    return this.prisma.user.update({
+      data,
       where,
     });
   }
 
-  async getFriendList(userId: number) {
+  async queryFriendThread(userId: number) {
+    return this.prisma.friend.findMany({
+      where: {
+        hostUserId: userId
+      }
+    });
+  }
+
+  async queryGroupThread(userId: number) {
     return this.prisma.friend.findMany({
       where: {
         hostUserId: userId

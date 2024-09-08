@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { MessageService } from '../message/message.service';
-import { User as UserModel, Friend as FriendModel, ContentType, Prisma, UserMessageThread } from '@prisma/client';
+import { User as UserModel, ContentType, Prisma, UserMessageThread } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { toJson } from './utils';
 

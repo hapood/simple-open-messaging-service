@@ -24,15 +24,15 @@ model User {
   createdAt           DateTime          @default(now())
   updatedAt           DateTime          @updatedAt
   isDeleted           Boolean           @default(false)
-  userInfoId          Int               @unique
-  userInfo            UserInfo          @relation(fields: [userInfoId], references: [id])
+  userExtraId          Int               @unique
+  userExtra            UserExtra          @relation(fields: [userExtraId], references: [id])
   userMessageThreadId Int
   userMessageThread   UserMessageThread @relation(fields: [userMessageThreadId], references: [id])
 
   @@unique([uniqName, domain])
 }
 
-model UserInfo {
+model UserExtra {
   id             Int     @id @default(autoincrement())
   hasUrFriendReq Boolean @default(false)
   User           User?
@@ -44,11 +44,11 @@ model Group {
   avatar      String
   threadId    Int           @unique
   threadItem  MessageThread @relation(fields: [threadId], references: [id])
-  GroupInfoId Int           @unique
-  GroupInfo   GroupInfo     @relation(fields: [GroupInfoId], references: [id])
+  GroupExtraId Int           @unique
+  GroupExtra   GroupExtra     @relation(fields: [GroupExtraId], references: [id])
 }
 
-model GroupInfo {
+model GroupExtra {
   id           Int   @id @default(autoincrement())
   memberIdList Int[]
   adminIdList  Int[]
@@ -73,12 +73,14 @@ model UserMessageThread {
   status     UserMessageThreadStatus
   toObjType  MessageThreadType
   toObjId    Int
-  threadId   Int 
+  threadId   Int
   threadItem MessageThread           @relation(fields: [threadId], references: [id])
   createdAt  DateTime                @default(now())
   updatedAt  DateTime                @updatedAt
   isDeleted  Boolean                 @default(false)
   User       User[]
+
+  @@unique([userId, toObjType, toObjId])
 }
 
 model MessageThread {
