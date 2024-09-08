@@ -18,10 +18,8 @@ export class PopupService {
   private _popupType: PopupType | undefined
   subject = new BehaviorSubject<Command>({ caller: 'self-init', isShow: false, popupType: undefined })
   constructor() {
-    console.log('init!!!!')
     this.subject.subscribe({
       next: (cmd) => {
-        console.log('12',cmd)
         if (cmd.isShow === true) {
           this._popupType = cmd.popupType
         } else {

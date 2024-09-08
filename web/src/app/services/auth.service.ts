@@ -23,9 +23,8 @@ export class AuthService {
   private _timerHandler: ReturnType<typeof setTimeout> | undefined = undefined
   private _lastAccTok: string | undefined
   public acTkSub = new BehaviorSubject<{ lastToken: string | undefined, nextToken: string } | undefined>(undefined)
-  private _popupService!: PopupService
 
-  constructor(private http: HttpClient) {
+  constructor(private http: HttpClient,private popupService:PopupService) {
     const tkCrtTm = this._tokenCreateTime
     if (tkCrtTm !== null) {
       const leftTime = new Date().getTime() - parseInt(tkCrtTm)
@@ -33,10 +32,6 @@ export class AuthService {
         this.setTimerToRefresh(leftTime)
       }
     }
-  }
-
-  public setPopupService(service: PopupService) {
-    this._popupService = service
   }
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
@@ -55,7 +50,7 @@ export class AuthService {
   redoLoginAuth() {
     this.clearToken()
     const subject = new Subject<{ event: LoginEvent }>()
-    this._popupService.subject.next({
+    this.popupService.subject.next({
       caller: 'auth-service',
       isShow: true,
       popupType: PopupType.LOGIN,
@@ -63,7 +58,7 @@ export class AuthService {
     })
     subject.subscribe(({ event }) => {
       if (event === LoginEvent.SUCCESS) {
-        this._popupService.subject.next({
+        this.popupService.subject.next({
           caller: 'auth-service',
           isShow: false,
           popupType: undefined

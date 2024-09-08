@@ -15,7 +15,6 @@ export enum LoginEvent {
   standalone: true,
   imports: [UserAvatarComponent, MaterialInputComponent, MaterialCheckboxComponent,
     MaterialButtonComponent],
-  providers: [AuthService],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss'
 })

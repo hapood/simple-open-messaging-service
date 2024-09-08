@@ -38,7 +38,6 @@ export class MsgInputBarComponent {
 
   onClickIptWrp(event: Event) {
     event.stopPropagation()
-    console.log(event)
     const elm = this.userInput()!.nativeElement
     elm.focus()
   }

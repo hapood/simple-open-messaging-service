@@ -110,7 +110,7 @@ export class MessageThreadComponent {
     this._scrollerElm = elm;
     this.scrollObserver = new ResizeObserver(entries => {
       const { clientHeight, scrollTop, scrollHeight } = elm
-      console.log('scroller height change, sync with it')
+      console.info('scroller height change, sync with it')
       const { clientHeight: lastClientHeight, disToBot } = this._scrollerInfo
       const delta = lastClientHeight - clientHeight
       if ((this.isBottom && delta > 0) || (!this.isBottom && delta < disToBot)) {

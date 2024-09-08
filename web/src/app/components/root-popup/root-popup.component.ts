@@ -11,7 +11,6 @@ import { AuthService } from '../../services/auth.service';
   selector: 'app-root-popup',
   standalone: true,
   imports: [MaterialModalComponent, LoginComponent, LoginPageComponent],
-  providers: [PopupService],
   templateUrl: './root-popup.component.html',
   styleUrl: './root-popup.component.scss'
 })
@@ -24,9 +23,7 @@ export class RootPopupComponent {
   constructor(private popupService: PopupService, private authService: AuthService) {
     this.popupService.subject.subscribe({
       next: (cmd) => {
-        console.log(111, cmd)
         if (cmd.isShow === true) {
-          console.log(this.popupType() === PopupType.LOGIN)
           if (this.popupType() === PopupType.LOGIN) {
             cmd.subject?.complete()
             cmd.subject?.unsubscribe()
@@ -42,15 +39,11 @@ export class RootPopupComponent {
           this.curSubject.set(undefined)
           this.popupType.set(undefined)
         }
-      },
-      complete: (() => {
-        console.log('complete')
-      })
+      }
     })
   }
 
   ngOnInit() {
-    this.authService.setPopupService(this.popupService)
     this.authService.renewAccessToken()
   }
 

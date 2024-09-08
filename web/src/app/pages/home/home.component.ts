@@ -5,6 +5,7 @@ import { MsgService } from '../../services/message.service'
 import { ThreadListComponent } from '../../components/thread-list/thread-list.component';
 import { MessageThreadComponent } from '../../components/message-thread/friend-message.component';
 import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
+import { PopupService } from '../../services/popup.service';
 
 @Component({
   selector: 'app-home',
@@ -13,12 +14,11 @@ import { RootPopupComponent } from '../../components/root-popup/root-popup.compo
   templateUrl: './home.component.html',
   styleUrl: './home.component.scss'
 })
-
 export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
   curThreadId = signal<number | undefined>(undefined)
 
-  constructor(private msgService: MsgService) { }
+  constructor(private msgService: MsgService,private popupService:PopupService) { }
 
   ngOnInit() {
     this.getMyInfo();
