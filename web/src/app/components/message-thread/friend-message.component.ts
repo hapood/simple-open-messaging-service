@@ -5,7 +5,7 @@ import {
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { WebsocketService } from '../../services/websocket.service';
-import { MsgGroupStatus, DisMsgGrp } from './modal';
+import { MsgGroupStatus, DisMsgGrp } from './model';
 import { MsgGroupComponent } from '../msg-group/msg-group.component'
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { MsgInputBarComponent } from '../msg-input-bar/msg-input-bar.component';

@@ -1,4 +1,4 @@
-import { MsgGroup } from "../components/message-thread/modal";
+import { MsgGroup } from "../components/message-thread/model";
 
 export interface User { id: number; uniqName: string; password: string }
 export interface MsgThread { id: number, threadItem: ThreadItem }

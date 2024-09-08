@@ -1,6 +1,6 @@
 import { Component, input, viewChild, ElementRef, Output, EventEmitter, signal } from '@angular/core';
 import { IconComponent } from "../icon/icon.component";
-import { AppIconType } from '../icon/modal';
+import { AppIconType } from '../icon/model';
 import { tap } from 'rxjs';
 import { MsgService } from '../../services/message.service'
 

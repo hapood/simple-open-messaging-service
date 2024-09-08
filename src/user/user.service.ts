@@ -1,7 +1,9 @@
-import { Injectable, OnModuleInit, ConflictException } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
 import { AuthService } from 'src/auth/auth.service';
+import { StandardResponse } from 'src/model';
+
 @Injectable()
 export class UserService implements OnModuleInit {
   constructor(private prisma: PrismaService, private auth: AuthService) { }
@@ -9,104 +11,219 @@ export class UserService implements OnModuleInit {
   async onModuleInit() {
   }
 
-  async makeFriendRequest(hostUserId: number, friendUserId: number) {
-    await this.prisma.$transaction(async (prisma) => {
-      prisma.userMessageThread.findUnique({
-        where:{
-          id
+  makeFriendRequest(fromUserId: number, toUserId: number): Promise<StandardResponse> {
+    return this.prisma.$transaction(async (prisma) => {
+      const toUserThread = await prisma.userMessageThread.findUnique({
+        where: {
+          userId_toObjType_toObjId: {
+            userId: toUserId,
+            toObjType: MessageThreadType.P2P_MESSAGE,
+            toObjId: fromUserId
+          },
         }
       })
-      prisma.userMessageThread.createMany({
-        data: [{
-          threadId: null, userId: hostUserId, toObjId: friendUserId,
-          toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
-        }, {
-          threadId: null, userId: friendUserId, toObjId: hostUserId,
-          toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
-        }]
-      })
-    })
-
-    return true
-  }
-
-  async acceptFriendRequest(hostUserId: number, friendUserId: number) {
-    await this.prisma.$transaction(async (prisma) => {
-      const threadData = await this.prisma.messageThread.create({
-        data: {
-          type: MessageThreadType.P2P_MESSAGE, info: {
-            userId1: hostUserId,
-            userId2: friendUserId
+      if (toUserThread) {
+        // not first make firend request
+        if (toUserThread.status === UserMessageThreadStatus.APPROVED) {
+          //toUserThread exist then fromUserThread exist too.
+          await prisma.userMessageThread.update({
+            where: {
+              userId_toObjType_toObjId: {
+                userId: fromUserId,
+                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjId: toUserId
+              },
+            },
+            data: {
+              status: UserMessageThreadStatus.APPROVED
+            }
+          })
+          return {
+            status: 1,
+            message: 'already been friends'
+          }
+        } else if (toUserThread.status === UserMessageThreadStatus.DELETED) {
+          //both reset to PENDING
+          await prisma.userMessageThread.update({
+            where: {
+              userId_toObjType_toObjId: {
+                userId: fromUserId,
+                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjId: toUserId
+              },
+            },
+            data: {
+              status: UserMessageThreadStatus.PENDING
+            }
+          })
+          await prisma.userMessageThread.update({
+            where: {
+              userId_toObjType_toObjId: {
+                userId: toUserId,
+                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjId: fromUserId
+              },
+            },
+            data: {
+              status: UserMessageThreadStatus.PENDING
+            }
+          })
+          return {
+            status: 0,
+            message: 'already requested before'
+          }
+        } else {
+          //don't bother any more when BLOCKED or PENDING
+          await prisma.userMessageThread.update({
+            where: {
+              userId_toObjType_toObjId: {
+                userId: fromUserId,
+                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjId: toUserId
+              },
+            },
+            data: {
+              status: UserMessageThreadStatus.PENDING
+            }
+          })
+          return {
+            status: 2,
+            message: 'request sent successful'
           }
         }
-      })
-      prisma.userMessageThread.updateMany({
+      } else {
+        await prisma.userMessageThread.createMany({
+          data: [{
+            threadId: null, userId: fromUserId, toObjId: toUserId,
+            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
+          }, {
+            threadId: null, userId: toUserId, toObjId: fromUserId,
+            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
+          }]
+        })
+        return {
+          status: 0,
+          message: 'request sent successful'
+        }
+      }
+    })
+  }
+
+  async acceptFriendRequest(fromUserId: number, toUserId: number): Promise<StandardResponse> {
+    return await this.prisma.$transaction(async (prisma) => {
+      const request = await prisma.userMessageThread.findUnique({
+        where: {
+          userId_toObjType_toObjId: {
+            userId: fromUserId,
+            toObjType: MessageThreadType.P2P_MESSAGE,
+            toObjId: toUserId
+          },
+          status: UserMessageThreadStatus.PENDING,
+        }
+      });
+      if (request === null) {
+        return {
+          status: 1,
+          message: `user [${fromUserId}] did not send make friend request to you.`
+        }
+      }
+      let threadId = request.threadId
+      if (threadId === null) {
+        const threadData = await prisma.messageThread.create({
+          data: {
+            type: MessageThreadType.P2P_MESSAGE, info: {
+              userId1: fromUserId,
+              userId2: toUserId
+            }
+          }
+        })
+        threadId = threadData.id
+      }
+      await prisma.userMessageThread.updateMany({
+        where: {
+          OR: [{
+            userId: toUserId,
+            toObjType: MessageThreadType.P2P_MESSAGE,
+            toObjId: fromUserId
+          }, {
+            userId: fromUserId,
+            toObjType: MessageThreadType.P2P_MESSAGE,
+            toObjId: toUserId
+          }]
+        },
         data: [{
-          threadId: threadData.id, userId: hostUserId, status: UserMessageThreadStatus.APPROVED
-        }, {
-          threadId: threadData.id, userId: friendUserId, status: UserMessageThreadStatus.APPROVED
+          threadId: threadId, status: UserMessageThreadStatus.APPROVED
         }]
       })
+      return {
+        status: 0,
+        message: 'already been friends'
+      }
     })
-
-    return true
   }
 
-  async findOne(
-    userWhereUniqueInput: any,
-  ): Promise<User | null> {
+  findUniqueUser(
+    userWhereUniqueInput: Prisma.UserWhereUniqueInput,
+    hasExtra = true
+  ) {
     return this.prisma.user.findUniqueOrThrow({
       where: userWhereUniqueInput,
-    });
-  }
-
-  async findFriend(
-    params: Prisma.FriendWhereInput,
-  ): Promise<Friend | null> {
-    return await this.prisma.friend.findUniqueOrThrow({
-      where: params,
       include: {
-        friendUser: true
-      }
-    });
-  }
-  async getUserList(params: {
-    skip?: number;
-    take?: number;
-    cursor?: Prisma.UserWhereUniqueInput;
-    where?: Prisma.UserWhereInput;
-    orderBy?: Prisma.UserOrderByWithRelationInput;
-  }): Promise<User[]> {
-    const { skip, take, cursor, where, orderBy } = params;
-    return this.prisma.user.findMany({
-      skip,
-      take,
-      cursor,
-      where,
-      orderBy,
+        userExtra: hasExtra,
+      },
     });
   }
 
-  async createUser(data: Prisma.UserCreateInput) {
-    return await this.prisma.$transaction(async (prisma) => {
+  registerLocal(data: { uniqName: string, password: string }): Promise<StandardResponse> {
+    return this.prisma.$transaction(async (prisma) => {
+      /*^ Start of string
+        (?=[\w.-]{5,20}$) Assert 5-20 of the allowed characters
+        (?:[\d_.-]*[a-zA-Z]){3} Match 3 times a-zA-Z followed by optional digits _ . -
+        [\w.-]* Match optional word chars or . or -
+        $ End of string
+      */
+      const regex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/
+      if (regex.test(data.uniqName) === false) {
+        return {
+          status: 1, message: `uniqName [${data.uniqName}] is not valid`
+        }
+      }
+
       const user = await prisma.user.findUnique({
         where: { uniqName: data.uniqName, domain: null },
       });
       if (user !== undefined) {
-        new ConflictException(`User ${data.uniqName} already exists`);
+        return {
+          status: 2, message: `User ${data.uniqName} already exists`
+        }
       }
-      data.password = await this.auth.hashStr(data.password)
+      const newUserData: Prisma.UserCreateInput = {
+        uniqName: data.uniqName,
+        isForeigner: false,
+        hashPwd: await this.auth.hashStr(data.password),
+        domain: '',
+        userExtra: {
+          create: {
+            name: data.uniqName,
+            avatar: '',
+          }
+        },
+      }
       const newUser = await prisma.user.create({
-        data,
+        data: newUserData
       });
       return {
-        id: newUser.id,
-        uniqName: newUser.uniqName
+        status: 0,
+        message: 'successfuly registered',
+        data: {
+          id: newUser.id,
+          uniqName: newUser.uniqName
+        }
       }
     })
   }
 
-  async updateUser(params: {
+  updateUser(params: {
     where: Prisma.UserWhereUniqueInput;
     data: Prisma.UserUpdateInput;
   }): Promise<User> {
@@ -117,7 +234,7 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  async updateUserExtra(params: {
+  updateUserExtra(params: {
     where: Prisma.UserWhereUniqueInput;
     data: Prisma.UserUpdateInput;
   }): Promise<User> {
@@ -128,20 +245,7 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  async queryFriendThread(userId: number) {
-    return this.prisma.friend.findMany({
-      where: {
-        hostUserId: userId
-      }
-    });
+  queryUserThread(params: Prisma.UserMessageThreadFindManyArgs) {
+    return this.prisma.userMessageThread.findMany(params)
   }
-
-  async queryGroupThread(userId: number) {
-    return this.prisma.friend.findMany({
-      where: {
-        hostUserId: userId
-      }
-    });
-  }
-
 }

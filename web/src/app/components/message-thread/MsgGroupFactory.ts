@@ -6,8 +6,8 @@ import {
   firstValueFrom, concatMap
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
-import { UserProfile } from '../msg-group/modal';
-import { MsgGroup, MsgGroupStatus, DisplayMsg, DisMsgGrp } from './modal';
+import { UserProfile } from '../msg-group/model';
+import { MsgGroup, MsgGroupStatus, DisplayMsg, DisMsgGrp } from './model';
 
 //must bigger than 0
 const GROUP_MSG_NUM = 10;

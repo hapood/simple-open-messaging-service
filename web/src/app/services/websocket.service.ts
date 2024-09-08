@@ -41,7 +41,7 @@ export class WebsocketService {
         }
         ws.onopen = () => {
           this._ws = ws
-          console.log("Successfully connected: " + this.url);
+          console.log("successfuly connected: " + this.url);
         }
       }
       ), complete: () => {

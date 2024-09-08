@@ -15,43 +15,42 @@ datasource db {
 }
 
 model User {
-  id                  Int               @id @default(autoincrement())
-  uniqName            String            @unique @db.VarChar(127)
-  avatar              String
-  hashPwd             String            @db.VarChar(31)
-  isForeigner         Boolean
-  domain              String            @db.VarChar(63)
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
-  isDeleted           Boolean           @default(false)
-  userExtraId          Int               @unique
-  userExtra            UserExtra          @relation(fields: [userExtraId], references: [id])
-  userMessageThreadId Int
-  userMessageThread   UserMessageThread @relation(fields: [userMessageThreadId], references: [id])
+  id          Int       @id @default(autoincrement())
+  uniqName    String    @unique @db.VarChar(31)
+  hashPwd     String    @db.VarChar(31)
+  isForeigner Boolean
+  domain      String    @db.VarChar(63)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  isDeleted   Boolean   @default(false)
+  userExtraId Int       @unique
+  userExtra   UserExtra @relation(fields: [userExtraId], references: [id])
 
   @@unique([uniqName, domain])
 }
 
 model UserExtra {
   id             Int     @id @default(autoincrement())
+  name           String  @db.VarChar(127)
   hasUrFriendReq Boolean @default(false)
+  avatar         String
   User           User?
 }
 
 model Group {
-  id          Int           @id @default(autoincrement())
-  name        String        @db.VarChar(127)
-  avatar      String
-  threadId    Int           @unique
-  threadItem  MessageThread @relation(fields: [threadId], references: [id])
+  id           Int           @id @default(autoincrement())
+  name         String        @db.VarChar(127)
+  threadId     Int           @unique
+  threadItem   MessageThread @relation(fields: [threadId], references: [id])
   GroupExtraId Int           @unique
-  GroupExtra   GroupExtra     @relation(fields: [GroupExtraId], references: [id])
+  GroupExtra   GroupExtra    @relation(fields: [GroupExtraId], references: [id])
 }
 
 model GroupExtra {
-  id           Int   @id @default(autoincrement())
+  id           Int    @id @default(autoincrement())
   memberIdList Int[]
   adminIdList  Int[]
+  avatar       String
 
   Group Group?
 }
@@ -64,7 +63,8 @@ enum MessageThreadType {
 enum UserMessageThreadStatus {
   PENDING
   APPROVED
-  REJECTED
+  BLOCKED
+  DELETED
 }
 
 model UserMessageThread {
@@ -78,9 +78,9 @@ model UserMessageThread {
   createdAt  DateTime                @default(now())
   updatedAt  DateTime                @updatedAt
   isDeleted  Boolean                 @default(false)
-  User       User[]
 
   @@unique([userId, toObjType, toObjId])
+  @@unique([userId, threadId])
 }
 
 model MessageThread {

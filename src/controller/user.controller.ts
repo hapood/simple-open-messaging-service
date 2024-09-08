@@ -8,7 +8,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
-import { User as UserModel, Friend as FriendModel } from '@prisma/client';
+import { Prisma, User as UserModel, UserMessageThreadStatus, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller()
@@ -22,57 +22,89 @@ export class UserController {
   @Get('my-profile')
   async getMyProfile(@Request() req,
   ) {
-    return await this.userService.findOne({ id: req.user.userId })
+    return await this.userService.findUniqueUser({ id: req.user.userId })
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('query-friend-info')
-  async queryFriendInfo(
+  @Post('query-thread/valid')
+  async queryValidThread(
     @Request() req,
-    @Body() params: { userId: number },
-  ): Promise<FriendModel> {
-    return await this.userService.findFriend({ hostUserId: req.user.userId, friendUserId: params.userId })
+    @Body() params: {
+      skip: number;
+      take: number;
+      lastId?: number;
+      orderBy: 'desc' | 'asc'
+    },
+  ) {
+    const newParams: Prisma.UserMessageThreadFindManyArgs = {
+      skip: params.skip,
+      take: params.take,
+      where: {
+        userId: req.user.userId,
+        toObjType: MessageThreadType.P2P_MESSAGE,
+        status: UserMessageThreadStatus.APPROVED
+      },
+      orderBy: {
+        createdAt: params.orderBy,
+      },
+    };
+    return await this.userService.queryUserThread(newParams)
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('add-friend')
-  async addFriend(@Request() req,
-    @Body() userData: { uniqName: string; },
+  @Post('query-thread/from-pending')
+  async queryPendingThread(
+    @Request() req,
+    @Body() params: {
+      skip: number;
+      take: number;
+      lastId?: number;
+      orderBy: 'desc' | 'asc'
+    },
   ) {
-    const friend = await this.userService.findOne({ uniqName: userData.uniqName })
-    if (req.user.userId === friend.id) throw new Error("can not add self")
+    const newParams: Prisma.UserMessageThreadFindManyArgs = {
+      skip: params.skip,
+      take: params.take,
+      where: {
+        userId: req.user.userId,
+        toObjType: MessageThreadType.P2P_MESSAGE,
+        status: UserMessageThreadStatus.APPROVED
+      },
+      orderBy: {
+        createdAt: params.orderBy,
+      },
+    };
+    return await this.userService.queryUserThread(newParams)
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('make-friend-request')
+  async makeFriendRequest(@Request() req,
+    @Body() params: { uniqName: string; },
+  ) {
+    const friend = await this.userService.findUniqueUser({ uniqName: params.uniqName }, false)
+    if (req.user.userId === friend.id) {
+      return {
+        status: 3,
+        message: 'can not make friend with self'
+      }
+    }
     if (friend) {
-      await this.userService.createFriend(req.user.userId, friend.id);
-      return true
+      //status 0,1,2
+      return this.userService.makeFriendRequest(req.user.userId, friend.id);
+    } else {
+      return {
+        status: 4,
+        message: 'friend does not not exist'
+      }
     }
-    throw new Error("no firend info")
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('get-friend-list')
-  async getFriendList(@Request() req,
+  @Post('accept-friend-request')
+  async acceptFriendRequest(@Request() req,
+    @Body() params: { userId: number; },
   ) {
-    return await this.userService.getFriendList(req.user.userId)
+    return this.userService.acceptFriendRequest(params.userId, req.user.userId)
   }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('add-user')
-  async signupUser(
-    @Body() userData: { uniqName: string; password: string },
-  ) {
-    const newData = {
-      uniqName: userData.uniqName.trim(),
-      password: userData.password.trim(),
-      isForeigner: false,
-      domain: "qifa.io"
-    }
-    return this.userService.createUser(newData);
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('get-user-list')
-  async getPostById(@Param('id') id: string): Promise<UserModel[]> {
-    return this.userService.getUserList({});
-  }
-
 }

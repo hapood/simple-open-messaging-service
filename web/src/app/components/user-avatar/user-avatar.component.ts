@@ -1,5 +1,5 @@
 import { Component, input } from '@angular/core';
-import { UserAvatarType } from './modal'
+import { UserAvatarType } from './model'
 
 @Component({
   selector: 'app-user-avatar',
@@ -14,4 +14,4 @@ export class UserAvatarComponent {
   readonly UserAvatarType = UserAvatarType
 }
 
-export { UserAvatarType } from './modal'
+export { UserAvatarType } from './model'

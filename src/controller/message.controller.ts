@@ -25,14 +25,7 @@ export class MessageController {
     @Request() req,
     @Body() params: { threadId: number },
   ): Promise<UserMessageThread> {
-    return await this.messageService.findUserThread({ userId: req.user.userId, threadId: params.threadId })
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Post('get-thread-list')
-  async getMsgThreadList(@Request() req,
-  ) {
-    return await this.messageService.getMsgThreadList(req.user.userId)
+    return await this.messageService.findUniqueUserThread({ userId_threadId: { userId: req.user.userId, threadId: params.threadId } })
   }
 
   @UseGuards(JwtAuthGuard)
@@ -61,9 +54,6 @@ export class MessageController {
     const newParams: Prisma.MessageFindManyArgs = {
       skip: params.skip,
       take: params.take,
-      where: {
-        threadId: params.threadId,
-      },
       orderBy: {
         id: params.orderBy,
       },
@@ -71,7 +61,7 @@ export class MessageController {
     if (params.lastId) {
       newParams.cursor = { id: params.lastId }
     }
-    const list = await this.messageService.queryMessages(newParams)
+    const list = await this.messageService.queryMessages(req.user.userId, params.threadId, newParams)
     return toJson(list)
   }
 

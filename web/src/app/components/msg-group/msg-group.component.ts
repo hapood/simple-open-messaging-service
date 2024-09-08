@@ -4,7 +4,7 @@ import {
   ElementRef
 } from '@angular/core';
 import { NgClass } from '@angular/common';
-import { MsgGroupStatus, DisplayMsg } from '../message-thread/modal'
+import { MsgGroupStatus, DisplayMsg } from '../message-thread/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 @Component({
