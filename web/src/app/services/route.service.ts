@@ -62,7 +62,10 @@ export class RouteService {
   }
 
   clearHistory() {
-    history.go(1 - this._stateList.length)
+    let step = 1 - this._stateList.length
+    if (step < 0) {
+      history.go(step)
+    }
   }
 
   hasPrevRoute() {

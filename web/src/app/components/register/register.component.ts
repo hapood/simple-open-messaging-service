@@ -39,7 +39,7 @@ export class RegisterComponent {
   constructor(private userService: UserService,) {
     effect(() => {
       const uniqname = this.uniqName()
-      if (uniqname !== '' && !this._uniqNameRegex.test(uniqname)) {
+      if (!this._uniqNameRegex.test(uniqname)) {
         this.isUniqNameVld.set(false)
         this.uniqNameHint.set('1 to 20 letters/numbers')
       } else {
@@ -49,7 +49,7 @@ export class RegisterComponent {
     }, { allowSignalWrites: true })
     effect(() => {
       const password = this.password()
-      if (password !== '' && !this._passwordRegx.test(password)) {
+      if (!this._passwordRegx.test(password)) {
         this.isPwdVld.set(false)
         this.passwordHint.set('6 to 20 letters/numbers/symbols')
       } else {
@@ -60,6 +60,7 @@ export class RegisterComponent {
   }
 
   register() {
+    this.onSuccess.emit({ uniqName: 'hapood', password: '512512' })
     if (this.isReging()) {
       return
     }

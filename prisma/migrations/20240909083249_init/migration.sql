@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "User" ALTER COLUMN "hashPwd" SET DATA TYPE VARCHAR(127);

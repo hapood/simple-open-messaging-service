@@ -198,7 +198,7 @@ export class UserService implements OnModuleInit {
       const user = await prisma.user.findUnique({
         where: { uniqName: data.uniqName, domain: null },
       });
-      if (user !== undefined) {
+      if (user !== null) {
         return {
           status: 2, message: `User ${data.uniqName} already exists`
         }

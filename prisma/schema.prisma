@@ -17,7 +17,7 @@ datasource db {
 model User {
   id          Int       @id @default(autoincrement())
   uniqName    String    @unique @db.VarChar(31)
-  hashPwd     String    @db.VarChar(31)
+  hashPwd     String    @db.VarChar(127)
   isForeigner Boolean
   domain      String?    @db.VarChar(63)
   createdAt   DateTime  @default(now())
