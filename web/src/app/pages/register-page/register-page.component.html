@@ -1,0 +1,11 @@
+<div class="register-page-wrapper">
+  <div class="register-header">
+    @if(isShowBackBtn()){
+    <button class="icon-btn"><app-icon [type]="AppIconType.BACK"
+        [style]="{width:'32px',height:'32px'}"></app-icon></button>}
+    <div class="register-title">Register to SOMS</div>
+  </div>
+  <div class="register-com-wrapper">
+    <app-register (onSuccess)="onSuccess($event)"></app-register>
+  </div>
+</div>

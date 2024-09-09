@@ -14,6 +14,7 @@ export class MaterialInputComponent {
   text = model('')
   placeholder = input()
   required = input(false)
+  autocomplete = input<string>()
   pattern = input<string | RegExp>('')
   type = input<'text' | 'password'>('text')
   isFocus = signal(false)
@@ -31,10 +32,5 @@ export class MaterialInputComponent {
   focusInput(event: Event) {
     const elm = this.userInput()!.nativeElement
     elm.focus()
-    // event.stopPropagation()
-  }
-
-  ngOnInit() {
-    console.log(this.text(), this.text() === "")
   }
 }

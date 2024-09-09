@@ -2,7 +2,7 @@ import { Injectable, signal } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../utils'
 
-export enum PopupType { LOGIN }
+export enum PopupType { }
 
 interface Command {
   caller: string,

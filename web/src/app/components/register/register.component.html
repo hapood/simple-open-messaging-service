@@ -1,14 +1,16 @@
-<div class="register-wrapper">
-  <div class="avatar-hero">
-    <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
+<form (ngSubmit)="register()" class="register-wrapper">
+  <div class="progress-wrapper">
+    @if(isReging()){
+    <app-material-progress-linear />}
   </div>
-  <div class="title">Login to SOMS</div>
   <div class="input-line">
     <app-material-input [(text)]="uniqName" placeholder="Username"></app-material-input>
+    <div class="err-hint">{{uniqNameHint()}}</div>
   </div>
   <div class="input-line">
-    <app-material-input type="password" [(text)]="password" placeholder="Password" />
+    <app-material-input type="password" [(text)]="password" placeholder="Password" autocomplete="new-password" />
+    <div class="err-hint">{{passwordHint()}}</div>
   </div>
-  <app-material-button (click)="login()">Login</app-material-button>
+  <app-material-button type="submit" class="sub-btn" [disabled]="isRegBtnDisabled()">Sign up</app-material-button>
   <div class="error">{{resp()}}</div>
-</div>
+</form>

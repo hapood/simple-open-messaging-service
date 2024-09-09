@@ -1,8 +1,6 @@
 import { Component, signal } from '@angular/core';
 import { PopupService, PopupType } from '../../services/popup.service';
 import { MaterialModalComponent } from '../material-modal/material-modal.component';
-import { LoginComponent } from '../login/login.component';
-import { LoginPageComponent } from "../../pages/auth/login/login-page.component";
 import { Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../../utils'
 import { AuthService } from '../../services/auth.service';
@@ -10,7 +8,7 @@ import { AuthService } from '../../services/auth.service';
 @Component({
   selector: 'app-root-popup',
   standalone: true,
-  imports: [MaterialModalComponent, LoginComponent, LoginPageComponent],
+  imports: [MaterialModalComponent],
   templateUrl: './root-popup.component.html',
   styleUrl: './root-popup.component.scss'
 })
@@ -24,16 +22,9 @@ export class RootPopupComponent {
     this.popupService.subject.subscribe({
       next: (cmd) => {
         if (cmd.isShow === true) {
-          if (this.popupType() === PopupType.LOGIN) {
-            cmd.subject?.complete()
-            cmd.subject?.unsubscribe()
-          } else {
-            this.clearLastSubject()
-            this.curSubject.set(cmd.subject)
-            if (cmd.popupType === PopupType.LOGIN) {
-              this.popupType.set(PopupType.LOGIN)
-            }
-          }
+          this.clearLastSubject()
+          this.curSubject.set(cmd.subject)
+          this.popupType.set(cmd.popupType)
         } else {
           this.clearLastSubject();
           this.curSubject.set(undefined)

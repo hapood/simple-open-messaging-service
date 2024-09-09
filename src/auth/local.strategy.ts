@@ -17,7 +17,6 @@ export class LocalStrategy extends PassportStrategy(Strategy) {
   private _blackLogList: { ip: string, date: number }[] = []
   private _timer: NodeJS.Timeout | undefined
 
-
   constructor(private authService: AuthService) {
     super({
       usernameField: 'uniqName',

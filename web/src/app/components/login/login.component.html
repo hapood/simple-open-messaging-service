@@ -6,11 +6,16 @@
   <div class="input-line">
     <app-material-input [(text)]="uniqName" placeholder="Username"></app-material-input>
   </div>
+  <app-material-progress-linear [max]="100" [value]="10" />
   <div class="input-line">
     <app-material-input type="password" [(text)]="password" placeholder="Password" />
   </div>
   <div class="error">{{resp()}}</div>
   <app-material-checkbox [(checked)]="isKeepLogin">keep me logged in</app-material-checkbox>
-  <app-material-button (click)="login()" [disabled]="isLoging()">Login</app-material-button>
-  <app-material-button [styleType]="MaterialButtonType.TEXT" (click)="jumpToRegister()">Register</app-material-button>
+  <div class="bot-btns">
+    <app-material-button class="login-btn" (click)="login()"
+      [disabled]="isLoginBtnDisabled()">Login</app-material-button>
+    <app-material-button class="reg-btn" [styleType]="MaterialButtonType.TEXT"
+      (click)="jumpToRegister()">Register</app-material-button>
+  </div>
 </div>

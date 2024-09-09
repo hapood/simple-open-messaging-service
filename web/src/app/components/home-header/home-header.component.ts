@@ -1,6 +1,5 @@
 import { Component, input } from '@angular/core';
-import { IconComponent } from "../icon/icon.component";
-import { AppIconType } from '../icon/model';
+import { IconComponent, AppIconType } from "../icon/icon.component";
 
 @Component({
   selector: 'app-home-header',

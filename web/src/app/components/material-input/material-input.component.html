@@ -2,6 +2,6 @@
   <div class="form-field__control">
     <label (click)="focusInput($event)" class="form-field__label">{{placeholder()}}</label>
     <input [type]="type()" #userInput [(ngModel)]="text" type="text" (focus)="onFocus()" (blur)="onBlur()"
-      class="form-field__input" />
+      class="form-field__input" [autocomplete]="autocomplete()" />
   </div>
 </div>

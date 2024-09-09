@@ -4,11 +4,11 @@
   -moz-appearance: none;
   appearance: none;
   border: none;
-  width: 160px;
+  width: 100%;
   height: 4px;
-  vertical-align: middle;
   color: rgb(var(--matter-helper-theme));
   background-color: rgba(var(--matter-helper-theme), 0.12);
+  display: block;
 }
 
 .matter-progress-linear::-webkit-progress-bar {

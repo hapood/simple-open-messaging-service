@@ -1,6 +1,6 @@
 /* Actual code example */
 
-$primary-color: #b11adc;
+$primary-color: #2196f3;
 $animation-duration: 0.4s;
 
 @mixin label-active() {
@@ -10,7 +10,6 @@ $animation-duration: 0.4s;
 
 .form-field {
   display: block;
-  margin-bottom: 16px;
 
   &--is-active {
     .form-field__control {
@@ -41,6 +40,7 @@ $animation-duration: 0.4s;
   position: absolute;
   top: 0;
   transition: all $animation-duration;
+  color: #959595;
   width: 100%;
 }
 .form-field__control {

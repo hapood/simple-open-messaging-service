@@ -95,10 +95,10 @@ export class UserService implements OnModuleInit {
       } else {
         await prisma.userMessageThread.createMany({
           data: [{
-            threadId: null, userId: fromUserId, toObjId: toUserId,
+            threadId: null, userId: fromUserId, toObjId: toUserId,reqMessage:'',
             toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
           }, {
-            threadId: null, userId: toUserId, toObjId: fromUserId,
+            threadId: null, userId: toUserId, toObjId: fromUserId,reqMessage:'',
             toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
           }]
         })
@@ -183,10 +183,15 @@ export class UserService implements OnModuleInit {
         [\w.-]* Match optional word chars or . or -
         $ End of string
       */
-      const regex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/
-      if (regex.test(data.uniqName) === false) {
+      const nameRegex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/
+      const pwdRegex = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/
+      if (nameRegex.test(data.uniqName) === false) {
         return {
-          status: 1, message: `uniqName [${data.uniqName}] is not valid`
+          status: 1, message: `uniqName [${data.uniqName}] not match regex [${nameRegex}]`
+        }
+      } else if (pwdRegex.test(data.password) === false) {
+        return {
+          status: 1, message: `uniqName [${data.uniqName}] not match regex [${pwdRegex}]`
         }
       }
 
@@ -202,7 +207,6 @@ export class UserService implements OnModuleInit {
         uniqName: data.uniqName,
         isForeigner: false,
         hashPwd: await this.auth.hashStr(data.password),
-        domain: '',
         userExtra: {
           create: {
             name: data.uniqName,

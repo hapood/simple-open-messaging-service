@@ -19,7 +19,7 @@ model User {
   uniqName    String    @unique @db.VarChar(31)
   hashPwd     String    @db.VarChar(31)
   isForeigner Boolean
-  domain      String    @db.VarChar(63)
+  domain      String?    @db.VarChar(63)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   isDeleted   Boolean   @default(false)

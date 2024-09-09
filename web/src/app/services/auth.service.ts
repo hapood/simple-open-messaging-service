@@ -1,8 +1,8 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, EMPTY, of, Subject, tap } from 'rxjs';
-import { LoginEvent } from '../components/login/login.component';
-import { PopupService, PopupType } from './popup.service';
+import { BehaviorSubject, EMPTY, of, tap } from 'rxjs';
+import { RouteService, RoutePage } from './route.service';
+import { apiPrefix } from './constants';
 
 const TOKEN_CREATE_TIME = "token_create_time",
   REFRESH_TOKEN = 'refresh_token', SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000,
@@ -15,7 +15,6 @@ type AccessTokenRes = { status: number, message: string, data?: { access_token: 
   providedIn: 'root',
 })
 export class AuthService {
-  prefix = 'http://127.0.0.1:3000'
   private _tokenCreateTime = localStorage.getItem(TOKEN_CREATE_TIME)
   private _isKeep = localStorage.getItem(IS_KEEP_LOGIN) === '1' || false
   private _isReReTk = false
@@ -24,7 +23,7 @@ export class AuthService {
   private _lastAccTok: string | undefined
   public acTkSub = new BehaviorSubject<{ lastToken: string | undefined, nextToken: string } | undefined>(undefined)
 
-  constructor(private http: HttpClient,private popupService:PopupService) {
+  constructor(private http: HttpClient, private routeService: RouteService) {
     const tkCrtTm = this._tokenCreateTime
     if (tkCrtTm !== null) {
       const leftTime = new Date().getTime() - parseInt(tkCrtTm)
@@ -36,7 +35,7 @@ export class AuthService {
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
     return this.http.post<RefreshTokenRes>
-      (`${this.prefix}/auth/login`, params, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
+      (`${apiPrefix}/auth/login`, params, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
         if (res.status === 0) {
           const data = res.data
           this._isKeep = params.isKeep
@@ -49,22 +48,7 @@ export class AuthService {
 
   redoLoginAuth() {
     this.clearToken()
-    const subject = new Subject<{ event: LoginEvent }>()
-    this.popupService.subject.next({
-      caller: 'auth-service',
-      isShow: true,
-      popupType: PopupType.LOGIN,
-      subject
-    })
-    subject.subscribe(({ event }) => {
-      if (event === LoginEvent.SUCCESS) {
-        this.popupService.subject.next({
-          caller: 'auth-service',
-          isShow: false,
-          popupType: undefined
-        })
-      }
-    })
+    this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 
   renewAccessToken() {
@@ -77,7 +61,7 @@ export class AuthService {
       this.redoLoginAuth()
     } else {
       this.http.post<AccessTokenRes>
-        (`${this.prefix}/auth/renew-access`, {
+        (`${apiPrefix}/auth/renew-access`, {
           refreshToken: rfToken
         }, { 'headers': { Authorization: 'public' } }).subscribe({
           next: ({ status, message, data }) => {
@@ -104,7 +88,7 @@ export class AuthService {
       this.redoLoginAuth()
     } else {
       this.http.post<RefreshTokenRes>
-        (`${this.prefix}/auth/renew-refresh`, {
+        (`${apiPrefix}/auth/renew-refresh`, {
           refreshToken: rfToken
         }, { 'headers': { Authorization: 'public' } }).subscribe({
           next: ({ status, message, data }) => {
@@ -175,15 +159,10 @@ export class AuthService {
     const refreshToken = this.getRefreshToken()
     if (refreshToken) {
       this.clearToken()
-      return this.http.post<{ access_token: string }>(`${this.prefix}/auth/logout`, {
+      return this.http.post<{ access_token: string }>(`${apiPrefix}/auth/logout`, {
         refreshToken
       }, { 'headers': { Authorization: 'public' } })
     }
     return of(EMPTY)
-  }
-
-  register(params: { uniqName: string, password: string }) {
-    return this.http.post<{ id: number, uniqName: string }>(`${this.prefix}/auth/register`,
-      params, { 'headers': { Authorization: 'public' } })
   }
 }

@@ -1,6 +1,7 @@
-import { Component, computed, input } from '@angular/core';
+import { Component, input } from '@angular/core';
 import { AppIconType } from './model'
 
+export { AppIconType } from './model';
 @Component({
   selector: 'app-icon',
   standalone: true,
