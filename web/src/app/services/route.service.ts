@@ -1,8 +1,13 @@
 import { Injectable } from '@angular/core';
-import { Router, ActivatedRoute } from '@angular/router';
+import { Router } from '@angular/router';
 import { PopStateEvent } from '@angular/common'
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
+}
+
+interface AppPopState {
+  type: RouteStateType,
+  seq: number,
 }
 
 enum RouteStateType {
@@ -13,9 +18,11 @@ enum RouteStateType {
 })
 export class RouteService {
   private _stateList!: { type: RouteStateType, data?: any }[]
-  constructor(private route: ActivatedRoute, private router: Router) {
+  private _lastState: AppPopState | undefined
+
+  constructor(private router: Router) {
     this._stateList = [{ type: RouteStateType.NAV, }]
-    window.addEventListener('PopStateEvent', (event) => this.onPopStateEvent(event))
+    window.addEventListener('popstate', (event) => this.onPopStateEvent(event))
   }
 
   getPageRoute(page: RoutePage, params?: any) {
@@ -38,7 +45,8 @@ export class RouteService {
   navigate(page: RoutePage, params?: any) {
     const commands = this.getPageRoute(page, params)
     if (commands) {
-      this.router.navigate(commands);
+      const state: AppPopState = { type: RouteStateType.NAV, seq: this._stateList.length }
+      this.router.navigate(commands, { state });
       this._stateList.push({ type: RouteStateType.NAV, })
     } else {
       console.error(`no page to navigate [${page}]`)
@@ -50,7 +58,8 @@ export class RouteService {
     const commands = this.getPageRoute(page, params)
     if (commands) {
       const sList = this._stateList
-      this.router.navigate(commands, { replaceUrl: true });
+      const state: AppPopState = { type: RouteStateType.NAV, seq: sList.length - 1 }
+      this.router.navigate(commands, { replaceUrl: true, state });
       sList[sList.length - 1] = ({ type: RouteStateType.NAV })
     } else {
       console.error(`no page to redirect [${page}]`)
@@ -58,7 +67,12 @@ export class RouteService {
   }
 
   onPopStateEvent(event: PopStateEvent) {
-    this._stateList.pop()
+    let state: AppPopState = event.state
+    if (this._lastState !== undefined && state.seq < this._lastState.seq) {
+      this._stateList.pop()
+    } else {
+      this._stateList.push({ type: state.type })
+    }
   }
 
   clearHistory() {
@@ -71,7 +85,13 @@ export class RouteService {
   hasPrevRoute() {
     return this._stateList.length > 1
   }
-  popupModalDlg(id: string) {
-    history.pushState({ id }, '')
+
+  popupModalDlg() {
+    history.pushState({ seq: this._stateList.length }, '')
+    this._stateList.push({ type: RouteStateType.STATE, })
+  }
+
+  go(delta: number) {
+    history.go(delta)
   }
 }

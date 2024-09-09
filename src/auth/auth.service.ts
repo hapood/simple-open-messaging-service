@@ -69,9 +69,9 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   checkRefreshTokenInfo(refreshToken: string) {
-    const payload: JwtPayload = this.jwtService.decode(refreshToken)
-    console.log(payload, new Date(payload.exp * 1000))
-    if (this._refreshTokenDict[refreshToken] === payload.sub) {
+    const payload: JwtPayload | null = this.jwtService.decode(refreshToken)
+    if (payload !== null && this._refreshTokenDict[refreshToken] === payload.sub &&
+      new Date().getTime() < payload.exp * 1000) {
       return payload
     }
     else {

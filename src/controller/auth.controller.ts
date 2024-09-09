@@ -45,7 +45,6 @@ export class AuthController {
   @Post('auth/renew-access')
   async renewaccessTokens(@Body() { refreshToken }: { refreshToken: string }) {
     const info = this.authService.checkRefreshTokenInfo(refreshToken)
-    console.log(info,1223)
     if (info !== undefined) {
       this.authService.removeRefreshToken(info.sub, refreshToken)
       return {
