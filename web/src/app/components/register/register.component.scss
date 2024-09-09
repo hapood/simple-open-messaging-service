@@ -11,15 +11,17 @@
     width: 100%;
     top: 0;
   }
-  
+
   .input-line {
     margin-top: 8px;
     width: 260px;
   }
+
   .avatar-hero {
     width: 180px;
     height: 180px;
   }
+
   .error,
   .err-hint {
     font-size: 12px;
@@ -28,6 +30,11 @@
     height: 12px;
     margin-top: 8px;
   }
+
+  .error {
+    max-width: 300px;
+  }
+
   .sub-btn {
     margin-top: 10px;
   }

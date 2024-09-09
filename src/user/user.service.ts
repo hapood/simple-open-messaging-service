@@ -167,7 +167,7 @@ export class UserService implements OnModuleInit {
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
     hasExtra = true
   ) {
-    return this.prisma.user.findUniqueOrThrow({
+    return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
       include: {
         userExtra: hasExtra,

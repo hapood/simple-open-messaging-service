@@ -22,7 +22,13 @@ export class UserController {
   @Get('user/my-profile')
   async getMyProfile(@Request() req,
   ) {
-    return await this.userService.findUniqueUser({ id: req.user.userId })
+    const data = await this.userService.findUniqueUser({ id: req.user.userId })
+    return {
+      userId: data.id,
+      uniqName: data.uniqName,
+      domain: data.domain,
+      userExtra: data.userExtra
+    }
   }
 
   @UseGuards(JwtAuthGuard)

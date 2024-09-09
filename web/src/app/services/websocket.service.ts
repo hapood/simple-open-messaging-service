@@ -12,7 +12,7 @@ export class WebsocketService {
   readonly eventSubject = new Subject<MessageEvent>();
 
   constructor(private authService: AuthService) {
-    this.connect()
+    // this.connect()
   }
 
   public connect() {

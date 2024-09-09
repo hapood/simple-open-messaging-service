@@ -17,6 +17,7 @@ export class RegisterComponent {
 
   uniqName = signal('');
   password = signal('');
+  password2 = signal('');
   uniqNameHint = signal('');
   passwordHint = signal('');
   isUniqNameVld = signal(false);
@@ -60,11 +61,14 @@ export class RegisterComponent {
   }
 
   register() {
-    this.onSuccess.emit({ uniqName: 'hapood', password: '512512' })
     if (this.isReging()) {
       return
     }
     const uniqName = this.uniqName(), password = this.password()
+    if (this.password2() !== password) {
+      this.resp.set("Two entered passwords do not match, make sure to re-enter")
+      return
+    }
     this.isReging.set(true)
     this.userService.register({ uniqName, password })
       .subscribe({

@@ -20,8 +20,9 @@ export class RegisterPageComponent {
   }
 
   onSuccess({ uniqName, password }: { uniqName: string, password: string }) {
-    this.authService.login({ uniqName, password, isKeep: true })
-    this.routeService.clearHistory();
-    this.routeService.redirect(RoutePage.HOME)
+    this.authService.login({ uniqName, password, isKeep: true }).subscribe(() => {
+      this.routeService.clearHistory();
+      this.routeService.redirect(RoutePage.HOME)
+    })
   }
 }

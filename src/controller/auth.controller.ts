@@ -3,6 +3,7 @@ import {
   Post,
   Request,
   UseGuards,
+  Body
 } from '@nestjs/common';
 import { User as UserModel } from '@prisma/client';
 import { LocalAuthGuard } from '../auth/local-auth.guard';
@@ -19,7 +20,10 @@ export class AuthController {
   async login(@Request() req) {
     const authInfo: LoginAuthInfo = req.user;
     if (authInfo.status === 0) {
-      return await this.authService.login(req.user as UserModel)
+      return {
+        status: 0, message: 'successful',
+        data: await this.authService.login(authInfo.userId)
+      }
     } else {
       if (authInfo.bannedUntil !== undefined) {
         return {
@@ -39,38 +43,37 @@ export class AuthController {
   }
 
   @Post('auth/renew-access')
-  async renewaccessTokens(@Request() req) {
-    const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
-    const isValid = this.authService.checkRefreshTokenValid(userId, refreshToken)
-    this.authService.removeRefreshToken(userId, refreshToken)
-    if (isValid) {
+  async renewaccessTokens(@Body() { refreshToken }: { refreshToken: string }) {
+    const info = this.authService.checkRefreshTokenInfo(refreshToken)
+    console.log(info,1223)
+    if (info !== undefined) {
+      this.authService.removeRefreshToken(info.sub, refreshToken)
       return {
-        code: 0,
+        status: 0,
         message: 'success',
         data: {
-          access_token: this.authService.getAccessToken(userId)
+          access_token: this.authService.getAccessToken(info.sub)
         }
       }
     } else {
       return {
-        code: 1,
+        status: 1,
         message: 'refresh_token is invalid',
       }
     }
   }
 
   @Post('auth/renew-refresh')
-  async renewRefreshTokens(@Request() req) {
-    const userId = req.user['sub'], refreshToken = req.user['refreshToken'];
-    const isValid = this.authService.checkRefreshTokenValid(userId, refreshToken)
-    this.authService.removeRefreshToken(userId, refreshToken)
-    if (isValid) {
+  async renewRefreshTokens(@Body() { refreshToken }: { refreshToken: string }) {
+    const info = this.authService.checkRefreshTokenInfo(refreshToken)
+    this.authService.removeRefreshToken(info.sub, refreshToken)
+    if (info !== undefined) {
       return {
         code: 0,
         message: 'success',
         data: {
-          access_token: this.authService.getAccessToken(userId),
-          refresh_token: this.authService.getRefreshToken(userId)
+          access_token: this.authService.getAccessToken(info.sub),
+          refresh_token: this.authService.getRefreshToken(info.sub)
         }
       }
     } else {

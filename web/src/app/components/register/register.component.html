@@ -9,6 +9,9 @@
   </div>
   <div class="input-line">
     <app-material-input type="password" [(text)]="password" placeholder="Password" autocomplete="new-password" />
+  </div>
+  <div class="input-line">
+    <app-material-input type="password" [(text)]="password2" placeholder="Password Again" autocomplete="new-password" />
     <div class="err-hint">{{passwordHint()}}</div>
   </div>
   <app-material-button type="submit" class="sub-btn" [disabled]="isRegBtnDisabled()">Sign up</app-material-button>

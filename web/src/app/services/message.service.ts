@@ -30,7 +30,7 @@ export class MsgService {
   }
 
   getMyProfile() {
-    return this.http.get<User>(`${apiPrefix}/my-profile`)
+    return this.http.get<User>(`${apiPrefix}/user/my-profile`)
   }
 
   sendMessage(params: { threadId: number, content: string }) {

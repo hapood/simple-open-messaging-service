@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse, } from '@angular/common/http';
-import { Subject, Observable, catchError, switchMap, filter, take, } from 'rxjs';
+import { Observable, catchError, switchMap, filter, take, } from 'rxjs';
 import { AuthService } from './services/auth.service';
 
 @Injectable()
@@ -15,7 +15,8 @@ export class AuthInterceptor implements HttpInterceptor {
       return this.authService.acTkSub.pipe(filter(data => data !== undefined),
         take(1),
         switchMap(({ lastToken, nextToken }) => {
-          if ((req.headers as any).Authorization !== 'Bearer ' + lastToken) {
+          const oldAuth = req.headers.get('Authorization')
+          if (oldAuth !== null && oldAuth !== 'Bearer ' + lastToken) {
             throw new Error('obsolete http request')
           }
           authReq = this.addTokenHeader(req, nextToken);

@@ -3,6 +3,7 @@ import { UserService } from '../user/user.service';
 import { JwtService } from '@nestjs/jwt';
 import { User as UserModel } from '@prisma/client';
 import * as argon2 from 'argon2';
+import { JwtPayload } from './model';
 
 @Injectable()
 export class AuthService implements OnModuleInit, OnModuleDestroy {
@@ -37,6 +38,9 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   async validateUser(uniqName: string, password: string): Promise<UserModel | undefined> {
     const user = await this.userService.findUniqueUser({ uniqName });
+    if (user === null) {
+      return undefined
+    }
     const match = await argon2.verify(user.hashPwd, password);
     if (match === true) {
       return user;
@@ -48,10 +52,10 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return argon2.hash(str)
   }
 
-  async login(user: UserModel) {
+  async login(userId: number) {
     return {
-      access_token: this.getAccessToken(user.id),
-      refresh_token: this.getRefreshToken(user.id)
+      access_token: this.getAccessToken(userId),
+      refresh_token: this.getRefreshToken(userId)
     };
   }
 
@@ -64,8 +68,15 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return true
   }
 
-  checkRefreshTokenValid(userId: number, refreshToken: string) {
-    return this._refreshTokenDict[refreshToken] === userId
+  checkRefreshTokenInfo(refreshToken: string) {
+    const payload: JwtPayload = this.jwtService.decode(refreshToken)
+    console.log(payload, new Date(payload.exp * 1000))
+    if (this._refreshTokenDict[refreshToken] === payload.sub) {
+      return payload
+    }
+    else {
+      return undefined
+    }
   }
 
   removeRefreshToken(userId: number, refreshToken: string) {
