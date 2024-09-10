@@ -37,7 +37,6 @@ export class AuthService {
     return this.http.post<RefreshTokenRes>
       (`${apiPrefix}/auth/login`, params, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
         if (res.status === 0) {
-          console.log(res)
           const data = res.data
           this._isKeep = params.isKeep
           this.clearToken()

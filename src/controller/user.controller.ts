@@ -1,14 +1,12 @@
 import {
   Controller,
-  Get,
-  Param,
   Post,
   Body,
   Request,
   UseGuards
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
-import { Prisma, User as UserModel, UserMessageThreadStatus, MessageThreadType } from '@prisma/client';
+import { Prisma, UserMessageThreadStatus, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @Controller()
@@ -19,16 +17,12 @@ export class UserController {
 
 
   @UseGuards(JwtAuthGuard)
-  @Get('user/my-profile')
+  @Post('user/my-profile')
   async getMyProfile(@Request() req,
   ) {
     const data = await this.userService.findUniqueUser({ id: req.user.userId })
-    return {
-      userId: data.id,
-      uniqName: data.uniqName,
-      domain: data.domain,
-      userExtra: data.userExtra
-    }
+    delete data.hashPwd
+    return data
   }
 
   @UseGuards(JwtAuthGuard)
@@ -39,7 +33,6 @@ export class UserController {
       skip: number;
       take: number;
       lastId?: number;
-      orderBy: 'desc' | 'asc'
     },
   ) {
     const newParams: Prisma.UserMessageThreadFindManyArgs = {
@@ -51,10 +44,16 @@ export class UserController {
         status: UserMessageThreadStatus.APPROVED
       },
       orderBy: {
-        createdAt: params.orderBy,
+        id: 'asc',
       },
     };
-    return await this.userService.queryUserThread(newParams)
+    const list = await this.userService.queryUserThread(newParams)
+    return {
+      status: 0,
+      message: 'successful',
+      data: list
+    }
+
   }
 
   @UseGuards(JwtAuthGuard)
@@ -79,6 +78,9 @@ export class UserController {
       orderBy: {
         createdAt: params.orderBy,
       },
+      include: {
+        threadItem: true
+      }
     };
     return await this.userService.queryUserThread(newParams)
   }
@@ -117,5 +119,34 @@ export class UserController {
   @Post('user/register')
   registerLocal(@Body() params: { uniqName: string; password: string },) {
     return this.userService.registerLocal(params)
+  }
+
+  @Post('user/query')
+  async queryUserBase(@Body() { userIds }: { userIds: number[] },) {
+    if (userIds.length > 100) {
+      return {
+        status: 1,
+        message: 'must less than 100 userIds per query'
+      }
+    }
+    const list = await this.userService.queryUsers({
+      where: {
+        id: {
+          in: userIds
+        },
+        isDeleted: false
+      },
+      include: {
+        userExtra: true
+      }
+    })
+    list.forEach(item => {
+      delete item.hashPwd
+    })
+    return {
+      status: 0,
+      message: 'successful',
+      data: list
+    }
   }
 }

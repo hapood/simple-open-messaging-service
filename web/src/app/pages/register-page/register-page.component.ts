@@ -3,6 +3,7 @@ import { RegisterComponent } from '../../components/register/register.component'
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { AuthService } from '../../services/auth.service';
+
 @Component({
   selector: 'app-register-page',
   standalone: true,
@@ -18,13 +19,14 @@ export class RegisterPageComponent {
       this.isShowBackBtn.set(true)
     }
   }
-  goBack(){
+  goBack() {
     this.routeService.go(-1)
   }
   onSuccess({ uniqName, password }: { uniqName: string, password: string }) {
     this.authService.login({ uniqName, password, isKeep: true }).subscribe(() => {
-      this.routeService.clearHistory();
-      this.routeService.redirect(RoutePage.HOME)
+      this.routeService.clearHistoryThen().subscribe(() => {
+        this.routeService.redirect(RoutePage.HOME)
+      });
     })
   }
 }

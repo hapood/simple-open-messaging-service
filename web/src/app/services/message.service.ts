@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { User, MsgThread, Message, Friend, QueryMessageLogParams } from './Interfaces'
+import { MsgThread, Message, Friend, QueryMessageLogParams } from './model'
 import { apiPrefix } from './constants';
 
 @Injectable({
@@ -9,13 +9,6 @@ import { apiPrefix } from './constants';
 export class MsgService {
   constructor(private http: HttpClient) { }
 
-  getUserList() {
-    return this.http.get<User[]>(`${apiPrefix}/get-user-list`)
-  }
-
-  getThreadList() {
-    return this.http.post<MsgThread[]>(`${apiPrefix}/get-thread-list`, {})
-  }
 
   getThreadInfo(params: { threadId: number }) {
     return this.http.post<MsgThread>(`${apiPrefix}/query-thread-info`, params)
@@ -27,10 +20,6 @@ export class MsgService {
 
   addFriend(uniqName: string) {
     return this.http.post(`${apiPrefix}/add-friend`, { uniqName })
-  }
-
-  getMyProfile() {
-    return this.http.get<User>(`${apiPrefix}/user/my-profile`)
   }
 
   sendMessage(params: { threadId: number, content: string }) {

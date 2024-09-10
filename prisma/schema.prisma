@@ -15,26 +15,37 @@ datasource db {
 }
 
 model User {
-  id          Int       @id @default(autoincrement())
-  uniqName    String    @unique @db.VarChar(31)
-  hashPwd     String    @db.VarChar(127)
-  isForeigner Boolean
-  domain      String?    @db.VarChar(63)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  isDeleted   Boolean   @default(false)
-  userExtraId Int       @unique
-  userExtra   UserExtra @relation(fields: [userExtraId], references: [id])
+  id            Int         @id @default(autoincrement())
+  uniqName      String      @unique @db.VarChar(31)
+  hashPwd       String      @db.VarChar(127)
+  isForeigner   Boolean
+  domain        String?     @db.VarChar(63)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  isDeleted     Boolean     @default(false)
+  userExtraId   Int         @unique
+  userExtra     UserExtra   @relation(fields: [userExtraId], references: [id])
+  userNotiBoxId Int         @unique
+  userNotiBox   userNotiBox @relation(fields: [userNotiBoxId], references: [id])
 
   @@unique([uniqName, domain])
 }
 
 model UserExtra {
-  id             Int     @id @default(autoincrement())
-  name           String  @db.VarChar(127)
-  hasUrFriendReq Boolean @default(false)
-  avatar         String
+  id        Int      @id @default(autoincrement())
+  name      String   @db.VarChar(127)
+  avatar    String
+  User      User?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model userNotiBox {
+  id             Int      @id @default(autoincrement())
+  hasUrFriendReq Boolean  @default(false)
   User           User?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 }
 
 model Group {
@@ -47,12 +58,13 @@ model Group {
 }
 
 model GroupExtra {
-  id           Int    @id @default(autoincrement())
+  id           Int      @id @default(autoincrement())
   memberIdList Int[]
   adminIdList  Int[]
   avatar       String
-
-  Group Group?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  Group        Group?
 }
 
 enum MessageThreadType {
@@ -117,8 +129,10 @@ enum NotifyType {
 }
 
 model Notify {
-  id      BigInt     @id @default(autoincrement())
-  userId  Int
-  type    NotifyType
-  content Json
+  id        BigInt     @id @default(autoincrement())
+  userId    Int
+  type      NotifyType
+  content   Json
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
 }

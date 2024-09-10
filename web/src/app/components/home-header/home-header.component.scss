@@ -12,6 +12,14 @@
   padding: 0 10px;
 }
 
-.icon-btn{
+.icon-btn {
   @include styless-button;
+  position: relative;
+}
+.menu-text {
+  font-size: 14px;
+  color: #000;
+  margin-left:12px;
+  height: 40px;
+  line-height: 40px;
 }

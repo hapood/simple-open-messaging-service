@@ -1,8 +1,8 @@
 import { signal } from '@angular/core';
 import { MsgService } from '../../services/message.service'
-import { Message, MsgThread, QueryMessageLogParams, } from '../../services/Interfaces';
+import { Message, MsgThread, QueryMessageLogParams, } from '../../services/model';
 import {
-  forkJoin, mergeMap, Observable, shareReplay, of, from,
+  forkJoin, mergeMap, Observable, of, from,
   firstValueFrom, concatMap
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
@@ -32,7 +32,6 @@ export interface GrpAddInfo {
 }
 
 interface MsgFactCallback {
-  onThreadInit: (info: ThreadInfo) => void
   beforeGrpRemoved: (index: number) => void
   afterMsgListAdd: (direction: 0 | 1) => void
   afterGrpReady: (index: number) => void
@@ -322,24 +321,6 @@ export class MsgGroupFactory {
   }
 
   _initThreadInfo() {
-    const getThreadInfo = this.msgService.getThreadInfo({
-      threadId: this.threadIdNum
-    })
-    const getMyInfo = this.msgService.getMyProfile()
-    this.initSglUsrPf$ = forkJoin([getThreadInfo, getMyInfo]).pipe(mergeMap(([thread, profile]) => {
-      this.msgThread = thread
-      this.profileRecord[profile.id] = { id: profile.id, uniqName: profile.uniqName, isSelf: true }
-      const { userId1, userId2 } = thread.threadItem.info
-      const friendId = userId1 === profile.id ? userId2 : userId1
-      return this.msgService.queryFriendInfo({ userId: friendId })
-    }), shareReplay())
-    this.initSglUsrPf$.subscribe(res => {
-      const friendProfile = res.friendUser
-      this.profileRecord[friendProfile.id] = { id: friendProfile.id, uniqName: friendProfile.uniqName, isSelf: false }
-      this.cb.onThreadInit({
-        title: friendProfile.uniqName
-      })
-    })
   }
 
   _procGenGrp({ drct, grp, list }: WorkflowGenerateResult): Observable<UpdateGroupParams> {

@@ -2,9 +2,9 @@ import { Component, signal, computed, Output, EventEmitter, effect } from '@angu
 import { FormsModule } from '@angular/forms';
 import { MaterialInputComponent } from '../material-input/material-input.component';
 import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
-import { AuthService } from '../../services/auth.service';
 import { MaterialProgressLinearComponent } from '../material-progress-linear/material-progress-linear.component';
 import { UserService } from '../../services/user.service';
+
 @Component({
   selector: 'app-register',
   standalone: true,
@@ -73,9 +73,9 @@ export class RegisterComponent {
     this.userService.register({ uniqName, password })
       .subscribe({
         next: ({ status, message }) => {
-          console.log(status)
           if (status === 0) {
             this.onSuccess.emit({ uniqName, password })
+            this.isReging.set(false)
             this.isSuccess.set(true)
           } else {
             this.resp.set(message)

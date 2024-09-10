@@ -1,6 +1,5 @@
 import { Routes } from '@angular/router';
 import { LoginPageComponent } from './pages/login-page/login-page.component';
-import { MyFriendsComponent } from './pages/relation/my-firends/my-friends.component';
 import { HomeComponent } from './pages/home/home.component';
 import { MessageThreadComponent } from './components/message-thread/friend-message.component';
 import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.component';
@@ -13,7 +12,6 @@ export const routes: Routes = [
   { path: "nav", component: PageNavgatorComponent },
   { path: "auth/login", component: LoginPageComponent },
   { path: "auth/register", component: RegisterPageComponent },
-  { path: "my-friends", component: MyFriendsComponent, },
   { path: "friend-message/:threadId", component: MessageThreadComponent, },
   { path: "friend-message/:threadId/:startMsgId", component: MessageThreadComponent, },
   { path: 'forbidden', component: ForbiddenPageComponent },

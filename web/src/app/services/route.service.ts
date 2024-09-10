@@ -1,6 +1,8 @@
 import { Injectable } from '@angular/core';
 import { Router } from '@angular/router';
 import { PopStateEvent } from '@angular/common'
+import { delay, EMPTY, of, tap } from 'rxjs';
+
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
@@ -59,6 +61,7 @@ export class RouteService {
     if (commands) {
       const sList = this._stateList
       const state: AppPopState = { type: RouteStateType.NAV, seq: sList.length - 1 }
+      console.log(commands, 1233)
       this.router.navigate(commands, { replaceUrl: true, state });
       sList[sList.length - 1] = ({ type: RouteStateType.NAV })
     } else {
@@ -75,11 +78,13 @@ export class RouteService {
     }
   }
 
-  clearHistory() {
-    let step = 1 - this._stateList.length
-    if (step < 0) {
-      history.go(step)
-    }
+  clearHistoryThen() {
+    return of(EMPTY).pipe(tap(() => {
+      let step = 1 - this._stateList.length
+      if (step < 0) {
+        history.go(step)
+      }
+    }), delay(10))
   }
 
   hasPrevRoute() {

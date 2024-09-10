@@ -95,10 +95,10 @@ export class UserService implements OnModuleInit {
       } else {
         await prisma.userMessageThread.createMany({
           data: [{
-            threadId: null, userId: fromUserId, toObjId: toUserId,reqMessage:'',
+            threadId: null, userId: fromUserId, toObjId: toUserId, reqMessage: '',
             toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
           }, {
-            threadId: null, userId: toUserId, toObjId: fromUserId,reqMessage:'',
+            threadId: null, userId: toUserId, toObjId: fromUserId, reqMessage: '',
             toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
           }]
         })
@@ -213,6 +213,10 @@ export class UserService implements OnModuleInit {
             avatar: '',
           }
         },
+        userNotiBox: {
+          create: {
+          }
+        }
       }
       const newUser = await prisma.user.create({
         data: newUserData
@@ -252,5 +256,9 @@ export class UserService implements OnModuleInit {
 
   queryUserThread(params: Prisma.UserMessageThreadFindManyArgs) {
     return this.prisma.userMessageThread.findMany(params)
+  }
+
+  queryUsers(params: Prisma.UserFindManyArgs) {
+    return this.prisma.user.findMany(params)
   }
 }

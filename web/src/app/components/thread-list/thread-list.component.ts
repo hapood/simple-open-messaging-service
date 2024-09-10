@@ -1,9 +1,12 @@
 import { Component, input, signal } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
-import { MsgService } from '../../services/message.service'
-import { MsgThread, User } from '../../services/Interfaces'
+import { UserService } from '../../services/user.service'
+import { MsgThread, User } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { switchMap, of } from 'rxjs';
+
+interface DispThreadItem { id: number, userId: number, name: string, icon: string }
 @Component({
   selector: 'app-thread-list',
   standalone: true,
@@ -15,37 +18,53 @@ export class ThreadListComponent {
   UserAvatarType = UserAvatarType
   readonly profile = input<User>()
 
-  readonly threadList = signal<MsgThread[]>([])
+  readonly threadList = signal<DispThreadItem[]>([])
   readonly selectedId = signal<number | undefined>(undefined)
 
   userInfoDict = signal<Record<string, User>>({})
 
-  constructor(private msgService: MsgService, private route: ActivatedRoute, private router: Router) { }
+  constructor(private userService: UserService, private route: ActivatedRoute, private router: Router) { }
 
-  getThreadList() {
-    return this.msgService.getThreadList().subscribe(threadList => {
+  genThreadList() {
+    return this.userService.queryUserThreadValid({ take: 10, skip: 0 }).pipe(switchMap(({ status, message, data: threadList }) => {
+      if (status == 0) {
+        return this.userService.queryUserInfo({ userIds: threadList!.map(item => item.toObjId) }).pipe(switchMap(({ status, message, data: userList }) => {
+          const dict: Record<number, User> = {}
+          if (status == 0) {
+            const dispThreadList: DispThreadItem[] = []
+            userList!.forEach(item => dict[item.id] = item)
+            threadList!.forEach(thread => {
+              const user = dict[thread.toObjId]
+              if (user) {
+                dispThreadList.push({
+                  id: thread.id,
+                  userId: thread.toObjId,
+                  name: user.userExtra.name,
+                  icon: user.userExtra.avatar
+                })
+              }
+            })
+            return of(dispThreadList)
+          } else {
+            throw new Error(message)
+          }
+        }))
+      } else {
+        throw new Error(message)
+      }
+    })).subscribe(threadList => {
       this.threadList.set(threadList)
     })
   }
 
-  getUserList() {
-    return this.msgService.getUserList().subscribe(userList => {
-      const dict: Record<string, User> = {}
-      userList.map(item => {
-        dict[item.id] = item
-      })
-      this.userInfoDict.set(dict)
-    })
-  }
-
-  onThreadClick(thread: MsgThread) {
+  onThreadClick(thread: DispThreadItem) {
     this.selectedId.set(thread.id)
     this.route.url.subscribe(urls => {
       let replaceUrl = true
       if (urls.length === 0) {
         replaceUrl = false
       } this.router.navigate(['/thread/', thread.id], { replaceUrl });
-
+      
     })
   }
 
@@ -59,7 +78,6 @@ export class ThreadListComponent {
   }
 
   ngOnInit() {
-    this.getThreadList();
-    this.getUserList();
+    this.genThreadList();
   }
 }

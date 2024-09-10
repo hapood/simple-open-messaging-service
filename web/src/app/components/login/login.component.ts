@@ -1,4 +1,5 @@
 import { Component, signal, computed, Output, EventEmitter } from '@angular/core';
+import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service'
 import { UserAvatarComponent, UserAvatarType } from '../../components/user-avatar/user-avatar.component';
 import { MaterialInputComponent } from '../material-input/material-input.component';
@@ -15,7 +16,7 @@ export enum LoginEvent {
   selector: 'app-login',
   standalone: true,
   imports: [UserAvatarComponent, MaterialInputComponent, MaterialCheckboxComponent,
-    MaterialButtonComponent, MaterialProgressLinearComponent],
+    MaterialButtonComponent, MaterialProgressLinearComponent, FormsModule],
   templateUrl: './login.component.html',
   styleUrl: './login.component.scss'
 })
@@ -29,8 +30,9 @@ export class LoginComponent {
   MaterialButtonType = MaterialButtonType
   isKeepLogin = signal(true)
   isLoging = signal(false)
+  isSuccess = signal(false)
   isLoginBtnDisabled = computed(() => {
-    return this.isLoging() || this.uniqName() === '' || this.password() === ''
+    return this.isSuccess() || this.isLoging() || this.uniqName() === '' || this.password() === ''
   })
 
   constructor(private authService: AuthService, private routeService: RouteService) {
@@ -42,11 +44,16 @@ export class LoginComponent {
       return
     }
     this.isLoging.set(true)
-    this.authService.login({ uniqName: this.uniqName(), password: this.password(), isKeep: this.isKeepLogin() })
+    this.authService.login({
+      uniqName: this.uniqName(),
+      password: this.password(), isKeep: this.isKeepLogin()
+    })
       .subscribe({
         next: ({ status, message }) => {
           if (status === 0) {
             this.onSuccess.emit(true)
+            this.isSuccess.set(true)
+            this.isLoging.set(false)
           } else {
             this.resp.set(message)
             this.isLoging.set(false)
@@ -56,8 +63,6 @@ export class LoginComponent {
           console.error(err)
           this.resp.set('error occured')
           this.isLoging.set(false)
-        }
-        , complete: () => {
         }
       })
   }

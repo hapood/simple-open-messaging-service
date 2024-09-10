@@ -1,0 +1,16 @@
+@import "../../assets/utils.scss";
+
+.menu-button {
+  @include styless-button;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0 10px;
+}
+
+/* Hover, Focus */
+.menu-button:hover,
+.menu-button:focus {
+  background-color: rgba(26, 27, 31, 0.08);
+}

@@ -71,9 +71,6 @@ export class MessageThreadComponent {
     this._startMsgId = startMsgId
     const grpFactory = new MsgGroupFactory({
       cb: {
-        onThreadInit: ({ title }) => {
-          this.title.set(title)
-        },
         beforeGrpRemoved: () => { },
         afterMsgListAdd: (direction) => {
           this.checkAndBuildGroup()
