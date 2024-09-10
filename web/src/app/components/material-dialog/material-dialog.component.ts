@@ -2,13 +2,13 @@ import { Component, input } from '@angular/core';
 import { NgClass } from '@angular/common';
 
 @Component({
-  selector: 'app-material-modal',
+  selector: 'app-material-dialog',
   standalone: true,
   imports: [NgClass],
-  templateUrl: './material-modal.component.html',
-  styleUrl: './material-modal.component.scss'
+  templateUrl: './material-dialog.component.html',
+  styleUrl: './material-dialog.component.scss'
 })
-export class MaterialModalComponent {
+export class MaterialDialogComponent {
   
   isShow = input(false)
 }

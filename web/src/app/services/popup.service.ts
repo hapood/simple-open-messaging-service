@@ -2,7 +2,7 @@ import { Injectable, signal } from '@angular/core';
 import { BehaviorSubject, Subject } from 'rxjs';
 import { ComponentEventSubject } from '../../utils'
 
-export enum PopupType { }
+export enum PopupType { FRIEND_REQUESTS}
 
 interface Command {
   caller: string,

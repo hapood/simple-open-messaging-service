@@ -5,8 +5,7 @@ import { UserService } from '../../services/user.service'
 import { ThreadListComponent } from '../../components/thread-list/thread-list.component';
 import { MessageThreadComponent } from '../../components/message-thread/friend-message.component';
 import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
-import { PopupService } from '../../services/popup.service';
-
+import { AuthService } from '../../services/auth.service';
 @Component({
   selector: 'app-home',
   standalone: true,
@@ -18,10 +17,11 @@ export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
   curThreadId = signal<number | undefined>(undefined)
 
-  constructor(private userService: UserService, private popupService: PopupService) { }
+  constructor(private userService: UserService, private authService: AuthService) { }
 
   ngOnInit() {
     this.userService.updateSessionProfile();
+    this.authService.renewAccessToken()
   }
 
 }

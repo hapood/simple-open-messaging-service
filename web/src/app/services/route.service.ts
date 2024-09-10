@@ -61,7 +61,6 @@ export class RouteService {
     if (commands) {
       const sList = this._stateList
       const state: AppPopState = { type: RouteStateType.NAV, seq: sList.length - 1 }
-      console.log(commands, 1233)
       this.router.navigate(commands, { replaceUrl: true, state });
       sList[sList.length - 1] = ({ type: RouteStateType.NAV })
     } else {

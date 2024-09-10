@@ -1,4 +1,15 @@
-<app-material-modal [isShow]="popupType()!==undefined">
-  @switch (popupType()) {
-  }
-</app-material-modal>
+<app-material-dialog [isShow]="popupType()!==undefined">
+  <div class="register-header">
+    @if(isShowBackBtn()){
+    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
+        [style]="{width:'32px',height:'32px'}"></app-icon></button>}
+    <div class="register-title">{{popupTitle()}}</div>
+  </div>
+  <div class="popup-com-wrapper">
+    @if(currentPopupCom()!==undefined){
+    <ng-container *ngComponentOutlet="
+        currentPopupCom();
+        inputs: {subject:curSubject()};
+      " />}
+  </div>
+</app-material-dialog>
