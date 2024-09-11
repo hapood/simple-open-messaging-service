@@ -1,7 +1,29 @@
-<div>
-  <div>
-    <div>Received</div>
-    <div>Sent</div>
+<div class="friend-requests">
+  <div class="tabs">
+    <div class="tab-item" (click)="setTab(0)">
+      <div class="tab-text">Received
+        <div class="active_indi" [ngClass]="[activeTab()==0?'show':'hide']"></div>
+      </div>
+    </div>
+    <div class="tab-item" (click)="setTab(1)">
+      <div class="tab-text">Sent
+        <div class="active_indi" [ngClass]="[activeTab()==1?'show':'hide']"></div>
+      </div>
+    </div>
   </div>
-  <div></div>
+  <div [ngClass]="[activeTab()==0?'show':'hide']">
+
+  </div>
+  <div [ngClass]="[activeTab()==1?'show':'hide']">
+    <div class="content">
+      @if(isShowSendForm()===true){
+      <div class="sent-form"></div>
+      }@else {
+      <div class="sent-btn-wrp">
+        <app-material-button [styleType]="MaterialButtonType.OUTLINED" (click)="showSendForm()">Add
+          Friend</app-material-button>
+      </div>
+      }
+    </div>
+  </div>
 </div>

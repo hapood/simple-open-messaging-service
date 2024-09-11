@@ -1,0 +1,20 @@
+.popup-header {
+  height: 56px;
+  width: 100%;
+  background: #fff;
+  box-sizing: border-box;
+  border-bottom: 1px solid #cccccc;
+  display: flex;
+  align-items: center;
+  padding: 0 10px;
+  .popup-title {
+    font-size: 16px;
+    position: absolute;
+    left: 50%;
+    transform: translateX(-50%);
+  }
+}
+.popup-com-wrapper {
+  height: calc(100vh - 56px);
+  background: #ffffff;
+}
