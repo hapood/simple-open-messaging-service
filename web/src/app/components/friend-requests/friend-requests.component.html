@@ -1,4 +1,10 @@
 <div class="friend-requests">
+  <div class="popup-header">
+    @if(isShowBackBtn()){
+    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
+        [style]="{width:'32px',height:'32px'}"></app-icon></button>}
+    <div class="popup-title">Friend Requests</div>
+  </div>
   <div class="tabs">
     <div class="tab-item" (click)="setTab(0)">
       <div class="tab-text">Received
