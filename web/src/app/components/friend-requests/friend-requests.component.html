@@ -7,29 +7,47 @@
   </div>
   <div class="tabs">
     <div class="tab-item" (click)="setTab(0)">
-      <div class="tab-text">Received
+      <div class="tab-text">New
         <div class="active_indi" [ngClass]="[activeTab()==0?'show':'hide']"></div>
       </div>
     </div>
     <div class="tab-item" (click)="setTab(1)">
-      <div class="tab-text">Sent
+      <div class="tab-text">Received
         <div class="active_indi" [ngClass]="[activeTab()==1?'show':'hide']"></div>
       </div>
     </div>
+    <div class="tab-item" (click)="setTab(2)">
+      <div class="tab-text">Sent
+        <div class="active_indi" [ngClass]="[activeTab()==2?'show':'hide']"></div>
+      </div>
+    </div>
   </div>
-  <div [ngClass]="[activeTab()==0?'show':'hide']">
-
+  <div [ngClass]="[activeTab()==0?'show':'hide']" class="tab-content">
+    <div class="add-content">
+      @if(addTabStatus()===AddTabStatus.EMPTY){
+      <div>
+        Add new friend by username/full address.
+      </div>
+      }
+      @else if(addTabStatus()===AddTabStatus.SEARCHING){
+      <div>Searching</div>
+      }
+      @else if(addTabStatus()===AddTabStatus.SUCCESS){
+      <div>{{userData()!.uniqName}}</div>
+      }
+      @else if(addTabStatus()===AddTabStatus.ERROR){
+      <div>{{errMsg()}}</div>
+      }
+    </div>
+    <form class="user-search-bar" (ngSubmit)="searchUser()">
+      <input class="user-search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
+        placeholder="username/full address">
+      <app-material-button type="submit" [disabled]="addTabStatus()===AddTabStatus.SEARCHING"
+        [styleType]="MaterialButtonType.TEXT">Search</app-material-button>
+    </form>
   </div>
   <div [ngClass]="[activeTab()==1?'show':'hide']">
     <div class="content">
-      @if(isShowSendForm()===true){
-      <div class="sent-form"></div>
-      }@else {
-      <div class="sent-btn-wrp">
-        <app-material-button [styleType]="MaterialButtonType.OUTLINED" (click)="showSendForm()">Add
-          Friend</app-material-button>
-      </div>
-      }
     </div>
   </div>
 </div>

@@ -29,6 +29,8 @@ export class AuthService {
       const leftTime = new Date().getTime() - parseInt(tkCrtTm)
       if (leftTime < SEVEN_DAY_TIME) {
         this.setTimerToRefresh(leftTime)
+      } else {
+        this.setTimerToRefresh(SEVEN_DAY_TIME)
       }
     }
   }

@@ -5,25 +5,34 @@ import { MaterialButtonComponent, MaterialButtonType } from '../material-button/
 import { RouteService } from '../../services/route.service';
 import { MaterialInputComponent } from '../material-input/material-input.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { FormsModule } from '@angular/forms';
+import { UserService, User } from '../../services/user.service';
+
+enum AddTabStatus {
+  EMPTY, SEARCHING, SUCCESS, ERROR
+}
 
 @Component({
   selector: 'app-friend-requests',
   standalone: true,
-  imports: [NgClass, MaterialButtonComponent, IconComponent, MaterialInputComponent],
+  imports: [FormsModule, NgClass, MaterialButtonComponent, IconComponent, MaterialInputComponent],
   templateUrl: './friend-requests.component.html',
   styleUrl: './friend-requests.component.scss'
 })
-
 export class FriendRequestsComponent {
+  readonly searchText = signal('')
+  readonly userData = signal<User | undefined>(undefined)
+  readonly errMsg = signal('')
+  readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.EMPTY)
   subject = input<Subject<any> | undefined>(undefined)
   activeTab = signal(0)
-  isShowSendForm = signal(false)
   isShowBackBtn = signal(false)
-  
-  AppIconType=AppIconType
+
+  AddTabStatus=AddTabStatus
+  AppIconType = AppIconType
   MaterialButtonType = MaterialButtonType
 
-  constructor(private routeService: RouteService,) {
+  constructor(private routeService: RouteService, private userService: UserService) {
     if (this.routeService.hasPrevRoute()) {
       this.isShowBackBtn.set(true)
     }
@@ -32,12 +41,25 @@ export class FriendRequestsComponent {
     this.activeTab.set(tab)
   }
 
-  showSendForm() {
-    this.isShowSendForm.set(true)
-  }
-
   goBack() {
     this.routeService.go(-1)
   }
 
+  searchUser() {
+    this.addTabStatus.set(AddTabStatus.SEARCHING)
+    this.userService.getUserInfoByUniqName({ uniqName: this.searchText().trim() }).subscribe({
+      next: res => {
+        if (res.status === 0) {
+          this.userData.set(res.data)
+          this.addTabStatus.set(AddTabStatus.SUCCESS)
+        } else {
+          this.addTabStatus.set(AddTabStatus.ERROR)
+          this.errMsg.set(res.message)
+        }
+      }, error: () => {
+        this.errMsg.set('unknow error occured')
+        this.addTabStatus.set(AddTabStatus.ERROR)
+      }
+    })
+  }
 }

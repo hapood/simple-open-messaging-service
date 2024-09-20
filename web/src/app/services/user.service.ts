@@ -3,6 +3,8 @@ import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
 import { User, QueryUserThreadParams, MsgThread } from './model'
 
+export type { User } from './model'
+
 @Injectable({
   providedIn: 'root',
 })
@@ -37,5 +39,9 @@ export class UserService {
 
   queryUserInfo(params: { userIds: number[] }) {
     return this.http.post<{ status: number, message: string, data?: User[] }>(`${apiPrefix}/user/query`, params)
+  }
+
+  getUserInfoByUniqName(params: { uniqName: string }) {
+    return this.http.post<{ status: number, message: string, data?: User }>(`${apiPrefix}/user/by-uniq-name`, params)
   }
 }

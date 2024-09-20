@@ -8,7 +8,7 @@ import {
 import { UserService } from '../user/user.service';
 import { Prisma, UserMessageThreadStatus, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-
+import { StandardResponse } from './utils'
 @Controller()
 export class UserController {
   constructor(
@@ -121,6 +121,7 @@ export class UserController {
     return this.userService.registerLocal(params)
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('user/query')
   async queryUserBase(@Body() { userIds }: { userIds: number[] },) {
     if (userIds.length > 100) {
@@ -149,4 +150,26 @@ export class UserController {
       data: list
     }
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('user/by-uniq-name')
+  async getUserByuniqName(@Body() { uniqName }: { uniqName: string }): Promise<StandardResponse> {
+    const user = await this.userService.findUniqueUser({
+      uniqName,
+      isDeleted: false
+    }, true)
+    if (user !== null) {
+      return {
+        status: 0,
+        message: 'successful',
+        data: user
+      }
+    } else {
+      return {
+        status: 1,
+        message: `can not find user [${uniqName}]`
+      }
+    }
+  }
+
 }

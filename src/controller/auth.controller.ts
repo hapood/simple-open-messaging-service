@@ -27,7 +27,7 @@ export class AuthController {
     } else {
       if (authInfo.bannedUntil !== undefined) {
         return {
-          code: 2,
+          status: 2,
           message: 'too many bad attemp',
           data: {
             bannedUntil: authInfo.bannedUntil
@@ -35,7 +35,7 @@ export class AuthController {
         }
       } else {
         return {
-          code: 1,
+          status: 1,
           message: 'error username/password'
         }
       }
@@ -68,7 +68,7 @@ export class AuthController {
     this.authService.removeRefreshToken(info.sub, refreshToken)
     if (info !== undefined) {
       return {
-        code: 0,
+        status: 0,
         message: 'success',
         data: {
           access_token: this.authService.getAccessToken(info.sub),
@@ -77,7 +77,7 @@ export class AuthController {
       }
     } else {
       return {
-        code: 1,
+        status: 1,
         message: 'refresh_token is invalid',
       }
     }

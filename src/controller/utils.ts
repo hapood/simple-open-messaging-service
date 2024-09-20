@@ -10,3 +10,9 @@ export function toJson(param: any) {
     }
   );
 };
+
+export interface StandardResponse {
+  status: number,
+  message: string,
+  data?: any
+}

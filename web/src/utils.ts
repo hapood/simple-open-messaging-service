@@ -5,8 +5,3 @@ export function arrayToDictIndex<T extends string, U>(arr: (Record<T, string> & 
   })
   return dict
 }
-
-export type ComponentEventSubject<T, U = any> = {
-  event: T,
-  payload?: U
-}

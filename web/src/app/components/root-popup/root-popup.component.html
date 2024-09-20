@@ -1,9 +1,8 @@
-<app-material-dialog [isShow]="popupType()!==undefined">
+<app-material-dialog [isShow]="dlgList().length>0">
   <div class="popup-com-wrapper">
-    @if(currentPopupCom()!==undefined){
+    @for(info of dlgList();track $index){
     <ng-container *ngComponentOutlet="
-        currentPopupCom();
-        inputs: {subject:curSubject()};
+        info.component
       " />}
   </div>
 </app-material-dialog>

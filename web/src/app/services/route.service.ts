@@ -1,10 +1,28 @@
-import { Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { PopStateEvent } from '@angular/common'
 import { delay, EMPTY, of, tap } from 'rxjs';
+import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
+}
+
+export enum PopupType { FRIEND_REQUESTS }
+
+const componentDict = {
+  [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent
+}
+
+export interface DlgInfo {
+  component: any,
+  inputs?: any | undefined
+}
+
+interface Command {
+  caller: string,
+  popupType: PopupType,
+  inputs?: any
 }
 
 interface AppPopState {
@@ -19,11 +37,12 @@ enum RouteStateType {
   providedIn: 'root',
 })
 export class RouteService {
-  private _stateList!: { type: RouteStateType, data?: any }[]
+  private _stateList!: AppPopState[]
   private _lastState: AppPopState | undefined
+  dlgList = signal<DlgInfo[]>([])
 
   constructor(private router: Router) {
-    this._stateList = [{ type: RouteStateType.NAV, }]
+    this._stateList = [{ type: RouteStateType.NAV, seq: 0 }]
     window.addEventListener('popstate', (event) => this.onPopStateEvent(event))
   }
 
@@ -49,12 +68,20 @@ export class RouteService {
     if (commands) {
       const state: AppPopState = { type: RouteStateType.NAV, seq: this._stateList.length }
       this.router.navigate(commands, { state });
-      this._stateList.push({ type: RouteStateType.NAV, })
+      this._stateList.push(state)
     } else {
       console.error(`no page to navigate [${page}]`)
     }
   }
 
+  popupDlg(cmd: Command) {
+    const state: AppPopState = { type: RouteStateType.STATE, seq: this._stateList.length }
+    history.pushState(state, '')
+    this._stateList.push(state)
+    const dlgList = this.dlgList
+    dlgList.set(dlgList().concat([{ component: componentDict[cmd.popupType], inputs: cmd.inputs }]))
+    this._lastState = state
+  }
 
   redirect(page: RoutePage, params?: any) {
     const commands = this.getPageRoute(page, params)
@@ -62,7 +89,8 @@ export class RouteService {
       const sList = this._stateList
       const state: AppPopState = { type: RouteStateType.NAV, seq: sList.length - 1 }
       this.router.navigate(commands, { replaceUrl: true, state });
-      sList[sList.length - 1] = ({ type: RouteStateType.NAV })
+      sList[sList.length - 1] = state
+      this._lastState = state
     } else {
       console.error(`no page to redirect [${page}]`)
     }
@@ -70,10 +98,19 @@ export class RouteService {
 
   onPopStateEvent(event: PopStateEvent) {
     let state: AppPopState = event.state
-    if (this._lastState !== undefined && state.seq < this._lastState.seq) {
-      this._stateList.pop()
+    if (state.seq === this._lastState!.seq) {
+      const info = this._stateList.pop()
+      console.log(info)
+      if (info!.type === RouteStateType.STATE) {
+        const dlgList = this.dlgList()
+        this.dlgList.set(dlgList.slice(0, dlgList.length - 1))
+      }
+      this._lastState = info
+    } else if (state.seq > this._lastState!.seq) {
+      this._stateList.push(state)
+      this._lastState = state
     } else {
-      this._stateList.push({ type: state.type })
+      console.error('onPopStateEvent error, never should come here')
     }
   }
 
@@ -88,11 +125,6 @@ export class RouteService {
 
   hasPrevRoute() {
     return this._stateList.length > 1
-  }
-
-  popupModalDlg() {
-    history.pushState({ seq: this._stateList.length }, '')
-    this._stateList.push({ type: RouteStateType.STATE, })
   }
 
   go(delta: number) {
