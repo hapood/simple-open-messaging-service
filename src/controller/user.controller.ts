@@ -86,23 +86,23 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('user/make-friend-request')
-  async makeFriendRequest(@Request() req,
-    @Body() params: { uniqName: string; },
+  @Post('user/send-friend-request')
+  async sendFriendRequest(@Request() req,
+    @Body() params: { userId: number; },
   ) {
-    const friend = await this.userService.findUniqueUser({ uniqName: params.uniqName }, false)
-    if (req.user.userId === friend.id) {
+    if (req.user.userId === params.userId) {
       return {
         status: 3,
         message: 'can not make friend with self'
       }
     }
+    const friend = await this.userService.findUniqueUser({ id: params.userId }, false)
     if (friend) {
       //status 0,1,2
       return this.userService.makeFriendRequest(req.user.userId, friend.id);
     } else {
       return {
-        status: 4,
+        status: 3,
         message: 'friend does not not exist'
       }
     }
@@ -153,11 +153,12 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @Post('user/by-uniq-name')
-  async getUserByuniqName(@Body() { uniqName }: { uniqName: string }): Promise<StandardResponse> {
+  async getUserByUniqName(@Body() { uniqName }: { uniqName: string }): Promise<StandardResponse> {
     const user = await this.userService.findUniqueUser({
       uniqName,
       isDeleted: false
     }, true)
+    delete user.hashPwd
     if (user !== null) {
       return {
         status: 0,
@@ -171,5 +172,4 @@ export class UserController {
       }
     }
   }
-
 }

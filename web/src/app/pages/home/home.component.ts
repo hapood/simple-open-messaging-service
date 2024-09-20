@@ -15,6 +15,7 @@ import { AuthService } from '../../services/auth.service';
 })
 export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
+  readonly isShowMsgTrd = signal(false)
   curThreadId = signal<number | undefined>(undefined)
 
   constructor(private userService: UserService, private authService: AuthService) { }

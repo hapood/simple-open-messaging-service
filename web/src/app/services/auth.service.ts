@@ -117,7 +117,6 @@ export class AuthService {
   }
 
   setReToken(refreshToken: string, isKeep?: boolean) {
-    this.clearToken()
     if (isKeep === true) {
       this._isKeep = true
       localStorage.setItem(IS_KEEP_LOGIN, '1')

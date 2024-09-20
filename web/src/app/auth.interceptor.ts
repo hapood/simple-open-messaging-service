@@ -10,7 +10,6 @@ export class AuthInterceptor implements HttpInterceptor {
 
   intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<Object>> {
     let authReq = req;
-    console.log(req)
     if (req.headers.get('Authorization') !== 'public') {
       return this.authService.acTkSub.pipe(filter(data => data !== undefined),
         take(1),

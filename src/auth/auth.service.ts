@@ -37,7 +37,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async validateUser(uniqName: string, password: string): Promise<UserModel | undefined> {
-    const user = await this.userService.findUniqueUser({ uniqName });
+    const user = await this.userService.findUniqueUser({ uniqName }, true);
     if (user === null) {
       return undefined
     }

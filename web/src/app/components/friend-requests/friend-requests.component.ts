@@ -7,15 +7,17 @@ import { MaterialInputComponent } from '../material-input/material-input.compone
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
-
+import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { MsgService } from '../../services/message.service'
 enum AddTabStatus {
-  EMPTY, SEARCHING, SUCCESS, ERROR
+  INIT, EMPTY, SEARCHING, SUCCESS, ERROR
 }
 
 @Component({
   selector: 'app-friend-requests',
   standalone: true,
-  imports: [FormsModule, NgClass, MaterialButtonComponent, IconComponent, MaterialInputComponent],
+  imports: [UserAvatarComponent, FormsModule, NgClass,
+    MaterialButtonComponent, IconComponent, MaterialInputComponent],
   templateUrl: './friend-requests.component.html',
   styleUrl: './friend-requests.component.scss'
 })
@@ -23,16 +25,21 @@ export class FriendRequestsComponent {
   readonly searchText = signal('')
   readonly userData = signal<User | undefined>(undefined)
   readonly errMsg = signal('')
-  readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.EMPTY)
+  readonly reqRspTxt = signal('')
+  readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT)
+  readonly canAdd = signal(false)
+  readonly curSearchText = signal('')
+
   subject = input<Subject<any> | undefined>(undefined)
   activeTab = signal(0)
   isShowBackBtn = signal(false)
 
-  AddTabStatus=AddTabStatus
+  UserAvatarType = UserAvatarType
+  AddTabStatus = AddTabStatus
   AppIconType = AppIconType
   MaterialButtonType = MaterialButtonType
 
-  constructor(private routeService: RouteService, private userService: UserService) {
+  constructor(private routeService: RouteService, private userService: UserService, private msgService: MsgService) {
     if (this.routeService.hasPrevRoute()) {
       this.isShowBackBtn.set(true)
     }
@@ -47,18 +54,51 @@ export class FriendRequestsComponent {
 
   searchUser() {
     this.addTabStatus.set(AddTabStatus.SEARCHING)
-    this.userService.getUserInfoByUniqName({ uniqName: this.searchText().trim() }).subscribe({
+    this.reqRspTxt.set('')
+    const curSearchText = this.searchText().trim()
+    this.userService.getUserInfoByUniqName({ uniqName: curSearchText }).subscribe({
       next: res => {
         if (res.status === 0) {
-          this.userData.set(res.data)
-          this.addTabStatus.set(AddTabStatus.SUCCESS)
+          if (res.data!.uniqName === this.userService.sessionProfile()!.uniqName) {
+            this.userData.set(res.data)
+            this.addTabStatus.set(AddTabStatus.SUCCESS)
+            this.canAdd.set(false)
+            this.reqRspTxt.set('can not add yourself')
+          } else {
+            this.msgService.getThreadByUserId({ userId: res.data!.id }).subscribe(res2 => {
+              if (res2.status === 1) {
+                const thread = res2.data
+                // if(thread!.status){
+
+                // }
+              }
+              this.userData.set(res.data)
+              this.canAdd.set(true)
+              this.addTabStatus.set(AddTabStatus.SUCCESS)
+            })
+          }
         } else {
-          this.addTabStatus.set(AddTabStatus.ERROR)
-          this.errMsg.set(res.message)
+          this.curSearchText.set(curSearchText)
+          this.addTabStatus.set(AddTabStatus.EMPTY)
         }
       }, error: () => {
         this.errMsg.set('unknow error occured')
         this.addTabStatus.set(AddTabStatus.ERROR)
+      }
+    })
+  }
+
+  sendRequest() {
+    this.reqRspTxt.set('')
+    this.userService.sendFriendRequest({ userId: this.userData()!.id }).subscribe({
+      next: res => {
+        if (res.status === 0) {
+          this.reqRspTxt.set('sent successfully')
+        } else {
+          this.reqRspTxt.set(res.message)
+        }
+      }, error: () => {
+        this.reqRspTxt.set('unknow error occured')
       }
     })
   }

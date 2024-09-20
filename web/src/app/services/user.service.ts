@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
-import { User, QueryUserThreadParams, MsgThread } from './model'
+import { User, QueryUserThreadParams, MsgThread, StandardResponse } from './model'
 
 export type { User } from './model'
 
@@ -42,6 +42,10 @@ export class UserService {
   }
 
   getUserInfoByUniqName(params: { uniqName: string }) {
-    return this.http.post<{ status: number, message: string, data?: User }>(`${apiPrefix}/user/by-uniq-name`, params)
+    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/by-uniq-name`, params)
+  }
+
+  sendFriendRequest(params: { userId: number }) {
+    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/send-friend-request`, params)
   }
 }

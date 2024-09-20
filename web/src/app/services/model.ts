@@ -10,3 +10,14 @@ export interface QueryMessageLogParams {
 export interface QueryUserThreadParams {
   take: number, skip: number, lastId?: string | undefined
 }
+export interface StandardResponse<T = any> {
+  status: number, message: string, data?: T
+}
+export interface UserMessageThread {
+  id: number,
+  userId: number,
+  toObjType: number,
+  toObjId: number,
+  threadItem?: ThreadItem,
+  status: number
+}

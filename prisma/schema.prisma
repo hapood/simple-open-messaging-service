@@ -86,8 +86,8 @@ model UserMessageThread {
   toObjType  MessageThreadType
   toObjId    Int
   reqMessage String
-  threadId   Int
-  threadItem MessageThread           @relation(fields: [threadId], references: [id])
+  threadId   Int?
+  threadItem MessageThread?          @relation(fields: [threadId], references: [id])
   createdAt  DateTime                @default(now())
   updatedAt  DateTime                @updatedAt
   isDeleted  Boolean                 @default(false)

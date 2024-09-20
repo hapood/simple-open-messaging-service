@@ -7,9 +7,9 @@ import {
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { MessageService } from '../message/message.service';
-import { User as UserModel, ContentType, Prisma, UserMessageThread } from '@prisma/client';
+import { ContentType, MessageThreadType, UserMessageThread, Prisma } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { toJson } from './utils';
+import { toJson, StandardResponse } from './utils';
 
 @Controller()
 export class MessageController {
@@ -65,4 +65,28 @@ export class MessageController {
     return toJson(list)
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('thread/by-user-id')
+  async getThreadByUniqName(@Request() req, @Body() { userId: toUserId }: { userId: number }): Promise<StandardResponse> {
+    const userId = req.user.userId
+    const thread = await this.messageService.findUniqueUserThread({
+      userId_toObjType_toObjId: {
+        userId,
+        toObjType: MessageThreadType.P2P_MESSAGE,
+        toObjId: toUserId
+      }
+    })
+    if (thread === null) {
+      return {
+        status: 1,
+        message: `no thread with user [${toUserId}]`,
+      }
+    } else {
+      return {
+        status: 0,
+        message: 'successful',
+        data: thread
+      }
+    }
+  }
 }
