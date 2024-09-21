@@ -131,3 +131,19 @@
     }
   }
 }
+
+.pending-content {
+  .user-info {
+    display: flex;
+
+    .user-avatar {
+      width: 54px;
+      height: 54px;
+    }
+
+    .user-name {
+      margin-left: 10px;
+      font-size: 20px;
+    }
+  }
+}

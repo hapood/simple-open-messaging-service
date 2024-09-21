@@ -9,6 +9,9 @@ import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { MsgService } from '../../services/message.service'
+import { arrayToDictIndex } from '../../../utils';
+import dayjs from 'dayjs';
+
 enum AddTabStatus {
   INIT, EMPTY, SEARCHING, SUCCESS, ERROR
 }
@@ -29,6 +32,8 @@ export class FriendRequestsComponent {
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT)
   readonly canAdd = signal(false)
   readonly curSearchText = signal('')
+  readonly pendingReqList = signal([] as (User & { status: number, date: string })[])
+  readonly toPendingErrTxt = signal('')
 
   subject = input<Subject<any> | undefined>(undefined)
   activeTab = signal(0)
@@ -99,6 +104,36 @@ export class FriendRequestsComponent {
         }
       }, error: () => {
         this.reqRspTxt.set('unknow error occured')
+      }
+    })
+  }
+
+  ngOnInit() {
+    this.userService.queryToPending({ take: 20, beforeDate: new Date().getTime() }).subscribe({
+      next: (res) => {
+        if (res.status === 0) {
+          const userIds = res.data!.map(item => item.toObjId)
+          this.userService.queryUserInfo({ userIds }).subscribe(res2 => {
+            if (res2.status === 0) {
+              const dict = arrayToDictIndex(res2.data!, 'id')
+              const list = res.data!.map(item => {
+                const userData = dict[item.toObjId]
+                if (userData) {
+                  return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss') }
+                } else {
+                  return { status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss') } as (User & { status: number, date: string })
+                }
+              })
+              this.pendingReqList.set(list)
+            }
+            this.toPendingErrTxt.set('unknow error occured')
+          })
+        } else {
+          this.toPendingErrTxt.set('unknow error occured')
+        }
+      },
+      error: (err) => {
+        this.toPendingErrTxt.set('unknow error occured')
       }
     })
   }

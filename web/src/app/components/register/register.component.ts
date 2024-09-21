@@ -84,7 +84,7 @@ export class RegisterComponent {
         },
         error: (err) => {
           console.error(err)
-          this.resp.set('error occured')
+          this.resp.set('unknow error occured')
           this.isReging.set(false)
         }
       })

@@ -61,7 +61,7 @@ export class LoginComponent {
         },
         error: (err) => {
           console.error(err)
-          this.resp.set('error occured')
+          this.resp.set('unknow error occured')
           this.isLoging.set(false)
         }
       })

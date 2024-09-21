@@ -9,6 +9,7 @@ import { UserService } from '../user/user.service';
 import { Prisma, UserMessageThreadStatus, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils'
+
 @Controller()
 export class UserController {
   constructor(
@@ -57,32 +58,37 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('user/query-thread/from-pending')
+  @Post('user/query-thread/to-pending')
   async queryPendingThread(
     @Request() req,
     @Body() params: {
-      skip: number;
+      beforeDate: number;
       take: number;
-      lastId?: number;
-      orderBy: 'desc' | 'asc'
     },
-  ) {
+  ): Promise<StandardResponse> {
     const newParams: Prisma.UserMessageThreadFindManyArgs = {
-      skip: params.skip,
       take: params.take,
       where: {
         userId: req.user.userId,
         toObjType: MessageThreadType.P2P_MESSAGE,
-        status: UserMessageThreadStatus.APPROVED
+        status: UserMessageThreadStatus.TO_PENDING,
+        updatedAt: {
+          lt: new Date(params.beforeDate),
+        },
       },
       orderBy: {
-        createdAt: params.orderBy,
+        updatedAt: 'desc',
       },
       include: {
         threadItem: true
       }
     };
-    return await this.userService.queryUserThread(newParams)
+    const data = await this.userService.queryUserThread(newParams)
+    return {
+      status: 0,
+      message: 'successful',
+      data
+    }
   }
 
   @UseGuards(JwtAuthGuard)

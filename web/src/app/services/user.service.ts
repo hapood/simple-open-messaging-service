@@ -34,11 +34,11 @@ export class UserService {
   }
 
   queryUserThreadValid(params: QueryUserThreadParams) {
-    return this.http.post<{ status: number, message: string, data?: MsgThread[] }>(`${apiPrefix}/user/query-thread/valid`, params)
+    return this.http.post<StandardResponse<MsgThread[]>>(`${apiPrefix}/user/query-thread/valid`, params)
   }
 
   queryUserInfo(params: { userIds: number[] }) {
-    return this.http.post<{ status: number, message: string, data?: User[] }>(`${apiPrefix}/user/query`, params)
+    return this.http.post<StandardResponse<User[]>>(`${apiPrefix}/user/query`, params)
   }
 
   getUserInfoByUniqName(params: { uniqName: string }) {
@@ -47,5 +47,11 @@ export class UserService {
 
   sendFriendRequest(params: { userId: number }) {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/send-friend-request`, params)
+  }
+
+  queryToPending(params: {
+    take: number, beforeDate: number
+  }) {
+    return this.http.post<StandardResponse<MsgThread[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
   }
 }

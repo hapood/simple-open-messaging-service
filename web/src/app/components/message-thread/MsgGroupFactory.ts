@@ -338,7 +338,7 @@ export class MsgGroupFactory {
           const { dispList } = this._buildDispDict(grp, list, true)
           return { index, grp: grp, status: MsgGroupStatus.RENDERING, dispList }
         }).catch(e => {
-          throw new GrpWrkFlwErr('error occured while querying missing user profile', index)
+          throw new GrpWrkFlwErr('unknow error occured while querying missing user profile', index)
         }))
     }
   }

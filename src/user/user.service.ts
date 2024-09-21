@@ -54,7 +54,7 @@ export class UserService implements OnModuleInit {
               },
             },
             data: {
-              status: UserMessageThreadStatus.PENDING
+              status: UserMessageThreadStatus.FROM_PENDING
             }
           })
           await prisma.userMessageThread.update({
@@ -66,7 +66,7 @@ export class UserService implements OnModuleInit {
               },
             },
             data: {
-              status: UserMessageThreadStatus.PENDING
+              status: UserMessageThreadStatus.TO_PENDING
             }
           })
           return {
@@ -84,7 +84,7 @@ export class UserService implements OnModuleInit {
               },
             },
             data: {
-              status: UserMessageThreadStatus.PENDING
+              status: UserMessageThreadStatus.FROM_PENDING
             }
           })
           return {
@@ -96,10 +96,10 @@ export class UserService implements OnModuleInit {
         await prisma.userMessageThread.createMany({
           data: [{
             threadId: null, userId: fromUserId, toObjId: toUserId, reqMessage: '',
-            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
+            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.FROM_PENDING
           }, {
             threadId: null, userId: toUserId, toObjId: fromUserId, reqMessage: '',
-            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.PENDING
+            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.TO_PENDING
           }]
         })
         return {
@@ -119,7 +119,7 @@ export class UserService implements OnModuleInit {
             toObjType: MessageThreadType.P2P_MESSAGE,
             toObjId: toUserId
           },
-          status: UserMessageThreadStatus.PENDING,
+          status: UserMessageThreadStatus.FROM_PENDING,
         }
       });
       if (request === null) {

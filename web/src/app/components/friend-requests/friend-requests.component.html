@@ -12,13 +12,8 @@
       </div>
     </div>
     <div class="tab-item" (click)="setTab(1)">
-      <div class="tab-text">Received
+      <div class="tab-text">Pending
         <div class="active_indi" [ngClass]="[activeTab()===1?'show':'hide']"></div>
-      </div>
-    </div>
-    <div class="tab-item" (click)="setTab(2)">
-      <div class="tab-text">Sent
-        <div class="active_indi" [ngClass]="[activeTab()===2?'show':'hide']"></div>
       </div>
     </div>
   </div>
@@ -62,13 +57,28 @@
     </form>
   </div>
   <div [ngClass]="[activeTab()===1?'show':'hide']">
-    <div class="content">
-      <div>1122</div>
-    </div>
-  </div>
-  <div [ngClass]="[activeTab()===2?'show':'hide']">
-    <div class="content">
-      <div>1122</div>
+    <div class="pending-content">
+      @for( req of pendingReqList();track $index){
+      <div class="user-info">
+        <div class="user-avatar">
+          <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+        </div>
+        <div>
+          <div class="user-name">{{req.uniqName}}</div>
+          <div class="date">{{req.date}}</div>
+        </div>
+        <div>
+          @if(req.status===0){
+          <app-material-button (click)="sendRequest()"
+            [styleType]="MaterialButtonType.CONTAINTED">Approve</app-material-button>
+          }@else {
+          <app-material-button (click)="sendRequest()" [disabled]="true"
+            [styleType]="MaterialButtonType.CONTAINTED">@if(req.status===-1){<span>Invalid
+              User</span>}@else{<span>Approved</span>}</app-material-button>
+          }
+        </div>
+      </div>
+      }
     </div>
   </div>
 </div>
