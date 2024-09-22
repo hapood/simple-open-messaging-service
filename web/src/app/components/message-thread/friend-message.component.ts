@@ -27,7 +27,7 @@ const SCROLL_HEIGHT_THRESHOLD = 1000;
 })
 export class MessageThreadComponent {
 
-  threadId = input<number>();
+  userThreadId = input<number>();
   startMsgId = input<string>();
 
   grpStatArrSig: Signal<MsgGroupStatus[]> | undefined
@@ -46,19 +46,24 @@ export class MessageThreadComponent {
   private _scrollerInfo!: { clientHeight: number, disToBot: number };
   private grpFactory!: MsgGroupFactory
 
-  constructor(private wsService: WebsocketService, private msgService: MsgService, private userService: UserService) {
+  constructor(private wsService: WebsocketService, private msgService: MsgService,
+    private userService: UserService) {
     this.wsService.eventSubject.subscribe({
-      next: (msg) => { console.info('on message', msg) }
+      next: (msg) => {
+        if (msg.event === 'NEW_MESSAGE' && msg.status === 0 && msg.data.threadId === this.grpFactory.userThread.threadId) {
+          this.checkAndBuildGroup()
+        }
+      }
     })
 
   }
 
   ngOnInit() {
-    const threadIdNum = this.threadId()!, startMsgId = this.startMsgId()
-    this.initialize(threadIdNum, startMsgId)
+    const userThreadId = this.userThreadId()!, startMsgId = this.startMsgId()
+    this.initialize(userThreadId, startMsgId)
   }
 
-  initialize(threadIdNum: number, startMsgId: string | undefined) {
+  initialize(userThreadId: number, startMsgId: string | undefined) {
     this._startMsgId = startMsgId
     const grpFactory = new MsgGroupFactory({
       cb: {
@@ -78,7 +83,7 @@ export class MessageThreadComponent {
         }
       }
       , startMsgId,
-      threadIdNum,
+      userThreadId,
       msgService: this.msgService,
       userService: this.userService
     })

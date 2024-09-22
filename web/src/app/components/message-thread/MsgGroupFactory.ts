@@ -61,7 +61,7 @@ export class MsgGroupFactory {
   readonly dispGrpList = signal<DisMsgGrp[]>([])
 
   _groupList: MsgGroup[] = []
-  private msgThread: MsgThread | Record<string, undefined> = {}
+  userThread: MsgThread | Record<string, undefined> = {}
   private profileRecord: Record<string, UserProfile> = {}
   private messageList: Message[] = [];
   //_oldGrpMsgIdx+1 is the index of messageList, whitch point to oldest message
@@ -72,18 +72,18 @@ export class MsgGroupFactory {
   private hasMoreOldMsg = true
   private _startMsgId: string | undefined
   private cb: MsgFactCallback
-  private threadIdNum: number
+  private userThreadId: number
   private isQueryingOld = false
   private isQueryingNew = false
 
-  constructor({ cb, startMsgId, threadIdNum, msgService, userService }:
-    { cb: MsgFactCallback, startMsgId?: string, threadIdNum: number, msgService: MsgService, userService: UserService }) {
+  constructor({ cb, startMsgId, userThreadId, msgService, userService }:
+    { cb: MsgFactCallback, startMsgId?: string, userThreadId: number, msgService: MsgService, userService: UserService }) {
     this.cb = cb
     this._startMsgId = startMsgId
-    this.threadIdNum = threadIdNum
+    this.userThreadId = userThreadId
     this.msgService = msgService
     this.userService = userService
-    this._initThreadInfo(threadIdNum)
+    this._initThreadInfo(userThreadId)
   }
 
   private _removeGrp(index: number) {
@@ -267,12 +267,12 @@ export class MsgGroupFactory {
       console.info('has no more old message, shold not load.')
       return
     }
-    let threadIdNum = this.threadIdNum
+    let threadIdNum = this.userThreadId
     const startId = this._startMsgId, oldestMsg = this.messageList[0]
     if (oldestMsg) {
       console.info('delta query more old data')
       this._queryOldMsgs({
-        threadId: threadIdNum, take: GROUP_MSG_NUM, skip: 1,
+        userThreadId: threadIdNum, take: GROUP_MSG_NUM, skip: 1,
         lastId: oldestMsg.id, orderBy: 'desc'
       })
     }
@@ -281,14 +281,14 @@ export class MsgGroupFactory {
       if (startId) {
         console.info('first query old group with startId')
         this._queryOldMsgs({
-          threadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 1,
+          userThreadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 1,
           lastId: startId, orderBy: 'desc'
 
         })
       } else {
         console.info('first query old group')
         this._queryOldMsgs({
-          threadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 0,
+          userThreadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 0,
           orderBy: 'desc'
         })
       }
@@ -301,13 +301,13 @@ export class MsgGroupFactory {
       console.info('has no more new message, shold not load.')
       return
     }
-    let threadIdNum = this.threadIdNum
+    let threadIdNum = this.userThreadId
     const startId = this._startMsgId, messageList = this.messageList
     const newestMsg = messageList[messageList.length - 1]
     if (newestMsg) {
       console.info('delta query more new data')
       this._queryNewMsgs({
-        threadId: threadIdNum,
+        userThreadId: threadIdNum,
         orderBy: 'asc',
         take: GROUP_MSG_NUM,
         skip: 1,
@@ -318,7 +318,7 @@ export class MsgGroupFactory {
       if (startId) {
         console.info('first query new group with startId')
         this._queryNewMsgs({
-          threadId: threadIdNum,
+          userThreadId: threadIdNum,
           orderBy: 'asc',
           take: GROUP_MSG_NUM,
           skip: 0,
@@ -333,7 +333,7 @@ export class MsgGroupFactory {
   _initThreadInfo(threadId: number) {
     this.userService.getUserThreadInfo({ threadId }).subscribe(res => {
       if (res.status === 0) {
-        this.msgThread = res.data!
+        this.userThread = res.data!
         this.cb.onMsgThreadInit(res.data!)
       } else {
         console.error(res)
@@ -353,7 +353,7 @@ export class MsgGroupFactory {
     } else {
       return this._qryMisProf(Array.from(userIdSet)).pipe(switchMap(userList => {
         userList.forEach(item => {
-          this.profileRecord[item.id] = { ...item, isSelf: item.id === this.msgThread.userId }
+          this.profileRecord[item.id] = { ...item, isSelf: item.id === this.userThread.userId }
         })
         const { dispList } = this._buildDispDict(grp, list, true)
         return of({ index, grp: grp, status: MsgGroupStatus.RENDERING, dispList })

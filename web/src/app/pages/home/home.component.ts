@@ -7,6 +7,7 @@ import { MessageThreadComponent } from '../../components/message-thread/friend-m
 import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
 import { AuthService } from '../../services/auth.service';
 import { RouteService, PopupType } from '../../services/route.service';
+import { WebsocketService } from '../../services/websocket.service';
 @Component({
   selector: 'app-home',
   standalone: true,
@@ -20,7 +21,7 @@ export class HomeComponent {
   curThreadId = signal<number | undefined>(undefined)
 
   constructor(private userService: UserService,
-    private authService: AuthService, private routeService: RouteService) { }
+    private authService: AuthService, private routeService: RouteService, private wsService: WebsocketService) { }
 
   ngOnInit() {
     this.userService.updateSessionProfile();

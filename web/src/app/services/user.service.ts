@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
-import { User, QueryUserThreadParams, MsgThread, StandardResponse } from './model'
+import { User, QueryUserThreadParams, UserMessageThread, StandardResponse } from './model'
 
 export type { User } from './model'
 
@@ -34,7 +34,7 @@ export class UserService {
   }
 
   queryUserThreadValid(params: QueryUserThreadParams) {
-    return this.http.post<StandardResponse<MsgThread[]>>(`${apiPrefix}/user/query-thread/valid`, params)
+    return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/valid`, params)
   }
 
   queryUserInfo(params: { userIds: number[] }) {
@@ -52,7 +52,7 @@ export class UserService {
   queryToPending(params: {
     take: number, beforeDate: number
   }) {
-    return this.http.post<StandardResponse<MsgThread[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
+    return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
   }
 
   approveFriendRequest(params: { userId: number }) {
@@ -60,7 +60,7 @@ export class UserService {
   }
 
   getUserThreadInfo(params: { threadId: number }) {
-    return this.http.post<StandardResponse<MsgThread>>(`${apiPrefix}/user/get-thread-info`, params)
+    return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/user/get-thread-info`, params)
   }
 
 }

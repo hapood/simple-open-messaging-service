@@ -1,6 +1,6 @@
-import { NestFactory, HttpAdapterHost } from '@nestjs/core';
+import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
-import { WsAdapter } from './ws-adapter';
+import { WsAdapter } from '@nestjs/platform-ws';
 
 Date.prototype.toJSON = function () {
   return this.getTime()
@@ -8,7 +8,8 @@ Date.prototype.toJSON = function () {
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  app.useWebSocketAdapter(new WsAdapter(app, app.get(HttpAdapterHost)));
+  app.useWebSocketAdapter(new WsAdapter(app));
+
   app.enableCors();
   await app.listen(3000);
 }

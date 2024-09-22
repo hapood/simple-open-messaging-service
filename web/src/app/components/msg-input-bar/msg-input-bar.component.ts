@@ -13,7 +13,7 @@ import { MsgService } from '../../services/message.service'
 })
 export class MsgInputBarComponent {
 
-  readonly threadId = input<number>()
+  readonly userThreadId = input<number>()
   @Output() onAfterSent = new EventEmitter();
   readonly userInput = viewChild<ElementRef<HTMLInputElement>>('userInput');
   readonly AppIconType = AppIconType
@@ -54,12 +54,12 @@ export class MsgInputBarComponent {
   }
 
   send(): void {
-    let threadId = this.threadId()
-    if (threadId) {
+    let userThreadId = this.userThreadId()
+    if (userThreadId) {
       const content = this.getInputText()
       console.info(`send content: ${content}`)
       if (content) {
-        this.msgService.sendMessage({ threadId, content }).pipe(
+        this.msgService.sendMessage({ threadId: userThreadId, content }).pipe(
           tap(() => {
             this.clearTextInput()
           }))

@@ -2,6 +2,12 @@ import { Injectable } from '@angular/core';
 import { Subject, take, switchMap, filter } from 'rxjs';
 import { AuthService } from './auth.service';
 
+export interface StandardMessage<T = any> {
+  event: string,
+  status: number,
+  message: string,
+  data?: T
+}
 @Injectable({
   providedIn: 'root'
 })
@@ -9,10 +15,10 @@ export class WebsocketService {
   private readonly url = 'ws://127.0.0.1:3000'
   private _ws: WebSocket | null = null
   private _isConning = false
-  readonly eventSubject = new Subject<MessageEvent>();
+  readonly eventSubject = new Subject<StandardMessage>();
 
   constructor(private authService: AuthService) {
-    // this.connect()
+    this.connect()
   }
 
   public connect() {
@@ -27,26 +33,31 @@ export class WebsocketService {
         ws.onerror = (error) => {
           this._ws = null
           console.error(error)
-          console.error("ws connect error, try reconnceting")
-          this.reconnect(1000)
         }
         ws.onclose = () => {
           this._ws = null
-          console.error("ws connect closed by server, try reconnceting")
-          this.reconnect(1000)
+          console.error("ws connect closed, try reconnceting")
+          this._isConning = false
+          this.reconnect(10000)
         }
         ws.onmessage = (message) => {
-          console.log(message);
-          this.eventSubject.next(message)
+          const obj = JSON.parse(message.data)
+          if (obj.event === 'AUTH') {
+            if (obj.status === 1) {
+              this.authService.renewAccessToken()
+            } else {
+              console.error(obj)
+            }
+          } else {
+            this.eventSubject.next(obj)
+          }
         }
         ws.onopen = () => {
           this._ws = ws
-          console.log("successfuly connected: " + this.url);
+          console.info("ws successfully connected: " + this.url);
         }
       }
-      ), complete: () => {
-        this._isConning = false
-      }
+      )
     })
 
   }

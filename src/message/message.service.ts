@@ -1,6 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, ContentType, Prisma, Message, UserMessageThread } from '@prisma/client';
+import { User, ContentType, Prisma, Message, UserMessageThreadStatus } from '@prisma/client';
 import { StandardResponse } from 'src/model';
 @Injectable()
 export class MessageService implements OnModuleInit {
@@ -22,7 +22,7 @@ export class MessageService implements OnModuleInit {
 
   async sendMessageToThread(userId: number, threadId: number, content: string, type: ContentType): Promise<StandardResponse> {
     return await this.prisma.$transaction(async (prisma) => {
-      const userMsgTr = prisma.userMessageThread.findUnique({
+      const userMsgTr = await prisma.userMessageThread.findUnique({
         where: {
           userId_threadId: {
             userId,
@@ -30,11 +30,19 @@ export class MessageService implements OnModuleInit {
           }
         }
       })
-      if (userMsgTr !== null) {
+      const friendMsgTr = await prisma.userMessageThread.findUnique({
+        where: {
+          userId_threadId: {
+            userId: userMsgTr.toObjId,
+            threadId
+          }
+        }
+      })
+      if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
         const newData = {
           content,
           contentType: type,
-          threadId,
+          threadId: userMsgTr.threadId,
           creator: userId
         }
         const data = await prisma.message.create({ data: newData });

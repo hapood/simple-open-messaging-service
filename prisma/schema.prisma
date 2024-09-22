@@ -92,6 +92,7 @@ model UserMessageThread {
   createdAt  DateTime                @default(now())
   updatedAt  DateTime                @updatedAt
   isDeleted  Boolean                 @default(false)
+  lastRead   BigInt?
 
   @@unique([userId, toObjType, toObjId])
   @@unique([userId, threadId])
