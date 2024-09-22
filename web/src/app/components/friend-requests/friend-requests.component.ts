@@ -15,6 +15,7 @@ import dayjs from 'dayjs';
 enum AddTabStatus {
   INIT, EMPTY, SEARCHING, SUCCESS, ERROR
 }
+type PedingReq = User & { status: number, date: string, errText: string }
 
 @Component({
   selector: 'app-friend-requests',
@@ -32,7 +33,7 @@ export class FriendRequestsComponent {
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT)
   readonly canAdd = signal(false)
   readonly curSearchText = signal('')
-  readonly pendingReqList = signal([] as (User & { status: number, date: string })[])
+  readonly pendingReqList = signal([] as PedingReq[])
   readonly toPendingErrTxt = signal('')
 
   subject = input<Subject<any> | undefined>(undefined)
@@ -108,6 +109,19 @@ export class FriendRequestsComponent {
     })
   }
 
+  approve(index: number) {
+    const req = this.pendingReqList()[index]
+    this.userService.approveFriendRequest({ userId: req.id }).subscribe(res => {
+      const reqList = this.pendingReqList()
+      if (res.status === 0) {
+        this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 1, errText: '' }]).concat(reqList.slice(index + 1)))
+      } else {
+        this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 0, errText: res.message }]).concat(reqList.slice(index + 1)))
+      }
+    })
+
+  }
+
   ngOnInit() {
     this.userService.queryToPending({ take: 20, beforeDate: new Date().getTime() }).subscribe({
       next: (res) => {
@@ -119,9 +133,9 @@ export class FriendRequestsComponent {
               const list = res.data!.map(item => {
                 const userData = dict[item.toObjId]
                 if (userData) {
-                  return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss') }
+                  return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
                 } else {
-                  return { status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss') } as (User & { status: number, date: string })
+                  return { status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PedingReq
                 }
               })
               this.pendingReqList.set(list)

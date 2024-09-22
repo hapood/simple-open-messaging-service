@@ -73,8 +73,18 @@ export class UserService implements OnModuleInit {
             status: 0,
             message: 'already requested before'
           }
+        } else if (toUserThread.status === UserMessageThreadStatus.FROM_PENDING) {
+          const res = await this.approveFriendRequest(fromUserId, toUserId)
+          if (res.status === 0) {
+            return res
+          } else {
+            return {
+              status: 3,
+              message: res.message
+            }
+          }
         } else {
-          //don't bother any more when BLOCKED or PENDING
+          //don't bother any more when BLOCKED or TO_PENDING
           await prisma.userMessageThread.update({
             where: {
               userId_toObjType_toObjId: {
@@ -110,7 +120,7 @@ export class UserService implements OnModuleInit {
     })
   }
 
-  async acceptFriendRequest(fromUserId: number, toUserId: number): Promise<StandardResponse> {
+  async approveFriendRequest(fromUserId: number, toUserId: number): Promise<StandardResponse> {
     return await this.prisma.$transaction(async (prisma) => {
       const request = await prisma.userMessageThread.findUnique({
         where: {
@@ -119,46 +129,65 @@ export class UserService implements OnModuleInit {
             toObjType: MessageThreadType.P2P_MESSAGE,
             toObjId: toUserId
           },
-          status: UserMessageThreadStatus.FROM_PENDING,
         }
       });
-      if (request === null) {
+      if (request !== null && request.status === UserMessageThreadStatus.FROM_PENDING) {
+        const myRequest = await prisma.userMessageThread.findUnique({
+          where: {
+            userId_toObjType_toObjId: {
+              userId: toUserId,
+              toObjType: MessageThreadType.P2P_MESSAGE,
+              toObjId: fromUserId
+            },
+          }
+        });
+        let threadId = request.threadId
+        if (threadId === null) {
+          const threadData = await prisma.messageThread.create({
+            data: {
+              type: MessageThreadType.P2P_MESSAGE, info: {
+                userId1: fromUserId,
+                userId2: toUserId
+              }
+            }
+          })
+          threadId = threadData.id
+        }
+        await prisma.userMessageThread.update({
+          where: {
+            userId_toObjType_toObjId: {
+              userId: fromUserId,
+              toObjType: MessageThreadType.P2P_MESSAGE,
+              toObjId: toUserId
+            },
+          },
+          data: {
+            threadId: threadId, status: UserMessageThreadStatus.APPROVED
+          }
+        })
+        if (myRequest.status !== UserMessageThreadStatus.APPROVED) {
+          await prisma.userMessageThread.update({
+            where: {
+              userId_toObjType_toObjId: {
+                userId: toUserId,
+                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjId: fromUserId
+              },
+            },
+            data: {
+              threadId: threadId, status: UserMessageThreadStatus.APPROVED
+            }
+          })
+        }
+        return {
+          status: 0,
+          message: 'already been friends'
+        }
+      } else {
         return {
           status: 1,
           message: `user [${fromUserId}] did not send make friend request to you.`
         }
-      }
-      let threadId = request.threadId
-      if (threadId === null) {
-        const threadData = await prisma.messageThread.create({
-          data: {
-            type: MessageThreadType.P2P_MESSAGE, info: {
-              userId1: fromUserId,
-              userId2: toUserId
-            }
-          }
-        })
-        threadId = threadData.id
-      }
-      await prisma.userMessageThread.updateMany({
-        where: {
-          OR: [{
-            userId: toUserId,
-            toObjType: MessageThreadType.P2P_MESSAGE,
-            toObjId: fromUserId
-          }, {
-            userId: fromUserId,
-            toObjType: MessageThreadType.P2P_MESSAGE,
-            toObjId: toUserId
-          }]
-        },
-        data: [{
-          threadId: threadId, status: UserMessageThreadStatus.APPROVED
-        }]
-      })
-      return {
-        status: 0,
-        message: 'already been friends'
       }
     })
   }

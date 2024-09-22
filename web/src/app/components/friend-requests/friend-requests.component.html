@@ -69,13 +69,14 @@
         </div>
         <div>
           @if(req.status===0){
-          <app-material-button (click)="sendRequest()"
+          <app-material-button (click)="approve($index)"
             [styleType]="MaterialButtonType.CONTAINTED">Approve</app-material-button>
           }@else {
-          <app-material-button (click)="sendRequest()" [disabled]="true"
+          <app-material-button [disabled]="true"
             [styleType]="MaterialButtonType.CONTAINTED">@if(req.status===-1){<span>Invalid
               User</span>}@else{<span>Approved</span>}</app-material-button>
           }
+          <div>{{req.errText}}</div>
         </div>
       </div>
       }

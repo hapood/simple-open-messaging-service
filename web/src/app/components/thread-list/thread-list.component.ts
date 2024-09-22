@@ -1,4 +1,4 @@
-import { Component, input, signal } from '@angular/core';
+import { Component, input, signal, EventEmitter, Output } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { UserService } from '../../services/user.service'
@@ -17,9 +17,10 @@ interface DispThreadItem { id: number, userId: number, name: string, icon: strin
 export class ThreadListComponent {
   UserAvatarType = UserAvatarType
   readonly profile = input<User>()
-
+  readonly selectedId = input<number>()
   readonly threadList = signal<DispThreadItem[]>([])
-  readonly selectedId = signal<number | undefined>(undefined)
+
+  @Output() onSelect = new EventEmitter<number>()
 
   userInfoDict = signal<Record<string, User>>({})
 
@@ -58,14 +59,7 @@ export class ThreadListComponent {
   }
 
   onThreadClick(thread: DispThreadItem) {
-    this.selectedId.set(thread.id)
-    this.route.url.subscribe(urls => {
-      let replaceUrl = true
-      if (urls.length === 0) {
-        replaceUrl = false
-      } this.router.navigate(['/thread/', thread.id], { replaceUrl });
-      
-    })
+    this.onSelect.emit(thread.id)
   }
 
   getUserName(item: MsgThread) {

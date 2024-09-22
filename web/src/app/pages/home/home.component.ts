@@ -6,6 +6,7 @@ import { ThreadListComponent } from '../../components/thread-list/thread-list.co
 import { MessageThreadComponent } from '../../components/message-thread/friend-message.component';
 import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
 import { AuthService } from '../../services/auth.service';
+import { RouteService, PopupType } from '../../services/route.service';
 @Component({
   selector: 'app-home',
   standalone: true,
@@ -18,11 +19,15 @@ export class HomeComponent {
   readonly isShowMsgTrd = signal(false)
   curThreadId = signal<number | undefined>(undefined)
 
-  constructor(private userService: UserService, private authService: AuthService) { }
+  constructor(private userService: UserService,
+    private authService: AuthService, private routeService: RouteService) { }
 
   ngOnInit() {
     this.userService.updateSessionProfile();
     this.authService.renewAccessToken()
   }
 
+  onThreadSelect(id: number) {
+    this.routeService.popupDlg({ caller: 'HOME', popupType: PopupType.MSG_THREAD, inputs: { threadId: id } })
+  }
 }

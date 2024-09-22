@@ -103,27 +103,34 @@ export class MsgGroupFactory {
     }
     this.isQueryingOld = true
     this.msgService.queryMessageLog(params).subscribe({
-      next: (list) => {
-        if (list.length === 0) {
-          return
+      next: (res) => {
+        if (res.status === 0) {
+          const list = res.data!
+          if (list.length === 0) {
+            return
+          }
+          const rList = list.reverse();
+          this.messageList = rList.concat(this.messageList)
+          const delta = rList.length
+          this._oldGrpMsgIdx += delta
+          this._newGrpMsgIdx += delta
+          this._groupList.forEach(grp => {
+            grp.sIndex += delta
+            grp.eIndex += delta
+          })
+          if (list.length < params.take) {
+            console.info('no more old message to load, set hasMoreOldMsg false')
+            this.hasMoreOldMsg = false
+          }
+          console.info('old messages added to messageList')
+          this.cb.afterMsgListAdd(0)
+        } else {
+
         }
-        const rList = list.reverse();
-        this.messageList = rList.concat(this.messageList)
-        const delta = rList.length
-        this._oldGrpMsgIdx += delta
-        this._newGrpMsgIdx += delta
-        this._groupList.forEach(grp => {
-          grp.sIndex += delta
-          grp.eIndex += delta
-        })
-        if (list.length < params.take) {
-          console.info('no more old message to load, set hasMoreOldMsg false')
-          this.hasMoreOldMsg = false
-        }
-        console.info('old messages added to messageList')
-        this.cb.afterMsgListAdd(0)
+        this.isQueryingOld = false
       },
-      complete: () => {
+      error: (err) => {
+        console.error(err)
         this.isQueryingOld = false
       }
     })
@@ -136,19 +143,24 @@ export class MsgGroupFactory {
     }
     this.isQueryingNew = true
     this.msgService.queryMessageLog(params).subscribe({
-      next: (list) => {
-        if (list.length === 0) {
-          return
+      next: (res) => {
+        if (res.status === 0) {
+          const list = res.data!
+          if (list.length === 0) {
+            return
+          }
+          this.messageList = this.messageList.concat(list)
+          if (list.length < params.take) {
+            console.info('no more new message to load, set hasMoreNewMsg false')
+            this.hasMoreNewMsg = false
+          }
+          console.info('new messages added to messageList')
+          this.cb.afterMsgListAdd(1)
+        } else {
         }
-        this.messageList = this.messageList.concat(list)
-        if (list.length < params.take) {
-          console.info('no more new message to load, set hasMoreNewMsg false')
-          this.hasMoreNewMsg = false
-        }
-        console.info('new messages added to messageList')
-        this.cb.afterMsgListAdd(1)
+        this.isQueryingNew = false
       },
-      complete: () => {
+      error: () => {
         this.isQueryingNew = false
       }
     })

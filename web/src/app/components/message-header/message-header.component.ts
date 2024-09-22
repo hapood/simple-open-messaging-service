@@ -1,7 +1,7 @@
 import { Component, input } from '@angular/core';
 import { IconComponent } from "../icon/icon.component";
 import { AppIconType } from '../icon/model';
-
+import { RouteService } from '../../services/route.service';
 @Component({
   selector: 'app-message-header',
   standalone: true,
@@ -12,4 +12,10 @@ import { AppIconType } from '../icon/model';
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType
   readonly name = input('')
+  constructor(private routeService: RouteService) {
+
+  }
+  goBack() {
+    this.routeService.go(-1)
+  }
 }

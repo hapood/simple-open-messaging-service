@@ -54,4 +54,8 @@ export class UserService {
   }) {
     return this.http.post<StandardResponse<MsgThread[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
   }
+
+  approveFriendRequest(params: { userId: number }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/user/approve-friend-request`, params)
+  }
 }

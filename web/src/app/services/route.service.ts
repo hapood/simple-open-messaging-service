@@ -3,15 +3,17 @@ import { Router } from '@angular/router';
 import { PopStateEvent } from '@angular/common'
 import { delay, EMPTY, of, tap } from 'rxjs';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
+import { MessageThreadComponent } from '../components/message-thread/friend-message.component';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
-export enum PopupType { FRIEND_REQUESTS }
+export enum PopupType { FRIEND_REQUESTS, MSG_THREAD }
 
 const componentDict = {
-  [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent
+  [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
+  [PopupType.MSG_THREAD]: MessageThreadComponent
 }
 
 export interface DlgInfo {
@@ -31,7 +33,7 @@ interface AppPopState {
 }
 
 enum RouteStateType {
-  NAV, STATE
+  NAV, DIALOG
 }
 @Injectable({
   providedIn: 'root',
@@ -75,7 +77,7 @@ export class RouteService {
   }
 
   popupDlg(cmd: Command) {
-    const state: AppPopState = { type: RouteStateType.STATE, seq: this._stateList.length }
+    const state: AppPopState = { type: RouteStateType.DIALOG, seq: this._stateList.length }
     history.pushState(state, '')
     this._stateList.push(state)
     const dlgList = this.dlgList
@@ -98,10 +100,9 @@ export class RouteService {
 
   onPopStateEvent(event: PopStateEvent) {
     let state: AppPopState = event.state
-    if (state.seq === this._lastState!.seq) {
+    if (state.seq === undefined || state.seq === this._lastState!.seq) {
       const info = this._stateList.pop()
-      console.log(info)
-      if (info!.type === RouteStateType.STATE) {
+      if (info!.type === RouteStateType.DIALOG) {
         const dlgList = this.dlgList()
         this.dlgList.set(dlgList.slice(0, dlgList.length - 1))
       }

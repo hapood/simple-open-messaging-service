@@ -7,12 +7,9 @@ import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.co
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
 export const routes: Routes = [
   { path: "", component: HomeComponent },
-  { path: "thread/:threadId", component: HomeComponent },
   { path: "nav", component: PageNavgatorComponent },
   { path: "auth/login", component: LoginPageComponent },
   { path: "auth/register", component: RegisterPageComponent },
-  { path: "friend-message/:threadId", component: HomeComponent, },
-  { path: "friend-message/:threadId/:startMsgId", component: HomeComponent, },
   { path: 'forbidden', component: ForbiddenPageComponent },
   { path: '**', component: PageNotFoundComponent }
 ];

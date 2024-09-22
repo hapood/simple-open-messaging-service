@@ -115,11 +115,11 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('user/accept-friend-request')
+  @Post('user/approve-friend-request')
   async acceptFriendRequest(@Request() req,
     @Body() params: { userId: number; },
   ) {
-    return this.userService.acceptFriendRequest(params.userId, req.user.userId)
+    return this.userService.approveFriendRequest(params.userId, req.user.userId)
   }
 
   @Post('user/register')
