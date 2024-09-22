@@ -9,7 +9,7 @@ export class MessageService implements OnModuleInit {
   async onModuleInit() {
   }
 
-  findUniqueUserThread(
+  findUniqueUserMessageThread(
     params: Prisma.UserMessageThreadWhereUniqueInput,
   ) {
     return this.prisma.userMessageThread.findUnique({

@@ -2,7 +2,7 @@
   <div class="popup-com-wrapper">
     @for(info of dlgList();track $index){
     <ng-container *ngComponentOutlet="
-        info.component
+        info.component;inputs:info.inputs
       " />}
   </div>
 </app-material-dialog>

@@ -58,4 +58,9 @@ export class UserService {
   approveFriendRequest(params: { userId: number }) {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/approve-friend-request`, params)
   }
+
+  getUserThreadInfo(params: { threadId: number }) {
+    return this.http.post<StandardResponse<MsgThread>>(`${apiPrefix}/user/get-thread-info`, params)
+  }
+
 }

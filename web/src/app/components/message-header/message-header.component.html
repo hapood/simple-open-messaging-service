@@ -1,7 +1,7 @@
 <div class="msg-header">
     <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
             [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    <ng-content></ng-content>
+    <ng-content>{{title()}}</ng-content>
     <button class="icon-btn"><app-icon [type]="AppIconType.MORE"
             [style]="{width:'32px',height:'32px'}"></app-icon></button>
 </div>

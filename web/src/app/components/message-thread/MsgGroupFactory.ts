@@ -2,12 +2,12 @@ import { signal } from '@angular/core';
 import { MsgService } from '../../services/message.service'
 import { Message, MsgThread, QueryMessageLogParams, } from '../../services/model';
 import {
-  forkJoin, mergeMap, Observable, of, from,
-  firstValueFrom, concatMap
+  Observable, of, concatMap, switchMap
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
 import { UserProfile } from '../msg-group/model';
 import { MsgGroup, MsgGroupStatus, DisplayMsg, DisMsgGrp } from './model';
+import { UserService } from '../../services/user.service';
 
 //must bigger than 0
 const GROUP_MSG_NUM = 10;
@@ -21,10 +21,6 @@ export class GrpWrkFlwErr extends Error {
   }
 }
 
-export interface ThreadInfo {
-  title: string
-}
-
 export interface GrpAddInfo {
   direction: 0 | 1,
   list: MsgGroup[],
@@ -35,6 +31,7 @@ interface MsgFactCallback {
   beforeGrpRemoved: (index: number) => void
   afterMsgListAdd: (direction: 0 | 1) => void
   afterGrpReady: (index: number) => void
+  onMsgThreadInit: (data: MsgThread) => void
 }
 
 type WorkflowPositionResult = {
@@ -58,6 +55,7 @@ type UpdateGroupParams = {
 
 export class MsgGroupFactory {
   private msgService: MsgService;
+  private userService: UserService;
 
   readonly grpStatArrSig = signal<MsgGroupStatus[]>([])
   readonly dispGrpList = signal<DisMsgGrp[]>([])
@@ -75,17 +73,17 @@ export class MsgGroupFactory {
   private _startMsgId: string | undefined
   private cb: MsgFactCallback
   private threadIdNum: number
-  private initSglUsrPf$!: Observable<any>
   private isQueryingOld = false
   private isQueryingNew = false
 
-  constructor({ cb, startMsgId, threadIdNum, msgService }:
-    { cb: MsgFactCallback, startMsgId?: string, threadIdNum: number, msgService: MsgService }) {
+  constructor({ cb, startMsgId, threadIdNum, msgService, userService }:
+    { cb: MsgFactCallback, startMsgId?: string, threadIdNum: number, msgService: MsgService, userService: UserService }) {
     this.cb = cb
     this._startMsgId = startMsgId
     this.threadIdNum = threadIdNum
     this.msgService = msgService
-    this._initThreadInfo()
+    this.userService = userService
+    this._initThreadInfo(threadIdNum)
   }
 
   private _removeGrp(index: number) {
@@ -332,7 +330,15 @@ export class MsgGroupFactory {
     }
   }
 
-  _initThreadInfo() {
+  _initThreadInfo(threadId: number) {
+    this.userService.getUserThreadInfo({ threadId }).subscribe(res => {
+      if (res.status === 0) {
+        this.msgThread = res.data!
+        this.cb.onMsgThreadInit(res.data!)
+      } else {
+        console.error(res)
+      }
+    })
   }
 
   _procGenGrp({ drct, grp, list }: WorkflowGenerateResult): Observable<UpdateGroupParams> {
@@ -345,18 +351,24 @@ export class MsgGroupFactory {
     if (isFullfill) {
       return of({ index, grp: grp, status: MsgGroupStatus.RENDERING, dispList })
     } else {
-      return from(
-        this._qryMisProf(Array.from(userIdSet)).then(() => {
-          const { dispList } = this._buildDispDict(grp, list, true)
-          return { index, grp: grp, status: MsgGroupStatus.RENDERING, dispList }
-        }).catch(e => {
-          throw new GrpWrkFlwErr('unknow error occured while querying missing user profile', index)
-        }))
+      return this._qryMisProf(Array.from(userIdSet)).pipe(switchMap(userList => {
+        userList.forEach(item => {
+          this.profileRecord[item.id] = { ...item, isSelf: item.id === this.msgThread.userId }
+        })
+        const { dispList } = this._buildDispDict(grp, list, true)
+        return of({ index, grp: grp, status: MsgGroupStatus.RENDERING, dispList })
+      }))
     }
   }
 
-  private async _qryMisProf(ids: number[]) {
-    await firstValueFrom(this.initSglUsrPf$)
+  private _qryMisProf(ids: number[]) {
+    return this.userService.queryUserInfo({ userIds: ids }).pipe(switchMap((res) => {
+      if (res.status === 0) {
+        return of(res.data!)
+      } else {
+        throw new GrpWrkFlwErr('unknow error occured while querying missing user profile')
+      }
+    }))
   }
 
   private _buildDispDict(grp: MsgGroup, list: Message[], isForce?: boolean) {
@@ -380,25 +392,33 @@ export class MsgGroupFactory {
 
     for (let i = 0; i < list.length; i++) {
       const msg = list[i]
-      const profile = profileRecord[msg.creator]
+      let profile = profileRecord[msg.creator]
       if (profile === undefined) {
-        isFullfill = false
-        userIdSet.add(msg.creator)
-      } else if (isFullfill || isForce) {
-        const newItem = generateItem(msg, profile) as DisplayMsg
-        let nextItem = list[i + 1];
-        if (nextItem === undefined) {
-          nextItem = this.messageList[grp.eIndex]
+        if (isForce !== true) {
+          userIdSet.add(msg.creator)
+          isFullfill = false
+          continue
+        } else {
+          profile = {
+            id: -1,
+            uniqName: 'Error',
+            isSelf: false
+          }
         }
-        let prevItem = list[i - 1]
-        if (prevItem === undefined) {
-          prevItem = this.messageList[grp.sIndex - 1]
-        }
-        const isDiffUser = prevItem?.creator !== msg.creator
-        newItem.isDateShrink = false && isDiffUser || (nextItem !== undefined) && dayjs(nextItem.createdAt).isSame(dayjs(msg.createdAt), 'minute')
-        newItem.isShowHead = isDiffUser || prevItem === undefined || !dayjs(prevItem.createdAt).isSame(dayjs(msg.createdAt), 'minute')
-        dispList.push(newItem)
       }
+      const newItem = generateItem(msg, profile) as DisplayMsg
+      let nextItem = list[i + 1];
+      if (nextItem === undefined) {
+        nextItem = this.messageList[grp.eIndex]
+      }
+      let prevItem = list[i - 1]
+      if (prevItem === undefined) {
+        prevItem = this.messageList[grp.sIndex - 1]
+      }
+      const isDiffUser = prevItem?.creator !== msg.creator
+      newItem.isDateShrink = false && isDiffUser || (nextItem !== undefined) && dayjs(nextItem.createdAt).isSame(dayjs(msg.createdAt), 'minute')
+      newItem.isShowHead = isDiffUser || prevItem === undefined || !dayjs(prevItem.createdAt).isSame(dayjs(msg.createdAt), 'minute')
+      dispList.push(newItem)
     }
     return { dispList, isFullfill, userIdSet }
   }

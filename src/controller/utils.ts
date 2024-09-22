@@ -11,8 +11,8 @@ export function toJson(param: any) {
   );
 };
 
-export interface StandardResponse {
+export interface StandardResponse<T = any> {
   status: number,
   message: string,
-  data?: any
+  data?: T
 }

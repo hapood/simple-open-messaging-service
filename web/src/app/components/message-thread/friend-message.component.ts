@@ -1,6 +1,6 @@
 import {
   Component, ElementRef, signal, viewChild, input, Signal,
-  effect
+
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { FormsModule } from '@angular/forms';
@@ -11,10 +11,8 @@ import { MessageHeaderComponent } from '../message-header/message-header.compone
 import { MsgInputBarComponent } from '../msg-input-bar/msg-input-bar.component';
 import { MsgGroupFactory } from './MsgGroupFactory';
 import { MsgService } from '../../services/message.service'
-
-enum MessageThreadStatus {
-  EMPTY, LOADING, SHOW
-}
+import { UserService } from '../../services/user.service';
+import { MsgThread } from '../../services/model';
 
 const LOAD_MORE_TRIGGER_OFFSET = 100;
 const UNREAD_INITIAL_PADDING_TOP = 100;
@@ -32,10 +30,8 @@ export class MessageThreadComponent {
   threadId = input<number>();
   startMsgId = input<string>();
 
-  status = signal(MessageThreadStatus.EMPTY)
-  grpStatArrSig !: Signal<MsgGroupStatus[]>
-  dispGrpList!: Signal<DisMsgGrp[]>
-  MessageThreadStatus = MessageThreadStatus
+  grpStatArrSig: Signal<MsgGroupStatus[]> | undefined
+  dispGrpList: Signal<DisMsgGrp[]> | undefined
 
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
@@ -49,22 +45,17 @@ export class MessageThreadComponent {
   private _scrollerElm!: HTMLDivElement
   private _scrollerInfo!: { clientHeight: number, disToBot: number };
   private grpFactory!: MsgGroupFactory
-  private _lastThreadId: number | undefined
 
-  constructor(private wsService: WebsocketService, private msgService: MsgService) {
+  constructor(private wsService: WebsocketService, private msgService: MsgService, private userService: UserService) {
     this.wsService.eventSubject.subscribe({
       next: (msg) => { console.info('on message', msg) }
     })
 
-    effect(() => {
-      const threadIdNum = this.threadId(), startMsgId = this.startMsgId()
-      if (this._lastThreadId !== threadIdNum) {
-        this._lastThreadId = threadIdNum
-      }
-      if (threadIdNum) {
-        this.initialize(threadIdNum, startMsgId)
-      }
-    })
+  }
+
+  ngOnInit() {
+    const threadIdNum = this.threadId()!, startMsgId = this.startMsgId()
+    this.initialize(threadIdNum, startMsgId)
   }
 
   initialize(threadIdNum: number, startMsgId: string | undefined) {
@@ -77,11 +68,19 @@ export class MessageThreadComponent {
         },
         afterGrpReady: () => {
           this.checkAndBuildGroup()
+        },
+        onMsgThreadInit: (msgThread: MsgThread) => {
+          this.userService.queryUserInfo({ userIds: [msgThread.toObjId] }).subscribe(res => {
+            if (res.status === 0) {
+              this.title.set(res.data![0].uniqName)
+            }
+          })
         }
       }
       , startMsgId,
       threadIdNum,
-      msgService: this.msgService
+      msgService: this.msgService,
+      userService: this.userService
     })
     this.grpStatArrSig = grpFactory.grpStatArrSig
     this.dispGrpList = grpFactory.dispGrpList
@@ -154,11 +153,10 @@ export class MessageThreadComponent {
         if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
           console.info('scroll reached top, try load more old group')
           grpFactory.startBuild(0)
-          return
-        } else if (scrollTop + clientHeight > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
+        }
+        if (scrollTop + clientHeight > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
           console.info('scroll reached bottom, try load more new group')
           grpFactory.startBuild(1)
-          return
         }
         console.info("no need for delta generating")
         return

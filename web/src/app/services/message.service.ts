@@ -8,11 +8,7 @@ import { apiPrefix } from './constants';
 })
 export class MsgService {
   constructor(private http: HttpClient) { }
-
-  getThreadInfo(params: { threadId: number }) {
-    return this.http.post<MsgThread>(`${apiPrefix}/query-thread-info`, params)
-  }
-
+  
   addUser(params: { uniqName: string, password: string }) {
     return this.http.post(`${apiPrefix}/add-user`, params)
   }

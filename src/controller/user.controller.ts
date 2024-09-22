@@ -6,14 +6,15 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
-import { Prisma, UserMessageThreadStatus, MessageThreadType } from '@prisma/client';
+import { MessageService } from '../message/message.service';
+import { Prisma, UserMessageThreadStatus, UserMessageThread, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils'
 
 @Controller()
 export class UserController {
   constructor(
-    private readonly userService: UserService
+    private readonly userService: UserService, public readonly messageService: MessageService
   ) { }
 
 
@@ -178,4 +179,21 @@ export class UserController {
       }
     }
   }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('/user/get-thread-info')
+  async queryThreadInfo(
+    @Request() req,
+    @Body() params: { threadId: number },
+  ): Promise<StandardResponse<UserMessageThread>> {
+    const thread = await this.messageService.findUniqueUserMessageThread({
+      id: params.threadId
+    })
+    if (thread !== null && thread.userId === req.user.userId) {
+      return { status: 0, message: 'successful', data: thread }
+    } else {
+      return { status: 1, message: `user has no thread [${params.threadId}]` }
+    }
+  }
+
 }

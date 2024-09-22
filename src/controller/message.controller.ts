@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { MessageService } from '../message/message.service';
-import { ContentType, MessageThreadType, UserMessageThread, Prisma } from '@prisma/client';
+import { ContentType, MessageThreadType, Prisma } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { toJson, StandardResponse } from './utils';
 
@@ -17,16 +17,6 @@ export class MessageController {
     private readonly userService: UserService,
     private readonly messageService: MessageService
   ) { }
-
-
-  @UseGuards(JwtAuthGuard)
-  @Post('query-thread-info')
-  async queryThreadInfo(
-    @Request() req,
-    @Body() params: { threadId: number },
-  ): Promise<UserMessageThread> {
-    return await this.messageService.findUniqueUserThread({ userId_threadId: { userId: req.user.userId, threadId: params.threadId } })
-  }
 
   @UseGuards(JwtAuthGuard)
   @Post('send-message')
@@ -69,7 +59,7 @@ export class MessageController {
   @Post('thread/by-user-id')
   async getThreadByUniqName(@Request() req, @Body() { userId: toUserId }: { userId: number }): Promise<StandardResponse> {
     const userId = req.user.userId
-    const thread = await this.messageService.findUniqueUserThread({
+    const thread = await this.messageService.findUniqueUserMessageThread({
       userId_toObjType_toObjId: {
         userId,
         toObjType: MessageThreadType.P2P_MESSAGE,

@@ -11,7 +11,7 @@ import { RouteService } from '../../services/route.service';
 })
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType
-  readonly name = input('')
+  readonly title = input('')
   constructor(private routeService: RouteService) {
 
   }
