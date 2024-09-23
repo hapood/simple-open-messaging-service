@@ -1,13 +1,11 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
-import { AuthService } from 'src/auth/auth.service';
 import { StandardResponse } from 'src/model';
 
 @Injectable()
 export class UserService implements OnModuleInit {
-  constructor(private prisma: PrismaService,
-    private auth: AuthService) { }
+  constructor(private prisma: PrismaService) { }
 
   async onModuleInit() {
   }
@@ -145,10 +143,7 @@ export class UserService implements OnModuleInit {
         if (threadId === null) {
           const threadData = await prisma.messageThread.create({
             data: {
-              type: MessageThreadType.P2P_MESSAGE, info: {
-                userId1: fromUserId,
-                userId2: toUserId
-              }
+              type: MessageThreadType.P2P_MESSAGE
             }
           })
           threadId = threadData.id
@@ -204,63 +199,6 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  registerLocal(data: { uniqName: string, password: string }): Promise<StandardResponse> {
-    return this.prisma.$transaction(async (prisma) => {
-      /*^ Start of string
-        (?=[\w.-]{5,20}$) Assert 5-20 of the allowed characters
-        (?:[\d_.-]*[a-zA-Z]){3} Match 3 times a-zA-Z followed by optional digits _ . -
-        [\w.-]* Match optional word chars or . or -
-        $ End of string
-      */
-      const nameRegex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/
-      const pwdRegex = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/
-      if (nameRegex.test(data.uniqName) === false) {
-        return {
-          status: 1, message: `uniqName [${data.uniqName}] not match regex [${nameRegex}]`
-        }
-      } else if (pwdRegex.test(data.password) === false) {
-        return {
-          status: 1, message: `uniqName [${data.uniqName}] not match regex [${pwdRegex}]`
-        }
-      }
-
-      const user = await prisma.user.findUnique({
-        where: { uniqName: data.uniqName, domain: null },
-      });
-      if (user !== null) {
-        return {
-          status: 2, message: `User ${data.uniqName} already exists`
-        }
-      }
-      const newUserData: Prisma.UserCreateInput = {
-        uniqName: data.uniqName,
-        isForeigner: false,
-        hashPwd: await this.auth.hashStr(data.password),
-        userExtra: {
-          create: {
-            name: data.uniqName,
-            avatar: '',
-          }
-        },
-        userNotiBox: {
-          create: {
-          }
-        }
-      }
-      const newUser = await prisma.user.create({
-        data: newUserData
-      });
-      return {
-        status: 0,
-        message: 'successfuly registered',
-        data: {
-          id: newUser.id,
-          uniqName: newUser.uniqName
-        }
-      }
-    })
-  }
-
   updateUser(params: {
     where: Prisma.UserWhereUniqueInput;
     data: Prisma.UserUpdateInput;
@@ -289,5 +227,43 @@ export class UserService implements OnModuleInit {
 
   queryUsers(params: Prisma.UserFindManyArgs) {
     return this.prisma.user.findMany(params)
+  }
+
+  addUser(params: { uniqName: string, hashPwd: string }) {
+    return this.prisma.$transaction(async (prisma) => {
+      const user = await prisma.user.findUnique({
+        where: { uniqName: params.uniqName, domain: null },
+      });
+      if (user !== null) {
+        return {
+          status: 2
+        }
+      }
+      const newUserData: Prisma.UserCreateInput = {
+        uniqName: params.uniqName,
+        isForeigner: false,
+        hashPwd: params.hashPwd,
+        userExtra: {
+          create: {
+            name: params.uniqName,
+            avatar: '',
+          }
+        },
+        userNotiBox: {
+          create: {
+          }
+        }
+      }
+      const newUser = await prisma.user.create({
+        data: newUserData
+      });
+      return {
+        status: 0,
+        data: {
+          id: newUser.id,
+          uniqName: newUser.uniqName
+        }
+      }
+    })
   }
 }

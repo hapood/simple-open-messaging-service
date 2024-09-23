@@ -2,11 +2,11 @@ import { Component, input, signal, EventEmitter, Output } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { Router, ActivatedRoute } from '@angular/router';
 import { UserService } from '../../services/user.service'
-import { MsgThread, User, ThreadItem } from '../../services/model'
+import { User } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { switchMap, of } from 'rxjs';
 
-interface DispThreadItem { id: number, userId: number, name: string, icon: string, threadItem: ThreadItem }
+interface DispThreadItem { id: number, userId: number, name: string, icon: string }
 @Component({
   selector: 'app-thread-list',
   standalone: true,
@@ -42,7 +42,6 @@ export class ThreadListComponent {
                   userId: thread.toObjId,
                   name: user.userExtra.name,
                   icon: user.userExtra.avatar,
-                  threadItem: thread.threadItem
                 })
               }
             })
@@ -59,8 +58,8 @@ export class ThreadListComponent {
     })
   }
 
-  onThreadClick(thread: DispThreadItem) {
-    this.onSelect.emit(thread.id)
+  onUsrTrdClick(userTrd: DispThreadItem) {
+    this.onSelect.emit(userTrd.id)
   }
 
   ngOnInit() {

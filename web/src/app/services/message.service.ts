@@ -17,8 +17,8 @@ export class MsgService {
     return this.http.post(`${apiPrefix}/add-friend`, { uniqName })
   }
 
-  sendMessage(params: { threadId: number, content: string }) {
-    return this.http.post<{ id: string, createAt: string }>(`${apiPrefix}/send-message`, params)
+  sendMessage(params: { userThreadId: number, content: string }) {
+    return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
   }
 
   queryMessageLog(params: QueryMessageLogParams) {

@@ -20,78 +20,27 @@ export class MessageService implements OnModuleInit {
     });
   }
 
-  async sendMessageToThread(userId: number, threadId: number, content: string, type: ContentType): Promise<StandardResponse> {
-    return await this.prisma.$transaction(async (prisma) => {
-      const userMsgTr = await prisma.userMessageThread.findUnique({
-        where: {
-          userId_threadId: {
-            userId,
-            threadId
-          }
-        }
-      })
-      const friendMsgTr = await prisma.userMessageThread.findUnique({
-        where: {
-          userId_threadId: {
-            userId: userMsgTr.toObjId,
-            threadId
-          }
-        }
-      })
-      if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
-        const newData = {
-          content,
-          contentType: type,
-          threadId: userMsgTr.threadId,
-          creator: userId
-        }
-        const data = await prisma.message.create({ data: newData });
-        return {
-          status: 0,
-          message: 'successful',
-          data: {
-            id: data.id,
-            createdAt: data.createdAt
-          }
-        }
-      } else {
-        return {
-          status: 1,
-          message: 'failed'
-        }
-      }
-    })
+  async writeMsgToThread(userId: number, threadId: number, content: string, type: ContentType) {
+    const newData = {
+      content,
+      contentType: type,
+      threadId,
+      creator: userId
+    }
+    const data = await this.prisma.message.create({ data: newData });
+    return {
+      id: data.id,
+      createdAt: data.createdAt
+    }
   }
 
-  queryMessages(userId: number, threadId: number, params: Prisma.MessageFindManyArgs):
-    Promise<StandardResponse> {
-    return this.prisma.$transaction(async (prisma) => {
-      const userMsgTr = prisma.userMessageThread.findUnique({
-        where: {
-          userId_threadId: {
-            userId,
-            threadId
-          }
-        }
-      })
-      if (userMsgTr !== null) {
-        const res = await this.prisma.message.findMany({
-          ...params,
-          where: {
-            threadId: threadId,
-          }
-        });
-        return {
-          status: 0,
-          message: 'failed',
-          data: res
-        }
-      } else {
-        return {
-          status: 1,
-          message: 'failed'
-        }
+  async queryMessages(threadId: number, params: Prisma.MessageFindManyArgs) {
+    const data = await this.prisma.message.findMany({
+      ...params,
+      where: {
+        threadId: threadId,
       }
-    })
+    });
+    return data
   }
 }

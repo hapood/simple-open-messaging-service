@@ -101,7 +101,6 @@ model UserMessageThread {
 model MessageThread {
   id                Int                 @id @default(autoincrement())
   type              MessageThreadType
-  info              Json
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   UserMessageThread UserMessageThread[]

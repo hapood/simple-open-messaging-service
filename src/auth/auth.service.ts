@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit, OnModuleDestroy, forwardRef, Inject } from '@nestjs/common';
+import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { JwtService } from '@nestjs/jwt';
 import { User as UserModel } from '@prisma/client';
@@ -11,7 +11,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   private _tokenRecordList: { userId: number, date: number, token: string }[] = []
   private _timer: NodeJS.Timeout | undefined
   constructor(
-    @Inject(forwardRef(() => UserService)) private userService: UserService, private jwtService: JwtService) {
+    private userService: UserService, private jwtService: JwtService) {
     this._timer = setInterval(() => {
       const now = new Date().getTime(), tokenRecordList = this._tokenRecordList, refreshTokenDict = this._tokenRecordList
       let i = 0
@@ -109,6 +109,5 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       )
     this.bindRefreshTokenToUser(userId, refreshToken)
     return refreshToken
-
   }
 }

@@ -1,5 +1,5 @@
 <div>@for (thread of threadList(); track thread.id) {
-  <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onThreadClick(thread)">
+  <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
       <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
     </div>

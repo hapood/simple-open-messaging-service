@@ -5,7 +5,6 @@ import {
   Request,
   UseGuards
 } from '@nestjs/common';
-import { UserService } from '../user/user.service';
 import { MessageService } from '../message/message.service';
 import { ContentType, MessageThreadType, Prisma, UserMessageThreadStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -14,7 +13,6 @@ import { EventGateway } from 'src/gateway/event.gateway';
 @Controller()
 export class MessageController {
   constructor(
-    private readonly userService: UserService,
     private readonly messageService: MessageService,
     private readonly eventGateway: EventGateway
   ) { }
@@ -22,21 +20,32 @@ export class MessageController {
   @UseGuards(JwtAuthGuard)
   @Post('send-message')
   async sendMessage(@Request() req,
-    @Body() params: { threadId: number, content: string },
-  ) {
-    if (!params.content) {
-      return
+    @Body() params: { userThreadId: number, content: string },
+  ): Promise<StandardResponse> {
+    if (!params.content?.trim()) {
+      return { status: 2, message: 'no content' }
     }
-    const data = await this.messageService.sendMessageToThread(req.user.userId, params.threadId, params.content, ContentType.PURE_TEXT)
-    this.messageService.findUniqueUserMessageThread({
-      userId_threadId: {
-        userId: req.user.userId, threadId: params.threadId
-      }
-    }).then(thread => {
-      this.eventGateway.onNewMessage(req.user.userId, thread.id)
-      this.eventGateway.onNewMessage(thread.toObjId, thread.id)
+    const userMsgTr = await this.messageService.findUniqueUserMessageThread({
+      id: params.userThreadId
     })
-    return toJson(data)
+    const friendMsgTr = await this.messageService.findUniqueUserMessageThread({
+      userId_threadId: {
+        userId: userMsgTr.toObjId,
+        threadId: userMsgTr.threadId
+      }
+    })
+    if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
+    }
+    else {
+      return {
+        status: 1,
+        message: 'failed'
+      }
+    }
+    const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
+    this.eventGateway.onNewMessage(req.user.userId, userMsgTr.id)
+    this.eventGateway.onNewMessage(userMsgTr.toObjId, userMsgTr.id)
+    return { status: 0, message: 'sucessful', data: toJson(data) }
   }
 
   @UseGuards(JwtAuthGuard)
@@ -49,11 +58,11 @@ export class MessageController {
       lastId?: number;
       orderBy: 'desc' | 'asc'
     },
-  ) {
+  ): Promise<StandardResponse> {
     const userThread = await this.messageService.findUniqueUserMessageThread({
       id: params.userThreadId
     })
-    if (userThread.status !== UserMessageThreadStatus.DELETED) {
+    if (userThread.status === UserMessageThreadStatus.APPROVED) {
       const newParams: Prisma.MessageFindManyArgs = {
         skip: params.skip,
         take: params.take,
@@ -64,8 +73,10 @@ export class MessageController {
       if (params.lastId) {
         newParams.cursor = { id: params.lastId }
       }
-      const data = await this.messageService.queryMessages(req.user.userId, userThread.threadId, newParams)
-      return data
+      const data = await this.messageService.queryMessages(userThread.threadId, newParams)
+      return {
+        status: 0, message: 'sucessful', data: toJson(data)
+      }
     } else {
       return { status: 2, message: `no user thread $[${params.userThreadId}]` }
     }

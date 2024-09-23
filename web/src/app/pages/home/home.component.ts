@@ -18,7 +18,7 @@ import { WebsocketService } from '../../services/websocket.service';
 export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
   readonly isShowMsgTrd = signal(false)
-  curThreadId = signal<number | undefined>(undefined)
+  curUsrtrdId = signal<number | undefined>(undefined)
 
   constructor(private userService: UserService,
     private authService: AuthService, private routeService: RouteService, private wsService: WebsocketService) { }

@@ -12,7 +12,7 @@ import { MsgInputBarComponent } from '../msg-input-bar/msg-input-bar.component';
 import { MsgGroupFactory } from './MsgGroupFactory';
 import { MsgService } from '../../services/message.service'
 import { UserService } from '../../services/user.service';
-import { MsgThread } from '../../services/model';
+import { UserMessageThread } from '../../services/model';
 
 const LOAD_MORE_TRIGGER_OFFSET = 100;
 const UNREAD_INITIAL_PADDING_TOP = 100;
@@ -50,7 +50,7 @@ export class MessageThreadComponent {
     private userService: UserService) {
     this.wsService.eventSubject.subscribe({
       next: (msg) => {
-        if (msg.event === 'NEW_MESSAGE' && msg.status === 0 && msg.data.threadId === this.grpFactory.userThread.threadId) {
+        if (msg.event === 'NEW_MESSAGE' && msg.status === 0 && msg.data.threadId === this.grpFactory.userThread!.threadId) {
           this.checkAndBuildGroup()
         }
       }
@@ -65,31 +65,6 @@ export class MessageThreadComponent {
 
   initialize(userThreadId: number, startMsgId: string | undefined) {
     this._startMsgId = startMsgId
-    const grpFactory = new MsgGroupFactory({
-      cb: {
-        beforeGrpRemoved: () => { },
-        afterMsgListAdd: (direction) => {
-          this.checkAndBuildGroup()
-        },
-        afterGrpReady: () => {
-          this.checkAndBuildGroup()
-        },
-        onMsgThreadInit: (msgThread: MsgThread) => {
-          this.userService.queryUserInfo({ userIds: [msgThread.toObjId] }).subscribe(res => {
-            if (res.status === 0) {
-              this.title.set(res.data![0].uniqName)
-            }
-          })
-        }
-      }
-      , startMsgId,
-      userThreadId,
-      msgService: this.msgService,
-      userService: this.userService
-    })
-    this.grpStatArrSig = grpFactory.grpStatArrSig
-    this.dispGrpList = grpFactory.dispGrpList
-    this.grpFactory = grpFactory
     if (startMsgId) {
       console.info('set show specific id scroll group threshold')
       this.threshold = {
@@ -103,7 +78,33 @@ export class MessageThreadComponent {
         down: 0,
       }
     }
-    this.checkAndBuildGroup()
+    const grpFactory = new MsgGroupFactory({
+      cb: {
+        beforeGrpRemoved: () => { },
+        afterMsgListAdd: (direction) => {
+          this.checkAndBuildGroup()
+        },
+        afterGrpReady: () => {
+          this.checkAndBuildGroup()
+        },
+        onMsgThreadInit: (userMsgTrd: UserMessageThread) => {
+          this.userService.queryUserInfo({ userIds: [userMsgTrd.toObjId] }).subscribe(res => {
+            if (res.status === 0) {
+              this.title.set(res.data![0].uniqName)
+              //start build from here
+              this.checkAndBuildGroup()
+            }
+          })
+        }
+      }
+      , startMsgId,
+      userThreadId,
+      msgService: this.msgService,
+      userService: this.userService
+    })
+    this.grpStatArrSig = grpFactory.grpStatArrSig
+    this.dispGrpList = grpFactory.dispGrpList
+    this.grpFactory = grpFactory
   }
 
   ngAfterViewInit() {

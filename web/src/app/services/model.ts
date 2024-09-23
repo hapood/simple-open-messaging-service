@@ -2,7 +2,7 @@ export interface User {
   id: number; uniqName: string; password: string,
   userExtra: { name: string, avatar: string }
 }
-export interface ThreadItem { id: number, info: { userId1: number, userId2: number } }
+export interface ThreadItem { id: number }
 export interface Message { id: string, content: string, creator: number, createdAt: number }
 export interface Friend { id: number, friendUser: User }
 export interface QueryMessageLogParams {
@@ -20,6 +20,9 @@ export interface UserMessageThread {
   userId: number,
   toObjType: number,
   toObjId: number,
+  threadId: number,
   threadItem?: ThreadItem,
-  status: number
+  status: number,
+  createdAt: number,
+  updatedAt: number
 }

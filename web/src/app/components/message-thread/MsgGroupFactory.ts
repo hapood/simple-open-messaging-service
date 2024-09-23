@@ -1,6 +1,6 @@
 import { signal } from '@angular/core';
 import { MsgService } from '../../services/message.service'
-import { Message, MsgThread, QueryMessageLogParams, } from '../../services/model';
+import { Message, UserMessageThread, QueryMessageLogParams, } from '../../services/model';
 import {
   Observable, of, concatMap, switchMap
 } from "rxjs";
@@ -31,7 +31,7 @@ interface MsgFactCallback {
   beforeGrpRemoved: (index: number) => void
   afterMsgListAdd: (direction: 0 | 1) => void
   afterGrpReady: (index: number) => void
-  onMsgThreadInit: (data: MsgThread) => void
+  onMsgThreadInit: (data: UserMessageThread) => void
 }
 
 type WorkflowPositionResult = {
@@ -61,7 +61,7 @@ export class MsgGroupFactory {
   readonly dispGrpList = signal<DisMsgGrp[]>([])
 
   _groupList: MsgGroup[] = []
-  userThread: MsgThread | Record<string, undefined> = {}
+  userThread: UserMessageThread | undefined
   private profileRecord: Record<string, UserProfile> = {}
   private messageList: Message[] = [];
   //_oldGrpMsgIdx+1 is the index of messageList, whitch point to oldest message
@@ -330,8 +330,8 @@ export class MsgGroupFactory {
     }
   }
 
-  _initThreadInfo(threadId: number) {
-    this.userService.getUserThreadInfo({ threadId }).subscribe(res => {
+  _initThreadInfo(userThreadId: number) {
+    this.userService.getUserThreadInfo({ userThreadId }).subscribe(res => {
       if (res.status === 0) {
         this.userThread = res.data!
         this.cb.onMsgThreadInit(res.data!)
@@ -353,7 +353,7 @@ export class MsgGroupFactory {
     } else {
       return this._qryMisProf(Array.from(userIdSet)).pipe(switchMap(userList => {
         userList.forEach(item => {
-          this.profileRecord[item.id] = { ...item, isSelf: item.id === this.userThread.userId }
+          this.profileRecord[item.id] = { ...item, isSelf: item.id === this.userThread!.userId }
         })
         const { dispList } = this._buildDispDict(grp, list, true)
         return of({ index, grp: grp, status: MsgGroupStatus.RENDERING, dispList })

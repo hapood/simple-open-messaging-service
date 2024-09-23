@@ -59,7 +59,7 @@ export class MsgInputBarComponent {
       const content = this.getInputText()
       console.info(`send content: ${content}`)
       if (content) {
-        this.msgService.sendMessage({ threadId: userThreadId, content }).pipe(
+        this.msgService.sendMessage({ userThreadId, content }).pipe(
           tap(() => {
             this.clearTextInput()
           }))

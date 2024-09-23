@@ -10,11 +10,12 @@ import { MessageService } from '../message/message.service';
 import { Prisma, UserMessageThreadStatus, UserMessageThread, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils'
+import { AuthService } from 'src/auth/auth.service';
 
 @Controller()
 export class UserController {
   constructor(
-    private readonly userService: UserService, public readonly messageService: MessageService
+    private readonly userService: UserService, private readonly messageService: MessageService, private authService: AuthService
   ) { }
 
 
@@ -124,8 +125,39 @@ export class UserController {
   }
 
   @Post('user/register')
-  registerLocal(@Body() params: { uniqName: string; password: string },) {
-    return this.userService.registerLocal(params)
+  async registerLocal(@Body() params: { uniqName: string; password: string },) {
+
+    /*^ Start of string
+      (?=[\w.-]{5,20}$) Assert 5-20 of the allowed characters
+      (?:[\d_.-]*[a-zA-Z]){3} Match 3 times a-zA-Z followed by optional digits _ . -
+      [\w.-]* Match optional word chars or . or -
+      $ End of string
+    */
+    const nameRegex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/
+    const pwdRegex = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/
+    if (nameRegex.test(params.uniqName) === false) {
+      return {
+        status: 1, message: `uniqName [${params.uniqName}] not match regex [${nameRegex}]`
+      }
+    } else if (pwdRegex.test(params.password) === false) {
+      return {
+        status: 1, message: `uniqName [${params.uniqName}] not match regex [${pwdRegex}]`
+      }
+    }
+    const res = await this.userService.addUser({
+      uniqName: params.uniqName, hashPwd: await this.authService.hashStr(params.password)
+    })
+    if (res.status === 2) {
+      return {
+        status: 2, message: `User ${params.uniqName} already exists`
+      }
+    } else {
+      return {
+        status: 0,
+        message: 'successfuly registered',
+        data: res.data
+      }
+    }
   }
 
   @UseGuards(JwtAuthGuard)
@@ -182,18 +214,17 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @Post('/user/get-thread-info')
-  async queryThreadInfo(
+  async queryUserThreadInfo(
     @Request() req,
-    @Body() params: { threadId: number },
+    @Body() params: { userThreadId: number },
   ): Promise<StandardResponse<UserMessageThread>> {
     const thread = await this.messageService.findUniqueUserMessageThread({
-      id: params.threadId
+      id: params.userThreadId
     })
     if (thread !== null && thread.userId === req.user.userId) {
       return { status: 0, message: 'successful', data: thread }
     } else {
-      return { status: 1, message: `user has no thread [${params.threadId}]` }
+      return { status: 1, message: `user has no thread [${params.userThreadId}]` }
     }
   }
-
 }
