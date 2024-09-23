@@ -4,16 +4,17 @@ import { PopStateEvent } from '@angular/common'
 import { delay, EMPTY, of, tap } from 'rxjs';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
 import { MessageThreadComponent } from '../components/message-thread/friend-message.component';
-
+import { NewGroupComponent } from '../components/new-group/new-group.component';
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
-export enum PopupType { FRIEND_REQUESTS, MSG_THREAD }
+export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP }
 
 const componentDict = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
-  [PopupType.MSG_THREAD]: MessageThreadComponent
+  [PopupType.MSG_THREAD]: MessageThreadComponent,
+  [PopupType.NEW_GROUP]: NewGroupComponent
 }
 
 export interface DlgInfo {

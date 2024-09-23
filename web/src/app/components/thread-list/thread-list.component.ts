@@ -24,7 +24,7 @@ export class ThreadListComponent {
 
   userInfoDict = signal<Record<string, User>>({})
 
-  constructor(private userService: UserService, private route: ActivatedRoute, private router: Router) { }
+  constructor(private userService: UserService) { }
 
   genThreadList() {
     return this.userService.queryUserThreadValid({ take: 10, skip: 0 }).pipe(switchMap(({ status, message, data: threadList }) => {

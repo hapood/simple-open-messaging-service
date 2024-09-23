@@ -22,10 +22,10 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @Post('user/my-profile')
   async getMyProfile(@Request() req,
-  ) {
+  ): Promise<StandardResponse> {
     const data = await this.userService.findUniqueUser({ id: req.user.userId })
     delete data.hashPwd
-    return data
+    return { status: 0, message: 'successful', data }
   }
 
   @UseGuards(JwtAuthGuard)
@@ -36,6 +36,7 @@ export class UserController {
       skip: number;
       take: number;
       lastId?: number;
+      toObjType?: MessageThreadType
     },
   ): Promise<StandardResponse> {
     const newParams: Prisma.UserMessageThreadFindManyArgs = {
@@ -43,7 +44,7 @@ export class UserController {
       take: params.take,
       where: {
         userId: req.user.userId,
-        toObjType: MessageThreadType.P2P_MESSAGE,
+        toObjType: params.toObjType,
         status: UserMessageThreadStatus.APPROVED
       },
       orderBy: {
@@ -66,10 +67,12 @@ export class UserController {
     @Body() params: {
       beforeDate: number;
       take: number;
+      skip: number
     },
   ): Promise<StandardResponse> {
     const newParams: Prisma.UserMessageThreadFindManyArgs = {
       take: params.take,
+      skip: params.skip,
       where: {
         userId: req.user.userId,
         toObjType: MessageThreadType.P2P_MESSAGE,

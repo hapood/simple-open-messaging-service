@@ -8,8 +8,7 @@ import {
 import { MessageService } from '../message/message.service';
 import { ContentType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { toJson, StandardResponse } from './utils';
-import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
+import { StandardResponse } from './utils';
 import dayjs from 'dayjs';
 import { GroupService } from 'src/group/group.service';
 
@@ -30,41 +29,49 @@ export class MessageController {
         message: `group name must less than 32 characters`
       }
     }
-    const grp = await this.groupService.createNewGroup({
+    const trd = await this.groupService.createNewGroup({
       owner: userId,
       groupName: params.groupName
     })
     return {
       status: 0,
       message: 'successful',
-      data: grp
+      data: { threadId: trd.id, groupId: trd.groupId }
     }
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('group/invite-user')
-  async inviteUsers(@Request() req, @Body() params: { userId: number }): Promise<StandardResponse> {
-    const { isFriend, userMsgTr } = await this.messageService.getFriendship({ userId: req.user.userId, friendUserId: params.userId })
-    if (isFriend) {
-      const expiryDate = dayjs().add(3, 'day').valueOf()
-      this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, JSON.stringify({
-        type: 'GROUP_INVITE',
-        inviter: req.user.userId,
-        expiryDate,
-        key: this.groupService.generateInviteToken({
-          toUserId: userMsgTr.toObjId,
-          threadId: userMsgTr.threadId,
-          expiryDate
-        })
-      }), ContentType.CARD)
-      return {
-        status: 0,
-        message: 'successful'
+  async inviteUsers(@Request() req, @Body() params: { userId: number, threadId: number }): Promise<StandardResponse> {
+    const groupTrd = await this.messageService.findUniqueUserMessageThread({ userId_threadId: { userId: req.user.userId, threadId: params.threadId } })
+    if (groupTrd !== null) {
+      const { isFriend, userMsgTr } = await this.messageService.getFriendship({ userId: req.user.userId, friendUserId: params.userId })
+      if (isFriend) {
+        const expiryDate = dayjs().add(3, 'day').valueOf()
+        this.messageService.writeMsgToThread(req.user.userId, groupTrd.threadId, JSON.stringify({
+          type: 'GROUP_INVITE',
+          inviter: req.user.userId,
+          expiryDate,
+          key: this.groupService.generateInviteToken({
+            toUserId: userMsgTr.toObjId,
+            threadId: userMsgTr.threadId,
+            expiryDate
+          })
+        }), ContentType.CARD)
+        return {
+          status: 0,
+          message: 'successful'
+        }
+      } else {
+        return {
+          status: 1,
+          message: `[${params.userId}] is not your feiend`
+        }
       }
     } else {
       return {
-        status: 1,
-        message: `[${params.userId}] is not your feiend`
+        status: 2,
+        message: `you are not in group [${params.userId}]`
       }
     }
   }

@@ -10,7 +10,7 @@ export interface QueryMessageLogParams {
   orderBy: 'asc' | 'desc', lastId?: string | undefined
 }
 export interface QueryUserThreadParams {
-  take: number, skip: number, lastId?: string | undefined
+  take: number, skip: number, lastId?: string | undefined, toObjType?: "P2P_MESSAGE" | "GROUP_MESSAGE"
 }
 export interface StandardResponse<T = any> {
   status: number, message: string, data?: T

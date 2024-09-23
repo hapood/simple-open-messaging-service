@@ -5,7 +5,7 @@ import { MaterialMenuButtonComponent } from '../material-menu-button/material-me
 import { RouteService, PopupType } from '../../services/route.service';
 
 enum MenuItem {
-  FRIEND_REQUESTS, LOGOUT
+  FRIEND_REQUESTS, LOGOUT, NEW_GROUP
 }
 @Component({
   selector: 'app-home-header',
@@ -29,6 +29,11 @@ export class HomeHeaderComponent {
       this.routeService.popupDlg({
         caller: "HomeHeaderMenu",
         popupType: PopupType.FRIEND_REQUESTS
+      })
+    } else if (menuItem === MenuItem.NEW_GROUP) {
+      this.routeService.popupDlg({
+        caller: "HomeHeaderMenu",
+        popupType: PopupType.NEW_GROUP
       })
     }
   }

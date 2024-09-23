@@ -1,7 +1,7 @@
 import { Component, input } from '@angular/core';
-import { IconComponent } from "../icon/icon.component";
-import { AppIconType } from '../icon/model';
+import { IconComponent, AppIconType } from "../icon/icon.component";
 import { RouteService } from '../../services/route.service';
+
 @Component({
   selector: 'app-message-header',
   standalone: true,

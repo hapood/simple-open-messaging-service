@@ -1,0 +1,77 @@
+import { Component, input, signal, EventEmitter, Output, computed } from '@angular/core';
+import { NgClass } from '@angular/common';
+import { Router, ActivatedRoute } from '@angular/router';
+import { UserService } from '../../services/user.service'
+import { User } from '../../services/model'
+import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { switchMap, of } from 'rxjs';
+
+export interface DispUserItem { id: number, userId: number, name: string, icon: string }
+@Component({
+  selector: 'app-user-list',
+  standalone: true,
+  imports: [UserAvatarComponent, NgClass],
+  templateUrl: './user-list.component.html',
+  styleUrl: './user-list.component.scss'
+})
+
+export class UserListComponent {
+  UserAvatarType = UserAvatarType
+  readonly profile = input<User>()
+  readonly selectedDict = input<Record<number, boolean | undefined>>()
+  readonly threadList = signal<DispUserItem[]>([])
+
+  readonly dispThreadList = computed(() => {
+    const threadList = this.threadList(), selectedDict = this.selectedDict()
+    if (selectedDict !== undefined) {
+      return threadList.map(thread => {
+        return { ...thread, selected: selectedDict[thread.userId] }
+      })
+    } else { return threadList as (DispUserItem & { selected: undefined })[] }
+  })
+  @Output() onSelect = new EventEmitter<DispUserItem>()
+
+  userInfoDict = signal<Record<string, User>>({})
+
+  constructor(private userService: UserService, private route: ActivatedRoute, private router: Router) { }
+
+  genThreadList() {
+    return this.userService.queryUserThreadValid({ take: 10, skip: 0, toObjType: "P2P_MESSAGE" }).pipe(switchMap(({ status, message, data: threadList }) => {
+      if (status == 0) {
+        return this.userService.queryUserInfo({ userIds: threadList!.map(item => item.toObjId) }).pipe(switchMap(({ status, message, data: userList }) => {
+          const dict: Record<number, User> = {}
+          if (status == 0) {
+            const dispThreadList: DispUserItem[] = []
+            userList!.forEach(item => dict[item.id] = item)
+            threadList!.forEach(thread => {
+              const user = dict[thread.toObjId]
+              if (user) {
+                dispThreadList.push({
+                  id: thread.id,
+                  userId: thread.toObjId,
+                  name: user.userExtra.name,
+                  icon: user.userExtra.avatar,
+                })
+              }
+            })
+            return of(dispThreadList)
+          } else {
+            throw new Error(message)
+          }
+        }))
+      } else {
+        throw new Error(message)
+      }
+    })).subscribe(threadList => {
+      this.threadList.set(threadList)
+    })
+  }
+
+  onUsrTrdClick(userTrd: DispUserItem) {
+    this.onSelect.emit(userTrd)
+  }
+
+  ngOnInit() {
+    this.genThreadList();
+  }
+}

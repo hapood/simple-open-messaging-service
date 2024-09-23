@@ -15,8 +15,8 @@ export class UserService {
 
   updateSessionProfile() {
     this.getMyProfile().subscribe({
-      next: profile => {
-        this.sessionProfile.set(profile)
+      next: res => {
+        this.sessionProfile.set(res.data)
       },
       error: (err) => {
         console.error(err)
@@ -30,7 +30,7 @@ export class UserService {
   }
 
   getMyProfile() {
-    return this.http.post<User>(`${apiPrefix}/user/my-profile`, {})
+    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/my-profile`, {})
   }
 
   queryUserThreadValid(params: QueryUserThreadParams) {

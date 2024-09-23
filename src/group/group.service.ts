@@ -12,6 +12,14 @@ export class GroupService implements OnModuleInit {
   async onModuleInit() {
   }
 
+  findUniqGroup(params: Prisma.GroupFindUniqueArgs) {
+    return this.prisma.group.findUnique(params)
+  }
+
+  findUniqGroupMember(params: Prisma.GroupMemberFindUniqueArgs) {
+    return this.prisma.groupMember.findUnique(params)
+  }
+
   generateInviteToken(params: {
     toUserId: number,
     expiryDate: number,
@@ -45,7 +53,7 @@ export class GroupService implements OnModuleInit {
   }
 
   async createNewGroup(params: { groupName: string, owner: number }) {
-    this.prisma.$transaction(async (prisma) => {
+    return this.prisma.$transaction(async (prisma) => {
       const data = await prisma.messageThread.create({
         data: {
           type: MessageThreadType.GROUP_MESSAGE,
@@ -64,6 +72,7 @@ export class GroupService implements OnModuleInit {
           userId: params.owner
         }
       })
+      return data
     })
   }
 
