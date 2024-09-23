@@ -5,7 +5,7 @@ import {
   UseGuards,
   Body
 } from '@nestjs/common';
-import { User as UserModel } from '@prisma/client';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { LocalAuthGuard } from '../auth/local-auth.guard';
 import { AuthService } from '../auth/auth.service';
 import { LoginAuthInfo } from 'src/auth/local.strategy';
@@ -83,6 +83,7 @@ export class AuthController {
     }
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('auth/logout')
   async logout(@Request() req) {
     const userId = req.user['sub'], refreshToken = req.user['refreshToken'];

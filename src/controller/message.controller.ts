@@ -10,11 +10,14 @@ import { ContentType, MessageThreadType, Prisma, UserMessageThreadStatus } from 
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { toJson, StandardResponse } from './utils';
 import { EventGateway } from 'src/gateway/event.gateway';
+import { GroupService } from 'src/group/group.service';
+
 @Controller()
 export class MessageController {
   constructor(
     private readonly messageService: MessageService,
-    private readonly eventGateway: EventGateway
+    private readonly eventGateway: EventGateway,
+    private readonly groupService: GroupService
   ) { }
 
   @UseGuards(JwtAuthGuard)
@@ -28,24 +31,33 @@ export class MessageController {
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
       id: params.userThreadId
     })
-    const friendMsgTr = await this.messageService.findUniqueUserMessageThread({
-      userId_threadId: {
-        userId: userMsgTr.toObjId,
-        threadId: userMsgTr.threadId
+    if (userMsgTr.toObjType === MessageThreadType.GROUP_MESSAGE) {
+      if (userMsgTr.status === UserMessageThreadStatus.APPROVED) {
+        const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
+        const userIds = await this.groupService.getAllGroupUserIds(userMsgTr.toObjId)
+        userIds.forEach(userId => {
+          this.eventGateway.onNewMessage(userMsgTr.toObjId, userMsgTr.threadId)
+        })
+        return { status: 0, message: 'sucessful', data: toJson(data) }
       }
-    })
-    if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
-    }
-    else {
-      return {
-        status: 1,
-        message: 'failed'
+    } else {
+      const friendMsgTr = await this.messageService.findUniqueUserMessageThread({
+        userId_threadId: {
+          userId: userMsgTr.toObjId,
+          threadId: userMsgTr.threadId
+        }
+      })
+      if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
+        const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
+        this.eventGateway.onNewMessage(req.user.userId, userMsgTr.threadId)
+        this.eventGateway.onNewMessage(userMsgTr.toObjId, userMsgTr.threadId)
+        return { status: 0, message: 'sucessful', data: toJson(data) }
       }
     }
-    const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
-    this.eventGateway.onNewMessage(req.user.userId, userMsgTr.id)
-    this.eventGateway.onNewMessage(userMsgTr.toObjId, userMsgTr.id)
-    return { status: 0, message: 'sucessful', data: toJson(data) }
+    return {
+      status: 1,
+      message: 'failed'
+    }
   }
 
   @UseGuards(JwtAuthGuard)
@@ -84,19 +96,19 @@ export class MessageController {
 
   @UseGuards(JwtAuthGuard)
   @Post('thread/by-user-id')
-  async getThreadByUniqName(@Request() req, @Body() { userId: toUserId }: { userId: number }): Promise<StandardResponse> {
+  async getThreadByUniqName(@Request() req, @Body() params: { userId: number }): Promise<StandardResponse> {
     const userId = req.user.userId
     const thread = await this.messageService.findUniqueUserMessageThread({
       userId_toObjType_toObjId: {
         userId,
         toObjType: MessageThreadType.P2P_MESSAGE,
-        toObjId: toUserId
+        toObjId: params.userId
       }
     })
     if (thread === null) {
       return {
         status: 1,
-        message: `no thread with user [${toUserId}]`,
+        message: `no thread with user [${params.userId}]`,
       }
     } else {
       return {

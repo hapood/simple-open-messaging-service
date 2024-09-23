@@ -29,6 +29,8 @@
     "@nestjs/websockets": "^10.4.1",
     "@prisma/client": "^5.18.0",
     "argon2": "^0.41.1",
+    "dayjs": "^1.11.13",
+    "jsonwebtoken": "^9.0.2",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",

@@ -6,8 +6,9 @@ import { MessageModule } from './message/message.module';
 import { AuthModule } from './auth/auth.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { UserController } from './controller/user.controller';
+import { GroupModule } from './group/group.module';
 @Module({
-  imports: [AuthModule, UserModule, GatewayModule, MessageModule],
+  imports: [AuthModule, UserModule, GatewayModule, MessageModule, GroupModule],
   controllers: [MessageController, AuthController, UserController],
   providers: [],
 })
