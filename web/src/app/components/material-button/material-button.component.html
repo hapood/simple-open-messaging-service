@@ -1,4 +1,4 @@
-<button [type]="type()" [ngClass]="[styleType()===MaterialButtonType.OUTLINED?
+<button [ngClass]="[styleType()===MaterialButtonType.OUTLINED?
 'matter-button-outlined':styleType()===MaterialButtonType.TEXT?
-  'matter-button-text':'matter-button-contained']" (click)="onClick($event)"
+  'matter-button-text':'matter-button-contained']"
   [disabled]="disabled()"><ng-content></ng-content></button>

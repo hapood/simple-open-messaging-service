@@ -193,8 +193,8 @@ export class UserController {
       uniqName,
       isDeleted: false
     }, true)
-    delete user.hashPwd
     if (user !== null) {
+      delete user.hashPwd
       return {
         status: 0,
         message: 'successful',

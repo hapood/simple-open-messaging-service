@@ -29,6 +29,6 @@ export class HomeComponent {
   }
 
   onThreadSelect(id: number) {
-    this.routeService.popupDlg({ caller: 'HOME', popupType: PopupType.MSG_THREAD, inputs: { threadId: id } })
+    this.routeService.popupDlg({ caller: 'HOME', popupType: PopupType.MSG_THREAD, inputs: { userThreadId: id } })
   }
 }

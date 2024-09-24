@@ -68,8 +68,8 @@ export class MsgGroupFactory {
   // in current groups, maybe out of range, means message group is empty
   private _oldGrpMsgIdx = 0
   private _newGrpMsgIdx = 0
-  private hasMoreNewMsg = false
-  private hasMoreOldMsg = true
+  private _newestMsgId = '0'
+  private _oldestMsgId = '0'
   private _startMsgId: string | undefined
   private cb: MsgFactCallback
   private userThreadId: number
@@ -104,24 +104,28 @@ export class MsgGroupFactory {
       next: (res) => {
         if (res.status === 0) {
           const list = res.data!
-          if (list.length === 0) {
-            return
+          if (list.length > 0) {
+            const rList = list.reverse();
+            this.messageList = rList.concat(this.messageList)
+            const delta = rList.length
+            this._oldGrpMsgIdx += delta
+            this._newGrpMsgIdx += delta
+            this._groupList.forEach(grp => {
+              grp.sIndex += delta
+              grp.eIndex += delta
+            })
           }
-          const rList = list.reverse();
-          this.messageList = rList.concat(this.messageList)
-          const delta = rList.length
-          this._oldGrpMsgIdx += delta
-          this._newGrpMsgIdx += delta
-          this._groupList.forEach(grp => {
-            grp.sIndex += delta
-            grp.eIndex += delta
-          })
           if (list.length < params.take) {
-            console.info('no more old message to load, set hasMoreOldMsg false')
-            this.hasMoreOldMsg = false
+            const msg = this.messageList[0]
+            if (msg !== undefined) {
+              console.info(`_oldestMsgId set to [${msg.id}]`)
+              this._oldestMsgId = msg.id
+            }
           }
-          console.info('old messages added to messageList')
-          this.cb.afterMsgListAdd(0)
+          if (list.length > 0) {
+            console.info('old messages added to messageList')
+            this.cb.afterMsgListAdd(0)
+          }
         } else {
 
         }
@@ -144,17 +148,11 @@ export class MsgGroupFactory {
       next: (res) => {
         if (res.status === 0) {
           const list = res.data!
-          if (list.length === 0) {
-            return
+          if (list.length > 0) {
+            this.messageList = this.messageList.concat(list)
+            console.info('new messages added to messageList')
+            this.cb.afterMsgListAdd(1)
           }
-          this.messageList = this.messageList.concat(list)
-          if (list.length < params.take) {
-            console.info('no more new message to load, set hasMoreNewMsg false')
-            this.hasMoreNewMsg = false
-          }
-          console.info('new messages added to messageList')
-          this.cb.afterMsgListAdd(1)
-        } else {
         }
         this.isQueryingNew = false
       },
@@ -166,9 +164,6 @@ export class MsgGroupFactory {
 
   private _startToBldOldGrp(endIndex: number): Observable<WorkflowGenerateResult> {
     //endIndex message will not appeared in generated group
-    if (!this.hasMoreOldMsg && this._oldGrpMsgIdx < 0) {
-      throw new GrpWrkFlwErr('no more old message to build')
-    }
     const messageList = this.messageList
     console.info(`_startToBldOldGrp to index [${endIndex}]`)
     // for keeping group style stable, addition one take and may be droped after
@@ -176,7 +171,7 @@ export class MsgGroupFactory {
     let startIndex = endIndex - takeNum;
     if (endIndex < 1) {
       this._loadMoreOldMsg()
-      throw new GrpWrkFlwErr('no more old message, quit workflow and turn to load')
+      throw new GrpWrkFlwErr('no more local old message, quit workflow and turn to load')
     }
     if (startIndex < 0) {
       takeNum += startIndex;
@@ -188,10 +183,10 @@ export class MsgGroupFactory {
       topList = topList.slice(1)
       startIndex += 1
     } else {
-      if (this.hasMoreOldMsg) {
-        this._loadMoreOldMsg()
+      if (this._loadMoreOldMsg() === true) {
         throw new GrpWrkFlwErr('for keeping group style stable, must quit workflow and turn to load')
       }
+      //if no more remote old message, continue workflow with final topList
     }
     this._oldGrpMsgIdx = startIndex
     const grpStatArrSig = this.grpStatArrSig, dispGrpList = this.dispGrpList()
@@ -208,9 +203,6 @@ export class MsgGroupFactory {
   }
 
   private _startToBldNewGrp(startIndex: number): Observable<WorkflowGenerateResult> {
-    if (!this.hasMoreNewMsg && this._newGrpMsgIdx > this.messageList.length - 1) {
-      throw new GrpWrkFlwErr('no more new message to build')
-    }
     //startIndex message will not appeared in generated group
     console.info(`_startToBldNewGrp from index [${startIndex}]`)
     const messageList = this.messageList
@@ -231,7 +223,7 @@ export class MsgGroupFactory {
       return of({ drct: 1, grp: grp, list: botList })
     } else {
       this._loadMoreNewMsg()
-      throw new GrpWrkFlwErr('no more new message, quit workflow and turn to load')
+      throw new GrpWrkFlwErr('no more local new message, quit workflow and turn to load')
     }
   }
 
@@ -263,70 +255,76 @@ export class MsgGroupFactory {
 
   _loadMoreOldMsg() {
     console.info('_loadMoreOldMsg')
-    if (!this.hasMoreOldMsg) {
-      console.info('has no more old message, shold not load.')
-      return
-    }
     let threadIdNum = this.userThreadId
     const startId = this._startMsgId, oldestMsg = this.messageList[0]
-    if (oldestMsg) {
+    let params!: QueryMessageLogParams, curOldestMsgId = '-1'
+    if (oldestMsg !== undefined) {
       console.info('delta query more old data')
-      this._queryOldMsgs({
+      params = {
         userThreadId: threadIdNum, take: GROUP_MSG_NUM, skip: 1,
         lastId: oldestMsg.id, orderBy: 'desc'
-      })
-    }
-    else {
-      //when first query old message, get one more item to keep group style stable
-      if (startId) {
-        console.info('first query old group with startId')
-        this._queryOldMsgs({
-          userThreadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 1,
-          lastId: startId, orderBy: 'desc'
-
-        })
-      } else {
-        console.info('first query old group')
-        this._queryOldMsgs({
-          userThreadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 0,
-          orderBy: 'desc'
-        })
       }
+      curOldestMsgId = oldestMsg.id
+    }
+    //when first query old message, get one more item to keep group style stable
+    else if (startId !== undefined) {
+      console.info('first query old group with startId')
+      this._queryOldMsgs({
+        userThreadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 1,
+        lastId: startId, orderBy: 'desc'
+      })
+      curOldestMsgId = startId
+    } else {
+      console.info('first query old group')
+      params = {
+        userThreadId: threadIdNum, take: GROUP_MSG_NUM + 1, skip: 0,
+        orderBy: 'desc'
+      }
+    }
+    if (curOldestMsgId < this._oldestMsgId) {
+      this._queryOldMsgs(params)
+      //return true when remote old message existed
+      return true
+    } else {
+      console.info('has no more remote old message, shold not query.')
+      return false
     }
   }
 
   _loadMoreNewMsg() {
     console.info('_loadMoreNewMsg')
-    if (!this.hasMoreNewMsg) {
-      console.info('has no more new message, shold not load.')
-      return
-    }
     let threadIdNum = this.userThreadId
     const startId = this._startMsgId, messageList = this.messageList
     const newestMsg = messageList[messageList.length - 1]
-    if (newestMsg) {
+    let params!: QueryMessageLogParams, curNewestMsgId!: string
+    if (newestMsg !== undefined) {
       console.info('delta query more new data')
-      this._queryNewMsgs({
+      params = {
         userThreadId: threadIdNum,
         orderBy: 'asc',
         take: GROUP_MSG_NUM,
         skip: 1,
         lastId: newestMsg.id
-
-      })
-    } else {
-      if (startId) {
-        console.info('first query new group with startId')
-        this._queryNewMsgs({
-          userThreadId: threadIdNum,
-          orderBy: 'asc',
-          take: GROUP_MSG_NUM,
-          skip: 0,
-          lastId: startId
-        })
-      } else {
-        console.error('can not query new message without startId')
       }
+      curNewestMsgId = newestMsg.id
+    } else if (startId !== undefined) {
+      console.info('first query new group with startId')
+      params = {
+        userThreadId: threadIdNum,
+        orderBy: 'asc',
+        take: GROUP_MSG_NUM,
+        skip: 0,
+        lastId: startId
+      }
+      curNewestMsgId = startId
+    } else {
+      console.error('can not query new message without startId')
+      return
+    }
+    if (curNewestMsgId < this._newestMsgId) {
+      this._queryNewMsgs(params)
+    } else {
+      console.info('has no more remote new message, shold not query.')
     }
   }
 
@@ -529,7 +527,9 @@ export class MsgGroupFactory {
     }
   }
 
-  newMessageNotify() {
-    this.hasMoreNewMsg = true
+  newMessageNotify(msgId: string) {
+    if (msgId > this._newestMsgId) {
+      this._newestMsgId = msgId
+    }
   }
 }

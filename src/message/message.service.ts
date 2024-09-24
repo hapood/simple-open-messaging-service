@@ -66,6 +66,7 @@ export class MessageService implements OnModuleInit {
   }
 
   makeFriendRequest(fromUserId: number, toUserId: number) {
+    console.log(fromUserId, toUserId)
     return this.prisma.$transaction(async (prisma) => {
       const toUserThread = await prisma.userMessageThread.findUnique({
         where: {

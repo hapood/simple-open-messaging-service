@@ -96,6 +96,7 @@ export class FriendRequestsComponent {
 
   sendRequest() {
     this.reqRspTxt.set('')
+    console.log(12333)
     this.userService.sendFriendRequest({ userId: this.userData()!.id }).subscribe({
       next: res => {
         if (res.status === 0) {

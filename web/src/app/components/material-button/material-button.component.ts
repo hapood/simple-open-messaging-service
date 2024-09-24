@@ -1,4 +1,4 @@
-import { Component, EventEmitter, Output, input } from '@angular/core';
+import { Component, input } from '@angular/core';
 import { NgClass } from '@angular/common';
 
 export enum MaterialButtonType {
@@ -15,13 +15,6 @@ export enum MaterialButtonType {
 
 export class MaterialButtonComponent {
   MaterialButtonType = MaterialButtonType
-  type = input<string>()
   styleType = input(MaterialButtonType.CONTAINTED)
   disabled = input(false)
-  @Output() click = new EventEmitter();
-
-  onClick(event: MouseEvent) {
-    this.click.emit(event)
-  }
-
 }

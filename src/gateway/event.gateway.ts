@@ -61,11 +61,8 @@ export class EventGateway implements OnGatewayConnection, OnGatewayDisconnect, O
     }
   }
 
-  onNewMessage(userId: number, threadId: number) {
+  onNewMessage(userId: number, data: { threadId: number, msgId: string }) {
     const list = this.wsClientDict[userId]
-    const data = {
-      threadId,
-    }
     list.forEach(item => item.send({ event: 'NEW_MESSAGE', status: 0, message: 'new message', data }))
   }
 

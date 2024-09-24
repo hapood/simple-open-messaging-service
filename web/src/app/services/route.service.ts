@@ -100,15 +100,19 @@ export class RouteService {
   }
 
   onPopStateEvent(event: PopStateEvent) {
-    let state: AppPopState = event.state
-    if (state.seq === undefined || state.seq === this._lastState!.seq) {
+    const state: AppPopState = event.state
+    let curSeq = state.seq
+    if (curSeq === undefined) { } {
+      curSeq = 0
+    }
+    if (curSeq <= this._lastState!.seq) {
       const info = this._stateList.pop()
       if (info!.type === RouteStateType.DIALOG) {
         const dlgList = this.dlgList()
         this.dlgList.set(dlgList.slice(0, dlgList.length - 1))
       }
       this._lastState = info
-    } else if (state.seq > this._lastState!.seq) {
+    } else if (curSeq > this._lastState!.seq) {
       this._stateList.push(state)
       this._lastState = state
     } else {

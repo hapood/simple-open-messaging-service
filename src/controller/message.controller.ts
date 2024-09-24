@@ -8,7 +8,7 @@ import {
 import { MessageService } from '../message/message.service';
 import { ContentType, MessageThreadType, Prisma, UserMessageThreadStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { toJson, StandardResponse } from './utils';
+import { convertBigIntId, StandardResponse } from './utils';
 import { EventGateway } from 'src/gateway/event.gateway';
 import { GroupService } from 'src/group/group.service';
 
@@ -34,11 +34,12 @@ export class MessageController {
     if (userMsgTr.toObjType === MessageThreadType.GROUP_MESSAGE) {
       if (userMsgTr.status === UserMessageThreadStatus.APPROVED) {
         const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
+        const msgData = { threadId: userMsgTr.threadId, msgId: data.id.toString() }
         const userIds = await this.groupService.getAllGroupUserIds(userMsgTr.toObjId)
         userIds.forEach(userId => {
-          this.eventGateway.onNewMessage(userMsgTr.toObjId, userMsgTr.threadId)
+          this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData)
         })
-        return { status: 0, message: 'sucessful', data: toJson(data) }
+        return { status: 0, message: 'sucessful', data: convertBigIntId(data) }
       }
     } else {
       const friendMsgTr = await this.messageService.findUniqueUserMessageThread({
@@ -49,9 +50,10 @@ export class MessageController {
       })
       if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
         const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
-        this.eventGateway.onNewMessage(req.user.userId, userMsgTr.threadId)
-        this.eventGateway.onNewMessage(userMsgTr.toObjId, userMsgTr.threadId)
-        return { status: 0, message: 'sucessful', data: toJson(data) }
+        const msgData = { threadId: userMsgTr.threadId, msgId: data.id.toString() }
+        this.eventGateway.onNewMessage(req.user.userId, msgData)
+        this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData)
+        return { status: 0, message: 'sucessful', data: convertBigIntId(data) }
       }
     }
     return {
@@ -86,8 +88,9 @@ export class MessageController {
         newParams.cursor = { id: params.lastId }
       }
       const data = await this.messageService.queryMessages(userThread.threadId, newParams)
+      data.forEach(item => convertBigIntId(item))
       return {
-        status: 0, message: 'sucessful', data: toJson(data)
+        status: 0, message: 'sucessful', data
       }
     } else {
       return { status: 2, message: `no user thread $[${params.userThreadId}]` }

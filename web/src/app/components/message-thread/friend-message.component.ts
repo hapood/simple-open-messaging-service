@@ -50,8 +50,12 @@ export class MessageThreadComponent {
     private userService: UserService) {
     this.wsService.eventSubject.subscribe({
       next: (msg) => {
-        if (msg.event === 'NEW_MESSAGE' && msg.status === 0 && msg.data.threadId === this.grpFactory.userThread!.threadId) {
-          this.checkAndBuildGroup()
+        if (msg.event === 'NEW_MESSAGE' && msg.status === 0) {
+          const msgData = msg.data
+          if (msgData.threadId === this.grpFactory.userThread!.threadId) {
+            this.grpFactory.newMessageNotify(msgData.msgId)
+            this.checkAndBuildGroup()
+          }
         }
       }
     })
@@ -170,12 +174,10 @@ export class MessageThreadComponent {
         if (upsideGroupHeight < up) {
           console.info('upside group not satisfied threshold, try add group')
           grpFactory.startBuild(0)
-          return
         }
         if (downsideGroupHeight < this.threshold.down) {
           console.info('downside group not satisfied threshold, try add group')
           grpFactory.startBuild(1)
-          return
         }
         console.info("initial generating finished")
       }
@@ -263,11 +265,5 @@ export class MessageThreadComponent {
   }
 
   afterMsgSent() {
-    this.grpFactory.newMessageNotify()
-    if (this.isBottom) {
-      this.checkAndBuildGroup()
-    } else {
-
-    }
   }
 }

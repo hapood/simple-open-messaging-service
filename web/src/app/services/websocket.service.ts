@@ -12,7 +12,7 @@ export interface StandardMessage<T = any> {
   providedIn: 'root'
 })
 export class WebsocketService {
-  private readonly url = 'ws://127.0.0.1:3000'
+  private readonly url = 'ws://10.176.80.28:3000'
   private _ws: WebSocket | null = null
   private _isConning = false
   readonly eventSubject = new Subject<StandardMessage>();
