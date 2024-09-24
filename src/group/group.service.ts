@@ -12,8 +12,12 @@ export class GroupService implements OnModuleInit {
   async onModuleInit() {
   }
 
-  findUniqGroup(params: Prisma.GroupFindUniqueArgs) {
-    return this.prisma.group.findUnique(params)
+  findUniqGroup(params: Prisma.GroupWhereUniqueInput) {
+    return this.prisma.group.findUnique({ where: params })
+  }
+
+  queryGroups(params: Prisma.GroupFindManyArgs) {
+    return this.prisma.group.findMany(params)
   }
 
   findUniqGroupMember(params: Prisma.GroupMemberFindUniqueArgs) {
@@ -56,7 +60,7 @@ export class GroupService implements OnModuleInit {
     return this.prisma.$transaction(async (prisma) => {
       const data = await prisma.messageThread.create({
         data: {
-          type: MessageThreadType.GROUP_MESSAGE,
+          type: MessageThreadType.GROUP,
           groupItem: {
             create: {
               name: params.groupName,
@@ -64,6 +68,16 @@ export class GroupService implements OnModuleInit {
               ownerId: params.owner
             }
           }
+        }
+      })
+      await prisma.userMessageThread.create({
+        data: {
+          userId: params.owner,
+          status: UserMessageThreadStatus.APPROVED,
+          toObjType: MessageThreadType.GROUP,
+          toObjId: data.groupId,
+          reqMessage: '',
+          threadId: data.id
         }
       })
       await prisma.groupMember.create({
@@ -93,7 +107,7 @@ export class GroupService implements OnModuleInit {
         data: {
           userId: params.userId,
           status: UserMessageThreadStatus.APPROVED,
-          toObjType: MessageThreadType.GROUP_MESSAGE,
+          toObjType: MessageThreadType.GROUP,
           toObjId: group.id,
           reqMessage: '',
           threadId: params.threadId

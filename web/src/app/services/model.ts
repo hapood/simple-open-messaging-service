@@ -5,12 +5,15 @@ export interface User {
 export interface ThreadItem { id: number }
 export interface Message { id: string, content: string, creator: number, createdAt: number }
 export interface Friend { id: number, friendUser: User }
+export interface Group { name: string, id: number }
+
+type MessageThreadType = "P2P" | "GROUP"
 export interface QueryMessageLogParams {
   userThreadId: number, take: number, skip: number,
   orderBy: 'asc' | 'desc', lastId?: string | undefined
 }
 export interface QueryUserThreadParams {
-  take: number, skip: number, lastId?: string | undefined, toObjType?: "P2P_MESSAGE" | "GROUP_MESSAGE"
+  take: number, skip: number, lastId?: string | undefined, toObjType?: MessageThreadType
 }
 export interface StandardResponse<T = any> {
   status: number, message: string, data?: T
@@ -18,11 +21,13 @@ export interface StandardResponse<T = any> {
 export interface UserMessageThread {
   id: number,
   userId: number,
-  toObjType: number,
+  toObjType: MessageThreadType,
   toObjId: number,
   threadId: number,
   threadItem?: ThreadItem,
   status: number,
   createdAt: number,
-  updatedAt: number
+  updatedAt: number,
+  userInfo: User,
+  groupInfo: Group
 }

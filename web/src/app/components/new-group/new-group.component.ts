@@ -23,13 +23,13 @@ export class NewGroupComponent {
   }
 
   onTrdSelect(trdItem: DispUserItem) {
-    let dict = this.selectedDict(), list = this.selectedList();
+    let dict = { ...this.selectedDict() }, list = this.selectedList();
     if (dict[trdItem.userId]) {
       dict[trdItem.userId] = false
       list = list.filter(item => item.userId !== trdItem.userId)
     } else {
       dict[trdItem.userId] = true
-      list.push(trdItem)
+      list = list.concat(trdItem)
     }
     this.selectedDict.set(dict)
     this.selectedList.set(list)
@@ -37,14 +37,14 @@ export class NewGroupComponent {
 
   create() {
     const list = this.selectedList();
-    let groupName = 'group with ';
-    list.slice(0, 3).forEach(item => {
-      groupName += item.name
-    })
+    let groupName = list.slice(0, 3).map(item => item.name).join(', ')
+    if (groupName.length > 12) {
+      groupName = groupName.slice(0, 12) + ' ...'
+    }
     this.groupService.createGroup({ groupName }).subscribe(res => {
       if (res.status === 0) {
         list.forEach(item => {
-          this.groupService.inviteUser({ threadId: res.data!.threadId, userId: item.userId })
+          this.groupService.inviteUser({ threadId: res.data!.threadId, userId: item.userId }).subscribe()
         })
         this.goBack()
       }

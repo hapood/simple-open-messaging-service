@@ -6,6 +6,7 @@ import {
   UseGuards
 } from '@nestjs/common';
 import { UserService } from '../user/user.service';
+import { GroupService } from 'src/group/group.service';
 import { MessageService } from '../message/message.service';
 import { Prisma, UserMessageThreadStatus, UserMessageThread, MessageThreadType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -15,7 +16,8 @@ import { AuthService } from 'src/auth/auth.service';
 @Controller()
 export class UserController {
   constructor(
-    private readonly userService: UserService, private readonly messageService: MessageService, private authService: AuthService
+    private readonly userService: UserService, private readonly messageService: MessageService,
+    private readonly authService: AuthService, private readonly groupService: GroupService
   ) { }
 
 
@@ -49,15 +51,38 @@ export class UserController {
       },
       orderBy: {
         id: 'asc',
-      },
+      }
     };
     const list = await this.userService.queryUserThread(newParams)
+    const userIds = [], groupIds = [];
+    list.forEach(item => {
+      if (item.toObjType === MessageThreadType.P2P) {
+        userIds.push(item.toObjId)
+      } else if (item.toObjType === MessageThreadType.GROUP) {
+        userIds.push(item.toObjId)
+      }
+    })
+    const [userList, groupList] = await Promise.all([this.userService.queryUsers({
+      where: {
+        id: {
+          in: userIds
+        },
+        isDeleted: false
+      }
+    }), this.groupService.queryGroups({
+      where: {
+        id: {
+          in: groupIds
+        }
+      }
+    })])
+    const dict = {}
+
     return {
       status: 0,
       message: 'successful',
       data: list
     }
-
   }
 
   @UseGuards(JwtAuthGuard)
@@ -75,7 +100,7 @@ export class UserController {
       skip: params.skip,
       where: {
         userId: req.user.userId,
-        toObjType: MessageThreadType.P2P_MESSAGE,
+        toObjType: MessageThreadType.P2P,
         status: UserMessageThreadStatus.TO_PENDING,
         updatedAt: {
           lt: new Date(params.beforeDate),
@@ -209,7 +234,7 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('/user/get-thread-info')
+  @Post('/user/thread-info')
   async queryUserThreadInfo(
     @Request() req,
     @Body() params: { userThreadId: number },

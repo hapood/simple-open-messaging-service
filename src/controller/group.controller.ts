@@ -13,7 +13,7 @@ import dayjs from 'dayjs';
 import { GroupService } from 'src/group/group.service';
 
 @Controller()
-export class MessageController {
+export class GroupController {
   constructor(
     private readonly messageService: MessageService,
     private readonly groupService: GroupService
@@ -41,7 +41,7 @@ export class MessageController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Post('group/invite-user')
+  @Post('group/invite')
   async inviteUsers(@Request() req, @Body() params: { userId: number, threadId: number }): Promise<StandardResponse> {
     const groupTrd = await this.messageService.findUniqueUserMessageThread({ userId_threadId: { userId: req.user.userId, threadId: params.threadId } })
     if (groupTrd !== null) {
@@ -96,6 +96,24 @@ export class MessageController {
       return {
         status: 1,
         message: 'invite expired'
+      }
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('group/info')
+  async getGroupInfo(@Request() req, @Body() params: { groupId: number }): Promise<StandardResponse> {
+    const data = this.groupService.findUniqGroup({ id: params.groupId })
+    if (data !== null) {
+      return {
+        status: 0,
+        message: 'succesful',
+        data
+      }
+    } else {
+      return {
+        status: 1,
+        message: `invalid groupId [${params.groupId}]`
       }
     }
   }

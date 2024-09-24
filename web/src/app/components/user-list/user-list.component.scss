@@ -5,10 +5,15 @@
   align-items: center;
   padding: 0 10px;
   .active-icon {
-    
+    width: 18px;
+    height: 18px;
+    position: absolute;
+    left: 0;
+    bottom: 0;
   }
 
   .thread-avatar {
+    position: relative;
     width: 54px;
     height: 54px;
     flex-grow: 0;

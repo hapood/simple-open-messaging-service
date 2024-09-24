@@ -1,10 +1,9 @@
 import { Component, input, signal, EventEmitter, Output } from '@angular/core';
 import { NgClass } from '@angular/common';
-import { Router, ActivatedRoute } from '@angular/router';
 import { UserService } from '../../services/user.service'
 import { User } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
-import { switchMap, of } from 'rxjs';
+import { switchMap, of, forkJoin } from 'rxjs';
 
 interface DispThreadItem { id: number, userId: number, name: string, icon: string }
 @Component({
@@ -27,34 +26,12 @@ export class ThreadListComponent {
   constructor(private userService: UserService) { }
 
   genThreadList() {
-    return this.userService.queryUserThreadValid({ take: 10, skip: 0 }).pipe(switchMap(({ status, message, data: threadList }) => {
-      if (status == 0) {
-        return this.userService.queryUserInfo({ userIds: threadList!.map(item => item.toObjId) }).pipe(switchMap(({ status, message, data: userList }) => {
-          const dict: Record<number, User> = {}
-          if (status == 0) {
-            const dispThreadList: DispThreadItem[] = []
-            userList!.forEach(item => dict[item.id] = item)
-            threadList!.forEach(thread => {
-              const user = dict[thread.toObjId]
-              if (user) {
-                dispThreadList.push({
-                  id: thread.id,
-                  userId: thread.toObjId,
-                  name: user.userExtra.name,
-                  icon: user.userExtra.avatar,
-                })
-              }
-            })
-            return of(dispThreadList)
-          } else {
-            throw new Error(message)
-          }
-        }))
+    return this.userService.queryUserThreadValid({ take: 10, skip: 0 }).subscribe(res => {
+      if (res.status == 0) {
+
       } else {
-        throw new Error(message)
+        throw new Error(res.message)
       }
-    })).subscribe(threadList => {
-      this.threadList.set(threadList)
     })
   }
 

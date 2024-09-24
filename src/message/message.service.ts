@@ -47,7 +47,7 @@ export class MessageService implements OnModuleInit {
     const userMsgTr = await this.findUniqueUserMessageThread({
       userId_toObjType_toObjId: {
         userId: params.userId,
-        toObjType: MessageThreadType.P2P_MESSAGE,
+        toObjType: MessageThreadType.P2P,
         toObjId: params.friendUserId
       }
     })
@@ -66,13 +66,12 @@ export class MessageService implements OnModuleInit {
   }
 
   makeFriendRequest(fromUserId: number, toUserId: number) {
-    console.log(fromUserId, toUserId)
     return this.prisma.$transaction(async (prisma) => {
       const toUserThread = await prisma.userMessageThread.findUnique({
         where: {
           userId_toObjType_toObjId: {
             userId: toUserId,
-            toObjType: MessageThreadType.P2P_MESSAGE,
+            toObjType: MessageThreadType.P2P,
             toObjId: fromUserId
           },
         }
@@ -85,7 +84,7 @@ export class MessageService implements OnModuleInit {
             where: {
               userId_toObjType_toObjId: {
                 userId: fromUserId,
-                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjType: MessageThreadType.P2P,
                 toObjId: toUserId
               },
             },
@@ -103,7 +102,7 @@ export class MessageService implements OnModuleInit {
             where: {
               userId_toObjType_toObjId: {
                 userId: fromUserId,
-                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjType: MessageThreadType.P2P,
                 toObjId: toUserId
               },
             },
@@ -115,7 +114,7 @@ export class MessageService implements OnModuleInit {
             where: {
               userId_toObjType_toObjId: {
                 userId: toUserId,
-                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjType: MessageThreadType.P2P,
                 toObjId: fromUserId
               },
             },
@@ -144,7 +143,7 @@ export class MessageService implements OnModuleInit {
             where: {
               userId_toObjType_toObjId: {
                 userId: fromUserId,
-                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjType: MessageThreadType.P2P,
                 toObjId: toUserId
               },
             },
@@ -160,10 +159,10 @@ export class MessageService implements OnModuleInit {
         await prisma.userMessageThread.createMany({
           data: [{
             threadId: null, userId: fromUserId, toObjId: toUserId, reqMessage: '',
-            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.FROM_PENDING
+            toObjType: MessageThreadType.P2P, status: UserMessageThreadStatus.FROM_PENDING
           }, {
             threadId: null, userId: toUserId, toObjId: fromUserId, reqMessage: '',
-            toObjType: MessageThreadType.P2P_MESSAGE, status: UserMessageThreadStatus.TO_PENDING
+            toObjType: MessageThreadType.P2P, status: UserMessageThreadStatus.TO_PENDING
           }]
         })
         return {
@@ -179,7 +178,7 @@ export class MessageService implements OnModuleInit {
         where: {
           userId_toObjType_toObjId: {
             userId: fromUserId,
-            toObjType: MessageThreadType.P2P_MESSAGE,
+            toObjType: MessageThreadType.P2P,
             toObjId: toUserId
           },
         }
@@ -189,7 +188,7 @@ export class MessageService implements OnModuleInit {
           where: {
             userId_toObjType_toObjId: {
               userId: toUserId,
-              toObjType: MessageThreadType.P2P_MESSAGE,
+              toObjType: MessageThreadType.P2P,
               toObjId: fromUserId
             },
           }
@@ -198,7 +197,7 @@ export class MessageService implements OnModuleInit {
         if (threadId === null) {
           const threadData = await prisma.messageThread.create({
             data: {
-              type: MessageThreadType.P2P_MESSAGE
+              type: MessageThreadType.P2P
             }
           })
           threadId = threadData.id
@@ -207,7 +206,7 @@ export class MessageService implements OnModuleInit {
           where: {
             userId_toObjType_toObjId: {
               userId: fromUserId,
-              toObjType: MessageThreadType.P2P_MESSAGE,
+              toObjType: MessageThreadType.P2P,
               toObjId: toUserId
             },
           },
@@ -220,7 +219,7 @@ export class MessageService implements OnModuleInit {
             where: {
               userId_toObjType_toObjId: {
                 userId: toUserId,
-                toObjType: MessageThreadType.P2P_MESSAGE,
+                toObjType: MessageThreadType.P2P,
                 toObjId: fromUserId
               },
             },

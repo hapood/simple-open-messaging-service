@@ -31,7 +31,7 @@ export class MessageController {
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
       id: params.userThreadId
     })
-    if (userMsgTr.toObjType === MessageThreadType.GROUP_MESSAGE) {
+    if (userMsgTr.toObjType === MessageThreadType.GROUP) {
       if (userMsgTr.status === UserMessageThreadStatus.APPROVED) {
         const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
         const msgData = { threadId: userMsgTr.threadId, msgId: data.id.toString() }
@@ -104,7 +104,7 @@ export class MessageController {
     const thread = await this.messageService.findUniqueUserMessageThread({
       userId_toObjType_toObjId: {
         userId,
-        toObjType: MessageThreadType.P2P_MESSAGE,
+        toObjType: MessageThreadType.P2P,
         toObjId: params.userId
       }
     })

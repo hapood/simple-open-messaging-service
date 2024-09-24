@@ -73,8 +73,8 @@ model GroupMember {
 }
 
 enum MessageThreadType {
-  P2P_MESSAGE
-  GROUP_MESSAGE
+  P2P
+  GROUP
 }
 
 enum UserMessageThreadStatus {

@@ -60,7 +60,7 @@ export class UserService {
   }
 
   getUserThreadInfo(params: { userThreadId: number }) {
-    return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/user/get-thread-info`, params)
+    return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/user/thread-info`, params)
   }
 
 }

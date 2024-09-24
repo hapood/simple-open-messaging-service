@@ -1,5 +1,5 @@
 -- CreateEnum
-CREATE TYPE "MessageThreadType" AS ENUM ('P2P_MESSAGE', 'GROUP_MESSAGE');
+CREATE TYPE "MessageThreadType" AS ENUM ('P2P', 'GROUP');
 
 -- CreateEnum
 CREATE TYPE "UserMessageThreadStatus" AS ENUM ('PENDING', 'APPROVED', 'BLOCKED', 'DELETED');

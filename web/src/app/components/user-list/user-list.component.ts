@@ -36,7 +36,7 @@ export class UserListComponent {
   constructor(private userService: UserService, private route: ActivatedRoute, private router: Router) { }
 
   genThreadList() {
-    return this.userService.queryUserThreadValid({ take: 10, skip: 0, toObjType: "P2P_MESSAGE" }).pipe(switchMap(({ status, message, data: threadList }) => {
+    return this.userService.queryUserThreadValid({ take: 10, skip: 0, toObjType: "P2P" }).pipe(switchMap(({ status, message, data: threadList }) => {
       if (status == 0) {
         return this.userService.queryUserInfo({ userIds: threadList!.map(item => item.toObjId) }).pipe(switchMap(({ status, message, data: userList }) => {
           const dict: Record<number, User> = {}

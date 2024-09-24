@@ -2,8 +2,8 @@
   <div class="msg-header">
     <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    Add Group
+    New Group
     <app-material-button (click)="create()" [styleType]="MaterialButtonType.TEXT">Create</app-material-button>
   </div>
-  <app-user-list (onSelect)="onTrdSelect($event)" />
+  <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
 </div>
