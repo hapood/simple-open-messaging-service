@@ -1,12 +1,9 @@
 import { Component, input, signal, EventEmitter, Output, computed } from '@angular/core';
 import { NgClass } from '@angular/common';
-import { Router, ActivatedRoute } from '@angular/router';
 import { UserService } from '../../services/user.service'
-import { User } from '../../services/model'
+import { UserMessageThread } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
-import { switchMap, of } from 'rxjs';
 
-export interface DispUserItem { id: number, userId: number, name: string, icon: string }
 @Component({
   selector: 'app-user-list',
   standalone: true,
@@ -17,58 +14,34 @@ export interface DispUserItem { id: number, userId: number, name: string, icon: 
 
 export class UserListComponent {
   UserAvatarType = UserAvatarType
-  readonly profile = input<User>()
   readonly selectedDict = input<Record<number, boolean | undefined>>()
-  readonly threadList = signal<DispUserItem[]>([])
+  readonly threadList = signal<UserMessageThread[]>([])
 
   readonly dispThreadList = computed(() => {
     const threadList = this.threadList(), selectedDict = this.selectedDict()
     if (selectedDict !== undefined) {
       return threadList.map(thread => {
-        return { ...thread, selected: selectedDict[thread.userId] }
+        return { ...thread, selected: selectedDict[thread.id] } as (UserMessageThread & { selected: undefined })
       })
-    } else { return threadList as (DispUserItem & { selected: undefined })[] }
+    } else { return threadList as (UserMessageThread & { selected: undefined })[] }
   })
-  @Output() onSelect = new EventEmitter<DispUserItem>()
 
-  userInfoDict = signal<Record<string, User>>({})
+  @Output() onSelect = new EventEmitter<UserMessageThread & { selected: undefined }>()
 
-  constructor(private userService: UserService, private route: ActivatedRoute, private router: Router) { }
+  constructor(private userService: UserService) { }
 
   genThreadList() {
-    return this.userService.queryUserThreadValid({ take: 10, skip: 0, toObjType: "P2P" }).pipe(switchMap(({ status, message, data: threadList }) => {
-      if (status == 0) {
-        return this.userService.queryUserInfo({ userIds: threadList!.map(item => item.toObjId) }).pipe(switchMap(({ status, message, data: userList }) => {
-          const dict: Record<number, User> = {}
-          if (status == 0) {
-            const dispThreadList: DispUserItem[] = []
-            userList!.forEach(item => dict[item.id] = item)
-            threadList!.forEach(thread => {
-              const user = dict[thread.toObjId]
-              if (user) {
-                dispThreadList.push({
-                  id: thread.id,
-                  userId: thread.toObjId,
-                  name: user.userExtra.name,
-                  icon: user.userExtra.avatar,
-                })
-              }
-            })
-            return of(dispThreadList)
-          } else {
-            throw new Error(message)
-          }
-        }))
+    return this.userService.queryUserThreadValid({ take: 10, skip: 0, toObjType: "P2P" }).subscribe(res => {
+      if (res.status == 0) {
+        this.threadList.set(res.data!)
       } else {
-        throw new Error(message)
+        throw new Error(res.message)
       }
-    })).subscribe(threadList => {
-      this.threadList.set(threadList)
     })
   }
 
-  onUsrTrdClick(userTrd: DispUserItem) {
-    this.onSelect.emit(userTrd)
+  onUsrTrdClick(userMsgTrd: UserMessageThread & { selected: undefined }) {
+    this.onSelect.emit(userMsgTrd)
   }
 
   ngOnInit() {

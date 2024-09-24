@@ -36,7 +36,7 @@ export class MessageThreadComponent {
   readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
   readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
 
-  readonly title = signal('')
+  readonly userMsgTrd = input<UserMessageThread>()
 
   private isBottom = false
   private scrollObserver!: ResizeObserver;
@@ -52,7 +52,7 @@ export class MessageThreadComponent {
       next: (msg) => {
         if (msg.event === 'NEW_MESSAGE' && msg.status === 0) {
           const msgData = msg.data
-          if (msgData.threadId === this.grpFactory.userThread!.threadId) {
+          if (msgData.threadId === this.grpFactory.userMsgTrd.threadId) {
             this.grpFactory.newMessageNotify(msgData.msgId)
             this.checkAndBuildGroup()
           }
@@ -90,20 +90,15 @@ export class MessageThreadComponent {
         afterGrpReady: () => {
           this.checkAndBuildGroup()
         },
-        onMsgThreadInit: (userMsgTrd: UserMessageThread) => {
-          this.userService.queryUserInfo({ userIds: [userMsgTrd.toObjId] }).subscribe(res => {
-            if (res.status === 0) {
-              this.title.set(res.data![0].uniqName)
-              //start build from here
-              this.checkAndBuildGroup()
-            }
-          })
+        onMsgThreadInit: () => {
+          this.checkAndBuildGroup()
         }
       }
       , startMsgId,
       userThreadId,
       msgService: this.msgService,
-      userService: this.userService
+      userService: this.userService,
+      userMsgTrd: this.userMsgTrd()!
     })
     this.grpStatArrSig = grpFactory.grpStatArrSig
     this.dispGrpList = grpFactory.dispGrpList
@@ -132,6 +127,7 @@ export class MessageThreadComponent {
       disToBot: scrollHeight - (clientHeight + scrollTop)
     }
     this.scrollObserver.observe(elm);
+    this.checkAndBuildGroup()
   }
 
   ngOnDestroy() {

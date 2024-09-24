@@ -5,16 +5,19 @@ import { delay, EMPTY, of, tap } from 'rxjs';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
 import { MessageThreadComponent } from '../components/message-thread/friend-message.component';
 import { NewGroupComponent } from '../components/new-group/new-group.component';
+import { GroupInfoComponent } from '../components/group-info/group-info.component';
+
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
-export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP }
+export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO }
 
 const componentDict = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
   [PopupType.MSG_THREAD]: MessageThreadComponent,
-  [PopupType.NEW_GROUP]: NewGroupComponent
+  [PopupType.NEW_GROUP]: NewGroupComponent,
+  [PopupType.GROUP_INFO]: GroupInfoComponent
 }
 
 export interface DlgInfo {

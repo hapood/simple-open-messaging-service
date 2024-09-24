@@ -51,6 +51,13 @@ export class MessageService implements OnModuleInit {
         toObjId: params.friendUserId
       }
     })
+    if (userMsgTr === null) {
+      return {
+        isFriend: false,
+        userMsgTr: null,
+        friendMsgTr: null
+      }
+    }
     const friendMsgTr = await this.findUniqueUserMessageThread({
       userId_threadId: {
         userId: userMsgTr.toObjId,

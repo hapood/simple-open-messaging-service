@@ -8,7 +8,7 @@ import {
 import { UserService } from '../user/user.service';
 import { GroupService } from 'src/group/group.service';
 import { MessageService } from '../message/message.service';
-import { Prisma, UserMessageThreadStatus, UserMessageThread, MessageThreadType } from '@prisma/client';
+import { Prisma, UserMessageThreadStatus, UserMessageThread, MessageThreadType, User, Group } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils'
 import { AuthService } from 'src/auth/auth.service';
@@ -59,7 +59,7 @@ export class UserController {
       if (item.toObjType === MessageThreadType.P2P) {
         userIds.push(item.toObjId)
       } else if (item.toObjType === MessageThreadType.GROUP) {
-        userIds.push(item.toObjId)
+        groupIds.push(item.toObjId)
       }
     })
     const [userList, groupList] = await Promise.all([this.userService.queryUsers({
@@ -76,12 +76,26 @@ export class UserController {
         }
       }
     })])
-    const dict = {}
-
+    const userDict: Record<number, User> = {}
+    userList.forEach(item => {
+      delete item.hashPwd
+      userDict[item.id] = item
+    })
+    const groupDict: Record<number, Group> = {}
+    groupList.forEach(item => {
+      groupDict[item.id] = item
+    })
     return {
       status: 0,
       message: 'successful',
-      data: list
+      data: list.map(item => {
+        if (item.toObjType === MessageThreadType.P2P) {
+          (item as any).userItem = userDict[item.toObjId]
+        } else if (item.toObjType === MessageThreadType.GROUP) {
+          (item as any).groupItem = groupDict[item.toObjId]
+        }
+        return item
+      })
     }
   }
 
@@ -243,6 +257,11 @@ export class UserController {
       id: params.userThreadId
     })
     if (thread !== null && thread.userId === req.user.userId) {
+      if (thread.toObjType === 'P2P') {
+        (thread as any).userItem = await this.userService.findUniqueUser({ id: thread.toObjId })
+      } else if (thread.toObjType === 'GROUP') {
+        (thread as any).groupItem = await this.groupService.findUniqeGroup({ id: thread.toObjId })
+      }
       return { status: 0, message: 'successful', data: thread }
     } else {
       return { status: 1, message: `user has no thread [${params.userThreadId}]` }

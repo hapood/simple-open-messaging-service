@@ -28,6 +28,6 @@ export interface UserMessageThread {
   status: number,
   createdAt: number,
   updatedAt: number,
-  userInfo: User,
-  groupInfo: Group
+  userItem: User,
+  groupItem: Group
 }

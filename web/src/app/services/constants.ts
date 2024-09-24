@@ -1,1 +1,1 @@
-export const apiPrefix = "http://10.176.80.28:3000"
+export const apiPrefix = `//${location.hostname}:3000`

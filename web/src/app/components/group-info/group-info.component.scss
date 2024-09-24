@@ -1,0 +1,18 @@
+@import "../../assets/utils.scss";
+
+.msg-header {
+  height: 56px;
+  width: 100%;
+  background: #fff;
+  box-sizing: border-box;
+  border-bottom: 1px solid #cccccc;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+}
+
+.icon-btn{
+  @include styless-button;
+
+}

@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE "Group" ALTER COLUMN "name" SET DATA TYPE TEXT;
+
+-- AlterTable
+ALTER TABLE "UserExtra" ALTER COLUMN "name" SET DATA TYPE TEXT;

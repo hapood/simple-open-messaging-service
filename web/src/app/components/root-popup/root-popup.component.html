@@ -1,8 +1,8 @@
 <app-material-dialog [isShow]="dlgList().length>0">
-  <div class="popup-com-wrapper">
-    @for(info of dlgList();track $index){
+  @for(info of dlgList();track $index){
+  <div class="popup-com-wrapper" [style]="{zIndex:$index}">
     <ng-container *ngComponentOutlet="
         info.component;inputs:info.inputs
-      " />}
-  </div>
+      " />
+  </div>}
 </app-material-dialog>

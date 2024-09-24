@@ -1,5 +1,5 @@
 import { Component, signal } from '@angular/core';
-import { User } from '../../services/model'
+import { User, UserMessageThread } from '../../services/model'
 import { HomeHeaderComponent } from '../../components/home-header/home-header.component';
 import { UserService } from '../../services/user.service'
 import { ThreadListComponent } from '../../components/thread-list/thread-list.component';
@@ -28,7 +28,7 @@ export class HomeComponent {
     this.authService.renewAccessToken()
   }
 
-  onThreadSelect(id: number) {
-    this.routeService.popupDlg({ caller: 'HOME', popupType: PopupType.MSG_THREAD, inputs: { userThreadId: id } })
+  onThreadSelect(userMsgTrd: UserMessageThread) {
+    this.routeService.popupDlg({ caller: 'HOME', popupType: PopupType.MSG_THREAD, inputs: { userThreadId: userMsgTrd.id, userMsgTrd: userMsgTrd } })
   }
 }

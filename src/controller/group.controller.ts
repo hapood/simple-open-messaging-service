@@ -9,7 +9,7 @@ import { MessageService } from '../message/message.service';
 import { ContentType } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils';
-import dayjs from 'dayjs';
+import * as dayjs from 'dayjs';
 import { GroupService } from 'src/group/group.service';
 
 @Controller()
@@ -103,7 +103,7 @@ export class GroupController {
   @UseGuards(JwtAuthGuard)
   @Post('group/info')
   async getGroupInfo(@Request() req, @Body() params: { groupId: number }): Promise<StandardResponse> {
-    const data = this.groupService.findUniqGroup({ id: params.groupId })
+    const data = this.groupService.findUniqeGroup({ id: params.groupId })
     if (data !== null) {
       return {
         status: 0,

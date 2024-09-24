@@ -1,6 +1,6 @@
 <div>
   <div class="msg-container">
-    <app-message-header [title]="title()"></app-message-header>
+    <app-message-header [userMsgTrd]="userMsgTrd()"></app-message-header>
     <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
       <div class="msg-group-list" #groupPadding>
         @if(dispGrpList!==undefined){

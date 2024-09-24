@@ -1,11 +1,9 @@
 import { Component, input, signal, EventEmitter, Output } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { UserService } from '../../services/user.service'
-import { User } from '../../services/model'
+import { User, UserMessageThread } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
-import { switchMap, of, forkJoin } from 'rxjs';
 
-interface DispThreadItem { id: number, userId: number, name: string, icon: string }
 @Component({
   selector: 'app-thread-list',
   standalone: true,
@@ -17,26 +15,24 @@ export class ThreadListComponent {
   UserAvatarType = UserAvatarType
   readonly profile = input<User>()
   readonly selectedId = input<number>()
-  readonly threadList = signal<DispThreadItem[]>([])
+  readonly threadList = signal<UserMessageThread[]>([])
 
-  @Output() onSelect = new EventEmitter<number>()
-
-  userInfoDict = signal<Record<string, User>>({})
+  @Output() onSelect = new EventEmitter<UserMessageThread>()
 
   constructor(private userService: UserService) { }
 
   genThreadList() {
     return this.userService.queryUserThreadValid({ take: 10, skip: 0 }).subscribe(res => {
       if (res.status == 0) {
-
+        this.threadList.set(res.data!)
       } else {
         throw new Error(res.message)
       }
     })
   }
 
-  onUsrTrdClick(userTrd: DispThreadItem) {
-    this.onSelect.emit(userTrd.id)
+  onUsrTrdClick(userMsgTrd: UserMessageThread) {
+    this.onSelect.emit(userMsgTrd)
   }
 
   ngOnInit() {

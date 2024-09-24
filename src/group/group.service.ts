@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
-import jsonwebtoken from 'jsonwebtoken'
+import * as jsonwebtoken from 'jsonwebtoken'
 
 const secret = '1b14c2677bacd5b82701b2f599281dc93befcf34ba988e5bbe73b855ad4cbe18'
 
@@ -12,7 +12,7 @@ export class GroupService implements OnModuleInit {
   async onModuleInit() {
   }
 
-  findUniqGroup(params: Prisma.GroupWhereUniqueInput) {
+  findUniqeGroup(params: Prisma.GroupWhereUniqueInput) {
     return this.prisma.group.findUnique({ where: params })
   }
 

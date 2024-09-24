@@ -1,9 +1,10 @@
 import { Component, signal } from '@angular/core';
-import { UserListComponent, DispUserItem } from '../user-list/user-list.component';
+import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from "../icon/icon.component";
 import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
 import { GroupService } from '../../services/group.service';
+import { UserMessageThread } from '../../services/model';
 
 @Component({
   selector: 'app-new-group',
@@ -14,7 +15,7 @@ import { GroupService } from '../../services/group.service';
 })
 export class NewGroupComponent {
   selectedDict = signal<Record<number, boolean | undefined>>({})
-  selectedList = signal<DispUserItem[]>([])
+  selectedList = signal<UserMessageThread[]>([])
   AppIconType = AppIconType
   MaterialButtonType = MaterialButtonType
 
@@ -22,13 +23,14 @@ export class NewGroupComponent {
 
   }
 
-  onTrdSelect(trdItem: DispUserItem) {
+  onTrdSelect(trdItem: UserMessageThread) {
+    console.log(trdItem)
     let dict = { ...this.selectedDict() }, list = this.selectedList();
-    if (dict[trdItem.userId]) {
-      dict[trdItem.userId] = false
-      list = list.filter(item => item.userId !== trdItem.userId)
+    if (dict[trdItem.id]) {
+      dict[trdItem.id] = false
+      list = list.filter(item => item.id !== trdItem.id)
     } else {
-      dict[trdItem.userId] = true
+      dict[trdItem.id] = true
       list = list.concat(trdItem)
     }
     this.selectedDict.set(dict)
@@ -37,14 +39,14 @@ export class NewGroupComponent {
 
   create() {
     const list = this.selectedList();
-    let groupName = list.slice(0, 3).map(item => item.name).join(', ')
-    if (groupName.length > 12) {
-      groupName = groupName.slice(0, 12) + ' ...'
+    let groupName = list.slice(0, 3).map(item => item.userItem.uniqName).join(', ')
+    if (groupName.length > 26) {
+      groupName = groupName.slice(0, 22) + ' ...'
     }
     this.groupService.createGroup({ groupName }).subscribe(res => {
       if (res.status === 0) {
         list.forEach(item => {
-          this.groupService.inviteUser({ threadId: res.data!.threadId, userId: item.userId }).subscribe()
+          this.groupService.inviteUser({ threadId: res.data!.threadId, userId: item.toObjId }).subscribe()
         })
         this.goBack()
       }

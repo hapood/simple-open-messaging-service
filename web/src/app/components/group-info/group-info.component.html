@@ -1,0 +1,9 @@
+<div>
+  <div class="msg-header">
+    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
+        [style]="{width:'32px',height:'32px'}"></app-icon></button>
+    Group Info
+    <app-material-button (click)="invite()" [styleType]="MaterialButtonType.TEXT">Invite</app-material-button>
+  </div>
+  <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
+</div>
