@@ -123,6 +123,7 @@ enum ContentType {
   IMAGE
   VIDEO
   FILE
+  AUDIO
 }
 
 model Message {

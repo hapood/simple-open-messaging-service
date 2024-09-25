@@ -63,6 +63,24 @@ export class GroupController {
     console.log(file);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('file/send-video')
+  @UsePipes(new SendFileValidationPipe())
+  @UseInterceptors(new CalcFileDestInterceptor(), FileInterceptor('file', {
+    storage: diskStorage({
+      destination: function (req, file, callback) {
+        callback(null, './uploads/' + 'threadId');
+      },
+      filename: function (req, file, cb) {
+        cb(null, file.fieldname + '-' + Date.now())
+      }
+    })
+  }))
+  sendAudioFile(@UploadedFile(new ParseFilePipe({
+    validators: [new FileTypeValidator({ fileType: /.(mp3|wav|acc)/ })],
+  })) file: Express.Multer.File) {
+    console.log(file);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Post('file/send-general-file')
