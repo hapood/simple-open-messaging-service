@@ -43,7 +43,7 @@ export class GroupInfoComponent {
     const list = this.selectedList(), userMsgTrd = this.userMsgTrd();
     if (userMsgTrd !== undefined) {
       list.forEach(item => {
-        this.groupService.inviteUser({ threadId: userMsgTrd.threadId, userId: item.toObjId }).subscribe()
+        this.groupService.inviteUser({ groupId: userMsgTrd.toObjId, userId: item.toObjId }).subscribe()
       })
       alert('success')
     }

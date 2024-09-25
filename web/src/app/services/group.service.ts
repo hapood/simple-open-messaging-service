@@ -20,7 +20,7 @@ export class GroupService {
     return this.http.post<StandardMessage<GrpCreateInfo>>(`${apiPrefix}/group/create`, params)
   }
 
-  inviteUser(params: { userId: number, threadId: number }) {
+  inviteUser(params: { userId: number, groupId: number }) {
     return this.http.post<StandardMessage>(`${apiPrefix}/group/invite`, params)
   }
 }

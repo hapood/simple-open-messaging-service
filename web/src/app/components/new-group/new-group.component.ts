@@ -46,7 +46,7 @@ export class NewGroupComponent {
     this.groupService.createGroup({ groupName }).subscribe(res => {
       if (res.status === 0) {
         list.forEach(item => {
-          this.groupService.inviteUser({ threadId: res.data!.threadId, userId: item.toObjId }).subscribe()
+          this.groupService.inviteUser({ groupId: res.data!.groupId, userId: item.toObjId }).subscribe()
         })
         this.goBack()
       }

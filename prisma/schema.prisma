@@ -117,8 +117,9 @@ model MessageThread {
 
 enum ContentType {
   PURE_TEXT
-  CARD
-  RICH_TEXT
+  INVITE
+  IMAGE
+  VIDEO
 }
 
 model Message {

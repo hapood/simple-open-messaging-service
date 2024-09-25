@@ -42,8 +42,14 @@ export class GroupController {
 
   @UseGuards(JwtAuthGuard)
   @Post('group/invite')
-  async inviteUsers(@Request() req, @Body() params: { userId: number, threadId: number }): Promise<StandardResponse> {
-    const groupTrd = await this.messageService.findUniqueUserMessageThread({ userId_threadId: { userId: req.user.userId, threadId: params.threadId } })
+  async inviteUsers(@Request() req, @Body() params: { userId: number, groupId: number }): Promise<StandardResponse> {
+    const groupTrd = await this.messageService.findUniqueUserMessageThread({ id: params.groupId })
+    if (groupTrd === null || groupTrd.userId !== params.userId) {
+      return {
+        status: 2,
+        message: `you are not in group [${params.groupId}]`
+      }
+    }
     if (groupTrd !== null) {
       const { isFriend, userMsgTr } = await this.messageService.getFriendship({ userId: req.user.userId, friendUserId: params.userId })
       if (isFriend) {
@@ -57,7 +63,7 @@ export class GroupController {
             threadId: userMsgTr.threadId,
             expiryDate
           })
-        }), ContentType.CARD)
+        }), ContentType.INVITE)
         return {
           status: 0,
           message: 'successful'
