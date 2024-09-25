@@ -369,7 +369,8 @@ export class MsgGroupFactory {
       const isSameYear = day.isSame(today, 'year')
       return {
         id: msg.id,
-        lines: msg.content.split('\n'),
+        contentType: msg.contentType,
+        content: msg.content,
         creatorName: profile.uniqName,
         isSelf: profile.isSelf,
         createdAt: isToday ? day.format('HH:mm') : isSameYear ?

@@ -1,0 +1,7 @@
+<div [ngClass]="['msg-list-item',isSelf()?'msg-self':'msg-other']">
+  <div>
+    @for(line of lines(); track $index){
+    <p class="msg-p">{{line}}</p>
+    }
+  </div>
+</div>

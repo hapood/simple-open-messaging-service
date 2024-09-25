@@ -23,4 +23,8 @@ export class GroupService {
   inviteUser(params: { userId: number, groupId: number }) {
     return this.http.post<StandardMessage>(`${apiPrefix}/group/invite`, params)
   }
+
+  joinGroup(params: { token: string }) {
+    return this.http.post<StandardMessage>(`${apiPrefix}/group/join`, params)
+  }
 }

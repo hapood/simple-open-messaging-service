@@ -9,14 +9,9 @@ export class MessageService implements OnModuleInit {
   }
 
   findUniqueUserMessageThread(
-    params: Prisma.UserMessageThreadWhereUniqueInput,
+    params: Prisma.UserMessageThreadFindUniqueArgs,
   ) {
-    return this.prisma.userMessageThread.findUnique({
-      where: params,
-      include: {
-        threadItem: true
-      }
-    });
+    return this.prisma.userMessageThread.findUnique(params);
   }
 
   async writeMsgToThread(userId: number, threadId: number, content: string, type: ContentType) {
@@ -45,10 +40,12 @@ export class MessageService implements OnModuleInit {
 
   async getFriendship(params: { userId: number, friendUserId: number }) {
     const userMsgTr = await this.findUniqueUserMessageThread({
-      userId_toObjType_toObjId: {
-        userId: params.userId,
-        toObjType: MessageThreadType.P2P,
-        toObjId: params.friendUserId
+      where: {
+        userId_toObjType_toObjId: {
+          userId: params.userId,
+          toObjType: MessageThreadType.P2P,
+          toObjId: params.friendUserId
+        }
       }
     })
     if (userMsgTr === null) {
@@ -59,9 +56,11 @@ export class MessageService implements OnModuleInit {
       }
     }
     const friendMsgTr = await this.findUniqueUserMessageThread({
-      userId_threadId: {
-        userId: userMsgTr.toObjId,
-        threadId: userMsgTr.threadId
+      where: {
+        userId_threadId: {
+          userId: userMsgTr.toObjId,
+          threadId: userMsgTr.threadId
+        }
       }
     })
     return {

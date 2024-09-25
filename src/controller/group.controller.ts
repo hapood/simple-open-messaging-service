@@ -11,12 +11,11 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils';
 import * as dayjs from 'dayjs';
 import { GroupService } from 'src/group/group.service';
-
 @Controller()
 export class GroupController {
   constructor(
     private readonly messageService: MessageService,
-    private readonly groupService: GroupService
+    private readonly groupService: GroupService,
   ) { }
 
   @UseGuards(JwtAuthGuard)
@@ -36,31 +35,34 @@ export class GroupController {
     return {
       status: 0,
       message: 'successful',
-      data: { threadId: trd.id, groupId: trd.groupId }
+      data: { threadId: trd.id, groupId: trd.id }
     }
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('group/invite')
   async inviteUsers(@Request() req, @Body() params: { userId: number, groupId: number }): Promise<StandardResponse> {
-    const groupTrd = await this.messageService.findUniqueUserMessageThread({ id: params.groupId })
-    if (groupTrd === null || groupTrd.userId !== params.userId) {
+    const groupMember = await this.groupService.findUniqeGroupMember({
+      where: { groupId_userId: { groupId: params.groupId, userId: req.user.userId } }
+    })
+    if (groupMember === null) {
       return {
         status: 2,
         message: `you are not in group [${params.groupId}]`
       }
-    }
-    if (groupTrd !== null) {
+    } else {
+      const grpData = await this.groupService.findUniqeGroup({ id: params.groupId })
       const { isFriend, userMsgTr } = await this.messageService.getFriendship({ userId: req.user.userId, friendUserId: params.userId })
       if (isFriend) {
         const expiryDate = dayjs().add(3, 'day').valueOf()
-        this.messageService.writeMsgToThread(req.user.userId, groupTrd.threadId, JSON.stringify({
+        this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, JSON.stringify({
           type: 'GROUP_INVITE',
-          inviter: req.user.userId,
+          fromUserId: req.user.userId,
+          groupName: grpData.name,
           expiryDate,
-          key: this.groupService.generateInviteToken({
+          token: this.groupService.generateInviteToken({
             toUserId: userMsgTr.toObjId,
-            threadId: userMsgTr.threadId,
+            groupId: params.groupId,
             expiryDate
           })
         }), ContentType.INVITE)
@@ -74,11 +76,6 @@ export class GroupController {
           message: `[${params.userId}] is not your feiend`
         }
       }
-    } else {
-      return {
-        status: 2,
-        message: `you are not in group [${params.userId}]`
-      }
     }
   }
 
@@ -88,7 +85,7 @@ export class GroupController {
     const res = this.groupService.decodeInviteDate(params)
     if (res.status === 0) {
       const data = res.data
-      await this.groupService.joinGroup({ threadId: data.tid, userId: data.sub })
+      await this.groupService.joinGroup({ groupId: data.gid, userId: data.sub })
       return {
         status: 0,
         message: 'succesful'
@@ -97,11 +94,6 @@ export class GroupController {
       return {
         status: 1,
         message: 'invalid invite'
-      }
-    } else if (res.status === 1) {
-      return {
-        status: 1,
-        message: 'invite expired'
       }
     }
   }

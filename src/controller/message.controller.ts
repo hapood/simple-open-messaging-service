@@ -29,23 +29,27 @@ export class MessageController {
       return { status: 2, message: 'no content' }
     }
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
-      id: params.userThreadId
+      where: {
+        id: params.userThreadId
+      }
     })
     if (userMsgTr.toObjType === MessageThreadType.GROUP) {
       if (userMsgTr.status === UserMessageThreadStatus.APPROVED) {
         const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
         const msgData = { threadId: userMsgTr.threadId, msgId: data.id.toString() }
         const userIds = await this.groupService.getAllGroupUserIds(userMsgTr.toObjId)
-        userIds.forEach(userId => {
-          this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData)
+        userIds.forEach(item => {
+          this.eventGateway.onNewMessage(item.userId, msgData)
         })
         return { status: 0, message: 'sucessful', data: convertBigIntId(data) }
       }
     } else {
       const friendMsgTr = await this.messageService.findUniqueUserMessageThread({
-        userId_threadId: {
-          userId: userMsgTr.toObjId,
-          threadId: userMsgTr.threadId
+        where: {
+          userId_threadId: {
+            userId: userMsgTr.toObjId,
+            threadId: userMsgTr.threadId
+          }
         }
       })
       if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
@@ -74,7 +78,9 @@ export class MessageController {
     },
   ): Promise<StandardResponse> {
     const userThread = await this.messageService.findUniqueUserMessageThread({
-      id: params.userThreadId
+      where: {
+        id: params.userThreadId
+      }
     })
     if (userThread.status === UserMessageThreadStatus.APPROVED) {
       const newParams: Prisma.MessageFindManyArgs = {
@@ -102,10 +108,12 @@ export class MessageController {
   async getThreadByUniqName(@Request() req, @Body() params: { userId: number }): Promise<StandardResponse> {
     const userId = req.user.userId
     const thread = await this.messageService.findUniqueUserMessageThread({
-      userId_toObjType_toObjId: {
-        userId,
-        toObjType: MessageThreadType.P2P,
-        toObjId: params.userId
+      where: {
+        userId_toObjType_toObjId: {
+          userId,
+          toObjType: MessageThreadType.P2P,
+          toObjId: params.userId
+        }
       }
     })
     if (thread === null) {

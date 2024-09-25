@@ -1,0 +1,12 @@
+<div class="card-wrapper">
+  <div>{{data()!.creatorName}} invite you join group:</div>
+  <div>{{inviteData().groupName}}</div>
+  <div>valid until {{expiryDate()}}</div>
+  @switch (status()) {
+  @case (0) { <app-material-button (click)="joinGroup()">Join</app-material-button>
+  }
+  @case (1) {
+  <app-material-button>EXPIRED</app-material-button>
+  }
+  }
+</div>

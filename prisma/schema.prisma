@@ -15,20 +15,21 @@ datasource db {
 }
 
 model User {
-  id            Int           @id @default(autoincrement())
-  uniqName      String        @unique @db.VarChar(31)
-  hashPwd       String        @db.VarChar(127)
-  isForeigner   Boolean
-  domain        String?       @db.VarChar(63)
-  createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
-  isDeleted     Boolean       @default(false)
-  userExtraId   Int           @unique
-  userExtra     UserExtra     @relation(fields: [userExtraId], references: [id])
-  userNotiBoxId Int           @unique
-  userNotiBox   userNotiBox   @relation(fields: [userNotiBoxId], references: [id])
-  Group         Group[]
-  GroupMember   GroupMember[]
+  id                Int                 @id @default(autoincrement())
+  uniqName          String              @unique @db.VarChar(31)
+  hashPwd           String              @db.VarChar(127)
+  isForeigner       Boolean
+  domain            String?             @db.VarChar(63)
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+  isDeleted         Boolean             @default(false)
+  userExtraId       Int                 @unique
+  userExtra         UserExtra           @relation(fields: [userExtraId], references: [id])
+  userNotiBoxId     Int                 @unique
+  userNotiBox       userNotiBox         @relation(fields: [userNotiBoxId], references: [id])
+  Group             Group[]
+  GroupMember       GroupMember[]
+  UserMessageThread UserMessageThread[]
 
   @@unique([uniqName, domain])
 }
@@ -51,15 +52,16 @@ model userNotiBox {
 }
 
 model Group {
-  id            Int             @id @default(autoincrement())
-  name          String
-  ownerId       Int
-  owner         User            @relation(fields: [ownerId], references: [id])
-  avatar        String
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
-  MessageThread MessageThread[]
-  GroupMember   GroupMember[]
+  id          Int           @id @default(autoincrement())
+  name        String
+  ownerId     Int
+  owner       User          @relation(fields: [ownerId], references: [id])
+  avatar      String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  threadId    Int
+  threadItem  MessageThread @relation(fields: [threadId], references: [id])
+  GroupMember GroupMember[]
 }
 
 model GroupMember {
@@ -88,6 +90,7 @@ enum UserMessageThreadStatus {
 model UserMessageThread {
   id         Int                     @id @default(autoincrement())
   userId     Int
+  userItem   User                   @relation(fields: [userId], references: [id])
   status     UserMessageThreadStatus
   toObjType  MessageThreadType
   toObjId    Int
@@ -109,10 +112,9 @@ model MessageThread {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   isDeleted         Boolean             @default(false)
-  groupId           Int?
-  groupItem         Group?              @relation(fields: [groupId], references: [id])
   UserMessageThread UserMessageThread[]
   Message           Message[]
+  Group             Group[]
 }
 
 enum ContentType {

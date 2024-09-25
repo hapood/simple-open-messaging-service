@@ -6,7 +6,6 @@
     color: #000000;
     font-size: 14px;
     line-height: 14px;
-    ;
     padding-bottom: 2px;
     font-weight: 600;
 
@@ -57,31 +56,6 @@
 
   .normal-gap {
     margin-bottom: 8px;
-  }
-
-  .msg-list-item {
-    border-radius: 8px;
-    padding: 10px;
-    box-sizing: border-box;
-
-    &.msg-self {
-      background: #448aff;
-      color: #ffffff;
-    }
-
-    &.msg-other {
-      background: #eeeeee;
-      color: #000000;
-      margin-right: 30px;
-    }
-
-    .msg-p {
-      font-size: 14px;
-      line-height: 18px;
-      padding: 0;
-      margin: 0;
-      word-break: break-all;
-    }
   }
 
   .msg-time {

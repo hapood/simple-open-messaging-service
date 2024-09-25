@@ -3,7 +3,7 @@ export interface User {
   userExtra: { name: string, avatar: string }
 }
 export interface ThreadItem { id: number }
-export interface Message { id: string, content: string, creator: number, createdAt: number }
+export interface Message { id: string, content: string, contentType: string, creator: number, createdAt: number }
 export interface Friend { id: number, friendUser: User }
 export interface Group { name: string, id: number }
 

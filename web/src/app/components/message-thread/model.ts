@@ -25,10 +25,11 @@ export enum MsgGroupStatus {
 
 export interface DisplayMsg {
   id: string,
-  creatorName: string,
+  creatorName: string
+  content: string
+  contentType: string
   isSelf: boolean
-  lines: string[],
-  createdAt: string,
-  isDateShrink: boolean,
+  createdAt: string
+  isDateShrink: boolean
   isShowHead: boolean
 }

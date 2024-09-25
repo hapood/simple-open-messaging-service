@@ -20,19 +20,19 @@ export class GroupService implements OnModuleInit {
     return this.prisma.group.findMany(params)
   }
 
-  findUniqGroupMember(params: Prisma.GroupMemberFindUniqueArgs) {
+  findUniqeGroupMember(params: Prisma.GroupMemberFindUniqueArgs) {
     return this.prisma.groupMember.findUnique(params)
   }
 
   generateInviteToken(params: {
     toUserId: number,
     expiryDate: number,
-    threadId: number
+    groupId: number
   }) {
     return jsonwebtoken.sign({
       sub: params.toUserId,
       exp: Math.floor(params.expiryDate / 1000),
-      tid: params.threadId
+      gid: params.groupId
     }, secret)
   }
 
@@ -51,23 +51,24 @@ export class GroupService implements OnModuleInit {
     } else {
       return {
         status: 0,
-        data: payload as { sub: number, exp: number, tid: number }
+        data: payload as { sub: number, exp: number, gid: number }
       }
     }
   }
 
   async createNewGroup(params: { groupName: string, owner: number }) {
     return this.prisma.$transaction(async (prisma) => {
-      const data = await prisma.messageThread.create({
+      const trdData = await prisma.messageThread.create({
         data: {
-          type: MessageThreadType.GROUP,
-          groupItem: {
-            create: {
-              name: params.groupName,
-              avatar: '',
-              ownerId: params.owner
-            }
-          }
+          type: MessageThreadType.GROUP
+        }
+      })
+      const grpData = await prisma.group.create({
+        data: {
+          name: params.groupName,
+          avatar: '',
+          ownerId: params.owner,
+          threadId: trdData.id
         }
       })
       await prisma.userMessageThread.create({
@@ -75,26 +76,26 @@ export class GroupService implements OnModuleInit {
           userId: params.owner,
           status: UserMessageThreadStatus.APPROVED,
           toObjType: MessageThreadType.GROUP,
-          toObjId: data.groupId,
+          toObjId: grpData.id,
           reqMessage: '',
-          threadId: data.id
+          threadId: grpData.threadId
         }
       })
       await prisma.groupMember.create({
         data: {
-          groupId: data.groupId,
+          groupId: grpData.id,
           userId: params.owner
         }
       })
-      return data
+      return grpData
     })
   }
 
-  async joinGroup(params: { threadId: number, userId: number }) {
+  async joinGroup(params: { groupId: number, userId: number }) {
     await this.prisma.$transaction(async (prisma) => {
       const group = await prisma.group.findUnique({
         where: {
-          id: params.threadId
+          id: params.groupId
         }
       })
       await prisma.groupMember.create({
@@ -110,7 +111,7 @@ export class GroupService implements OnModuleInit {
           toObjType: MessageThreadType.GROUP,
           toObjId: group.id,
           reqMessage: '',
-          threadId: params.threadId
+          threadId: group.threadId
         }
       })
     })

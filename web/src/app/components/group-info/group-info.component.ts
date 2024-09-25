@@ -26,7 +26,6 @@ export class GroupInfoComponent {
   }
 
   onTrdSelect(trdItem: UserMessageThread) {
-    console.log(trdItem)
     let dict = { ...this.selectedDict() }, list = this.selectedList();
     if (dict[trdItem.id]) {
       dict[trdItem.id] = false

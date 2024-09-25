@@ -1,0 +1,24 @@
+.msg-list-item {
+  border-radius: 8px;
+  padding: 10px;
+  box-sizing: border-box;
+
+  &.msg-self {
+    background: #448aff;
+    color: #ffffff;
+  }
+
+  &.msg-other {
+    background: #eeeeee;
+    color: #000000;
+    margin-right: 30px;
+  }
+
+  .msg-p {
+    font-size: 14px;
+    line-height: 18px;
+    padding: 0;
+    margin: 0;
+    word-break: break-all;
+  }
+}

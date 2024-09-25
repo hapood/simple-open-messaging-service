@@ -68,6 +68,9 @@ export class UserController {
           in: userIds
         },
         isDeleted: false
+      },
+      include: {
+        userExtra: true
       }
     }), this.groupService.queryGroups({
       where: {
@@ -254,7 +257,9 @@ export class UserController {
     @Body() params: { userThreadId: number },
   ): Promise<StandardResponse<UserMessageThread>> {
     const thread = await this.messageService.findUniqueUserMessageThread({
-      id: params.userThreadId
+      where: {
+        id: params.userThreadId
+      }
     })
     if (thread !== null && thread.userId === req.user.userId) {
       if (thread.toObjType === 'P2P') {

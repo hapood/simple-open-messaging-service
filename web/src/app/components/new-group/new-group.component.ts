@@ -5,7 +5,7 @@ import { IconComponent, AppIconType } from "../icon/icon.component";
 import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
 import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
-
+import { UserService } from '../../services/user.service';
 @Component({
   selector: 'app-new-group',
   standalone: true,
@@ -19,12 +19,11 @@ export class NewGroupComponent {
   AppIconType = AppIconType
   MaterialButtonType = MaterialButtonType
 
-  constructor(private routeService: RouteService, private groupService: GroupService) {
+  constructor(private routeService: RouteService, private groupService: GroupService, private userService: UserService) {
 
   }
 
   onTrdSelect(trdItem: UserMessageThread) {
-    console.log(trdItem)
     let dict = { ...this.selectedDict() }, list = this.selectedList();
     if (dict[trdItem.id]) {
       dict[trdItem.id] = false
@@ -39,9 +38,13 @@ export class NewGroupComponent {
 
   create() {
     const list = this.selectedList();
-    let groupName = list.slice(0, 3).map(item => item.userItem.uniqName).join(', ')
-    if (groupName.length > 26) {
-      groupName = groupName.slice(0, 22) + ' ...'
+    let groupName = this.userService.sessionProfile()!.userExtra.name
+    for (let i = 0; i < list.length; i++) {
+      groupName += ' ' + list[i].userItem.userExtra
+      if (groupName.length > 26) {
+        groupName = groupName.slice(0, 22) + ' ...'
+        break;
+      }
     }
     this.groupService.createGroup({ groupName }).subscribe(res => {
       if (res.status === 0) {

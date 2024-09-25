@@ -1,16 +1,17 @@
 import {
   Component, computed, input, Output,
-  EventEmitter, viewChild, effect,
+  EventEmitter, viewChild,
   ElementRef
 } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { MsgGroupStatus, DisplayMsg } from '../message-thread/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { MsgCardComponent } from '../message/msg-card/msg-card.component';
 
 @Component({
   selector: 'app-msg-group',
   standalone: true,
-  imports: [NgClass, UserAvatarComponent],
+  imports: [NgClass, UserAvatarComponent, MsgCardComponent],
   templateUrl: './msg-group.component.html',
   styleUrl: './msg-group.component.scss'
 })

@@ -7,13 +7,7 @@
       @if(item.isShowHead){
       <div class="msg-name-wrapper msg-self">{{item.creatorName}}</div>
       }
-      <div [ngClass]="['msg-list-item','msg-self']">
-        <div>
-          @for(line of item.lines; track $index){
-          <p class="msg-p">{{line}}</p>
-          }
-        </div>
-      </div>
+      <app-msg-card [data]="item"></app-msg-card>
       @if(!item.isDateShrink){
       <div class="msg-time msg-time-self">{{item.createdAt}}</div>
       }
@@ -34,13 +28,7 @@
       @if(item.isShowHead){
       <div class="msg-name-wrapper msg-other">{{item.creatorName}}</div>
       }
-      <div [ngClass]="['msg-list-item','msg-other']">
-        <div class="msg-content">
-          @for(line of item.lines; track $index){
-          <p class="msg-p">{{line}}</p>
-          }
-        </div>
-      </div>
+      <app-msg-card [data]="item"></app-msg-card>
       @if(!item.isDateShrink){
       <div class="msg-time msg-time-other">{{item.createdAt}}</div>
       }
