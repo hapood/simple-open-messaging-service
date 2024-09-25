@@ -122,6 +122,7 @@ enum ContentType {
   INVITE
   IMAGE
   VIDEO
+  FILE
 }
 
 model Message {
