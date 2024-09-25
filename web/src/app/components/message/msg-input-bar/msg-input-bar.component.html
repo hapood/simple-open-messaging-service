@@ -1,8 +1,9 @@
 <div class="bottom-bar">
-  <div class="bottom-input-wrapper" (click)="onClickIptWrp($event)">
-    <button (click)="onLeftBtnClk($event)" class="left-btn">
-      @if(isEditing()){
-      <svg class="left-btn-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <div class="bottom-input-wrapper">
+    <button class="left-btn">
+      @if(isTyping()||isFocus()){
+      <svg (mousedown)="switchEmjPnl($event)" class="left-btn-svg" viewBox="0 0 24 24" fill="none"
+        xmlns="http://www.w3.org/2000/svg">
         <path
           d="M8.5 11C9.32843 11 10 10.3284 10 9.5C10 8.67157 9.32843 8 8.5 8C7.67157 8 7 8.67157 7 9.5C7 10.3284 7.67157 11 8.5 11Z"
           fill="#707579" />
@@ -15,24 +16,34 @@
         <path fill-rule="evenodd" clip-rule="evenodd"
           d="M12 23C18.0751 23 23 18.0751 23 12C23 5.92487 18.0751 1 12 1C5.92487 1 1 5.92487 1 12C1 18.0751 5.92487 23 12 23ZM12 20.9932C7.03321 20.9932 3.00683 16.9668 3.00683 12C3.00683 7.03321 7.03321 3.00683 12 3.00683C16.9668 3.00683 20.9932 7.03321 20.9932 12C20.9932 16.9668 16.9668 20.9932 12 20.9932Z"
           fill="#707579" />
-      </svg>}@else {
-      <svg class="left-btn-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <g id="Iconly/Curved/Upload">
-          <g id="Upload">
-            <path id="Stroke 1" d="M12.1207 2.209V14.25" stroke="#707579" stroke-width="2" stroke-linecap="round"
-              stroke-linejoin="round" />
-            <path id="Stroke 3" d="M9.20471 5.13574L12.1207 2.20774L15.0367 5.13574" stroke="#707579" stroke-width="2"
-              stroke-linecap="round" stroke-linejoin="round" />
-            <path id="Stroke 4"
-              d="M7.62988 7.64014C4.04988 7.97014 2.74988 9.31014 2.74988 14.6401C2.74988 21.7411 5.05988 21.7411 11.9999 21.7411C18.9399 21.7411 21.2499 21.7411 21.2499 14.6401C21.2499 9.31014 19.9499 7.97014 16.3699 7.64014"
-              stroke="#707579" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-          </g>
-        </g>
       </svg>
-      }
+      @if(isEmjPnlShow()===true){
+      <div class="emoji-panel">
+        @for(char of emojiList;track $index){
+        <div (mousedown)="insertEmoji(char)">{{char}}</div>
+        }
+      </div>}
+      }@else {
+      <div class="upload-icon">
+        <input type="file" class="hidden_file_input" />
+        <svg class="left-btn-svg" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <g id="Iconly/Curved/Upload">
+            <g id="Upload">
+              <path id="Stroke 1" d="M12.1207 2.209V14.25" stroke="#707579" stroke-width="2" stroke-linecap="round"
+                stroke-linejoin="round" />
+              <path id="Stroke 3" d="M9.20471 5.13574L12.1207 2.20774L15.0367 5.13574" stroke="#707579" stroke-width="2"
+                stroke-linecap="round" stroke-linejoin="round" />
+              <path id="Stroke 4"
+                d="M7.62988 7.64014C4.04988 7.97014 2.74988 9.31014 2.74988 14.6401C2.74988 21.7411 5.05988 21.7411 11.9999 21.7411C18.9399 21.7411 21.2499 21.7411 21.2499 14.6401C21.2499 9.31014 19.9499 7.97014 16.3699 7.64014"
+                stroke="#707579" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            </g>
+          </g>
+        </svg>
+      </div> }
     </button>
-    <div contenteditable="true" #userInput (input)="onUserInput($event)" class="bottom-input" #input placeholder="请输入文字"
-      (keydown)="checkSend($event)" (focus)="isEditing.set(true)" (blur)="isEditing.set(false)"></div>
+    <div contenteditable="true" #userInput (input)="onUserInput($event)" class="bottom-input" #input
+      placeholder="Type message here" (keydown)="checkSend($event)" (focus)="isFocus.set(true)"
+      (blur)="isFocus.set(false)"></div>
   </div>
   <button (click)="send()" class="send-btn">
     <svg width="24px" height="24px" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" id="send" class="icon glyph">

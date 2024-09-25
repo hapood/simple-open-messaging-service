@@ -5,7 +5,7 @@ import {
   Observable, of, concatMap, switchMap
 } from "rxjs";
 import { default as dayjs } from 'dayjs'
-import { UserProfile } from '../msg-group/model';
+import { UserProfile } from '../message/msg-group/model';
 import { MsgGroup, MsgGroupStatus, DisplayMsg, DisMsgGrp } from './model';
 import { UserService } from '../../services/user.service';
 
