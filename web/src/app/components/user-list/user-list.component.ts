@@ -5,11 +5,10 @@ import { UserMessageThread } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 @Component({
-  selector: 'app-user-list',
-  standalone: true,
-  imports: [UserAvatarComponent, NgClass],
-  templateUrl: './user-list.component.html',
-  styleUrl: './user-list.component.scss'
+    selector: 'app-user-list',
+    imports: [UserAvatarComponent, NgClass],
+    templateUrl: './user-list.component.html',
+    styleUrl: './user-list.component.scss'
 })
 
 export class UserListComponent {

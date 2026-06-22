@@ -3,11 +3,10 @@ import { AppIconType } from './model'
 
 export { AppIconType } from './model';
 @Component({
-  selector: 'app-icon',
-  standalone: true,
-  imports: [],
-  templateUrl: './icon.component.html',
-  styleUrl: './icon.component.scss'
+    selector: 'app-icon',
+    imports: [],
+    templateUrl: './icon.component.html',
+    styleUrl: './icon.component.scss'
 })
 export class IconComponent {
   readonly type = input<AppIconType>()

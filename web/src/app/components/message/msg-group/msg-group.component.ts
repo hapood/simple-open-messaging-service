@@ -9,11 +9,10 @@ import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avat
 import { MsgCardComponent } from '../msg-card/msg-card.component';
 
 @Component({
-  selector: 'app-msg-group',
-  standalone: true,
-  imports: [NgClass, UserAvatarComponent, MsgCardComponent],
-  templateUrl: './msg-group.component.html',
-  styleUrl: './msg-group.component.scss'
+    selector: 'app-msg-group',
+    imports: [NgClass, UserAvatarComponent, MsgCardComponent],
+    templateUrl: './msg-group.component.html',
+    styleUrl: './msg-group.component.scss'
 })
 export class MsgGroupComponent {
   @Output() onHeightChange = new EventEmitter<{ index: number, height: number }>();

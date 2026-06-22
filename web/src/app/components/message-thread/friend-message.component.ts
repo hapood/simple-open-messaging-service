@@ -19,11 +19,10 @@ const UNREAD_INITIAL_PADDING_TOP = 100;
 const SCROLL_HEIGHT_THRESHOLD = 1000;
 
 @Component({
-  selector: 'app-message-thread',
-  standalone: true,
-  imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent, MsgInputBarComponent],
-  templateUrl: './friend-message.component.html',
-  styleUrl: './friend-message.component.scss'
+    selector: 'app-message-thread',
+    imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent, MsgInputBarComponent],
+    templateUrl: './friend-message.component.html',
+    styleUrl: './friend-message.component.scss'
 })
 export class MessageThreadComponent {
 

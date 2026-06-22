@@ -13,12 +13,11 @@ export enum LoginEvent {
 }
 
 @Component({
-  selector: 'app-login',
-  standalone: true,
-  imports: [UserAvatarComponent, MaterialInputComponent, MaterialCheckboxComponent,
-    MaterialButtonComponent, MaterialProgressLinearComponent, FormsModule],
-  templateUrl: './login.component.html',
-  styleUrl: './login.component.scss'
+    selector: 'app-login',
+    imports: [UserAvatarComponent, MaterialInputComponent, MaterialCheckboxComponent,
+        MaterialButtonComponent, MaterialProgressLinearComponent, FormsModule],
+    templateUrl: './login.component.html',
+    styleUrl: './login.component.scss'
 })
 export class LoginComponent {
   @Output() onSuccess = new EventEmitter<boolean>();

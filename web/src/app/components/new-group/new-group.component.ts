@@ -7,11 +7,10 @@ import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
 import { UserService } from '../../services/user.service';
 @Component({
-  selector: 'app-new-group',
-  standalone: true,
-  imports: [UserListComponent, IconComponent, MaterialButtonComponent],
-  templateUrl: './new-group.component.html',
-  styleUrl: './new-group.component.scss'
+    selector: 'app-new-group',
+    imports: [UserListComponent, IconComponent, MaterialButtonComponent],
+    templateUrl: './new-group.component.html',
+    styleUrl: './new-group.component.scss'
 })
 export class NewGroupComponent {
   selectedDict = signal<Record<number, boolean | undefined>>({})

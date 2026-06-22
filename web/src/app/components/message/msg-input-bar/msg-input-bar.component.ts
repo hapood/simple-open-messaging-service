@@ -5,11 +5,10 @@ import { tap } from 'rxjs';
 import { MsgService } from '../../../services/message.service'
 
 @Component({
-  selector: 'app-msg-input-bar',
-  standalone: true,
-  imports: [IconComponent],
-  templateUrl: './msg-input-bar.component.html',
-  styleUrl: './msg-input-bar.component.scss'
+    selector: 'app-msg-input-bar',
+    imports: [IconComponent],
+    templateUrl: './msg-input-bar.component.html',
+    styleUrl: './msg-input-bar.component.scss'
 })
 export class MsgInputBarComponent {
 

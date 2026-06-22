@@ -5,11 +5,10 @@ import { GroupService } from '../../../services/group.service';
 import { DisplayMsg } from '../../message-thread/model';
 
 @Component({
-  selector: 'app-invite-card',
-  standalone: true,
-  imports: [MaterialButtonComponent],
-  templateUrl: './invite-card.component.html',
-  styleUrl: './invite-card.component.scss'
+    selector: 'app-invite-card',
+    imports: [MaterialButtonComponent],
+    templateUrl: './invite-card.component.html',
+    styleUrl: './invite-card.component.scss'
 })
 
 export class InviteCardComponent {

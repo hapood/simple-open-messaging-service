@@ -7,11 +7,10 @@ import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
 
 @Component({
-  selector: 'app-group-info',
-  standalone: true,
-  imports: [UserListComponent, IconComponent, MaterialButtonComponent],
-  templateUrl: './group-info.component.html',
-  styleUrl: './group-info.component.scss'
+    selector: 'app-group-info',
+    imports: [UserListComponent, IconComponent, MaterialButtonComponent],
+    templateUrl: './group-info.component.html',
+    styleUrl: './group-info.component.scss'
 })
 export class GroupInfoComponent {
   readonly userMsgTrd = input<UserMessageThread>()

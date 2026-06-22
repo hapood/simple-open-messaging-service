@@ -6,11 +6,10 @@ import { MaterialProgressLinearComponent } from '../material-progress-linear/mat
 import { UserService } from '../../services/user.service';
 
 @Component({
-  selector: 'app-register',
-  standalone: true,
-  imports: [MaterialInputComponent, MaterialButtonComponent, FormsModule, MaterialProgressLinearComponent],
-  templateUrl: './register.component.html',
-  styleUrl: './register.component.scss',
+    selector: 'app-register',
+    imports: [MaterialInputComponent, MaterialButtonComponent, FormsModule, MaterialProgressLinearComponent],
+    templateUrl: './register.component.html',
+    styleUrl: './register.component.scss'
 })
 export class RegisterComponent {
   @Output() onSuccess = new EventEmitter<{ uniqName: string, password: string }>();

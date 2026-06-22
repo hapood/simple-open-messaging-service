@@ -4,11 +4,10 @@ import { NgClass } from '@angular/common';
 
 
 @Component({
-  selector: 'app-material-input',
-  standalone: true,
-  imports: [FormsModule, NgClass],
-  templateUrl: './material-input.component.html',
-  styleUrl: './material-input.component.scss'
+    selector: 'app-material-input',
+    imports: [FormsModule, NgClass],
+    templateUrl: './material-input.component.html',
+    styleUrl: './material-input.component.scss'
 })
 export class MaterialInputComponent {
   text = model('')

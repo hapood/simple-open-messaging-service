@@ -8,11 +8,10 @@ enum MenuItem {
   FRIEND_REQUESTS, LOGOUT, NEW_GROUP
 }
 @Component({
-  selector: 'app-home-header',
-  standalone: true,
-  imports: [IconComponent, MaterialMenuComponent, MaterialMenuButtonComponent],
-  templateUrl: './home-header.component.html',
-  styleUrl: './home-header.component.scss'
+    selector: 'app-home-header',
+    imports: [IconComponent, MaterialMenuComponent, MaterialMenuButtonComponent],
+    templateUrl: './home-header.component.html',
+    styleUrl: './home-header.component.scss'
 })
 export class HomeHeaderComponent {
   readonly AppIconType = AppIconType

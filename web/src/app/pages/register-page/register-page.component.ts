@@ -5,11 +5,10 @@ import { RouteService, RoutePage } from '../../services/route.service';
 import { AuthService } from '../../services/auth.service';
 
 @Component({
-  selector: 'app-register-page',
-  standalone: true,
-  imports: [RegisterComponent, IconComponent],
-  templateUrl: './register-page.component.html',
-  styleUrl: './register-page.component.scss'
+    selector: 'app-register-page',
+    imports: [RegisterComponent, IconComponent],
+    templateUrl: './register-page.component.html',
+    styleUrl: './register-page.component.scss'
 })
 export class RegisterPageComponent {
   AppIconType = AppIconType

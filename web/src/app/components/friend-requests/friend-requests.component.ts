@@ -18,12 +18,11 @@ enum AddTabStatus {
 type PedingReq = User & { status: number, date: string, errText: string }
 
 @Component({
-  selector: 'app-friend-requests',
-  standalone: true,
-  imports: [UserAvatarComponent, FormsModule, NgClass,
-    MaterialButtonComponent, IconComponent, MaterialInputComponent],
-  templateUrl: './friend-requests.component.html',
-  styleUrl: './friend-requests.component.scss'
+    selector: 'app-friend-requests',
+    imports: [UserAvatarComponent, FormsModule, NgClass,
+        MaterialButtonComponent, IconComponent, MaterialInputComponent],
+    templateUrl: './friend-requests.component.html',
+    styleUrl: './friend-requests.component.scss'
 })
 export class FriendRequestsComponent {
   readonly searchText = signal('')

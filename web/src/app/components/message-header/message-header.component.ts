@@ -3,11 +3,10 @@ import { IconComponent, AppIconType } from "../icon/icon.component";
 import { RouteService, PopupType } from '../../services/route.service';
 import { UserMessageThread } from '../../services/model';
 @Component({
-  selector: 'app-message-header',
-  standalone: true,
-  imports: [IconComponent],
-  templateUrl: './message-header.component.html',
-  styleUrl: './message-header.component.scss'
+    selector: 'app-message-header',
+    imports: [IconComponent],
+    templateUrl: './message-header.component.html',
+    styleUrl: './message-header.component.scss'
 })
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType

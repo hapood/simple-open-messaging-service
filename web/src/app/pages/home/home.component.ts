@@ -9,11 +9,10 @@ import { AuthService } from '../../services/auth.service';
 import { RouteService, PopupType } from '../../services/route.service';
 import { WebsocketService } from '../../services/websocket.service';
 @Component({
-  selector: 'app-home',
-  standalone: true,
-  imports: [HomeHeaderComponent, ThreadListComponent, MessageThreadComponent, RootPopupComponent],
-  templateUrl: './home.component.html',
-  styleUrl: './home.component.scss'
+    selector: 'app-home',
+    imports: [HomeHeaderComponent, ThreadListComponent, MessageThreadComponent, RootPopupComponent],
+    templateUrl: './home.component.html',
+    styleUrl: './home.component.scss'
 })
 export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)

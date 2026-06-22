@@ -5,11 +5,10 @@ import { User, UserMessageThread } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 @Component({
-  selector: 'app-thread-list',
-  standalone: true,
-  imports: [UserAvatarComponent, NgClass],
-  templateUrl: './thread-list.component.html',
-  styleUrl: './thread-list.component.scss'
+    selector: 'app-thread-list',
+    imports: [UserAvatarComponent, NgClass],
+    templateUrl: './thread-list.component.html',
+    styleUrl: './thread-list.component.scss'
 })
 export class ThreadListComponent {
   UserAvatarType = UserAvatarType

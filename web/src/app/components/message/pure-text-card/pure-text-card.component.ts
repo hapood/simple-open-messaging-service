@@ -3,11 +3,10 @@ import { NgClass } from '@angular/common';
 import { DisplayMsg } from '../../message-thread/model';
 
 @Component({
-  selector: 'app-pure-text-card',
-  standalone: true,
-  imports: [NgClass],
-  templateUrl: './pure-text-card.component.html',
-  styleUrl: './pure-text-card.component.scss'
+    selector: 'app-pure-text-card',
+    imports: [NgClass],
+    templateUrl: './pure-text-card.component.html',
+    styleUrl: './pure-text-card.component.scss'
 })
 export class PureTextCardComponent {
   data = input<DisplayMsg>()
