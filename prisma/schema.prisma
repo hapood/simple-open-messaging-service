@@ -30,6 +30,7 @@ model User {
   Group             Group[]
   GroupMember       GroupMember[]
   UserMessageThread UserMessageThread[]
+  refreshTokens     RefreshToken[]
 
   @@unique([uniqName, domain])
 }
@@ -149,4 +150,18 @@ model Notify {
   content   Json
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
+}
+
+/// refresh_token 落库（替换原内存字典）：支持重启存活、多端、可吊销
+model RefreshToken {
+  id         BigInt   @id @default(autoincrement())
+  userId     Int
+  user       User     @relation(fields: [userId], references: [id])
+  tokenHash  String   @unique // 存 sha256 哈希，不存明文
+  device     String? // 多端标识（P0 暂不填）
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime? // 软吊销
+
+  @@index([userId])
 }

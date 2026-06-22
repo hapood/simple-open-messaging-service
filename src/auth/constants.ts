@@ -1,3 +1,8 @@
+import { requireEnv } from '../common/env';
+
 export const jwtConstants = {
-  secret: 'a3e85a304100f00c4fa62aa8106a9af898c00e4592ecbd0abd3878b458d866fc997cf8dfc46ff2948e0d20e4b087d8bc3158b8287314ac05771d7b01169ee6ee0bd6afa98f5195b2f607bed878bdc66a46495541d5041a3446b983a0ff1b27ee60e04c90b122e769464566b6c80f48f5c205cf7132c30fd93ab318c322eb1bedd4a227fa73d4a502b92b70e08d0b15435554b7a50bb1dc708f221889f2dea96bffec28a31694eb94d69c57be57027214a1dfe7f2714b54719a1854b5b56acefe90db84f1c77b80591d50473c233625ec29ceeb6bff8b6729306386519d6c1e2c67012287ca90602493fa9466ce9aa6e22dc4dfd83e1c88e7566598f08a8e32f0',
+  // access_token 签名/校验密钥（JwtModule、JwtStrategy、WebSocket 网关均用此）
+  accessSecret: requireEnv('JWT_ACCESS_SECRET'),
+  // refresh_token 签名/校验密钥（仅 AuthService 使用，与 access 分离）
+  refreshSecret: requireEnv('JWT_REFRESH_SECRET'),
 };

@@ -10,12 +10,20 @@ import { UserService } from 'src/user/user.service';
 import { PrismaService } from '../prisma.service';
 
 @Module({
-  imports: [UserModule, PassportModule,
+  imports: [
+    UserModule,
+    PassportModule,
     JwtModule.register({
-      secret: jwtConstants.secret
-    }),],
-  providers: [AuthService, LocalStrategy, UserService, PrismaService,
-    JwtStrategy],
+      secret: jwtConstants.accessSecret,
+    }),
+  ],
+  providers: [
+    AuthService,
+    LocalStrategy,
+    UserService,
+    PrismaService,
+    JwtStrategy,
+  ],
   exports: [AuthService],
 })
-export class AuthModule { }
+export class AuthModule {}

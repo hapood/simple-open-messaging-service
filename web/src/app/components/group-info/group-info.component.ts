@@ -49,6 +49,6 @@ export class GroupInfoComponent {
   }
 
   goBack() {
-    this.routeService.go(-1)
+    this.routeService.closeDlg()
   }
 }

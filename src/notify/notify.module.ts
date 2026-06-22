@@ -6,4 +6,4 @@ import { PrismaService } from '../prisma.service';
   providers: [NotifyService, PrismaService],
   exports: [NotifyService],
 })
-export class NotifyModule { }
+export class NotifyModule {}

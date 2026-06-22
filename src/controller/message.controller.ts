@@ -1,12 +1,11 @@
-import {
-  Controller,
-  Post,
-  Body,
-  Request,
-  UseGuards
-} from '@nestjs/common';
+import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
 import { MessageService } from '../message/message.service';
-import { ContentType, MessageThreadType, Prisma, UserMessageThreadStatus } from '@prisma/client';
+import {
+  ContentType,
+  MessageThreadType,
+  Prisma,
+  UserMessageThreadStatus,
+} from '@prisma/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { convertBigIntId, StandardResponse } from './utils';
 import { EventGateway } from 'src/gateway/event.gateway';
@@ -17,71 +16,97 @@ export class MessageController {
   constructor(
     private readonly messageService: MessageService,
     private readonly eventGateway: EventGateway,
-    private readonly groupService: GroupService
-  ) { }
+    private readonly groupService: GroupService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('send-message')
-  async sendMessage(@Request() req,
-    @Body() params: { userThreadId: number, content: string },
+  async sendMessage(
+    @Request() req,
+    @Body() params: { userThreadId: number; content: string },
   ): Promise<StandardResponse> {
     if (!params.content?.trim()) {
-      return { status: 2, message: 'no content' }
+      return { status: 2, message: 'no content' };
     }
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
       where: {
-        id: params.userThreadId
-      }
-    })
+        id: params.userThreadId,
+      },
+    });
     if (userMsgTr.toObjType === MessageThreadType.GROUP) {
       if (userMsgTr.status === UserMessageThreadStatus.APPROVED) {
-        const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
-        const msgData = { threadId: userMsgTr.threadId, msgId: data.id.toString() }
-        const userIds = await this.groupService.getAllGroupUserIds(userMsgTr.toObjId)
-        userIds.forEach(item => {
-          this.eventGateway.onNewMessage(item.userId, msgData)
-        })
-        return { status: 0, message: 'sucessful', data: convertBigIntId(data) }
+        const data = await this.messageService.writeMsgToThread(
+          req.user.userId,
+          userMsgTr.threadId,
+          params.content,
+          ContentType.PURE_TEXT,
+        );
+        const msgData = {
+          threadId: userMsgTr.threadId,
+          msgId: data.id.toString(),
+        };
+        const userIds = await this.groupService.getAllGroupUserIds(
+          userMsgTr.toObjId,
+        );
+        userIds.forEach((item) => {
+          this.eventGateway.onNewMessage(item.userId, msgData);
+        });
+        return { status: 0, message: 'sucessful', data: convertBigIntId(data) };
       }
     } else {
-      const friendMsgTr = await this.messageService.findUniqueUserMessageThread({
-        where: {
-          userId_threadId: {
-            userId: userMsgTr.toObjId,
-            threadId: userMsgTr.threadId
-          }
-        }
-      })
-      if (friendMsgTr.status === UserMessageThreadStatus.APPROVED && userMsgTr.status === UserMessageThreadStatus.APPROVED) {
-        const data = await this.messageService.writeMsgToThread(req.user.userId, userMsgTr.threadId, params.content, ContentType.PURE_TEXT)
-        const msgData = { threadId: userMsgTr.threadId, msgId: data.id.toString() }
-        this.eventGateway.onNewMessage(req.user.userId, msgData)
-        this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData)
-        return { status: 0, message: 'sucessful', data: convertBigIntId(data) }
+      const friendMsgTr = await this.messageService.findUniqueUserMessageThread(
+        {
+          where: {
+            userId_threadId: {
+              userId: userMsgTr.toObjId,
+              threadId: userMsgTr.threadId,
+            },
+          },
+        },
+      );
+      if (
+        friendMsgTr.status === UserMessageThreadStatus.APPROVED &&
+        userMsgTr.status === UserMessageThreadStatus.APPROVED
+      ) {
+        const data = await this.messageService.writeMsgToThread(
+          req.user.userId,
+          userMsgTr.threadId,
+          params.content,
+          ContentType.PURE_TEXT,
+        );
+        const msgData = {
+          threadId: userMsgTr.threadId,
+          msgId: data.id.toString(),
+        };
+        this.eventGateway.onNewMessage(req.user.userId, msgData);
+        this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
+        return { status: 0, message: 'sucessful', data: convertBigIntId(data) };
       }
     }
     return {
       status: 1,
-      message: 'failed'
-    }
+      message: 'failed',
+    };
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('query-messages')
-  async queryMessages(@Request() req,
-    @Body() params: {
-      userThreadId: number,
+  async queryMessages(
+    @Request() req,
+    @Body()
+    params: {
+      userThreadId: number;
       skip: number;
       take: number;
       lastId?: number;
-      orderBy: 'desc' | 'asc'
+      orderBy: 'desc' | 'asc';
     },
   ): Promise<StandardResponse> {
     const userThread = await this.messageService.findUniqueUserMessageThread({
       where: {
-        id: params.userThreadId
-      }
-    })
+        id: params.userThreadId,
+      },
+    });
     if (userThread.status === UserMessageThreadStatus.APPROVED) {
       const newParams: Prisma.MessageFindManyArgs = {
         skip: params.skip,
@@ -91,42 +116,50 @@ export class MessageController {
         },
       };
       if (params.lastId) {
-        newParams.cursor = { id: params.lastId }
+        newParams.cursor = { id: params.lastId };
       }
-      const data = await this.messageService.queryMessages(userThread.threadId, newParams)
-      data.forEach(item => convertBigIntId(item))
+      const data = await this.messageService.queryMessages(
+        userThread.threadId,
+        newParams,
+      );
+      data.forEach((item) => convertBigIntId(item));
       return {
-        status: 0, message: 'sucessful', data
-      }
+        status: 0,
+        message: 'sucessful',
+        data,
+      };
     } else {
-      return { status: 2, message: `no user thread $[${params.userThreadId}]` }
+      return { status: 2, message: `no user thread $[${params.userThreadId}]` };
     }
   }
 
   @UseGuards(JwtAuthGuard)
   @Post('thread/by-user-id')
-  async getThreadByUniqName(@Request() req, @Body() params: { userId: number }): Promise<StandardResponse> {
-    const userId = req.user.userId
+  async getThreadByUniqName(
+    @Request() req,
+    @Body() params: { userId: number },
+  ): Promise<StandardResponse> {
+    const userId = req.user.userId;
     const thread = await this.messageService.findUniqueUserMessageThread({
       where: {
         userId_toObjType_toObjId: {
           userId,
           toObjType: MessageThreadType.P2P,
-          toObjId: params.userId
-        }
-      }
-    })
+          toObjId: params.userId,
+        },
+      },
+    });
     if (thread === null) {
       return {
         status: 1,
         message: `no thread with user [${params.userId}]`,
-      }
+      };
     } else {
       return {
         status: 0,
         message: 'successful',
-        data: thread
-      }
+        data: thread,
+      };
     }
   }
 }

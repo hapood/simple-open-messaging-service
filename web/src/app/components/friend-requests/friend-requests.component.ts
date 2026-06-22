@@ -38,7 +38,7 @@ export class FriendRequestsComponent {
 
   subject = input<Subject<any> | undefined>(undefined)
   activeTab = signal(0)
-  isShowBackBtn = signal(false)
+  isShowBackBtn = signal(true)
 
   UserAvatarType = UserAvatarType
   AddTabStatus = AddTabStatus
@@ -46,16 +46,13 @@ export class FriendRequestsComponent {
   MaterialButtonType = MaterialButtonType
 
   constructor(private routeService: RouteService, private userService: UserService, private msgService: MsgService) {
-    if (this.routeService.hasPrevRoute()) {
-      this.isShowBackBtn.set(true)
-    }
   }
   setTab(tab: number) {
     this.activeTab.set(tab)
   }
 
   goBack() {
-    this.routeService.go(-1)
+    this.routeService.closeDlg()
   }
 
   searchUser() {

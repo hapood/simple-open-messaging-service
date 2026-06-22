@@ -13,20 +13,15 @@ import { AuthService } from '../../services/auth.service';
 })
 export class RegisterPageComponent {
   AppIconType = AppIconType
-  isShowBackBtn = signal(false)
+  isShowBackBtn = signal(true)
   constructor(private routeService: RouteService, private authService: AuthService) {
-    if (this.routeService.hasPrevRoute()) {
-      this.isShowBackBtn.set(true)
-    }
   }
   goBack() {
     this.routeService.go(-1)
   }
   onSuccess({ uniqName, password }: { uniqName: string, password: string }) {
     this.authService.login({ uniqName, password, isKeep: true }).subscribe(() => {
-      this.routeService.clearHistoryThen().subscribe(() => {
-        this.routeService.redirect(RoutePage.HOME)
-      });
+      this.routeService.redirect(RoutePage.HOME)
     })
   }
 }

@@ -1,76 +1,81 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
-import * as jsonwebtoken from 'jsonwebtoken'
+import {
+  Prisma,
+  MessageThreadType,
+  UserMessageThreadStatus,
+} from '@prisma/client';
+import * as jsonwebtoken from 'jsonwebtoken';
+import { requireEnv } from '../common/env';
 
-const secret = '1b14c2677bacd5b82701b2f599281dc93befcf34ba988e5bbe73b855ad4cbe18'
+const secret = requireEnv('GROUP_INVITE_SECRET');
 
 @Injectable()
 export class GroupService implements OnModuleInit {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async onModuleInit() {
-  }
+  async onModuleInit() {}
 
   findUniqeGroup(params: Prisma.GroupWhereUniqueInput) {
-    return this.prisma.group.findUnique({ where: params })
+    return this.prisma.group.findUnique({ where: params });
   }
 
   queryGroups(params: Prisma.GroupFindManyArgs) {
-    return this.prisma.group.findMany(params)
+    return this.prisma.group.findMany(params);
   }
 
   findUniqeGroupMember(params: Prisma.GroupMemberFindUniqueArgs) {
-    return this.prisma.groupMember.findUnique(params)
+    return this.prisma.groupMember.findUnique(params);
   }
 
   generateInviteToken(params: {
-    toUserId: number,
-    expiryDate: number,
-    groupId: number
+    toUserId: number;
+    expiryDate: number;
+    groupId: number;
   }) {
-    return jsonwebtoken.sign({
-      sub: params.toUserId,
-      exp: Math.floor(params.expiryDate / 1000),
-      gid: params.groupId
-    }, secret)
+    return jsonwebtoken.sign(
+      {
+        sub: params.toUserId,
+        exp: Math.floor(params.expiryDate / 1000),
+        gid: params.groupId,
+      },
+      secret,
+    );
   }
 
-  decodeInviteDate(params: {
-    token
-  }) {
-    const payload: any = jsonwebtoken.decode(params.token)
+  decodeInviteDate(params: { token }) {
+    const payload: any = jsonwebtoken.decode(params.token);
     if (payload === null) {
       return {
-        status: 1
-      }
+        status: 1,
+      };
     } else if (new Date().getTime() > payload.exp * 1000) {
       return {
-        status: 2
-      }
+        status: 2,
+      };
     } else {
       return {
         status: 0,
-        data: payload as { sub: number, exp: number, gid: number }
-      }
+        data: payload as { sub: number; exp: number; gid: number },
+      };
     }
   }
 
-  async createNewGroup(params: { groupName: string, owner: number }) {
+  async createNewGroup(params: { groupName: string; owner: number }) {
     return this.prisma.$transaction(async (prisma) => {
       const trdData = await prisma.messageThread.create({
         data: {
-          type: MessageThreadType.GROUP
-        }
-      })
+          type: MessageThreadType.GROUP,
+        },
+      });
       const grpData = await prisma.group.create({
         data: {
           name: params.groupName,
           avatar: '',
           ownerId: params.owner,
-          threadId: trdData.id
-        }
-      })
+          threadId: trdData.id,
+        },
+      });
       await prisma.userMessageThread.create({
         data: {
           userId: params.owner,
@@ -78,32 +83,32 @@ export class GroupService implements OnModuleInit {
           toObjType: MessageThreadType.GROUP,
           toObjId: grpData.id,
           reqMessage: '',
-          threadId: grpData.threadId
-        }
-      })
+          threadId: grpData.threadId,
+        },
+      });
       await prisma.groupMember.create({
         data: {
           groupId: grpData.id,
-          userId: params.owner
-        }
-      })
-      return grpData
-    })
+          userId: params.owner,
+        },
+      });
+      return grpData;
+    });
   }
 
-  async joinGroup(params: { groupId: number, userId: number }) {
+  async joinGroup(params: { groupId: number; userId: number }) {
     await this.prisma.$transaction(async (prisma) => {
       const group = await prisma.group.findUnique({
         where: {
-          id: params.groupId
-        }
-      })
+          id: params.groupId,
+        },
+      });
       await prisma.groupMember.create({
         data: {
           groupId: group.id,
-          userId: params.userId
-        }
-      })
+          userId: params.userId,
+        },
+      });
       await prisma.userMessageThread.create({
         data: {
           userId: params.userId,
@@ -111,20 +116,20 @@ export class GroupService implements OnModuleInit {
           toObjType: MessageThreadType.GROUP,
           toObjId: group.id,
           reqMessage: '',
-          threadId: group.threadId
-        }
-      })
-    })
+          threadId: group.threadId,
+        },
+      });
+    });
   }
 
   async getAllGroupUserIds(groupId: number) {
     return this.prisma.groupMember.findMany({
       where: {
-        groupId
+        groupId,
       },
       select: {
-        userId: true
-      }
-    })
+        userId: true,
+      },
+    });
   }
 }

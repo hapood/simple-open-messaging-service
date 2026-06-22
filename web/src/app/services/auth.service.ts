@@ -147,6 +147,10 @@ export class AuthService {
     return sessionStorage.getItem(REFRESH_TOKEN) || localStorage.getItem(REFRESH_TOKEN) || undefined
   }
 
+  isLoggedIn(): boolean {
+    return this.getRefreshToken() !== undefined
+  }
+
   clearToken() {
     this._lastAccTok = undefined
     this.acTkSub.next(undefined)

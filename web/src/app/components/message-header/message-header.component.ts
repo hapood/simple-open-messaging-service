@@ -27,14 +27,14 @@ export class MessageHeaderComponent {
 
   }
   goBack() {
-    this.routeService.go(-1)
+    this.routeService.closeDlg()
   }
 
   showThreadInfo() {
     const userMsgTrd = this.userMsgTrd()
     if (userMsgTrd !== undefined) {
       if (userMsgTrd.toObjType === 'GROUP') {
-        this.routeService.popupDlg({ caller: 'MESSAGE_HEADER', popupType: PopupType.GROUP_INFO, inputs: { userMsgTrd } })
+        this.routeService.popupDlg(PopupType.GROUP_INFO, { userMsgTrd })
       }
     }
   }

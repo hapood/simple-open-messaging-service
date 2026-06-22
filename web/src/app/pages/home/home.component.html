@@ -1,6 +1,6 @@
 <div class="page-wrapper">
   <div class="thread-list-wrapper">
-    <app-home-header>
+    <app-home-header [onThreadListChanged]="refreshThreadList">
       <div>SOMS</div>
     </app-home-header>
     <div class="thread-list">

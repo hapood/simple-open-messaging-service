@@ -1,11 +1,11 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, Type } from '@angular/core';
 import { Router } from '@angular/router';
-import { PopStateEvent } from '@angular/common'
-import { delay, EMPTY, of, tap } from 'rxjs';
+import { Subject } from 'rxjs';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
 import { MessageThreadComponent } from '../components/message-thread/friend-message.component';
 import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { GroupInfoComponent } from '../components/group-info/group-info.component';
+import { UserMessageThread } from './model';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
@@ -13,43 +13,52 @@ export enum RoutePage {
 
 export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO }
 
-const componentDict = {
+const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
   [PopupType.MSG_THREAD]: MessageThreadComponent,
   [PopupType.NEW_GROUP]: NewGroupComponent,
   [PopupType.GROUP_INFO]: GroupInfoComponent
 }
 
+// per-popup input contracts — what each dialog's input() fields accept
+export interface PopupInput {
+  [PopupType.FRIEND_REQUESTS]: { subject?: Subject<any> }
+  [PopupType.MSG_THREAD]: { userThreadId: number, userMsgTrd: UserMessageThread, startMsgId?: string }
+  [PopupType.NEW_GROUP]: undefined
+  [PopupType.GROUP_INFO]: { userMsgTrd: UserMessageThread }
+}
+
+// per-popup result contracts — what a dialog passes back to its opener via closeDlg()
+export interface PopupResult {
+  [PopupType.FRIEND_REQUESTS]: undefined
+  [PopupType.MSG_THREAD]: undefined
+  [PopupType.NEW_GROUP]: { groupId: number }
+  [PopupType.GROUP_INFO]: undefined
+}
+
 export interface DlgInfo {
-  component: any,
-  inputs?: any | undefined
+  component: Type<unknown>,
+  inputs?: Record<string, unknown>
 }
 
-interface Command {
-  caller: string,
-  popupType: PopupType,
-  inputs?: any
+interface DlgEntry {
+  info: DlgInfo
+  onResult?: (result: unknown) => void
+  result?: unknown
 }
 
-interface AppPopState {
-  type: RouteStateType,
-  seq: number,
-}
-
-enum RouteStateType {
-  NAV, DIALOG
-}
 @Injectable({
   providedIn: 'root',
 })
 export class RouteService {
-  private _stateList!: AppPopState[]
-  private _lastState: AppPopState | undefined
+  private dlgStack: DlgEntry[] = []
   dlgList = signal<DlgInfo[]>([])
 
   constructor(private router: Router) {
-    this._stateList = [{ type: RouteStateType.NAV, seq: 0 }]
-    window.addEventListener('popstate', (event) => this.onPopStateEvent(event))
+    // Each open dialog owns one history entry, so pressing back (system or
+    // programmatic) closes the topmost dialog one at a time. Page navigation
+    // correctness is handled by the route guards, not here.
+    window.addEventListener('popstate', () => this.onPopStateEvent())
   }
 
   getPageRoute(page: RoutePage, params?: any) {
@@ -72,68 +81,55 @@ export class RouteService {
   navigate(page: RoutePage, params?: any) {
     const commands = this.getPageRoute(page, params)
     if (commands) {
-      const state: AppPopState = { type: RouteStateType.NAV, seq: this._stateList.length }
-      this.router.navigate(commands, { state });
-      this._stateList.push(state)
+      this.router.navigate(commands)
     } else {
       console.error(`no page to navigate [${page}]`)
     }
   }
 
-  popupDlg(cmd: Command) {
-    const state: AppPopState = { type: RouteStateType.DIALOG, seq: this._stateList.length }
-    history.pushState(state, '')
-    this._stateList.push(state)
-    const dlgList = this.dlgList
-    dlgList.set(dlgList().concat([{ component: componentDict[cmd.popupType], inputs: cmd.inputs }]))
-    this._lastState = state
-  }
-
   redirect(page: RoutePage, params?: any) {
     const commands = this.getPageRoute(page, params)
     if (commands) {
-      const sList = this._stateList
-      const state: AppPopState = { type: RouteStateType.NAV, seq: sList.length - 1 }
-      this.router.navigate(commands, { replaceUrl: true, state });
-      sList[sList.length - 1] = state
-      this._lastState = state
+      this.router.navigate(commands, { replaceUrl: true })
     } else {
       console.error(`no page to redirect [${page}]`)
     }
   }
 
-  onPopStateEvent(event: PopStateEvent) {
-    const state: AppPopState = event.state
-    let curSeq = state.seq
-    if (curSeq === undefined) { } {
-      curSeq = 0
+  popupDlg<K extends PopupType>(
+    popupType: K,
+    inputs?: PopupInput[K],
+    onResult?: (result: PopupResult[K]) => void
+  ) {
+    // push a sentinel history entry so back closes this dialog
+    history.pushState({ tag: 'soms-dlg' }, '')
+    const entry: DlgEntry = {
+      info: { component: componentDict[popupType], inputs: inputs as Record<string, unknown> | undefined },
+      onResult: onResult as ((result: unknown) => void) | undefined
     }
-    if (curSeq <= this._lastState!.seq) {
-      const info = this._stateList.pop()
-      if (info!.type === RouteStateType.DIALOG) {
-        const dlgList = this.dlgList()
-        this.dlgList.set(dlgList.slice(0, dlgList.length - 1))
-      }
-      this._lastState = info
-    } else if (curSeq > this._lastState!.seq) {
-      this._stateList.push(state)
-      this._lastState = state
-    } else {
-      console.error('onPopStateEvent error, never should come here')
+    this.dlgStack.push(entry)
+    this.dlgList.update(list => list.concat([entry.info]))
+  }
+
+  // close the topmost dialog, optionally returning a result to its opener.
+  // funnels through history.back() so system-back and button-back behave identically.
+  closeDlg(result?: unknown) {
+    const top = this.dlgStack[this.dlgStack.length - 1]
+    if (top) {
+      top.result = result
+      history.back()
     }
   }
 
-  clearHistoryThen() {
-    return of(EMPTY).pipe(tap(() => {
-      let step = 1 - this._stateList.length
-      if (step < 0) {
-        history.go(step)
+  onPopStateEvent() {
+    // back while dialogs are open → close the topmost one and deliver its result
+    if (this.dlgStack.length > 0) {
+      const entry = this.dlgStack.pop()!
+      if (entry.onResult) {
+        entry.onResult(entry.result)
       }
-    }), delay(10))
-  }
-
-  hasPrevRoute() {
-    return this._stateList.length > 1
+      this.dlgList.update(list => list.slice(0, -1))
+    }
   }
 
   go(delta: number) {

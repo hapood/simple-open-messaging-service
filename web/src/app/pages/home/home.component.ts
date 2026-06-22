@@ -1,4 +1,4 @@
-import { Component, signal } from '@angular/core';
+import { Component, signal, viewChild } from '@angular/core';
 import { User, UserMessageThread } from '../../services/model'
 import { HomeHeaderComponent } from '../../components/home-header/home-header.component';
 import { UserService } from '../../services/user.service'
@@ -19,6 +19,7 @@ export class HomeComponent {
   readonly profile = signal<User | undefined>(undefined)
   readonly isShowMsgTrd = signal(false)
   curUsrtrdId = signal<number | undefined>(undefined)
+  readonly threadListCmp = viewChild(ThreadListComponent)
 
   constructor(private userService: UserService,
     private authService: AuthService, private routeService: RouteService, private wsService: WebsocketService) { }
@@ -28,7 +29,12 @@ export class HomeComponent {
     this.authService.renewAccessToken()
   }
 
+  // passed through HomeHeader to the NewGroup dialog's onResult, so creating a group refreshes the list
+  refreshThreadList = () => {
+    this.threadListCmp()?.genThreadList()
+  }
+
   onThreadSelect(userMsgTrd: UserMessageThread) {
-    this.routeService.popupDlg({ caller: 'HOME', popupType: PopupType.MSG_THREAD, inputs: { userThreadId: userMsgTrd.id, userMsgTrd: userMsgTrd } })
+    this.routeService.popupDlg(PopupType.MSG_THREAD, { userThreadId: userMsgTrd.id, userMsgTrd })
   }
 }

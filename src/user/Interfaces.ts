@@ -1,4 +1,3 @@
-
 enum UserType {
-  PURE_TEXT
+  PURE_TEXT,
 }

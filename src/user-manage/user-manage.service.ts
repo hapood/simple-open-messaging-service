@@ -1,13 +1,20 @@
 import { Injectable, OnModuleInit, ConflictException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
+import {
+  User,
+  Prisma,
+  MessageThreadType,
+  UserMessageThreadStatus,
+} from '@prisma/client';
 import { AuthService } from 'src/auth/auth.service';
 @Injectable()
 export class UserManageService implements OnModuleInit {
-  constructor(private prisma: PrismaService, private auth: AuthService) { }
+  constructor(
+    private prisma: PrismaService,
+    private auth: AuthService,
+  ) {}
 
-  async onModuleInit() {
-  }
+  async onModuleInit() {}
 
   async getUserList(params: {
     skip?: number;
@@ -25,5 +32,4 @@ export class UserManageService implements OnModuleInit {
       orderBy,
     });
   }
-
 }

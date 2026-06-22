@@ -48,15 +48,16 @@ export class NewGroupComponent {
     }
     this.groupService.createGroup({ groupName }).subscribe(res => {
       if (res.status === 0) {
+        const groupId = res.data!.groupId
         list.forEach(item => {
-          this.groupService.inviteUser({ groupId: res.data!.groupId, userId: item.toObjId }).subscribe()
+          this.groupService.inviteUser({ groupId, userId: item.toObjId }).subscribe()
         })
-        this.goBack()
+        this.routeService.closeDlg({ groupId })
       }
     })
   }
 
   goBack() {
-    this.routeService.go(-1)
+    this.routeService.closeDlg()
   }
 }

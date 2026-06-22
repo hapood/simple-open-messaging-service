@@ -1,17 +1,21 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
-import { User, Prisma, MessageThreadType, UserMessageThreadStatus } from '@prisma/client';
+import {
+  User,
+  Prisma,
+  MessageThreadType,
+  UserMessageThreadStatus,
+} from '@prisma/client';
 
 @Injectable()
 export class UserService implements OnModuleInit {
-  constructor(private prisma: PrismaService) { }
+  constructor(private prisma: PrismaService) {}
 
-  async onModuleInit() {
-  }
+  async onModuleInit() {}
 
   findUniqueUser(
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
-    hasExtra = true
+    hasExtra = true,
   ) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
@@ -44,22 +48,22 @@ export class UserService implements OnModuleInit {
   }
 
   queryUserThread(params: Prisma.UserMessageThreadFindManyArgs) {
-    return this.prisma.userMessageThread.findMany(params)
+    return this.prisma.userMessageThread.findMany(params);
   }
 
   queryUsers(params: Prisma.UserFindManyArgs) {
-    return this.prisma.user.findMany(params)
+    return this.prisma.user.findMany(params);
   }
 
-  addUser(params: { uniqName: string, hashPwd: string }) {
+  addUser(params: { uniqName: string; hashPwd: string }) {
     return this.prisma.$transaction(async (prisma) => {
       const user = await prisma.user.findUnique({
         where: { uniqName: params.uniqName, domain: null },
       });
       if (user !== null) {
         return {
-          status: 2
-        }
+          status: 2,
+        };
       }
       const newUserData: Prisma.UserCreateInput = {
         uniqName: params.uniqName,
@@ -69,23 +73,22 @@ export class UserService implements OnModuleInit {
           create: {
             name: params.uniqName,
             avatar: '',
-          }
+          },
         },
         userNotiBox: {
-          create: {
-          }
-        }
-      }
+          create: {},
+        },
+      };
       const newUser = await prisma.user.create({
-        data: newUserData
+        data: newUserData,
       });
       return {
         status: 0,
         data: {
           id: newUser.id,
-          uniqName: newUser.uniqName
-        }
-      }
-    })
+          uniqName: newUser.uniqName,
+        },
+      };
+    });
   }
 }
