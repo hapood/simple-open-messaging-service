@@ -5,7 +5,7 @@ import {
   Prisma,
   MessageThreadType,
   UserMessageThreadStatus,
-} from '@prisma/client';
+} from '../prisma/generated/client';
 import { AuthService } from 'src/auth/auth.service';
 
 @Injectable()

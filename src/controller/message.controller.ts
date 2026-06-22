@@ -5,7 +5,7 @@ import {
   MessageThreadType,
   Prisma,
   UserMessageThreadStatus,
-} from '@prisma/client';
+} from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { convertBigIntId, StandardResponse } from './utils';
 import { EventGateway } from 'src/gateway/event.gateway';

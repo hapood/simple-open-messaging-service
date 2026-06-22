@@ -4,7 +4,7 @@ import {
   Prisma,
   MessageThreadType,
   UserMessageThreadStatus,
-} from '@prisma/client';
+} from '../prisma/generated/client';
 import * as jsonwebtoken from 'jsonwebtoken';
 import { requireEnv } from '../common/env';
 

@@ -261,7 +261,7 @@ interface WsFrame<T = unknown> {
 >
 > 📌 **验证中额外发现并修复**（均归入 P0）：① refresh token 加 `jti`（防同一秒为同一用户签发导致的 `tokenHash` 唯一冲突）；② `main.ts` 接入 `dotenv/config` 自加载 `.env`；③ `start:prod` 路径修正（`dist/main` → `dist/src/main`）；④ 迁移顺手补上历史 drift（`ContentType` 枚举 `FILE`/`AUDIO` 此前只改了 schema 未建迁移）。
 >
-> 📌 **依赖升级**（NestJS 10→11 / Prisma 5→7 / Angular 18→最新）经决定作为**独立任务**，不并入 P0——避免 P0 爆炸半径过大。
+> ✅ **依赖升级（后端）已落地**：NestJS 10→11 / Prisma 5→7（新生成器 + `@prisma/adapter-pg` driver adapter + `prisma.config.ts`）/ TypeScript ~5.9 / ESLint 9 flat config；**保持 CJS**（Prisma 7 已验证兼容 CJS 消费）。前端 Angular 18→22 仍待办。详见分支 `chore/deps-nestjs11-prisma7`。
 
 | 内容 | 影响文件 | 验收 |
 | --- | --- | --- |
@@ -292,6 +292,8 @@ P1 拆为两步推进：**P1a 最小子集先行**（解锁契约 + 前端 mock�
 | OpenAPI 全量补齐 | 剩余接口 | 所有端点文档完整 |
 | 前端类型生成 | `web/` 接入 `openapi-typescript` | 前端 service 类型由生成产物驱动 |
 | 序列化拦截器 + 去 `Date.toJSON` hack | `src/main.ts`、新增拦截器、移除 `convertBigIntId` 调用 | Date/BigInt 统一序列化，无全局副作用 |
+
+> **P1 外挂（工程基建）— 后端整体转 ESM**（独立小任务，可与 P1a/P1b 并行；非 P1 契约范畴，仅就近归档）。`type:"module"` + `tsconfig`(`module/moduleResolution: NodeNext`、`target ES2023`、`esModuleInterop`) + 相对导入补 `.js`(全仓库 ~50–100 处) + `__dirname`/`require` → `import.meta.url`/`fileURLToPath`(如 `file.controller` 的 `diskStorage`) + CJS-only 工具(loader/ts-node)处理。**非必需**：Prisma 7 已验证兼容 CJS 消费(`@prisma/client` exports 提供 `require` 条件)。**前置依赖**：本轮「依赖升级」(NestJS 11 / Prisma 7 / TS 5.9)落地后再做。**触发点**(择一即可动手)：需引入 ESM-only 依赖 / 换 Vitest / Node 对 CJS 收紧。**注意**：代价≈范围/风险翻倍，且当前零后端测试网——动手前先补 auth e2e 冒烟。
 
 #### P1a 核心接口 checklist
 

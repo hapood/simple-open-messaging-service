@@ -2,7 +2,7 @@
 
 一个简洁的即时通讯（IM）服务，提供用户体系、好友/群组会话、实时消息推送与文件上传能力，设计目标是「易于被第三方应用接入」。
 
-- **后端**：NestJS 10 + Prisma 5 + PostgreSQL + 原生 WebSocket (`ws`) + Passport (Local + JWT)
+- **后端**：NestJS 11 + Prisma 7 + PostgreSQL + 原生 WebSocket (`ws`) + Passport (Local + JWT)
 - **前端**：Angular 18（Standalone + Signal + 实验性 Zoneless），自研 Material 风格组件库
 
 > 应用代号 **SOMS**（Simple Open Message Service）。仓库内同时包含后端服务（根目录）与 Angular 前端（`web/`）。
@@ -43,8 +43,8 @@
 
 | 类别 | 选型 |
 | --- | --- |
-| 框架 | NestJS 10 |
-| 数据库 | PostgreSQL（Prisma 5 ORM，开启 `relationJoins`） |
+| 框架 | NestJS 11 |
+| 数据库 | PostgreSQL（Prisma 7 ORM，Rust-free 客户端 + `@prisma/adapter-pg` driver adapter） |
 | 实时通信 | `@nestjs/platform-ws` + `@nestjs/websockets`（原生 WebSocket） |
 | 认证 | Passport `local` + `jwt`，`@nestjs/jwt`，`argon2` 密码哈希 |
 | 工具 | `dayjs` 时间、`jsonwebtoken` 群组邀请 token |

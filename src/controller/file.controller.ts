@@ -12,7 +12,7 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { MessageService } from '../message/message.service';
-import { ContentType } from '@prisma/client';
+import { ContentType } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils';
 import * as dayjs from 'dayjs';

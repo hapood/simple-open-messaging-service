@@ -5,7 +5,7 @@ import {
   Prisma,
   MessageThreadType,
   UserMessageThreadStatus,
-} from '@prisma/client';
+} from '../prisma/generated/client';
 
 @Injectable()
 export class UserService implements OnModuleInit {

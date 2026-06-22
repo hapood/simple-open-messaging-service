@@ -1,6 +1,6 @@
 # 数据模型
 
-SOMS 使用 PostgreSQL，通过 Prisma 5（开启 `relationJoins`）定义数据模型。Schema 源文件：[prisma/schema.prisma](../prisma/schema.prisma)。
+SOMS 使用 PostgreSQL，通过 Prisma 7（Rust-free 客户端 + `@prisma/adapter-pg` driver adapter；`relationJoins` 已 GA）定义数据模型。Schema 源文件：[prisma/schema.prisma](../prisma/schema.prisma)，CLI 配置见 [prisma.config.ts](../prisma.config.ts)。
 
 ## 目录
 

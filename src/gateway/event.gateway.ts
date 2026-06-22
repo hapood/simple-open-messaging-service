@@ -18,7 +18,7 @@ class Client {
     public readonly userInfo: { userId: number },
   ) {}
 
-  public send(message: Object) {
+  public send(message: object) {
     this.ws.send(JSON.stringify(message));
   }
 }

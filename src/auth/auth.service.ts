@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { UserService } from '../user/user.service';
 import { JwtService } from '@nestjs/jwt';
-import { User as UserModel } from '@prisma/client';
+import { User as UserModel } from '../prisma/generated/client';
 import * as argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service';

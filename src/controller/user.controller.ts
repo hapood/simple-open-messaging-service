@@ -9,7 +9,7 @@ import {
   MessageThreadType,
   User,
   Group,
-} from '@prisma/client';
+} from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { StandardResponse } from './utils';
 import { AuthService } from 'src/auth/auth.service';
