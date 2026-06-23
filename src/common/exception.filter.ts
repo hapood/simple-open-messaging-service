@@ -9,7 +9,7 @@ import { Prisma } from '../prisma/generated/client';
 import { Response } from 'express';
 
 /**
- * 全局异常过滤器：所有异常统一转 { status, message, data } 信封 + 正确 HTTP 码，禁止泄漏堆栈。
+ * 全局异常过滤器：所有异常统一转 { code, message, data } 信封 + 正确 HTTP 码，禁止泄漏堆栈。
  * - HttpException：沿用其状态码与 message（ValidationPipe 的字段级错误为数组则拼接，P1a 起接入）
  * - Prisma 已知错误：P2002(唯一冲突)→409，P2025(记录不存在)→404
  * - 其它未知异常：500 + 'internal error'；原文仅记服务端日志（结构化日志属 P3）
@@ -25,7 +25,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     console.error('[AllExceptionsFilter]', exception);
 
     response.status(httpStatus).json({
-      status: 1,
+      code: 1,
       message,
       data: null,
     });

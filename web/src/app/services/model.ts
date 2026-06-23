@@ -16,7 +16,7 @@ export interface QueryUserThreadParams {
   take: number, skip: number, lastId?: string | undefined, toObjType?: MessageThreadType
 }
 export interface StandardResponse<T = any> {
-  status: number, message: string, data?: T
+  code: number, message: string, data?: T
 }
 export interface UserMessageThread {
   id: number,

@@ -102,7 +102,7 @@ export class MsgGroupFactory {
     this.isQueryingOld = true
     this.msgService.queryMessageLog(params).subscribe({
       next: (res) => {
-        if (res.status === 0) {
+        if (res.code === 0) {
           const list = res.data!
           if (list.length > 0) {
             const rList = list.reverse();
@@ -146,7 +146,7 @@ export class MsgGroupFactory {
     this.isQueryingNew = true
     this.msgService.queryMessageLog(params).subscribe({
       next: (res) => {
-        if (res.status === 0) {
+        if (res.code === 0) {
           const list = res.data!
           if (list.length > 0) {
             this.messageList = this.messageList.concat(list)
@@ -350,7 +350,7 @@ export class MsgGroupFactory {
 
   private _qryMisProf(ids: number[]) {
     return this.userService.queryUserInfo({ userIds: ids }).pipe(switchMap((res) => {
-      if (res.status === 0) {
+      if (res.code === 0) {
         return of(res.data!)
       } else {
         throw new GrpWrkFlwErr('unknow error occured while querying missing user profile')

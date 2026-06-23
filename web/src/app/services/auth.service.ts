@@ -8,8 +8,8 @@ const TOKEN_CREATE_TIME = "token_create_time",
   REFRESH_TOKEN = 'refresh_token', SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000,
   IS_KEEP_LOGIN = "is_keep_login"
 
-type RefreshTokenRes = { status: number, message: string, data?: { access_token: string, refresh_token: string } }
-type AccessTokenRes = { status: number, message: string, data?: { access_token: string } }
+type RefreshTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
+type AccessTokenRes = { code: number, message: string, data?: { access_token: string } }
 
 @Injectable({
   providedIn: 'root',
@@ -38,7 +38,7 @@ export class AuthService {
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
     return this.http.post<RefreshTokenRes>
       (`${apiPrefix}/auth/login`, params, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
-        if (res.status === 0) {
+        if (res.code === 0) {
           const data = res.data
           this._isKeep = params.isKeep
           this.clearToken()
@@ -66,9 +66,9 @@ export class AuthService {
         (`${apiPrefix}/auth/renew-access`, {
           refreshToken: rfToken
         }, { 'headers': { Authorization: 'public' } }).subscribe({
-          next: ({ status, message, data }) => {
+          next: ({ code, message, data }) => {
             this._isReACTk = false
-            if (status === 0) {
+            if (code === 0) {
               this.setAcToken(data!.access_token)
             } else {
               console.info(message)
@@ -95,8 +95,8 @@ export class AuthService {
         (`${apiPrefix}/auth/renew-refresh`, {
           refreshToken: rfToken
         }, { 'headers': { Authorization: 'public' } }).subscribe({
-          next: ({ status, message, data }) => {
-            if (status === 0) {
+          next: ({ code, message, data }) => {
+            if (code === 0) {
               this.setAcToken(data!.access_token)
               this.setReToken(data!.refresh_token)
             } else {

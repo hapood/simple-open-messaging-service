@@ -34,7 +34,7 @@ export class InviteCardComponent {
 
   joinGroup() {
     this.groupService.joinGroup({ token: this.inviteData().token }).subscribe(res => {
-      if (res.status === 0) {
+      if (res.code === 0) {
         alert('joinGroup ok')
       }
     })

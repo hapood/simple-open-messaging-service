@@ -1,4 +1,5 @@
 import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MessageService } from '../message/message.service';
 import {
   ContentType,
@@ -7,10 +8,14 @@ import {
   UserMessageThreadStatus,
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { convertBigIntId, StandardResponse } from './utils';
+import { convertBigIntId } from './utils';
+import { ApiResult, ApiResultResponse } from '../common/api-result';
+import { MessageResponseDto } from '../dto/response.dto';
+import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
 import { EventGateway } from 'src/gateway/event.gateway';
 import { GroupService } from 'src/group/group.service';
 
+@ApiTags('message')
 @Controller()
 export class MessageController {
   constructor(
@@ -20,17 +25,21 @@ export class MessageController {
   ) {}
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('send-message')
+  @ApiOperation({ summary: '发送消息（P2P/群）' })
   async sendMessage(
     @Request() req,
-    @Body() params: { userThreadId: number; content: string },
-  ): Promise<StandardResponse> {
-    if (!params.content?.trim()) {
-      return { status: 2, message: 'no content' };
+    @Body() dto: SendMessageDto,
+  ): Promise<ApiResult> {
+    // content 缺失/空串已由 SendMessageDto 的 @IsNotEmpty 拦截 → 400；
+    // 这里仅处理纯空白（业务码 2）。
+    if (!dto.content?.trim()) {
+      return { code: 2, message: 'no content' };
     }
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
       where: {
-        id: params.userThreadId,
+        id: dto.userThreadId,
       },
     });
     if (userMsgTr.toObjType === MessageThreadType.GROUP) {
@@ -38,7 +47,7 @@ export class MessageController {
         const data = await this.messageService.writeMsgToThread(
           req.user.userId,
           userMsgTr.threadId,
-          params.content,
+          dto.content,
           ContentType.PURE_TEXT,
         );
         const msgData = {
@@ -51,7 +60,7 @@ export class MessageController {
         userIds.forEach((item) => {
           this.eventGateway.onNewMessage(item.userId, msgData);
         });
-        return { status: 0, message: 'sucessful', data: convertBigIntId(data) };
+        return { code: 0, message: 'sucessful', data: convertBigIntId(data) };
       }
     } else {
       const friendMsgTr = await this.messageService.findUniqueUserMessageThread(
@@ -71,7 +80,7 @@ export class MessageController {
         const data = await this.messageService.writeMsgToThread(
           req.user.userId,
           userMsgTr.threadId,
-          params.content,
+          dto.content,
           ContentType.PURE_TEXT,
         );
         const msgData = {
@@ -80,43 +89,39 @@ export class MessageController {
         };
         this.eventGateway.onNewMessage(req.user.userId, msgData);
         this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
-        return { status: 0, message: 'sucessful', data: convertBigIntId(data) };
+        return { code: 0, message: 'sucessful', data: convertBigIntId(data) };
       }
     }
     return {
-      status: 1,
+      code: 1,
       message: 'failed',
     };
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('query-messages')
+  @ApiOperation({ summary: '查询会话历史消息（游标分页）' })
+  @ApiResultResponse(MessageResponseDto, true)
   async queryMessages(
     @Request() req,
-    @Body()
-    params: {
-      userThreadId: number;
-      skip: number;
-      take: number;
-      lastId?: number;
-      orderBy: 'desc' | 'asc';
-    },
-  ): Promise<StandardResponse> {
+    @Body() dto: QueryMessagesDto,
+  ): Promise<ApiResult> {
     const userThread = await this.messageService.findUniqueUserMessageThread({
       where: {
-        id: params.userThreadId,
+        id: dto.userThreadId,
       },
     });
     if (userThread.status === UserMessageThreadStatus.APPROVED) {
       const newParams: Prisma.MessageFindManyArgs = {
-        skip: params.skip,
-        take: params.take,
+        skip: dto.skip,
+        take: dto.take,
         orderBy: {
-          id: params.orderBy,
+          id: dto.orderBy,
         },
       };
-      if (params.lastId) {
-        newParams.cursor = { id: params.lastId };
+      if (dto.lastId) {
+        newParams.cursor = { id: dto.lastId };
       }
       const data = await this.messageService.queryMessages(
         userThread.threadId,
@@ -124,21 +129,23 @@ export class MessageController {
       );
       data.forEach((item) => convertBigIntId(item));
       return {
-        status: 0,
+        code: 0,
         message: 'sucessful',
         data,
       };
     } else {
-      return { status: 2, message: `no user thread $[${params.userThreadId}]` };
+      return { code: 2, message: `no user thread $[${dto.userThreadId}]` };
     }
   }
 
+  // thread/by-user-id 归 P1b：暂不接 DTO/Swagger，仅信封字段名跟随全局 status→code 改名。
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('thread/by-user-id')
   async getThreadByUniqName(
     @Request() req,
     @Body() params: { userId: number },
-  ): Promise<StandardResponse> {
+  ): Promise<ApiResult> {
     const userId = req.user.userId;
     const thread = await this.messageService.findUniqueUserMessageThread({
       where: {
@@ -151,12 +158,12 @@ export class MessageController {
     });
     if (thread === null) {
       return {
-        status: 1,
+        code: 1,
         message: `no thread with user [${params.userId}]`,
       };
     } else {
       return {
-        status: 0,
+        code: 0,
         message: 'successful',
         data: thread,
       };

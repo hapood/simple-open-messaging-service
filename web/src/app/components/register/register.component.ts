@@ -71,8 +71,8 @@ export class RegisterComponent {
     this.isReging.set(true)
     this.userService.register({ uniqName, password })
       .subscribe({
-        next: ({ status, message }) => {
-          if (status === 0) {
+        next: ({ code, message }) => {
+          if (code === 0) {
             this.onSuccess.emit({ uniqName, password })
             this.isReging.set(false)
             this.isSuccess.set(true)

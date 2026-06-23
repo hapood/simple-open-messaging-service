@@ -1,19 +1,32 @@
 import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserService } from '../user/user.service';
 import { GroupService } from 'src/group/group.service';
 import { MessageService } from '../message/message.service';
 import {
   Prisma,
   UserMessageThreadStatus,
-  UserMessageThread,
   MessageThreadType,
   User,
   Group,
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { StandardResponse } from './utils';
 import { AuthService } from 'src/auth/auth.service';
+import { ApiResult, ApiResultResponse } from '../common/api-result';
+import {
+  UserResponseDto,
+  UserMessageThreadResponseDto,
+} from '../dto/response.dto';
+import { RegisterDto } from '../dto/auth.dto';
+import {
+  UserIdDto,
+  UserByUniqNameDto,
+  QueryUsersDto,
+  QueryValidThreadDto,
+  QueryPendingThreadDto,
+} from '../dto/user.dto';
 
+@ApiTags('user')
 @Controller()
 export class UserController {
   constructor(
@@ -24,31 +37,31 @@ export class UserController {
   ) {}
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/my-profile')
-  async getMyProfile(@Request() req): Promise<StandardResponse> {
+  @ApiOperation({ summary: '获取当前用户资料' })
+  @ApiResultResponse(UserResponseDto)
+  async getMyProfile(@Request() req): Promise<ApiResult> {
     const data = await this.userService.findUniqueUser({ id: req.user.userId });
     delete data.hashPwd;
-    return { status: 0, message: 'successful', data };
+    return { code: 0, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/query-thread/valid')
+  @ApiOperation({ summary: '查询有效会话列表（含对端 user/group 信息）' })
+  @ApiResultResponse(UserMessageThreadResponseDto, true)
   async queryValidThread(
     @Request() req,
-    @Body()
-    params: {
-      skip: number;
-      take: number;
-      lastId?: number;
-      toObjType?: MessageThreadType;
-    },
-  ): Promise<StandardResponse> {
+    @Body() dto: QueryValidThreadDto,
+  ): Promise<ApiResult> {
     const newParams: Prisma.UserMessageThreadFindManyArgs = {
-      skip: params.skip,
-      take: params.take,
+      skip: dto.skip,
+      take: dto.take,
       where: {
         userId: req.user.userId,
-        toObjType: params.toObjType,
+        toObjType: dto.toObjType,
         status: UserMessageThreadStatus.APPROVED,
       },
       orderBy: {
@@ -95,7 +108,7 @@ export class UserController {
       groupDict[item.id] = item;
     });
     return {
-      status: 0,
+      code: 0,
       message: 'successful',
       data: list.map((item) => {
         if (item.toObjType === MessageThreadType.P2P) {
@@ -109,25 +122,23 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/query-thread/to-pending')
+  @ApiOperation({ summary: '查询待处理好友请求会话' })
+  @ApiResultResponse(UserMessageThreadResponseDto, true)
   async queryPendingThread(
     @Request() req,
-    @Body()
-    params: {
-      beforeDate: number;
-      take: number;
-      skip: number;
-    },
-  ): Promise<StandardResponse> {
+    @Body() dto: QueryPendingThreadDto,
+  ): Promise<ApiResult> {
     const newParams: Prisma.UserMessageThreadFindManyArgs = {
-      take: params.take,
-      skip: params.skip,
+      take: dto.take,
+      skip: dto.skip,
       where: {
         userId: req.user.userId,
         toObjType: MessageThreadType.P2P,
         status: UserMessageThreadStatus.TO_PENDING,
         updatedAt: {
-          lt: new Date(params.beforeDate),
+          lt: new Date(dto.beforeDate),
         },
       },
       orderBy: {
@@ -139,26 +150,28 @@ export class UserController {
     };
     const data = await this.userService.queryUserThread(newParams);
     return {
-      status: 0,
+      code: 0,
       message: 'successful',
       data,
     };
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/send-friend-request')
+  @ApiOperation({ summary: '发送好友请求' })
   async sendFriendRequest(
     @Request() req,
-    @Body() params: { userId: number },
-  ): Promise<StandardResponse> {
-    if (req.user.userId === params.userId) {
+    @Body() dto: UserIdDto,
+  ): Promise<ApiResult> {
+    if (req.user.userId === dto.userId) {
       return {
-        status: 3,
+        code: 3,
         message: 'can not make friend with self',
       };
     }
     const friend = await this.userService.findUniqueUser(
-      { id: params.userId },
+      { id: dto.userId },
       false,
     );
     if (friend) {
@@ -175,62 +188,60 @@ export class UserController {
         res.status === 5 //don't bother any more when BLOCKED or TO_PENDING
       ) {
         return {
-          status: 0,
+          code: 0,
           message: 'request sent successful',
         };
       } else if (res.status === 4) {
         // firend is FROM_PENDING, make friend error,should not happened
         return {
-          status: 1,
+          code: 1,
           message: 'unknow error',
         };
       }
     } else {
       return {
-        status: 2,
+        code: 2,
         message: 'friend does not not exist',
       };
     }
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/approve-friend-request')
+  @ApiOperation({ summary: '同意好友请求' })
   async acceptFriendRequest(
     @Request() req,
-    @Body() params: { userId: number },
-  ): Promise<StandardResponse> {
+    @Body() dto: UserIdDto,
+  ): Promise<ApiResult> {
     const res = await this.messageService.approveFriendRequest(
-      params.userId,
+      dto.userId,
       req.user.userId,
     );
     if (res.status === 0) {
       return {
-        status: 0,
+        code: 0,
         message: 'already been friends',
       };
     } else {
       return {
-        status: 1,
-        message: `user [${params.userId}] did not send make friend request to you.`,
+        code: 1,
+        message: `user [${dto.userId}] did not send make friend request to you.`,
       };
     }
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/query')
-  async queryUserBase(
-    @Body() { userIds }: { userIds: number[] },
-  ): Promise<StandardResponse> {
-    if (userIds.length > 100) {
-      return {
-        status: 1,
-        message: 'must less than 100 userIds per query',
-      };
-    }
+  @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
+  @ApiResultResponse(UserResponseDto, true)
+  async queryUserBase(@Body() dto: QueryUsersDto): Promise<ApiResult> {
+    // 上限 100 的校验已移入 QueryUsersDto 的 @ArrayMaxSize(100) → 失败走 ValidationPipe → 400
     const list = await this.userService.queryUsers({
       where: {
         id: {
-          in: userIds,
+          in: dto.userIds,
         },
         isDeleted: false,
       },
@@ -242,20 +253,23 @@ export class UserController {
       delete item.hashPwd;
     });
     return {
-      status: 0,
+      code: 0,
       message: 'successful',
       data: list,
     };
   }
 
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('user/by-uniq-name')
+  @ApiOperation({ summary: '按 uniqName 查用户' })
+  @ApiResultResponse(UserResponseDto)
   async getUserByUniqName(
-    @Body() { uniqName }: { uniqName: string },
-  ): Promise<StandardResponse> {
+    @Body() dto: UserByUniqNameDto,
+  ): Promise<ApiResult> {
     const user = await this.userService.findUniqueUser(
       {
-        uniqName,
+        uniqName: dto.uniqName,
         isDeleted: false,
       },
       true,
@@ -263,24 +277,26 @@ export class UserController {
     if (user !== null) {
       delete user.hashPwd;
       return {
-        status: 0,
+        code: 0,
         message: 'successful',
         data: user,
       };
     } else {
       return {
-        status: 1,
-        message: `can not find user [${uniqName}]`,
+        code: 1,
+        message: `can not find user [${dto.uniqName}]`,
       };
     }
   }
 
+  // thread-info 归 P1b：暂不接 DTO/Swagger，仅信封字段名跟随全局 status→code 改名。
   @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Post('/user/thread-info')
   async queryUserThreadInfo(
     @Request() req,
     @Body() params: { userThreadId: number },
-  ): Promise<StandardResponse<UserMessageThread>> {
+  ): Promise<ApiResult> {
     const thread = await this.messageService.findUniqueUserMessageThread({
       where: {
         id: params.userThreadId,
@@ -296,48 +312,33 @@ export class UserController {
           id: thread.toObjId,
         });
       }
-      return { status: 0, message: 'successful', data: thread };
+      return { code: 0, message: 'successful', data: thread };
     } else {
       return {
-        status: 1,
+        code: 1,
         message: `user has no thread [${params.userThreadId}]`,
       };
     }
   }
 
+  @ApiTags('auth')
   @Post('user/register')
-  async registerLocal(@Body() params: { uniqName: string; password: string }) {
-    /*^ Start of string
-      (?=[\w.-]{5,20}$) Assert 5-20 of the allowed characters
-      (?:[\d_.-]*[a-zA-Z]){3} Match 3 times a-zA-Z followed by optional digits _ . -
-      [\w.-]* Match optional word chars or . or -
-      $ End of string
-    */
-    const nameRegex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/;
-    const pwdRegex = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/;
-    if (nameRegex.test(params.uniqName) === false) {
-      return {
-        status: 1,
-        message: `uniqName [${params.uniqName}] not match regex [${nameRegex}]`,
-      };
-    } else if (pwdRegex.test(params.password) === false) {
-      return {
-        status: 1,
-        message: `uniqName [${params.uniqName}] not match regex [${pwdRegex}]`,
-      };
-    }
+  @ApiOperation({ summary: '注册新用户' })
+  async registerLocal(@Body() dto: RegisterDto): Promise<ApiResult> {
+    /* uniqName/password 的格式校验（regex）已移入 RegisterDto 的 @Matches → 失败走 ValidationPipe → 400。
+       业务校验（uniqName 重复）仍在 service，走 200 + code:2。 */
     const res = await this.userService.addUser({
-      uniqName: params.uniqName,
-      hashPwd: await this.authService.hashStr(params.password),
+      uniqName: dto.uniqName,
+      hashPwd: await this.authService.hashStr(dto.password),
     });
     if (res.status === 2) {
       return {
-        status: 2,
-        message: `User ${params.uniqName} already exists`,
+        code: 2,
+        message: `User ${dto.uniqName} already exists`,
       };
     } else {
       return {
-        status: 0,
+        code: 0,
         message: 'successfuly registered',
         data: res.data,
       };

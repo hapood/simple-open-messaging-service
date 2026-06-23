@@ -60,7 +60,7 @@ export class FriendRequestsComponent {
     const curSearchText = this.searchText().trim()
     this.userService.getUserInfoByUniqName({ uniqName: curSearchText }).subscribe({
       next: res => {
-        if (res.status === 0) {
+        if (res.code === 0) {
           if (res.data!.uniqName === this.userService.sessionProfile()!.uniqName) {
             this.userData.set(res.data)
             this.addTabStatus.set(AddTabStatus.SUCCESS)
@@ -68,7 +68,7 @@ export class FriendRequestsComponent {
             this.reqRspTxt.set('can not add yourself')
           } else {
             this.msgService.getThreadByUserId({ userId: res.data!.id }).subscribe(res2 => {
-              if (res2.status === 1) {
+              if (res2.code === 1) {
                 const thread = res2.data
                 // if(thread!.status){
 
@@ -94,7 +94,7 @@ export class FriendRequestsComponent {
     this.reqRspTxt.set('')
     this.userService.sendFriendRequest({ userId: this.userData()!.id }).subscribe({
       next: res => {
-        if (res.status === 0) {
+        if (res.code === 0) {
           this.reqRspTxt.set('sent successfully')
         } else {
           this.reqRspTxt.set(res.message)
@@ -109,7 +109,7 @@ export class FriendRequestsComponent {
     const req = this.pendingReqList()[index]
     this.userService.approveFriendRequest({ userId: req.id }).subscribe(res => {
       const reqList = this.pendingReqList()
-      if (res.status === 0) {
+      if (res.code === 0) {
         this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 1, errText: '' }]).concat(reqList.slice(index + 1)))
       } else {
         this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 0, errText: res.message }]).concat(reqList.slice(index + 1)))
@@ -121,10 +121,10 @@ export class FriendRequestsComponent {
   ngOnInit() {
     this.userService.queryToPending({ take: 20, beforeDate: new Date().getTime() }).subscribe({
       next: (res) => {
-        if (res.status === 0) {
+        if (res.code === 0) {
           const userIds = res.data!.map(item => item.toObjId)
           this.userService.queryUserInfo({ userIds }).subscribe(res2 => {
-            if (res2.status === 0) {
+            if (res2.code === 0) {
               const dict = arrayToDictIndex(res2.data!, 'id')
               const list = res.data!.map(item => {
                 const userData = dict[item.toObjId]

@@ -31,7 +31,7 @@ export class UserListComponent {
 
   genThreadList() {
     return this.userService.queryUserThreadValid({ take: 10, skip: 0, toObjType: "P2P" }).subscribe(res => {
-      if (res.status == 0) {
+      if (res.code == 0) {
         this.threadList.set(res.data!)
       } else {
         throw new Error(res.message)

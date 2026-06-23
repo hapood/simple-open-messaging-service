@@ -48,8 +48,8 @@ export class LoginComponent {
       password: this.password(), isKeep: this.isKeepLogin()
     })
       .subscribe({
-        next: ({ status, message }) => {
-          if (status === 0) {
+        next: ({ code, message }) => {
+          if (code === 0) {
             this.onSuccess.emit(true)
             this.isSuccess.set(true)
             this.isLoging.set(false)

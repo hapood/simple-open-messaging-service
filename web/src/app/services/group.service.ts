@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
-import { StandardMessage } from './websocket.service';
+import { StandardResponse } from './model';
 
 export interface GrpCreateInfo {
   threadId: number,
@@ -17,14 +17,14 @@ export class GroupService {
   }
 
   createGroup(params: { groupName: string }) {
-    return this.http.post<StandardMessage<GrpCreateInfo>>(`${apiPrefix}/group/create`, params)
+    return this.http.post<StandardResponse<GrpCreateInfo>>(`${apiPrefix}/group/create`, params)
   }
 
   inviteUser(params: { userId: number, groupId: number }) {
-    return this.http.post<StandardMessage>(`${apiPrefix}/group/invite`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix}/group/invite`, params)
   }
 
   joinGroup(params: { token: string }) {
-    return this.http.post<StandardMessage>(`${apiPrefix}/group/join`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix}/group/join`, params)
   }
 }
