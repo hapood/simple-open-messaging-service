@@ -1,7 +1,7 @@
 import { Injectable } from '@angular/core';
 import { Subject, take, switchMap, filter } from 'rxjs';
 import { AuthService } from './auth.service';
-import { apiPrefix } from './constants';
+import { wsUrl } from './constants';
 export interface StandardMessage<T = any> {
   event: string,
   status: number,
@@ -12,7 +12,7 @@ export interface StandardMessage<T = any> {
   providedIn: 'root'
 })
 export class WebsocketService {
-  private readonly url = `${apiPrefix}`
+  private readonly url = wsUrl
   private _ws: WebSocket | null = null
   private _isConning = false
   readonly eventSubject = new Subject<StandardMessage>();

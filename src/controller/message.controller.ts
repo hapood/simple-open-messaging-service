@@ -27,6 +27,7 @@ export class MessageController {
   @ApiBearerAuth()
   @Post('send-message')
   @ApiOperation({ summary: '发送消息（P2P/群）' })
+  @ApiResultResponse(MessageResponseDto)
   async sendMessage(
     @Request() req,
     @Body() dto: SendMessageDto,

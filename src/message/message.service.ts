@@ -29,10 +29,9 @@ export class MessageService implements OnModuleInit {
       creator: userId,
     };
     const data = await this.prisma.message.create({ data: newData });
-    return {
-      id: data.id,
-      createdAt: data.createdAt,
-    };
+    // 返回完整 Message（契约 MessageResponseDto 全字段）。
+    // BigInt/Date 由全局 SerializeInterceptor 统一序列化（见 src/common/serialize.interceptor.ts）。
+    return data;
   }
 
   async queryMessages(threadId: number, params: Prisma.MessageFindManyArgs) {

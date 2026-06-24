@@ -36,7 +36,12 @@ async function bootstrap() {
   // 异常过滤器不经拦截器链，但其响应体只含 {code,message} 原语，无需转换。
   app.useGlobalInterceptors(new SerializeInterceptor());
 
-  // P1a：Swagger。文档 UI 挂 /api/v1/docs；路由本身暂不加 /api/v1 全局前缀（前缀属 P1b）。
+  // P1b：全局路由前缀。所有 HTTP 端点统一挂 /api/v1 下（须在 Swagger createDocument 前调用，
+  // 文档内端点路径会自动带上此前缀）。Swagger UI 仍挂 /api/v1/docs —— SwaggerModule.setup
+  // 不受 setGlobalPrefix 影响，不会双重前缀。WS（WsAdapter）与 CORS 不受影响。
+  app.setGlobalPrefix('api/v1');
+
+  // P1a：Swagger。文档 UI 挂 /api/v1/docs。
   const config = new DocumentBuilder()
     .setTitle('Simple Open Chat API')
     .setDescription('面向第三方接入的 IM 开放接口（P1a 契约层）')
