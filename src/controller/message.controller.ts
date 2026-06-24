@@ -9,8 +9,12 @@ import {
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
-import { MessageResponseDto } from '../dto/response.dto';
+import {
+  MessageResponseDto,
+  UserMessageThreadResponseDto,
+} from '../dto/response.dto';
 import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
+import { UserIdDto } from '../dto/user.dto';
 import { EventGateway } from 'src/gateway/event.gateway';
 import { GroupService } from 'src/group/group.service';
 
@@ -137,13 +141,14 @@ export class MessageController {
     }
   }
 
-  // thread/by-user-id 归 P1b：暂不接 DTO/Swagger，仅信封字段名跟随全局 status→code 改名。
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Post('thread/by-user-id')
+  @ApiOperation({ summary: '按对端 userId 查 P2P 会话' })
+  @ApiResultResponse(UserMessageThreadResponseDto)
   async getThreadByUniqName(
     @Request() req,
-    @Body() params: { userId: number },
+    @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
     const userId = req.user.userId;
     const thread = await this.messageService.findUniqueUserMessageThread({
@@ -151,14 +156,14 @@ export class MessageController {
         userId_toObjType_toObjId: {
           userId,
           toObjType: MessageThreadType.P2P,
-          toObjId: params.userId,
+          toObjId: dto.userId,
         },
       },
     });
     if (thread === null) {
       return {
         code: 1,
-        message: `no thread with user [${params.userId}]`,
+        message: `no thread with user [${dto.userId}]`,
       };
     } else {
       return {

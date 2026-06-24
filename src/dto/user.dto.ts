@@ -74,8 +74,11 @@ export class QueryPendingThreadDto {
   @Min(1)
   take: number;
 
+  // 前端 queryToPending 只发 { take, beforeDate }，不带 skip（依赖 Prisma skip:undefined=不分页）。
+  // 故设可选；提供时仍校验为非负整数。
+  @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  skip: number;
+  skip?: number;
 }

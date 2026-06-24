@@ -128,3 +128,34 @@ export class UserMessageThreadResponseDto {
   @ApiProperty({ description: '对端群组（GROUP 时）' })
   groupItem?: { id: number; name: string; ownerId: number; avatar: string };
 }
+
+export class CreateGroupResponseDto {
+  @ApiProperty({ example: 12, description: '群消息线程 id' })
+  threadId: number;
+
+  @ApiProperty({ example: 12, description: '群 id' })
+  groupId: number;
+}
+
+export class GroupResponseDto {
+  @ApiProperty({ example: 12 })
+  id: number;
+
+  @ApiProperty({ example: 'dev-team', description: '群名' })
+  name: string;
+
+  @ApiProperty({ example: 1, description: '群主 userId' })
+  ownerId: number;
+
+  @ApiProperty({ example: 'https://.../g.png', description: '群头像 URL' })
+  avatar: string;
+
+  @ApiProperty({ example: 12, description: '群消息线程 id' })
+  threadId: number;
+
+  @ApiProperty({ example: 1_700_000_000_000 })
+  createdAt: number;
+
+  @ApiProperty({ example: 1_700_000_000_000 })
+  updatedAt: number;
+}

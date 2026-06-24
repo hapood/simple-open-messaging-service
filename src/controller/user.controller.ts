@@ -20,6 +20,7 @@ import {
 import { RegisterDto } from '../dto/auth.dto';
 import {
   UserIdDto,
+  UserThreadIdDto,
   UserByUniqNameDto,
   QueryUsersDto,
   QueryValidThreadDto,
@@ -289,17 +290,18 @@ export class UserController {
     }
   }
 
-  // thread-info 归 P1b：暂不接 DTO/Swagger，仅信封字段名跟随全局 status→code 改名。
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Post('/user/thread-info')
+  @ApiOperation({ summary: '查询会话详情（含对端 user/group）' })
+  @ApiResultResponse(UserMessageThreadResponseDto)
   async queryUserThreadInfo(
     @Request() req,
-    @Body() params: { userThreadId: number },
+    @Body() dto: UserThreadIdDto,
   ): Promise<ApiResult> {
     const thread = await this.messageService.findUniqueUserMessageThread({
       where: {
-        id: params.userThreadId,
+        id: dto.userThreadId,
       },
     });
     if (thread !== null && thread.userId === req.user.userId) {
@@ -316,7 +318,7 @@ export class UserController {
     } else {
       return {
         code: 1,
-        message: `user has no thread [${params.userThreadId}]`,
+        message: `user has no thread [${dto.userThreadId}]`,
       };
     }
   }
