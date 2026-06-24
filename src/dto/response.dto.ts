@@ -6,9 +6,9 @@ import {
 } from '../prisma/generated/client';
 
 /**
- * 响应实体 DTO（供 OpenAPI 响应 schema 用）。字段类型反映线上序列化结果：
- * Date → 毫秒时间戳(number)（当前仍由 main.ts 的 Date.prototype.toJSON hack 完成，P1b 改序列化拦截器）；
- * BigInt id → string（当前由 convertBigIntId 完成）。
+ * 响应实体 DTO（供 OpenAPI 响应 schema 用）。字段类型反映线上序列化结果，
+ * 统一由全局 SerializeInterceptor 完成（见 src/common/serialize.interceptor.ts）：
+ * Date → 毫秒时间戳(number)；BigInt（如 Message.id、UserMessageThread.lastRead）→ string。
  */
 
 export class UserExtraResponseDto {

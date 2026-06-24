@@ -8,7 +8,6 @@ import {
   UserMessageThreadStatus,
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { convertBigIntId } from './utils';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
 import { MessageResponseDto } from '../dto/response.dto';
 import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
@@ -60,7 +59,7 @@ export class MessageController {
         userIds.forEach((item) => {
           this.eventGateway.onNewMessage(item.userId, msgData);
         });
-        return { code: 0, message: 'sucessful', data: convertBigIntId(data) };
+        return { code: 0, message: 'sucessful', data };
       }
     } else {
       const friendMsgTr = await this.messageService.findUniqueUserMessageThread(
@@ -89,7 +88,7 @@ export class MessageController {
         };
         this.eventGateway.onNewMessage(req.user.userId, msgData);
         this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
-        return { code: 0, message: 'sucessful', data: convertBigIntId(data) };
+        return { code: 0, message: 'sucessful', data };
       }
     }
     return {
@@ -127,7 +126,6 @@ export class MessageController {
         userThread.threadId,
         newParams,
       );
-      data.forEach((item) => convertBigIntId(item));
       return {
         code: 0,
         message: 'sucessful',

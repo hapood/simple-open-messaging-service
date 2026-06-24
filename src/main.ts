@@ -7,12 +7,7 @@ import { WsAdapter } from '@nestjs/platform-ws';
 import helmet from 'helmet';
 import { parseCorsOrigins } from './common/env';
 import { AllExceptionsFilter } from './common/exception.filter';
-
-// ⚠️ P0 保留：全局覆盖 Date.prototype.toJSON（Date→毫秒戳）。
-// P1b 将由「响应序列化拦截器」替代并移除此全局副作用（protocol-plan §4.2.5 / bug #8）。
-Date.prototype.toJSON = function () {
-  return this.getTime();
-};
+import { SerializeInterceptor } from './common/serialize.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -35,6 +30,11 @@ async function bootstrap() {
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
+
+  // P1b：全局响应序列化拦截器。BigInt→string / Date→毫秒数，
+  // 替代原 main.ts 的 Date.prototype.toJSON hack 与 convertBigIntId（均移除）。
+  // 异常过滤器不经拦截器链，但其响应体只含 {code,message} 原语，无需转换。
+  app.useGlobalInterceptors(new SerializeInterceptor());
 
   // P1a：Swagger。文档 UI 挂 /api/v1/docs；路由本身暂不加 /api/v1 全局前缀（前缀属 P1b）。
   const config = new DocumentBuilder()
