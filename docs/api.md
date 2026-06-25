@@ -64,8 +64,8 @@ interface StandardResponse<T = any> {
 
 - **鉴权**：Local（body 提供 `uniqName` + `password`）
 - **请求体**：`{ uniqName: string, password: string }`
-- **响应 `data`**（status=0）：`{ access_token: string, refresh_token: string }`
-- **错误**：`status:1` 用户名/密码错误；`status:2` IP 被封禁，`data.bannedUntil` 为解封时间戳
+- **响应 `data`**（code=0）：`{ access_token: string, refresh_token: string }`
+- **错误**：凭据错 `code:10003`；IP 封禁 `code:10005`，`data.bannedUntil` 为解封时间戳
 - **限流**：同 IP 累计失败 >3 次封禁 30 分钟、>6 次封禁 3 小时、>9 次封禁 24 小时
 
 ### POST `/auth/renew-access` — 刷新 access_token
@@ -84,7 +84,7 @@ interface StandardResponse<T = any> {
 
 - **鉴权**：无（`public`，前端在 header 标记 `Authorization: 'public'`，refresh_token 在 body）
 - **请求体**：`{ refreshToken: string }`
-- **响应**：`{ status: 0, message: 'success' }`，成功将对应 refresh_token 置为吊销（`revokedAt`）
+- **响应**：`{ code: 0, message: 'success' }`，成功将对应 refresh_token 置为吊销（`revokedAt`）
 
 > ✅ P0 已修复：refresh_token 落库 `RefreshToken` 表（存 sha256 哈希），重启不失效、登出真正吊销、续期轮换。`logout` 的 refreshToken 从 body 取（原实现从 JWT payload 取，恒为 undefined）。
 
@@ -125,7 +125,8 @@ interface StandardResponse<T = any> {
 
 - **鉴权**：JWT
 - **请求体**：`{ userId: number }`（目标用户）
-- **响应 `status`**：`0` 首次发送 / `1` 已是好友 / `2` 重新发起（曾删除）/ `3` 对方已先请求并直接建立 / `5` 不再打扰
+- **响应 `code`**：`0` 请求已发送（涵盖首次发送 / 已是好友 / 重新发起 / 对方已先请求直接建立 / 不再打扰）；`20002` 好友状态机未知状态（不应发生）
+- **内部状态机**：`makeFriendRequest` 返回 status `0/1/2/3/5` 驱动上述行为，不直接体现在响应 `code`
 - **详见**：[architecture.md → 好友请求状态机](./architecture.md#好友请求状态机)
 
 ### POST `/user/approve-friend-request` — 接受好友请求
@@ -223,20 +224,18 @@ interface StandardResponse<T = any> {
 
 ## 文件 API
 
-> 控制器：[src/controller/file.controller.ts](../src/controller/file.controller.ts)
+🚧 **未实现**：原 `file.controller.ts` / `src/file/*` 为未完成的死代码（未注册、handler 仅 `console.log`、`send-video` 路由重复、类名误写），已于 P1b 清理删除。文件上传计划在 **P3** 基于下述设计意图重新实现。
 
-🚧 **此模块当前未完成**：`FileModule` 未导入 `AppModule`，端点不生效；即便生效，handler 也仅 `console.log(file)`，不落库、不返回 URL。以下为设计意图。
+设计意图（P3 参考）：
 
 | 路径 | 字段名 | 允许的 MIME |
 | --- | --- | --- |
 | `POST /file/send-image` | `file` | jpg / jpeg / png / webp |
 | `POST /file/send-video` | `file` | mp4 / webm / ogg |
-| `POST /file/send-audio`（设计） | `file` | mp3 / wav / acc |
+| `POST /file/send-audio` | `file` | mp3 / wav / acc |
 | `POST /file/send-general-file` | `file` | 任意 |
 
-请求为 `multipart/form-data`，使用 `@UseInterceptors(FileInterceptor('file'))` + `FileTypeValidator` 校验。`CalcFileDestInterceptor` 设计用于按会话计算存储路径，但当前未实现，文件统一存到 `./uploads/threadId`。
-
-> 代码缺陷：音频上传端点的方法名是 `sendAudioFile`，但路由装饰器误写为 `/file/send-video`，与视频端点重复。
+请求为 `multipart/form-data`，使用 `FileInterceptor('file')` + `FileTypeValidator` 校验；按会话计算存储路径，落库到 `Message` 并返回可访问 URL。
 
 ---
 

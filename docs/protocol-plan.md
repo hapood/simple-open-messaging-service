@@ -60,7 +60,7 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 | 4 | [src/auth/constants.ts](../src/auth/constants.ts)、[src/group/group.service.ts](../src/group/group.service.ts) | JWT / 邀请 token 签名密钥**硬编码** |
 | 5 | [src/main.ts](../src/main.ts) | `app.enableCors()` 默认全开（生产不安全） |
 | 6 | [src/model.ts](../src/model.ts) ↔ [src/controller/utils.ts](../src/controller/utils.ts) | `StandardResponse` 重复定义 |
-| 7 | [src/controller/file.controller.ts](../src/controller/file.controller.ts) | `/file/send-video` 路由重复（音频端点误用同路径）；handler 仅 `console.log`，不落库不返回 URL |
+| 7 | ~~src/controller/file.controller.ts~~ | ✅ P1b 已清理：死代码（未注册 + `send-video` 路由重复 + 类名误写 `GroupController`）整域删除；文件上传留 P3 重新实现 |
 | 8 | [src/main.ts](../src/main.ts) | 全局覆盖 `Date.prototype.toJSON`，影响整个进程 |
 
 ---
@@ -296,7 +296,7 @@ P1 拆为两步推进：**P1a 最小子集先行**（解锁契约 + 前端 mock�
 | 前端类型生成 | `web/` 接入 `openapi-typescript` | 前端 service 类型由生成产物驱动 |
 | 序列化拦截器 + 去 `Date.toJSON` hack | `src/main.ts`、新增拦截器、移除 `convertBigIntId` 调用 | Date/BigInt 统一序列化，无全局副作用 |
 
-> **P1 外挂（工程基建）— 后端整体转 ESM**（独立小任务，可与 P1a/P1b 并行；非 P1 契约范畴，仅就近归档）。`type:"module"` + `tsconfig`(`module/moduleResolution: NodeNext`、`target ES2023`、`esModuleInterop`) + 相对导入补 `.js`(全仓库 ~50–100 处) + `__dirname`/`require` → `import.meta.url`/`fileURLToPath`(如 `file.controller` 的 `diskStorage`) + CJS-only 工具(loader/ts-node)处理。**非必需**：Prisma 7 已验证兼容 CJS 消费(`@prisma/client` exports 提供 `require` 条件)。**前置依赖**：本轮「依赖升级」(NestJS 11 / Prisma 7 / TS 5.9)落地后再做。**触发点**(择一即可动手)：需引入 ESM-only 依赖 / 换 Vitest / Node 对 CJS 收紧。**注意**：代价≈范围/风险翻倍，且当前零后端测试网——动手前先补 auth e2e 冒烟。
+> **P1 外挂（工程基建）— 后端整体转 ESM**（独立小任务，可与 P1a/P1b 并行；非 P1 契约范畴，仅就近归档）。`type:"module"` + `tsconfig`(`module/moduleResolution: NodeNext`、`target ES2023`、`esModuleInterop`) + 相对导入补 `.js`(全仓库 ~50–100 处) + `__dirname`/`require` → `import.meta.url`/`fileURLToPath` + CJS-only 工具(loader/ts-node)处理。**非必需**：Prisma 7 已验证兼容 CJS 消费(`@prisma/client` exports 提供 `require` 条件)。**前置依赖**：本轮「依赖升级」(NestJS 11 / Prisma 7 / TS 5.9)落地后再做。**触发点**(择一即可动手)：需引入 ESM-only 依赖 / 换 Vitest / Node 对 CJS 收紧。**注意**：代价≈范围/风险翻倍，且当前零后端测试网——动手前先补 auth e2e 冒烟。
 
 #### P1a 核心接口 checklist
 
@@ -389,7 +389,7 @@ P1a 完成后，前端 mock 由 OpenAPI 契约驱动，无需手写：
 | 响应信封结构化 `details` 字段 | `api-result.ts`、`exception.filter.ts` | 速率限制等附加数据（`bannedUntil`/`retry_after`）走 `details`，对标 Telegram `parameters` / WhatsApp `error_data`；P1b 暂放 `data` |
 | 健康检查 | 新增 controller | `/api/v1/health` 返回 DB 状态 |
 | 限流 | `@nestjs/throttler` | 登录/续期/发消息有明确配额 |
-| 补全文件上传 | `src/file/*`、`file.controller.ts` | 落库、返回 URL、修重复路由；大文件可走分片/对象存储 |
+| 实现文件上传 | 新增 `src/file/*` + controller | 落库到 Message、返回可访问 URL（参考 [api.md](./api.md) 文件 API 设计意图）；大文件可走分片/对象存储 |
 
 ---
 
@@ -403,6 +403,6 @@ P1a 完成后，前端 mock 由 OpenAPI 契约驱动，无需手写：
 | 响应信封合并 | [src/model.ts](../src/model.ts)、[src/controller/utils.ts](../src/controller/utils.ts) |
 | refresh 落库 + 修 bug + 密钥 | [src/auth/auth.service.ts](../src/auth/auth.service.ts)、[src/auth/constants.ts](../src/auth/constants.ts)、[src/controller/auth.controller.ts](../src/controller/auth.controller.ts)、[prisma/schema.prisma](../prisma/schema.prisma) |
 | WS 心跳/seq/事件 | [src/gateway/event.gateway.ts](../src/gateway/event.gateway.ts) |
-| 文件上传 | [src/controller/file.controller.ts](../src/controller/file.controller.ts)、[src/file/*](../src/file/) |
+| 文件上传 | P3 新增 `src/file/*` + controller（原死代码 P1b 已删） |
 | 前端续期单飞 + WS 退避 | [web/src/app/auth.interceptor.ts](../web/src/app/auth.interceptor.ts)、[web/src/app/services/auth.service.ts](../web/src/app/services/auth.service.ts)、[web/src/app/services/websocket.service.ts](../web/src/app/services/websocket.service.ts) |
 | 前端类型生成 | [web/](../web/)（新增 openapi-typescript 流水线） |

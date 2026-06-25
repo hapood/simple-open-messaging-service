@@ -61,7 +61,6 @@
 | UserController | [src/controller/user.controller.ts](../src/controller/user.controller.ts) | `/user/*` |
 | MessageController | [src/controller/message.controller.ts](../src/controller/message.controller.ts) | `/send-message`、`/query-messages`、`/thread/by-user-id` |
 | GroupController | [src/controller/group.controller.ts](../src/controller/group.controller.ts) | `/group/*` |
-| FileController | [src/controller/file.controller.ts](../src/controller/file.controller.ts) | `/file/*`（🚧 未完成） |
 
 ## 前端结构
 
@@ -226,8 +225,8 @@ TO_PENDING/BLOCKED   不再打扰                                  5
 
 1. ~~**密钥硬编码**~~ ✅ 已修复（P0）：JWT access/refresh secret、群组邀请 secret 已外置至 `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` / `GROUP_INVITE_SECRET`，缺失则启动 fail-fast（`src/common/env.ts`）。
 2. ~~**refresh_token 仅存内存**~~ ✅ 已修复（P0）：refresh_token 落库到 `RefreshToken` 表（存 sha256 哈希），重启不失效、可吊销（`revokedAt`）、续期轮换；顺带修了三个 bug——`logout`（从 body 取 refresh，不再从 JWT payload 取恒为 undefined 的值，并改为 public 端点）、`renew-access`（不再误删 refresh，否则 7 天定时续期会失效）、`renew-refresh`（先判空再吊销，修空指针 500）。
-3. **三个模块未接入**：`NotifyModule`、`UserManageModule`、`FileModule` 未导入 `AppModule`。
-4. **文件上传未完成**：handler 仅 `console.log`，不落库、不返回 URL；`FileController` 中 `/file/send-video` 路由重复（音频端点误用同路径）；`file.module.ts` / `file.service.ts` 为空。
+3. **两个模块未接入**：`NotifyModule`、`UserManageModule` 未导入 `AppModule`（原 `FileModule` 为空壳死代码，P1b 已删除，P3 重新实现）。
+4. ~~**文件上传未完成**~~ ✅ 死代码已清理（P1b）：原 `file.controller.ts` / `src/file/*` 未注册且实现残缺（`console.log`、`send-video` 路由重复、空壳 module/service），已整域删除；文件上传留 P3 基于 [api.md](./api.md) 设计意图重新实现。
 5. **前端 authGuard 未生效**：未挂载到路由，且检查的 `localStorage('token')` 与实际 `refresh_token` key 不一致。
 6. **`/user/query` 隐私**：可批量查询任意未删除用户信息，无关系级可见性隔离。
 7. **`Date.prototype.toJSON` 全局覆盖**：影响整个进程的 JSON 序列化行为，跨项目复用需注意。
