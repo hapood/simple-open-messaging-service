@@ -1,9 +1,18 @@
-import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Request,
+  UseGuards,
+  HttpStatus,
+  HttpCode,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MessageService } from '../message/message.service';
 import { ContentType } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
+import { BusinessCode } from '../common/business-code';
 import * as dayjs from 'dayjs';
 import { GroupService } from 'src/group/group.service';
 import {
@@ -27,6 +36,7 @@ export class GroupController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('group/create')
   @ApiOperation({ summary: '创建群组' })
   @ApiResultResponse(CreateGroupResponseDto)
@@ -35,13 +45,13 @@ export class GroupController {
     @Body() dto: CreateGroupDto,
   ): Promise<ApiResult> {
     const userId = req.user.userId;
-    // groupName 长度校验已迁入 CreateGroupDto @MaxLength(31)（超长 → 400）。
+    // groupName 长度校验已迁入 CreateGroupDto @MaxLength(31)（超长 → 200/10000）。
     const trd = await this.groupService.createNewGroup({
       owner: userId,
       groupName: dto.groupName,
     });
     return {
-      code: 0,
+      code: BusinessCode.OK,
       message: 'successful',
       data: { threadId: trd.threadId, groupId: trd.id },
     };
@@ -49,6 +59,7 @@ export class GroupController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('group/invite')
   @ApiOperation({ summary: '邀请用户入群（生成邀请 token 写入消息）' })
   async inviteUsers(
@@ -62,7 +73,7 @@ export class GroupController {
     });
     if (groupMember === null) {
       return {
-        code: 2,
+        code: BusinessCode.GROUP_NOT_MEMBER,
         message: `you are not in group [${dto.groupId}]`,
       };
     } else {
@@ -92,12 +103,12 @@ export class GroupController {
           ContentType.INVITE,
         );
         return {
-          code: 0,
+          code: BusinessCode.OK,
           message: 'successful',
         };
       } else {
         return {
-          code: 1,
+          code: BusinessCode.GROUP_NOT_FRIEND,
           message: `[${dto.userId}] is not your feiend`,
         };
       }
@@ -106,6 +117,7 @@ export class GroupController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('group/join')
   @ApiOperation({ summary: '凭邀请 token 加入群组' })
   async joinGroup(
@@ -120,12 +132,12 @@ export class GroupController {
         userId: data.sub,
       });
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'succesful',
       };
     } else if (res.status === 1) {
       return {
-        code: 1,
+        code: BusinessCode.GROUP_INVALID_TOKEN,
         message: 'invalid invite',
       };
     }
@@ -133,6 +145,7 @@ export class GroupController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('group/info')
   @ApiOperation({ summary: '查询群信息' })
   @ApiResultResponse(GroupResponseDto)
@@ -144,13 +157,13 @@ export class GroupController {
     const data = await this.groupService.findUniqeGroup({ id: dto.groupId });
     if (data !== null) {
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'succesful',
         data,
       };
     } else {
       return {
-        code: 1,
+        code: BusinessCode.NOT_FOUND,
         message: `invalid groupId [${dto.groupId}]`,
       };
     }

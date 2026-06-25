@@ -1,4 +1,12 @@
-import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Request,
+  UseGuards,
+  HttpStatus,
+  HttpCode,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MessageService } from '../message/message.service';
 import {
@@ -9,6 +17,7 @@ import {
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
+import { BusinessCode } from '../common/business-code';
 import {
   MessageResponseDto,
   UserMessageThreadResponseDto,
@@ -29,6 +38,7 @@ export class MessageController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('send-message')
   @ApiOperation({ summary: '发送消息（P2P/群）' })
   @ApiResultResponse(MessageResponseDto)
@@ -36,10 +46,10 @@ export class MessageController {
     @Request() req,
     @Body() dto: SendMessageDto,
   ): Promise<ApiResult> {
-    // content 缺失/空串已由 SendMessageDto 的 @IsNotEmpty 拦截 → 400；
-    // 这里仅处理纯空白（业务码 2）。
+    // content 缺失/空串已由 SendMessageDto 的 @IsNotEmpty 拦截 → ValidationPipe 纳入业务流(200/10000)；
+    // 这里仅处理纯空白（业务码 MESSAGE_EMPTY）。
     if (!dto.content?.trim()) {
-      return { code: 2, message: 'no content' };
+      return { code: BusinessCode.MESSAGE_EMPTY, message: 'no content' };
     }
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
       where: {
@@ -64,7 +74,7 @@ export class MessageController {
         userIds.forEach((item) => {
           this.eventGateway.onNewMessage(item.userId, msgData);
         });
-        return { code: 0, message: 'sucessful', data };
+        return { code: BusinessCode.OK, message: 'sucessful', data };
       }
     } else {
       const friendMsgTr = await this.messageService.findUniqueUserMessageThread(
@@ -93,17 +103,18 @@ export class MessageController {
         };
         this.eventGateway.onNewMessage(req.user.userId, msgData);
         this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
-        return { code: 0, message: 'sucessful', data };
+        return { code: BusinessCode.OK, message: 'sucessful', data };
       }
     }
     return {
-      code: 1,
+      code: BusinessCode.THREAD_NOT_APPROVED,
       message: 'failed',
     };
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('query-messages')
   @ApiOperation({ summary: '查询会话历史消息（游标分页）' })
   @ApiResultResponse(MessageResponseDto, true)
@@ -132,17 +143,18 @@ export class MessageController {
         newParams,
       );
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'sucessful',
         data,
       };
     } else {
-      return { code: 2, message: `no user thread $[${dto.userThreadId}]` };
+      return { code: BusinessCode.THREAD_NOT_FOUND, message: `no user thread $[${dto.userThreadId}]` };
     }
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('thread/by-user-id')
   @ApiOperation({ summary: '按对端 userId 查 P2P 会话' })
   @ApiResultResponse(UserMessageThreadResponseDto)
@@ -162,12 +174,12 @@ export class MessageController {
     });
     if (thread === null) {
       return {
-        code: 1,
+        code: BusinessCode.THREAD_NOT_FOUND,
         message: `no thread with user [${dto.userId}]`,
       };
     } else {
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'successful',
         data: thread,
       };

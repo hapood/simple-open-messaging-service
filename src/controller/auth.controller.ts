@@ -1,9 +1,18 @@
-import { Controller, Post, Request, UseGuards, Body } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Request,
+  UseGuards,
+  Body,
+  HttpStatus,
+  HttpCode,
+} from '@nestjs/common';
 import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard';
 import { AuthService } from '../auth/auth.service';
 import { LoginAuthInfo } from 'src/auth/local.strategy';
 import { ApiResult } from '../common/api-result';
+import { BusinessCode } from '../common/business-code';
 import { LoginDto, RefreshTokenDto } from '../dto/auth.dto';
 
 @ApiTags('auth')
@@ -12,6 +21,7 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   @UseGuards(LocalAuthGuard)
+  @HttpCode(HttpStatus.OK)
   @Post('auth/login')
   @ApiOperation({ summary: '登录（凭据换 access/refresh token）' })
   // login 走 LocalStrategy，body 不经 @Body DTO；用 @ApiBody 文档化请求体即可。
@@ -20,14 +30,14 @@ export class AuthController {
     const authInfo: LoginAuthInfo = req.user;
     if (authInfo.status === 0) {
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'successful',
         data: await this.authService.login(authInfo.userId),
       };
     } else {
       if (authInfo.bannedUntil !== undefined) {
         return {
-          code: 2,
+          code: BusinessCode.RATE_LIMITED,
           message: 'too many bad attemp',
           data: {
             bannedUntil: authInfo.bannedUntil,
@@ -35,13 +45,14 @@ export class AuthController {
         };
       } else {
         return {
-          code: 1,
+          code: BusinessCode.UNAUTHENTICATED,
           message: 'error username/password',
         };
       }
     }
   }
 
+  @HttpCode(HttpStatus.OK)
   @Post('auth/renew-access')
   @ApiOperation({ summary: '用 refresh token 换新的 access token（不轮换 refresh）' })
   async renewaccessTokens(
@@ -51,7 +62,7 @@ export class AuthController {
     if (userId !== undefined) {
       // 仅刷新 access，不动 refresh（原实现会 removeRefreshToken，误删后 7 天定时续期会失效）
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'success',
         data: {
           access_token: this.authService.getAccessToken(userId),
@@ -59,12 +70,13 @@ export class AuthController {
       };
     } else {
       return {
-        code: 1,
+        code: BusinessCode.UNAUTHENTICATED,
         message: 'refresh_token is invalid',
       };
     }
   }
 
+  @HttpCode(HttpStatus.OK)
   @Post('auth/renew-refresh')
   @ApiOperation({ summary: '用 refresh token 轮换出新的 access + refresh' })
   async renewRefreshTokens(
@@ -75,7 +87,7 @@ export class AuthController {
     if (userId !== undefined) {
       await this.authService.revokeRefreshToken(dto.refreshToken);
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'success',
         data: {
           access_token: this.authService.getAccessToken(userId),
@@ -84,12 +96,13 @@ export class AuthController {
       };
     } else {
       return {
-        code: 1,
+        code: BusinessCode.UNAUTHENTICATED,
         message: 'refresh_token is invalid',
       };
     }
   }
 
+  @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
   @ApiOperation({ summary: '登出（吊销 refresh token）' })
   async logout(@Body() dto: RefreshTokenDto): Promise<ApiResult> {
@@ -97,7 +110,7 @@ export class AuthController {
     // 前端发 'public' 头 + body，故此端点无需 JWT 鉴权，以 refresh token 作为持有证明吊销。
     await this.authService.logout(dto.refreshToken);
     return {
-      code: 0,
+      code: BusinessCode.OK,
       message: 'success',
     };
   }

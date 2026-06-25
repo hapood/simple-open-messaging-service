@@ -1,4 +1,12 @@
-import { Controller, Post, Body, Request, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  Request,
+  UseGuards,
+  HttpStatus,
+  HttpCode,
+} from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserService } from '../user/user.service';
 import { GroupService } from 'src/group/group.service';
@@ -13,6 +21,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthService } from 'src/auth/auth.service';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
+import { BusinessCode } from '../common/business-code';
 import {
   UserResponseDto,
   UserMessageThreadResponseDto,
@@ -39,17 +48,19 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/my-profile')
   @ApiOperation({ summary: '获取当前用户资料' })
   @ApiResultResponse(UserResponseDto)
   async getMyProfile(@Request() req): Promise<ApiResult> {
     const data = await this.userService.findUniqueUser({ id: req.user.userId });
     delete data.hashPwd;
-    return { code: 0, message: 'successful', data };
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/valid')
   @ApiOperation({ summary: '查询有效会话列表（含对端 user/group 信息）' })
   @ApiResultResponse(UserMessageThreadResponseDto, true)
@@ -109,7 +120,7 @@ export class UserController {
       groupDict[item.id] = item;
     });
     return {
-      code: 0,
+      code: BusinessCode.OK,
       message: 'successful',
       data: list.map((item) => {
         if (item.toObjType === MessageThreadType.P2P) {
@@ -124,6 +135,7 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/to-pending')
   @ApiOperation({ summary: '查询待处理好友请求会话' })
   @ApiResultResponse(UserMessageThreadResponseDto, true)
@@ -151,7 +163,7 @@ export class UserController {
     };
     const data = await this.userService.queryUserThread(newParams);
     return {
-      code: 0,
+      code: BusinessCode.OK,
       message: 'successful',
       data,
     };
@@ -159,6 +171,7 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/send-friend-request')
   @ApiOperation({ summary: '发送好友请求' })
   async sendFriendRequest(
@@ -167,7 +180,7 @@ export class UserController {
   ): Promise<ApiResult> {
     if (req.user.userId === dto.userId) {
       return {
-        code: 3,
+        code: BusinessCode.FRIEND_SELF,
         message: 'can not make friend with self',
       };
     }
@@ -189,19 +202,19 @@ export class UserController {
         res.status === 5 //don't bother any more when BLOCKED or TO_PENDING
       ) {
         return {
-          code: 0,
+          code: BusinessCode.OK,
           message: 'request sent successful',
         };
       } else if (res.status === 4) {
         // firend is FROM_PENDING, make friend error,should not happened
         return {
-          code: 1,
+          code: BusinessCode.FRIEND_UNKNOWN_STATE,
           message: 'unknow error',
         };
       }
     } else {
       return {
-        code: 2,
+        code: BusinessCode.NOT_FOUND,
         message: 'friend does not not exist',
       };
     }
@@ -209,6 +222,7 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/approve-friend-request')
   @ApiOperation({ summary: '同意好友请求' })
   async acceptFriendRequest(
@@ -221,12 +235,12 @@ export class UserController {
     );
     if (res.status === 0) {
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'already been friends',
       };
     } else {
       return {
-        code: 1,
+        code: BusinessCode.FRIEND_NO_INCOMING,
         message: `user [${dto.userId}] did not send make friend request to you.`,
       };
     }
@@ -234,11 +248,12 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/query')
   @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
   @ApiResultResponse(UserResponseDto, true)
   async queryUserBase(@Body() dto: QueryUsersDto): Promise<ApiResult> {
-    // 上限 100 的校验已移入 QueryUsersDto 的 @ArrayMaxSize(100) → 失败走 ValidationPipe → 400
+    // 上限 100 的校验已移入 QueryUsersDto 的 @ArrayMaxSize(100) → 失败走 ValidationPipe → 200/10000
     const list = await this.userService.queryUsers({
       where: {
         id: {
@@ -254,7 +269,7 @@ export class UserController {
       delete item.hashPwd;
     });
     return {
-      code: 0,
+      code: BusinessCode.OK,
       message: 'successful',
       data: list,
     };
@@ -262,6 +277,7 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/by-uniq-name')
   @ApiOperation({ summary: '按 uniqName 查用户' })
   @ApiResultResponse(UserResponseDto)
@@ -278,13 +294,13 @@ export class UserController {
     if (user !== null) {
       delete user.hashPwd;
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'successful',
         data: user,
       };
     } else {
       return {
-        code: 1,
+        code: BusinessCode.NOT_FOUND,
         message: `can not find user [${dto.uniqName}]`,
       };
     }
@@ -292,6 +308,7 @@ export class UserController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('/user/thread-info')
   @ApiOperation({ summary: '查询会话详情（含对端 user/group）' })
   @ApiResultResponse(UserMessageThreadResponseDto)
@@ -314,33 +331,34 @@ export class UserController {
           id: thread.toObjId,
         });
       }
-      return { code: 0, message: 'successful', data: thread };
+      return { code: BusinessCode.OK, message: 'successful', data: thread };
     } else {
       return {
-        code: 1,
+        code: BusinessCode.NOT_FOUND,
         message: `user has no thread [${dto.userThreadId}]`,
       };
     }
   }
 
   @ApiTags('auth')
+  @HttpCode(HttpStatus.OK)
   @Post('user/register')
   @ApiOperation({ summary: '注册新用户' })
   async registerLocal(@Body() dto: RegisterDto): Promise<ApiResult> {
-    /* uniqName/password 的格式校验（regex）已移入 RegisterDto 的 @Matches → 失败走 ValidationPipe → 400。
-       业务校验（uniqName 重复）仍在 service，走 200 + code:2。 */
+    /* uniqName/password 的格式校验（regex）已移入 RegisterDto 的 @Matches → 失败走 ValidationPipe → 200/10000。
+       业务校验（uniqName 重复）仍在 service，走 200 + ALREADY_EXISTS。 */
     const res = await this.userService.addUser({
       uniqName: dto.uniqName,
       hashPwd: await this.authService.hashStr(dto.password),
     });
     if (res.status === 2) {
       return {
-        code: 2,
+        code: BusinessCode.ALREADY_EXISTS,
         message: `User ${dto.uniqName} already exists`,
       };
     } else {
       return {
-        code: 0,
+        code: BusinessCode.OK,
         message: 'successfuly registered',
         data: res.data,
       };
