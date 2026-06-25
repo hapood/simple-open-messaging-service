@@ -136,7 +136,7 @@ export class MessageController {
         },
       };
       if (dto.lastId) {
-        newParams.cursor = { id: dto.lastId };
+        newParams.cursor = { id: BigInt(dto.lastId) };
       }
       const data = await this.messageService.queryMessages(
         userThread.threadId,

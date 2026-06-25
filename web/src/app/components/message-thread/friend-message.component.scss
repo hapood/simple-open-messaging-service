@@ -1,8 +1,19 @@
+// fill-parent chain: host → unnamed wrapper → msg-container. Lets the thread
+// fill its host on both the mobile full-screen overlay and the desktop pane.
+:host {
+  display: block;
+  height: 100%;
+  width: 100%;
+}
+:host > div {
+  height: 100%;
+}
+
 .msg-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   overflow: hidden;
 
   .msg-scroll-container {

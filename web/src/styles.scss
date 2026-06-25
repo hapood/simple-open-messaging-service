@@ -1,8 +1,32 @@
-/* You can add global styles to this file, and also import other style files */
-body {
-  margin: 0;
-}
+@use '@angular/material' as mat;
+
+/* === M3 theme: 主色 #2196f3（mat.$blue-palette 500 色阶，与原手搓版一致） === */
+$theme: mat.define-theme((
+  color: (
+    primary: mat.$blue-palette,
+    tertiary: mat.$blue-palette,
+  ),
+  typography: (
+    plain-family: ('-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto',
+                   'Helvetica', 'Arial', system-ui, sans-serif),
+  ),
+  density: (
+    scale: 0,
+  ),
+));
 
 :root {
+  @include mat.all-component-themes($theme);
+  /* 保留现有报错色，避免 login/register 的 .error/.err-hint 随 M3 error 调色板漂移 */
   --mat-form-field-error-text-color: #ba1a1a;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--mat-app-text-font, -apple-system, BlinkMacSystemFont, system-ui, sans-serif);
 }

@@ -39,9 +39,8 @@ export class QueryMessagesDto {
   take: number;
 
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  lastId?: number;
+  @IsString()
+  lastId?: string;
 
   @IsIn(['desc', 'asc'])
   orderBy: 'desc' | 'asc';

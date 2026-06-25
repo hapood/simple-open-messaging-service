@@ -1,12 +1,12 @@
 import { Component, input, signal } from '@angular/core';
-import { MaterialButtonComponent } from '../../material-button/material-button.component';
+import { MatButtonModule } from '@angular/material/button';
 import dayjs from 'dayjs';
 import { GroupService } from '../../../services/group.service';
 import { DisplayMsg } from '../../message-thread/model';
 
 @Component({
     selector: 'app-invite-card',
-    imports: [MaterialButtonComponent],
+    imports: [MatButtonModule],
     templateUrl: './invite-card.component.html',
     styleUrl: './invite-card.component.scss'
 })

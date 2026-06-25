@@ -1,13 +1,14 @@
 import { Component, signal, computed, Output, EventEmitter, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { MaterialInputComponent } from '../material-input/material-input.component';
-import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
-import { MaterialProgressLinearComponent } from '../material-progress-linear/material-progress-linear.component';
 import { UserService } from '../../services/user.service';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 
 @Component({
     selector: 'app-register',
-    imports: [MaterialInputComponent, MaterialButtonComponent, FormsModule, MaterialProgressLinearComponent],
+    imports: [FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule],
     templateUrl: './register.component.html',
     styleUrl: './register.component.scss'
 })
@@ -27,7 +28,6 @@ export class RegisterComponent {
     return this.isSuccess() || this.isReging() || this.isUniqNameVld() === false || this.isPwdVld() === false
   })
   isSuccess = signal(false)
-  MaterialButtonType = MaterialButtonType
   /*^ Start of string
     (?=[\w.-]{5,20}$) Assert 5-20 of the allowed characters
     (?:[\d_.-]*[a-zA-Z]){3} Match 3 times a-zA-Z followed by optional digits _ . -

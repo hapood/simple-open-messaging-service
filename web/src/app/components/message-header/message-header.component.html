@@ -1,6 +1,8 @@
 <div class="msg-header">
+    @if (!isDesktop()) {
     <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
             [style]="{width:'32px',height:'32px'}"></app-icon></button>
+    }
     <ng-content>
         <div (click)="showThreadInfo()">{{title()}}</div>
     </ng-content>

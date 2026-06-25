@@ -1,4 +1,4 @@
-<div>@for (thread of threadList(); track thread.id) {
+<div>@for (thread of filteredThreadList(); track thread.id) {
   <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
     @if(thread.toObjType==='P2P'){<div class="thread-avatar">
       <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>

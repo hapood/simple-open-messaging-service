@@ -12,14 +12,4 @@
     height: calc(100% - 56px);
     overflow-y: auto;
   }
-
-  .message-thread-wrapper {
-    height: 100%;
-    width: 100%;
-    overflow: hidden;
-    position: absolute;
-    top: 0;
-    z-index: 1;
-    background: #ffffff;
-  }
 }

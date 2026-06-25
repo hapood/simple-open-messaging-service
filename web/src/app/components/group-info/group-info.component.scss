@@ -1,7 +1,24 @@
 @import "../../assets/utils.scss";
 
+// fill-parent chain so group-info fills the mobile overlay AND the desktop side panel
+:host {
+  display: block;
+  height: 100%;
+}
+:host > div {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+app-user-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .msg-header {
   height: 56px;
+  flex: 0 0 auto;
   width: 100%;
   background: #fff;
   box-sizing: border-box;

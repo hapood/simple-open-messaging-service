@@ -1,23 +1,28 @@
 <form (ngSubmit)="login()" class="login-wrapper">
   <div class="progress-wrapper">
     @if(isLoging()){
-    <app-material-progress-linear />}
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
   </div>
   <div class="avatar-hero">
     <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
   </div>
   <div class="title">Login to SOMS</div>
   <div class="input-line">
-    <app-material-input [(text)]="uniqName" placeholder="Username"></app-material-input>
+    <mat-form-field appearance="fill" style="width: 100%">
+      <mat-label>Username</mat-label>
+      <input matInput [ngModel]="uniqName()" (ngModelChange)="uniqName.set($event)" name="uniqName">
+    </mat-form-field>
   </div>
   <div class="input-line">
-    <app-material-input type="password" [(text)]="password" placeholder="Password" />
+    <mat-form-field appearance="fill" style="width: 100%">
+      <mat-label>Password</mat-label>
+      <input matInput type="password" [ngModel]="password()" (ngModelChange)="password.set($event)" name="password">
+    </mat-form-field>
   </div>
   <div class="error">{{resp()}}</div>
-  <app-material-checkbox [(checked)]="isKeepLogin">keep me logged in</app-material-checkbox>
+  <mat-checkbox [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">keep me logged in</mat-checkbox>
   <div class="bot-btns">
-    <app-material-button class="login-btn" type="submit" [disabled]="isLoginBtnDisabled()">Login</app-material-button>
-    <app-material-button class="reg-btn" [styleType]="MaterialButtonType.TEXT"
-      (click)="jumpToRegister()">Register</app-material-button>
+    <button mat-raised-button class="login-btn" type="submit" [disabled]="isLoginBtnDisabled()">Login</button>
+    <button mat-button class="reg-btn" (click)="jumpToRegister()">Register</button>
   </div>
 </form>

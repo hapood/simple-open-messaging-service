@@ -1,0 +1,12 @@
+<div class="desktop-home">
+  <app-icon-rail class="rail" [onThreadListChanged]="refreshList" />
+  <app-chat-list-pane class="list" [style.width.px]="listWidth()"
+    (selectThread)="onThreadSelect($event)" />
+  <div class="resizer" (mousedown)="startResize($event)" (dblclick)="resetWidth()"
+    title="拖拽调整宽度；双击重置"></div>
+  <app-chat-pane class="chat" [userMsgTrd]="selectedThread()" />
+  @if (infoThread(); as trd) {
+    <app-info-pane class="info" [userMsgTrd]="trd" (close)="infoPanel.close()" />
+  }
+  <app-root-popup />
+</div>

@@ -1,9 +1,8 @@
 import { Component, input, signal } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { Subject } from 'rxjs';
-import { MaterialButtonComponent, MaterialButtonType } from '../material-button/material-button.component';
+import { MatButtonModule } from '@angular/material/button';
 import { RouteService } from '../../services/route.service';
-import { MaterialInputComponent } from '../material-input/material-input.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
@@ -20,7 +19,7 @@ type PedingReq = User & { status: number, date: string, errText: string }
 @Component({
     selector: 'app-friend-requests',
     imports: [UserAvatarComponent, FormsModule, NgClass,
-        MaterialButtonComponent, IconComponent, MaterialInputComponent],
+        MatButtonModule, IconComponent],
     templateUrl: './friend-requests.component.html',
     styleUrl: './friend-requests.component.scss'
 })
@@ -42,7 +41,6 @@ export class FriendRequestsComponent {
   UserAvatarType = UserAvatarType
   AddTabStatus = AddTabStatus
   AppIconType = AppIconType
-  MaterialButtonType = MaterialButtonType
 
   constructor(private routeService: RouteService, private userService: UserService, private msgService: MsgService) {
   }

@@ -2,13 +2,13 @@ import { Component, signal } from '@angular/core';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from "../icon/icon.component";
-import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
+import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
 import { UserService } from '../../services/user.service';
 @Component({
     selector: 'app-new-group',
-    imports: [UserListComponent, IconComponent, MaterialButtonComponent],
+    imports: [UserListComponent, IconComponent, MatButtonModule],
     templateUrl: './new-group.component.html',
     styleUrl: './new-group.component.scss'
 })
@@ -16,7 +16,6 @@ export class NewGroupComponent {
   selectedDict = signal<Record<number, boolean | undefined>>({})
   selectedList = signal<UserMessageThread[]>([])
   AppIconType = AppIconType
-  MaterialButtonType = MaterialButtonType
 
   constructor(private routeService: RouteService, private groupService: GroupService, private userService: UserService) {
 

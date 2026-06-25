@@ -3,10 +3,10 @@
   <div>{{inviteData().groupName}}</div>
   <div>valid until {{expiryDate()}}</div>
   @switch (status()) {
-  @case (0) { <app-material-button (click)="joinGroup()">Join</app-material-button>
+  @case (0) { <button mat-raised-button (click)="joinGroup()">Join</button>
   }
   @case (1) {
-  <app-material-button>EXPIRED</app-material-button>
+  <button mat-raised-button>EXPIRED</button>
   }
   }
 </div>

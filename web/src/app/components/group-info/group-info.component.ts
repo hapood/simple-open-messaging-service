@@ -2,23 +2,25 @@ import { Component, signal, input } from '@angular/core';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from "../icon/icon.component";
-import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
+import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
 
 @Component({
     selector: 'app-group-info',
-    imports: [UserListComponent, IconComponent, MaterialButtonComponent],
+    imports: [UserListComponent, IconComponent, MatButtonModule],
     templateUrl: './group-info.component.html',
     styleUrl: './group-info.component.scss'
 })
 export class GroupInfoComponent {
   readonly userMsgTrd = input<UserMessageThread>()
+  /** optional close handler; when set, goBack() calls it instead of closeDlg
+   *  (lets this component be reused in the desktop side panel). */
+  readonly closeFn = input<(() => void) | undefined>(undefined)
 
   selectedDict = signal<Record<number, boolean | undefined>>({})
   selectedList = signal<UserMessageThread[]>([])
   AppIconType = AppIconType
-  MaterialButtonType = MaterialButtonType
 
   constructor(private routeService: RouteService, private groupService: GroupService) {
 
@@ -48,6 +50,8 @@ export class GroupInfoComponent {
   }
 
   goBack() {
-    this.routeService.closeDlg()
+    const fn = this.closeFn()
+    if (fn) fn()
+    else this.routeService.closeDlg()
   }
 }

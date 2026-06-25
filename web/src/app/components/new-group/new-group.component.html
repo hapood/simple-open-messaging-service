@@ -3,7 +3,7 @@
     <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
     New Group
-    <app-material-button (click)="create()" [styleType]="MaterialButtonType.TEXT">Create</app-material-button>
+    <button mat-button (click)="create()">Create</button>
   </div>
   <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
 </div>

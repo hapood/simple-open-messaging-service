@@ -1,39 +1,38 @@
-import { Component, signal, viewChild } from '@angular/core';
-import { User, UserMessageThread } from '../../services/model'
-import { HomeHeaderComponent } from '../../components/home-header/home-header.component';
-import { UserService } from '../../services/user.service'
-import { ThreadListComponent } from '../../components/thread-list/thread-list.component';
-import { MessageThreadComponent } from '../../components/message-thread/friend-message.component';
-import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
+import { Component, inject, OnInit } from '@angular/core';
+import { LayoutService } from '../../services/layout.service';
+import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
-import { RouteService, PopupType } from '../../services/route.service';
 import { WebsocketService } from '../../services/websocket.service';
-@Component({
-    selector: 'app-home',
-    imports: [HomeHeaderComponent, ThreadListComponent, MessageThreadComponent, RootPopupComponent],
-    templateUrl: './home.component.html',
-    styleUrl: './home.component.scss'
-})
-export class HomeComponent {
-  readonly profile = signal<User | undefined>(undefined)
-  readonly isShowMsgTrd = signal(false)
-  curUsrtrdId = signal<number | undefined>(undefined)
-  readonly threadListCmp = viewChild(ThreadListComponent)
+import { DesktopHomeComponent } from '../../components/desktop/desktop-home/desktop-home.component';
+import { MobileHomeComponent } from '../../components/mobile/mobile-home/mobile-home.component';
 
-  constructor(private userService: UserService,
-    private authService: AuthService, private routeService: RouteService, private wsService: WebsocketService) { }
+/**
+ * Home route entry — a thin shell that forks the desktop vs mobile view trees
+ * via @defer on LayoutService.isDesktop(), so each device only downloads its
+ * own shell chunk. App bootstrap (profile / token / websocket) lives here
+ * because this route component is always instantiated regardless of device.
+ */
+@Component({
+  selector: 'app-home',
+  imports: [DesktopHomeComponent, MobileHomeComponent],
+  template: `
+    @defer (when layout.isDesktop()) {
+      <app-desktop-home />
+    } @defer (when !layout.isDesktop()) {
+      <app-mobile-home />
+    }
+  `,
+})
+export class HomeComponent implements OnInit {
+  protected readonly layout = inject(LayoutService);
+  private readonly userService = inject(UserService);
+  private readonly authService = inject(AuthService);
+  private readonly wsService = inject(WebsocketService);
 
   ngOnInit() {
     this.userService.updateSessionProfile();
-    this.authService.renewAccessToken()
-  }
-
-  // passed through HomeHeader to the NewGroup dialog's onResult, so creating a group refreshes the list
-  refreshThreadList = () => {
-    this.threadListCmp()?.genThreadList()
-  }
-
-  onThreadSelect(userMsgTrd: UserMessageThread) {
-    this.routeService.popupDlg(PopupType.MSG_THREAD, { userThreadId: userMsgTrd.id, userMsgTrd })
+    this.authService.renewAccessToken();
+    // 单例 constructor 不会在登出后重登时再跑，需在此重连 WS
+    this.wsService.connect();
   }
 }

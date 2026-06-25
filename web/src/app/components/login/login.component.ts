@@ -2,11 +2,12 @@ import { Component, signal, computed, Output, EventEmitter } from '@angular/core
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service'
 import { UserAvatarComponent, UserAvatarType } from '../../components/user-avatar/user-avatar.component';
-import { MaterialInputComponent } from '../material-input/material-input.component';
-import { MaterialButtonComponent, MaterialButtonType } from "../material-button/material-button.component";
-import { MaterialCheckboxComponent } from '../material-checkbox/material-checkbox.component';
 import { RouteService, RoutePage } from '../../services/route.service';
-import { MaterialProgressLinearComponent } from "../material-progress-linear/material-progress-linear.component";
+import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
 
 export enum LoginEvent {
   SUCCESS, INVALID, ERROR, JUMP_TO_REGISTER
@@ -14,8 +15,8 @@ export enum LoginEvent {
 
 @Component({
     selector: 'app-login',
-    imports: [UserAvatarComponent, MaterialInputComponent, MaterialCheckboxComponent,
-        MaterialButtonComponent, MaterialProgressLinearComponent, FormsModule],
+    imports: [UserAvatarComponent, FormsModule, MatButtonModule, MatCheckboxModule,
+        MatFormFieldModule, MatInputModule, MatProgressBarModule],
     templateUrl: './login.component.html',
     styleUrl: './login.component.scss'
 })
@@ -26,7 +27,6 @@ export class LoginComponent {
   password = signal('');
   resp = signal('');
   UserAvatarType = UserAvatarType
-  MaterialButtonType = MaterialButtonType
   isKeepLogin = signal(true)
   isLoging = signal(false)
   isSuccess = signal(false)

@@ -37,9 +37,9 @@
           <div class="user-name">{{userData()!.uniqName}}</div>
         </div>
         <div class="send-btn-line">
-          @if(canAdd()){<app-material-button (click)="sendRequest()"
-            [disabled]="addTabStatus()===AddTabStatus.SEARCHING" [styleType]="MaterialButtonType.CONTAINTED">Send
-            Request</app-material-button>
+          @if(canAdd()){<button mat-raised-button (click)="sendRequest()"
+            [disabled]="addTabStatus()===AddTabStatus.SEARCHING">Send
+            Request</button>
           }
         </div>
         @if(reqRspTxt().length>0){<div class="response-text">{{reqRspTxt()}}</div>}
@@ -52,8 +52,7 @@
     <form class="user-search-bar" (ngSubmit)="searchUser()">
       <input class="user-search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
         placeholder="username/full address">
-      <app-material-button type="submit" [disabled]="addTabStatus()===AddTabStatus.SEARCHING"
-        [styleType]="MaterialButtonType.TEXT">Search</app-material-button>
+      <button mat-button type="submit" [disabled]="addTabStatus()===AddTabStatus.SEARCHING">Search</button>
     </form>
   </div>
   <div [ngClass]="[activeTab()===1?'show':'hide']">
@@ -69,12 +68,10 @@
         </div>
         <div>
           @if(req.status===0){
-          <app-material-button (click)="approve($index)"
-            [styleType]="MaterialButtonType.CONTAINTED">Approve</app-material-button>
+          <button mat-raised-button (click)="approve($index)">Approve</button>
           }@else {
-          <app-material-button [disabled]="true"
-            [styleType]="MaterialButtonType.CONTAINTED">@if(req.status===-1){<span>Invalid
-              User</span>}@else{<span>Approved</span>}</app-material-button>
+          <button mat-raised-button [disabled]="true">@if(req.status===-1){<span>Invalid
+              User</span>}@else{<span>Approved</span>}</button>
           }
           <div>{{req.errText}}</div>
         </div>

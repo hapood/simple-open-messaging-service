@@ -8,10 +8,5 @@
         (onSelect)="onThreadSelect($event)"></app-thread-list>
     </div>
   </div>
-  @if(isShowMsgTrd()===true){
-  <div class="message-thread-wrapper">
-    <app-message-thread [userThreadId]="curUsrtrdId()"></app-message-thread>
-  </div>
-  }
   <app-root-popup></app-root-popup>
 </div>

@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, EMPTY, of, tap } from 'rxjs';
+import { BehaviorSubject, EMPTY, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
 
@@ -155,6 +155,7 @@ export class AuthService {
     this._lastAccTok = undefined
     this.acTkSub.next(undefined)
     sessionStorage.removeItem(REFRESH_TOKEN)
+    localStorage.removeItem(REFRESH_TOKEN)
     localStorage.removeItem(TOKEN_CREATE_TIME)
     if (this._timerHandler !== undefined) {
       clearTimeout(this._timerHandler)
@@ -166,10 +167,10 @@ export class AuthService {
     const refreshToken = this.getRefreshToken()
     if (refreshToken) {
       this.clearToken()
-      return this.http.post<{ access_token: string }>(`${apiPrefix}/auth/logout`, {
+      return this.http.post<{ code: number; message: string }>(`${apiPrefix}/auth/logout`, {
         refreshToken
       }, { 'headers': { Authorization: 'public' } })
     }
-    return of(EMPTY)
+    return EMPTY
   }
 }

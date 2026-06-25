@@ -1,7 +1,7 @@
 <form (ngSubmit)="register()" class="register-wrapper">
   <div class="progress-wrapper">
     @if(isReging()){
-    <app-material-progress-linear />}
+    <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
   </div>
   <svg fill="#000000" width="120px" height="120px" viewBox="0 0 24 24" id="sign-alt" data-name="Flat Line"
     xmlns="http://www.w3.org/2000/svg" class="icon flat-line">
@@ -14,16 +14,25 @@
       style="fill: none; stroke: rgb(0, 0, 0); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2;"></path>
   </svg>
   <div class="input-line">
-    <app-material-input [(text)]="uniqName" placeholder="Username"></app-material-input>
+    <mat-form-field appearance="fill" style="width: 100%">
+      <mat-label>Username</mat-label>
+      <input matInput [ngModel]="uniqName()" (ngModelChange)="uniqName.set($event)" name="uniqName">
+    </mat-form-field>
     <div class="err-hint">{{uniqNameHint()}}</div>
   </div>
   <div class="input-line">
-    <app-material-input type="password" [(text)]="password" placeholder="Password" autocomplete="new-password" />
+    <mat-form-field appearance="fill" style="width: 100%">
+      <mat-label>Password</mat-label>
+      <input matInput type="password" [ngModel]="password()" (ngModelChange)="password.set($event)" name="password" autocomplete="new-password">
+    </mat-form-field>
   </div>
   <div class="input-line">
-    <app-material-input type="password" [(text)]="password2" placeholder="Password Again" autocomplete="new-password" />
+    <mat-form-field appearance="fill" style="width: 100%">
+      <mat-label>Password Again</mat-label>
+      <input matInput type="password" [ngModel]="password2()" (ngModelChange)="password2.set($event)" name="password2" autocomplete="new-password">
+    </mat-form-field>
     <div class="err-hint">{{passwordHint()}}</div>
   </div>
-  <app-material-button type="submit" class="sub-btn" [disabled]="isRegBtnDisabled()">Sign up</app-material-button>
+  <button mat-raised-button type="submit" class="sub-btn" [disabled]="isRegBtnDisabled()">Sign up</button>
   <div class="error">{{resp()}}</div>
 </form>

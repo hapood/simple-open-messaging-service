@@ -9,6 +9,9 @@ import {
  * 响应实体 DTO（供 OpenAPI 响应 schema 用）。字段类型反映线上序列化结果，
  * 统一由全局 SerializeInterceptor 完成（见 src/common/serialize.interceptor.ts）：
  * Date → 毫秒时间戳(number)；BigInt（如 Message.id、UserMessageThread.lastRead）→ string。
+ *
+ * 注意类定义顺序：被 @ApiProperty({ type: X }) 引用的类须先于引用方定义
+ * （属性装饰器在类声明时求值，ES class 不提升，否则命中 TDZ → 运行时 ReferenceError）。
  */
 
 export class UserExtraResponseDto {
@@ -81,6 +84,29 @@ export class MessageResponseDto {
   isDeleted: boolean;
 }
 
+export class GroupResponseDto {
+  @ApiProperty({ example: 12 })
+  id: number;
+
+  @ApiProperty({ example: 'dev-team', description: '群名' })
+  name: string;
+
+  @ApiProperty({ example: 1, description: '群主 userId' })
+  ownerId: number;
+
+  @ApiProperty({ example: 'https://.../g.png', description: '群头像 URL' })
+  avatar: string;
+
+  @ApiProperty({ example: 12, description: '群消息线程 id' })
+  threadId: number;
+
+  @ApiProperty({ example: 1_700_000_000_000 })
+  createdAt: number;
+
+  @ApiProperty({ example: 1_700_000_000_000 })
+  updatedAt: number;
+}
+
 export class UserMessageThreadResponseDto {
   @ApiProperty({ example: 1 })
   id: number;
@@ -121,12 +147,12 @@ export class UserMessageThreadResponseDto {
   })
   lastRead?: string;
 
-  // P2P 项附带 userItem: UserResponseDto；GROUP 项附带 groupItem
+  // P2P 项附带 userItem: UserResponseDto；GROUP 项附带 groupItem: GroupResponseDto
   @ApiProperty({ type: UserResponseDto, description: '对端用户（P2P 时）' })
   userItem?: UserResponseDto;
 
-  @ApiProperty({ description: '对端群组（GROUP 时）' })
-  groupItem?: { id: number; name: string; ownerId: number; avatar: string };
+  @ApiProperty({ type: GroupResponseDto, description: '对端群组（GROUP 时）' })
+  groupItem?: GroupResponseDto;
 }
 
 export class CreateGroupResponseDto {
@@ -135,27 +161,4 @@ export class CreateGroupResponseDto {
 
   @ApiProperty({ example: 12, description: '群 id' })
   groupId: number;
-}
-
-export class GroupResponseDto {
-  @ApiProperty({ example: 12 })
-  id: number;
-
-  @ApiProperty({ example: 'dev-team', description: '群名' })
-  name: string;
-
-  @ApiProperty({ example: 1, description: '群主 userId' })
-  ownerId: number;
-
-  @ApiProperty({ example: 'https://.../g.png', description: '群头像 URL' })
-  avatar: string;
-
-  @ApiProperty({ example: 12, description: '群消息线程 id' })
-  threadId: number;
-
-  @ApiProperty({ example: 1_700_000_000_000 })
-  createdAt: number;
-
-  @ApiProperty({ example: 1_700_000_000_000 })
-  updatedAt: number;
 }
