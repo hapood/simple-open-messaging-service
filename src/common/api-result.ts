@@ -8,7 +8,8 @@ import {
 
 /**
  * 统一响应信封。所有 HTTP 接口返回此结构（见 protocol-plan §5.1）。
- * - code: 0 表示成功，非 0 为业务错误码（值沿用各 controller 现有实现；P1b 起按 §5.2 错误码段规整）。
+ * - code: 0 成功；非 0 为业务错误码，按域分段（见 src/common/business-code.ts）。
+ *   业务失败一律 HTTP 200 + 业务码；仅未认证(401)/资源不存在(404)/冲突(409)/服务器异常(500) 保留 HTTP 码。
  * - message: 人类可读提示。
  * - data: 业务数据（成功时）。
  *
@@ -16,7 +17,11 @@ import {
  * 不走 nest-cli swagger 插件 shim（shim 只服务于带 class-validator 的请求 DTO）。
  */
 export class ApiResult<T = unknown> {
-  @ApiProperty({ example: 0, description: '0 = 成功；非 0 = 业务错误码' })
+  @ApiProperty({
+    example: 0,
+    description:
+      '0 = 成功；非 0 = 业务错误码，按域分段：10xxx 通用(10000 参数校验/10001 不存在/10002 已存在/10003 未认证/10005 限流)、20xxx 好友会话、30xxx 消息、40xxx 群组。详见 BusinessCode。',
+  })
   code: number;
 
   @ApiProperty({ example: 'successful', description: '人类可读的提示信息' })
