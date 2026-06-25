@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Message, Friend, QueryMessageLogParams, StandardResponse, UserMessageThread } from './model'
+import { Message, QueryMessageLogParams, StandardResponse, UserMessageThread } from './model'
 import { apiPrefix } from './constants';
 
 @Injectable({
