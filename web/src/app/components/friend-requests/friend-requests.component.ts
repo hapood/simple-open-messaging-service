@@ -68,7 +68,7 @@ export class FriendRequestsComponent {
             this.reqRspTxt.set('can not add yourself')
           } else {
             this.msgService.getThreadByUserId({ userId: res.data!.id }).subscribe(res2 => {
-              if (res2.code === 1) {
+              if (res2.code === 30003) { // THREAD_NOT_FOUND：与该用户尚无 P2P 会话（可发起好友请求）
                 const thread = res2.data
                 // if(thread!.status){
 

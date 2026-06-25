@@ -1,0 +1,76 @@
+### SOMS 业务码段回归脚本（VS Code REST Client）
+### 业务码按域分段（见 src/common/business-code.ts）：0 成功 / 10xxx 通用 / 20xxx 好友 / 30xxx 消息 / 40xxx 群组
+### 原则：业务结果一律 HTTP 200 + code；仅 401/404/409/500 保留 HTTP 码给系统层。
+
+@host = http://localhost:3000/api/v1
+@token =
+
+
+### Swagger 文档（浏览器访问 /api/v1/docs）
+GET {{host}}/docs
+
+
+### 1. register 缺 password → 期望 HTTP 200 / code 10000（ValidationPipe 纳入业务流）
+POST {{host}}/user/register
+Content-Type: application/json
+
+{"uniqName": "test"}
+
+
+### 2. register 新用户 → 期望 HTTP 200 / code 0
+POST {{host}}/user/register
+Content-Type: application/json
+
+{"uniqName": "demo_1234", "password": "123456"}
+
+
+### 3. register 重复 → 期望 HTTP 200 / code 10002（ALREADY_EXISTS）
+POST {{host}}/user/register
+Content-Type: application/json
+
+{"uniqName": "demo_1234", "password": "123456"}
+
+
+### 4. login 错密码 → 期望 HTTP 200 / code 10003（UNAUTHENTICATED）
+POST {{host}}/auth/login
+Authorization: public
+Content-Type: application/json
+
+{"uniqName": "no_such_user", "password": "wrongpwd"}
+
+
+### 5. 无 token 访问受保护路由 → 期望 HTTP 401 / code 10003（JwtAuthGuard，HTTP 码保留）
+POST {{host}}/user/my-profile
+
+
+### 6. renew-access 无效 refresh → 期望 HTTP 200 / code 10003
+POST {{host}}/auth/renew-access
+Authorization: public
+Content-Type: application/json
+
+{"refreshToken": "invalid_token"}
+
+
+### 登录拿 token（把返回 data.access_token 填入上方 @token 后再测下列）
+POST {{host}}/auth/login
+Authorization: public
+Content-Type: application/json
+
+{"uniqName": "demo_1234", "password": "123456"}
+
+
+### 7. by-uniq-name 不存在 → 期望 HTTP 200 / code 10001（NOT_FOUND）
+POST {{host}}/user/by-uniq-name
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"uniqName": "no_such_user"}
+
+
+### 8. send-friend-request 自己 → 期望 HTTP 200 / code 20001（FRIEND_SELF）
+###    userId 换成自己的 id（先调 my-profile 取）
+POST {{host}}/user/send-friend-request
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{"userId": 10}
