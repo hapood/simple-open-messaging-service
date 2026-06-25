@@ -1,24 +1,5 @@
 @import "../../assets/utils.scss";
 
-.register-header {
-  height: 56px;
-  width: 100%;
-  background: #fff;
-  box-sizing: border-box;
-  border-bottom: 1px solid #cccccc;
-  display: flex;
-  align-items: center;
-  padding: 0 10px;
-}
-.register-title {
-  font-size: 16px;
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-}
-.icon-btn {
-  @include styless-button;
-}
-.register-com-wrapper {
-  padding-top: 16px;
+.auth-shell {
+  @include auth-shell;
 }

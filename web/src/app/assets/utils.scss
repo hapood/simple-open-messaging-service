@@ -4,3 +4,31 @@
   background-color: unset;
   padding: unset
 }
+
+// Shared auth split-screen shell. Include inside the `.auth-shell` selector.
+// Left column = <app-auth-brand> (decorative, hides itself below the breakpoint),
+// right column = `.form-pane` that centers the form card. Below 900px the grid
+// collapses to a single column so the card centers full-screen on mobile.
+@mixin auth-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
+  min-height: 100vh;
+  min-height: 100dvh;
+
+  .form-pane {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 24px;
+    background: #f4f6f9;
+  }
+
+  @media (max-width: 899px) {
+    grid-template-columns: 1fr;
+
+    .form-pane {
+      min-height: 100vh;
+      min-height: 100dvh;
+    }
+  }
+}

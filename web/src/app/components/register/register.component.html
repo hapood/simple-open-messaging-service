@@ -1,38 +1,50 @@
-<form (ngSubmit)="register()" class="register-wrapper">
-  <div class="progress-wrapper">
+<form (ngSubmit)="register()" class="register-card">
+  <div class="progress-slot">
     @if(isReging()){
     <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
   </div>
-  <svg fill="#000000" width="120px" height="120px" viewBox="0 0 24 24" id="sign-alt" data-name="Flat Line"
-    xmlns="http://www.w3.org/2000/svg" class="icon flat-line">
-    <path id="secondary" d="M4,9H20a1,1,0,0,1,1,1V21a0,0,0,0,1,0,0H3a0,0,0,0,1,0,0V10A1,1,0,0,1,4,9Z"
-      style="fill: rgb(44, 169, 188); stroke-width: 2;"></path>
-    <polyline id="primary" points="18 9 12 3 6 9"
-      style="fill: none; stroke: rgb(0, 0, 0); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2;">
-    </polyline>
-    <path id="primary-2" data-name="primary" d="M8,13h8m-6,4h4m7-7a1,1,0,0,0-1-1H4a1,1,0,0,0-1,1V21H21Z"
-      style="fill: none; stroke: rgb(0, 0, 0); stroke-linecap: round; stroke-linejoin: round; stroke-width: 2;"></path>
-  </svg>
+
+  <h1 class="register-title">Create your account</h1>
+  <p class="register-sub">Join SOMS in just a few seconds</p>
+
   <div class="input-line">
-    <mat-form-field appearance="fill" style="width: 100%">
+    <mat-form-field class="field" appearance="fill">
       <mat-label>Username</mat-label>
-      <input matInput [ngModel]="uniqName()" (ngModelChange)="uniqName.set($event)" name="uniqName">
+      <input matInput name="uniqName" autocomplete="username" autofocus
+        [ngModel]="uniqName()" (ngModelChange)="onUniqNameInput($event)">
     </mat-form-field>
-    <div class="err-hint">{{uniqNameHint()}}</div>
+    <div class="hint">{{uniqNameHint()}}</div>
   </div>
+
   <div class="input-line">
-    <mat-form-field appearance="fill" style="width: 100%">
+    <mat-form-field class="field" appearance="fill">
       <mat-label>Password</mat-label>
-      <input matInput type="password" [ngModel]="password()" (ngModelChange)="password.set($event)" name="password" autocomplete="new-password">
+      <input matInput name="password" autocomplete="new-password"
+        [type]="showPassword() ? 'text' : 'password'"
+        [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
+      <button mat-icon-button matSuffix type="button" (click)="togglePassword()"
+        [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'">
+        <app-icon [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE" [style]="{ width: '20px', height: '20px' }" />
+      </button>
     </mat-form-field>
   </div>
+
   <div class="input-line">
-    <mat-form-field appearance="fill" style="width: 100%">
+    <mat-form-field class="field" appearance="fill">
       <mat-label>Password Again</mat-label>
-      <input matInput type="password" [ngModel]="password2()" (ngModelChange)="password2.set($event)" name="password2" autocomplete="new-password">
+      <input matInput name="password2" autocomplete="new-password"
+        [type]="showPassword() ? 'text' : 'password'"
+        [ngModel]="password2()" (ngModelChange)="onPassword2Input($event)">
     </mat-form-field>
-    <div class="err-hint">{{passwordHint()}}</div>
+    <div class="hint">{{passwordHint()}}</div>
   </div>
-  <button mat-raised-button type="submit" class="sub-btn" [disabled]="isRegBtnDisabled()">Sign up</button>
-  <div class="error">{{resp()}}</div>
+
+  <div class="error" role="alert">{{resp()}}</div>
+
+  <button mat-raised-button color="primary" type="submit" class="submit-btn" [disabled]="isRegBtnDisabled()">Sign up</button>
+
+  <div class="alt-action">
+    Already have an account?
+    <button type="button" class="link-btn" (click)="jumpToLogin()">Login</button>
+  </div>
 </form>

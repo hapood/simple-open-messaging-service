@@ -1,7 +1,7 @@
 import { Component, signal, computed, Output, EventEmitter } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { AuthService } from '../../services/auth.service'
-import { UserAvatarComponent, UserAvatarType } from '../../components/user-avatar/user-avatar.component';
+import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
@@ -9,13 +9,9 @@ import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 
-export enum LoginEvent {
-  SUCCESS, INVALID, ERROR, JUMP_TO_REGISTER
-}
-
 @Component({
     selector: 'app-login',
-    imports: [UserAvatarComponent, FormsModule, MatButtonModule, MatCheckboxModule,
+    imports: [IconComponent, FormsModule, MatButtonModule, MatCheckboxModule,
         MatFormFieldModule, MatInputModule, MatProgressBarModule],
     templateUrl: './login.component.html',
     styleUrl: './login.component.scss'
@@ -23,10 +19,12 @@ export enum LoginEvent {
 export class LoginComponent {
   @Output() onSuccess = new EventEmitter<boolean>();
 
+  readonly AppIcon = AppIconType;
+
   uniqName = signal('');
   password = signal('');
   resp = signal('');
-  UserAvatarType = UserAvatarType
+  showPassword = signal(false)
   isKeepLogin = signal(true)
   isLoging = signal(false)
   isSuccess = signal(false)
@@ -36,6 +34,26 @@ export class LoginComponent {
 
   constructor(private authService: AuthService, private routeService: RouteService) {
 
+  }
+
+  togglePassword() {
+    this.showPassword.update(v => !v)
+  }
+
+  onUniqNameInput(v: string) {
+    this.uniqName.set(v)
+    this.clearError()
+  }
+
+  onPasswordInput(v: string) {
+    this.password.set(v)
+    this.clearError()
+  }
+
+  private clearError() {
+    if (this.resp()) {
+      this.resp.set('')
+    }
   }
 
   login() {
@@ -60,7 +78,7 @@ export class LoginComponent {
         },
         error: (err) => {
           console.error(err)
-          this.resp.set('unknow error occured')
+          this.resp.set('unknown error occurred')
           this.isLoging.set(false)
         }
       })

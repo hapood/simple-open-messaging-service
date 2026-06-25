@@ -1,22 +1,17 @@
-import { Component, signal } from '@angular/core';
+import { Component } from '@angular/core';
 import { RegisterComponent } from '../../components/register/register.component';
-import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { AuthService } from '../../services/auth.service';
 
 @Component({
     selector: 'app-register-page',
-    imports: [RegisterComponent, IconComponent],
+    imports: [RegisterComponent, AuthBrandComponent],
     templateUrl: './register-page.component.html',
     styleUrl: './register-page.component.scss'
 })
 export class RegisterPageComponent {
-  AppIconType = AppIconType
-  isShowBackBtn = signal(true)
   constructor(private routeService: RouteService, private authService: AuthService) {
-  }
-  goBack() {
-    this.routeService.go(-1)
   }
   onSuccess({ uniqName, password }: { uniqName: string, password: string }) {
     this.authService.login({ uniqName, password, isKeep: true }).subscribe(() => {

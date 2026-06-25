@@ -1,0 +1,63 @@
+:host {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  overflow: hidden;
+  color: #ffffff;
+  background: linear-gradient(135deg, #2ca9bc 0%, #2196f3 100%);
+
+  // soft decorative bubbles, low opacity so the wordmark keeps contrast
+  &::before,
+  &::after {
+    content: "";
+    position: absolute;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.08);
+  }
+  &::before {
+    width: 320px;
+    height: 320px;
+    top: -120px;
+    right: -80px;
+  }
+  &::after {
+    width: 220px;
+    height: 220px;
+    bottom: -90px;
+    left: -60px;
+  }
+}
+
+.brand-stack {
+  position: relative;
+  max-width: 320px;
+  text-align: center;
+}
+
+.brand-bubble {
+  width: 84px;
+  height: 84px;
+  margin: 0 auto 24px;
+}
+
+.brand-word {
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: 3px;
+}
+
+.brand-tag {
+  margin-top: 16px;
+  font-size: 16px;
+  line-height: 1.7;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+// below the split breakpoint the brand panel yields to the centered card
+@media (max-width: 899px) {
+  :host {
+    display: none;
+  }
+}

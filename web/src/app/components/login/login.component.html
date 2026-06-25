@@ -1,28 +1,37 @@
-<form (ngSubmit)="login()" class="login-wrapper">
-  <div class="progress-wrapper">
+<form (ngSubmit)="login()" class="login-card">
+  <div class="progress-slot">
     @if(isLoging()){
     <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
   </div>
-  <div class="avatar-hero">
-    <app-user-avatar [type]="UserAvatarType.SELF"></app-user-avatar>
-  </div>
-  <div class="title">Login to SOMS</div>
-  <div class="input-line">
-    <mat-form-field appearance="fill" style="width: 100%">
-      <mat-label>Username</mat-label>
-      <input matInput [ngModel]="uniqName()" (ngModelChange)="uniqName.set($event)" name="uniqName">
-    </mat-form-field>
-  </div>
-  <div class="input-line">
-    <mat-form-field appearance="fill" style="width: 100%">
-      <mat-label>Password</mat-label>
-      <input matInput type="password" [ngModel]="password()" (ngModelChange)="password.set($event)" name="password">
-    </mat-form-field>
-  </div>
-  <div class="error">{{resp()}}</div>
-  <mat-checkbox [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">keep me logged in</mat-checkbox>
-  <div class="bot-btns">
-    <button mat-raised-button class="login-btn" type="submit" [disabled]="isLoginBtnDisabled()">Login</button>
-    <button mat-button class="reg-btn" (click)="jumpToRegister()">Register</button>
+
+  <h1 class="login-title">Login to SOMS</h1>
+  <p class="login-sub">Welcome back, please sign in to continue</p>
+
+  <mat-form-field class="field" appearance="fill">
+    <mat-label>Username</mat-label>
+    <input matInput name="uniqName" autocomplete="username" autofocus
+      [ngModel]="uniqName()" (ngModelChange)="onUniqNameInput($event)">
+  </mat-form-field>
+
+  <mat-form-field class="field" appearance="fill">
+    <mat-label>Password</mat-label>
+    <input matInput name="password" autocomplete="current-password"
+      [type]="showPassword() ? 'text' : 'password'"
+      [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
+    <button mat-icon-button matSuffix type="button" (click)="togglePassword()"
+      [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'">
+      <app-icon [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE" [style]="{ width: '20px', height: '20px' }" />
+    </button>
+  </mat-form-field>
+
+  <mat-checkbox class="keep-cb" [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">Keep me logged in</mat-checkbox>
+
+  <div class="error" role="alert">{{resp()}}</div>
+
+  <button mat-raised-button color="primary" type="submit" class="submit-btn" [disabled]="isLoginBtnDisabled()">Login</button>
+
+  <div class="alt-action">
+    Don't have an account?
+    <button type="button" class="link-btn" (click)="jumpToRegister()">Register</button>
   </div>
 </form>

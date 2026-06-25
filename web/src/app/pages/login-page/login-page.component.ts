@@ -1,10 +1,11 @@
 import { Component } from '@angular/core';
 import { LoginComponent } from '../../components/login/login.component';
+import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { RouteService, RoutePage } from '../../services/route.service';
 
 @Component({
     selector: 'app-login-page',
-    imports: [LoginComponent],
+    imports: [LoginComponent, AuthBrandComponent],
     templateUrl: './login-page.component.html',
     styleUrl: './login-page.component.scss'
 })
