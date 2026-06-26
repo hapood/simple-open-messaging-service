@@ -2,7 +2,7 @@
 
 本文档是 SOMS **后端接口与前后端交互协议栈**的目标设计基准，用于团队对齐与后续渐进式实施。它基于对现有代码（后端 5 个 controller、`EventGateway`、`AuthService`，前端 `AuthInterceptor` / `WebsocketService`）的审查，提出分层目标契约、错误码体系、WS 事件目录与演进路线图。
 
-- **状态**：规划草案（2026-06-22）
+- **状态**：P0/P1 已完成并验证；本文档仅保留待办（P2/P3 + ESM 外挂）。最后更新 2026-06-26。
 - **范围**：HTTP 接口、数据契约、认证、实时通信、前后端协同
 - **目标**：在「简洁、易被第三方应用接入」的定位下，补齐契约、正确性与可靠性
 
@@ -33,35 +33,13 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 
 ---
 
-## 二、现状评估
+## 二、现状评估（P0/P1 前基线，仅供回溯）
 
-### 协议栈速览
-
-| 层 | 现状 | 评价 |
-| --- | --- | --- |
-| 传输 | HTTP/1.1 + 原生 `ws`（同端口 3000） | OK |
-| HTTP 方法 | 全 `POST`（含所有查询），无 `/api/v1` 前缀 | ⚠️ 丢 HTTP 语义、无版本策略 |
-| 响应信封 | `{ status, message, data }`，`status:0` 成功 | 业务码可行，但**所有错误都走 HTTP 200** |
-| 鉴权 | `Authorization: Bearer`，公共接口用 `'public'` 哨兵 | 思路 OK |
-| Token | access 15min(内存) + refresh 14d(**仅内存字典**) | ⚠️ 重启失效、有删除 bug、不可水平扩展 |
-| 序列化 | 全局 `Date.prototype.toJSON` hack + 手动 `convertBigIntId` | ⚠️ 全进程副作用 |
-| WS 鉴权 | 子协议 `Sec-WebSocket-Protocol` 传 token | 能 work，非主流 |
-| WS 事件 | `AUTH` / `NEW_MESSAGE`，仅推 `{threadId,msgId}` | 薄载荷+二次拉取合理；**无心跳、无序号、事件少** |
-| 契约 | 无 OpenAPI，类型前后端手抄 | ⚠️ 冲突接入目标 |
-| 校验/异常 | 手写 `if`，无全局过滤器/ValidationPipe | ⚠️ 500 会泄漏堆栈 |
+> 以下为规划时（2026-06-22）的协议栈快照，其中标 ⚠️ 的项（无 `/api/v1` 前缀、错误全走 HTTP 200、refresh 仅内存字典、`Date.toJSON` hack、无 OpenAPI、无全局过滤器/ValidationPipe）**均已在 P0/P1 修复**。唯一遗留：WS「无心跳、无序号」——见 [六、P2](#六演进路线图)。
 
 ### 已发现的协议层 bug 与隐患
 
-| # | 位置 | 问题 |
-| --- | --- | --- |
-| 1 | [src/auth/auth.service.ts](../src/auth/auth.service.ts) | refresh_token 仅存内存 `_refreshTokenDict`；`removeRefreshToken` 与清理定时器存在 **key 错配**（按 `userId` 查字典，字典以 token 为 key），续期/登出的删除实际不生效 |
-| 2 | [src/controller/auth.controller.ts](../src/controller/auth.controller.ts) `renew-refresh` | 在 `if (info !== undefined)` 之前就调用 `removeRefreshToken(info.sub, ...)`，`info` 为 `undefined` 时抛 500 |
-| 3 | [src/controller/auth.controller.ts](../src/controller/auth.controller.ts) `logout` | 从 `req.user['refreshToken']` 取 refreshToken，但 **JWT payload 里只有 `sub`**，取不到值；前端实际是把 refreshToken 放在 body 里、且走 `'public'` 头 |
-| 4 | [src/auth/constants.ts](../src/auth/constants.ts)、[src/group/group.service.ts](../src/group/group.service.ts) | JWT / 邀请 token 签名密钥**硬编码** |
-| 5 | [src/main.ts](../src/main.ts) | `app.enableCors()` 默认全开（生产不安全） |
-| 6 | [src/model.ts](../src/model.ts) ↔ [src/controller/utils.ts](../src/controller/utils.ts) | `StandardResponse` 重复定义 |
-| 7 | ~~src/controller/file.controller.ts~~ | ✅ P1b 已清理：死代码（未注册 + `send-video` 路由重复 + 类名误写 `GroupController`）整域删除；文件上传留 P3 重新实现 |
-| 8 | [src/main.ts](../src/main.ts) | 全局覆盖 `Date.prototype.toJSON`，影响整个进程 |
+> 原列 8 条协议层 bug/隐患（refresh 内存字典与 key 错配、renew-refresh 空指针、logout 取错字段、密钥硬编码、CORS 全开、`StandardResponse` 重复定义、file 域死代码、`Date.toJSON` 全局 hack）**均已在 P0/P1 修复**，详见 git 历史。
 
 ---
 
@@ -256,121 +234,16 @@ interface WsFrame<T = unknown> {
 
 每档列出**内容**、**影响文件**、**验收**。
 
-### P0 — 正确性与安全（必须先堵）
+### P0 — 正确性与安全 ✅ 已完成
 
-> ✅ **本轮已完成 4/5**：全局异常过滤器、refresh_token 落库（修 logout / renew-access / renew-refresh bug）、密钥外置、CORS 白名单 + helmet。② ValidationPipe + DTO 仍按 **P1a** 推进（与 Swagger 同做，避免返工）。迁移命令 `npx prisma migrate dev --name add_refresh_token` 需 PG 可连通后执行。
->
-> ✅ **已端到端验证**（PG18/Timescale 实例，真实 DB）：重启后续期可用、refresh 轮换、`renew-access` 不销毁 refresh、登出真正吊销、异常过滤器不泄漏堆栈、CORS 白名单生效（非白名单 origin 被拦）。
->
-> 📌 **验证中额外发现并修复**（均归入 P0）：① refresh token 加 `jti`（防同一秒为同一用户签发导致的 `tokenHash` 唯一冲突）；② `main.ts` 接入 `dotenv/config` 自加载 `.env`；③ `start:prod` 路径修正（`dist/main` → `dist/src/main`）；④ 迁移顺手补上历史 drift（`ContentType` 枚举 `FILE`/`AUDIO` 此前只改了 schema 未建迁移）。
->
-> ✅ **依赖升级（后端）已落地**：NestJS 10→11 / Prisma 5→7（新生成器 + `@prisma/adapter-pg` driver adapter + `prisma.config.ts`）/ TypeScript ~5.9 / ESLint 9 flat config；**保持 CJS**（Prisma 7 已验证兼容 CJS 消费）。前端 Angular 18→22 仍待办。详见分支 `chore/deps-nestjs11-prisma7`。
+全局异常过滤器、ValidationPipe+DTO、refresh_token 落库（修 logout/renew-access/renew-refresh bug）、密钥外置、CORS 白名单+helmet 均已落地并端到端验证；后端依赖升级（NestJS 11 / Prisma 7 / TS 5.9，保持 CJS）完成。详见 git 历史。
 
-| 内容 | 影响文件 | 验收 |
-| --- | --- | --- |
-| 全局异常过滤器 | 新增 `src/common/exception.filter.ts` | 任意异常返回 `ApiResult` + 正确 HTTP 码，无堆栈泄漏 |
-| ValidationPipe + DTO | `src/controller/*`、新增 DTO 目录 | 缺字段/类型错返回 400 + 字段级错误信息 |
-| refresh_token 落库 + 修 logout/renew-refresh bug | `schema.prisma`、`src/auth/auth.service.ts`、`auth.controller.ts` | 重启后续期仍有效；登出真正吊销；续期轮换 |
-| 密钥外置 | `src/auth/constants.ts`、`src/group/group.service.ts`、`.env.example` | 无硬编码 secret，缺 env 启动报错 |
-| CORS 白名单 + helmet | `src/main.ts` | 生产仅允许配置的 origin |
+### P1 — 契约与接入 ✅ 已完成
 
-### P1 — 契约与接入（服务第三方接入目标）
-
-P1 拆为两步推进：**P1a 最小子集先行**（解锁契约 + 前端 mock），**P1b 补齐其余**。
-
-**P1a — 最小子集（优先落地）**
-
-| 内容 | 影响文件 | 验收 |
-| --- | --- | --- |
-| Swagger + `/api/v1/docs` + 核心接口 OpenAPI | `main.ts` + 核心 DTO（login / register / send-message / query-messages / query-thread / send-friend-request 等） | OpenAPI 可访问、核心接口入参与响应 schema 完整 |
-
-> 为什么优先：P1a 一完成，即可用 Prism 做契约驱动 mock（见下方「前端 mock 衔接」），前端开发不再依赖完整后端。它本身就是 P1 该做的，不欠债，又对冲了「前端临时要写却没有 mock」的风险——建议作为 P1 的第一块。
-
-**P1b — 其余契约化**
-
-| 内容 | 影响文件 | 验收 |
-| --- | --- | --- |
-| `/api/v1` 版本前缀 + HTTP 状态码对齐 | 全部 controller、`main.ts` | 4xx/5xx 走标准码，业务码在 200 |
-| class-validator DTO 全量（覆盖 P1a 未含接口） | controller + DTO 目录 | 所有端点入参有 DTO 与文档 |
-| OpenAPI 全量补齐 | 剩余接口 | 所有端点文档完整 |
-| 前端类型生成 | `web/` 接入 `openapi-typescript` | 前端 service 类型由生成产物驱动 |
-| 序列化拦截器 + 去 `Date.toJSON` hack | `src/main.ts`、新增拦截器、移除 `convertBigIntId` 调用 | Date/BigInt 统一序列化，无全局副作用 |
+Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、class-validator DTO 全量、OpenAPI 全量、前端 `openapi-typescript` 类型生成、序列化拦截器（去 `Date.toJSON` hack）、业务码段规整均已落地。各端点入参/响应以**实时 OpenAPI**（`/api/v1/docs` + 前端生成类型）为唯一事实源。
 
 > **P1 外挂（工程基建）— 后端整体转 ESM**（独立小任务，可与 P1a/P1b 并行；非 P1 契约范畴，仅就近归档）。`type:"module"` + `tsconfig`(`module/moduleResolution: NodeNext`、`target ES2023`、`esModuleInterop`) + 相对导入补 `.js`(全仓库 ~50–100 处) + `__dirname`/`require` → `import.meta.url`/`fileURLToPath` + CJS-only 工具(loader/ts-node)处理。**非必需**：Prisma 7 已验证兼容 CJS 消费(`@prisma/client` exports 提供 `require` 条件)。**前置依赖**：本轮「依赖升级」(NestJS 11 / Prisma 7 / TS 5.9)落地后再做。**触发点**(择一即可动手)：需引入 ESM-only 依赖 / 换 Vitest / Node 对 CJS 收紧。**注意**：代价≈范围/风险翻倍，且当前零后端测试网——动手前先补 auth e2e 冒烟。
 
-#### P1a 核心接口 checklist
-
-下表为 P1a 需补全 OpenAPI 的核心接口，覆盖前端 mock 一个可用 IM 的最小闭环：**注册 → 登录 → 会话列表 → 发消息 → 查历史 → 加好友**。群组接口（create/invite/join/info）、`thread-info`、`by-user-id` 等归 P1b。
-
-> 约定：P1b 起统一加 `/api/v1` 前缀（下表列相对路径）；写/查接口均为 `POST` + JSON body + `ApiResult` 返回（见 5.1）；业务码沿用当前实现，P1b 起按 5.2 错误码段规整。
-
-**共享类型**（定义一次，各接口引用）
-
-- `User`：`{ id, uniqName, isForeigner, domain?, createdAt, updatedAt, isDeleted, userExtra:{name,avatar}, userNotiBox }`（不含 hashPwd）
-- `Message`：`{ id:string, contentType, content, threadId, creator, createdAt, updatedAt, isDeleted }`（id 为 BigInt→string）
-- `UserMessageThread`：`{ id, userId, status, toObjType, toObjId, reqMessage, threadId?, createdAt, updatedAt, isDeleted, lastRead?:string }`
-- 枚举：`MessageThreadType=P2P|GROUP`；`UserMessageThreadStatus=FROM_PENDING|TO_PENDING|APPROVED|BLOCKED|DELETED`；`ContentType=PURE_TEXT|INVITE|IMAGE|VIDEO|FILE|AUDIO`
-- 序列化：Date→毫秒时间戳(number)；BigInt id→string
-
-**① 认证**（除 logout 外均 public）
-
-| 接口 | 鉴权 | 入参 | 响应 data | 备注 |
-| --- | --- | --- | --- | --- |
-| `POST /auth/login` | Local | `{ uniqName, password }` | `{ access_token, refresh_token }` | code: 1 凭据错；2 IP 封禁 `data.bannedUntil` |
-| `POST /user/register` | public | `{ uniqName, password }` | `{ id, uniqName }` | uniqName 正则 + pwd 6–20；code: 2 已存在 |
-| `POST /auth/renew-access` | public | `{ refreshToken }` | `{ access_token }` | code: 1 invalid |
-| `POST /auth/renew-refresh` | public | `{ refreshToken }` | `{ access_token, refresh_token }` | ⚠️ P0 修 info 空指针；code: 1 invalid |
-| `POST /auth/logout` | JWT | `{ refreshToken }` | — | ⚠️ P0 修：挂了 JwtAuthGuard 但前端发 public、且从 JWT 取 refreshToken（取不到），鉴权方式需统一 |
-
-**② 会话**（均 JWT）
-
-| 接口 | 入参 | 响应 data |
-| --- | --- | --- |
-| `POST /user/query-thread/valid` | `{ skip, take, lastId?, toObjType? }` | `UserMessageThread[]`；P2P 项带 `userItem:User`、GROUP 项带 `groupItem` |
-| `POST /user/query-thread/to-pending` | `{ beforeDate, take, skip }` | `UserMessageThread[]`（含 threadItem） |
-
-**③ 消息**（均 JWT）
-
-| 接口 | 入参 | 响应 data | 备注 |
-| --- | --- | --- | --- |
-| `POST /send-message` | `{ userThreadId, content }` | `Message`（新建） | code: 0 成功 / 1 会话未 approved / 2 无内容；副作用 WS 推 NEW_MESSAGE |
-| `POST /query-messages` | `{ userThreadId, skip, take, lastId?, orderBy }` | `Message[]` | 游标分页；code: 2 无此会话 |
-
-**④ 好友**（均 JWT）
-
-| 接口 | 入参 | 响应 | 备注（对外 code） |
-| --- | --- | --- | --- |
-| `POST /user/send-friend-request` | `{ userId }` | `code/message` | 0 成功（首次/已是好友/重新发起/对方先请求→建立）/ 2 用户不存在 / 3 不可加自己 / 1 未知 |
-| `POST /user/approve-friend-request` | `{ userId }`（发起方） | `code/message` | 0 建立成功 / 1 未收到请求 |
-
-**⑤ 用户**（均 JWT）
-
-| 接口 | 入参 | 响应 data | 备注 |
-| --- | --- | --- | --- |
-| `POST /user/my-profile` | — | `User`（当前用户） | |
-| `POST /user/query` | `{ userIds:number[] }` | `User[]` | ≤100；code: 1 超限 |
-| `POST /user/by-uniq-name` | `{ uniqName }` | `User` | code: 1 找不到 |
-
-**WebSocket 事件**（非 OpenAPI，前端 mock 需手写——往 `eventSubject` 灌帧）
-
-| 事件 | data | mock 用途 |
-| --- | --- | --- |
-| `AUTH` | — | 连接鉴权结果（code 0/1/2） |
-| `NEW_MESSAGE` | `{ threadId:number, msgId:string }` | 模拟对方/群成员发消息，触发前端增量拉取 |
-
-> mock 提示：登录/续期返回的 token 用任意字符串即可（mock 不校验签名）；发消息后由 mock 主动推一条 `NEW_MESSAGE` 即可驱动 UI；状态化场景（好友审批、消息顺序）需 mock 自维护内存状态——这正是 Prism 静态 mock 的局限（见下方）。
-
-#### 前端 mock 衔接（P1a 之后）
-
-P1a 完成后，前端 mock 由 OpenAPI 契约驱动，无需手写：
-
-| 方案 | 适用 | 说明 |
-| --- | --- | --- |
-| **Prism + OpenAPI**（首选） | P1a 之后 | `prism mock openapi.yaml` 起契约 mock server，前端 `apiPrefix` 指向它；后端改 spec→mock 自动跟随 |
-| **SQLite 开发后端**（备选） | 嫌 PG 重、要真联调 | Prisma 开发期换 SQLite provider，真实后端秒起，不废弃、无 mock 债 |
-| **MSW / MockInterceptor**（过渡） | P1a 之前急需写前端 | 仅作过渡，P1a 后被 Prism 取代；勿为短期需求搭建会被丢弃的 mock |
-
-> 局限：Prism 基于 schema 生成数据，类型对但业务不真。IM 的状态化场景（消息时序、好友状态机、已读回执）等「有状态」交互，静态 mock 可能不够，仍需少量手写补状态（例如往 WS `eventSubject` 灌模拟帧）。
 
 ### P2 — 实时体验与可靠性
 

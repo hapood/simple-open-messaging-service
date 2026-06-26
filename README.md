@@ -218,11 +218,11 @@ npm test --prefix web           # Karma 测试
 
 本项目核心链路（注册登录、好友、P2P/群组会话、消息收发与实时推送）已可用。以下部分仍在开发中，接入前请注意：
 
-- 🚧 **文件上传**（`src/controller/file.controller.ts`）：端点已定义并完成 multer 存储，但 handler 仅打印日志，未落库、未返回文件 URL。
+- 🚧 **文件上传**：原 `file` 域死代码已在 P1b 整域删除（`src/controller/file.controller.ts` 不复存在）；功能重新实现留待 P3（落库到 Message + 返回可访问 URL）。
 - 🚧 **通知系统**（`src/notify`）：`NotifyModule` 已编写但未导入 `AppModule`；Prisma 已建模 `Notify` / `userNotiBox`，代码尚未消费。
 - 🚧 **用户管理**（`src/user-manage`）：服务已有 `getUserList`，但模块未接入、无控制器端点。
 - ✅ **密钥硬编码**（P0 已修复）：JWT access/refresh 与群组邀请 secret 已外置至环境变量（`JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` / `GROUP_INVITE_SECRET`），缺失则启动 fail-fast。
-- ⚠️ **前端路由守卫**：`authGuard` 存在但未挂载到任何路由，且检查的 storage key 与实际不一致。
+- ✅ **前端路由守卫**：`authGuard` / `guestGuard` 已挂载到路由（home/nav 走 authGuard，login/register 走 guestGuard）。
 
 ## 更多文档
 

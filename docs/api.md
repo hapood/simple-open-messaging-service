@@ -41,7 +41,7 @@ interface StandardResponse<T = any> {
 | `40xxx` | 群组域 | `40001` 非群成员 / `40002` 非好友不可邀请 / `40003` 无效邀请 token |
 
 > 示例：登录凭据错 → `code:10003`；IP 封禁 → `code:10005` + `data.bannedUntil`（解封时间戳）；注册重复 → `code:10002`。
-> 注：下文各 API 段部分错误说明仍沿用旧 `status:N` 写法，以本表 `code` 为准（待统一清理）。
+> 说明：HTTP 响应信封字段为 `code`（见上表）。下文仍出现 `status` 的两处为**有意保留**：① WebSocket 帧的 `status` 字段（见「消息格式」，当前实现即此）；② 好友请求内部状态机的 `status 0/1/2/3/5`（不直接体现在响应 `code`）。
 
 ### 鉴权
 
