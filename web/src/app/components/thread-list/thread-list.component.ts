@@ -3,8 +3,7 @@ import { NgClass } from '@angular/common';
 import { UserService } from '../../services/user.service'
 import { User, UserMessageThread } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
-
-export type ThreadFilterType = 'ALL' | 'P2P' | 'GROUP'
+import { ChatFolder, inFolder } from '../../services/folder.service'
 
 @Component({
     selector: 'app-thread-list',
@@ -16,17 +15,17 @@ export class ThreadListComponent {
   UserAvatarType = UserAvatarType
   readonly profile = input<User>()
   readonly selectedId = input<number>()
-  /** type filter; ALL = no filter. Mobile doesn't pass it → stays ALL. */
-  readonly filterType = input<ThreadFilterType>('ALL')
+  /** active folder; undefined = no folder filter (show all) */
+  readonly folder = input<ChatFolder | undefined>(undefined)
   /** local name search; '' = no filter. */
   readonly searchText = input('')
   readonly threadList = signal<UserMessageThread[]>([])
 
-  /** view model after applying the type + search filters. */
+  /** view model after applying the folder + search filters. */
   readonly filteredThreadList = computed(() => {
-    const filter = this.filterType(), q = this.searchText().trim().toLowerCase()
+    const folder = this.folder(), q = this.searchText().trim().toLowerCase()
     return this.threadList().filter(t => {
-      if (filter !== 'ALL' && t.toObjType !== filter) return false
+      if (folder && !inFolder(t, folder)) return false
       if (q) {
         const name = (t.toObjType === 'P2P' ? t.userItem?.uniqName : t.groupItem?.name) ?? ''
         if (!name.toLowerCase().includes(q)) return false
@@ -40,7 +39,9 @@ export class ThreadListComponent {
   constructor(private userService: UserService) { }
 
   genThreadList() {
-    return this.userService.queryUserThreadValid({ take: 10, skip: 0 }).subscribe(res => {
+    // take:200 — folders must filter over the full thread set, not the first page.
+    // (true infinite scroll is a follow-up; 200 covers personal thread counts.)
+    return this.userService.queryUserThreadValid({ take: 200, skip: 0 }).subscribe(res => {
       if (res.code == 0) {
         this.threadList.set(res.data!)
       } else {

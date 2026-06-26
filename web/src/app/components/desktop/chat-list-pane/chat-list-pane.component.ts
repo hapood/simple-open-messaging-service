@@ -1,11 +1,13 @@
-import { Component, EventEmitter, Output, signal, viewChild } from '@angular/core';
+import { Component, EventEmitter, Output, signal, computed, inject, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ThreadListComponent, ThreadFilterType } from '../../thread-list/thread-list.component';
+import { ThreadListComponent } from '../../thread-list/thread-list.component';
 import { UserMessageThread } from '../../../services/model';
+import { FolderService, ChatFolder } from '../../../services/folder.service';
 
 /**
- * Desktop middle pane: search + type-filter tabs + the shared thread list.
- * Owns the search/filter UI state; delegates rendering + data to thread-list.
+ * Desktop middle pane: search + (optional) folder tabs + the shared thread list.
+ * The folder tab bar renders ONLY once the user has at least one folder — mirroring
+ * Telegram, which shows no tabs by default. Folder create/edit lives in icon-rail.
  */
 @Component({
   selector: 'app-chat-list-pane',
@@ -16,15 +18,19 @@ import { UserMessageThread } from '../../../services/model';
         <input type="text" placeholder="搜索"
           [ngModel]="searchText()" (ngModelChange)="searchText.set($event)" />
       </div>
-      <div class="tabs">
-        @for (tab of tabs; track tab.value) {
-          <button class="tab" [class.active]="filterType() === tab.value"
-            (click)="filterType.set(tab.value)">{{ tab.label }}</button>
-        }
-      </div>
+      @if (folders().length) {
+        <div class="folder-tabs">
+          <button class="ftab" [class.active]="!activeFolder()"
+            (click)="activeFolderId.set(undefined)">全部</button>
+          @for (f of folders(); track f.id) {
+            <button class="ftab" [class.active]="activeFolder()?.id === f.id"
+              (click)="activeFolderId.set(f.id)">{{ f.name }}</button>
+          }
+        </div>
+      }
       <div class="list">
         <app-thread-list
-          [filterType]="filterType()"
+          [folder]="activeFolder()"
           [searchText]="searchText()"
           (onSelect)="selectThread.emit($event)">
         </app-thread-list>
@@ -52,30 +58,44 @@ import { UserMessageThread } from '../../../services/model';
       font-size: 14px;
       outline: none;
     }
-    .tabs { display: flex; gap: 6px; padding: 0 10px 8px; }
-    .tab {
-      flex: 1;
+    .folder-tabs {
+      display: flex;
+      gap: 6px;
+      padding: 0 10px 8px;
+      overflow-x: auto;
+      scrollbar-width: thin;
+    }
+    .ftab {
+      flex: 0 0 auto;
       height: 30px;
+      padding: 0 14px;
       border: 1px solid #d1d5db;
       background: #fff;
-      border-radius: 6px;
+      border-radius: 15px;
       cursor: pointer;
       font-size: 13px;
       color: #374151;
+      white-space: nowrap;
     }
-    .tab.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .ftab.active { background: #2563eb; border-color: #2563eb; color: #fff; }
     .list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   `]
 })
 export class ChatListPaneComponent {
-  readonly tabs: ReadonlyArray<{ value: ThreadFilterType, label: string }> = [
-    { value: 'ALL', label: '全部' },
-    { value: 'P2P', label: '个人' },
-    { value: 'GROUP', label: '群组' },
-  ]
-  readonly filterType = signal<ThreadFilterType>('ALL')
+  private readonly folderService = inject(FolderService)
+
+  /** undefined = "全部" (no folder filter) */
+  readonly activeFolderId = signal<string | undefined>(undefined)
   readonly searchText = signal('')
   readonly threadListCmp = viewChild(ThreadListComponent)
+
+  readonly folders = computed(() => this.folderService.folders())
+
+  /** resolves the active folder (undefined for "全部" or when its id was deleted) */
+  readonly activeFolder = computed<ChatFolder | undefined>(() => {
+    const id = this.activeFolderId()
+    return id ? this.folderService.getById(id) : undefined
+  })
 
   @Output() selectThread = new EventEmitter<UserMessageThread>()
 

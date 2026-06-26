@@ -30,6 +30,11 @@ import { WebsocketService } from '../../../services/websocket.service';
             <path d="M12 8v8M8 12h8"/>
           </svg>
         </button>
+        <button class="rail-btn" (click)="folderEditor()" title="文件夹" aria-label="folders">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          </svg>
+        </button>
         <button class="rail-btn" (click)="logout()" title="登出" aria-label="logout">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
@@ -89,6 +94,10 @@ export class IconRailComponent {
       // only refresh when a group was actually created, not on cancel/back
       if (result) this.onThreadListChanged()?.()
     })
+  }
+
+  folderEditor() {
+    this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
   }
 
   logout() {
