@@ -120,26 +120,25 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @Post('group/join')
   @ApiOperation({ summary: '凭邀请 token 加入群组' })
-  async joinGroup(
-    @Request() req,
-    @Body() dto: JoinGroupDto,
-  ): Promise<ApiResult> {
-    const res = this.groupService.decodeInviteDate(dto);
-    if (res.status === 0) {
-      const data = res.data;
-      await this.groupService.joinGroup({
-        groupId: data.gid,
-        userId: data.sub,
-      });
-      return {
-        code: BusinessCode.OK,
-        message: 'succesful',
-      };
-    } else if (res.status === 1) {
-      return {
-        code: BusinessCode.GROUP_INVALID_TOKEN,
-        message: 'invalid invite',
-      };
+  async joinGroup(@Body() dto: JoinGroupDto): Promise<ApiResult> {
+    const res = this.groupService.decodeInviteToken(dto.token);
+    switch (res.status) {
+      case 0:
+        await this.groupService.joinGroup({
+          groupId: res.data.gid,
+          userId: res.data.sub,
+        });
+        return { code: BusinessCode.OK, message: 'successful' };
+      case 2:
+        return {
+          code: BusinessCode.GROUP_INVALID_TOKEN,
+          message: 'invite expired',
+        };
+      default:
+        return {
+          code: BusinessCode.GROUP_INVALID_TOKEN,
+          message: 'invalid invite',
+        };
     }
   }
 
@@ -158,7 +157,7 @@ export class GroupController {
     if (data !== null) {
       return {
         code: BusinessCode.OK,
-        message: 'succesful',
+        message: 'successful',
         data,
       };
     } else {

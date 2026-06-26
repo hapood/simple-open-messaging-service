@@ -38,7 +38,7 @@ export class AuthController {
       if (authInfo.bannedUntil !== undefined) {
         return {
           code: BusinessCode.RATE_LIMITED,
-          message: 'too many bad attemp',
+          message: 'too many bad attempts',
           data: {
             bannedUntil: authInfo.bannedUntil,
           },

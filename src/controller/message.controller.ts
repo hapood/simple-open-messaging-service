@@ -52,10 +52,15 @@ export class MessageController {
       return { code: BusinessCode.MESSAGE_EMPTY, message: 'no content' };
     }
     const userMsgTr = await this.messageService.findUniqueUserMessageThread({
-      where: {
-        id: dto.userThreadId,
-      },
+      where: { id: dto.userThreadId },
     });
+    // B1：记录不存在时直接返回业务码，避免下方 .toObjType 抛 TypeError → 500
+    if (userMsgTr === null) {
+      return {
+        code: BusinessCode.THREAD_NOT_FOUND,
+        message: `no user thread [${dto.userThreadId}]`,
+      };
+    }
     if (userMsgTr.toObjType === MessageThreadType.GROUP) {
       if (userMsgTr.status === UserMessageThreadStatus.APPROVED) {
         const data = await this.messageService.writeMsgToThread(
@@ -74,7 +79,7 @@ export class MessageController {
         userIds.forEach((item) => {
           this.eventGateway.onNewMessage(item.userId, msgData);
         });
-        return { code: BusinessCode.OK, message: 'sucessful', data };
+        return { code: BusinessCode.OK, message: 'successful', data };
       }
     } else {
       const friendMsgTr = await this.messageService.findUniqueUserMessageThread(
@@ -103,7 +108,7 @@ export class MessageController {
         };
         this.eventGateway.onNewMessage(req.user.userId, msgData);
         this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
-        return { code: BusinessCode.OK, message: 'sucessful', data };
+        return { code: BusinessCode.OK, message: 'successful', data };
       }
     }
     return {
@@ -123,10 +128,15 @@ export class MessageController {
     @Body() dto: QueryMessagesDto,
   ): Promise<ApiResult> {
     const userThread = await this.messageService.findUniqueUserMessageThread({
-      where: {
-        id: dto.userThreadId,
-      },
+      where: { id: dto.userThreadId },
     });
+    // B1：记录不存在时直接返回业务码，避免下方 .status 抛 TypeError → 500
+    if (userThread === null) {
+      return {
+        code: BusinessCode.THREAD_NOT_FOUND,
+        message: `no user thread [${dto.userThreadId}]`,
+      };
+    }
     if (userThread.status === UserMessageThreadStatus.APPROVED) {
       const newParams: Prisma.MessageFindManyArgs = {
         skip: dto.skip,
@@ -144,7 +154,7 @@ export class MessageController {
       );
       return {
         code: BusinessCode.OK,
-        message: 'sucessful',
+        message: 'successful',
         data,
       };
     } else {

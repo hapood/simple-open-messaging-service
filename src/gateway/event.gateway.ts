@@ -19,7 +19,15 @@ class Client {
   ) {}
 
   public send(message: object) {
-    this.ws.send(JSON.stringify(message));
+    // 连接未就绪/已关闭时跳过，避免 send 抛错中断群发 forEach（B2：错误隔离）
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    try {
+      this.ws.send(JSON.stringify(message));
+    } catch {
+      // 单连接发送失败不波及其它连接的推送
+    }
   }
 }
 
@@ -36,35 +44,29 @@ export class EventGateway
   afterInit() {}
 
   handleConnection(client: WebSocket) {
+    // verify 默认校验过期：过期抛 TokenExpiredError，签名/格式错抛其它。
+    // A2：原实现把过期判断写在 verify 之后的 else 分支，永远走不到（过期已抛异常进 catch 被报成 invalid）。
+    // 现按异常类型区分：过期→AUTH 1（前端 renewAccessToken 后重连），无效→AUTH 2。
+    let payload: { sub: number; exp: number };
     try {
-      const payload = this.jwtService.verify(client.protocol);
-      const { sub, exp } = payload;
-      if (new Date().getTime() < exp * 1000) {
-        let list = this.wsClientDict[sub];
-        if (list === undefined) {
-          list = this.wsClientDict[sub] = [];
-        }
-        list.push(new Client(client, { userId: sub }));
-      } else {
-        client.send(
-          JSON.stringify({
-            event: 'AUTH',
-            status: 1,
-            message: 'token expired',
-          }),
-        );
-        client.close();
-      }
+      payload = this.jwtService.verify(client.protocol);
     } catch (e) {
+      const expired = (e as Error)?.name === 'TokenExpiredError';
       client.send(
         JSON.stringify({
           event: 'AUTH',
-          status: 2,
-          message: 'not valid token',
+          status: expired ? 1 : 2,
+          message: expired ? 'token expired' : 'not valid token',
         }),
       );
       client.close();
+      return;
     }
+    let list = this.wsClientDict[payload.sub];
+    if (list === undefined) {
+      list = this.wsClientDict[payload.sub] = [];
+    }
+    list.push(new Client(client, { userId: payload.sub }));
   }
 
   handleDisconnect(client: WebSocket) {

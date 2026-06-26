@@ -43,21 +43,30 @@ export class GroupService implements OnModuleInit {
     );
   }
 
-  decodeInviteDate(params: { token }) {
-    const payload: any = jsonwebtoken.decode(params.token);
-    if (payload === null) {
-      return {
-        status: 1,
+  /**
+   * 校验邀请 token：验签 + 过期检查。
+   * 原实现用 jsonwebtoken.decode（仅解 payload 不验签），任何人伪造 token 即可入群。
+   * - status 0：有效，返回 payload
+   * - status 1：签名无效 / 格式错误
+   * - status 2：已过期
+   */
+  decodeInviteToken(
+    token: string,
+  ):
+    | { status: 0; data: { sub: number; exp: number; gid: number } }
+    | { status: 1; message: string }
+    | { status: 2; message: string } {
+    try {
+      const payload = jsonwebtoken.verify(token, secret) as unknown as {
+        sub: number;
+        exp: number;
+        gid: number;
       };
-    } else if (new Date().getTime() > payload.exp * 1000) {
-      return {
-        status: 2,
-      };
-    } else {
-      return {
-        status: 0,
-        data: payload as { sub: number; exp: number; gid: number },
-      };
+      return { status: 0, data: payload };
+    } catch (e) {
+      return e.name === 'TokenExpiredError'
+        ? { status: 2, message: 'invite expired' }
+        : { status: 1, message: 'invalid invite' };
     }
   }
 
