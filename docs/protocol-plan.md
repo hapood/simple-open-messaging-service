@@ -261,7 +261,7 @@ Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、cl
 | 结构化日志 + traceId（含响应信封 traceId 字段） | 全局中间件/拦截器、`api-result.ts`、`exception.filter.ts` | 日志含 traceId 串联请求；响应信封注入 traceId（对标 WhatsApp `fbtrace_id`）供客户端报错附上、服务端据此查日志 |
 | 响应信封结构化 `details` 字段 | `api-result.ts`、`exception.filter.ts` | 速率限制等附加数据（`bannedUntil`/`retry_after`）走 `details`，对标 Telegram `parameters` / WhatsApp `error_data`；P1b 暂放 `data` |
 | 健康检查 | 新增 controller | `/api/v1/health` 返回 DB 状态 |
-| 限流 | `@nestjs/throttler` | 登录/续期/发消息有明确配额 |
+| 登录限流（共享存储 + 分层响应） | `src/auth/local.strategy.ts` → `@nestjs/throttler` / `rate-limiter-flexible` + Redis | **已落地（进程内内存）**：滑动窗口(15min) + IP/账户(uniqName)双维度 + `trust proxy` 取真实 IP + 渐进封禁（30min/3h/24h 阶梯，见 `local.strategy.ts`）。**P3 待办**：① 多实例共享存储(Redis，当前进程内重启即丢、多副本各自计数)；② 分层响应(CAPTCHA / 增加延迟 / 通知账户所有者，替代纯硬封禁)；③ 封禁时长温和化与阈值精调（当前 24h 偏长，有账号锁定型 DoS 风险）；④ 封禁可观测(结构化日志/告警)；⑤ 覆盖续期/发消息等端点 |
 | 实现文件上传 | 新增 `src/file/*` + controller | 落库到 Message、返回可访问 URL（参考 [api.md](./api.md) 文件 API 设计意图）；大文件可走分片/对象存储 |
 
 ---

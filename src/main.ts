@@ -1,5 +1,6 @@
 import 'dotenv/config'; // 最先加载 .env，确保 AppModule 导入链中的 requireEnv 与 Prisma 能读到环境变量
 import { NestFactory } from '@nestjs/core';
+import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
@@ -10,7 +11,10 @@ import { AllExceptionsFilter } from './common/exception.filter';
 import { SerializeInterceptor } from './common/serialize.interceptor';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  // 反代/隧道后取真实客户端 IP（限流按 IP 精确计数；见 local.strategy.ts）。
+  // 值=信任的反代跳数：1 适合单层 nginx/隧道；生产按实际拓扑调整，勿设 true（X-Forwarded-For 可被伪造）。
+  app.set('trust proxy', 1);
   app.useWebSocketAdapter(new WsAdapter(app));
 
   app.use(helmet());
