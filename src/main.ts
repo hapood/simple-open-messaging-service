@@ -14,8 +14,12 @@ async function bootstrap() {
   app.useWebSocketAdapter(new WsAdapter(app));
 
   app.use(helmet());
+  // 开发模式（NODE_ENV !== 'production'）回显任意 Origin：配合 web 端 ng serve 绑 0.0.0.0，
+  // 可从 LAN/公网/隧道（任意 host）访问前端并正常调 :3000 接口。
+  // 生产模式（NODE_ENV=production）严格走 CORS_ORIGIN 白名单。
+  const isDev = process.env.NODE_ENV !== 'production';
   app.enableCors({
-    origin: parseCorsOrigins(process.env.CORS_ORIGIN),
+    origin: isDev ? true : parseCorsOrigins(process.env.CORS_ORIGIN),
     credentials: true,
   });
 
