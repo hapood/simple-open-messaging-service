@@ -254,6 +254,19 @@ Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、cl
 | 已读回执 / 输入中 / 在线状态 | gateway、前端组件 | `lastRead` 被消费、状态实时刷新 |
 | 接入 Notify | `src/notify/*`、`app.module.ts` | 通知表被写入与推送 |
 
+### P2+ — 好友域功能补全（产品对齐）
+
+> 本轮（2026-06-26）已修：互加好友自动批准入参顺序 bug（`makeFriendRequest` FROM_PENDING 分支）、`sendFriendRequest`/`acceptFriendRequest` 状态文案不准确、前端搜索结果按会话状态区分「可加/已是好友/已发过/对方发过你」（不再恒显示 Send Request）、`ngOnInit` 成功时误置错误文案、若干拼写。
+> **拒绝好友请求**已实现：`POST user/decline-friend-request` + 前端 Pending 项 Decline 按钮。语义=删除这对请求行（双方 FROM_PENDING/TO_PENDING），回到初始态、不通知对方、允许重发（对标 Telegram）。
+> 以下为遗留**功能缺口**（schema 已建模但无端点 / 无 UI），按产品对标（Telegram/Discord）应补，暂列待办：
+
+| 内容 | 现状 | 影响 |
+| --- | --- | --- |
+| 撤回已发请求 | `FROM_PENDING` 无法 cancel | 用户无法撤回误发请求 |
+| 删除好友 / 拉黑 | `DELETED`/`BLOCKED` 状态存在但无端点写入 | 无法解除好友、无防骚扰 |
+| 请求附言 | `UserMessageThread.reqMessage` 字段未用，`send-friend-request` 仅收 `userId` | 无法带验证信息（对标微信/Telegram 附言） |
+| 实时通知 | 新请求无推送，依赖前端轮询 Pending | 已纳入上方 P2「接入 Notify」 |
+
 ### P3 — 工程化与生产就绪
 
 | 内容 | 影响文件 | 验收 |

@@ -188,35 +188,36 @@ export class UserController {
       { id: dto.userId },
       false,
     );
-    if (friend) {
-      //status 0,1,2
-      const res = await this.messageService.makeFriendRequest(
-        req.user.userId,
-        friend.id,
-      );
-      if (
-        res.status === 0 ||
-        res.status === 1 || // already been friends
-        res.status === 2 || // deleted and reset to TO_PENDING
-        res.status === 3 || // firend is FROM_PENDING, set to APPROVED
-        res.status === 5 //don't bother any more when BLOCKED or TO_PENDING
-      ) {
-        return {
-          code: BusinessCode.OK,
-          message: 'request sent successful',
-        };
-      } else if (res.status === 4) {
-        // firend is FROM_PENDING, make friend error,should not happened
-        return {
-          code: BusinessCode.FRIEND_UNKNOWN_STATE,
-          message: 'unknow error',
-        };
-      }
-    } else {
+    if (!friend) {
       return {
         code: BusinessCode.NOT_FOUND,
-        message: 'friend does not not exist',
+        message: 'friend does not exist',
       };
+    }
+    // makeFriendRequest 状态语义见 message.service.ts：
+    //  0 首次发请求 / 1 已是好友 / 2 删除后重发 / 3 对端先发过→互加成功 / 4 不应发生 / 5 对端待处理或已拉黑
+    // 不同结果给前端准确文案（前端按 code===0 判成功、回显 message），而非一律 "request sent"。
+    const res = await this.messageService.makeFriendRequest(
+      req.user.userId,
+      friend.id,
+    );
+    switch (res.status) {
+      case 0:
+      case 2:
+        return { code: BusinessCode.OK, message: 'friend request sent' };
+      case 1:
+        return { code: BusinessCode.OK, message: 'you are already friends' };
+      case 3:
+        return { code: BusinessCode.OK, message: 'you are now friends' };
+      case 5:
+        // 对端 TO_PENDING（已发过、幂等）或 BLOCKED。后者不回显"被拉黑"以免泄露屏蔽状态。
+        return { code: BusinessCode.OK, message: 'friend request sent' };
+      default:
+        // status 4：状态机不应到达
+        return {
+          code: BusinessCode.FRIEND_UNKNOWN_STATE,
+          message: 'unknown error',
+        };
     }
   }
 
@@ -236,12 +237,38 @@ export class UserController {
     if (res.status === 0) {
       return {
         code: BusinessCode.OK,
-        message: 'already been friends',
+        message: 'friend request approved',
       };
     } else {
       return {
         code: BusinessCode.FRIEND_NO_INCOMING,
-        message: `user [${dto.userId}] did not send make friend request to you.`,
+        message: `user [${dto.userId}] did not send you a friend request.`,
+      };
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/decline-friend-request')
+  @ApiOperation({ summary: '拒绝好友请求' })
+  async declineFriendRequest(
+    @Request() req,
+    @Body() dto: UserIdDto,
+  ): Promise<ApiResult> {
+    const res = await this.messageService.declineFriendRequest(
+      dto.userId,
+      req.user.userId,
+    );
+    if (res.status === 0) {
+      return {
+        code: BusinessCode.OK,
+        message: 'friend request declined',
+      };
+    } else {
+      return {
+        code: BusinessCode.FRIEND_NO_INCOMING,
+        message: `user [${dto.userId}] did not send you a friend request.`,
       };
     }
   }

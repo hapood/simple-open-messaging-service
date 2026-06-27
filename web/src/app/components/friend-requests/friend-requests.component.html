@@ -1,81 +1,107 @@
 <div class="friend-requests">
   <div class="popup-header">
     @if(isShowBackBtn()){
-    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
-        [style]="{width:'32px',height:'32px'}"></app-icon></button>}
-    <div class="popup-title">Friend Requests</div>
+    <button class="icon-btn" (click)="goBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
+        [style]="{width:'24px',height:'24px'}"></app-icon></button>}
+    <div class="popup-title">Add Friends</div>
   </div>
+
   <div class="tabs">
-    <div class="tab-item" (click)="setTab(0)">
-      <div class="tab-text">New
-        <div class="active_indi" [ngClass]="[activeTab()===0?'show':'hide']"></div>
-      </div>
-    </div>
-    <div class="tab-item" (click)="setTab(1)">
-      <div class="tab-text">Pending
-        <div class="active_indi" [ngClass]="[activeTab()===1?'show':'hide']"></div>
-      </div>
-    </div>
+    <button class="tab-item" [class.active]="activeTab()===0" (click)="setTab(0)">
+      <span class="tab-text">Add</span>
+    </button>
+    <button class="tab-item" [class.active]="activeTab()===1" (click)="setTab(1)">
+      <span class="tab-text">Pending</span>
+      @if(pendingReqList().length > 0){<span class="tab-badge">{{pendingReqList().length}}</span>}
+    </button>
   </div>
-  <div [ngClass]="[activeTab()===0?'show':'hide']" class="tab-content">
-    <div class="add-wrapper">
-      @if(addTabStatus()===AddTabStatus.INIT){
-      <div class="add-content">Add new friend by username/full address.</div>
-      }
-      @if(addTabStatus()===AddTabStatus.EMPTY){
-      <div class="add-content">Can not find user {{curSearchText().trim()}}</div>
-      }
-      @else if(addTabStatus()===AddTabStatus.SEARCHING){
-      <div class="add-content">Searching</div>
-      }
-      @else if(addTabStatus()===AddTabStatus.SUCCESS){
-      <div class="add-content-user">
-        <div class="user-info">
-          <div class="user-avatar">
-            <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
-          </div>
-          <div class="user-name">{{userData()!.uniqName}}</div>
-        </div>
-        <div class="send-btn-line">
-          @if(canAdd()){<button mat-raised-button (click)="sendRequest()"
-            [disabled]="addTabStatus()===AddTabStatus.SEARCHING">Send
-            Request</button>
-          }
-        </div>
-        @if(reqRspTxt().length>0){<div class="response-text">{{reqRspTxt()}}</div>}
-      </div>
-      }
-      @else if(addTabStatus()===AddTabStatus.ERROR){
-      <div class="add-content">{{errMsg()}}</div>
-      }
-    </div>
-    <form class="user-search-bar" (ngSubmit)="searchUser()">
-      <input class="user-search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
-        placeholder="username/full address">
-      <button mat-button type="submit" [disabled]="addTabStatus()===AddTabStatus.SEARCHING">Search</button>
+
+  <!-- Add tab -->
+  <div class="tab-pane" [hidden]="activeTab()!==0">
+    <form class="search-bar" (ngSubmit)="searchUser()" role="search">
+      <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
+      <input class="search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
+        placeholder="Search by username" autocomplete="off"
+        [disabled]="addTabStatus()===AddTabStatus.SEARCHING">
+      <button mat-raised-button class="search-btn" type="submit"
+        [disabled]="addTabStatus()===AddTabStatus.SEARCHING || !searchText().trim()">
+        @if(addTabStatus()===AddTabStatus.SEARCHING){Searching}@else{Search}
+      </button>
     </form>
+
+    <div class="result-area">
+      @switch(addTabStatus()){
+        @case(AddTabStatus.INIT){
+        <div class="state-hint">
+          <app-icon [type]="AppIconType.SEARCH" [style]="{width:'40px',height:'40px'}"></app-icon>
+          <div class="state-title">Find your friends</div>
+          <div class="state-sub">Search by username to send a request.</div>
+        </div>
+        }
+        @case(AddTabStatus.SEARCHING){
+        <div class="state-hint"><div class="state-title">Searching…</div></div>
+        }
+        @case(AddTabStatus.EMPTY){
+        <div class="state-hint">
+          <div class="state-title">No user found</div>
+          <div class="state-sub">We couldn't find "{{curSearchText().trim()}}".</div>
+        </div>
+        }
+        @case(AddTabStatus.ERROR){
+        <div class="state-hint"><div class="state-title state-error">{{errMsg()}}</div></div>
+        }
+        @case(AddTabStatus.SUCCESS){
+        <div class="user-card">
+          <div class="user-main">
+            <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar></div>
+            <div class="user-meta">
+              <div class="user-name">{{userData()!.uniqName}}</div>
+            </div>
+          </div>
+          <div class="user-actions">
+            @if(canAdd()){
+            <button mat-raised-button color="primary" (click)="sendRequest()"
+              [disabled]="addTabStatus()===AddTabStatus.SEARCHING">Send Request</button>
+            }
+          </div>
+          @if(reqRspTxt().length>0){<div class="response-text" [class.is-info]="!canAdd()">{{reqRspTxt()}}</div>}
+        </div>
+        }
+      }
+    </div>
   </div>
-  <div [ngClass]="[activeTab()===1?'show':'hide']">
-    <div class="pending-content">
-      @for( req of pendingReqList();track $index){
-      <div class="user-info">
-        <div class="user-avatar">
-          <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+
+  <!-- Pending tab -->
+  <div class="tab-pane" [hidden]="activeTab()!==1">
+    <div class="pending-area">
+      @if(pendingLoading()){
+        <div class="state-hint"><div class="state-title">Loading…</div></div>
+      } @else if(toPendingErrTxt().length>0){
+        <div class="state-hint"><div class="state-title state-error">{{toPendingErrTxt()}}</div></div>
+      } @else if(pendingReqList().length===0){
+        <div class="state-hint">
+          <div class="state-title">No pending requests</div>
+          <div class="state-sub">Friend requests you receive will appear here.</div>
         </div>
-        <div>
-          <div class="user-name">{{req.uniqName}}</div>
-          <div class="date">{{req.date}}</div>
+      } @else {
+        @for(req of pendingReqList();track req.id){
+        <div class="pending-row">
+          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar></div>
+          <div class="pending-meta">
+            <div class="user-name">{{req.uniqName}}</div>
+            <div class="pending-date">{{req.date}}</div>
+          </div>
+          <div class="pending-actions">
+            @if(req.status===0){
+            <button mat-raised-button color="primary" (click)="approve($index)">Approve</button>
+            <button mat-button class="decline-btn" (click)="decline($index)">Decline</button>
+            }@else {
+            <button mat-button [disabled]="true">@if(req.status===-1){Invalid User}@else{Approved}</button>
+            }
+          </div>
         </div>
-        <div>
-          @if(req.status===0){
-          <button mat-raised-button (click)="approve($index)">Approve</button>
-          }@else {
-          <button mat-raised-button [disabled]="true">@if(req.status===-1){<span>Invalid
-              User</span>}@else{<span>Approved</span>}</button>
-          }
-          <div>{{req.errText}}</div>
-        </div>
-      </div>
+        @if(req.errText){<div class="row-err">{{req.errText}}</div>}
+        }
       }
     </div>
   </div>

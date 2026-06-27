@@ -142,9 +142,12 @@ export class MessageService implements OnModuleInit {
         } else if (
           toUserThread.status === UserMessageThreadStatus.FROM_PENDING
         ) {
-          const res = await this.approveFriendRequest(fromUserId, toUserId);
+          // toUserThread(userId=toUserId) 为 FROM_PENDING，说明对端先发过请求 → 双向意愿，直接互加。
+          // approveFriendRequest(X, Y) 要求 X 的行为 FROM_PENDING，故 X=toUserId、Y=fromUserId。
+          // （原实现误传 (fromUserId, toUserId)，导致 X 的行不是 FROM_PENDING → 恒返回 status 4。）
+          const res = await this.approveFriendRequest(toUserId, fromUserId);
           if (res.status === 0) {
-            //firend is FROM_PENDING, set to APPROVED
+            //对端 FROM_PENDING，已双双置 APPROVED
             return { status: 3 };
           } else {
             return {
@@ -267,6 +270,52 @@ export class MessageService implements OnModuleInit {
           status: 1,
         };
       }
+    });
+  }
+
+  /**
+   * 拒绝好友请求：删除这对请求行（请求方 FROM_PENDING + 我 TO_PENDING）。
+   * 语义对标 Telegram——拒绝后请求从我的待处理列表消失，且不通知对方；关系回到
+   * 「无任何记录」的初始态，对方之后仍可重新发起（makeFriendRequest 的首次请求分支）。
+   *
+   * 入参与 approveFriendRequest 一致：fromUserId=请求方，toUserId=我（拒绝者）。
+   * 仅当请求方行确为 FROM_PENDING（确有待处理请求）才删除；否则返回 status 1（无可拒绝对象）。
+   * 待处理阶段 threadId 为 null（MessageThread 仅在同意时创建），删除请求行不会产生孤立会话。
+   */
+  async declineFriendRequest(fromUserId: number, toUserId: number) {
+    return await this.prisma.$transaction(async (prisma) => {
+      const request = await prisma.userMessageThread.findUnique({
+        where: {
+          userId_toObjType_toObjId: {
+            userId: fromUserId,
+            toObjType: MessageThreadType.P2P,
+            toObjId: toUserId,
+          },
+        },
+      });
+      if (
+        request === null ||
+        request.status !== UserMessageThreadStatus.FROM_PENDING
+      ) {
+        return { status: 1 };
+      }
+      await prisma.userMessageThread.deleteMany({
+        where: {
+          OR: [
+            {
+              userId: fromUserId,
+              toObjType: MessageThreadType.P2P,
+              toObjId: toUserId,
+            },
+            {
+              userId: toUserId,
+              toObjType: MessageThreadType.P2P,
+              toObjId: fromUserId,
+            },
+          ],
+        },
+      });
+      return { status: 0 };
     });
   }
 }

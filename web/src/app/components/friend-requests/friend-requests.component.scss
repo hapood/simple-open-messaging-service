@@ -1,149 +1,282 @@
 @import "../../assets/utils.scss";
 
+$primary: #005cbb;
+$border: #e3e5e8;
+$muted: #707991;
+$bg-subtle: #f4f6f9;
+$danger: #d93025;
+
 .friend-requests {
   width: 100%;
   height: 100%;
   overflow-y: hidden;
   display: flex;
   flex-direction: column;
-
-  .user-search-bar {
-    background-color: #cccccc;
-    display: flex;
-    padding: 10px 10px calc(env(safe-area-inset-bottom) + 10px) 10px;
-    width: 100%;
-    box-sizing: border-box;
-    position: relative;
-
-    .user-search-input {
-      flex: 1;
-      padding: 6px;
-      margin-right: 10px;
-    }
-  }
-
-  .tab-content {
-    flex: 1;
-    overflow: hidden;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .add-wrapper {
-    padding: 10px;
-    flex: 1;
-    overflow-y: scroll;
-
-    .add-content {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      border: 1px solid #cccccc;
-      height: 100%;
-      box-sizing: border-box;
-    }
-  }
+  background: #fff;
 }
-
-.tabs {
-  display: flex;
-  align-items: center;
-  height: 40px;
-
-  .tab-item {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-
-    .tab-text {
-      font-weight: 600px;
-      font-size: 14px;
-      position: relative;
-
-      .active_indi {
-        box-sizing: border-box;
-        position: absolute;
-        width: 100%;
-        height: 2px;
-        background-color: #005cbb;
-      }
-    }
-  }
-}
-
-.show {}
-
-.hide {
-  display: none !important;
-}
-
 
 .popup-header {
   height: 56px;
-  width: 100%;
-  background: #fff;
-  box-sizing: border-box;
-  border-bottom: 1px solid #cccccc;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  padding: 0 10px;
+  padding: 0 8px;
+  border-bottom: 1px solid $border;
+  position: relative;
 
   .popup-title {
-    font-size: 16px;
     position: absolute;
     left: 50%;
     transform: translateX(-50%);
+    font-size: 16px;
+    font-weight: 600;
   }
 }
 
 .icon-btn {
   @include styless-button;
-  position: relative;
-}
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
 
-.add-content-user {
-  margin-top: 10px;
-
-  .user-info {
-    display: flex;
-
-    .user-avatar {
-      width: 54px;
-      height: 54px;
-    }
-
-    .user-name {
-      margin-left: 10px;
-      font-size: 20px;
-    }
-  }
-
-  .send-btn-line {
-    margin-top: 20px;
-    display: flex;
-    justify-content: center;
-
-    .response-text {
-      margin-top: 10px;
-      font-size: 12px;
-    }
+  &:hover {
+    background: $bg-subtle;
   }
 }
 
-.pending-content {
-  .user-info {
+/* tabs */
+.tabs {
+  flex: 0 0 auto;
+  display: flex;
+  border-bottom: 1px solid $border;
+
+  .tab-item {
+    flex: 1;
+    height: 44px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    position: relative;
+    color: $muted;
+
+    .tab-text {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .tab-badge {
+      display: inline-block;
+      margin-left: 6px;
+      min-width: 18px;
+      height: 18px;
+      padding: 0 5px;
+      border-radius: 9px;
+      background: $primary;
+      color: #fff;
+      font-size: 11px;
+      line-height: 18px;
+      text-align: center;
+    }
+
+    &.active {
+      color: $primary;
+
+      &::after {
+        content: '';
+        position: absolute;
+        left: 0;
+        right: 0;
+        bottom: -1px;
+        height: 2px;
+        background: $primary;
+      }
+    }
+  }
+}
+
+.tab-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  // [hidden] 绑定需压过本规则的 display:flex（类选择器特异性高于 UA 的 [hidden]{display:none}）。
+  // 用属性选择器 .tab-pane[hidden] 提升特异性，免 !important。
+  &[hidden] {
+    display: none;
+  }
+}
+
+/* search bar (top) */
+.search-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  background: $bg-subtle;
+
+  .search-icon {
+    color: $muted;
+    flex: 0 0 auto;
+  }
+
+  .search-input {
+    flex: 1;
+    min-width: 0;
+    height: 40px;
+    padding: 0 12px;
+    border: 1px solid $border;
+    border-radius: 20px;
+    background: #fff;
+    font-size: 14px;
+    box-sizing: border-box;
+
+    &:focus {
+      outline: none;
+      border-color: $primary;
+    }
+  }
+
+  .search-btn {
+    flex: 0 0 auto;
+  }
+}
+
+.result-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+/* shared empty / loading / error hint */
+.state-hint {
+  height: 100%;
+  min-height: 160px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  color: $muted;
+  text-align: center;
+
+  .state-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: #2b2f3a;
+  }
+
+  .state-sub {
+    font-size: 13px;
+  }
+
+  .state-error {
+    color: $danger;
+  }
+}
+
+/* add result card */
+.user-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid $border;
+  border-radius: 12px;
+
+  .user-main {
     display: flex;
+    align-items: center;
 
     .user-avatar {
-      width: 54px;
-      height: 54px;
+      width: 48px;
+      height: 48px;
+      flex: 0 0 auto;
     }
 
-    .user-name {
-      margin-left: 10px;
-      font-size: 20px;
+    .user-meta {
+      margin-left: 12px;
     }
+  }
+
+  .user-actions {
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .user-name {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .response-text {
+    font-size: 12px;
+    color: $muted;
+
+    &.is-info {
+      color: $primary;
+    }
+  }
+}
+
+/* pending list */
+.pending-area {
+  flex: 1;
+  overflow-y: auto;
+
+  .pending-row {
+    display: flex;
+    align-items: center;
+    padding: 10px 12px;
+    border-bottom: 1px solid $border;
+
+    .user-avatar {
+      width: 44px;
+      height: 44px;
+      flex: 0 0 auto;
+    }
+
+    .pending-meta {
+      flex: 1;
+      min-width: 0;
+      margin-left: 12px;
+
+      .user-name {
+        font-size: 15px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .pending-date {
+        font-size: 12px;
+        color: $muted;
+        margin-top: 2px;
+      }
+    }
+
+    .pending-actions {
+      flex: 0 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+
+      .decline-btn {
+        color: $danger;
+      }
+    }
+  }
+
+  .row-err {
+    padding: 0 12px 8px 68px;
+    font-size: 12px;
+    color: $danger;
+    border-bottom: 1px solid $border;
   }
 }
