@@ -26,6 +26,7 @@ import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
 import { UserIdDto } from '../dto/user.dto';
 import { EventGateway } from 'src/gateway/event.gateway';
 import { GroupService } from 'src/group/group.service';
+import { serializeBody } from '../common/serialize.interceptor';
 
 @ApiTags('message')
 @Controller()
@@ -67,12 +68,14 @@ export class MessageController {
           req.user.userId,
           userMsgTr.threadId,
           dto.content,
-          ContentType.PURE_TEXT,
+          dto.contentType ?? ContentType.PURE_TEXT,
         );
-        const msgData = {
+        // WS 推完整消息体（serializeBody 把 BigInt→string / Date→ms，与 HTTP 响应同口径；
+        // 前端收到即可直接渲染，无需二次 query-messages）。
+        const msgData = serializeBody({
           threadId: userMsgTr.threadId,
-          msgId: data.id.toString(),
-        };
+          ...data,
+        });
         const userIds = await this.groupService.getAllGroupUserIds(
           userMsgTr.toObjId,
         );
@@ -100,12 +103,12 @@ export class MessageController {
           req.user.userId,
           userMsgTr.threadId,
           dto.content,
-          ContentType.PURE_TEXT,
+          dto.contentType ?? ContentType.PURE_TEXT,
         );
-        const msgData = {
+        const msgData = serializeBody({
           threadId: userMsgTr.threadId,
-          msgId: data.id.toString(),
-        };
+          ...data,
+        });
         this.eventGateway.onNewMessage(req.user.userId, msgData);
         this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
         return { code: BusinessCode.OK, message: 'successful', data };
@@ -138,9 +141,11 @@ export class MessageController {
       };
     }
     if (userThread.status === UserMessageThreadStatus.APPROVED) {
+      // take+1 法：多取 1 条判断 hasMore，data 截断回 take 条。
+      // 消除「总数恰为 take 整数倍时前端靠 <take 启发式多打一次空请求」的边界问题。
       const newParams: Prisma.MessageFindManyArgs = {
         skip: dto.skip,
-        take: dto.take,
+        take: dto.take + 1,
         orderBy: {
           id: dto.orderBy,
         },
@@ -148,14 +153,17 @@ export class MessageController {
       if (dto.lastId) {
         newParams.cursor = { id: BigInt(dto.lastId) };
       }
-      const data = await this.messageService.queryMessages(
+      const rows = await this.messageService.queryMessages(
         userThread.threadId,
         newParams,
       );
+      const hasMore = rows.length > dto.take;
+      const data = hasMore ? rows.slice(0, dto.take) : rows;
       return {
         code: BusinessCode.OK,
         message: 'successful',
         data,
+        hasMore,
       };
     } else {
       return { code: BusinessCode.THREAD_NOT_FOUND, message: `no user thread $[${dto.userThreadId}]` };

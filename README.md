@@ -230,3 +230,4 @@ npm test --prefix web           # Karma 测试
 - [docs/api.md](docs/api.md) — 完整 HTTP API 与 WebSocket 事件参考
 - [docs/database.md](docs/database.md) — 数据模型与关系图
 - [docs/protocol-plan.md](docs/protocol-plan.md) — 后端接口与前后端交互协议栈规划（分层目标契约、错误码、WS 事件目录、P0–P3 路线图）
+- [docs/chat-message-list-design.md](docs/chat-message-list-design.md) — 移动端 1v1 聊天消息列表设计规范（WhatsApp 风：气泡/头像/名字/尾尖/分组/明暗主题/尺寸）

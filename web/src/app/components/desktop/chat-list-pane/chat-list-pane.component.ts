@@ -42,8 +42,8 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: #fff;
-      border-right: 1px solid #e5e7eb;
+      background: var(--app-surface);
+      border-right: 1px solid var(--app-border);
       box-sizing: border-box;
       overflow: hidden;
     }
@@ -53,8 +53,8 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
       box-sizing: border-box;
       height: 34px;
       padding: 0 10px;
-      border-radius: 8px;
-      border: 1px solid #d1d5db;
+      border-radius: var(--app-radius-md);
+      border: 1px solid var(--app-border-strong);
       font-size: 14px;
       outline: none;
     }
@@ -69,15 +69,15 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
       flex: 0 0 auto;
       height: 30px;
       padding: 0 14px;
-      border: 1px solid #d1d5db;
-      background: #fff;
-      border-radius: 15px;
+      border: 1px solid var(--app-border-strong);
+      background: var(--app-surface);
+      border-radius: var(--app-radius-pill);
       cursor: pointer;
       font-size: 13px;
-      color: #374151;
+      color: var(--app-text);
       white-space: nowrap;
     }
-    .ftab.active { background: #2563eb; border-color: #2563eb; color: #fff; }
+    .ftab.active { background: var(--app-brand); border-color: var(--app-brand); color: #fff; }
     .list { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
   `]
 })

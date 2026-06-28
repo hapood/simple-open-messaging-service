@@ -1,10 +1,11 @@
 @import "../../assets/utils.scss";
 
-$primary: #005cbb;
-$border: #e3e5e8;
-$muted: #707991;
-$bg-subtle: #f4f6f9;
-$danger: #d93025;
+// 局部别名指向全局 token（var()）。改主题/深色模式只动 _tokens.scss，此处零改动。
+$primary: var(--app-brand);
+$border: var(--app-border);
+$muted: var(--app-text-muted);
+$bg-subtle: var(--app-bg);
+$danger: var(--app-danger);
 
 .friend-requests {
   width: 100%;
@@ -12,7 +13,7 @@ $danger: #d93025;
   overflow-y: hidden;
   display: flex;
   flex-direction: column;
-  background: #fff;
+  background: var(--app-surface);
 }
 
 .popup-header {
@@ -40,7 +41,7 @@ $danger: #d93025;
   justify-content: center;
   width: 40px;
   height: 40px;
-  border-radius: 50%;
+  border-radius: var(--app-radius-pill);
   cursor: pointer;
 
   &:hover {
@@ -74,7 +75,7 @@ $danger: #d93025;
       min-width: 18px;
       height: 18px;
       padding: 0 5px;
-      border-radius: 9px;
+      border-radius: var(--app-radius-pill);
       background: $primary;
       color: #fff;
       font-size: 11px;
@@ -131,8 +132,8 @@ $danger: #d93025;
     height: 40px;
     padding: 0 12px;
     border: 1px solid $border;
-    border-radius: 20px;
-    background: #fff;
+    border-radius: var(--app-radius-pill);
+    background: var(--app-surface);
     font-size: 14px;
     box-sizing: border-box;
 
@@ -168,7 +169,7 @@ $danger: #d93025;
   .state-title {
     font-size: 15px;
     font-weight: 600;
-    color: #2b2f3a;
+    color: var(--app-text);
   }
 
   .state-sub {
@@ -187,7 +188,7 @@ $danger: #d93025;
   gap: 12px;
   padding: 12px;
   border: 1px solid $border;
-  border-radius: 12px;
+  border-radius: var(--app-radius-lg);
 
   .user-main {
     display: flex;

@@ -9,6 +9,7 @@ import helmet from 'helmet';
 import { parseCorsOrigins } from './common/env';
 import { AllExceptionsFilter } from './common/exception.filter';
 import { SerializeInterceptor } from './common/serialize.interceptor';
+import { join } from 'path';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -18,6 +19,11 @@ async function bootstrap() {
   app.useWebSocketAdapter(new WsAdapter(app));
 
   app.use(helmet());
+
+  // 静态资源：图片上传落到 process.cwd()/uploads，经 /uploads/* 直接访问。
+  // NestExpressAdapter 扩展了 prefix 选项——把目录挂到子路径 /uploads/ 下，
+  // 与 UploadService.save 返回的 url 前缀对齐。helmet 默认 CSP img-src 'self' data:（同源，允许）。
+  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
   // 开发模式（NODE_ENV !== 'production'）回显任意 Origin：配合 web 端 ng serve 绑 0.0.0.0，
   // 可从 LAN/公网/隧道（任意 host）访问前端并正常调 :3000 接口。
   // 生产模式（NODE_ENV=production）严格走 CORS_ORIGIN 白名单。

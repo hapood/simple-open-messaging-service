@@ -80,7 +80,7 @@ export class EventGateway
     } catch (e) {}
   }
 
-  onNewMessage(userId: number, data: { threadId: number; msgId: string }) {
+  onNewMessage(userId: number, data: unknown) {
     const list = this.wsClientDict[userId];
     list?.forEach((item) =>
       item.send({

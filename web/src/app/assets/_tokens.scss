@@ -1,0 +1,117 @@
+// ============================================================================
+// SOMS Design Tokens — 全站视觉单一事实源
+// ----------------------------------------------------------------------------
+// 所有自研组件应消费这里的「语义 token」(var(--app-*))，而非硬编码色值。
+//
+// 分层：原始色阶(Sass 变量) → 语义 token(CSS 变量 --app-*) → 组件消费
+// 品牌主色锚定 Angular Material 3 主题 primary (mat.$blue-palette 500 = #2196f3)，
+// 使自研组件与 mat-button 等 Material 组件视觉同色，消除历史 7 种蓝各自为政。
+//
+// 深色模式：light 在 :root；dark 预留 [data-theme="dark"]（下一轮填充）。
+// 语义 token 解耦了明暗值，切主题只需重定义变量，组件零改动。
+// ============================================================================
+
+// ---- 原始色阶（Sass 端；供需要编译期运算的场景 @use，组件日常用 CSS 变量即可）---
+// 灰阶沿用 Tailwind gray（与现有 icon-rail / folder-editor / chat-list-pane 一致，迁移成本最低）
+$app-gray-50:  #f9fafb;
+$app-gray-100: #f3f4f6;
+$app-gray-200: #e5e7eb;
+$app-gray-300: #d1d5db;
+$app-gray-400: #9ca3af;
+$app-gray-500: #6b7280;
+$app-gray-700: #374151;
+$app-gray-900: #111827;
+
+// ---- 语义 token（CSS 变量；组件实际消费这些）-------------------------------
+:root {
+  // 品牌（统一历史 7 种蓝：#3370ff/#2563eb/#3390ec/#448aff/#005cbb/#2196f3/#2ca9bc → M3 primary）
+  --app-brand:        #2196f3;
+  --app-brand-hover:  #1976d2;   // hover / 按下加深
+  --app-brand-soft:   #e3f2fd;   // 品牌浅底（选中胶囊 / 高亮）
+  --app-brand-accent: #2ca9bc;   // 渐变辅色（auth 品牌页装饰）
+
+  // 文字（替换 #000000 / #111827 / #1f2329 / #2b2f3a / #374151 等多种「近黑」）
+  --app-text:        #{$app-gray-900};   // 主文字
+  --app-text-muted:  #{$app-gray-500};   // 次要文字（替换 #6b7280/#707579/#707991/#8a919d/#4e5969）
+  --app-text-faint:  #{$app-gray-400};   // 更弱：时间戳 / 占位（替换 #898989/#9ca3af/#a2acb4/#a8aeb8）
+
+  // 表面与底色（替换 #fff/#ffffff/#eeeeee/#f4f6f9/#f3f4f6/#faf9fd/#eef0f3 等多种「白/浅灰」）
+  --app-surface:     #ffffff;            // 卡片 / 面板白底
+  --app-bg:          #f4f6f9;            // 页面 / 窗格分隔底
+  --app-bg-muted:    #{$app-gray-100};   // 次级底（rail / 输入栏 / hover 底）
+
+  // 边框与交互状态底（替换 #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6）
+  --app-border:        #{$app-gray-200};
+  --app-border-strong: #{$app-gray-300};
+  --app-hover:   #{$app-gray-100};   // 列表项 hover
+  --app-active:  #{$app-gray-200};   // 列表项 active / 选中（替换 #dddddd）
+
+  // 语义色
+  --app-danger:       #dc2626;   // 错误 / 危险（替换 #d93025 / #ba1a1a）
+  --app-danger-soft:  #fef2f2;   // 错误浅底
+  --app-success-soft: #afefc8;   // 成功浅底（邀请卡）
+
+  // 消息气泡（IM 核心语义）
+  --app-bubble-self:  var(--app-brand);     // 自己消息
+  --app-bubble-other: #{$app-gray-100};     // 他方消息（替换 #eeeeee）
+
+  // 圆角（收敛历史 4/6/8/9/10/12/16/20px 八档 → 四档 + pill）
+  --app-radius-sm:   6px;
+  --app-radius-md:   10px;
+  --app-radius-lg:   16px;
+  --app-radius-pill: 9999px;
+
+  // 间距（收敛常见 4/8/12/16）
+  --app-space-1: 4px;
+  --app-space-2: 8px;
+  --app-space-3: 12px;
+  --app-space-4: 16px;
+}
+
+// ---- 聊天 / IM 语义 token（WhatsApp 对标，--im-*）--------------------------
+// 1v1 聊天列表的视觉单一事实源：气泡 / 头像 / 时间戳 / 日期分隔 / 媒体网格等
+// 「IM 专属」语义色。与通用 --app-* 区分（--app-bubble-* 是项目通用蓝气泡，
+// 聊天列表走 WhatsApp 绿，故另立 --im-*）。phase-4 真实 MsgGroupComponent 直接复用。
+// 色值全面对标现行 WhatsApp Web（亮色出栈 #d9fdd3、入栈 #fff；暗色 #005c4b/#202c33）。
+:root {
+  --im-chat-bg:        #efeae2;   // 聊天区底色（WhatsApp 米色带壁纸观感）
+  --im-bubble-self:    #d9fdd3;   // 出栈气泡（现行 WhatsApp 绿，旧版 #dcf8c6）
+  --im-bubble-other:   #ffffff;   // 入栈气泡
+  --im-bubble-text:    #111b21;   // 气泡正文
+  --im-time:           #667781;   // 气泡内嵌时间戳（绿/白泡通用灰绿）
+  --im-avatar-self:    #25d366;   // self 头像底（WhatsApp 品牌绿）
+  --im-avatar-other:   #c7c7cc;   // other 头像底（占位灰）
+  --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // 日期分隔 pill 底
+  --im-date-pill-text: var(--app-text-faint);  // 日期分隔文字
+  --im-media-gap:      2px;       // 相册拼盘格间隙
+  --im-media-radius:   var(--app-radius-md);   // 相册单格圆角
+}
+
+// ============================================================================
+// 深色模式（实装）——语义 token 解耦后组件零改动，只需在此重定义变量。
+// 触发：容器挂 [data-theme="dark"]（playground 主题切换即给 .pg 根挂此属性；
+// 未来全站暗色可在 <html> 上挂）。后代继承变量，无需改组件。
+// ============================================================================
+[data-theme="dark"] {
+  // 通用 token 暗色（替换原先注释预留）
+  --app-bg:          #0b141a;
+  --app-bg-muted:    #202c33;
+  --app-surface:     #202c33;
+  --app-text:        #e9edef;
+  --app-text-muted:  #8696a0;
+  --app-text-faint:  #667781;
+  --app-border:      #2a3942;
+  --app-hover:       #2a3942;
+  --app-active:      #37424a;
+
+  // IM token 暗色（WhatsApp dark）
+  --im-chat-bg:        #0b141a;
+  --im-bubble-self:    #005c4b;
+  --im-bubble-other:   #202c33;
+  --im-bubble-text:    #e9edef;
+  --im-time:           rgba(233, 237, 239, 0.5);
+  --im-avatar-self:    #25d366;
+  --im-avatar-other:   #37424a;
+  --im-date-pill-bg:   #182229;
+  --im-date-pill-text: #8696a0;
+}

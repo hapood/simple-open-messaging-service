@@ -6,7 +6,7 @@
   padding: 48px;
   overflow: hidden;
   color: #ffffff;
-  background: linear-gradient(135deg, #2ca9bc 0%, #2196f3 100%);
+  background: linear-gradient(135deg, var(--app-brand-accent) 0%, var(--app-brand) 100%);
 
   // soft decorative bubbles, low opacity so the wordmark keeps contrast
   &::before,
@@ -41,7 +41,7 @@
   height: 84px;
   margin: 0 auto 24px;
   // logo 自带主色底，脱离品牌页渐变（favicon/独立图标）也能成立；
-  // 在蓝绿渐变背景上靠投影分层，避免与渐变末端 #2196f3 融为一体
+  // 在蓝绿渐变背景上靠投影分层，避免与渐变末端融为一体
   filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.18));
 }
 

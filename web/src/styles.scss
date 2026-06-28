@@ -1,4 +1,5 @@
 @use '@angular/material' as mat;
+@use './app/assets/tokens';
 
 /* === M3 theme: 主色 #2196f3（mat.$blue-palette 500 色阶，与原手搓版一致） === */
 $theme: mat.define-theme((

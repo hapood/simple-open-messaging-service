@@ -1,0 +1,34 @@
+<div
+  class="pg-msg-row pg-{{ side() }}{{ showAvatar() ? ' pg-has-avatar' : '' }}{{ isGroupStart() ? ' pg-group-start' : '' }} pg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  @if (showAvatar() && side() === 'other') {
+    <div class="pg-avatar pg-avatar-other">{{ data().name.slice(0, 1) }}</div>
+  }
+
+  <div class="pg-col pg-{{ side() }}">
+    @if (showName()) {
+      <div class="pg-name pg-{{ side() }}">{{ data().name }}</div>
+    }
+    <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-invite">
+      <div class="pg-invite-card">
+        <div class="pg-invite-title">{{ data().name }} invite you to join:</div>
+        <div class="pg-invite-name">{{ invite().groupName }}</div>
+        @if (expiryLabel()) {
+          <div class="pg-invite-expiry">valid until {{ expiryLabel() }}</div>
+        }
+        @switch (status()) {
+          @case (0) {
+            <button mat-raised-button color="primary" (click)="joinGroup()">Join</button>
+          }
+          @case (1) {
+            <button mat-raised-button disabled>EXPIRED</button>
+          }
+        }
+      </div>
+    </div>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="pg-avatar pg-avatar-self">{{ data().name.slice(0, 1) }}</div>
+  }
+</div>

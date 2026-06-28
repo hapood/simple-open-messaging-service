@@ -1,18 +1,2 @@
-.bottom-bar {
-  display: flex;
-  position: fixed;
-  bottom: 0;
-  width: 100%;
-  .bar-item {
-    border: 1px solid #cccccc;
-    flex: 1;
-    display: flex;
-    align-items: center;
-    height: 30px;
-    font-size: 12px;
-
-    &.active {
-      background: red;
-    }
-  }
-}
+/* 根组件仅承载 <router-outlet />，无宿主样式。旧的 .bottom-bar 移动端底部导航
+   已被桌面 icon-rail / 移动端 mobile-home 取代，死代码已清理。 */

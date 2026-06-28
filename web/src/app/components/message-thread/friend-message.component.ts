@@ -1,264 +1,187 @@
 import {
-  Component, ElementRef, signal, viewChild, input, Signal,
-
+  Component,
+  effect,
+  ElementRef,
+  EnvironmentInjector,
+  inject,
+  input,
+  OnDestroy,
+  signal,
+  viewChild,
 } from '@angular/core';
-import { NgClass } from '@angular/common';
-import { FormsModule } from '@angular/forms';
-import { WebsocketService } from '../../services/websocket.service';
-import { MsgGroupStatus, DisMsgGrp } from './model';
-import { MsgGroupComponent } from '../message/msg-group/msg-group.component'
+import {
+  VirtualScroller,
+  type ScrollerApi,
+  type VsElement,
+  type VsItem,
+  type VsScrollInfo,
+} from '../../lib/virtual-scroll/virtual-scroller';
+import { classifyGroupFlags, type GroupCtx } from '../../lib/virtual-scroll/group-logic';
+import { ChatThreadController, formatDateSeparator } from './chat-thread-controller';
+import { createMsgVsElement } from '../message-cards/create-item';
+import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
-import { MsgInputBarComponent } from '../message/msg-input-bar/msg-input-bar.component';
-import { MsgGroupFactory } from './MsgGroupFactory';
-import { MsgService } from '../../services/message.service'
+import { MsgInputBarComponent } from '../message-cards/input-bar/msg-input-bar.component';
+import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
-import { UserMessageThread } from '../../services/model';
+import { WebsocketService } from '../../services/websocket.service';
+import type { UserMessageThread } from '../../services/model';
 
-const LOAD_MORE_TRIGGER_OFFSET = 100;
-const UNREAD_INITIAL_PADDING_TOP = 100;
-const SCROLL_HEIGHT_THRESHOLD = 1000;
+const TOP_LOAD_TRIGGER = 200; // 滚到距顶 200px 内 + 已挂载到顶 → 触发历史加载
 
+/**
+ * 消息线程容器（桌面 chat-pane 内联 + 移动 root-popup 弹窗共用本组件）。
+ *
+ * 渲染核心已替换为虚拟滚动内核 B（VirtualScroller 手动补偿）：
+ *  - 数据层委托 ChatThreadController（游标分页 / WS / 资料 / 分组）。
+ *  - 历史加载由 onScroll 检测「已挂载到顶 + 贴顶」触发 controller.fetchOlder，
+ *    完成后回调 scroller.prependItems（异步 HTTP，不用内核同步 onLoadMore）。
+ *  - createItem 用 classifyGroupFlags 按上一条算 isShowHead（append 不重渲旧末条）。
+ *  - 性能模式：不传 onDebug（生产 ngDevMode DCE 零开销）。
+ *
+ * zoneless：viewChild 用 effect 初始化（ngAfterViewInit 可能不触发，见 zoneless-viewchild-init-effect 记忆）。
+ * 切会话（同组件 input 变）：teardown 旧 scroller/controller + 重建（chat-pane @if 不销毁同实例）。
+ */
 @Component({
-    selector: 'app-message-thread',
-    imports: [FormsModule, NgClass, MsgGroupComponent, MessageHeaderComponent, MsgInputBarComponent],
-    templateUrl: './friend-message.component.html',
-    styleUrl: './friend-message.component.scss'
+  selector: 'app-message-thread',
+  standalone: true,
+  imports: [MessageHeaderComponent, MsgInputBarComponent],
+  templateUrl: './friend-message.component.html',
+  styleUrl: './friend-message.component.scss',
 })
-export class MessageThreadComponent {
+export class MessageThreadComponent implements OnDestroy {
+  readonly userThreadId = input<number>();
+  readonly startMsgId = input<string>();
+  readonly userMsgTrd = input<UserMessageThread>();
 
-  userThreadId = input<number>();
-  startMsgId = input<string>();
+  private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
+  private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly topSentinelRef = viewChild<ElementRef<HTMLDivElement>>('topSentinel');
+  private readonly envInjector = inject(EnvironmentInjector);
+  private readonly msgService = inject(MsgService);
+  private readonly userService = inject(UserService);
+  private readonly wsService = inject(WebsocketService);
 
-  grpStatArrSig: Signal<MsgGroupStatus[]> | undefined
-  dispGrpList: Signal<DisMsgGrp[]> | undefined
+  private scroller?: ScrollerApi<ChatItemData>;
+  private controller?: ChatThreadController;
+  private currentTrdId: number | null = null;
 
-  readonly msgScroller = viewChild<ElementRef<HTMLDivElement>>('msgScroller');
-  readonly groupPadding = viewChild<ElementRef<HTMLDivElement>>('groupPadding');
+  readonly atBottom = signal(true);
+  readonly stickyDate = signal<string | null>(null);
 
-  readonly userMsgTrd = input<UserMessageThread>()
-
-  private isBottom = false
-  private scrollObserver!: ResizeObserver;
-  private threshold: { up: number, down: number } | undefined = undefined
-  private _startMsgId: string | undefined
-  private _scrollerElm!: HTMLDivElement
-  private _scrollerInfo!: { clientHeight: number, disToBot: number };
-  private grpFactory!: MsgGroupFactory
-
-  constructor(private wsService: WebsocketService, private msgService: MsgService,
-    private userService: UserService) {
-    this.wsService.eventSubject.subscribe({
-      next: (msg) => {
-        if (msg.event === 'NEW_MESSAGE' && msg.status === 0) {
-          const msgData = msg.data
-          if (msgData.threadId === this.grpFactory.userMsgTrd.threadId) {
-            this.grpFactory.newMessageNotify(msgData.msgId)
-            this.checkAndBuildGroup()
-          }
-        }
-      }
-    })
+  constructor() {
+    // viewChild signal 解析后初始化（首次）；userMsgTrd 变化（切会话）时 teardown + 重建。
+    effect(() => {
+      const vp = this.viewportRef();
+      const ct = this.contentRef();
+      const ts = this.topSentinelRef();
+      const trd = this.userMsgTrd();
+      if (!vp || !ct || !ts || !trd) return;
+      if (this.currentTrdId === trd.id) return; // 同会话已初始化
+      this.teardown();
+      this.initScroller(vp.nativeElement, ct.nativeElement, ts.nativeElement, trd);
+      this.currentTrdId = trd.id;
+    });
   }
 
-  ngOnInit() {
-    const userThreadId = this.userThreadId()!, startMsgId = this.startMsgId()
-    this.initialize(userThreadId, startMsgId)
-  }
-
-  initialize(userThreadId: number, startMsgId: string | undefined) {
-    this._startMsgId = startMsgId
-    if (startMsgId) {
-      console.info('set show specific id scroll group threshold')
-      this.threshold = {
-        up: SCROLL_HEIGHT_THRESHOLD,
-        down: SCROLL_HEIGHT_THRESHOLD - UNREAD_INITIAL_PADDING_TOP,
-      }
-    } else {
-      console.info('set show old group scroll group threshold')
-      this.threshold = {
-        up: SCROLL_HEIGHT_THRESHOLD,
-        down: 0,
-      }
-    }
-    const grpFactory = new MsgGroupFactory({
-      cb: {
-        beforeGrpRemoved: () => { },
-        afterMsgListAdd: (direction) => {
-          this.checkAndBuildGroup()
+  private initScroller(
+    viewport: HTMLDivElement,
+    content: HTMLDivElement,
+    topSentinel: HTMLDivElement,
+    trd: UserMessageThread,
+  ): void {
+    const controller = new ChatThreadController(
+      trd,
+      this.msgService,
+      this.userService,
+      this.wsService,
+      {
+        onReady: (items) => {
+          this.scroller!.setItems(items);
+          this.scroller!.scrollToBottom();
+          this.updateStickyDate();
         },
-        afterGrpReady: () => {
-          this.checkAndBuildGroup()
+        onPrepended: (newItems) => {
+          this.scroller!.prependItems(newItems);
         },
-        onMsgThreadInit: () => {
-          this.checkAndBuildGroup()
-        }
-      }
-      , startMsgId,
-      userThreadId,
-      msgService: this.msgService,
-      userService: this.userService,
-      userMsgTrd: this.userMsgTrd()!
-    })
-    this.grpStatArrSig = grpFactory.grpStatArrSig
-    this.dispGrpList = grpFactory.dispGrpList
-    this.grpFactory = grpFactory
+        onAppended: (newItems) => {
+          // appendItems 内核已按 wasAtBottom 决定挂载；贴底再 scrollToBottom 保险。
+          this.scroller!.appendItems(newItems);
+          if (this.atBottom()) this.scroller!.scrollToBottom();
+        },
+      },
+    );
+    this.controller = controller;
+    // 内核 B（手动补偿）。不传 onLoadMore（异步 HTTP 走 onScroll）、不传 onDebug（性能模式）。
+    this.scroller = new VirtualScroller<ChatItemData>({
+      viewport,
+      content,
+      topSentinel,
+      hooks: { createItem: (item, index) => this.createItem(item, index) },
+      onScroll: (info) => this.onScroll(info),
+    });
+    controller.loadInitial();
   }
 
-  ngAfterViewInit() {
-    const elm = this.msgScroller()!.nativeElement;
-    this._scrollerElm = elm;
-    this.scrollObserver = new ResizeObserver(entries => {
-      const { clientHeight, scrollTop, scrollHeight } = elm
-      console.info('scroller height change, sync with it')
-      const { clientHeight: lastClientHeight, disToBot } = this._scrollerInfo
-      const delta = lastClientHeight - clientHeight
-      if ((this.isBottom && delta > 0) || (!this.isBottom && delta < disToBot)) {
-        elm.scrollTop += delta
-      }
-      this._scrollerInfo = {
-        clientHeight,
-        disToBot: scrollHeight - (clientHeight + scrollTop)
-      }
-    })
-    const { clientHeight, scrollTop, scrollHeight } = elm
-    this._scrollerInfo = {
-      clientHeight,
-      disToBot: scrollHeight - (clientHeight + scrollTop)
-    }
-    this.scrollObserver.observe(elm);
-    this.checkAndBuildGroup()
-  }
-
-  ngOnDestroy() {
-    this.scrollObserver.disconnect()
-  }
-
-  onAfterSent() {
-    this.afterMsgSent()
-  }
-
-  checkAndBuildGroup() {
-    let result = this.grpFactory.calcPreparedHeight()
-    if (!result) {
-      //wait for calculating
-      return
-    }
-    let { newScrollHeight, upsideGroupHeight, downsideGroupHeight, isAllStable } = result
-    if (this.threshold !== undefined) {
-      //initial upside and downside height
-      upsideGroupHeight = newScrollHeight
-      downsideGroupHeight = 0
-    }
-    const grpFactory = this.grpFactory
-    if (isAllStable) {
-      console.info("all groups are stable, check to load more groups")
-      if (this.threshold === undefined) {
-        const { scrollTop, clientHeight, scrollHeight } = this._scrollerElm
-        if (scrollTop < (LOAD_MORE_TRIGGER_OFFSET)) {
-          console.info('scroll reached top, try load more old group')
-          grpFactory.startBuild(0)
-        }
-        if (scrollTop + clientHeight > scrollHeight - LOAD_MORE_TRIGGER_OFFSET) {
-          console.info('scroll reached bottom, try load more new group')
-          grpFactory.startBuild(1)
-        }
-        console.info("no need for delta generating")
-        return
+  /** 内核 createItem 钩子：按上一条算分组标，调 createMsgVsElement 包装组件。 */
+  private createItem(item: VsItem<ChatItemData>, index: number): VsElement<ChatItemData> {
+    let isShowHead = true;
+    let isGroupStart = false;
+    const data = item.data;
+    if (data.type === 'msg') {
+      const curCtx: GroupCtx = { creator: data.creator };
+      const prevItem = index > 0 ? this.controller!.items[index - 1] : null;
+      const prevMsg =
+        prevItem?.data.type === 'msg' ? (prevItem.data as ChatMsgData) : null;
+      let prevCtx: GroupCtx | null;
+      if (prevMsg) {
+        prevCtx = { creator: prevMsg.creator };
+      } else if (index === 0 && this.controller!.hasOlder) {
+        // 幽灵 prev：还有更早历史 → 假设更早末条与本条同 sender（暂不显头像，prepend 后修正）。
+        prevCtx = { creator: data.creator };
       } else {
-        const up = this.threshold.up
-        if (upsideGroupHeight < up) {
-          console.info('upside group not satisfied threshold, try add group')
-          grpFactory.startBuild(0)
-        }
-        if (downsideGroupHeight < this.threshold.down) {
-          console.info('downside group not satisfied threshold, try add group')
-          grpFactory.startBuild(1)
-        }
-        console.info("initial generating finished")
+        prevCtx = null; // 真·首条 → 显头像
+      }
+      isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
+      isGroupStart = isShowHead && !!prevMsg; // 换发送者的新组首加组间留白
+    }
+    return createMsgVsElement(item, isShowHead, isGroupStart, this.envInjector);
+  }
+
+  private onScroll(info: VsScrollInfo): void {
+    this.atBottom.set(info.atBottom);
+    // 历史加载：已挂载到顶（mountedStart===0）+ 滚到顶附近 → 异步拉更旧（完成后 controller 回调 prependItems）。
+    if (info.mountedStart === 0 && info.scrollTop < TOP_LOAD_TRIGGER) {
+      this.controller?.fetchOlder();
+    }
+    this.updateStickyDate();
+  }
+
+  /** 粘性日期浮层：取挂载区间首条 msg 的天（近似视口顶部日期）。 */
+  private updateStickyDate(): void {
+    if (!this.scroller || !this.controller) return;
+    const info = this.scroller.getInfo();
+    const items = this.controller.items;
+    for (let i = info.mountedStart; i < info.mountedEnd && i < items.length; i++) {
+      const d = items[i].data;
+      if (d.type === 'msg') {
+        this.stickyDate.set(formatDateSeparator(d.createdAtMs));
+        return;
       }
     }
-
-    //calc height and scrollTop 
-    console.info('upside and downside are both ready, show it!')
-    const { scrollTop, clientHeight } = this._scrollerElm
-    const elm = this.groupPadding()!.nativeElement
-    elm.style.height = newScrollHeight + 'px';
-    if (this.threshold === undefined) {
-      console.info('delta setting scrollHeight')
-      if (newScrollHeight > clientHeight) {
-        if (this.isBottom) {
-          if (downsideGroupHeight < clientHeight) {
-            this._scrollerElm.scrollTop = newScrollHeight - clientHeight;
-          } else {
-            let scrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
-            if (scrollTop < 0) {
-              scrollTop = 0
-            }
-            this._scrollerElm.scrollTop = scrollTop
-          }
-        } else {
-          elm.style.display = "flex"
-          elm.style.flexDirection = "column"
-          elm.style.justifyContent = "flex-end"
-          this._scrollerElm.scrollTop = scrollTop + upsideGroupHeight
-        }
-      } else {
-        this._scrollerElm.scrollTop = 0
-        this.isBottom = true
-      }
-    } else {
-      console.info('initial setting scrollHeight')
-      if (this._startMsgId) {
-        if (newScrollHeight > clientHeight) {
-          const newScrollTop = newScrollHeight - downsideGroupHeight - UNREAD_INITIAL_PADDING_TOP
-          if (newScrollTop > 0) {
-            this._scrollerElm.scrollTop = newScrollTop;
-          } else {
-            this._scrollerElm.scrollTop = 0
-          }
-        } else {
-          this._scrollerElm.scrollTop = 0
-          this.isBottom = true
-        }
-      } else {
-        const newScrollTop = newScrollHeight - downsideGroupHeight - clientHeight
-        if (newScrollTop > 0) {
-          this._scrollerElm.scrollTop = newScrollTop
-        } else {
-          this._scrollerElm.scrollTop = 0
-        }
-        this.isBottom = true
-      }
-      this.threshold = undefined
-    }
-    grpFactory.preparedToStable()
   }
 
-  onMsgScroll(event: Event) {
-    console.info('onMsgScroll')
-    const { scrollTop, scrollHeight, clientHeight } = this._scrollerElm
-    if ((clientHeight + scrollTop) >= scrollHeight - 1) {
-      this.isBottom = true;
-    } else {
-      this.isBottom = false;
-    }
-    this._scrollerInfo = {
-      clientHeight,
-      disToBot: scrollHeight - (clientHeight + scrollTop)
-    }
-    this.checkAndBuildGroup()
+  /** 输入栏发送后回调：WS 会推新消息（自发消息也回推）→ onAppended 处理贴底，无需主动拉。 */
+  onAfterSent(): void {}
+
+  private teardown(): void {
+    this.scroller?.destroy();
+    this.scroller = undefined;
+    this.controller?.destroy();
+    this.controller = undefined;
   }
 
-  scrollToBottom() {
-    const elm = this._scrollerElm
-    elm.scrollTo(0, elm.scrollHeight);
-  }
-
-  onGroupHeightChange(params: { index: number, height: number }) {
-    this.grpFactory.updateGrpheight(params)
-    this.checkAndBuildGroup()
-  }
-
-  afterMsgSent() {
+  ngOnDestroy(): void {
+    this.teardown();
   }
 }

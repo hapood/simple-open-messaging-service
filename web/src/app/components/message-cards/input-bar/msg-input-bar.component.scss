@@ -1,0 +1,128 @@
+// WhatsApp 式输入栏。:host 作 flex item（message-thread flex column 底部），非 absolute。
+:host {
+  display: block;
+  flex: 0 0 auto;
+}
+
+.pg-input-bar {
+  position: relative;
+  display: flex;
+  align-items: flex-end; // auto-grow 多行时发送键贴底
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--app-bg-muted);
+  border-top: 1px solid var(--app-border);
+}
+
+// emoji 面板：浮在输入栏上方（8 列网格）。
+.pg-emoji-panel {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 8px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 4;
+}
+.pg-emoji {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1.6;
+  padding: 2px 0;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  &:hover {
+    background: var(--app-hover);
+  }
+}
+
+// 胶囊输入容器：emoji + textarea + 附件。
+.pg-input-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 4px 4px 6px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  transition: border-color 0.12s;
+  &:focus-within {
+    border-color: var(--app-brand);
+  }
+}
+
+.pg-input-ico {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  &:hover {
+    background: var(--app-hover);
+    color: var(--app-text);
+  }
+}
+
+.pg-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: none;
+  min-height: 36px;
+  max-height: 120px; // auto-grow 上限 ~6 行
+  box-sizing: border-box;
+  padding: 7px 6px;
+  border: none;
+  background: transparent;
+  color: var(--app-text);
+  font: inherit;
+  font-size: 14px;
+  line-height: 22px;
+  outline: none;
+  overflow-y: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+  &::placeholder {
+    color: var(--app-text-faint);
+  }
+}
+
+// 容器外圆形发送键：有文字=纸飞机、无文字=相机；始终 brand 色。
+.pg-send {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-brand);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.1s;
+  &:hover {
+    background: var(--app-brand-hover);
+  }
+  &:active {
+    transform: scale(0.94);
+  }
+}

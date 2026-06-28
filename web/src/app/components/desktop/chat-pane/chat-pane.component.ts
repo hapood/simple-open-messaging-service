@@ -25,7 +25,7 @@ import { UserMessageThread } from '../../../services/model';
       flex-direction: column;
       height: 100%;
       min-height: 0;
-      background: #fff;
+      background: var(--app-surface);
       overflow: hidden;
     }
     .empty {
@@ -33,7 +33,7 @@ import { UserMessageThread } from '../../../services/model';
       display: flex;
       align-items: center;
       justify-content: center;
-      color: #9ca3af;
+      color: var(--app-text-faint);
       font-size: 15px;
     }
     .chat-pane > app-message-thread {

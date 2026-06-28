@@ -1,15 +1,20 @@
 <div>
   <div class="msg-container">
     <app-message-header [userMsgTrd]="userMsgTrd()"></app-message-header>
-    <div class="msg-scroll-container" (scroll)="onMsgScroll($event)" #msgScroller>
-      <div class="msg-group-list" #groupPadding>
-        @if(dispGrpList!==undefined){
-        @for (dispGrp of dispGrpList(); track dispGrp.id){
-        <app-msg-group [list]="dispGrp.list" [nextStatus]="grpStatArrSig!()[$index]"
-          (onHeightChange)="onGroupHeightChange($event)" [index]="$index"></app-msg-group>
-        }}
+
+    <div class="msg-viewport" #viewport tabindex="0">
+      <div class="msg-content" #content>
+        <div class="msg-sentinel" #topSentinel></div>
       </div>
     </div>
-    <app-msg-input-bar (onAfterSent)="onAfterSent()" [userThreadId]="userThreadId()"></app-msg-input-bar>
+
+    @if (stickyDate(); as sd) {
+      <div class="msg-sticky-date" aria-hidden="true"><span>{{ sd }}</span></div>
+    }
+
+    <app-msg-input-bar
+      [userThreadId]="userThreadId()"
+      (onAfterSent)="onAfterSent()"
+    ></app-msg-input-bar>
   </div>
 </div>

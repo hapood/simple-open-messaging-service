@@ -36,19 +36,19 @@ import { UserMessageThread } from '../../../services/model';
     </div>
   `,
   styles: [`
-    .info-pane { height: 100%; background: #fff; border-left: 1px solid #e5e7eb; box-sizing: border-box; overflow: hidden; }
+    .info-pane { height: 100%; background: var(--app-surface); border-left: 1px solid var(--app-border); box-sizing: border-box; overflow: hidden; }
     app-group-info { display: block; height: 100%; }
     .p2p { display: flex; flex-direction: column; height: 100%; }
     .panel-header {
       height: 56px; flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
-      padding: 0 10px; border-bottom: 1px solid #e5e7eb; box-sizing: border-box;
+      padding: 0 10px; border-bottom: 1px solid var(--app-border); box-sizing: border-box;
     }
     .title { font-size: 15px; font-weight: 600; }
-    .close-btn { border: none; background: transparent; cursor: pointer; color: #6b7280; display: flex; padding: 4px; border-radius: 6px; }
-    .close-btn:hover { background: rgba(0,0,0,0.06); }
+    .close-btn { border: none; background: transparent; cursor: pointer; color: var(--app-text-muted); display: flex; padding: 4px; border-radius: var(--app-radius-sm); }
+    .close-btn:hover { background: var(--app-hover); }
     .profile { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 32px 16px; }
     .name { font-size: 16px; font-weight: 600; }
-    .hint { font-size: 13px; color: #9ca3af; }
+    .hint { font-size: 13px; color: var(--app-text-faint); }
   `]
 })
 export class InfoPaneComponent {

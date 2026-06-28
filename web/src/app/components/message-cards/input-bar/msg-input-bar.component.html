@@ -1,0 +1,44 @@
+<form class="pg-input-bar" (submit)="$event.preventDefault()">
+  @if (emojiOpen()) {
+    <div class="pg-emoji-panel" (click)="$event.stopPropagation()">
+      @for (e of EMOJIS; track e) {
+        <button type="button" class="pg-emoji" (click)="insertEmoji(e)">{{ e }}</button>
+      }
+    </div>
+  }
+  <div class="pg-input-wrap">
+    <button type="button" class="pg-input-ico" (click)="toggleEmoji()" aria-label="表情">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" />
+        <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
+      </svg>
+    </button>
+    <textarea #draftInput class="pg-input" rows="1" placeholder="输入消息…"
+              [ngModel]="draft()" [ngModelOptions]="{ standalone: true }"
+              (ngModelChange)="onDraftChange($event)"
+              (keydown)="onInputKeydown($event)"></textarea>
+    <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="发送图片">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+      </svg>
+    </button>
+  </div>
+  <button type="button" class="pg-send" [class.pg-send-media]="!draft().trim()" (click)="onSendClick()"
+          [attr.aria-label]="draft().trim() ? '发送' : '发送图片'">
+    @if (draft().trim()) {
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+      </svg>
+    } @else {
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+        <circle cx="12" cy="13" r="4" />
+      </svg>
+    }
+  </button>
+  <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
+</form>

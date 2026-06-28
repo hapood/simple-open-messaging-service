@@ -1,0 +1,28 @@
+// 邀请消息行：复用共享规则（@use row-base）+ invite 卡片样式。
+@use '../row-base' as *;
+
+.pg-bubble.pg-invite {
+  padding: 0;
+  display: block;
+  background: var(--app-surface);
+}
+
+.pg-invite-card {
+  padding: 12px 14px;
+  min-width: 220px;
+}
+.pg-invite-title {
+  font-size: 12px;
+  color: var(--app-text-muted);
+  margin-bottom: 4px;
+}
+.pg-invite-name {
+  font-size: 15px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.pg-invite-expiry {
+  font-size: 11px;
+  color: var(--app-text-faint);
+  margin-bottom: 8px;
+}

@@ -1,0 +1,170 @@
+// 消息行共享视觉规则（pg- 设计 token 命名空间）。
+// 各消息行组件 @use 本文件 → Emulated 封装下规则带各自 scope，只作用于本组件模板。
+//
+// 提取自 playground 全局 pg- 规则，去掉依赖 .pg-content 父选择器的部分：
+// 组件根 host（app-msg-*-row）是内核挂载的滚动 item，padding 直接设在 .pg-msg-row 上。
+
+:host {
+  display: block;
+}
+
+// item 根。纵向间距走 padding 不走 margin：内核用 offsetHeight 测高（不含 margin），
+// margin 会把盒子下推、下方气泡叠上来（见 vs-element-border-box 记忆）。
+.pg-msg-row {
+  display: flex;
+  position: relative;
+  padding: 6px var(--app-space-4) 0;
+  box-sizing: border-box;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  &.pg-self {
+    justify-content: flex-end;
+  }
+  &.pg-other {
+    justify-content: flex-start;
+  }
+  // 组间留白由「换发送者的新组首」承担（padding-top 加大）；组内归零续条贴邻。
+  // 每条纵向占位只取决于自己是否组首 → 追加新条时原末条高度不变（0 reflow）。
+  &.pg-group-start {
+    padding-top: 16px;
+  }
+  &.pg-grp-body {
+    padding-top: 0;
+  }
+}
+
+// 新消息淡入：pg-msg-new 持 opacity:0，双 RAF 后移除触发 transition 淡入。
+// vs-pending（内核 mount 时加）用 visibility:hidden 占位测高、移除瞬时切换不淡入 → 滚动挂载不 fade。
+.pg-msg-new {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+// 头像（微信式方形 8px 圆角，40px 业界规范；组首出现，self 右 other 左）。
+.pg-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  align-self: flex-start; // 贴该行顶部，与组首消息上沿对齐
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  &.pg-avatar-self {
+    background: var(--im-avatar-self);
+  }
+  &.pg-avatar-other {
+    background: var(--im-avatar-other);
+  }
+}
+
+.pg-col {
+  max-width: min(72%, 520px);
+  display: flex;
+  flex-direction: column;
+  &.pg-self {
+    align-items: flex-end;
+  }
+  &.pg-other {
+    align-items: flex-start;
+  }
+}
+// 组首显头像（has-avatar）；组内 col 让出头像列（40 头像 + 8 间距 = 48）与组首气泡边沿对齐。
+.pg-msg-row.pg-other .pg-col {
+  margin-left: 8px;
+}
+.pg-msg-row.pg-other:not(.pg-has-avatar) .pg-col {
+  margin-left: 48px;
+}
+.pg-msg-row.pg-self .pg-col {
+  margin-right: 8px;
+}
+.pg-msg-row.pg-self:not(.pg-has-avatar) .pg-col {
+  margin-right: 48px;
+}
+
+.pg-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  margin: 0 0 2px;
+}
+
+// 气泡（WhatsApp：浅绿/白 + 圆角 + 每条右下时间戳）。
+.pg-bubble {
+  position: relative;
+  min-height: 40px;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  border-radius: 10px;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
+  &.pg-self {
+    background: var(--im-bubble-self);
+    color: var(--im-bubble-text);
+  }
+  &.pg-other {
+    background: var(--im-bubble-other);
+    color: var(--im-bubble-text);
+  }
+  &.pg-body {
+    border-radius: 3px;
+  }
+  &.pg-head {
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    border-bottom-left-radius: 3px;
+    border-bottom-right-radius: 3px;
+    // 尾尖：旋转 45° 小方块跨气泡边沿（半内半外、同色）——内半被气泡遮、外半成三角尾尖，
+    // 与气泡融为一体无缝（border-三角法在圆角处易留缝）。
+    &::before {
+      content: '';
+      position: absolute;
+      width: 8px;
+      height: 8px;
+      transform: rotate(45deg);
+    }
+    &.pg-other::before {
+      // ◀ 头像在左：尾尖探左（他方组首有名字，尾尖略下移避名字）
+      top: 8px;
+      left: -4px;
+      background: var(--im-bubble-other);
+    }
+    &.pg-self::before {
+      // ▶ 头像在右：尾尖探右（self 无名字，下移到头像垂直中线 40/2−5）
+      top: 15px;
+      right: -4px;
+      background: var(--im-bubble-self);
+    }
+  }
+}
+
+.pg-bubble-text {
+  margin: 0;
+  font-size: 14.2px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+// 时间戳（WhatsApp：每条气泡右下角）。
+.pg-time {
+  position: absolute;
+  right: 10px;
+  bottom: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--im-time);
+}
+// 影子时间戳：与可见时间同文同宽、不可见但占位，逼正文末行让出右下角 → 正文永不与时间重叠。
+.pg-time-shadow {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 11px; // 必须与 .pg-time 同字号 → 同宽度精确占位
+  white-space: nowrap;
+  visibility: hidden;
+}

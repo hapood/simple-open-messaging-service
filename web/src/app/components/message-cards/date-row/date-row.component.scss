@@ -1,0 +1,19 @@
+:host {
+  display: block;
+  // 纵向留白走 padding 不走 margin（offsetHeight 不含 margin → 下方气泡会叠上来）。
+  padding: 14px var(--app-space-4);
+  box-sizing: border-box;
+}
+
+.pg-date {
+  display: flex;
+  justify-content: center;
+  > span {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--im-date-pill-text);
+    background: var(--im-date-pill-bg);
+    padding: 3px 12px;
+    border-radius: var(--app-radius-pill);
+  }
+}

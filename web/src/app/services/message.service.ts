@@ -17,8 +17,17 @@ export class MsgService {
     return this.http.post(`${apiPrefix}/add-friend`, { uniqName })
   }
 
-  sendMessage(params: { userThreadId: number, content: string }) {
+  sendMessage(params: { userThreadId: number, content: string, contentType?: string }) {
     return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
+  }
+
+  /** 上传图片（multipart：file + 宽高），返回 {url,w,h}。wh 由前端 createImageBitmap 读后带上。 */
+  uploadMedia(file: File, w: number, h: number) {
+    const fd = new FormData()
+    fd.append('file', file)
+    fd.append('w', String(w))
+    fd.append('h', String(h))
+    return this.http.post<StandardResponse<{ url: string, w: number, h: number }>>(`${apiPrefix}/upload`, fd)
   }
 
   queryMessageLog(params: QueryMessageLogParams) {

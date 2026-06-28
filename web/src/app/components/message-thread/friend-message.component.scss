@@ -1,5 +1,4 @@
-// fill-parent chain: host → unnamed wrapper → msg-container. Lets the thread
-// fill its host on both the mobile full-screen overlay and the desktop pane.
+// fill-parent chain: host → wrapper → msg-container. 移动全屏弹窗 / 桌面 pane 都靠它填满。
 :host {
   display: block;
   height: 100%;
@@ -15,14 +14,50 @@
   height: 100%;
   width: 100%;
   overflow: hidden;
+  position: relative;
+  background: var(--im-chat-bg);
+}
 
-  .msg-scroll-container {
-    overflow-x: hidden;
-    overflow-y: auto;
-    flex: 1 1 auto;
+// 滚动视口（内核 B 手动补偿：overflow-anchor:none 独占，避免浏览器二次调 scrollTop 打架）。
+.msg-viewport {
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
+  outline: none;
+  scrollbar-width: none; // 全平台隐藏滚动条
+  &::-webkit-scrollbar {
+    display: none;
   }
 }
 
-.msg-group-wrapper {}
+// 内容层：普通文档流（相对滚动架构），item block 堆叠、高度自然撑开供 viewport 滚动。
+.msg-content {
+  position: relative;
+}
 
-.msg-group-list {}
+// 顶部哨兵：保留给内核 A 路由/playground 复用；本组件不传 onLoadMore，sentinel 仅占位无害。
+.msg-sentinel {
+  height: 1px;
+}
+
+// 粘性日期浮层：在 msg-container 内、viewport 外（兄弟），absolute 钉顶部、不随文档流滚、不参与回收。
+.msg-sticky-date {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 5;
+  pointer-events: none;
+  > span {
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--im-date-pill-text);
+    background: var(--im-chat-bg);
+    padding: 3px 12px;
+    border-radius: var(--app-radius-pill);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  }
+}

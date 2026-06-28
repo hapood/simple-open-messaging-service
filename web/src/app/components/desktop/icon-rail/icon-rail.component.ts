@@ -54,8 +54,8 @@ import { WebsocketService } from '../../../services/websocket.service';
       width: 68px;
       height: 100%;
       padding: 12px 0;
-      background: #f3f4f6;
-      border-right: 1px solid #e5e7eb;
+      background: var(--app-bg-muted);
+      border-right: 1px solid var(--app-border);
       box-sizing: border-box;
     }
     .rail-btn {
@@ -67,12 +67,12 @@ import { WebsocketService } from '../../../services/websocket.service';
       margin: 4px 0;
       padding: 0;
       border: none;
-      border-radius: 50%;
+      border-radius: var(--app-radius-pill);
       background: transparent;
-      color: #374151;
+      color: var(--app-text);
       cursor: pointer;
     }
-    .rail-btn:hover { background: rgba(0, 0, 0, 0.06); }
+    .rail-btn:hover { background: var(--app-hover); }
     .avatar { margin-bottom: 8px; }
   `]
 })

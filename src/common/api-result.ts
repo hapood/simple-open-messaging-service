@@ -28,6 +28,14 @@ export class ApiResult<T = unknown> {
   message: string;
 
   data?: T;
+
+  @ApiProperty({
+    type: 'boolean',
+    nullable: true,
+    description:
+      '仅分页接口（如 query-messages）填充：是否还有更早一页。非分页接口为 undefined。',
+  })
+  hasMore?: boolean;
 }
 
 /**

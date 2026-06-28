@@ -32,4 +32,6 @@ export interface StandardResponse<T = unknown> {
   code: number
   message: string
   data?: T
+  /** 仅分页接口（query-messages）返回：是否还有更早一页。 */
+  hasMore?: boolean
 }

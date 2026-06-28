@@ -3,9 +3,9 @@
 .home-header {
   height: 56px;
   width: 100%;
-  background: #fff;
+  background: var(--app-surface);
   box-sizing: border-box;
-  border-bottom: 1px solid #cccccc;
+  border-bottom: 1px solid var(--app-border);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -18,7 +18,7 @@
 }
 .menu-text {
   font-size: 14px;
-  color: #000;
+  color: var(--app-text);
   margin-left:12px;
   height: 40px;
   line-height: 40px;

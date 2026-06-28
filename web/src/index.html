@@ -4,7 +4,10 @@
   <meta charset="utf-8">
   <title>Web</title>
   <base href="/">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- interactive-widget=resizes-content: 软键盘/浏览器栏弹出时缩小「布局视口」，
+       配合 100dvh 让输入框被顶到键盘上方而非被盖住（对齐 Gemini web；Chromium/Android 生效，
+       桌面无虚拟键盘不受影响；iOS Safari 忽略该关键字，需另做 focus 定位兜底）。 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <meta name="theme-color" content="#2196f3">
 </head>

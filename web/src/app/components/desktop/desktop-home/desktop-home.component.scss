@@ -10,7 +10,7 @@
     flex: 0 0 4px;
     cursor: col-resize;
     background: transparent;
-    &:hover { background: #e5e7eb; }
+    &:hover { background: var(--app-border); }
   }
   .chat { flex: 1 1 auto; min-width: 0; }
   .info { flex: 0 0 340px; }

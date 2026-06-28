@@ -1,0 +1,56 @@
+// 图片消息行：复用共享规则（@use row-base）+ media 特有（grid/cell/媒体时间戳角标）。
+@use '../row-base' as *;
+
+// media 气泡：图片贴边（padding:0）、外层 overflow:hidden 切圆角。
+// width:min(100%,320px)：320 = layoutAlbum 的 baseW，两者必须一致；max-width:100% 让窄屏收缩到 col。
+.pg-bubble.pg-media {
+  padding: 0;
+  min-height: 0;
+  width: min(100%, 320px);
+  display: block; // 覆盖文字气泡的 flex 垂直居中
+  overflow: hidden;
+}
+
+.pg-media-grid {
+  position: relative;
+  width: 100%;
+}
+
+// cell 绝对定位 + background-image（高度由 layoutAlbum 的 px 锁定，不依赖 grid/aspect-ratio）。
+.pg-media-cell {
+  position: absolute;
+  overflow: hidden;
+  background: rgba(127, 127, 127, 0.18); // 图加载前占位灰
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+// 媒体时间戳：叠在右下图上（半透明黑底药丸，任意图底色均可读）。
+.pg-media .pg-time {
+  right: 6px;
+  bottom: 6px;
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  border-radius: var(--app-radius-pill);
+}
+
+// 「+N」更多角标（相册 >6 张：末格蒙半透明黑底 + 居中数字）。
+.pg-cell-more::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+.pg-media-more {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 600;
+}
