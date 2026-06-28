@@ -1,4 +1,4 @@
-@import "../../assets/utils.scss";
+@use "../../assets/utils.scss" as *;
 
 .home-header {
   height: 56px;

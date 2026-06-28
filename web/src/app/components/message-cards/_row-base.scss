@@ -22,13 +22,13 @@
   &.pg-other {
     justify-content: flex-start;
   }
-  // 组间留白由「换发送者的新组首」承担（padding-top 加大）；组内归零续条贴邻。
+  // 组间留白由「换发送者的新组首」承担（padding-top 加大）；组内续条保留小间距（WhatsApp 紧凑但不贴死）。
   // 每条纵向占位只取决于自己是否组首 → 追加新条时原末条高度不变（0 reflow）。
   &.pg-group-start {
-    padding-top: 16px;
+    padding-top: 14px;
   }
   &.pg-grp-body {
-    padding-top: 0;
+    padding-top: 3px;
   }
 }
 

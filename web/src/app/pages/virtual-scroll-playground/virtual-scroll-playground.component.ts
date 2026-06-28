@@ -10,18 +10,26 @@ import { ActivatedRoute } from '@angular/router';
 import { classifyGroupFlags, GroupCtx } from '../../lib/virtual-scroll/group-logic';
 import { LayoutService } from '../../services/layout.service';
 import { createMsgVsElement } from '../../components/message-cards/create-item';
-import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
+import type { AlbumImage, ChatItemData } from '../../components/message-cards/chat-item';
+import { MockChatApi } from './mock-chat-api';
 
-type HeightMode = 'uniform' | 'random' | 'extreme';
+// Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除（与虚拟滚动内核同模式）。
+// 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
+declare const ngDevMode: boolean | null | undefined;
 
 /**
  * 虚拟滚动实验场。
  *
  * 渲染与真实聊天完全一致——createItem 调 createMsgVsElement（真实 message-cards 组件），
- * 数据/行为全 mock（不发 HTTP、不依赖登录/后端）：发消息、对方回复、附件发图、历史加载
- * 均用本地假数据。用于验收内核手感、虚拟化稳定性、高度变化与真实组件的契合。
+ * 数据/行为全 mock（不发 HTTP、不依赖登录/后端）：经 {@link MockChatApi} 生成器一次性产 n 条
+ * 稳定记录，发送/上传/对方回复均走 mock 接口，入参/出参打到 console。
  *
- * 数据类型用真实 ChatItemData（与 ChatThreadController 同构），保证 mock 与生产行为一致。
+ * 数据全量载入（generate → setItems → scrollToBottom），不传 onLoadMore——balance 自然挂载
+ * 更早 item，无需历史加载。跳转到指定 id 经内核 scrollToIndex（A/B 双内核均支持）。
+ *
+ * 【样式边界】本组件 ViewEncapsulation.None（全局 pg-），但**绝不写作用于聊天内容内部的 CSS**
+ *（.pg-msg-row/.pg-bubble 等由 message-cards 组件的 _row-base 自治）——否则全局规则会改消息行
+ * 实测高度、干扰内核 offsetHeight 判断。本文件只管外壳：stage/header/viewport 容器/面板/输入栏/FAB。
  */
 @Component({
   selector: 'app-virtual-scroll-playground',
@@ -29,7 +37,6 @@ type HeightMode = 'uniform' | 'random' | 'extreme';
   templateUrl: './virtual-scroll-playground.component.html',
   styleUrl: './virtual-scroll-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  // 容器/面板/输入栏样式仍全局 pg-（None）；消息行样式由真实组件 _row-base（Emulated scoped）提供。
   encapsulation: ViewEncapsulation.None,
 })
 export class VirtualScrollPlaygroundComponent implements OnDestroy {
@@ -37,7 +44,7 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   private readonly route = inject(ActivatedRoute);
   /** 动态创建消息组件（zoneless 下 createComponent + detectChanges 驱动渲染）。 */
   private readonly envInjector = inject(EnvironmentInjector);
-  /** 方案 A（借浏览器锚定）由路由 data.useNativeAnchor 决定：-b 路由为 true，其余走方案 B（手动补偿）。 */
+  /** 方案 A（借浏览器锚定）由路由 data.useNativeAnchor 决定：-a 路由为 true，-b（默认）走方案 B（手动补偿）。 */
   readonly useNativeAnchor = (this.route.snapshot.data as { useNativeAnchor?: boolean }).useNativeAnchor === true;
   /** 桌面级视口(宽屏+精确指针)：true=常驻侧栏；false=移动抽屉+FAB。 */
   readonly isDesktop = this.layout.isDesktop;
@@ -45,6 +52,14 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   readonly panelOpen = signal(false);
   /** 输入栏为避让软键盘上移的像素（visualViewport 计算，iOS 兜底）。 */
   readonly keyboardOffset = signal(0);
+
+  /** mock 接口（生成器 + send/upload/incoming；每次调用 console 打入参/出参）。 */
+  private readonly mockApi = new MockChatApi();
+  /** 生成器加载中（禁用数据量按钮，防重入）。 */
+  readonly loading = signal(false);
+  /** 短暂提示（跳转未命中等），自动清除。 */
+  readonly toast = signal<string | null>(null);
+  private toastTimer?: ReturnType<typeof setTimeout>;
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
@@ -54,22 +69,16 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   private readonly draftInput = viewChild<ElementRef<HTMLTextAreaElement>>('draftInput');
   private readonly inputBarRef = viewChild<ElementRef<HTMLFormElement>>('inputBar');
   private readonly attachInput = viewChild<ElementRef<HTMLInputElement>>('attachInput');
+  private readonly jumpInput = viewChild<ElementRef<HTMLInputElement>>('jumpInput');
 
   private scroller?: ScrollerApi<ChatItemData>;
 
-  // 状态读数（节流更新）
-  readonly scrollTop = signal(0);
-  readonly totalHeight = signal(0);
+  /** 已挂载节点数（FAB 角标，调试模式显示；性能模式不更新）。 */
   readonly mountedCount = signal(0);
-  readonly mountedFirst = signal(-1);
-  readonly mountedLast = signal(-1);
-  readonly atTop = signal(true);
-  readonly atBottom = signal(true); // 是否贴底（收到新消息时决定是否跟随滚动）
-  readonly cacheCount = signal(0);
-  /** 调试模式：开读数/角标/日志；性能模式全关。dev 页面默认开调试（验收手感时手动切性能）。 */
+  /** 是否贴底（收到新消息时决定是否跟随滚动）。 */
+  readonly atBottom = signal(true);
+  /** 调试模式：开 FAB 角标 + balance 诊断 console；性能模式全关。 */
   readonly debugMode = signal(true);
-  /** 最近一帧 balance 诊断（onDebug 上报，渲染到侧栏读数）。 */
-  readonly balanceStats = signal<VsDebugStats | null>(null);
   /** Telegram 式粘性日期：当前视口顶所属日期标签（滚动实时更新；null=不显浮层）。 */
   readonly stickyDate = signal<string | null>(null);
   /** 主题：light / dark。默认跟随系统 prefers-color-scheme，可手动 toggle 临时覆盖（系统变化时再跟随）。 */
@@ -79,7 +88,6 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   // 控件
   readonly count = signal(5000);
-  readonly mode = signal<HeightMode>('random');
   readonly draft = signal(''); // 输入栏草稿
   readonly emojiOpen = signal(false); // emoji 面板开关
   /** 输入栏实测高度（auto-grow 后更新），驱动 .pg-viewport bottom 紧贴输入栏上沿（多行不遮挡）。 */
@@ -157,15 +165,8 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   };
 
   private lastEmit = 0;
-  private items: VsItem<ChatItemData>[] = []; // 当前列表（发送时向末尾追加）
-  /** 是否还有更早历史。false=已到尽头，items[0] 是真·第一条对话（无需 ghost 判组首）。 */
-  private hasOlder = true;
-  /** items[0] 的前一条 creator（幽灵 prev）：hasOlder=true 时用于判 items[0] 是否组首；尽头时 null。 */
-  private topGhostCreator: number | null = null;
-  private histSeq = 0; // 下拉加载历史时的 id 序号，避免与现有 id 冲突
-  private histLoads = 0; // onLoadMore 已加载批数（封顶后返回 null，模拟"无更早历史"）
-  /** 自发消息 id 序号（send/reply/media 各自独立，避免与 buildItems 的数字 id 冲突）。 */
-  private sendSeq = 0;
+  private lastDebugLog = 0;
+  private items: VsItem<ChatItemData>[] = []; // 当前列表（generate 写入，send/incoming 追加）
 
   // FAB 拖动状态
   private fabDragging = false;
@@ -174,23 +175,6 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   private fabStartY = 0;
   private fabStartLeft = 0;
   private fabStartTop = 0;
-
-  private static readonly PHRASES = [
-    '在吗？',
-    '虚拟滚动内核跑起来了',
-    '你那边列表卡不卡',
-    '我把容器改成了恒定高度',
-    'Telegram 那套确实稳',
-    '气泡用的是项目设计 token',
-    '晚上一起复盘下手感',
-    '收到',
-    '滚轮惯性还得再调调',
-    '这消息列表能扛几万条了',
-    '你看右边「已挂载节点」',
-    '切数据量它不会涨',
-  ];
-  /** 周几中文（getDay: 0=周日）。日期分隔「本周」分级用。 */
-  private static readonly WEEK = ['日', '一', '二', '三', '四', '五', '六'];
 
   // zoneless + signal viewChild：ngAfterViewInit 可能不触发，改用 effect——
   // viewChild signal 解析后 effect 必跑，初始化 scroller（只一次）。
@@ -210,14 +194,11 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
         hooks: {
           createItem: (item, index) => this.createItemEl(item, index),
         },
-        onLoadMore: () => this.fetchOlder(),
         onScroll: (info) => this.onScroll(info),
         onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
       this.scroller = scroller;
-      this.regenerate();
-      scroller.refresh();
-      scroller.scrollToBottom(); // 聊天默认贴底（看最新消息）
+      void this.load(); // 异步生成数据 → setItems → 贴底（不传 onLoadMore：数据全量在内存）
     } catch (e) {
       console.error('[playground] scroller init failed:', e);
     }
@@ -226,6 +207,7 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   ngOnDestroy() {
     this.scroller?.destroy();
     this.themeMqCleanup?.();
+    clearTimeout(this.toastTimer);
     window.removeEventListener('pointermove', this.onFabMove);
     window.removeEventListener('pointerup', this.onFabUp);
   }
@@ -243,34 +225,66 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     onCleanup(() => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); });
   });
 
+  // --- 数据载入 ---
+
+  /** 生成器：调 mockApi.generate(count) 一次性产数据，setItems + 贴底。loading 期间禁用数据量按钮。 */
+  private async load(): Promise<void> {
+    const scroller = this.scroller;
+    if (!scroller) return;
+    this.loading.set(true);
+    try {
+      const items = await this.mockApi.generate(this.count());
+      this.items = items;
+      scroller.setItems(items);
+      scroller.refresh();
+      scroller.scrollToBottom(); // 聊天默认贴底（看最新消息）
+      this.updateStickyDate();
+    } finally {
+      this.loading.set(false);
+    }
+  }
+
   // --- 内核 hooks ---
 
   private createItemEl(item: VsItem<ChatItemData>, index: number): VsElement<ChatItemData> {
     // 分组判定在渲染时按【上一条】算（不预烤进 data）：间距/圆角只依赖"是否组首"，
     // 与下一条无关 → 追加新条时原末条高度不变、无需重渲（0 reflow）。
-    // 用真实组件渲染（createMsgVsElement），与生产 MessageThreadComponent 完全一致。
     let isShowHead = true, isGroupStart = false;
     if (item.data.type === 'msg') {
       const curCtx: GroupCtx = { creator: item.data.creator };
       const prevItem = index > 0 ? this.items[index - 1] : null;
       const prevMsg = prevItem?.data.type === 'msg' ? prevItem.data : null;
-      let prevCtx: GroupCtx | null;
-      if (prevMsg) {
-        prevCtx = { creator: prevMsg.creator };
-      } else if (index === 0 && this.hasOlder && this.topGhostCreator !== null) {
-        prevCtx = { creator: this.topGhostCreator };
-      } else {
-        prevCtx = null;
-      }
+      const prevCtx: GroupCtx | null = prevMsg ? { creator: prevMsg.creator } : null;
       isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
       isGroupStart = isShowHead && !!prevMsg;
     }
-    return createMsgVsElement(item, isShowHead, isGroupStart, this.envInjector);
+    const vs = createMsgVsElement(item, isShowHead, isGroupStart, this.envInjector);
+    // 调试角标（首/续 + 消息 id）：playground 动态注入到行内，ngDevMode 守卫 → 生产 AOT 不创建。
+    // absolute 定位、脱离文档流 → 不改行 offsetHeight，不影响内核高度判断。
+    if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
+    return vs;
   }
 
-  /** onDebug 回调：更新 balanceStats（渲染到侧栏读数）。 */
+  /** 注入调试角标到 .pg-msg-row：首(绿)/续(橙) + 消息 id。仅 dev（ngDevMode）；destroy 随组件卸载。 */
+  private attachDevBadge(host: HTMLElement, item: VsItem<ChatItemData>, isHead: boolean): void {
+    const d = item.data;
+    if (d.type !== 'msg') return; // 仅消息行（date 行无分组概念）
+    const row = host.querySelector('.pg-msg-row');
+    if (!row) return;
+    const badge = document.createElement('span');
+    badge.className = 'pg-dev-badge' + (isHead ? ' pg-dev-badge--head' : ' pg-dev-badge--body');
+    badge.textContent = `${isHead ? '首' : '续'} ${d.msgId}`;
+    row.appendChild(badge);
+  }
+
+  /** balance 诊断 → console.debug（调试模式 + 仅有挂载/卸载活动 + 节流，避免空闲刷屏）。 */
   private onBalanceDebug(s: VsDebugStats) {
-    this.balanceStats.set(s);
+    if (!this.debugMode()) return;
+    if (s.mount + s.unmount === 0) return;
+    const now = performance.now();
+    if (now - this.lastDebugLog < 200) return;
+    this.lastDebugLog = now;
+    console.debug('[vs balance]', s);
   }
 
   private onScroll(info: VsScrollInfo) {
@@ -278,15 +292,9 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     this.updateStickyDate();
     if (!isDevMode() || !this.debugMode()) return;
     const now = performance.now();
-    if (now - this.lastEmit < 100) return; // 读数节流
+    if (now - this.lastEmit < 100) return; // 角标节流
     this.lastEmit = now;
-    this.scrollTop.set(info.scrollTop);
-    this.totalHeight.set(info.scrollHeight);
     this.mountedCount.set(info.mounted);
-    this.mountedFirst.set(info.mountedStart);
-    this.mountedLast.set(info.mountedEnd - 1);
-    this.atTop.set(info.atTop);
-    this.cacheCount.set(info.total);
   }
 
   /**
@@ -319,57 +327,35 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   // --- 控件 ---
 
-  setCount(n: number) { this.count.set(n); this.regenerate(); }
-  setMode(m: HeightMode) { this.mode.set(m); this.regenerate(); }
-
-  regenerate() {
-    this.items = this.buildItems(this.count(), this.mode());
-    this.histLoads = 0;
-    this.hasOlder = true;
-    this.topGhostCreator = this.randomCreator();
-    this.scroller?.setItems(this.items);
-  }
+  setCount(n: number) { this.count.set(n); void this.load(); }
 
   /**
-   * onLoadMore 回调：生成更早的假历史。兑现幽灵衔接不变量（批次末条 creator=旧 topGhost），
-   * 使 prepend 后旧 items[0] 分组不变 → 内核无需重渲。封顶批预置尽头（hasOlder=false/topGhost=null）。
+   * 跳转到指定 id：纯数字→1-based 序号（index = N-1）；否则按 item.id 字符串 findIndex。
+   * 命中后内核 scrollToIndex(idx, 'center')；越界/未命中给短暂提示。
    */
-  private fetchOlder(): VsItem<ChatItemData>[] | null {
-    if (!this.hasOlder) return null;
-    this.histLoads++;
-    const more = this.buildItems(50, this.mode());
-    this.forceLastCreator(more, this.topGhostCreator);
-    const seq = this.histSeq++;
-    more.forEach((it, i) => { it.id = `hist-${seq}-${i}`; });
-    if (this.histLoads >= 20) {
-      this.hasOlder = false;
-      this.topGhostCreator = null;
+  jumpToId(v: string): void {
+    const scroller = this.scroller;
+    const input = this.jumpInput()?.nativeElement;
+    const s = (v ?? '').trim();
+    if (!s) return;
+    let idx: number;
+    if (/^\d+$/.test(s)) {
+      idx = parseInt(s, 10) - 1; // 1-based 序号
     } else {
-      this.topGhostCreator = this.randomCreator();
+      idx = this.items.findIndex(it => String(it.id) === s);
     }
-    return more;
+    if (!scroller || idx < 0 || idx >= this.items.length) {
+      this.showToast(`找不到：${s}`);
+      return;
+    }
+    scroller.scrollToIndex(idx, 'center');
+    if (input) input.value = '';
   }
 
-  /** 随机一个 creator（1=self / 2=other），用作幽灵 prev 的预言值。 */
-  private randomCreator(): number { return Math.random() < 0.5 ? 1 : 2; }
-
-  /** 强制批次【末条】消息 creator 匹配（1=self/2=other），兑现幽灵衔接不变量。 */
-  private forceLastCreator(items: VsItem<ChatItemData>[], creator: number | null) {
-    if (creator == null) return;
-    for (let i = items.length - 1; i >= 0; i--) {
-      const d = items[i].data;
-      if (d.type === 'msg') { d.creator = creator; d.isSelf = creator === 1; return; }
-    }
-  }
-
-  /** 模拟下拉加载：在头部插入历史消息，验证 prepend 的锚点保持（视觉不跳）。 */
-  loadMoreHistory() {
-    if (!this.scroller) return;
-    const more = this.buildItems(100, this.mode());
-    const seq = this.histSeq++;
-    more.forEach((it, i) => { it.id = `hist-${seq}-${i}`; });
-    this.items = [...more, ...this.items];
-    this.scroller.prependItems(more);
+  private showToast(msg: string): void {
+    this.toast.set(msg);
+    clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => this.toast.set(null), 1800);
   }
 
   toTop() { this.scroller?.scrollToTop(); }
@@ -379,7 +365,7 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   onInputKeydown(e: KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      this.send();
+      void this.send();
     }
   }
 
@@ -403,7 +389,7 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   /** 发送键：有文字 → 发文字；无文字 → 唤起附件选图（WhatsApp 相机入口同义）。 */
   onSendClick() {
-    if (this.draft().trim()) this.send();
+    if (this.draft().trim()) void this.send();
     else this.onAttachClick();
   }
 
@@ -411,7 +397,7 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   onAttachChange(e: Event) {
     const input = e.target as HTMLInputElement;
-    this.sendMediaFromFile(input.files);
+    void this.sendMediaFromFile(input.files);
     input.value = '';
   }
 
@@ -428,250 +414,64 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     });
   }
 
-  /** mock 发送文本：构造一条 self 的 PURE_TEXT 消息 append 到末尾并贴底（不发 HTTP）。 */
-  send() {
+  /** mock 发送文本：经 mockApi.sendMessage 构造一条 self 的 PURE_TEXT 并 append 贴底。 */
+  async send(): Promise<void> {
     const text = this.draft().trim();
-    if (!text || !this.scroller) return;
-    const item = this.mockMsg(text, true);
+    const scroller = this.scroller;
+    if (!text || !scroller) return;
+    const item = await this.mockApi.sendMessage({ content: text, contentType: 'PURE_TEXT' });
     this.items.push(item);
-    this.scroller.appendItems([item]);
-    this.scroller.scrollToBottom();
+    scroller.appendItems([item]);
+    scroller.scrollToBottom();
     this.draft.set('');
     this.autoGrow();
     // 模拟对方延迟回复（验证收消息 appendItems + 贴底跟随）
-    setTimeout(() => this.receiveReply(), 600 + Math.floor(Math.random() * 1200));
+    setTimeout(() => { void this.receiveReply(); }, 600 + Math.floor(Math.random() * 1200));
   }
 
-  /** 模拟对方回复：阿黄随机回一条；用户当时贴底则跟随滚到底，否则不打扰。 */
-  private receiveReply() {
+  /** 模拟对方回复：经 mockApi.simulateIncoming（WS）；用户当时贴底则跟随滚到底，否则不打扰。 */
+  private async receiveReply(): Promise<void> {
     const scroller = this.scroller;
     if (!scroller) return;
     const wasAtBottom = this.atBottom();
-    const phrases = VirtualScrollPlaygroundComponent.PHRASES;
-    const text = phrases[Math.floor(Math.random() * phrases.length)];
-    const item = this.mockMsg(text, false);
+    const item = await this.mockApi.simulateIncoming();
     this.items.push(item);
     scroller.appendItems([item]);
     if (wasAtBottom) scroller.scrollToBottom();
   }
 
-  /** 构造一条 mock ChatMsgData（PURE_TEXT）。creator：self=1 / other=2（与真实 controller 同构）。 */
-  private mockMsg(text: string, isSelf: boolean): VsItem<ChatItemData> {
-    const now = new Date();
-    const data: ChatMsgData = {
-      type: 'msg',
-      msgId: `mock-${this.sendSeq++}`,
-      creator: isSelf ? 1 : 2,
-      isSelf,
-      name: isSelf ? '我' : '阿黄',
-      text,
-      time: this.formatTime(now),
-      contentType: 'PURE_TEXT',
-      images: null,
-      createdAtMs: now.getTime(),
-    };
-    return { id: data.msgId, data };
-  }
-
   /**
-   * mock 发送图片：本地读图为 dataURL + 真实尺寸，构造一条 self 的 IMAGE 相册 append（不发 upload/sendMessage）。
-   * 多图合并为一条相册（Telegram album），与真实 sendImage 的「连续 IMAGE 前端合并」语义一致。
+   * mock 发送图片：本地读图为 dataURL + 真实尺寸 → mockApi.uploadMedia（记上传请求）→
+   * sendMessage({IMAGE, images})（记发送请求）→ append 贴底。多图合并为一条相册（与真实语义一致）。
    */
-  sendMediaFromFile(files: FileList | null) {
-    if (!files || files.length === 0) return;
+  async sendMediaFromFile(files: FileList | null): Promise<void> {
+    const scroller = this.scroller;
+    if (!files || files.length === 0 || !scroller) return;
     const list = Array.from(files).filter(f => f.type.startsWith('image/'));
     if (list.length === 0) return;
-    const imgs: AlbumImage[] = [];
-    let pending = list.length;
-    const done = () => {
-      if (--pending === 0) this.appendAlbum(imgs);
-    };
-    for (const f of list) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        const src = typeof reader.result === 'string' ? reader.result : '';
-        if (!src) { done(); return; }
-        const probe = new Image();
-        probe.onload = () => { imgs.push({ src, w: probe.naturalWidth || 400, h: probe.naturalHeight || 300 }); done(); };
-        probe.onerror = () => { imgs.push({ src, w: 400, h: 300 }); done(); };
-        probe.src = src;
-      };
-      reader.readAsDataURL(f);
-    }
-  }
-
-  /** 把一批图作为 self 的 IMAGE 相册 append 并贴底。 */
-  private appendAlbum(imgs: AlbumImage[]) {
-    const scroller = this.scroller;
-    if (!scroller || imgs.length === 0) return;
-    const now = new Date();
-    const msgId = `media-${this.sendSeq++}`;
-    const data: ChatMsgData = {
-      type: 'msg',
-      msgId,
-      creator: 1,
-      isSelf: true,
-      name: '我',
-      text: '',
-      time: this.formatTime(now),
-      contentType: 'IMAGE',
-      images: imgs,
-      createdAtMs: now.getTime(),
-    };
-    const item: VsItem<ChatItemData> = { id: msgId, data };
+    const imgs = await readImages(list);
+    if (imgs.length === 0) return;
+    await this.mockApi.uploadMedia(imgs);
+    const item = await this.mockApi.sendMessage({ content: '', contentType: 'IMAGE', images: imgs });
     this.items.push(item);
     scroller.appendItems([item]);
     scroller.scrollToBottom();
   }
+}
 
-  // —— 时间 / 日期格式化（与真实 chat-thread-controller 同口径）——
-  private formatTime(d: Date): string {
-    return `${this.pad2(d.getHours())}:${this.pad2(d.getMinutes())}`;
-  }
-  private formatDateSeparator(d: Date, now: Date): string {
-    const dayMs = 86_400_000;
-    const diff = Math.floor(this.midnight(now) / dayMs) - Math.floor(this.midnight(d) / dayMs);
-    if (diff === 0) return '今天';
-    if (diff === 1) return '昨天';
-    if (diff >= 2 && diff <= 6) return `周${VirtualScrollPlaygroundComponent.WEEK[d.getDay()]}`;
-    const md = `${d.getMonth() + 1}月${d.getDate()}日`;
-    return d.getFullYear() === now.getFullYear() ? md : `${d.getFullYear()}年${md}`;
-  }
-  private midnight(d: Date): number {
-    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
-  }
-  private pad2(n: number): string { return String(n).padStart(2, '0'); }
-
-  private buildItems(n: number, mode: HeightMode): VsItem<ChatItemData>[] {
-    type Raw =
-      | { kind: 'msg'; isSelf: boolean; text: string; day: number; minutes: number }
-      | { kind: 'media'; isSelf: boolean; day: number; minutes: number }
-      | { kind: 'date'; day: number };
-    const phrases = VirtualScrollPlaygroundComponent.PHRASES;
-    const raw: Raw[] = [];
-    let lastSelf: boolean | null = null;
-    let minutes = 9 * 60;
-    let day = 0;
-    let mediaBatch = 0;
-
-    const startMs = new Date(2025, 0, 1).getTime();
-    const now = new Date();
-    const targetDays = Math.max(1, Math.round((now.getTime() - startMs) / 86_400_000));
-    const step = Math.max(1, Math.round(n / targetDays));
-
-    for (let i = 0; i < n; i++) {
-      if (i > 0 && i % step === 0) {
-        day++;
-        raw.push({ kind: 'date', day });
-        lastSelf = null;
-        mediaBatch = 0;
-      }
-      let isSelf: boolean;
-      if (lastSelf === null) isSelf = Math.random() < 0.5;
-      else if (Math.random() < 0.35) isSelf = !lastSelf;
-      else isSelf = lastSelf;
-      lastSelf = isSelf;
-
-      minutes += 1 + Math.floor(Math.random() * 4);
-      if (minutes >= 24 * 60) minutes -= 24 * 60;
-
-      if (mediaBatch > 0) {
-        raw.push({ kind: 'media', isSelf, day, minutes });
-        mediaBatch--;
-        continue;
-      }
-      if (Math.random() < 0.12) {
-        mediaBatch = 1 + Math.floor(Math.random() * 5);
-        raw.push({ kind: 'media', isSelf, day, minutes });
-        continue;
-      }
-
-      let text = phrases[(i * 7) % phrases.length];
-      if (mode === 'extreme' && Math.random() < 0.08) {
-        text = Array.from({ length: 6 + Math.floor(Math.random() * 8) },
-          (_, k) => phrases[(i + k) % phrases.length]).join('，');
-      } else if (mode === 'random' && Math.random() < 0.3) {
-        text = `${phrases[(i * 7) % phrases.length]}，${phrases[(i * 7 + 3) % phrases.length]}`;
-      }
-      raw.push({ kind: 'msg', isSelf, text, day, minutes });
-    }
-
-    // 第二遍：连续同发送者 media 聚合为一个相册；msg → ChatMsgData。分组不预烤（渲染时算）。
-    const items: VsItem<ChatItemData>[] = [];
-    let imgSeed = 0;
-    let r = 0;
-    while (r < raw.length) {
-      const it = raw[r];
-      if (it.kind === 'date') {
-        const d = new Date(startMs + it.day * 86_400_000);
-        items.push({
-          id: `date-${items.length}`,
-          data: { type: 'date', label: this.formatDateSeparator(d, now), dayKey: `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}` },
-        });
-        r++;
-        continue;
-      }
-      if (it.kind === 'media') {
-        const isSelf = it.isSelf;
-        const imgs: AlbumImage[] = [];
-        while (r < raw.length) {
-          const cur = raw[r];
-          if (cur.kind !== 'media' || cur.isSelf !== isSelf) break;
-          imgs.push({ src: this.placeholderImage(imgSeed++), w: 400, h: 300 });
-          r++;
-        }
-        const date = new Date(startMs + it.day * 86_400_000 + it.minutes * 60_000);
-        items.push({ id: items.length, data: this.mockMediaData(isSelf, imgs, date) });
-        continue;
-      }
-      const date = new Date(startMs + it.day * 86_400_000 + it.minutes * 60_000);
-      items.push({ id: items.length, data: this.mockTextData(it.isSelf, it.text, date) });
-      r++;
-    }
-    return items;
-  }
-
-  private mockTextData(isSelf: boolean, text: string, date: Date): ChatMsgData {
-    return {
-      type: 'msg',
-      msgId: `seed-${this.sendSeq++}`,
-      creator: isSelf ? 1 : 2,
-      isSelf,
-      name: isSelf ? '我' : '阿黄',
-      text,
-      time: this.formatTime(date),
-      contentType: 'PURE_TEXT',
-      images: null,
-      createdAtMs: date.getTime(),
+/** 本地读取图片为 AlbumImage（dataURL + 真实尺寸；读失败用 400×300 兜底）。 */
+function readImages(files: File[]): Promise<AlbumImage[]> {
+  return Promise.all(files.map(f => new Promise<AlbumImage>(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const src = typeof reader.result === 'string' ? reader.result : '';
+      if (!src) { resolve({ src: '', w: 400, h: 300 }); return; }
+      const probe = new Image();
+      probe.onload = () => resolve({ src, w: probe.naturalWidth || 400, h: probe.naturalHeight || 300 });
+      probe.onerror = () => resolve({ src, w: 400, h: 300 });
+      probe.src = src;
     };
-  }
-
-  private mockMediaData(isSelf: boolean, imgs: AlbumImage[], date: Date): ChatMsgData {
-    return {
-      type: 'msg',
-      msgId: `seed-${this.sendSeq++}`,
-      creator: isSelf ? 1 : 2,
-      isSelf,
-      name: isSelf ? '我' : '阿黄',
-      text: '',
-      time: this.formatTime(date),
-      contentType: 'IMAGE',
-      images: imgs,
-      createdAtMs: date.getTime(),
-    };
-  }
-
-  /** 假数据占位图：基于 seed 生成不同色调的渐变 SVG（dataURL），离线稳定、不依赖图床。 */
-  private placeholderImage(seed: number): string {
-    const h1 = (seed * 53) % 360;
-    const h2 = (h1 + 80) % 360;
-    const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='400' height='300'>` +
-      `<defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'>` +
-      `<stop offset='0' stop-color='hsl(${h1},65%,58%)'/><stop offset='1' stop-color='hsl(${h2},55%,40%)'/>` +
-      `</linearGradient></defs>` +
-      `<rect width='400' height='300' fill='url(#g)'/>` +
-      `<text x='200' y='172' font-size='36' fill='rgba(255,255,255,0.85)' text-anchor='middle' font-family='sans-serif'>${(seed % 99) + 1}</text>` +
-      `</svg>`;
-    return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-  }
+    reader.onerror = () => resolve({ src: '', w: 400, h: 300 });
+    reader.readAsDataURL(f);
+  })));
 }

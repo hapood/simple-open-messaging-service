@@ -83,6 +83,34 @@ describe('VirtualScrollerAnchor (方案 A · 借浏览器锚定)', () => {
     expect(viewport.scrollTop).toBe(content.scrollHeight - 600);
   });
 
+  it('scrollToBottom 预估偏大且元素极矮时 fillBackward 兜底补满视口（与 B 同构）', () => {
+    // estimateHeight=1000、实测 10：主循环按缓存挂 3 条=30px < 视口 600 → 无兜底露白；fillBackward 补满。
+    const hooks = {
+      createItem: (): VsElement<number> => {
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 10 });
+        return { el, estimateHeight: () => 1000, onHeightChange: () => () => {}, destroy: () => {} };
+      },
+    };
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks });
+    scroller.setItems(makeItems(1000));
+    scroller.scrollToBottom();
+    expect(content.scrollHeight).toBeGreaterThanOrEqual(600);
+    expect(scroller.getInfo().mountedEnd).toBe(1000);
+  });
+
+  it('scrollToIndex 跳到指定 index 并将其纳入挂载窗口（与 B 同构，程序化写 scrollTop）', () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks });
+    scroller.setItems(makeItems(1000));
+    scroller.scrollToIndex(500, 'center');
+    const info = scroller.getInfo();
+    expect(info.mountedStart).toBeLessThanOrEqual(500);
+    expect(info.mountedEnd).toBeGreaterThan(500);
+    expect(info.mounted).toBeLessThan(1000);
+    expect(viewport.scrollTop).toBe(4000 - (600 / 2 - 100 / 2)); // 上方 buffer 4000 - center 偏移 250
+  });
+
   it('prepend 平移索引但【不补偿 scrollTop】（A 与 B 的关键区别：B 会 +500）', () => {
     const { hooks } = controllableHooks();
     scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks });

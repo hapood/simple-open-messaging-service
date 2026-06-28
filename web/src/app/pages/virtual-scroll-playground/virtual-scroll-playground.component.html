@@ -28,6 +28,9 @@
     @if (stickyDate()) {
       <div class="pg-sticky-date" aria-hidden="true"><span>{{ stickyDate() }}</span></div>
     }
+    @if (toast()) {
+      <div class="pg-toast" role="status">{{ toast() }}</div>
+    }
     <!-- 移动端：唤起控制面板抽屉（可拖动重定位） -->
     <button type="button" class="pg-fab" #fab (pointerdown)="onFabDown($event)" aria-label="控制面板（可拖动）">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -97,36 +100,24 @@
     <p class="pg-hint">纯 TS 内核 + 假数据。点列表区域后可用键盘（Home/End/PgUp/PgDn/↑↓）滚动。</p>
 
     <section>
-      <h4>数据量</h4>
+      <h4>数据量 <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? '生成中…' : 'generator' }}</span></h4>
       <div class="pg-btns">
-        <button (click)="setCount(1000)" [class.active]="count() === 1000">1k</button>
-        <button (click)="setCount(5000)" [class.active]="count() === 5000">5k</button>
-        <button (click)="setCount(50000)" [class.active]="count() === 50000">50k</button>
-      </div>
-    </section>
-
-    <section>
-      <h4>高度模式</h4>
-      <div class="pg-btns">
-        <button (click)="setMode('uniform')" [class.active]="mode() === 'uniform'">固定</button>
-        <button (click)="setMode('random')" [class.active]="mode() === 'random'">随机</button>
-        <button (click)="setMode('extreme')" [class.active]="mode() === 'extreme'">极端差异</button>
+        <button (click)="setCount(1000)" [disabled]="loading()" [class.active]="count() === 1000 && !loading()">1k</button>
+        <button (click)="setCount(5000)" [disabled]="loading()" [class.active]="count() === 5000 && !loading()">5k</button>
+        <button (click)="setCount(50000)" [disabled]="loading()" [class.active]="count() === 50000 && !loading()">50k</button>
       </div>
     </section>
 
     <section>
       <h4>定位</h4>
       <div class="pg-btns">
-        <button (click)="toTop()">顶部</button>
-        <button (click)="toBottom()">底部</button>
-        <button (click)="regenerate()">重置数据</button>
+        <button (click)="toTop()" [disabled]="loading()">顶部</button>
+        <button (click)="toBottom()" [disabled]="loading()">底部</button>
       </div>
-    </section>
-
-    <section>
-      <h4>历史加载</h4>
-      <div class="pg-btns">
-        <button (click)="loadMoreHistory()">下拉加载 100 条</button>
+      <div class="pg-jump">
+        <input #jumpInput class="pg-jump-input" placeholder="id 或 序号"
+               (keydown.enter)="jumpToId(jumpInput.value)" />
+        <button (click)="jumpToId(jumpInput.value)" [disabled]="loading()">跳转</button>
       </div>
     </section>
 
@@ -136,17 +127,6 @@
         <button (click)="debugMode.set(false)" [class.active]="!debugMode()">性能</button>
         <button (click)="debugMode.set(true)" [class.active]="debugMode()">调试</button>
       </div>
-    </section>
-
-    <section [style.display]="debugMode() ? null : 'none'">
-      <h4>状态读数</h4>
-      <dl class="pg-readout">
-        <div><dt>scrollTop</dt><dd>{{ scrollTop() }} px</dd></div>
-        <div><dt>缓存 / 内容高</dt><dd>{{ cacheCount() }} 条 / {{ totalHeight() }} px</dd></div>
-        <div><dt>已挂载区间</dt><dd>[{{ mountedFirst() }}, {{ mountedLast() }}] · {{ mountedCount() }} 条</dd></div>
-        <div><dt>贴顶 / 贴底</dt><dd>{{ atTop() }} / {{ atBottom() }}</dd></div>
-        <div><dt>balance</dt><dd>@if (balanceStats(); as s) { {{ s.ms.toFixed(1) }}ms · +{{ s.mount }}/-{{ s.unmount }} · st {{ s.scrollTop }} } @else { — }</dd></div>
-      </dl>
     </section>
   </aside>
 </div>

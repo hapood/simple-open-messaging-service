@@ -130,6 +130,48 @@ describe('VirtualScroller (相对滚动)', () => {
     expect(viewport.scrollTop).toBe(content.scrollHeight - 600);
   });
 
+  it('scrollToBottom 预估偏大且元素极矮时 fillBackward 兜底补满视口（不露白）', () => {
+    // estimateHeight=1000（巨高），实测 offsetHeight=10（极矮）。主循环按缓存(1000)挂极少 +
+    // bTarget 40 条 = 41×10=410px < 视口 600 → 无兜底会露白；fillBackward 按真实内容高补满。
+    const hooks = {
+      createItem: (): VsElement<number> => {
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 10 });
+        return { el, estimateHeight: () => 1000, onHeightChange: () => () => {}, destroy: () => {} };
+      },
+    };
+    scroller = new VirtualScroller<number>({ viewport, content, hooks });
+    scroller.setItems(makeItems(1000));
+    scroller.scrollToBottom();
+    expect(content.scrollHeight).toBeGreaterThanOrEqual(600); // 兜底后视口不空
+    expect(scroller.getInfo().mountedEnd).toBe(1000);          // 钉底
+  });
+
+  it('scrollToIndex 跳到指定 index 并将其纳入挂载窗口（center 锚定）', () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks });
+    scroller.setItems(makeItems(1000));
+    scroller.scrollToIndex(500, 'center');
+    const info = scroller.getInfo();
+    // 目标 index 落在挂载窗口内（向下填满视口+buffer，向上 bTarget 条 buffer）。
+    expect(info.mountedStart).toBeLessThanOrEqual(500);
+    expect(info.mountedEnd).toBeGreaterThan(500);
+    expect(info.mounted).toBeLessThan(1000); // 虚拟化：未全量挂载
+    expect(viewport.scrollTop).toBeGreaterThan(0);
+    // center 锚定：目标 item 顶端偏移 = 上方 buffer(40×100) - (vh/2 - h/2) = 4000 - 250。
+    expect(viewport.scrollTop).toBe(4000 - (600 / 2 - 100 / 2));
+  });
+
+  it('scrollToIndex clamp 越界 index 到 [0, len-1]', () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks });
+    scroller.setItems(makeItems(1000));
+    scroller.scrollToIndex(99999, 'top');
+    const info = scroller.getInfo();
+    expect(info.mountedEnd).toBe(1000);   // 越界→末条，向下无可挂
+    expect(info.atBottom).toBe(true);
+  });
+
   it('append 在贴底时跟随滚动到新底部', () => {
     const { hooks } = controllableHooks();
     scroller = new VirtualScroller<number>({ viewport, content, hooks });

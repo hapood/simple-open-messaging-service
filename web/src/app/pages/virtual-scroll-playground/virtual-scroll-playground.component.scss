@@ -1,5 +1,13 @@
-// ViewEncapsulation.None：样式全局，全部 pg- 前缀隔离，不污染真实组件。
-// 阶段 4 切真实 MsgGroupComponent 后，此文件随 playground 手写 DOM 一并废弃。
+// ViewEncapsulation.None：样式全局，全部 pg- 前缀隔离。
+//
+// 【样式边界】本文件**只管 playground 外壳**：stage / header / viewport 容器 / 面板 / 输入栏 / FAB。
+// 绝不写作用于聊天内容内部的 CSS（.pg-msg-row / .pg-bubble / .pg-media-* 等）——那些由
+// message-cards 组件的 _row-base.scss 自治。全局规则一旦改消息行实测高度，会干扰内核的
+// offsetHeight 判断（曾因重复定义 padding/bubble 把高度改小而不易察觉）。唯一例外是
+// .vs-pending（内核机制），已移至 lib/virtual-scroll/_vs.scss 由 styles.scss 全局引入。
+//
+// 调试角标 .pg-dev-badge 会注入到 .pg-msg-row 内，但 absolute 定位、脱离文档流，不改行高，
+// 且 ngDevMode 守卫（生产不创建）→ 不影响组件工作。
 
 .pg *,
 .pg *::before,
@@ -45,7 +53,7 @@
   flex: 0 0 auto;
   width: 32px; height: 32px;
   display: flex; align-items: center; justify-content: center;
-  border-radius: 8px; // 微信式方形，与列表头像一致
+  border-radius: 8px;
   background: var(--im-avatar-other); color: #fff;
   font-size: 13px; font-weight: 600;
 }
@@ -71,271 +79,33 @@
 .pg[data-theme="dark"] .pg-theme-toggle .pg-ico-moon { display: none; }
 .pg[data-theme="dark"] .pg-theme-toggle .pg-ico-sun { display: inline-flex; }
 
+// 滚动视口：原生滚动 + 全平台隐藏滚动条。
 .pg-viewport {
   position: absolute;
   top: 48px;   // 顶部留 header 高度
   right: 0;
   left: 0;
   bottom: 63px; // 给底部输入栏留位
-  overflow-y: auto; // 原生滚动（合成器线程，120Hz 满帧 + 移动 fling）
-  // 手动虚拟化：内核自己管 scrollTop 锚点补偿，关掉浏览器滚动锚定（overflow-anchor），
-  // 避免它在内容增删时二次调整 scrollTop、与我们的补偿打架产生抖动。
+  overflow-y: auto;
+  // 方案 B（默认 -b 路由）：内核自己管 scrollTop 锚点补偿，关掉浏览器滚动锚定避免打架。
   overflow-anchor: none;
-  background: var(--im-chat-bg); // 聊天底色（WhatsApp 米色 / 暗色 #0b141a）
+  background: var(--im-chat-bg);
   outline: none;
-  // 全平台隐藏滚动条
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
   &:focus { box-shadow: inset 0 0 0 2px rgba(33, 150, 243, 0.25); }
 }
-
-// 方案 A（-b 路由 .pg--native-anchor）：借浏览器滚动锚定，放开 overflow-anchor。
-// 默认 .pg-viewport 的 overflow-anchor:none 是给方案 B 手动补偿独占用的——方案 A 必须放开才能借浏览器。
+// 方案 A（-a 路由 .pg--native-anchor）：借浏览器滚动锚定，放开 overflow-anchor。
 .pg--native-anchor .pg-viewport { overflow-anchor: auto; }
 
-// 内容层：普通文档流（相对滚动架构）。item block 堆叠，高度自然撑开供 viewport 滚动；
-// 内核不再绝对定位 item、不再设 top，只负责挂载/卸载与高度变化的锚点补偿。
-.pg-content {
-  position: relative;
-}
-
-// 顶部哨兵：IO 观察用，极小不占视觉。
+// 内容层 + 顶部哨兵：内核管挂载/卸载与锚点补偿，此处不给消息行加任何样式。
+.pg-content { position: relative; }
 .pg-sentinel { height: 1px; }
 
-// item 根（pg-msg-row / pg-date）：block 流堆叠 + 水平 padding。
-// ⚠ 纵向间距必须走 padding、不能走 margin：内核用 offsetHeight 测高（不含 margin），
-// 而 margin-top 会把盒子下推 → 盒子实际位置比内核以为的低，下方气泡又按
-// 「不含 margin 的高度」紧贴上来 → 下方气泡叠到日期/上一行上、把对方底部盖住（曾见 pg-date 被气泡遮挡）。
-.pg-content > .pg-msg-row { padding: 6px var(--app-space-4) 0; }
-// 组间留白由"换发送者的新组首"承担（.pg-group-start 加大 padding-top）——每条纵向占位
-// 只取决于自己是否组首，与下一条无关 → 追加新条时原末条高度不变（0 reflow，无需重渲）。
-// 首条 / 日期分隔后的组首不加（其上已有 viewport 顶 / date padding 留白）。
-.pg-content > .pg-msg-row.pg-group-start { padding-top: 16px; }
-// 组内（非组首）padding-top 归零（padding-bottom 已由基础规则归零）→ 续条完全贴邻上条；组首 padding-top 16 撑开组间。
-.pg-content > .pg-msg-row.pg-grp-body { padding-top: 0; }
-// 调试角标：组首"首"(绿)/组内"续"(橙)，贴左上角——验证分组判定与紧凑是否生效（连发第 2+ 条应显"续"）。
-.pg-grp-head::before, .pg-grp-body::before {
-  position: absolute; left: 2px; top: 2px;
-  font-size: 9px; line-height: 1; font-weight: 600;
-  padding: 2px 4px; border-radius: 3px; z-index: 10; pointer-events: none;
-}
-.pg-grp-head::before { content: '首'; background: #4caf50; color: #fff; }
-.pg-grp-body::before { content: '续'; background: #ff9800; color: #fff; }
-// 日期分隔行纵向留白比消息行更大（原 margin:14px 0 改为 padding，理由见上）。
-.pg-content > .pg-date { padding: 14px var(--app-space-4); }
-
-// —— 单条消息行 ——
-.pg-msg-row {
-  display: flex;
-  position: relative;
-  &.pg-self { justify-content: flex-end; }
-  &.pg-other { justify-content: flex-start; }
-}
-
-// 新消息淡入：pg-msg-new 持 opacity:0，双 RAF 后移除触发 .pg-msg-row 的 opacity 过渡淡入。
-// vs-pending 用 visibility:hidden（非 opacity:0）：占位隐藏仍占布局、offsetHeight 可测，移除时是瞬时切换、
-// 不触发 opacity 过渡 → 滚动挂载的气泡瞬时显现（紧密），只有新消息才淡入；否则滚动挂载也 fade，列表发虚。
-.pg-content > .pg-msg-row { transition: opacity .3s ease, transform .3s ease; }
-.pg-msg-new { opacity: 0; transform: translateY(10px); }
-.vs-pending { visibility: hidden !important; transition: none !important; }
-
-// 头像（微信式方形：组首出现，self 在右、other 在左，贴组首消息上沿）
-// 尺寸 40px = 聊天气泡头像业界规范（WhatsApp/微信/Telegram/Discord/Material 均 ~40）。
-.pg-avatar {
-  width: 40px;
-  height: 40px;
-  flex: 0 0 auto;
-  align-self: flex-start; // 贴该行顶部，与组首消息上沿对齐
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px; // 微信式方形（微圆角），非圆形
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  &.pg-avatar-self { background: var(--im-avatar-self); }
-  &.pg-avatar-other { background: var(--im-avatar-other); }
-}
-
-.pg-col {
-  max-width: min(72%, 520px);
-  display: flex;
-  flex-direction: column;
-  &.pg-self { align-items: flex-end; }
-  &.pg-other { align-items: flex-start; }
-}
-// 组首显头像（.pg-has-avatar），双方都有：other 头像在左、self 在右。组内不显头像，
-// 但 col 让出头像列（40 头像 + 8 间距 = 48）与组首气泡边沿对齐；组首 col 仅留 8px 与头像间距。
-.pg-msg-row.pg-other .pg-col { margin-left: 8px; }
-.pg-msg-row.pg-other:not(.pg-has-avatar) .pg-col { margin-left: 48px; }
-.pg-msg-row.pg-self .pg-col { margin-right: 8px; }
-.pg-msg-row.pg-self:not(.pg-has-avatar) .pg-col { margin-right: 48px; }
-
-.pg-name {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--app-text-muted);
-  margin: 0 0 2px; // 与气泡边沿对齐（去掉原 14px 缩进）
-}
-
-// —— 气泡（WhatsApp：浅绿/白 + 小圆角 + 每条右下时间戳）——
-.pg-bubble {
-  position: relative;
-  min-height: 40px;
-  box-sizing: border-box;
-  padding: 6px 10px; // 右下时间戳改由 pg-time-shadow 按实际宽度占位（见末尾），不再固定留白
-  border-radius: 10px;
-  max-width: 100%;
-  display: flex;
-  align-items: center;
-  box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
-  &.pg-self { background: var(--im-bubble-self); color: var(--im-bubble-text); }
-  &.pg-other { background: var(--im-bubble-other); color: var(--im-bubble-text); }
-  // 组位：组首 head（顶圆+尾尖）、组内 body（四周小圆角）。不再区分 mid/tail——
-  // 那需依赖"下一条"判组尾，不重渲则原末条无法更新；简化后圆角只取决于自己是否组首。
-  &.pg-body { border-radius: 3px; }
-  &.pg-head {
-    border-top-left-radius: 10px; border-top-right-radius: 10px;
-    border-bottom-left-radius: 3px; border-bottom-right-radius: 3px;
-    // 尾尖 handle：旋转 45° 的小方块跨气泡边沿（半内半外、同色）——内半被气泡遮、外半成三角尾尖，
-    // 与气泡融为一体无缝（border-三角法在圆角处易留缝）。位于圆角下方贴直边，微信式。
-    &::before {
-      content: '';
-      position: absolute;
-      width: 8px;
-      height: 8px;
-      transform: rotate(45deg);
-    }
-    &.pg-other::before {          // ◀ 头像在左：尾尖探左（他方组首有名字，尾尖略下移避名字）
-      top: 8px;
-      left: -4px;
-      background: var(--im-bubble-other);
-    }
-    &.pg-self::before {           // ▶ 头像在右：尾尖探右（self 无名字，下移到头像垂直中线 40/2−5）
-      top: 15px;
-      right: -4px;
-      background: var(--im-bubble-self);
-    }
-  }
-}
-
-.pg-bubble-text {
-  margin: 0;
-  font-size: 14.2px;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-// 时间戳（WhatsApp：每条气泡右下角，淡色）
-.pg-time {
-  position: absolute;
-  right: 10px; // = padding-right，与内容区右沿对齐 = 影子右沿
-  bottom: 4px;
-  font-size: 11px;
-  white-space: nowrap; // 时间串不拆行
-  color: var(--im-time);
-}
-// 影子时间戳（WhatsApp 影子占位法）：与可见时间同文同宽、不可见但占位，逼正文末行让出右下角，
-// 可见时间绝对定位叠在影子上 → 正文永不与时间重叠。气泡时间恒 HH:mm，影子按其宽度占位。
-.pg-time-shadow {
-  display: inline-block;
-  margin-left: 8px; // 与正文留隙
-  font-size: 11px; // 必须与 .pg-time 同字号 → 同宽度，才能精确占位
-  white-space: nowrap;
-  visibility: hidden; // 不可见，仅占位（保留布局、参与换行）
-}
-
-// —— 照片媒体拼盘（Telegram album）——
-// 媒体气泡：图片贴边（padding:0）、外层 overflow:hidden 切圆角，复用 pg-head/mid/tail 组位 + 尾尖。
-.pg-bubble.pg-media {
-  padding: 0;
-  min-height: 0;
-  width: min(100%, 320px);
-  display: block;        // 覆盖文字气泡的 flex 垂直居中
-  overflow: hidden;
-}
-.pg-media-grid {
-  display: grid;
-  gap: var(--im-media-gap);
-  background: var(--im-media-gap); // 缝隙露底 = 间隙色，营造拼盘分割
-}
-.pg-media-cell {
-  position: relative;
-  overflow: hidden;
-  background: rgba(127, 127, 127, 0.18); // 图加载前占位灰
-  // img 绝对定位填满 cell（脱离文档流）→ cell 高度完全由 aspect-ratio 锁定，图加载后自然尺寸
-  // 不再撑高 cell。否则 scrollToBottom 时 cell 还矮（图未加载）→ scrollHeight 偏小、钉底位置错，
-  // 图加载完撑高 → gap 暴涨、没到底。
-  img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-}
-// 布局按张数（aspect-ratio 锁比例 → 高度稳定可估算，虚拟滚动地基）
-.pg-grid-1 { grid-template-columns: 1fr; }
-.pg-grid-1 .pg-media-cell { aspect-ratio: 4 / 3; }
-.pg-grid-2 { grid-template-columns: 1fr 1fr; }
-.pg-grid-2 .pg-media-cell { aspect-ratio: 1 / 1; }
-.pg-grid-3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-.pg-grid-3 .pg-media-cell { aspect-ratio: 1 / 1; }
-.pg-grid-3 .pg-cell-big { grid-row: 1 / span 2; aspect-ratio: 1 / 2; } // 左大 + 右两小
-.pg-grid-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
-.pg-grid-4 .pg-media-cell { aspect-ratio: 1 / 1; }
-.pg-grid-5 { grid-template-columns: 1fr 1fr 1fr; }
-.pg-grid-5 .pg-media-cell { aspect-ratio: 1 / 1; }
-.pg-grid-6 { grid-template-columns: 1fr 1fr 1fr; grid-template-rows: 1fr 1fr; }
-.pg-grid-6 .pg-media-cell { aspect-ratio: 1 / 1; }
-// 媒体时间戳：叠在右下图上（半透明黑底药丸，任意图底色均可读）
-.pg-media .pg-time {
-  right: 6px;
-  bottom: 6px;
-  padding: 1px 6px;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  border-radius: var(--app-radius-pill);
-}
-// 「+N」更多角标（相册 >6 张：末格蒙半透明黑底 + 居中数字）
-.pg-cell-more::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: rgba(0, 0, 0, 0.45);
-}
-.pg-media-more {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #fff;
-  font-size: 22px;
-  font-weight: 600;
-}
-
-// 组内/组间间距已移至 .pg-msg-row 的 padding-top（组首 .pg-group-start 加大）——
-// 不再用 col 的 margin-bottom：其依赖"下一条"，追加新条会改原末条高度 → reflow。
-
-// —— 日期分隔（居中 pill）——
-// 无 margin：纵向留白已由 .pg-content > .pg-date 的 padding 提供（见上 why 不能用 margin）。
-.pg-date {
-  display: flex;
-  justify-content: center;
-  > span {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--im-date-pill-text);
-    background: var(--im-date-pill-bg);
-    padding: 3px 12px;
-    border-radius: var(--app-radius-pill);
-  }
-}
-
-// —— Telegram 式粘性日期浮层 ——
-// 在 .pg-stage 内、.pg-viewport 外（兄弟）：absolute 钉在 header 下方（= 视口顶 + 余量），
-// 既不随文档流滚（不在滚动容器内）、也不参与虚拟滚动回收。组件据滚动位置更新文本，
-// 模拟「date 分隔行 sticky 接力」。背景用聊天底色（实色）+ 阴影，悬浮时遮住下方消息。
+// —— Telegram 式粘性日期浮层（在 stage 内、viewport 外，不随滚、不参与虚拟滚动回收）——
 .pg-sticky-date {
   position: absolute;
-  top: 56px; // header 48 + 8 余量，对齐 .pg-viewport 顶部内侧
+  top: 56px; // header 48 + 8 余量，对齐视口顶部内侧
   left: 0;
   right: 0;
   display: flex;
@@ -352,6 +122,41 @@
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
   }
 }
+
+// 跳转未命中短暂提示（底部居中浮层，输入栏之上）。
+.pg-toast {
+  position: absolute;
+  left: 50%;
+  bottom: 84px;
+  transform: translateX(-50%);
+  padding: 8px 16px;
+  border-radius: var(--app-radius-pill);
+  background: rgba(0, 0, 0, 0.78);
+  color: #fff;
+  font-size: 13px;
+  z-index: 6;
+  pointer-events: none;
+}
+
+// —— 调试角标（playground createItemEl 动态注入 .pg-msg-row，ngDevMode 守卫 → 生产不创建）——
+// 首=组首(绿) / 续=组内(橙) + 消息 id。absolute 脱离文档流、不改行 offsetHeight → 不影响内核。
+.pg-dev-badge {
+  position: absolute;
+  top: 1px;
+  z-index: 10;
+  padding: 1px 5px;
+  font: 600 9px/1.4 ui-monospace, monospace;
+  color: #fff;
+  border-radius: 3px;
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  font-variant-numeric: tabular-nums;
+}
+.pg-msg-row.pg-other .pg-dev-badge { left: 2px; }
+.pg-msg-row.pg-self .pg-dev-badge { right: 2px; }
+.pg-dev-badge--head { background: #4caf50; }
+.pg-dev-badge--body { background: #ff9800; }
 
 // ---------- 输入栏（WhatsApp 式：胶囊容器 + 容器外圆形发送键）----------
 .pg-input-bar {
@@ -532,47 +337,52 @@
 
     &:hover { border-color: var(--app-brand); color: var(--app-brand); }
     &.active { background: var(--app-brand); border-color: var(--app-brand); color: #fff; }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
   }
 }
 
-.pg-row {
+// 段落标题右侧小标签（generator / 生成中…）
+.pg-sec-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--app-text-faint);
+  background: var(--app-bg-muted);
+  border-radius: var(--app-radius-pill);
+  &--on { color: var(--app-brand); }
+}
+
+// 跳转输入（id / 序号）+ 按钮
+.pg-jump {
   display: flex;
   gap: 6px;
-  margin-bottom: 6px;
-
-  input {
+  margin-top: 8px;
+  .pg-jump-input {
     flex: 1 1 auto;
+    min-width: 0;
     padding: 6px 8px;
     border: 1px solid var(--app-border);
     border-radius: var(--app-radius-sm);
+    background: var(--app-surface);
+    color: var(--app-text);
     font-size: 13px;
     outline: none;
-    color: var(--app-text);
     &:focus { border-color: var(--app-brand); }
   }
   button {
+    flex: 0 0 auto;
     padding: 6px 12px;
     border: 1px solid var(--app-border);
     border-radius: var(--app-radius-sm);
     background: var(--app-surface);
+    color: var(--app-text-muted);
     cursor: pointer;
     font-size: 13px;
-    color: var(--app-text-muted);
     &:hover { border-color: var(--app-brand); color: var(--app-brand); }
   }
-}
-
-.pg-readout {
-  margin: 0;
-  > div {
-    display: flex;
-    justify-content: space-between;
-    padding: 5px 0;
-    border-bottom: 1px dashed var(--app-border);
-    font-variant-numeric: tabular-nums;
-  }
-  dt { color: var(--app-text-faint); }
-  dd { margin: 0; color: var(--app-text); font-weight: 500; }
 }
 
 // ---------- 响应式：移动端（!isDesktop，由 .pg--mobile class 驱动）----------
@@ -599,7 +409,7 @@
     cursor: grabbing;
     box-shadow: 0 10px 36px rgba(0, 0, 0, 0.24);
   }
-  // FPS 实时角标（滚动时由内核 onScroll ~2Hz 更新）
+  // 已挂载节点数角标（调试模式显示，滚动时由内核 onScroll 节流更新）
   .pg-fab-fps {
     position: absolute;
     top: -5px; right: -5px;
@@ -642,12 +452,8 @@
   .pg-viewport {
     -webkit-user-select: none; user-select: none;
   }
-
-  // 双方都有头像后，气泡要让出两侧头像列（48×2）+ 8 余量 = 104，防 self 气泡越过中线侵占他方头像区
-  .pg-col { max-width: calc(100% - 104px); }
 }
 
 // ---------- 深色主题 ----------
 // 配色已全部 token 化（_tokens.scss 的 --im-* / --app-* 亮 :root + 暗 [data-theme=dark]），
 // playground 不再自维护暗色覆盖——.pg 根挂 [data-theme] 即自动切换全部语义色。
-

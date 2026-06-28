@@ -1,5 +1,4 @@
 import { Component, input, signal } from '@angular/core';
-import { NgClass } from '@angular/common';
 import { Subject } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { RouteService } from '../../services/route.service';
@@ -18,7 +17,7 @@ type PendingReq = User & { status: number, date: string, errText: string }
 
 @Component({
     selector: 'app-friend-requests',
-    imports: [UserAvatarComponent, FormsModule, NgClass,
+    imports: [UserAvatarComponent, FormsModule,
         MatButtonModule, IconComponent],
     templateUrl: './friend-requests.component.html',
     styleUrl: './friend-requests.component.scss'

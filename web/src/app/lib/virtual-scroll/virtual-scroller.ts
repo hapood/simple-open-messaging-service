@@ -155,6 +155,8 @@ export interface ScrollerApi<T = unknown> {
   prependItems(newItems: VsItem<T>[]): void;
   scrollToBottom(): void;
   scrollToTop(): void;
+  /** 跳到指定 index（anchor 决定该 item 落在视口顶/中/底）。两套内核都支持。 */
+  scrollToIndex(index: number, anchor?: 'top' | 'center' | 'bottom'): void;
   getInfo(): VsScrollInfo;
   refresh(): void;
   destroy(): void;
@@ -317,6 +319,7 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
       this.mount(this.mountedStart);
     }
     this.measurePending();
+    this.fillBackward(); // 防御兜底：预估偏大致上方挂载不足时，按真实内容高补满视口+buffer
     this.viewport.scrollTop = this.content.scrollHeight - this.viewportHeight;
     this.shifting = false;
     this.ensureFilled(); // 内容不足一屏则加载更早历史填满（首次加载/数据稀少）
@@ -342,6 +345,30 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
     }
   }
 
+  /**
+   * 防御兜底：预估高度偏大致 {@link scrollToBottom} 的向上挂载不足（content 未覆盖视口+buffer）时，
+   * 按【真实】content.scrollHeight 继续向上挂载补满。常态（bTarget 缓冲已足）下首条判定即不满足、
+   * 循环零执行、零开销；仅预估明显偏大或元素极矮时补几条。补完由调用方据新内容高钉底。
+   * dev（ngDevMode）下若实际补挂了条数，console.warn 提示——预估偏差的可见信号。
+   */
+  private fillBackward() {
+    const startBefore = this.mountedStart;
+    const hBefore = this.content.scrollHeight;
+    while (this.mountedStart > 0 && this.content.scrollHeight - this.viewportHeight < this.buffer) {
+      this.mountedStart--;
+      this.mount(this.mountedStart);
+    }
+    this.measurePending();
+    if (ngDevMode && this.mountedStart !== startBefore) {
+      console.warn('%c[vs-fillBackward] 预估偏大，首帧挂载不足已兜底补挂', 'color:#e91e63;font-weight:700', {
+        补挂条数: startBefore - this.mountedStart,
+        内容高: `${hBefore} → ${this.content.scrollHeight}`,
+        视口: this.viewportHeight,
+        buffer: this.buffer,
+      });
+    }
+  }
+
   /** 滚到顶部：卸载全部，从 0 向底挂载首批，钉到顶。 */
   scrollToTop() {
     if (this.destroyed) return;
@@ -351,6 +378,42 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
     this.mountInitialForward();
     this.shifting = true;
     this.viewport.scrollTop = 0;
+    this.shifting = false;
+    this.emit();
+  }
+
+  /**
+   * 跳到指定 index（anchor 决定该 item 落在视口顶/中/底）。卸载全部后挂载目标周围窗口
+   * （向下填满视口+buffer、向上 bTarget 条 buffer），再据【已挂载】高度算 scrollTop。
+   * 所需 index 在写 scrollTop 前都已挂载（缓存有高），无需为未挂载 item 估算——不破坏
+   * 「不估算未挂载」原则。方案 A（{@link VirtualScrollerAnchor}）同构实现。
+   */
+  scrollToIndex(index: number, anchor: 'top' | 'center' | 'bottom' = 'top') {
+    if (this.destroyed || this.items.length === 0) return;
+    const idx = Math.max(0, Math.min(index, this.items.length - 1));
+    this.unmountAll();
+    this.mountedStart = idx;
+    this.mountedEnd = idx;
+    this.shifting = true;
+    // 向下挂载直到填满视口 + buffer（同 mountInitialForward 口径）。
+    while (this.mountedEnd < this.items.length
+           && this.content.scrollHeight - this.viewportHeight < this.buffer) {
+      this.mount(this.mountedEnd);
+      this.mountedEnd++;
+    }
+    // 向上 bTarget 条 buffer（与 scrollToBottom 上方 buffer 同口径）。
+    for (let i = 0; i < this.bTarget && this.mountedStart > 0; i++) {
+      this.mountedStart--;
+      this.mount(this.mountedStart);
+    }
+    this.measurePending();
+    // scrollTop = 目标 item 顶端距 content 顶（topOf 累加已挂载高度）+ anchor 偏移，clamp 到可滚区间。
+    let st = this.topOf(idx);
+    const h = this.heightOf(idx);
+    if (anchor === 'center') st += h / 2 - this.viewportHeight / 2;
+    else if (anchor === 'bottom') st += h - this.viewportHeight;
+    const max = this.content.scrollHeight - this.viewportHeight;
+    this.viewport.scrollTop = Math.max(0, Math.min(st, max));
     this.shifting = false;
     this.emit();
   }

@@ -1,0 +1,9 @@
+// 虚拟滚动内核所需的唯一全局样式契约（与核心库同目录，框架无关）。
+//
+// .vs-pending：内核 mount() 时为元素加上、measurePending() 测完真实 offsetHeight 后移除。
+// 用 visibility:hidden（保留布局、仍占高度可测）在「挂载→实测」这一帧把元素藏住，
+// 消除 estimateHeight→真实高度的跳变 flicker。消费方（styles.scss）@use 本文件一次即全局生效，
+// playground 与真实聊天共用内核 → 共享此规则，无需各处重复定义。
+.vs-pending {
+  visibility: hidden !important;
+}

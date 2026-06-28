@@ -13,7 +13,7 @@ export const routes: Routes = [
   { path: "auth/login", component: LoginPageComponent, canActivate: [guestGuard] },
   { path: "auth/register", component: RegisterPageComponent, canActivate: [guestGuard] },
   { path: 'forbidden', component: ForbiddenPageComponent },
-  { path: 'playground/virtual-scroll', component: VirtualScrollPlaygroundComponent },
-  { path: 'playground/virtual-scroll-b', component: VirtualScrollPlaygroundComponent, data: { useNativeAnchor: true } },
+  { path: 'playground/virtual-scroll-a', component: VirtualScrollPlaygroundComponent, data: { useNativeAnchor: true } },
+  { path: 'playground/virtual-scroll-b', component: VirtualScrollPlaygroundComponent },
   { path: '**', component: PageNotFoundComponent }
 ];

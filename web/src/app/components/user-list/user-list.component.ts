@@ -1,12 +1,11 @@
 import { Component, input, signal, EventEmitter, Output, computed } from '@angular/core';
-import { NgClass } from '@angular/common';
 import { UserService } from '../../services/user.service'
 import { UserMessageThread } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 @Component({
     selector: 'app-user-list',
-    imports: [UserAvatarComponent, NgClass],
+    imports: [UserAvatarComponent],
     templateUrl: './user-list.component.html',
     styleUrl: './user-list.component.scss'
 })

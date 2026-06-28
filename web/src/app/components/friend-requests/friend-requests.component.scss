@@ -1,4 +1,4 @@
-@import "../../assets/utils.scss";
+@use "../../assets/utils.scss" as *;
 
 // 局部别名指向全局 token（var()）。改主题/深色模式只动 _tokens.scss，此处零改动。
 $primary: var(--app-brand);

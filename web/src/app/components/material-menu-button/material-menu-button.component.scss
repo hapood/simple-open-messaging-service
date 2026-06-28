@@ -1,4 +1,4 @@
-@import "../../assets/utils.scss";
+@use "../../assets/utils.scss" as *;
 
 .menu-button {
   @include styless-button;

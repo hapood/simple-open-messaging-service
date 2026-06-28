@@ -165,6 +165,7 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       this.mount(this.mountedStart);
     }
     this.measurePending();
+    this.fillBackward(); // 防御兜底：预估偏大致上方挂载不足时，按真实内容高补满视口+buffer
     this.viewport.scrollTop = this.content.scrollHeight - this.viewportHeight;
     this.shifting = false;
     this.ensureFilled(); // 内容不足一屏则加载更早历史填满（首次加载/数据稀少）
@@ -187,6 +188,29 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     }
   }
 
+  /**
+   * 防御兜底：预估高度偏大致 scrollToBottom 的向上挂载不足时，按真实 content.scrollHeight 继续
+   * 向上挂载补满视口+buffer（与方案 B 同构）。常态循环零执行、零开销；仅预估偏大或元素极矮时补几条。
+   * dev（ngDevMode）下若实际补挂，console.warn 提示预估偏差。
+   */
+  private fillBackward() {
+    const startBefore = this.mountedStart;
+    const hBefore = this.content.scrollHeight;
+    while (this.mountedStart > 0 && this.content.scrollHeight - this.viewportHeight < this.buffer) {
+      this.mountedStart--;
+      this.mount(this.mountedStart);
+    }
+    this.measurePending();
+    if (ngDevMode && this.mountedStart !== startBefore) {
+      console.warn('%c[vs-fillBackward] 预估偏大，首帧挂载不足已兜底补挂', 'color:#e91e63;font-weight:700', {
+        补挂条数: startBefore - this.mountedStart,
+        内容高: `${hBefore} → ${this.content.scrollHeight}`,
+        视口: this.viewportHeight,
+        buffer: this.buffer,
+      });
+    }
+  }
+
   scrollToTop() {
     if (this.destroyed) return;
     this.unmountAll();
@@ -195,6 +219,37 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.mountInitialForward();
     this.shifting = true;
     this.viewport.scrollTop = 0;
+    this.shifting = false;
+    this.emit();
+  }
+
+  /**
+   * 跳到指定 index（anchor 决定该 item 落在视口顶/中/底）。卸载全部后挂载目标周围窗口，再据已挂载高度
+   * 算 scrollTop。与方案 B 同构：unmountAll 后无锚定元素可钉，直接写 scrollTop 生效（与 scrollToBottom 同）。
+   */
+  scrollToIndex(index: number, anchor: 'top' | 'center' | 'bottom' = 'top') {
+    if (this.destroyed || this.items.length === 0) return;
+    const idx = Math.max(0, Math.min(index, this.items.length - 1));
+    this.unmountAll();
+    this.mountedStart = idx;
+    this.mountedEnd = idx;
+    this.shifting = true;
+    while (this.mountedEnd < this.items.length
+           && this.content.scrollHeight - this.viewportHeight < this.buffer) {
+      this.mount(this.mountedEnd);
+      this.mountedEnd++;
+    }
+    for (let i = 0; i < this.bTarget && this.mountedStart > 0; i++) {
+      this.mountedStart--;
+      this.mount(this.mountedStart);
+    }
+    this.measurePending();
+    let st = this.topOf(idx);
+    const h = this.heightOf(idx);
+    if (anchor === 'center') st += h / 2 - this.viewportHeight / 2;
+    else if (anchor === 'bottom') st += h - this.viewportHeight;
+    const max = this.content.scrollHeight - this.viewportHeight;
+    this.viewport.scrollTop = Math.max(0, Math.min(st, max));
     this.shifting = false;
     this.emit();
   }
@@ -359,6 +414,13 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   private heightOf(i: number): number {
     return this.heights.get(i) ?? this.elements.get(i)?.estimateHeight() ?? 0;
+  }
+
+  /** 元素 i 顶端距 content 顶的像素（累加 mountedStart..i-1 的高度）。与方案 B 同口径。 */
+  private topOf(i: number): number {
+    let acc = 0;
+    for (let k = this.mountedStart; k < i; k++) acc += this.heightOf(k);
+    return acc;
   }
 
   private totalMountedHeight(): number {

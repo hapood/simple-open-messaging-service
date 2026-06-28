@@ -1,4 +1,4 @@
-@import "../../assets/utils.scss";
+@use "../../assets/utils.scss" as *;
 
 // fill-parent chain so group-info fills the mobile overlay AND the desktop side panel
 :host {
