@@ -1,20 +1,47 @@
-<div>@for (thread of filteredThreadList(); track thread.id) {
-  <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
-    @if(thread.toObjType==='P2P'){<div class="thread-avatar">
-      <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
-    </div>
-    <div class="thread-info">
-      <div class="thread-name">{{thread.userItem.uniqName}}</div>
-      <div class="thread-msg">last message</div>
-    </div>
-    }@else if(thread.toObjType==='GROUP'){<div class="thread-avatar">
-      <app-user-avatar [type]="UserAvatarType.GROUP"></app-user-avatar>
-    </div>
-    <div class="thread-info">
-      <div class="thread-name">{{thread.groupItem.name}}</div>
-      <div class="thread-msg">last message</div>
-    </div>
+<div class="thread-list">
+  @switch (status()) {
+    @case (ThreadListStatus.LOADING) {
+      <app-empty-state title="加载中…" />
     }
-  </div>
+    @case (ThreadListStatus.ERROR) {
+      <app-empty-state tone="error" [title]="errorMsg()" subtitle="无法加载会话列表"
+        ctaLabel="重试" (ctaClick)="genThreadList()" />
+    }
+    @case (ThreadListStatus.READY) {
+      @if (filteredThreadList().length === 0) {
+        @if (isSearchEmpty()) {
+          <app-empty-state title="没有匹配的会话" subtitle="试试其他关键词，或清空搜索。" />
+        } @else {
+          <app-empty-state title="还没有聊天" subtitle="添加好友，开始你的第一次对话。"
+            ctaLabel="添加好友" (ctaClick)="openFriendRequests()">
+            <svg width="40" height="40" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <rect width="64" height="64" rx="14" fill="#2196f3" />
+              <path transform="translate(6 7) scale(2.2)" fill="#ffffff"
+                d="M12 3C6.5 3 2 6.6 2 11c0 2.3 1.2 4.4 3.2 5.8-.2 1-.7 2.2-1.6 3.2-.2.2 0 .6.3.5 1.7-.3 3.2-1 4.4-1.9 1.1.3 2.3.4 3.7.4 5.5 0 10-3.6 10-8s-4.5-8-10-8z" />
+            </svg>
+          </app-empty-state>
+        }
+      } @else {
+        @for (thread of filteredThreadList(); track thread.id) {
+          <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
+            @if(thread.toObjType==='P2P'){<div class="thread-avatar">
+              <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+            </div>
+            <div class="thread-info">
+              <div class="thread-name">{{thread.userItem.uniqName}}</div>
+              <div class="thread-msg">last message</div>
+            </div>
+            }@else if(thread.toObjType==='GROUP'){<div class="thread-avatar">
+              <app-user-avatar [type]="UserAvatarType.GROUP"></app-user-avatar>
+            </div>
+            <div class="thread-info">
+              <div class="thread-name">{{thread.groupItem.name}}</div>
+              <div class="thread-msg">last message</div>
+            </div>
+            }
+          </div>
+        }
+      }
+    }
   }
 </div>

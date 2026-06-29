@@ -55,12 +55,22 @@ export class UserService {
     return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
   }
 
+  queryFromPending(params: {
+    take: number, beforeDate: number
+  }) {
+    return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/from-pending`, params)
+  }
+
   approveFriendRequest(params: { userId: number }) {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/approve-friend-request`, params)
   }
 
   declineFriendRequest(params: { userId: number }) {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/decline-friend-request`, params)
+  }
+
+  cancelFriendRequest(params: { userId: number }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/user/cancel-friend-request`, params)
   }
 
   getUserThreadInfo(params: { userThreadId: number }) {

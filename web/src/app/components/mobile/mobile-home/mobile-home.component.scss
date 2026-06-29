@@ -1,15 +1,24 @@
-.page-wrapper {
-  width: 100vw;
+:host {
+  display: block;
   height: 100vh;
+  height: 100dvh; // 移动端动态视口高度，避免地址栏撑高页面
+}
 
-  .thread-list-wrapper {
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-  }
+app-nav-drawer {
+  display: block;
+  height: 100%;
+}
 
-  .thread-list {
-    height: calc(100% - 56px);
-    overflow-y: auto;
-  }
+.mobile-home-body {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.thread-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }

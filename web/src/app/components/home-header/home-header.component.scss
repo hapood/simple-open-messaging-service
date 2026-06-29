@@ -14,12 +14,11 @@
 
 .icon-btn {
   @include styless-button;
-  position: relative;
 }
-.menu-text {
-  font-size: 14px;
+
+.title {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 1px;
   color: var(--app-text);
-  margin-left:12px;
-  height: 40px;
-  line-height: 40px;
 }

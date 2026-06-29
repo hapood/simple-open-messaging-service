@@ -174,6 +174,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/query-thread/from-pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 查询我发出的待处理好友请求 */
+        post: operations["UserController_queryFromPendingThread"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/send-friend-request": {
         parameters: {
             query?: never;
@@ -202,6 +219,40 @@ export interface paths {
         put?: never;
         /** 同意好友请求 */
         post: operations["UserController_acceptFriendRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/decline-friend-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 拒绝好友请求 */
+        post: operations["UserController_declineFriendRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/cancel-friend-request": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 撤销我发出的好友请求 */
+        post: operations["UserController_cancelFriendRequest"];
         delete?: never;
         options?: never;
         head?: never;
@@ -344,6 +395,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/upload": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传图片（返回 url + 前端传入的宽高） */
+        post: operations["UploadController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -359,6 +427,8 @@ export interface components {
              * @example successful
              */
             message: string;
+            /** @description 仅分页接口（如 query-messages）填充：是否还有更早一页。非分页接口为 undefined。 */
+            hasMore: boolean | null;
         };
         MessageResponseDto: {
             /**
@@ -396,6 +466,8 @@ export interface components {
         SendMessageDto: {
             userThreadId: number;
             content: string;
+            /** @enum {string} */
+            contentType?: "PURE_TEXT" | "INVITE" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO";
         };
         QueryMessagesDto: {
             userThreadId: number;
@@ -836,6 +908,31 @@ export interface operations {
             };
         };
     };
+    UserController_queryFromPendingThread: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["QueryPendingThreadDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserMessageThreadResponseDto"][];
+                    };
+                };
+            };
+        };
+    };
     UserController_sendFriendRequest: {
         parameters: {
             query?: never;
@@ -858,6 +955,48 @@ export interface operations {
         };
     };
     UserController_acceptFriendRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_declineFriendRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_cancelFriendRequest: {
         parameters: {
             query?: never;
             header?: never;
@@ -1063,6 +1202,23 @@ export interface operations {
                         data?: components["schemas"]["GroupResponseDto"];
                     };
                 };
+            };
+        };
+    };
+    UploadController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

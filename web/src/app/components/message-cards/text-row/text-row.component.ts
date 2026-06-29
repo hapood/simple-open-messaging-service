@@ -1,15 +1,20 @@
 import { Component, computed, input } from '@angular/core';
 import type { ChatMsgData } from '../chat-item';
+import { DateRowComponent } from '../date-row/date-row.component';
 
 /**
  * 纯文本消息行（WhatsApp 风：头像 + 名字 + 气泡 + 尾尖 + 右下时间戳）。
  *
  * standalone + Emulated 封装。分组（头像/名字/圆角/组间留白）由 isShowHead/isGroupStart
  * input 驱动，渲染时一次成型。共享视觉规则见 _row-base.scss（@use）。
+ *
+ * dateLabel：createItem 工厂按跨日判定传入；非空时模板顶部渲染 date pill（date 已从数据源
+ * 移出、改由前端派生，见 date-format.ts）。
  */
 @Component({
   selector: 'app-msg-text-row',
   standalone: true,
+  imports: [DateRowComponent],
   templateUrl: './text-row.component.html',
   styleUrl: './text-row.component.scss',
 })
@@ -19,6 +24,8 @@ export class TextRowComponent {
   readonly isShowHead = input(false);
   /** 换发送者的新组首（组间留白 padding-top）。 */
   readonly isGroupStart = input(false);
+  /** 跨日 date 分隔文案（非空=本条是某天首条、上方显 date pill）；null=不显。 */
+  readonly dateLabel = input<string | null>(null);
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());

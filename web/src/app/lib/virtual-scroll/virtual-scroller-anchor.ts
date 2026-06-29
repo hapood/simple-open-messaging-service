@@ -1,256 +1,159 @@
 /**
- * VirtualScrollerAnchor —— 方案 A：借浏览器滚动锚定（与方案 B {@link VirtualScroller} 硬分叉）。
+ * VirtualScrollerAnchor —— 方案 A：借浏览器 overflow-anchor 锚定（与方案 B 硬分叉，便于 a/b 对比）。
  *
- * 【与方案 B 的本质区别】
- * - 方案 B（virtual-scroller.ts）：文档流 + 内核手动写 scrollTop 做锚点补偿（顶部增删/上方变高时
- *   scrollTop += delta）。补偿必须逐像素准，且与浏览器锚定不能并存。
- * - 方案 A（本文件）：文档流 + **内核完全不写 scrollTop（顶部增删/变高时）**，交浏览器
- *   `overflow-anchor: auto`（默认）钉住「首个可见元素」→ 视口自动稳定。内核只管「挂哪些 item」。
+ * 【array index-based】内核维护 `mounted: Entry[]` 有序数组（mounted[0]=最老/DOM 顶 → 末=最新/底），
+ *  下标=窗口局部 index（不累积、不依赖方向、天然支持双向）。item.id（msgId）仅作 source 游标，
+ *  **不参与位置算术**。前缀和 `prefix[]`（flushPrefix 懒失效）让 topOf/totalH O(1) 摊销。
  *
- * 【为何顶部窗口判定要换算法】
- *   方案 B 靠「挂载即推 scrollTop」形成反馈环终止挂载循环（scrollTop 一旦 >= buffer 就停）。
- *   方案 A 不推 scrollTop，循环没有自增变量 → 必须改用**累计计数法**：
- *     · 顶部挂载：deficit = buffer - scrollTop（还差多少上方内容）；挂到 deficit <= 0 停。
- *     · 顶部回收：excess = scrollTop - buffer（上方多出多少）；卸到 excess < 下一项高停。
- *   跨帧由浏览器把 scrollTop 校正到准确值（锚定副作用），故每帧 deficit/excess 都是基于真实位移算的。
+ * 与方案 B（{@link VirtualScroller}）同构：array index + 数据源驱动、像素阈值窗口、检查点加载、trim、
+ *  mergeItems hook（相册合并在内核，per-batch）。唯一区别：**不写 scrollTop 补偿**——prepend 更老 /
+ *  上方高度变化 / 截上方 都不动 scrollTop，交由浏览器 `overflow-anchor: auto`（默认）钉住首个可见元素。
  *
- * 【方案 A 的得失】
- *   + 稳定性交浏览器，对测量误差（estimate vs 实测、box 口径）免疫——不存在「补偿算错」这类 bug。
- *   + 挂载与锚定在同一 layout pass 完成，无方案 B 那「JS 补偿帧」的潜在 1 帧错位。
- *   − 依赖 overflow-anchor（2026 全平台支持；Safari 13.1+）；mock 环境无浏览器锚定，单测只能验「内核不补偿」。
- *   − 底部跟随（贴底收新消息）锚定帮不上（它钉顶部首个可见），仍需内核手动 scrollTop = max。
+ * 故方案 A 没有「异步 resolve 后补偿用快照会跳变」的风险面（§async 对策只需重校验、不需补偿算术）——
+ * 这是方案 A 在 fling + 慢加载场景更顺的根本原因。代价：iOS 全系不支持 overflow-anchor → 方案 A 仅 Android。
  *
- * 【借浏览器锚定的前提】宿主 viewport 必须 overflow-anchor: auto（默认）。方案 B 的 playground
- *   设了 overflow-anchor: none（让手动补偿独占）；方案 A 的 playground 不设 none（保持默认 auto）。
+ * 注：重校验仍需（避免向反向/边界挂载），只是去掉补偿。
+ * 前提：宿主 viewport overflow-anchor: auto（默认）；方案 B 的 playground 设 none 让手动补偿独占。
  */
-
-import { ScrollerApi, VsDebugStats, VsElement, VsHooks, VsItem, VsOptions, VsScrollInfo } from './virtual-scroller';
-
-export type { VsDebugStats, VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo } from './virtual-scroller';
-
-// Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除。方案 A 用它守卫诊断采集
-// （与方案 B 对等）：生产 bundle 不含诊断代码、热路径零开销；非 Angular 环境该全局 undefined 同样关闭。
 declare const ngDevMode: boolean | null | undefined;
 
-const DEFAULT_BUFFER = 1500;
+import type { VsSource } from './source';
+import type {
+  VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi,
+} from './virtual-scroller';
+
+export type { VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi } from './virtual-scroller';
+
+const DEFAULTS: Required<VsConfig> = {
+  edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
+};
+
+/** 挂载项：item（带 msgId）+ 元素句柄 + 缓存高度 + 高度退订。字段可变（rebuild 替换 el/vs/height/unsub）。 */
+interface Entry<T> { item: VsItem<T>; el: HTMLElement; vs: VsElement<T>; height: number; unsub: () => void; }
 
 export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private readonly viewport: HTMLElement;
   private readonly content: HTMLElement;
-  private readonly topSentinel?: HTMLElement;
   private readonly hooks: VsHooks<T>;
-  private readonly onLoadMore?: () => VsItem<T>[] | null;
+  private readonly source: VsSource<T>;
+  private readonly cfg: Required<VsConfig>;
+  private readonly initOpts: { chatId?: number };
   private readonly onScroll?: (info: VsScrollInfo) => void;
-  private readonly buffer: number;
-  /** balance 条数缓冲阈值（来自 opts.balance，默认 20/80/40）。 */
-  private readonly bMount: number;
-  private readonly bRecycle: number;
-  private readonly bTarget: number;
-  /** 调试回调（opts.onDebug）：提供则每帧 balance 上报单帧统计（与方案 B 对等）。 */
   private readonly onDebug?: (stats: VsDebugStats) => void;
+
+  /** 有序挂载项：index 0=最老（DOM 顶）→ 末=最新（DOM 底）。下标=窗口局部 index。 */
+  private mounted: Entry<T>[] = [];
+  /** 前缀和：prefix[i]=Σheight[0..i-1]（prefix[0]=0、prefix[n]=totalH）。dirtyPrefix 时 flushPrefix 重算。 */
+  private prefix: number[] = [0];
+  private dirtyPrefix = true;
+
+  private noOlder = false;
+  private noNewer = false;
+  /** 当前显骨架的 entry（= mounted[0] 当 !noOlder）；null=无骨架。用 entry 引用（不怕数组位移）。 */
+  private ghostEntry: Entry<T> | null = null;
+  private inflightOlder = false;
+  private inflightNewer = false;
+  /** 调试开关：关闭挂载检查点（balance 不触发 loadOlder/loadNewer）。balance 内 ngDevMode 守卫 → 生产 AOT 移除。默认 false（检查点正常加载）。 */
+  closeCheckpoint = false;
+
+  /** 待实测高度的 entry 队列（改存 entry 引用，回调内 indexOf 读当前 index）。 */
+  private pendingMeasure: Entry<T>[] = [];
+
+  private vh = 0;
+  private shifting = false;   // 屏蔽程序化 scrollTop 写（scrollToBottom 等）引发的 scroll 方向误判
+  private mounting = false;
+  private measuring = false;
+  private destroyed = false;
+  private dirty = false;
+  private rafId = 0;
+  private lastScrollTop = 0;
   private mountTick = 0;
   private unmountTick = 0;
-  /** 待批量首测的已挂载 index（mount 加入、measurePending 消费）。延迟首测：mount 不读 offsetHeight。 */
-  private pendingMeasure: number[] = [];
-  /** measurePending 进行中：屏蔽 onElHeight 的 scheduleBalance 重入。 */
-  private measuring = false;
-
-  private items: VsItem<T>[] = [];
-  private mountedStart = 0;
-  private mountedEnd = 0;
-  private elements = new Map<number, VsElement<T>>();
-  private heights = new Map<number, number>();
-  private unsubs = new Map<number, () => void>();
-
-  private viewportHeight = 0;
-  private shifting = false; // 程序化改 scrollTop 中（贴底/跳转），忽略由此引发的 scroll 事件
-  private mounting = false; // mount 内首次 onHeightChange：跳过 balance，防重入
-  private loadingMore = false;
-  private noMoreHistory = false;
-  private destroyed = false;
-
-  private rafId = 0;
-  private dirty = false;
-  private readonly sentinelObs?: IntersectionObserver;
   private readonly viewportObs: ResizeObserver;
 
   constructor(opts: VsOptions<T>) {
     this.viewport = opts.viewport;
     this.content = opts.content;
-    this.topSentinel = opts.topSentinel;
     this.hooks = opts.hooks;
-    this.onLoadMore = opts.onLoadMore;
+    this.source = opts.source;
     this.onScroll = opts.onScroll;
     this.onDebug = opts.onDebug;
-
-    this.viewportObs = new ResizeObserver(() => { this.measureViewport(); this.scheduleBalance(); });
-    this.measureViewport();
+    this.initOpts = opts.initOpts ?? {};
+    this.cfg = { ...DEFAULTS, ...opts.config };
+    this.viewportObs = new ResizeObserver(() => { this.measureVh(); this.scheduleBalance(); });
+    this.measureVh();
     this.viewportObs.observe(this.viewport);
-    // 像素 buffer 默认 3×vh（随屏高，DEFAULT_BUFFER 作 vh=0 下限）；条数 buffer 默认 20/80/40。
-    this.buffer = opts.buffer ?? Math.max(DEFAULT_BUFFER, this.viewportHeight * 3);
-    const bal = opts.balance ?? { mount: 20, recycle: 80, target: 40 };
-    this.bMount = bal.mount;
-    this.bRecycle = bal.recycle;
-    this.bTarget = bal.target;
     this.viewport.addEventListener('scroll', this.onNativeScroll, { passive: true });
+  }
 
-    if (this.topSentinel && this.onLoadMore) {
-      this.sentinelObs = new IntersectionObserver(entries => {
-        if (entries.some(e => e.isIntersecting)) this.maybeLoadMore();
-      }, { root: this.viewport, rootMargin: `${this.buffer}px 0px ${this.buffer}px 0px` });
-      this.sentinelObs.observe(this.topSentinel);
+  private get threshold(): number {
+    return Math.max(this.vh + this.cfg.vhExtra, this.cfg.thresholdFloor);
+  }
+
+  async init(): Promise<void> {
+    let batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
+    let merged = this.mergeBatch(batch);
+    if (merged.length === 0) return;
+    this.absorbBoundary(merged);
+    this.mountBatch(merged, 'init');
+    while (this.totalH() < this.threshold && !this.noOlder && this.mounted.length > 0) {
+      const cursor = this.mounted[0].item.id; // 最老挂载的 msgId
+      batch = await this.source.getOlder(cursor, this.cfg.initBatch);
+      merged = this.mergeBatch(batch);
+      if (merged.length === 0) { this.noOlder = true; break; }
+      this.absorbBoundary(merged);
+      this.mountBatch(merged, 'older'); // 不内部 measure
+      this.measurePending();            // 补批统一测
     }
+    this.scrollToBottom();
+    this.updateGhost();
   }
 
-  // ---------- 公共 API ----------
-
-  setItems(items: VsItem<T>[]) {
-    this.unmountAll();
-    this.items = items;
-    this.mountedStart = 0;
-    this.mountedEnd = 0;
-    this.noMoreHistory = false;
-    this.mountInitialForward();
-    this.shifting = true;
-    this.viewport.scrollTop = 0;
-    this.shifting = false;
-    this.emit();
-  }
-
-  appendItems(newItems: VsItem<T>[]) {
-    if (this.destroyed || newItems.length === 0) return;
+  appendLive(rawItems: VsItem<T>[]): void {
+    if (this.destroyed || rawItems.length === 0) return;
     const wasAtBottom = this.isAtBottom();
-    for (const it of newItems) this.items.push(it);
-    if (wasAtBottom) {
-      // 贴底跟随是锚定帮不上的（它钉顶部），内核手动钉到底。
-      this.shifting = true;
-      for (let i = this.mountedEnd; i < this.items.length; i++) {
-        this.mount(i);
-        this.mountedEnd = i + 1;
-      }
-      this.measurePending();
-      this.viewport.scrollTop = this.content.scrollHeight - this.viewportHeight;
-      this.shifting = false;
-    }
+    const items = this.source.appendLive(rawItems);
+    const merged = this.mergeBatch(items);
+    this.absorbBoundary(merged);
+    this.mountBatch(merged, 'newer');
+    if (wasAtBottom) this.scrollToBottom();
     this.emit();
   }
 
-  /** 在头部插入若干 item（下拉加载历史）。不写 scrollTop——浏览器锚定钉住首个可见元素，视觉不跳。 */
-  prependItems(newItems: VsItem<T>[]) {
-    if (this.destroyed || newItems.length === 0) return;
-    const len = newItems.length;
-    this.noMoreHistory = false;
-    this.shiftKeys(len);
-    this.items.unshift(...newItems);
-    this.mountedStart += len;
-    this.mountedEnd += len;
-    // 挂载新元素 0..len-1 到顶部（从后往前 mount，邻居查找正确串成顺序）。不补偿 scrollTop。
-    for (let i = len - 1; i >= 0; i--) {
-      this.mount(i);
-    }
-    // 不重渲原首条（现 index=len）：宿主用"幽灵 prev"保证 prepend 后其分组不变，零 reflow。
-    // 见 playground fetchOlder 的衔接不变量（末条.creator = 旧顶端幽灵 creator）。
-    this.measurePending();
-    this.emit();
-  }
-
-  scrollToBottom() {
+  scrollToBottom(): void {
     if (this.destroyed) return;
-    this.unmountAll();
-    this.mountedEnd = this.items.length;
-    this.mountedStart = this.items.length;
     this.shifting = true;
-    while (this.mountedStart > 0 && this.totalMountedHeight() < this.viewportHeight + this.buffer) {
-      this.mountedStart--;
-      this.mount(this.mountedStart);
-    }
-    this.measurePending();
-    this.fillBackward(); // 防御兜底：预估偏大致上方挂载不足时，按真实内容高补满视口+buffer
-    this.viewport.scrollTop = this.content.scrollHeight - this.viewportHeight;
+    this.viewport.scrollTop = this.content.scrollHeight - this.vh;
     this.shifting = false;
-    this.ensureFilled(); // 内容不足一屏则加载更早历史填满（首次加载/数据稀少）
+    this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
+    // 最新端可能被 trimNewer 截掉（窗口后退、noNewer=false）→ 加载回全局最新（loadNewer 内 wasAtBottom 跟随再 scrollToBottom，链式直到 noNewer）
+    if (!this.noNewer) void this.loadNewer();
   }
 
-  /** 内容不足一屏时持续加载更早历史直到填满视口或无更多；加载后重新钉到底。 */
-  private ensureFilled() {
-    if (!this.onLoadMore) return;
-    let guard = 0;
-    while (!this.noMoreHistory && this.content.scrollHeight < this.viewportHeight && guard++ < 100) {
-      const more = this.onLoadMore();
-      if (!more || !more.length) { this.noMoreHistory = true; break; }
-      this.prependItems(more);
-    }
-    if (this.content.scrollHeight >= this.viewportHeight) {
-      this.shifting = true;
-      this.viewport.scrollTop = this.content.scrollHeight - this.viewportHeight;
-      this.shifting = false;
-    }
-  }
-
-  /**
-   * 防御兜底：预估高度偏大致 scrollToBottom 的向上挂载不足时，按真实 content.scrollHeight 继续
-   * 向上挂载补满视口+buffer（与方案 B 同构）。常态循环零执行、零开销；仅预估偏大或元素极矮时补几条。
-   * dev（ngDevMode）下若实际补挂，console.warn 提示预估偏差。
-   */
-  private fillBackward() {
-    const startBefore = this.mountedStart;
-    const hBefore = this.content.scrollHeight;
-    while (this.mountedStart > 0 && this.content.scrollHeight - this.viewportHeight < this.buffer) {
-      this.mountedStart--;
-      this.mount(this.mountedStart);
-    }
-    this.measurePending();
-    if (ngDevMode && this.mountedStart !== startBefore) {
-      console.warn('%c[vs-fillBackward] 预估偏大，首帧挂载不足已兜底补挂', 'color:#e91e63;font-weight:700', {
-        补挂条数: startBefore - this.mountedStart,
-        内容高: `${hBefore} → ${this.content.scrollHeight}`,
-        视口: this.viewportHeight,
-        buffer: this.buffer,
-      });
-    }
-  }
-
-  scrollToTop() {
+  scrollToTop(): void {
     if (this.destroyed) return;
-    this.unmountAll();
-    this.mountedStart = 0;
-    this.mountedEnd = 0;
-    this.mountInitialForward();
     this.shifting = true;
     this.viewport.scrollTop = 0;
     this.shifting = false;
+    this.lastScrollTop = 0;
     this.emit();
   }
 
-  /**
-   * 跳到指定 index（anchor 决定该 item 落在视口顶/中/底）。卸载全部后挂载目标周围窗口，再据已挂载高度
-   * 算 scrollTop。与方案 B 同构：unmountAll 后无锚定元素可钉，直接写 scrollTop 生效（与 scrollToBottom 同）。
-   */
-  scrollToIndex(index: number, anchor: 'top' | 'center' | 'bottom' = 'top') {
-    if (this.destroyed || this.items.length === 0) return;
-    const idx = Math.max(0, Math.min(index, this.items.length - 1));
-    this.unmountAll();
-    this.mountedStart = idx;
-    this.mountedEnd = idx;
+  scrollToIndex(id: string | number, anchor: 'top' | 'center' | 'bottom' = 'top'): void {
+    if (this.destroyed) return;
+    const idx = this.indexOfId(id);
+    if (idx < 0) return; // 不在挂载窗口（load-from-middle 是未来项）
+    this.flushPrefix();
+    let st = this.prefix[idx];
+    const h = this.mounted[idx].height;
+    if (anchor === 'center') st += h / 2 - this.vh / 2;
+    else if (anchor === 'bottom') st += h - this.vh;
+    const max = this.content.scrollHeight - this.vh;
     this.shifting = true;
-    while (this.mountedEnd < this.items.length
-           && this.content.scrollHeight - this.viewportHeight < this.buffer) {
-      this.mount(this.mountedEnd);
-      this.mountedEnd++;
-    }
-    for (let i = 0; i < this.bTarget && this.mountedStart > 0; i++) {
-      this.mountedStart--;
-      this.mount(this.mountedStart);
-    }
-    this.measurePending();
-    let st = this.topOf(idx);
-    const h = this.heightOf(idx);
-    if (anchor === 'center') st += h / 2 - this.viewportHeight / 2;
-    else if (anchor === 'bottom') st += h - this.viewportHeight;
-    const max = this.content.scrollHeight - this.viewportHeight;
     this.viewport.scrollTop = Math.max(0, Math.min(st, max));
     this.shifting = false;
+    this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
   }
 
@@ -258,269 +161,361 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return {
       scrollTop: Math.round(this.viewport.scrollTop),
       scrollHeight: Math.round(this.content.scrollHeight),
-      viewportHeight: this.viewportHeight,
-      mountedStart: this.mountedStart,
-      mountedEnd: this.mountedEnd,
-      mounted: this.elements.size,
-      total: this.items.length,
-      atTop: this.mountedStart === 0 && this.viewport.scrollTop <= 0,
-      atBottom: this.mountedEnd === this.items.length && this.isAtBottom(),
+      viewportHeight: this.vh,
+      oldestId: this.mounted[0]?.item.id ?? null,
+      newestId: this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : null,
+      mounted: this.mounted.length,
+      atTop: this.mounted.length > 0 && this.viewport.scrollTop <= 0,
+      atBottom: this.mounted.length > 0 && this.isAtBottom(),
+      noOlder: this.noOlder,
+      noNewer: this.noNewer,
     };
   }
 
-  refresh() {
-    this.measureViewport();
+  refresh(): void {
+    this.measureVh();
     if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
     this.dirty = false;
     this.balance();
   }
 
-  destroy() {
+  destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
-    this.sentinelObs?.disconnect();
     this.viewportObs.disconnect();
     this.viewport.removeEventListener('scroll', this.onNativeScroll);
     this.unmountAll();
+    this.source.destroy();
   }
 
-  // ---------- 挂载 / 卸载 ----------
+  // ---------- 前缀和 / 高度 ----------
 
-  private mount(i: number) {
-    if (this.elements.has(i)) return;
+  /** dirty 时重算 prefix（O(n)，n=mounted.length）。mount/unmount/onElHeight 置 dirty，读 prefix 前调。 */
+  private flushPrefix(): void {
+    if (!this.dirtyPrefix) return;
+    const p = [0];
+    let acc = 0;
+    for (const e of this.mounted) { acc += e.height; p.push(acc); }
+    this.prefix = p;
+    this.dirtyPrefix = false;
+  }
+
+  /** idx 顶端距 content 顶 = Σ更老邻居高度 = prefix[idx]。 */
+  private topOf(idx: number): number { this.flushPrefix(); return this.prefix[idx] ?? 0; }
+
+  private totalH(): number { this.flushPrefix(); return this.prefix.length > 0 ? this.prefix[this.prefix.length - 1] : 0; }
+
+  // ---------- 挂载（array index；DOM 按 mounted 顺序，不涉 scrollTop） ----------
+
+  /** mergeItems hook（默认 noop）。在 createItem 前、对每个 source batch 调一次。scope=batch。 */
+  private mergeBatch(batch: VsItem<T>[]): VsItem<T>[] {
+    return this.hooks.mergeItems ? this.hooks.mergeItems(batch) : batch;
+  }
+
+  /**
+   * 挂一批（已 merge）：side=init/older → prepend（mounted 首，DOM 插到旧首前）；newer → append（末）。
+   * older 不内部 measure（loadOlder 统一测 + ghost rebuild）；init/newer 末尾 measure。
+   * prev = 更老邻居：batch 内前一个（升序），或 append 时旧末。
+   */
+  private mountBatch(merged: VsItem<T>[], side: 'init' | 'older' | 'newer'): void {
+    // merged 已由调用方经 mergeItems hook 合并（per-batch）；本方法只挂载，不再 merge。
+    if (merged.length === 0) return;
+    if (side === 'newer') {
+      for (let i = 0; i < merged.length; i++) {
+        const prev = i > 0 ? merged[i - 1] : (this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item : null);
+        this.mounted.push(this.createEntry(merged[i], prev));
+      }
+    } else { // init / older 都 prepend（init 时 mounted 空，anchorEl=null → appendChild）
+      const anchorEl = this.mounted.length > 0 ? this.mounted[0].el : null;
+      const fresh: Entry<T>[] = [];
+      for (let i = 0; i < merged.length; i++) {
+        const prev = i > 0 ? merged[i - 1] : null;
+        fresh.push(this.createEntry(merged[i], prev, anchorEl));
+      }
+      this.mounted.unshift(...fresh);
+    }
+    this.dirtyPrefix = true;
+    if (side !== 'older') this.measurePending();
+  }
+
+  /** 创建并挂一个 entry：createItem + DOM 插入（anchorEl 前 / append）+ pendingMeasure + 订阅高度。 */
+  private createEntry(item: VsItem<T>, prev: VsItem<T> | null, anchorEl?: HTMLElement | null): Entry<T> {
     if (ngDevMode) this.mountTick++;
-    const vs = this.hooks.createItem(this.items[i], i);
+    const vs = this.hooks.createItem(item, prev);
     const el = vs.el;
-    el.dataset['vsIdx'] = String(i);
-    const prev = this.elements.get(i - 1)?.el;
-    const next = this.elements.get(i + 1)?.el;
-    if (prev) prev.after(el);
-    else if (next) this.content.insertBefore(el, next);
+    el.dataset['vsId'] = String(item.id);
+    if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
     else this.content.appendChild(el);
-    this.elements.set(i, vs);
-    this.heights.set(i, vs.estimateHeight()); // 初值；measurePending 批量测真实（延迟首测）
-    el.classList.add('vs-pending');            // 占位隐藏：测好前不可见，消除 estimate→真实 flicker
-    this.pendingMeasure.push(i);               // 待批量测高
-    // mounting：mount 内首次上报只更新缓存，不触发 balance（否则挂载途中重入，mountedEnd 未推进）。
-    this.mounting = true;
-    const stop = vs.onHeightChange(h => this.onElHeight(i, h));
+    const entry: Entry<T> = { item, el, vs, height: vs.estimateHeight(), unsub: () => {} };
+    el.classList.add('vs-pending');
+    this.pendingMeasure.push(entry);
+    this.mounting = true; // 屏蔽首报（同 id-based）
+    entry.unsub = vs.onHeightChange(h => this.onElHeight(entry, h));
     this.mounting = false;
-    this.unsubs.set(i, stop);
+    return entry;
   }
 
-  private unmount(i: number) {
-    const vs = this.elements.get(i);
-    if (!vs) return;
+  /**
+   * 原地重建一个已挂 entry：用当前真实 prev（mounted[idx-1]，更老邻居）重 createItem，DOM 原地替换
+   *（insertBefore(newEl,oldEl)+removeChild(oldEl)）、迁移订阅、push pendingMeasure。
+   * **轻量**：不 measurePending——由 loadOlder 在「挂新批 + ghost 显形」后统一一次 measure。
+   * 方案 A 全程不补偿 scrollTop（浏览器 overflow-anchor 钉视口）。
+   * 用途：骨架显形（旧 mounted[0] prepend 后下移、prev 从 null 变非 null，组首/date 须重算）。
+   */
+  private rebuildEntry(entry: Entry<T>): void {
+    const idx = this.mounted.indexOf(entry);
+    if (idx < 0) return;
+    if (ngDevMode) this.mountTick++;
+    const newPrev = idx > 0 ? this.mounted[idx - 1].item : null; // 更老邻居（index 小一条）
+    const newVs = this.hooks.createItem(entry.item, newPrev);
+    const newEl = newVs.el;
+    newEl.dataset['vsId'] = String(entry.item.id);
+    this.content.insertBefore(newEl, entry.el);
+    this.content.removeChild(entry.el);
+    entry.unsub();
+    entry.vs = newVs;
+    entry.el = newEl;
+    entry.height = newVs.estimateHeight();
+    newEl.classList.add('vs-pending');
+    this.pendingMeasure.push(entry);
+    this.mounting = true;
+    entry.unsub = newVs.onHeightChange(h => this.onElHeight(entry, h));
+    this.mounting = false;
+    this.dirtyPrefix = true;
+  }
+
+  /** 卸最老（mounted[0]，DOM 顶）。 */
+  private unmountTop(): boolean {
+    if (this.mounted.length === 0) return false;
+    const e = this.mounted[0];
+    e.unsub();
+    if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+    e.vs.destroy();
+    this.mounted.shift();
     if (ngDevMode) this.unmountTick++;
-    this.unsubs.get(i)?.();
-    if (vs.el.parentNode === this.content) this.content.removeChild(vs.el);
-    vs.destroy();
-    this.elements.delete(i);
-    this.heights.delete(i);
-    this.unsubs.delete(i);
+    this.dirtyPrefix = true;
+    return true;
   }
 
-  private unmountAll() {
-    for (const [, vs] of this.elements) {
-      if (vs.el.parentNode === this.content) this.content.removeChild(vs.el);
-      vs.destroy();
+  /** 卸最新（mounted 末，DOM 底）。 */
+  private unmountBot(): boolean {
+    if (this.mounted.length === 0) return false;
+    const e = this.mounted[this.mounted.length - 1];
+    e.unsub();
+    if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+    e.vs.destroy();
+    this.mounted.pop();
+    if (ngDevMode) this.unmountTick++;
+    this.dirtyPrefix = true;
+    return true;
+  }
+
+  private unmountAll(): void {
+    for (const e of this.mounted) {
+      if (e.el.parentNode === this.content) this.content.removeChild(e.el);
+      e.vs.destroy();
     }
-    this.elements.clear();
-    this.heights.clear();
-    this.unsubs.clear();
+    this.mounted = [];
+    this.prefix = [0];
+    this.dirtyPrefix = true;
+    this.pendingMeasure = [];
+    this.ghostEntry = null;
   }
 
-  private mountInitialForward() {
-    while (this.mountedEnd < this.items.length
-           && this.content.scrollHeight - this.viewportHeight < this.buffer) {
-      this.mount(this.mountedEnd);
-      this.mountedEnd++;
-    }
-    this.measurePending();
+  /**
+   * 同步骨架态（纯 class）：骨架 = mounted[0]（最老挂载）在「未到全局最老」时。用 entry 引用比对
+   *（不怕数组位移）；变了则旧 ghost 移 vs-ghost、新 ghost 加 vs-ghost。
+   * ghost 显形的 rebuild 由 loadOlder 在挂新批后显式做（并入统一 measure）。noOlder 时 target=null 永久消失。
+   */
+  private updateGhost(): void {
+    const target = !this.noOlder && this.mounted.length > 0 ? this.mounted[0] : null;
+    if (target === this.ghostEntry) return;
+    this.ghostEntry?.el.classList.remove('vs-ghost');
+    target?.el.classList.add('vs-ghost');
+    this.ghostEntry = target;
   }
 
-  // ---------- balance：双向回收（方案 A：顶部不写 scrollTop）----------
+  // ---------- balance：检查点 + 加载（无补偿） ----------
 
   private onNativeScroll = () => {
     if (this.shifting || this.destroyed) return;
     this.scheduleBalance();
   };
 
-  private scheduleBalance() {
+  private scheduleBalance(): void {
     if (this.dirty || this.destroyed) return;
     this.dirty = true;
-    this.rafId = requestAnimationFrame(() => {
-      this.dirty = false;
-      this.balance();
-    });
+    this.rafId = requestAnimationFrame(() => { this.dirty = false; this.balance(); });
   }
 
-  /**
-   * 重平衡挂载窗口。底部增删不影响视口（内容在下方）；顶部增删**不写 scrollTop**，交浏览器锚定。
-   * 顶部窗口判定用累计计数（deficit/excess），因为方案 A 没有「挂载即推 scrollTop」的反馈环。
-   */
-  private balance() {
-    if (this.destroyed) return;
+  private balance(): void {
+    if (this.destroyed || this.mounted.length === 0) return;
+    if (ngDevMode && this.closeCheckpoint) return; // 调试：关闭挂载检查点（不触发 loadOlder/loadNewer；生产 AOT 移除）
     const t0 = ngDevMode ? performance.now() : 0;
     const m0 = this.mountTick, u0 = this.unmountTick;
-    const topIdx = this.viewportTopIndex();
-    const botIdx = this.viewportBottomIndex();
-    // 缓冲阈值（宽滞后，与方案 B 一致）：缓冲 <mount 才挂载到 target、>recycle 才回收到 target，中间死区不动。
-    const MOUNT_BELOW = this.bMount, RECYCLE_ABOVE = this.bRecycle, TARGET = this.bTarget;
+    const st = this.viewport.scrollTop;
+    const dir = this.scrollDir(st);
+    this.lastScrollTop = st;
 
-    // 1/2. 底部挂载/回收（互斥）：下方缓冲 <10 挂到 20、>40 回收到 20。
-    const below = (this.mountedEnd - 1) - botIdx;
-    if (below < MOUNT_BELOW) {
-      while (this.mountedEnd < this.items.length && (this.mountedEnd - 1) - botIdx < TARGET) {
-        this.mount(this.mountedEnd);
-        this.mountedEnd++;
-      }
-    } else if (below > RECYCLE_ABOVE) {
-      while (this.mountedEnd - 1 > this.mountedStart && (this.mountedEnd - 1) - botIdx > TARGET) {
-        this.unmount(this.mountedEnd - 1);
-        this.mountedEnd--;
-      }
-    }
-    // 3/4. 顶部挂载/回收（互斥）：上方缓冲 <10 挂到 20、>40 回收到 20（不写 scrollTop，交浏览器锚定）。
-    const above = topIdx - this.mountedStart;
-    if (above < MOUNT_BELOW) {
-      while (this.mountedStart > 0 && topIdx - this.mountedStart < TARGET) {
-        this.mountedStart--;
-        this.mount(this.mountedStart);
-      }
-    } else if (above > RECYCLE_ABOVE) {
-      while (this.mountedStart < this.mountedEnd && topIdx - this.mountedStart > TARGET) {
-        this.unmount(this.mountedStart);
-        this.mountedStart++;
-      }
-    }
+    const total = this.totalH();
+    const atTop = st < this.cfg.edge;
+    const atBottom = total - this.vh - st < this.cfg.edge;
 
-    this.measurePending();
-    this.emit();
+    if (atTop && dir !== 'down' && !this.noOlder) this.loadOlder();
+    else if (atBottom && dir !== 'up' && !this.noNewer) this.loadNewer();
 
-    if (ngDevMode && this.onDebug && (this.mountTick !== m0 || this.unmountTick !== u0)) {
+    if (ngDevMode && this.onDebug) {
       this.onDebug({
-        ms: performance.now() - t0,
-        mount: this.mountTick - m0,
-        unmount: this.unmountTick - u0,
-        scrollTop: Math.round(this.viewport.scrollTop),
-        mountedStart: this.mountedStart,
-        mountedEnd: this.mountedEnd,
+        ms: performance.now() - t0, mount: this.mountTick - m0, unmount: this.unmountTick - u0,
+        scrollTop: Math.round(st), oldestId: this.mounted[0]?.item.id ?? null, newestId: this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : null,
+        inflightOlder: this.inflightOlder, inflightNewer: this.inflightNewer,
       });
     }
-  }
-
-  // ---------- 高度 ----------
-
-  private heightOf(i: number): number {
-    return this.heights.get(i) ?? this.elements.get(i)?.estimateHeight() ?? 0;
-  }
-
-  /** 元素 i 顶端距 content 顶的像素（累加 mountedStart..i-1 的高度）。与方案 B 同口径。 */
-  private topOf(i: number): number {
-    let acc = 0;
-    for (let k = this.mountedStart; k < i; k++) acc += this.heightOf(k);
-    return acc;
-  }
-
-  private totalMountedHeight(): number {
-    let acc = 0;
-    for (let k = this.mountedStart; k < this.mountedEnd; k++) acc += this.heightOf(k);
-    return acc;
+    this.emit();
   }
 
   /**
-   * 批量首测：对本批 pendingMeasure 的元素一次性读 offsetHeight（同一 layout pass = 1 次 reflow），
-   * 更新 heights（经 onElHeight，measuring 标志屏蔽 scheduleBalance 重入），再集中移 vs-pending。
-   * 取代旧「mount 内同步读 offsetHeight」——后者每个 mount 一次 reflow，N 个 = N 次。
+   * 向更老加载：getOlder（游标=mounted[0].item.id）+ mergeItems + 挂 prepend + 旧 ghost（原 mounted[0]）
+   *  显形 rebuild。方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉视口）；ghost 显形与新批共用一次 measure。
+   * absorbBoundary 在 revalidate 通过后才调（防 fling 回滑误锁 noOlder → 最老批永久不挂）。
    */
-  private measurePending() {
-    if (this.pendingMeasure.length === 0) return;
-    const ids = this.pendingMeasure;
-    this.pendingMeasure = [];
-    this.measuring = true;
-    const measured: number[] = [];
-    for (const i of ids) {
-      const el = this.elements.get(i)?.el;
-      if (!el) continue;
-      measured.push(i);
-      this.onElHeight(i, el.offsetHeight);
+  private async loadOlder(): Promise<void> {
+    if (this.inflightOlder || this.noOlder || this.mounted.length === 0) return;
+    this.inflightOlder = true;
+    try {
+      const cursor = this.mounted[0].item.id;
+      const batch = await this.source.getOlder(cursor, this.cfg.mountItem);
+      if (!this.revalidateTop()) return; // await 期间 fling 反向 → 不挂不 absorb（阶段0：revalidate 通过后才吸收边界）
+      const merged = this.mergeBatch(batch);
+      if (this.destroyed || merged.length === 0) { if (merged.length === 0) this.noOlder = true; return; }
+      this.absorbBoundary(merged); // 阶段0：通过后才吸收边界
+      const oldGhost = this.ghostEntry;
+      this.mountBatch(merged, 'older'); // prepend（不内部 measure）
+      // 旧 ghost 显形 rebuild（位置不变、用新 prev 重算组首/date），与新批共用一次 measure。
+      if (oldGhost && this.mounted.indexOf(oldGhost) > 0) {
+        oldGhost.el.classList.remove('vs-ghost'); // 须在 rebuild 换 el 前
+        this.rebuildEntry(oldGhost);
+      }
+      this.measurePending(); // 一次统一测：新批 + ghost 显形（方案 A 不补偿）
+      this.trimNewer();
+      this.updateGhost();
+    } finally {
+      this.inflightOlder = false;
     }
-    for (const i of measured) this.elements.get(i)?.el.classList.remove('vs-pending');
-    this.measuring = false;
+    this.emit();
   }
 
-  /** 视口顶对应的 item index（其底端越过 scrollTop，即视口内最靠上的可见 item）。 */
-  private viewportTopIndex(): number {
-    let acc = 0;
-    for (let k = this.mountedStart; k < this.mountedEnd; k++) {
-      acc += this.heightOf(k);
-      if (acc > this.viewport.scrollTop) return k;
+  /** 向更新加载：getNewer（游标=mounted 末 item.id）+ mergeItems + append。方案 A：重校验后挂载 + 截顶，**不补偿**。 */
+  private async loadNewer(): Promise<void> {
+    if (this.inflightNewer || this.noNewer || this.mounted.length === 0) return;
+    this.inflightNewer = true;
+    let merged: VsItem<T>[];
+    try {
+      const cursor = this.mounted[this.mounted.length - 1].item.id;
+      const batch = await this.source.getNewer(cursor, this.cfg.mountItem);
+      merged = this.mergeBatch(batch);
+    } finally {
+      this.inflightNewer = false;
     }
-    return Math.max(this.mountedStart, this.mountedEnd - 1);
+    if (this.destroyed || merged.length === 0) { if (merged.length === 0) this.noNewer = true; return; }
+    if (!this.revalidateBottom()) return;
+    const wasAtBottom = this.isAtBottom(); // 加载前贴底 → 加载后跟随到新底（点定位底部 / 向下滚贴底）
+    this.absorbBoundary(merged); // 阶段0：通过后才吸收边界
+    this.mountBatch(merged, 'newer'); // append（末尾 measure）
+    this.trimOlder();
+    if (wasAtBottom) this.scrollToBottom(); // 跟随到底（含触发后续 loadNewer 直到全局最新）
+    this.updateGhost();
+    this.emit();
   }
 
-  /** 视口底对应的 item index（其底端越过 scrollTop + vh）。 */
-  private viewportBottomIndex(): number {
-    const target = this.viewport.scrollTop + this.viewportHeight;
-    let acc = 0;
-    for (let k = this.mountedStart; k < this.mountedEnd; k++) {
-      acc += this.heightOf(k);
-      if (acc > target) return k;
+  /** 截更新端（底部，mounted 末）。**保留视口下方 buffer**：截后 content 底（totalH-h）须仍 > 视口底（st+vh）+ edge，
+   *  否则不截——防 compensateAbove 把 st 推大后 trim 截到视口内 → st 超出 total → atBottom 误判 → loadNewer 跳到底。
+   *  截掉最新端 → 重置 noNewer。无补偿（底部在视口下方）。 */
+  private trimNewer(): void {
+    let trimmed = false;
+    while (this.mounted.length > 1) {
+      this.flushPrefix();
+      const h = this.mounted[this.mounted.length - 1].height;
+      if (this.totalH() - h > this.threshold && (this.totalH() - h) - (this.viewport.scrollTop + this.vh) > this.cfg.edge) {
+        this.unmountBot(); trimmed = true;
+      } else break;
     }
-    return Math.max(this.mountedStart, this.mountedEnd - 1);
+    if (trimmed) this.noNewer = false;
   }
 
-  /** 元素上报真实高度变化：只更新缓存 + 重平衡；不补偿 scrollTop（交浏览器锚定）。 */
-  private onElHeight(i: number, h: number) {
+  /** 截更老端（顶部，mounted[0]）。**保留视口上方 buffer**：截后视口上方（st-h）须 > edge（对称 trimNewer）。
+   *  方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉住视口）。截掉最老端 → 重置 noOlder。 */
+  private trimOlder(): void {
+    let trimmed = false;
+    while (this.mounted.length > 1) {
+      this.flushPrefix();
+      const h = this.mounted[0].height;
+      if (this.totalH() - h > this.threshold && this.viewport.scrollTop - h > this.cfg.edge) {
+        this.unmountTop(); trimmed = true;
+      } else break;
+    }
+    if (trimmed) this.noOlder = false;
+  }
+
+  // ---------- 高度上报（无补偿） ----------
+
+  /** 方案 A：高度变化不补偿（浏览器锚定），只更缓存 + balance。entry 引用稳定（不怕数组位移）。 */
+  private onElHeight(entry: Entry<T>, h: number): void {
     if (this.destroyed) return;
-    const old = this.heights.get(i);
-    if (old === h) return;
-    this.heights.set(i, h);
+    if (entry.height === h) return;
+    entry.height = h;
+    this.dirtyPrefix = true;
     if (!this.mounting && !this.measuring) this.scheduleBalance();
   }
 
-  private isAtBottom(): boolean {
-    return this.viewport.scrollTop + this.viewportHeight >= this.content.scrollHeight - 1;
+  private indexOfId(id: string | number): number {
+    const key = String(id);
+    return this.mounted.findIndex(e => String(e.item.id) === key);
   }
 
-  // ---------- 历史加载 ----------
+  private isAtBottom(): boolean {
+    return this.viewport.scrollTop + this.vh >= this.content.scrollHeight - 1;
+  }
 
-  private maybeLoadMore() {
-    if (this.destroyed || this.loadingMore || this.noMoreHistory || !this.onLoadMore) return;
-    if (this.mountedStart > 0) return;
-    this.loadingMore = true;
-    const more = this.onLoadMore();
-    this.loadingMore = false;
-    if (more && more.length) {
-      this.prependItems(more);
-    } else {
-      this.noMoreHistory = true;
+  private scrollDir(st: number): 'up' | 'down' | null {
+    if (this.shifting) return null;
+    if (st < this.lastScrollTop - 1) return 'up';
+    if (st > this.lastScrollTop + 1) return 'down';
+    return null;
+  }
+
+  private revalidateTop(): boolean {
+    const st = this.viewport.scrollTop;
+    return st < this.cfg.edge && this.scrollDir(st) !== 'down' && !this.noOlder;
+  }
+
+  private revalidateBottom(): boolean {
+    const st = this.viewport.scrollTop;
+    const total = this.totalH();
+    return total - this.vh - st < this.cfg.edge && this.scrollDir(st) !== 'up' && !this.noNewer;
+  }
+
+  private absorbBoundary(items: VsItem<T>[]): void {
+    for (const it of items) {
+      if (it.boundary === 'oldest') this.noOlder = true;
+      else if (it.boundary === 'newest') this.noNewer = true;
     }
   }
 
-  // ---------- 工具 ----------
+  private measureVh(): void { this.vh = this.viewport.clientHeight; }
 
-  private measureViewport() {
-    this.viewportHeight = this.viewport.clientHeight;
+  private measurePending(): void {
+    if (this.pendingMeasure.length === 0) return;
+    const entries = this.pendingMeasure;
+    this.pendingMeasure = [];
+    this.measuring = true;
+    for (const entry of entries) {
+      if (this.mounted.indexOf(entry) < 0) continue; // 已卸载（防 trim 后残留）
+      this.onElHeight(entry, entry.el.offsetHeight);
+      entry.el.classList.remove('vs-pending');
+    }
+    this.measuring = false;
   }
 
-  private shiftKeys(n: number) {
-    if (n <= 0) return;
-    this.heights = remap(this.heights, n);
-    this.unsubs = remap(this.unsubs, n);
-    const els = new Map<number, VsElement<T>>();
-    for (const [k, v] of this.elements) els.set(k + n, v);
-    this.elements = els;
-  }
-
-  private emit() {
-    this.onScroll?.(this.getInfo());
-  }
-}
-
-function remap<V>(m: Map<number, V>, n: number): Map<number, V> {
-  const r = new Map<number, V>();
-  for (const [k, v] of m) r.set(k + n, v);
-  return r;
+  private emit(): void { this.onScroll?.(this.getInfo()); }
 }

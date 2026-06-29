@@ -1,4 +1,4 @@
-<div class="friend-requests">
+<div class="friend-requests" [appFitDialog]="fitOpts">
   <div class="popup-header">
     @if(isShowBackBtn()){
     <button class="icon-btn" (click)="goBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
@@ -13,6 +13,10 @@
     <button class="tab-item" [class.active]="activeTab()===1" (click)="setTab(1)">
       <span class="tab-text">Pending</span>
       @if(pendingReqList().length > 0){<span class="tab-badge">{{pendingReqList().length}}</span>}
+    </button>
+    <button class="tab-item" [class.active]="activeTab()===2" (click)="setTab(2)">
+      <span class="tab-text">Sent</span>
+      @if(sentReqList().length > 0){<span class="tab-badge">{{sentReqList().length}}</span>}
     </button>
   </div>
 
@@ -98,6 +102,36 @@
             }@else {
             <button mat-button [disabled]="true">@if(req.status===-1){Invalid User}@else{Approved}</button>
             }
+          </div>
+        </div>
+        @if(req.errText){<div class="row-err">{{req.errText}}</div>}
+        }
+      }
+    </div>
+  </div>
+
+  <!-- Sent tab -->
+  <div class="tab-pane" [hidden]="activeTab()!==2">
+    <div class="pending-area">
+      @if(sentLoading()){
+        <div class="state-hint"><div class="state-title">Loading…</div></div>
+      } @else if(sentErrTxt().length>0){
+        <div class="state-hint"><div class="state-title state-error">{{sentErrTxt()}}</div></div>
+      } @else if(sentReqList().length===0){
+        <div class="state-hint">
+          <div class="state-title">No sent requests</div>
+          <div class="state-sub">Friend requests you've sent will appear here.</div>
+        </div>
+      } @else {
+        @for(req of sentReqList();track req.id){
+        <div class="pending-row">
+          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar></div>
+          <div class="pending-meta">
+            <div class="user-name">{{req.uniqName}}</div>
+            <div class="pending-date">{{req.date}}</div>
+          </div>
+          <div class="pending-actions">
+            <button mat-button class="decline-btn" (click)="cancelSent($index)">Cancel</button>
           </div>
         </div>
         @if(req.errText){<div class="row-err">{{req.errText}}</div>}

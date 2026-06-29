@@ -3,6 +3,22 @@
 //
 // 提取自 playground 全局 pg- 规则，去掉依赖 .pg-content 父选择器的部分：
 // 组件根 host（app-msg-*-row）是内核挂载的滚动 item，padding 直接设在 .pg-msg-row 上。
+//
+// ── 虚拟滚动挂载组件契约（所有 app-msg-*-row 必须遵守）──────────────────────────
+// 内核（virtual-scroller）只管「按抽象 id 邻居插入 host + offsetHeight 测高 + 窗口/trim」，
+// 不干预组件内部 CSS。故组件须自满足下列约束（每条都是踩过的坑）：
+//  1. 高度 border-box：纵向留白走 padding 不走 margin。内核用 offsetHeight 测高（不含 margin），
+//     margin 会把盒子下推、下方叠上来。date-row / .pg-msg-row 的间距都走 padding（见 :host 注释）。
+//  2. 宽度自洽（重点）：host 内部布局宽度不能 cyclic 依赖父容器。反例——media 曾用
+//     width:min(100%,320px)，在 flex col 内、内容又是无固有宽的 absolute cells → percentage resolve
+//     为 0（相册整块空白，cell0=0x320）。文字 bubble 没事是因为文字内容撑开了宽度。
+//     正解：绝对宽度（width:320px）+ max-width:100%（max-width 不参与 content-size 计算、不循环）。
+//     备选业界方案：<img> + 固定宽 + aspect-ratio（img 有固有宽，天然无 cyclic）。
+//  3. estimateHeight 别太离谱：内核首帧按估算挂载，measurePending 会用实测修正，但偏差大 balance 会抖。
+//  4. host 内部自治：内核只挂 host（按抽象 id 定位），host 内部结构组件自理；外层（playground）禁止
+//     写作用到 host 内部的全局 CSS——会污染实测高度（见 playground-no-css-inside 记忆）。
+//  5. 别依赖内核运行时 class（vs-pending）：mount 时加、测完移除，组件不能假设它常驻。
+// ──────────────────────────────────────────────────────────────────────────────
 
 :host {
   display: block;

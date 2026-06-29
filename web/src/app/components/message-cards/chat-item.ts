@@ -3,10 +3,12 @@ export interface AlbumImage {
   src: string;
   w: number;
   h: number;
+  /** 该图所属的原 msg id（相册聚合多 msg 时各图不同）；layout 不读，仅供 dev 角标显聚合范围 `[min-max]`。 */
+  msgId?: string;
 }
 
 /**
- * 已解析、可渲染的消息数据。ChatThreadController 把后端 Message 翻成它。
+ * 已解析、可渲染的消息数据。HttpItemSource 把后端 Message 翻成它。
  *
  * 不含 isShowHead/isGroupStart——分组标在 createItem 渲染时按上一条算
  *（classifyGroupFlags），这样 append 新消息时旧末条高度不变、零 reflow。
@@ -32,12 +34,8 @@ export interface ChatMsgData {
   createdAtMs: number;
 }
 
-export interface ChatDateData {
-  type: 'date';
-  /** 今天/昨天/周X/M月D日/YYYY年M月D日。 */
-  label: string;
-  /** YYYY-MM-DD（跨天分隔判定）。 */
-  dayKey: string;
-}
-
-export type ChatItemData = ChatMsgData | ChatDateData;
+/**
+ * 虚拟滚动 item 数据。date 分隔不再是一种数据类型——source 只返回真实消息（ChatMsgData），
+ * date 由 createItem 工厂挂载时按相邻消息跨日判定派生（见 date-format.ts）。保留 ChatItemData 别名以稳接口。
+ */
+export type ChatItemData = ChatMsgData;

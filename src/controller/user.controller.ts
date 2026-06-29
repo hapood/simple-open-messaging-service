@@ -172,6 +172,42 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Post('user/query-thread/from-pending')
+  @ApiOperation({ summary: '查询我发出的待处理好友请求' })
+  @ApiResultResponse(UserMessageThreadResponseDto, true)
+  async queryFromPendingThread(
+    @Request() req,
+    @Body() dto: QueryPendingThreadDto,
+  ): Promise<ApiResult> {
+    const newParams: Prisma.UserMessageThreadFindManyArgs = {
+      take: dto.take,
+      skip: dto.skip,
+      where: {
+        userId: req.user.userId,
+        toObjType: MessageThreadType.P2P,
+        status: UserMessageThreadStatus.FROM_PENDING,
+        updatedAt: {
+          lt: new Date(dto.beforeDate),
+        },
+      },
+      orderBy: {
+        updatedAt: 'desc',
+      },
+      include: {
+        threadItem: true,
+      },
+    };
+    const data = await this.userService.queryUserThread(newParams);
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/send-friend-request')
   @ApiOperation({ summary: '发送好友请求' })
   async sendFriendRequest(
@@ -276,6 +312,32 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Post('user/cancel-friend-request')
+  @ApiOperation({ summary: '撤销我发出的好友请求' })
+  async cancelFriendRequest(
+    @Request() req,
+    @Body() dto: UserIdDto,
+  ): Promise<ApiResult> {
+    const res = await this.messageService.cancelFriendRequest(
+      req.user.userId,
+      dto.userId,
+    );
+    if (res.status === 0) {
+      return {
+        code: BusinessCode.OK,
+        message: 'friend request cancelled',
+      };
+    } else {
+      return {
+        code: BusinessCode.FRIEND_NO_INCOMING,
+        message: `user [${dto.userId}] has no pending request from you.`,
+      };
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/query')
   @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
   @ApiResultResponse(UserResponseDto, true)
@@ -348,7 +410,11 @@ export class UserController {
         id: dto.userThreadId,
       },
     });
-    if (thread !== null && thread.userId === req.user.userId) {
+    if (
+      thread !== null &&
+      thread.userId === req.user.userId &&
+      thread.status !== UserMessageThreadStatus.DELETED
+    ) {
       if (thread.toObjType === 'P2P') {
         (thread as any).userItem = await this.userService.findUniqueUser({
           id: thread.toObjId,

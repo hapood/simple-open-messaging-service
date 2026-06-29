@@ -1,4 +1,4 @@
-<div class="folder-editor">
+<div class="folder-editor" [appFitDialog]="fitOpts">
   @if (!editing()) {
     <div class="msg-header">
       <button class="icon-btn" (click)="goBack()">

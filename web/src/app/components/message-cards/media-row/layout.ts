@@ -1,13 +1,26 @@
 /**
- * 相册布局纯函数（tg 式：尺寸/比例已知 → 渲染前算定高）。
+ * 相册布局纯函数（行式 justified：每行图等高、按真实比例横向排开、行内尽量保比例）。
  *
  * 返回每个 cell 的 { xPct, yPx, wPct, hPx }：
- * - xPct/wPct 相对 grid 容器宽（%）→ 窄屏 bubble<320 时 cell 宽自适应、不溢出；
- * - yPx/hPx 绝对像素（按 baseW=320 算）→ 高度恒定，bg 加载/解码绝不改变高度。
+ * - xPct/wPct 相对 grid 容器宽（%）→ 窄屏 bubble<baseW 时 cell 宽自适应、不溢出；
+ * - yPx/hPx 绝对像素（按 baseW 算）→ 高度恒定，bg 加载/解码绝不改变高度。
  *
- * cell 用 absolute + 这些值 inline 定位，不依赖 CSS grid/aspect-ratio 收敛。
+ * 行式核心：一行 k 张图，行宽 W=baseW-(k-1)*gap，各图纵横比 r=h/w。
+ * 等高行高 rawH = W / Σ(1/r_i)（行内保比例、横向填满 W）。
+ * - rawH 落在 [minH, maxH] → 走 justified：cell 宽 = rawH/r_i（保比例、填满、不裁）。
+ * - rawH 超界（全横图行太矮 / 全竖图行太高）→ 行高 clamp 到 [minH,maxH]，cell 改等宽，
+ *   真实比例差交给 cell 既有 background-size:cover 裁。正常比例池（16:9~9:16）多数行落回
+ *   justified 分支保比例展示；只有极端组合才 clamp。
+ *   （注：不能"clamp 后行内等比重缩放回 W"——那会恒等于 rawH、抵消 clamp，故用分支。）
+ *
+ * w/h 异常（NaN/0/负）→ fallback 4:3（DEFAULT_R），防坏数据毒化 totalH 波及虚拟滚动。
  * totalH 作为虚拟滚动 estimateHeight，与 onHeightChange 实测同口径。
  */
+
+export interface AlbumImageLike {
+  w: number;
+  h: number;
+}
 
 export interface AlbumRect {
   /** 左/宽：相对 grid 容器宽的百分比（窄屏自适应）。 */
@@ -26,61 +39,114 @@ export interface AlbumLayout {
   moreCount: number;
 }
 
-const ALBUM_W = 320;
+export const ALBUM_W = 320;
 const ALBUM_GAP = 2;
+/** w/h 异常时的兜底纵横比（h/w），4:3（与历史数据一致）。 */
+const DEFAULT_R = 3 / 4;
+/** 行高 clamp 区间（相对 baseW）：minH 防极端扁条、maxH 防竖图撑爆消息。 */
+export const ALBUM_MIN_ROW_H_RATIO = 0.35;
+export const ALBUM_MAX_ROW_H_RATIO = 1;
 
 /** 把基于 baseW 的 px 宽换算成相对容器宽的百分比。 */
 function pct(px: number, baseW: number): number {
   return (px / baseW) * 100;
 }
 
+/** 取图纵横比 r=h/w；异常（非有限/≤0/NaN）→ fallback 4:3，防毒化 totalH。 */
+function ratio(img: AlbumImageLike): number {
+  const r = img.h / img.w;
+  return Number.isFinite(r) && r > 0 ? r : DEFAULT_R;
+}
+
+interface RowCell {
+  leftPx: number;
+  widthPx: number;
+  heightPx: number;
+}
+
 /**
- * 按图片数算相册布局。images 仅用 length（比例统一 4:3 / 1:1，与占位图一致）；
- * 真实不同比例图的裁剪由 background-size:cover 处理。
+ * 按真实比例排一行 cells（等高）。
+ * rawH ∈ [minH,maxH] → justified（保比例、填满、不裁）；否则 clamp 行高 + 等宽（cover 裁）。
  */
-export function layoutAlbum(images: { w: number; h: number }[], baseW = ALBUM_W): AlbumLayout {
+function layoutRow(items: AlbumImageLike[], W: number, gap: number, baseW: number): { cells: RowCell[]; rowH: number } {
+  const minH = baseW * ALBUM_MIN_ROW_H_RATIO;
+  const maxH = baseW * ALBUM_MAX_ROW_H_RATIO;
+  const count = items.length;
+  const rs = items.map(ratio);
+  const rawH = W / rs.reduce((s, r) => s + 1 / r, 0);
+
+  let rowH: number;
+  let widths: number[];
+  if (rawH >= minH && rawH <= maxH) {
+    // justified：行内保真实比例，宽 = 行高/r
+    rowH = rawH;
+    widths = rs.map((r) => rowH / r);
+  } else {
+    // 超界：clamp 行高，cell 改等宽，真实比例差由 cover 裁
+    rowH = Math.max(minH, Math.min(maxH, rawH));
+    const eqW = (W - (count - 1) * gap) / count;
+    widths = rs.map(() => eqW);
+  }
+
+  const cells: RowCell[] = [];
+  let left = 0;
+  for (let i = 0; i < count; i++) {
+    cells.push({ leftPx: left, widthPx: widths[i], heightPx: rowH });
+    left += widths[i] + gap;
+  }
+  return { cells, rowH };
+}
+
+/** 按张数选固定分行方案（shown=min(n,6)）。返回每行图片数。 */
+function rowPlan(shown: number): number[] {
+  switch (shown) {
+    case 1:
+      return [1];
+    case 2:
+      return [2];
+    case 3:
+      return [2, 1];
+    case 4:
+      return [2, 2];
+    case 5:
+      return [2, 3];
+    default:
+      return [3, 3]; // 6（及 >6 截断到 6）
+  }
+}
+
+export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLayout {
   const n = images.length;
+  if (n === 0) return { rects: [], totalH: 0, moreCount: 0 };
+
   const gap = ALBUM_GAP;
   const shown = Math.min(n, 6);
+  const plan = rowPlan(shown);
   const rects: AlbumRect[] = [];
-  let totalH: number;
 
-  if (n <= 1) {
-    // 1 张：4:3，cell 宽满，高 = baseW*3/4
-    totalH = Math.round((baseW * 3) / 4);
-    rects.push({ xPct: 0, yPx: 0, wPct: 100, hPx: totalH });
-  } else if (n === 2) {
-    // 2 张：1×2 正方形，cell 宽 (baseW-gap)/2
-    const cw = (baseW - gap) / 2;
-    totalH = Math.round(cw);
-    rects.push({ xPct: 0, yPx: 0, wPct: pct(cw, baseW), hPx: totalH });
-    rects.push({ xPct: pct(cw + gap, baseW), yPx: 0, wPct: pct(cw, baseW), hPx: totalH });
-  } else if (n === 3) {
-    // 3 张：左大跨满高（1:2）+ 右两小（1:1）
-    const cw = (baseW - gap) / 2;
-    totalH = baseW; // 左大 = 2*cw + gap = baseW
-    rects.push({ xPct: 0, yPx: 0, wPct: pct(cw, baseW), hPx: totalH });
-    rects.push({ xPct: pct(cw + gap, baseW), yPx: 0, wPct: pct(cw, baseW), hPx: Math.round(cw) });
-    rects.push({ xPct: pct(cw + gap, baseW), yPx: Math.round(cw + gap), wPct: pct(cw, baseW), hPx: Math.round(cw) });
-  } else if (n === 4) {
-    // 4 张：2×2 正方形
-    const cw = (baseW - gap) / 2;
-    totalH = baseW;
-    for (let r = 0; r < 2; r++) {
-      for (let c = 0; c < 2; c++) {
-        rects.push({ xPct: pct(c * (cw + gap), baseW), yPx: Math.round(r * (cw + gap)), wPct: pct(cw, baseW), hPx: Math.round(cw) });
-      }
+  let topPx = 0;
+  let idx = 0;
+  for (let row = 0; row < plan.length; row++) {
+    const count = plan[row];
+    const items = images.slice(idx, idx + count);
+    idx += count;
+    const W = baseW - (count - 1) * gap;
+    const { cells, rowH } = layoutRow(items, W, gap, baseW);
+    const yPx = Math.round(topPx);
+    const hPx = Math.round(rowH);
+    for (const c of cells) {
+      rects.push({ xPct: pct(c.leftPx, baseW), wPct: pct(c.widthPx, baseW), yPx, hPx });
     }
-  } else {
-    // 5/6 张：3 列正方形
-    const cols = 3;
-    const cw = (baseW - 2 * gap) / cols;
-    const rows = Math.ceil(shown / cols);
-    totalH = Math.round(cw * rows + (rows - 1) * gap);
-    for (let i = 0; i < shown; i++) {
-      const r = Math.floor(i / cols), c = i % cols;
-      rects.push({ xPct: pct(c * (cw + gap), baseW), yPx: Math.round(r * (cw + gap)), wPct: pct(cw, baseW), hPx: Math.round(cw) });
-    }
+    topPx += rowH + gap;
+  }
+
+  // totalH = round(ΣrowH + (rows-1)*gap)（topPx 末尾多加了一个 gap，扣回）。
+  const totalH = Math.round(topPx - gap);
+
+  // 末行 hPx 补差：使最后一格 yPx+hPx === totalH（消除 round 累积的 1px 缝）。
+  if (rects.length > 0) {
+    const last = rects[rects.length - 1];
+    last.hPx = totalH - last.yPx;
   }
 
   return { rects, totalH, moreCount: n > 6 ? n - 6 : 0 };

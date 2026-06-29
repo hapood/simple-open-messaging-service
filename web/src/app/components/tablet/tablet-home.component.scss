@@ -1,0 +1,40 @@
+:host {
+  display: block;
+  height: 100vh;
+  height: 100dvh;
+}
+
+app-nav-drawer {
+  display: block;
+  height: 100%;
+}
+
+.tablet-home {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.header {
+  flex: 0 0 auto;
+}
+
+.body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+// 列表用 flex 比例（触屏不可拖拽，无 resizer）；min/max 兜底极端宽窄
+.list {
+  flex: 0 0 38%;
+  min-width: 300px;
+  max-width: 420px;
+}
+
+.chat {
+  flex: 1;
+  min-width: 0;
+}

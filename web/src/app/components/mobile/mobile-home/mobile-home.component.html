@@ -1,12 +1,10 @@
-<div class="page-wrapper">
-  <div class="thread-list-wrapper">
-    <app-home-header [onThreadListChanged]="refreshThreadList">
-      <div>SOMS</div>
-    </app-home-header>
+<app-nav-drawer #d [onThreadListChanged]="refreshThreadList">
+  <div class="mobile-home-body">
+    <app-home-header (toggleDrawer)="d.toggle()" />
     <div class="thread-list">
-      <app-thread-list [profile]="this.profile()" [selectedId]="curUsrtrdId()"
+      <app-thread-list [profile]="profile()" [selectedId]="curUsrtrdId()"
         (onSelect)="onThreadSelect($event)"></app-thread-list>
     </div>
   </div>
-  <app-root-popup></app-root-popup>
-</div>
+</app-nav-drawer>
+<app-root-popup></app-root-popup>

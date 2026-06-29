@@ -105,7 +105,7 @@
 // —— Telegram 式粘性日期浮层（在 stage 内、viewport 外，不随滚、不参与虚拟滚动回收）——
 .pg-sticky-date {
   position: absolute;
-  top: 56px; // header 48 + 8 余量，对齐视口顶部内侧
+  top: 48px; // 紧贴 header 底（= 视口顶），无下移余量；loading spinner 显形时由 TS 隐藏浮层让位，故可贴顶
   left: 0;
   right: 0;
   display: flex;
@@ -394,7 +394,8 @@
   .pg-fab {
     display: flex;
     align-items: center; justify-content: center;
-    position: fixed; right: 16px; bottom: 16px; z-index: 3;
+    // 默认右侧垂直居中：top calc（不用 transform，避免与拖动切换的 left/top 定位叠加偏移）。拖动后切 left/top。
+    position: fixed; right: 16px; top: calc(50% - 22px); z-index: 3;
     width: 44px; height: 44px;
     border: none; border-radius: var(--app-radius-pill);
     background: var(--app-brand); color: #fff;
@@ -409,7 +410,7 @@
     cursor: grabbing;
     box-shadow: 0 10px 36px rgba(0, 0, 0, 0.24);
   }
-  // 已挂载节点数角标（调试模式显示，滚动时由内核 onScroll 节流更新）
+  // FAB 角标：视口上方/下方剩余 height（↑xxx ↓xxx），调试模式显示、单行不换行
   .pg-fab-fps {
     position: absolute;
     top: -5px; right: -5px;
@@ -421,6 +422,7 @@
     color: #4caf50;
     font: 600 11px/20px ui-monospace, monospace;
     text-align: center;
+    white-space: nowrap;  // ↑上方 ↓下方 单行显示，不在空格处换行
     pointer-events: none;
     border: 1px solid rgba(255, 255, 255, 0.25);
   }
@@ -457,3 +459,40 @@
 // ---------- 深色主题 ----------
 // 配色已全部 token 化（_tokens.scss 的 --im-* / --app-* 亮 :root + 暗 [data-theme=dark]），
 // playground 不再自维护暗色覆盖——.pg 根挂 [data-theme] 即自动切换全部语义色。
+
+// ---------- 内核参数编辑弹窗 ----------
+.pg-config-overlay {
+  position: fixed; inset: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+}
+.pg-config-modal {
+  width: min(360px, 92vw);
+  max-height: 80vh; overflow-y: auto;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.2);
+  padding: 16px;
+  display: flex; flex-direction: column; gap: 10px;
+  h3 { margin: 0 0 4px; font-size: 15px; }
+  label {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; font-size: 12px; color: var(--app-text-muted);
+  }
+  input[type="number"] {
+    width: 80px; padding: 4px 6px;
+    border: 1px solid var(--app-border); border-radius: var(--app-radius-sm);
+    background: var(--app-bg); color: var(--app-text);
+    font: inherit; font-size: 13px; text-align: right;
+  }
+}
+.pg-config-actions {
+  display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;
+  button {
+    padding: 6px 14px; border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-sm); background: var(--app-surface);
+    color: var(--app-text); cursor: pointer; font: inherit;
+  }
+  .pg-config-primary { background: var(--app-brand); color: #fff; border-color: var(--app-brand); }
+}

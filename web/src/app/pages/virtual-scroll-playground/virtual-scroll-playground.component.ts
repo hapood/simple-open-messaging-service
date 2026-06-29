@@ -4,18 +4,23 @@ import {
   EnvironmentInjector,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { VirtualScroller, ScrollerApi, VsElement, VsItem, VsOptions, VsScrollInfo, VsDebugStats } from '../../lib/virtual-scroll/virtual-scroller';
+import { VirtualScroller, ScrollerApi, VsElement, VsItem, VsConfig, VsOptions, VsScrollInfo, VsDebugStats } from '../../lib/virtual-scroll/virtual-scroller';
 import { VirtualScrollerAnchor } from '../../lib/virtual-scroll/virtual-scroller-anchor';
 import { ActivatedRoute } from '@angular/router';
 import { classifyGroupFlags, GroupCtx } from '../../lib/virtual-scroll/group-logic';
 import { LayoutService } from '../../services/layout.service';
-import { createMsgVsElement } from '../../components/message-cards/create-item';
-import type { AlbumImage, ChatItemData } from '../../components/message-cards/chat-item';
-import { MockChatApi } from './mock-chat-api';
+import { createMsgVsElement, createGhostVsElement } from '../../components/message-cards/create-item';
+import { mergeAlbumItems } from '../../components/message-cards/merge-items';
+import { shouldShowDateSeparator, formatDateSeparator } from '../../components/message-cards/date-format';
+import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
+import { MockItemSource, MockUserService } from './mock-chat-api';
 
 // Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除（与虚拟滚动内核同模式）。
 // 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
 declare const ngDevMode: boolean | null | undefined;
+
+// 内核调参默认值（与内核 DEFAULTS 同步：virtual-scroller.ts / anchor.ts）。mountPx 已删（array 内核死参数）。
+const VS_DEFAULTS: Required<VsConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
 
 /**
  * 虚拟滚动实验场。
@@ -53,8 +58,8 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   /** 输入栏为避让软键盘上移的像素（visualViewport 计算，iOS 兜底）。 */
   readonly keyboardOffset = signal(0);
 
-  /** mock 接口（生成器 + send/upload/incoming；每次调用 console 打入参/出参）。 */
-  private readonly mockApi = new MockChatApi();
+  /** mock 数据源（实现 VsSource；buildItems 生成器分页）。setup 时按 count 创建。 */
+  private source?: MockItemSource;
   /** 生成器加载中（禁用数据量按钮，防重入）。 */
   readonly loading = signal(false);
   /** 短暂提示（跳转未命中等），自动清除。 */
@@ -63,7 +68,6 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
-  private readonly topSentinelRef = viewChild<ElementRef<HTMLDivElement>>('topSentinel');
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
   private readonly pgStageRef = viewChild<ElementRef<HTMLDivElement>>('pgStage');
   private readonly draftInput = viewChild<ElementRef<HTMLTextAreaElement>>('draftInput');
@@ -73,12 +77,23 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   private scroller?: ScrollerApi<ChatItemData>;
 
-  /** 已挂载节点数（FAB 角标，调试模式显示；性能模式不更新）。 */
-  readonly mountedCount = signal(0);
+  /** 视口上方剩余 height（= scrollTop，向上可滚到窗口顶的余量；调试）。 */
+  readonly viewportAbove = signal(0);
+  /** 视口下方剩余 height（= scrollHeight - vh - scrollTop，向下可滚到窗口底的余量；调试）。 */
+  readonly viewportBelow = signal(0);
   /** 是否贴底（收到新消息时决定是否跟随滚动）。 */
   readonly atBottom = signal(true);
   /** 调试模式：开 FAB 角标 + balance 诊断 console；性能模式全关。 */
   readonly debugMode = signal(true);
+  /** 调试：关闭挂载检查点（balance 不触发 loadOlder/loadNewer）。默认 false（检查点正常加载）。仅 dev 有效（内核 ngDevMode 守卫，生产 AOT 移除）。 */
+  readonly closeCheckpoint = signal(false);
+  /** source get 延迟（ms，模拟 IO 慢加载）。默认 200，可调 0/1s/5s 测加载/补偿体验。 */
+  readonly sourceLatency = signal(200);
+  /** 内核调参（VsConfig）。setup 传给内核；编辑弹窗改 → applyConfig 重建生效。 */
+  readonly config = signal<Required<VsConfig>>({ ...VS_DEFAULTS });
+  /** 参数编辑弹窗开关 + 草稿（确认才 apply，避免改一个字段就重建）。 */
+  readonly configModalOpen = signal(false);
+  readonly configDraft = signal<Required<VsConfig>>({ ...VS_DEFAULTS });
   /** Telegram 式粘性日期：当前视口顶所属日期标签（滚动实时更新；null=不显浮层）。 */
   readonly stickyDate = signal<string | null>(null);
   /** 主题：light / dark。默认跟随系统 prefers-color-scheme，可手动 toggle 临时覆盖（系统变化时再跟随）。 */
@@ -166,7 +181,6 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   private lastEmit = 0;
   private lastDebugLog = 0;
-  private items: VsItem<ChatItemData>[] = []; // 当前列表（generate 写入，send/incoming 追加）
 
   // FAB 拖动状态
   private fabDragging = false;
@@ -181,28 +195,62 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   private readonly initScroller = effect(() => {
     const vp = this.viewportRef();
     const ct = this.contentRef();
-    const ts = this.topSentinelRef();
     if (!vp || !ct || this.scroller) return;
+    this.setup(vp.nativeElement, ct.nativeElement);
+  });
+
+  /** 建 source + 内核 + init。setCount 切数据量时 teardown 重建。 */
+  private setup(viewport: HTMLDivElement, content: HTMLDivElement): void {
     try {
+      this.scroller?.destroy();
+      this.source = new MockItemSource(this.count(), this.sourceLatency(), new MockUserService(), 1);
       // 据路由 data 选内核实现：方案 A（借浏览器锚定）或方案 B（手动补偿），两者同构 ScrollerApi。
       const Ctor: new (opts: VsOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
         this.useNativeAnchor ? VirtualScrollerAnchor : VirtualScroller;
-      const scroller = new Ctor({
-        viewport: vp.nativeElement,
-        content: ct.nativeElement,
-        topSentinel: ts?.nativeElement,
-        hooks: {
-          createItem: (item, index) => this.createItemEl(item, index),
-        },
+      this.scroller = new Ctor({
+        viewport, content, source: this.source,
+        config: this.config(),
+        hooks: { createItem: (item, prev) => this.createItemEl(item, prev), mergeItems: mergeAlbumItems },
         onScroll: (info) => this.onScroll(info),
         onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
-      this.scroller = scroller;
-      void this.load(); // 异步生成数据 → setItems → 贴底（不传 onLoadMore：数据全量在内存）
+      this.applyCloseCheckpoint();
+      void this.load();
     } catch (e) {
       console.error('[playground] scroller init failed:', e);
     }
-  });
+  }
+
+  /** 应用 closeCheckpoint 开关到内核（cast 设 closeCheckpoint 字段；setCount 重建后 setup 末尾重应用）。 */
+  applyCloseCheckpoint(): void {
+    const s = this.scroller as unknown as { closeCheckpoint?: boolean } | undefined;
+    if (s) s.closeCheckpoint = this.closeCheckpoint();
+  }
+
+  /** 设 source get 延迟（动态改 MockItemSource.latency，无需重建 source）。 */
+  setSourceLatency(ms: number): void {
+    this.sourceLatency.set(ms);
+    if (this.source) this.source.latency = ms;
+  }
+
+  /** 打开参数编辑弹窗（草稿 = 当前 config 副本）。 */
+  openConfigModal(): void {
+    this.configDraft.set({ ...this.config() });
+    this.configModalOpen.set(true);
+  }
+  cancelConfigModal(): void { this.configModalOpen.set(false); }
+  /** 弹窗编辑：改 draft 某字段（确认才 apply）。模板内不直接调 signal.update —— strict 模板类型检查对模板内 signal 方法绑定推断不出签名 → TS2345 整编译失败、新代码全不进 bundle。 */
+  setConfigDraft(field: keyof VsConfig, value: number): void {
+    this.configDraft.update(d => ({ ...d, [field]: value }));
+  }
+  /** 确认编辑：config ← draft + setup 重建（新参数生效）+ 关闭。 */
+  applyConfig(): void {
+    this.config.set({ ...this.configDraft() });
+    this.configModalOpen.set(false);
+    const vp = this.viewportRef()?.nativeElement;
+    const ct = this.contentRef()?.nativeElement;
+    if (vp && ct) this.setup(vp, ct);
+  }
 
   ngOnDestroy() {
     this.scroller?.destroy();
@@ -227,17 +275,13 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   // --- 数据载入 ---
 
-  /** 生成器：调 mockApi.generate(count) 一次性产数据，setItems + 贴底。loading 期间禁用数据量按钮。 */
+  /** init：内核经 source 分批加载到阈值 + 贴底（数据全量在 source，内核按需 get）。 */
   private async load(): Promise<void> {
     const scroller = this.scroller;
     if (!scroller) return;
     this.loading.set(true);
     try {
-      const items = await this.mockApi.generate(this.count());
-      this.items = items;
-      scroller.setItems(items);
-      scroller.refresh();
-      scroller.scrollToBottom(); // 聊天默认贴底（看最新消息）
+      await scroller.init();
       this.updateStickyDate();
     } finally {
       this.loading.set(false);
@@ -246,21 +290,27 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   // --- 内核 hooks ---
 
-  private createItemEl(item: VsItem<ChatItemData>, index: number): VsElement<ChatItemData> {
-    // 分组判定在渲染时按【上一条】算（不预烤进 data）：间距/圆角只依赖"是否组首"，
-    // 与下一条无关 → 追加新条时原末条高度不变、无需重渲（0 reflow）。
+  private createItemEl(item: VsItem<ChatItemData>, prev: VsItem<ChatItemData> | null): VsElement<ChatItemData> {
+    // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostVsElement）。
+    // prev=null ⟺ 被 prepend 成新 oldest；boundary!=='oldest' 排除全局最老（那条 noOlder、非 ghost、须真实渲）。
+    if (prev === null && item.boundary !== 'oldest') return createGhostVsElement();
+    // 分组判定 + date 分隔均按【更老邻居 prev】算（内核传入；抽象 id+1）：追加新条时原末条高度不变、无需重渲。
     let isShowHead = true, isGroupStart = false;
+    let dateLabel: string | null = null;
     if (item.data.type === 'msg') {
-      const curCtx: GroupCtx = { creator: item.data.creator };
-      const prevItem = index > 0 ? this.items[index - 1] : null;
-      const prevMsg = prevItem?.data.type === 'msg' ? prevItem.data : null;
+      const msg = item.data;
+      const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
+      const curCtx: GroupCtx = { creator: msg.creator };
       const prevCtx: GroupCtx | null = prevMsg ? { creator: prevMsg.creator } : null;
       isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
       isGroupStart = isShowHead && !!prevMsg;
+      // date 分隔：前端按窗口内前一条 prev 跨日判定（date 已从 source 移出）。oldest 上方固定显 date；
+      // trim 重挂 prev==null 非 oldest 不显（防闪烁，见 date-format.shouldShowDateSeparator）。
+      dateLabel = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest')
+        ? formatDateSeparator(msg.createdAtMs) : null;
     }
-    const vs = createMsgVsElement(item, isShowHead, isGroupStart, this.envInjector);
+    const vs = createMsgVsElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector);
     // 调试角标（首/续 + 消息 id）：playground 动态注入到行内，ngDevMode 守卫 → 生产 AOT 不创建。
-    // absolute 定位、脱离文档流 → 不改行 offsetHeight，不影响内核高度判断。
     if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
     return vs;
   }
@@ -273,8 +323,25 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     if (!row) return;
     const badge = document.createElement('span');
     badge.className = 'pg-dev-badge' + (isHead ? ' pg-dev-badge--head' : ' pg-dev-badge--body');
-    badge.textContent = `${isHead ? '首' : '续'} ${d.msgId}`;
+    badge.textContent = this.devIdLabel(d);
     row.appendChild(badge);
+  }
+
+  /**
+   * 角标 id 文本：相册聚合多 msg 时显范围 `[min-max]`（各图带原 msgId），否则单 id。
+   * mock 相册单 msg → 单 id；生产相册跨多 msg（toItems 合并）→ 范围，避免聚合后只显首条丢其余。
+   */
+  private devIdLabel(d: ChatMsgData): string {
+    if (d.contentType === 'IMAGE' && d.images) {
+      const ids = [...new Set(d.images.map(i => i.msgId).filter((x): x is string => !!x))];
+      if (ids.length > 1) {
+        const nums = ids.map(Number);
+        if (nums.every(n => !Number.isNaN(n))) { nums.sort((a, b) => a - b); return `[${nums[0]}-${nums[nums.length - 1]}]`; }
+        return `[${ids[0]}..${ids[ids.length - 1]}]`;
+      }
+      if (ids.length === 1) return ids[0];
+    }
+    return d.msgId;
   }
 
   /** balance 诊断 → console.debug（调试模式 + 仅有挂载/卸载活动 + 节流，避免空闲刷屏）。 */
@@ -290,11 +357,13 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   private onScroll(info: VsScrollInfo) {
     this.atBottom.set(info.atBottom);
     this.updateStickyDate();
-    if (!isDevMode() || !this.debugMode()) return;
+    if (!isDevMode()) return;
     const now = performance.now();
-    if (now - this.lastEmit < 100) return; // 角标节流
+    if (now - this.lastEmit < 100) return; // 节流：避免滚动高频刷 signal（100ms 一次足够）
     this.lastEmit = now;
-    this.mountedCount.set(info.mounted);
+    // 视口在 content（= mounted 窗口）内的位置：上方/下方剩余 height（< edge=1000 触发对应方向加载）。
+    this.viewportAbove.set(Math.round(info.scrollTop));
+    this.viewportBelow.set(Math.max(0, Math.round(info.scrollHeight - info.viewportHeight - info.scrollTop)));
   }
 
   /**
@@ -315,6 +384,10 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     for (const { d, top } of rects) {
       if (top <= fadeLo) current = d.textContent?.trim() ?? null;
     }
+    // 顶部 ghost 加载 spinner（.vs-ghost-loading，居中）显形时与居中日期浮层重叠 →
+    // spinner 出现在视口顶（bottom 越过视口顶）时不显浮层让位（spinner 走后自然恢复；行内 date 仍在）。
+    const ghost = ct.querySelector('.vs-ghost-loading');
+    if (ghost && ghost.getBoundingClientRect().bottom > vTop) current = null;
     this.stickyDate.set(current);
     const hasFloat = current !== null;
     for (const { d, top } of rects) {
@@ -327,28 +400,32 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
 
   // --- 控件 ---
 
-  setCount(n: number) { this.count.set(n); void this.load(); }
+  setCount(n: number) {
+    this.count.set(n);
+    const vp = this.viewportRef()?.nativeElement;
+    const ct = this.contentRef()?.nativeElement;
+    if (vp && ct) this.setup(vp, ct); // 切数据量：teardown + 重建 source(count) + 内核 + init
+  }
 
   /**
-   * 跳转到指定 id：纯数字→1-based 序号（index = N-1）；否则按 item.id 字符串 findIndex。
-   * 命中后内核 scrollToIndex(idx, 'center')；越界/未命中给短暂提示。
+   * 跳转到 msgId 序号（mock 'id-N'）：scrollToIndex 仅支持当前挂载窗口内。
+   * msgId 无数值序，靠 'id-' 前缀解析窗口边界序号判 N 是否在窗口内；区间外给提示（load-from-middle 是未来项）。
    */
   jumpToId(v: string): void {
     const scroller = this.scroller;
     const input = this.jumpInput()?.nativeElement;
     const s = (v ?? '').trim();
-    if (!s) return;
-    let idx: number;
-    if (/^\d+$/.test(s)) {
-      idx = parseInt(s, 10) - 1; // 1-based 序号
-    } else {
-      idx = this.items.findIndex(it => String(it.id) === s);
-    }
-    if (!scroller || idx < 0 || idx >= this.items.length) {
-      this.showToast(`找不到：${s}`);
+    if (!s || !scroller) return;
+    if (!/^-?\d+$/.test(s)) { this.showToast('跳转仅支持 id 数字'); return; }
+    const n = parseInt(s, 10);
+    const info = scroller.getInfo();
+    const oldestN = info.oldestId !== null ? Number(String(info.oldestId).replace(/^id-/, '')) : null;
+    const newestN = info.newestId !== null ? Number(String(info.newestId).replace(/^id-/, '')) : null;
+    if (oldestN === null || newestN === null || n < oldestN || n > newestN) {
+      this.showToast('不在当前挂载窗口内');
       return;
     }
-    scroller.scrollToIndex(idx, 'center');
+    scroller.scrollToIndex(`id-${n}`, 'center');
     if (input) input.value = '';
   }
 
@@ -414,35 +491,29 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     });
   }
 
-  /** mock 发送文本：经 mockApi.sendMessage 构造一条 self 的 PURE_TEXT 并 append 贴底。 */
+  /** mock 发送文本：构造一条 self 的 PURE_TEXT，appendLive（内核分配负抽象 id + 贴底跟随）。 */
   async send(): Promise<void> {
     const text = this.draft().trim();
     const scroller = this.scroller;
     if (!text || !scroller) return;
-    const item = await this.mockApi.sendMessage({ content: text, contentType: 'PURE_TEXT' });
-    this.items.push(item);
-    scroller.appendItems([item]);
-    scroller.scrollToBottom();
+    scroller.appendLive([this.makeMockItem(text, true, 'PURE_TEXT', null)]);
     this.draft.set('');
     this.autoGrow();
-    // 模拟对方延迟回复（验证收消息 appendItems + 贴底跟随）
+    // 模拟对方延迟回复（验证收消息 appendLive + 贴底跟随）
     setTimeout(() => { void this.receiveReply(); }, 600 + Math.floor(Math.random() * 1200));
   }
 
-  /** 模拟对方回复：经 mockApi.simulateIncoming（WS）；用户当时贴底则跟随滚到底，否则不打扰。 */
+  /** 模拟对方回复（WS）：appendLive；内核按当时是否贴底决定跟随滚到底。 */
   private async receiveReply(): Promise<void> {
     const scroller = this.scroller;
     if (!scroller) return;
-    const wasAtBottom = this.atBottom();
-    const item = await this.mockApi.simulateIncoming();
-    this.items.push(item);
-    scroller.appendItems([item]);
-    if (wasAtBottom) scroller.scrollToBottom();
+    const phrase = REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
+    scroller.appendLive([this.makeMockItem(phrase, false, 'PURE_TEXT', null)]);
   }
 
   /**
-   * mock 发送图片：本地读图为 dataURL + 真实尺寸 → mockApi.uploadMedia（记上传请求）→
-   * sendMessage({IMAGE, images})（记发送请求）→ append 贴底。多图合并为一条相册（与真实语义一致）。
+   * mock 发送图片：本地读图为 dataURL + 真实尺寸 → appendLive（多图合并一条相册，与真实语义一致）。
+   * 真实流程的 uploadMedia/sendMessage 在 mock 下省略（数据本就在前端）。
    */
   async sendMediaFromFile(files: FileList | null): Promise<void> {
     const scroller = this.scroller;
@@ -451,13 +522,28 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     if (list.length === 0) return;
     const imgs = await readImages(list);
     if (imgs.length === 0) return;
-    await this.mockApi.uploadMedia(imgs);
-    const item = await this.mockApi.sendMessage({ content: '', contentType: 'IMAGE', images: imgs });
-    this.items.push(item);
-    scroller.appendItems([item]);
-    scroller.scrollToBottom();
+    scroller.appendLive([this.makeMockItem('', true, 'IMAGE', imgs)]);
   }
+
+  /** 构造一条 mock ChatMsgData 并包成 VsItem（id 占位，appendLive 内由 source 覆盖为抽象 id）。 */
+  private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null): VsItem<ChatItemData> {
+    const now = new Date();
+    const data: ChatMsgData = {
+      type: 'msg',
+      msgId: `${isSelf ? 'mock' : 'recv'}-${this.sendSeq++}`,
+      creator: isSelf ? 1 : 2,
+      isSelf: false, name: '',  // 占位：source.appendLive 的 shape 按 creator 从 profiles 查填（镜像生产 toMsgData）
+      text,
+      time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
+      contentType, images, createdAtMs: now.getTime(),
+    };
+    return { id: data.msgId, data };
+  }
+  private sendSeq = 0;
 }
+
+/** 对方回复候选（mock）。 */
+const REPLY_PHRASES = ['在吗？', '收到', '哈哈', '好的', '虚拟滚动稳吗？', '看看挂载数'];
 
 /** 本地读取图片为 AlbumImage（dataURL + 真实尺寸；读失败用 400×300 兜底）。 */
 function readImages(files: File[]): Promise<AlbumImage[]> {

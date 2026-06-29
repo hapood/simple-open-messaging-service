@@ -1,0 +1,75 @@
+:host {
+  display: block;
+  height: 100%;
+}
+
+.nav-drawer-container {
+  height: 100%;
+}
+
+.nav-drawer {
+  width: 280px;
+  max-width: 85vw;            // 窄屏（小手机）不超出
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface);
+  border-right: 1px solid var(--app-border);
+}
+
+.drawer-header {
+  flex: 0 0 auto;
+  padding: 20px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-bottom: 1px solid var(--app-border);
+
+  .avatar {
+    width: 56px;
+    height: 56px;
+    border-radius: var(--app-radius-pill);
+    overflow: hidden;
+  }
+  .user-name {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--app-text);
+  }
+}
+
+.drawer-menu {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+}
+
+.nav-spacer {
+  flex: 1 1 auto;
+}
+
+.nav-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  height: 48px;
+  padding: 0 16px;
+  margin: 0 8px;
+  border: none;
+  border-radius: var(--app-radius-md);
+  background: none;
+  color: var(--app-text);
+  font-size: 15px;
+  cursor: pointer;
+  text-align: left;
+  box-sizing: border-box;
+
+  svg { flex: 0 0 auto; }
+
+  &:hover { background: var(--app-hover); }
+  &:active { background: var(--app-active); }
+
+  &.danger { color: var(--app-danger); }
+}

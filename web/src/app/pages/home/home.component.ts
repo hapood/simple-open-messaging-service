@@ -5,6 +5,7 @@ import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { DesktopHomeComponent } from '../../components/desktop/desktop-home/desktop-home.component';
 import { MobileHomeComponent } from '../../components/mobile/mobile-home/mobile-home.component';
+import { TabletHomeComponent } from '../../components/tablet/tablet-home.component';
 
 /**
  * Home route entry — a thin shell that forks the desktop vs mobile view trees
@@ -14,11 +15,13 @@ import { MobileHomeComponent } from '../../components/mobile/mobile-home/mobile-
  */
 @Component({
   selector: 'app-home',
-  imports: [DesktopHomeComponent, MobileHomeComponent],
+  imports: [DesktopHomeComponent, TabletHomeComponent, MobileHomeComponent],
   template: `
-    @defer (when layout.isDesktop()) {
+    @defer (when layout.mode()==='desktop') {
       <app-desktop-home />
-    } @defer (when !layout.isDesktop()) {
+    } @defer (when layout.mode()==='tablet') {
+      <app-tablet-home />
+    } @defer (when layout.mode()==='mobile') {
       <app-mobile-home />
     }
   `,

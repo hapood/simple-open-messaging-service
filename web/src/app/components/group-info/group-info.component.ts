@@ -5,14 +5,16 @@ import { IconComponent, AppIconType } from "../icon/icon.component";
 import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
+import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 @Component({
     selector: 'app-group-info',
-    imports: [UserListComponent, IconComponent, MatButtonModule],
+    imports: [UserListComponent, IconComponent, MatButtonModule, FitDialogDirective],
     templateUrl: './group-info.component.html',
     styleUrl: './group-info.component.scss'
 })
 export class GroupInfoComponent {
+  readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
   readonly userMsgTrd = input<UserMessageThread>()
   /** optional close handler; when set, goBack() calls it instead of closeDlg
    *  (lets this component be reused in the desktop side panel). */

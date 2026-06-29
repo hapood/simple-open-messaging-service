@@ -34,28 +34,16 @@
   position: relative;
   max-width: 320px;
   text-align: center;
-}
 
-.brand-bubble {
-  width: 84px;
-  height: 84px;
-  margin: 0 auto 24px;
-  // logo 自带主色底，脱离品牌页渐变（favicon/独立图标）也能成立；
-  // 在蓝绿渐变背景上靠投影分层，避免与渐变末端融为一体
-  filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.18));
-}
-
-.brand-word {
-  font-size: 44px;
-  font-weight: 700;
-  letter-spacing: 3px;
-}
-
-.brand-tag {
-  margin-top: 16px;
-  font-size: 16px;
-  line-height: 1.7;
-  color: rgba(255, 255, 255, 0.85);
+  // 落在品牌渐变面板上：白字 + 更大字号 + logo 投影分层（与迁移前视觉一致）。
+  // CSS 变量穿透到 <app-brand-logo> 内部，无需 ::ng-deep。
+  app-brand-logo {
+    --bl-word: 44px;
+    --bl-tag: 16px;
+    --bl-word-color: #ffffff;
+    --bl-tag-color: rgba(255, 255, 255, 0.85);
+    --bl-mark-filter: drop-shadow(0 8px 24px rgba(0, 0, 0, 0.18));
+  }
 }
 
 // below the split breakpoint the brand panel yields to the centered card

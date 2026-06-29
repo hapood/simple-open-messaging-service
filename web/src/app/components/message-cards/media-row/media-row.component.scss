@@ -2,11 +2,15 @@
 @use '../row-base' as *;
 
 // media 气泡：图片贴边（padding:0）、外层 overflow:hidden 切圆角。
-// width:min(100%,320px)：320 = layoutAlbum 的 baseW，两者必须一致；max-width:100% 让窄屏收缩到 col。
+// width:320px（= layoutAlbum 的 baseW，必须一致）：绝对宽度——不能用 min(100%,320px)。media 内容是
+// absolute cells（无固有宽度，不像文字气泡能被文本撑开），percentage width 在 flex col 内与 col 尺寸
+// 循环依赖 → resolve 为 0（相册整块空白）。max-width:100% 让窄屏（col<320）收缩，且不参与 content-size
+// 计算、不会循环。
 .pg-bubble.pg-media {
   padding: 0;
   min-height: 0;
-  width: min(100%, 320px);
+  width: 320px;
+  max-width: 100%;
   display: block; // 覆盖文字气泡的 flex 垂直居中
   overflow: hidden;
 }

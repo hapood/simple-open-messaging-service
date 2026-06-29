@@ -8,6 +8,7 @@ import { UserService, User } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { MsgService } from '../../services/message.service'
 import { arrayToDictIndex } from '../../../utils';
+import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import dayjs from 'dayjs';
 
 enum AddTabStatus {
@@ -18,11 +19,12 @@ type PendingReq = User & { status: number, date: string, errText: string }
 @Component({
     selector: 'app-friend-requests',
     imports: [UserAvatarComponent, FormsModule,
-        MatButtonModule, IconComponent],
+        MatButtonModule, IconComponent, FitDialogDirective],
     templateUrl: './friend-requests.component.html',
     styleUrl: './friend-requests.component.scss'
 })
 export class FriendRequestsComponent {
+  readonly fitOpts = { minHeight: 420 } as const
   readonly searchText = signal('')
   readonly userData = signal<User | undefined>(undefined)
   readonly errMsg = signal('')
@@ -33,6 +35,9 @@ export class FriendRequestsComponent {
   readonly pendingReqList = signal([] as PendingReq[])
   readonly toPendingErrTxt = signal('')
   readonly pendingLoading = signal(true)
+  readonly sentReqList = signal([] as PendingReq[])
+  readonly sentErrTxt = signal('')
+  readonly sentLoading = signal(true)
 
   subject = input<Subject<any> | undefined>(undefined)
   activeTab = signal(0)
@@ -144,11 +149,24 @@ export class FriendRequestsComponent {
     const req = this.pendingReqList()[index]
     this.userService.declineFriendRequest({ userId: req.id }).subscribe(res => {
       if (res.code === 0) {
-        // 拒绝成功：请求行已删除，从待处理列表移除（按 id 过滤，规避索引漂移）
+        // 拒绝成功：请求行已软删除（DELETED），从待处理列表移除（按 id 过滤，规避索引漂移）
         this.pendingReqList.set(this.pendingReqList().filter(r => r.id !== req.id))
       } else {
         // 失败：保留在列表并标记错误文案（errText 在模板中恒定渲染）
         this.pendingReqList.set(this.pendingReqList().map(r => r.id === req.id ? { ...r, errText: res.message } : r))
+      }
+    })
+  }
+
+  cancelSent(index: number) {
+    const req = this.sentReqList()[index]
+    this.userService.cancelFriendRequest({ userId: req.id }).subscribe(res => {
+      if (res.code === 0) {
+        // 撤销成功：我方请求行置 DELETED，从已发送列表移除（按 id 过滤，规避索引漂移）
+        this.sentReqList.set(this.sentReqList().filter(r => r.id !== req.id))
+      } else {
+        // 失败：保留在列表并标记错误文案
+        this.sentReqList.set(this.sentReqList().map(r => r.id === req.id ? { ...r, errText: res.message } : r))
       }
     })
   }
@@ -190,6 +208,45 @@ export class FriendRequestsComponent {
       error: (err) => {
         this.toPendingErrTxt.set('unknown error occurred')
         this.pendingLoading.set(false)
+      },
+    })
+
+    this.userService.queryFromPending({ take: 20, beforeDate: new Date().getTime() }).subscribe({
+      next: (res) => {
+        if (res.code !== 0) {
+          this.sentErrTxt.set('unknown error occurred')
+          this.sentLoading.set(false)
+          return
+        }
+        const userIds = res.data!.map(item => item.toObjId)
+        this.userService.queryUserInfo({ userIds }).subscribe({
+          next: (res2) => {
+            if (res2.code !== 0) {
+              this.sentErrTxt.set('unknown error occurred')
+              this.sentLoading.set(false)
+              return
+            }
+            const dict = arrayToDictIndex(res2.data!, 'id')
+            const list = res.data!.map(item => {
+              const userData = dict[item.toObjId]
+              if (userData) {
+                return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
+              } else {
+                return { id: item.toObjId, uniqName: 'Unknown user', status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+              }
+            })
+            this.sentReqList.set(list)
+            this.sentLoading.set(false)
+          },
+          error: () => {
+            this.sentErrTxt.set('unknown error occurred')
+            this.sentLoading.set(false)
+          },
+        })
+      },
+      error: (err) => {
+        this.sentErrTxt.set('unknown error occurred')
+        this.sentLoading.set(false)
       },
     })
   }

@@ -1,3 +1,7 @@
+@if (dateLabel(); as label) {
+  <app-msg-date-row [label]="label" />
+}
+
 <div
   class="pg-msg-row pg-{{ side() }}{{ showAvatar() ? ' pg-has-avatar' : '' }}{{ isGroupStart() ? ' pg-group-start' : '' }} pg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >

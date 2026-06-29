@@ -3,6 +3,7 @@ import { MatButtonModule } from '@angular/material/button';
 import dayjs from 'dayjs';
 import { GroupService } from '../../../services/group.service';
 import type { ChatMsgData } from '../chat-item';
+import { DateRowComponent } from '../date-row/date-row.component';
 
 /**
  * 邀请消息行（WhatsApp 行外壳 + 内嵌邀请卡片 + Join 按钮）。
@@ -11,11 +12,13 @@ import type { ChatMsgData } from '../chat-item';
  * 保留 MatButtonModule + GroupService（joinGroup 需组件级 DI，createComponent 传 envInjector 正常注入）。
  *
  * 修复旧 invite-card bug：原 dayjs().isAfter() 漏参数（恒比较 现在>现在），应为 isAfter(过期时间)。
+ *
+ * dateLabel：createItem 工厂按跨日判定传入；非空时模板顶部渲染 date pill。
  */
 @Component({
   selector: 'app-msg-invite-row',
   standalone: true,
-  imports: [MatButtonModule],
+  imports: [MatButtonModule, DateRowComponent],
   templateUrl: './invite-row.component.html',
   styleUrl: './invite-row.component.scss',
 })
@@ -23,6 +26,8 @@ export class InviteRowComponent {
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
+  /** 跨日 date 分隔文案（非空=本条是某天首条、上方显 date pill）；null=不显。 */
+  readonly dateLabel = input<string | null>(null);
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());

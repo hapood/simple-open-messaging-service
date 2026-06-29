@@ -1,39 +1,38 @@
 /**
- * VirtualScroller（相对滚动架构）单元测试。
+ * VirtualScroller（方案 B · array index）单元测试。
  *
- * 测试策略：内核框架无关、只通过 VsElement 接口与元素交互，故用 mock VsElement
- * （真实 div + Object.defineProperty 覆盖 offsetHeight）驱动，不依赖 CSS 布局——
- * content.scrollHeight / viewport.clientHeight / scrollTop 均用 getter/setter 固定，
- * 保证断言确定。requestAnimationFrame mock 为同步执行，balance 立即生效。
+ * 内核框架无关、只通过 VsElement + VsSource 接口交互，故用 mock 驱动：
+ *  - controllableHooks：真 div + Object.defineProperty(offsetHeight)，createItem(item, prev)。
+ *  - fakeSource：N 条 msg（'m-0'最老 .. 'm-(N-1)'最新），游标 getOlder/getNewer，升序返回。
+ * content.scrollHeight / viewport.clientHeight / scrollTop 用 getter/setter 固定；RAF mock 同步。
+ *
+ * 重点：方案 B 的 scrollTop 补偿（loadOlder prepend 后视口不跳）、ghost rebuild（以新 prev 再 createItem）、
+ *  阶段0 noOlder absorb 时机。msgId 游标验证内核 index 与 source id 解耦。
  */
-import { VirtualScroller, VsElement, VsItem, VsDebugStats } from './virtual-scroller';
+import { VirtualScroller, VsElement, VsItem } from './virtual-scroller';
+import type { VsSource } from './source';
 
-/** 求元素子节点 offsetHeight 之和（content.scrollHeight 的可控实现）。 */
+/** 'm-K' → K（msgId 解析为序号）。 */
+function num(id: string | number): number { return Number(String(id).replace(/^m-/, '')); }
+
 function sumChildrenHeight(el: HTMLElement): number {
   let s = 0;
   for (const c of Array.from(el.children)) s += (c as HTMLElement).offsetHeight || 0;
   return s;
 }
 
-function makeItems(n: number): VsItem<number>[] {
-  return Array.from({ length: n }, (_, i) => ({ id: i, data: i }));
-}
-
-/**
- * 可控 hooks：每个元素高度可事后改（setHeight 触发 onHeightChange 上报）。
- * offsetHeight 跟随 heights map，使 content.scrollHeight 与内核 heights 缓存一致。
- */
+/** 可控 hooks：createItem(item, prev)，每项高度固定（可事后 setHeight 改）。用 msgId 当 Map key。 */
 function controllableHooks(itemHeight = 100): {
-  hooks: { createItem: (item: VsItem<number>) => VsElement<number> };
-  setHeight: (id: number, h: number) => void;
+  hooks: { createItem: (item: VsItem<number>, prev: VsItem<number> | null) => VsElement<number> };
+  setHeight: (id: string, h: number) => void;
 } {
-  const cbs = new Map<number, (h: number) => void>();
-  const heights = new Map<number, number>();
-  const h0 = (id: number) => heights.get(id) ?? itemHeight;
+  const cbs = new Map<string, (h: number) => void>();
+  const heights = new Map<string, number>();
+  const h0 = (id: string) => heights.get(id) ?? itemHeight;
   return {
     hooks: {
       createItem: (item): VsElement<number> => {
-        const id = item.id as number;
+        const id = String(item.id);
         const el = document.createElement('div');
         Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => h0(id) });
         return {
@@ -44,17 +43,92 @@ function controllableHooks(itemHeight = 100): {
         };
       },
     },
-    setHeight: (id: number, h: number) => { heights.set(id, h); cbs.get(id)?.(h); },
+    setHeight: (id: string, h: number) => { heights.set(id, h); cbs.get(id)?.(h); },
   };
 }
 
-describe('VirtualScroller (相对滚动)', () => {
+/** 记录每次 createItem 的 (id, prev.id) 的 hooks——验 ghost rebuild 以新 prev 再调。 */
+function recordingHooks(itemHeight = 100): {
+  hooks: { createItem: (item: VsItem<number>, prev: VsItem<number> | null) => VsElement<number> };
+  calls: { id: string; prev: string | null }[];
+} {
+  const calls: { id: string; prev: string | null }[] = [];
+  return {
+    hooks: {
+      createItem: (item, prev): VsElement<number> => {
+        const id = String(item.id);
+        calls.push({ id, prev: prev ? String(prev.id) : null });
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => itemHeight });
+        return { el, estimateHeight: () => itemHeight, onHeightChange: () => () => {}, destroy: () => {} };
+      },
+    },
+    calls,
+  };
+}
+
+/** Fake source：N 条 msg（'m-0'最老 .. 'm-(N-1)'最新）。游标 getOlder/getNewer，升序返回。 */
+function fakeSource(N: number): VsSource<number> & { gets: () => number } {
+  const itemAt = (i: number): VsItem<number> | undefined => {
+    if (i < 0 || i >= N) return undefined;
+    const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
+    return boundary ? { id: `m-${i}`, data: i, boundary } : { id: `m-${i}`, data: i };
+  };
+  const slice = (lo: number, hi: number): VsItem<number>[] => {
+    const out: VsItem<number>[] = [];
+    for (let i = Math.max(0, lo); i < Math.min(N, hi); i++) { const it = itemAt(i); if (it) out.push(it); }
+    return out;
+  };
+  let gets = 0;
+  const src: VsSource<number> = {
+    init: async (_r, older) => slice(N - older, N),
+    getOlder: async (cursorId, count) => { gets++; const k = num(cursorId); return slice(k - count, k); },
+    getNewer: async (cursorId, count) => { const k = num(cursorId); return slice(k + 1, k + 1 + count); },
+    appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
+    destroy: () => {},
+  };
+  return Object.assign(src, { gets: () => gets });
+}
+
+/** 可控 source：getOlder 返回手动 resolve 的 Promise，测「getOlder 在途」时改 scrollTop（fling 反向）。 */
+function controllableSource(N: number): VsSource<number> & {
+  gets: () => number; resolveOlder: (items?: VsItem<number>[]) => void; isPending: () => boolean;
+} {
+  const itemAt = (i: number): VsItem<number> | undefined => {
+    if (i < 0 || i >= N) return undefined;
+    const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
+    return boundary ? { id: `m-${i}`, data: i, boundary } : { id: `m-${i}`, data: i };
+  };
+  const slice = (lo: number, hi: number): VsItem<number>[] => {
+    const out: VsItem<number>[] = [];
+    for (let i = Math.max(0, lo); i < Math.min(N, hi); i++) { const it = itemAt(i); if (it) out.push(it); }
+    return out;
+  };
+  let resolver: ((items?: VsItem<number>[]) => void) | null = null;
+  let pendingRange = { lo: 0, hi: 0 };
+  let gets = 0;
+  const src: VsSource<number> = {
+    init: async (_r, older) => slice(N - older, N),
+    getOlder: function (cursorId: string | number, count: number): Promise<VsItem<number>[]> {
+      gets++; const k = num(cursorId); pendingRange = { lo: k - count, hi: k };
+      return new Promise(resolve => { resolver = (items?: VsItem<number>[]) => resolve(items ?? slice(pendingRange.lo, pendingRange.hi)); });
+    },
+    getNewer: async (cursorId, count) => { const k = num(cursorId); return slice(k + 1, k + 1 + count); },
+    appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
+    destroy: () => {},
+  };
+  return Object.assign(src, {
+    gets: () => gets,
+    resolveOlder: (items?: VsItem<number>[]) => { if (resolver) { const r = resolver; resolver = null; r(items); } },
+    isPending: () => resolver !== null,
+  });
+}
+
+describe('VirtualScroller（方案 B · array index）', () => {
   let viewport: HTMLDivElement;
   let content: HTMLDivElement;
   let scroller: VirtualScroller<number> | undefined;
   let rafSpy: jasmine.Spy;
-  // ngDevMode 在生产 AOT 被 Angular 置 falsy 并据此删除诊断代码；这里显式管控其真假，
-  // 使 spec 不依赖 karma 环境是否注入了该全局。
   let savedNgDev: unknown;
 
   beforeEach(() => {
@@ -62,16 +136,11 @@ describe('VirtualScroller (相对滚动)', () => {
     content = document.createElement('div');
     viewport.appendChild(content);
     document.body.appendChild(viewport);
-
     Object.defineProperty(viewport, 'clientHeight', { configurable: true, get: () => 600 });
     let st = 0;
-    Object.defineProperty(viewport, 'scrollTop', { configurable: true, get: () => st, set: v => { st = v; } });
+    Object.defineProperty(viewport, 'scrollTop', { configurable: true, get: () => st, set: (v: number) => { st = v; } });
     Object.defineProperty(content, 'scrollHeight', { configurable: true, get: () => sumChildrenHeight(content) });
-
-    // balance 走 RAF 节流，mock 为同步执行。
     rafSpy = spyOn(window, 'requestAnimationFrame').and.callFake((cb: FrameRequestCallback) => { cb(0); return 0; });
-
-    // 默认按 dev 模式跑（ngDevMode truthy），诊断采集开启——与生产 AOT 删除对照。
     savedNgDev = (globalThis as { ngDevMode?: unknown }).ngDevMode;
     (globalThis as { ngDevMode?: unknown }).ngDevMode = true;
   });
@@ -84,248 +153,188 @@ describe('VirtualScroller (相对滚动)', () => {
     (globalThis as { ngDevMode?: unknown }).ngDevMode = savedNgDev;
   });
 
-  it('setItems 从顶部挂载首批，直到填满 视口 + buffer', () => {
+  it('init 取最新一批、贴底、窗口边界 msgId 正确', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(1000));
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
     const info = scroller.getInfo();
-    // 600(视口) + 1800(buffer=3×vh) = 2400；每项 100 → 24 项填满。
-    expect(info.mountedStart).toBe(0);
-    expect(info.mountedEnd).toBe(24);
-    expect(info.atTop).toBe(true);
-    expect(info.mounted).toBe(24);
-  });
-
-  it('estimateHeight 作为初值：估算小于实测时，首批挂载量按估算偏多', () => {
-    // estimateHeight=50（小），实测 offsetHeight=100。mountInitialForward 用 content.scrollHeight
-    // （基于 offsetHeight=100）判定停止 → 仍 24 项；但内核 heights 缓存初值是 estimate(50)，
-    // onHeightChange 上报 100 后修正。此处验证不报错且挂载合理。
-    const cbs = new Map<number, (h: number) => void>();
-    const hooks = {
-      createItem: (item: VsItem<number>): VsElement<number> => {
-        const el = document.createElement('div');
-        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 100 });
-        const id = item.id as number;
-        return {
-          el,
-          estimateHeight: () => 50,
-          onHeightChange: (cb) => { cbs.set(id, cb); cb(100); return () => { cbs.delete(id); }; },
-          destroy: () => {},
-        };
-      },
-    };
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(1000));
-    expect(scroller.getInfo().mountedEnd).toBe(24);
-  });
-
-  it('scrollToBottom 跳到末尾并贴底', () => {
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(100));
-    scroller.scrollToBottom();
-    const info = scroller.getInfo();
-    expect(info.mountedEnd).toBe(100);
+    expect(info.mounted).toBe(100);
+    expect(info.oldestId).toBe('m-400');
+    expect(info.newestId).toBe('m-499');
     expect(info.atBottom).toBe(true);
-    expect(viewport.scrollTop).toBe(content.scrollHeight - 600);
+    expect(info.noNewer).toBe(true);  // boundary newest 已吸收（锚点）
+    expect(info.noOlder).toBe(false); // 未到最老
   });
 
-  it('scrollToBottom 预估偏大且元素极矮时 fillBackward 兜底补满视口（不露白）', () => {
-    // estimateHeight=1000（巨高），实测 offsetHeight=10（极矮）。主循环按缓存(1000)挂极少 +
-    // bTarget 40 条 = 41×10=410px < 视口 600 → 无兜底会露白；fillBackward 按真实内容高补满。
-    const hooks = {
-      createItem: (): VsElement<number> => {
-        const el = document.createElement('div');
-        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 10 });
-        return { el, estimateHeight: () => 1000, onHeightChange: () => () => {}, destroy: () => {} };
-      },
-    };
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(1000));
-    scroller.scrollToBottom();
-    expect(content.scrollHeight).toBeGreaterThanOrEqual(600); // 兜底后视口不空
-    expect(scroller.getInfo().mountedEnd).toBe(1000);          // 钉底
-  });
-
-  it('scrollToIndex 跳到指定 index 并将其纳入挂载窗口（center 锚定）', () => {
+  it('上滑到顶边缘 → loadOlder 触发 getOlder、挂更老、oldestId 变更老', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(1000));
-    scroller.scrollToIndex(500, 'center');
-    const info = scroller.getInfo();
-    // 目标 index 落在挂载窗口内（向下填满视口+buffer，向上 bTarget 条 buffer）。
-    expect(info.mountedStart).toBeLessThanOrEqual(500);
-    expect(info.mountedEnd).toBeGreaterThan(500);
-    expect(info.mounted).toBeLessThan(1000); // 虚拟化：未全量挂载
-    expect(viewport.scrollTop).toBeGreaterThan(0);
-    // center 锚定：目标 item 顶端偏移 = 上方 buffer(40×100) - (vh/2 - h/2) = 4000 - 250。
-    expect(viewport.scrollTop).toBe(4000 - (600 / 2 - 100 / 2));
-  });
-
-  it('scrollToIndex clamp 越界 index 到 [0, len-1]', () => {
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(1000));
-    scroller.scrollToIndex(99999, 'top');
-    const info = scroller.getInfo();
-    expect(info.mountedEnd).toBe(1000);   // 越界→末条，向下无可挂
-    expect(info.atBottom).toBe(true);
-  });
-
-  it('append 在贴底时跟随滚动到新底部', () => {
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(50));
-    scroller.scrollToBottom();
-    expect(scroller.getInfo().atBottom).toBe(true);
-
-    scroller.appendItems(makeItems(3));
-    const info = scroller.getInfo();
-    expect(info.atBottom).toBe(true);
-    expect(info.mountedEnd).toBe(53);
-    expect(info.total).toBe(53);
-  });
-
-  it('append 在未贴底时不主动挂载（等用户滚下）', () => {
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(50)); // scrollTop=0，未贴底
-    const endBefore = scroller.getInfo().mountedEnd;
-    scroller.appendItems(makeItems(3));
-    // 未贴底：不主动挂新元素，mountedEnd 不变（total 增加）
-    expect(scroller.getInfo().mountedEnd).toBe(endBefore);
-    expect(scroller.getInfo().total).toBe(53);
-  });
-
-  it('prepend 平移已挂载索引并锚点补偿 scrollTop（视觉不跳）', () => {
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(100));
-    scroller.scrollToBottom();
-    const stBefore = viewport.scrollTop;
-    const startBefore = scroller.getInfo().mountedStart;
-    const endBefore = scroller.getInfo().mountedEnd;
-
-    scroller.prependItems(makeItems(5));
-    // 5 条历史插到顶部：索引整体 +5；scrollTop += 5*100（锚点补偿）。
-    expect(scroller.getInfo().mountedStart).toBe(startBefore + 5);
-    expect(scroller.getInfo().mountedEnd).toBe(endBefore + 5);
-    expect(viewport.scrollTop).toBe(stBefore + 5 * 100);
-  });
-
-  it('prepend 不重渲原首条（边界重渲已移除，依赖宿主幽灵保证分组不变）', () => {
-    let total = 0;
-    const hooks = {
-      createItem: (): VsElement<number> => {
-        total++;
-        const el = document.createElement('div');
-        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 100 });
-        return { el, estimateHeight: () => 100, onHeightChange: () => () => {}, destroy: () => {} };
-      },
-    };
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(100));
-    scroller.scrollToBottom();
-    const before = total;
-    scroller.prependItems(makeItems(5));
-    // 仅挂载新批次 5 条；原首条不再重 mount（旧实现会 +1 重渲）
-    expect(total).toBe(before + 5);
-  });
-
-  it('视口高于初始内容时，scrollToBottom 触发多次 onLoadMore 补满首屏（ensureFilled）', () => {
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, get: () => 4000 });
-    let calls = 0;
-    const onLoadMore = (): VsItem<number>[] | null => {
-      calls++;
-      if (calls > 20) return null;   // 安全封顶（模拟尽头）
-      return makeItems(5);           // 每批 5 条 × 100px = 500px
-    };
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, onLoadMore });
-    scroller.setItems(makeItems(5)); // 初始 5 条 = 500px ≪ 4000px 视口
-    calls = 0;                       // setItems 不触发 ensureFilled
-    scroller.scrollToBottom();
-    // 初始 500px，每批 +500px → 约 7 批填满 4000px
-    expect(calls).toBeGreaterThanOrEqual(7);
-    expect(content.scrollHeight).toBeGreaterThanOrEqual(4000);
-  });
-
-  it('视口上方元素高度变化 → scrollTop 锚点补偿', () => {
-    const { hooks, setHeight } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(100));
-    scroller.scrollToBottom(); // 贴底；item 90 在挂载窗口内、视口上方
-    // stub scheduleBalance：隔离 balance 窗口调整对 scrollTop 的副作用，只验 onElHeight 补偿本身。
-    spyOn(scroller as unknown as { scheduleBalance: () => void }, 'scheduleBalance').and.stub();
-    const st = viewport.scrollTop;
-    expect(scroller.getInfo().mountedStart).toBeLessThanOrEqual(90); // item90 已挂载
-
-    setHeight(90, 150); // item90: 100 → 150
-    expect(viewport.scrollTop).toBe(st + 50); // 视口上方 +50 → scrollTop += 50
-  });
-
-  it('视口下方元素高度变化不补偿 scrollTop', () => {
-    const { hooks, setHeight } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(100));
-    scroller.scrollToBottom();
-    spyOn(scroller as unknown as { scheduleBalance: () => void }, 'scheduleBalance').and.stub();
-    const st = viewport.scrollTop;
-    const last = scroller.getInfo().mountedEnd - 1; // 末尾元素，在视口下方/内
-
-    setHeight(last, 150);
-    expect(viewport.scrollTop).toBe(st); // 下方变化不补偿
-  });
-
-  it('滚动后双向回收：挂载窗口跟随视口，不全量挂载', () => {
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(500));
-    scroller.scrollToBottom();
-
-    // 向上滚一段，触发 balance（scroll 事件 → RAF → balance）。
-    viewport.scrollTop = Math.max(0, viewport.scrollTop - 3000);
+    const src = fakeSource(500);
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    const oldestBefore = scroller.getInfo().oldestId!;
+    viewport.scrollTop = 0;
     viewport.dispatchEvent(new Event('scroll'));
-
-    const info = scroller.getInfo();
-    expect(info.mounted).toBeLessThan(500); // 虚拟化：未全量挂载
-    expect(info.mountedEnd).toBeGreaterThan(info.mountedStart); // 窗口非空
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(src.gets()).toBeGreaterThan(0);
+    // 挂了更老：oldestId 序号变小（更老）；trim 后窗口滚走，oldestId 可能变更老
+    expect(num(scroller.getInfo().oldestId!)).toBeLessThanOrEqual(num(oldestBefore));
   });
 
-  it('destroy 清理：卸载全部元素', () => {
+  it('方案 B：loadOlder 后 scrollTop 补偿（视口不跳）', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks });
-    scroller.setItems(makeItems(100));
-    expect(scroller.getInfo().mounted).toBeGreaterThan(0);
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    viewport.scrollTop = 50;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve();
+    await Promise.resolve();
+    // loadOlder prepend 在视口上方 → scrollTop 应被 += 新挂高度（>50，非 0）
+    expect(viewport.scrollTop).toBeGreaterThan(50);
+  });
+
+  it('到最老边界后继续上滑 → 不再 getOlder（noOlder 熔断）', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(120); // 仅 120 条，init 100 + 一次补批即到最老
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    for (let i = 0; i < 5; i++) {
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event('scroll'));
+      await Promise.resolve(); await Promise.resolve();
+    }
+    expect(scroller.getInfo().noOlder).toBe(true);
+    const getsAtBoundary = src.gets();
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve(); await Promise.resolve();
+    expect(src.gets()).toBe(getsAtBoundary);
+  });
+
+  it('appendLive（WS）挂到底部、贴底跟随', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    scroller.appendLive([{ id: 'x', data: -1 }]);
+    await Promise.resolve();
+    const info = scroller.getInfo();
+    expect(info.newestId).toBe('live-0');
+    expect(info.atBottom).toBe(true);
+  });
+
+  it('trim：连续 loadOlder 窗口稳定不无限增长（保留视口 buffer）', async () => {
+    const { hooks } = controllableHooks(); // 100px/项
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init();
+    const totals: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event('scroll'));
+      await Promise.resolve(); await Promise.resolve();
+      if (i >= 5) totals.push(sumChildrenHeight(content));
+    }
+    // trim 保留视口 buffer（loadOlder 的 compensateAbove 推大 st → total ~ st+vh+edge，> threshold 6000，
+    //  不是「刚过 threshold」）。验证核心目标：连续 loadOlder 稳定、不无限增长（末次 < threshold*3，后 5 次波动 < 500）。
+    expect(totals[totals.length - 1]).toBeLessThan(6000 * 3);
+    expect(Math.max(...totals) - Math.min(...totals)).toBeLessThan(500);
+  });
+
+  it('measurePending 移除挂载元素 vs-pending', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(content.querySelectorAll('.vs-pending').length).toBe(0);
+  });
+
+  // ── 阶段0：noOlder absorb 时机（revalidate 通过后才吸收，防 fling 回滑误锁）──
+
+  it('阶段0：fling 反向时含 oldest 边界批不挂 → noOlder 不锁死、回顶仍能 getOlder', async () => {
+    const { hooks } = controllableHooks();
+    const src = controllableSource(120); // init 100 → 第一次 getOlder 返回 m-0..m-19（含 oldest=m-0）
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    expect(scroller.getInfo().noOlder).toBe(false);
+
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve();
+    expect(src.isPending()).toBe(true);
+
+    // fling 反向：离开顶边缘（>edge=1000）+ scrollDir 变 down
+    viewport.scrollTop = 2000;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve();
+
+    src.resolveOlder();
+    await Promise.resolve();
+    expect(scroller.getInfo().noOlder).toBe(false); // 修前会被锁 true（bug）
+
+    const getsBefore = src.gets();
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve();
+    expect(src.gets()).toBeGreaterThan(getsBefore);
+  });
+
+  // ── 阶段1：骨架 item（vs-ghost + rebuild）──
+
+  it('阶段1：init 后顶部 mounted[0] 显 vs-ghost（未到最老），且仅一条', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const oldest = scroller.getInfo().oldestId!;
+    expect(content.querySelector(`[data-vs-id="${oldest}"]`)?.classList.contains('vs-ghost')).toBe(true);
+    expect(content.querySelectorAll('.vs-ghost').length).toBe(1);
+  });
+
+  it('阶段1：滚到全局最老（noOlder）→ vs-ghost 消失', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(120) });
+    await scroller.init();
+    for (let i = 0; i < 6; i++) {
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event('scroll'));
+      await Promise.resolve(); await Promise.resolve();
+    }
+    expect(scroller.getInfo().noOlder).toBe(true);
+    expect(content.querySelectorAll('.vs-ghost').length).toBe(0);
+  });
+
+  it('阶段1：loadOlder 挂更老邻居 → 旧 ghost rebuild（createItem 以新 prev 再调）', async () => {
+    const { hooks, calls } = recordingHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const ghostId = scroller.getInfo().oldestId!; // 'm-400'：挂载时 prev=null（顶部）
+    expect(calls.filter(c => c.id === ghostId)[0].prev).toBeNull();
+
+    // 上滑触发 loadOlder（挂更老 m-300..m-399）：ghostId 获得更老邻居 → rebuild
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve(); await Promise.resolve();
+
+    const forGhost = calls.filter(c => c.id === ghostId);
+    expect(forGhost.length).toBe(2);          // 挂载 + rebuild
+    expect(forGhost[1].prev).not.toBeNull();   // 新 prev = 更老邻居
+  });
+
+  it('loadOlder 截最新端 → noNewer 重置 false（loadNewer 可加载回，修向下滚/定位底部卡住）', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(scroller.getInfo().noNewer).toBe(true); // init 贴底=全局最新
+    // 向上滚 loadOlder：prepend 更老 + trimNewer 截最新端（含全局最新 m-499）
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await Promise.resolve(); await Promise.resolve();
+    expect(scroller.getInfo().noNewer).toBe(false); // trimNewer 重置 → loadNewer 可加载回
+  });
+
+  it('destroy 清空所有挂载元素', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(content.children.length).toBeGreaterThan(0);
     scroller.destroy();
-    // destroy 后 content 无挂载元素（content 仅含挂载的 item div）
     expect(content.children.length).toBe(0);
-  });
-
-  it('dev(ngDevMode truthy) 下 balance 通过 onDebug 上报单帧诊断', () => {
-    const stats: VsDebugStats[] = [];
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, onDebug: s => stats.push(s) });
-    scroller.setItems(makeItems(500));
-    scroller.scrollToBottom(); // 直挂载、不经 balance
-    expect(stats.length).toBe(0);
-
-    // 向上滚 → balance 挂载更早 item + 回收底部 → onDebug 上报
-    viewport.scrollTop = Math.max(0, viewport.scrollTop - 3000);
-    viewport.dispatchEvent(new Event('scroll'));
-    expect(stats.length).toBeGreaterThan(0);
-    expect(stats[0].mount + stats[0].unmount).toBeGreaterThan(0);
-  });
-
-  it('生产(ngDevMode falsy) 下 balance 不触发诊断——AOT 可删除的语义保证', () => {
-    (globalThis as { ngDevMode?: unknown }).ngDevMode = false; // 模拟生产 AOT：诊断分支不可达
-    let called = 0;
-    const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, onDebug: () => called++ });
-    scroller.setItems(makeItems(500));
-    scroller.scrollToBottom();
-    viewport.scrollTop = Math.max(0, viewport.scrollTop - 3000);
-    viewport.dispatchEvent(new Event('scroll'));
-    expect(called).toBe(0); // 诊断回调零调用（afterEach 恢复 ngDevMode 原值）
   });
 });

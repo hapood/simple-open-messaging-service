@@ -38,7 +38,7 @@
         <circle cx="12" cy="12" r="3" />
         <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
       </svg>
-      <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">{{ mountedCount() }}</span>
+      <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
     <!-- 输入栏（WhatsApp 式）：胶囊容器 [emoji + auto-grow textarea + 附件] + 容器外圆形发送键 -->
@@ -109,6 +109,16 @@
     </section>
 
     <section>
+      <h4>source 延迟 <span class="pg-sec-tag">调试</span></h4>
+      <div class="pg-btns">
+        <button (click)="setSourceLatency(0)" [class.active]="sourceLatency() === 0">0</button>
+        <button (click)="setSourceLatency(200)" [class.active]="sourceLatency() === 200">200ms</button>
+        <button (click)="setSourceLatency(1000)" [class.active]="sourceLatency() === 1000">1s</button>
+        <button (click)="setSourceLatency(5000)" [class.active]="sourceLatency() === 5000">5s</button>
+      </div>
+    </section>
+
+    <section>
       <h4>定位</h4>
       <div class="pg-btns">
         <button (click)="toTop()" [disabled]="loading()">顶部</button>
@@ -128,5 +138,43 @@
         <button (click)="debugMode.set(true)" [class.active]="debugMode()">调试</button>
       </div>
     </section>
+
+    <section>
+      <h4>挂载检查点 <span class="pg-sec-tag">调试</span></h4>
+      <div class="pg-btns">
+        <button (click)="closeCheckpoint.set(false); applyCloseCheckpoint()" [class.active]="!closeCheckpoint()">开（正常加载）</button>
+        <button (click)="closeCheckpoint.set(true); applyCloseCheckpoint()" [class.active]="closeCheckpoint()">关（不触发加载）</button>
+      </div>
+    </section>
+
+    <section>
+      <h4>视口位置 <span class="pg-sec-tag">调试</span></h4>
+      <p class="pg-hint">↑ 上方剩余 {{ viewportAbove() }} px · ↓ 下方剩余 {{ viewportBelow() }} px（&lt; 1000 触发对应方向加载）</p>
+    </section>
+
+    <section>
+      <h4>内核参数 <span class="pg-sec-tag">调试</span></h4>
+      <p class="pg-hint">每次 {{ config().mountItem }} · init {{ config().initBatch }} · 阈值 {{ config().thresholdFloor }} · vh+{{ config().vhExtra }} · 边缘 {{ config().edge }}</p>
+      <div class="pg-btns">
+        <button (click)="openConfigModal()">编辑参数</button>
+      </div>
+    </section>
   </aside>
+
+  @if (configModalOpen()) {
+    <div class="pg-config-overlay" (click)="cancelConfigModal()">
+      <div class="pg-config-modal" (click)="$event.stopPropagation()">
+        <h3>内核参数</h3>
+        <label>initBatch（init 首批/补批）<input type="number" [ngModel]="configDraft().initBatch" (ngModelChange)="setConfigDraft('initBatch', +$event)" /></label>
+        <label>mountItem（loadOlder/loadNewer 每次）<input type="number" [ngModel]="configDraft().mountItem" (ngModelChange)="setConfigDraft('mountItem', +$event)" /></label>
+        <label>thresholdFloor（窗口阈值下限）<input type="number" [ngModel]="configDraft().thresholdFloor" (ngModelChange)="setConfigDraft('thresholdFloor', +$event)" /></label>
+        <label>vhExtra（vh 之外额外）<input type="number" [ngModel]="configDraft().vhExtra" (ngModelChange)="setConfigDraft('vhExtra', +$event)" /></label>
+        <label>edge（检查点触发距离）<input type="number" [ngModel]="configDraft().edge" (ngModelChange)="setConfigDraft('edge', +$event)" /></label>
+        <div class="pg-config-actions">
+          <button (click)="cancelConfigModal()">取消</button>
+          <button class="pg-config-primary" (click)="applyConfig()">确认（重建）</button>
+        </div>
+      </div>
+    </div>
+  }
 </div>

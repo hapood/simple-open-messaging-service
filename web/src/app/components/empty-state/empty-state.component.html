@@ -1,0 +1,12 @@
+<div class="empty-state" [class.is-error]="tone() === 'error'">
+  <div class="es-icon"><ng-content></ng-content></div>
+  <div class="es-title">{{ title() }}</div>
+  @if (subtitle()) {
+    <div class="es-sub">{{ subtitle() }}</div>
+  }
+  @if (ctaLabel()) {
+    <button mat-raised-button color="primary" class="es-cta" (click)="ctaClick.emit()">
+      {{ ctaLabel() }}
+    </button>
+  }
+</div>

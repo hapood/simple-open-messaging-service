@@ -6,13 +6,15 @@ import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
 import { UserMessageThread } from '../../services/model';
 import { UserService } from '../../services/user.service';
+import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 @Component({
     selector: 'app-new-group',
-    imports: [UserListComponent, IconComponent, MatButtonModule],
+    imports: [UserListComponent, IconComponent, MatButtonModule, FitDialogDirective],
     templateUrl: './new-group.component.html',
     styleUrl: './new-group.component.scss'
 })
 export class NewGroupComponent {
+  readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
   selectedDict = signal<Record<number, boolean | undefined>>({})
   selectedList = signal<UserMessageThread[]>([])
   AppIconType = AppIconType

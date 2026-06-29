@@ -7,3 +7,64 @@
 .vs-pending {
   visibility: hidden !important;
 }
+
+// .vs-ghost：内核给挂载窗口最顶条（oldestId 槽位、未到全局最老）加 vs-ghost，提示「上方还在加载」。
+// 两种承载：① createItem 对最顶条（prev=null、非全局最老）直接产【.vs-ghost-loading 居中 spinner】（见下：WhatsApp 风、
+//    固定高度、不渲真实组件 / 图片）；② trim 后位置晋升的最顶条是真实组件 el（prev 可能过时），用 ::after overlay
+//    流光遮盖其内部（_row-base 契约：外部 CSS 不写 host 内部 → 用伪元素遮盖、不穿透组件 DOM）。
+//    故 overlay 用 :not(.vs-ghost-loading) 排除 spinner 宿主（spinner 自带 ::before、不需遮罩）。
+// loadOlder 挂上更老邻居后该条 rebuild 显形（spinner → 真实）、内核移除 vs-ghost；跟着 oldestId 传递，noOlder 时永久消失。
+// position:relative 强制（host 默认无 position，不设 ::after 会相对 .pg-content 撑满整列）；absolute 不撑高 host offsetHeight。
+.vs-ghost {
+  position: relative;
+  &:not(.vs-ghost-loading)::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 1;            // 盖在 .pg-msg-row / .pg-date 之上（它们无 stacking context）
+    pointer-events: none;  // 不挡滚动 / 点击
+    background-color: var(--app-active);
+    background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.5) 50%, transparent 70%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: vs-shimmer 1.4s ease-in-out infinite;
+  }
+}
+
+// .vs-ghost-loading：ghost 加载指示——业界主流聊天「向上加载更老消息」的增量加载指示用居中 spinner
+//（WhatsApp 风；Telegram 骨架是初始空白填充用、非本场景）。骨架/消息形占位不适合此处：仅一行、且不知 self/other/
+// 内容类型，形状只能猜。spinner 与内容无关、轻、语义准（加载中）。结构由 createGhostVsElement 产（空 host + ::before 圆环）。
+// 固定高度（GHOST_H 由 JS inline）→ 不被内容撑变；host offsetHeight 恒定 = estimateHeight，rebuildDelta 由内核补偿。
+// 设计选择：spinner 用居中环形（border 圆环 + 顶色高亮 + 旋转），fg 取 --app-text-faint（与时间戳同档中性灰），track 浅灰。
+.vs-ghost-loading {
+  --vs-spin-track: rgba(0, 0, 0, 0.12);
+  --vs-spin-fg: var(--app-text-faint);     // 中性灰（与时间戳 / 占位同档）
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &::before {
+    content: '';
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    border: 2.5px solid var(--vs-spin-track);
+    border-top-color: var(--vs-spin-fg);   // 仅顶部高亮 → 旋转成「转圈」
+    animation: vs-spin 0.8s linear infinite;
+  }
+}
+
+// 深色模式（[data-theme="dark"]）：spinner token 翻成浅色（WhatsApp dark 底 #0b141a 上可辨；fg 走 --app-text-faint 已自适应）。
+[data-theme="dark"] .vs-ghost-loading {
+  --vs-spin-track: rgba(255, 255, 255, 0.14);
+}
+
+@keyframes vs-shimmer {
+  0%   { background-position: 200% 0; }   // 高光带在右外
+  100% { background-position: -200% 0; }  // 滑到左外（从右往左流光）
+}
+
+@keyframes vs-spin {
+  to { transform: rotate(360deg); }       // 环形 spinner 匀速旋转
+}

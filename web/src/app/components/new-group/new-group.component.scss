@@ -1,5 +1,18 @@
 @use "../../assets/utils.scss" as *;
 
+// fit 高度锁定后：根 div 作 flex 列，msg-header 固定 + app-user-list 拉伸并内部滚动
+:host > div {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+app-user-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .msg-header {
   height: 56px;
   width: 100%;

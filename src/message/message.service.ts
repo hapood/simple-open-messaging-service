@@ -274,13 +274,14 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
-   * 拒绝好友请求：删除这对请求行（请求方 FROM_PENDING + 我 TO_PENDING）。
-   * 语义对标 Telegram——拒绝后请求从我的待处理列表消失，且不通知对方；关系回到
-   * 「无任何记录」的初始态，对方之后仍可重新发起（makeFriendRequest 的首次请求分支）。
+   * 拒绝好友请求：把这对请求行（请求方 FROM_PENDING + 我 TO_PENDING）软删除为 DELETED。
+   * 语义对标 Telegram——拒绝后请求从待处理列表消失，且不通知对方。采用软删除而非物理删除：
+   * 保留请求历史（未来审计/防骚扰/"对方已撤销"通知有数据基础），对方重发时走 makeFriendRequest
+   * 的 DELETED 分支（status 2，update 复用双方行回 PENDING）而非新建。
    *
    * 入参与 approveFriendRequest 一致：fromUserId=请求方，toUserId=我（拒绝者）。
-   * 仅当请求方行确为 FROM_PENDING（确有待处理请求）才删除；否则返回 status 1（无可拒绝对象）。
-   * 待处理阶段 threadId 为 null（MessageThread 仅在同意时创建），删除请求行不会产生孤立会话。
+   * 仅当请求方行确为 FROM_PENDING 才置 DELETED；否则返回 status 1（无可拒绝对象）。
+   * 所有列表查询均按 status 过滤，DELETED 行不会泄漏到好友/待处理列表。
    */
   async declineFriendRequest(fromUserId: number, toUserId: number) {
     return await this.prisma.$transaction(async (prisma) => {
@@ -299,7 +300,7 @@ export class MessageService implements OnModuleInit {
       ) {
         return { status: 1 };
       }
-      await prisma.userMessageThread.deleteMany({
+      await prisma.userMessageThread.updateMany({
         where: {
           OR: [
             {
@@ -314,8 +315,20 @@ export class MessageService implements OnModuleInit {
             },
           ],
         },
+        data: {
+          status: UserMessageThreadStatus.DELETED,
+        },
       });
       return { status: 0 };
     });
+  }
+
+  /**
+   * 撤销我发出的好友请求：与 declineFriendRequest 数据操作完全一致（双方行 → DELETED），
+   * 区别只在语义——这里 fromUserId=我（发起方），是我主动撤回自己发出的待处理请求。
+   * 复用同一套「校验 FROM_PENDING → 双方置 DELETED」逻辑。
+   */
+  async cancelFriendRequest(fromUserId: number, toUserId: number) {
+    return this.declineFriendRequest(fromUserId, toUserId);
   }
 }

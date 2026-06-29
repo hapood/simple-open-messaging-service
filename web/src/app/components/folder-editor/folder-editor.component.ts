@@ -6,6 +6,7 @@ import { FolderService, ChatFolder, FolderTypeFilter } from '../../services/fold
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserService } from '../../services/user.service';
 import { UserMessageThread } from '../../services/model';
+import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 /**
  * Folder management dialog (desktop). Two-pane:
@@ -15,7 +16,7 @@ import { UserMessageThread } from '../../services/model';
  */
 @Component({
   selector: 'app-folder-editor',
-  imports: [FormsModule, MatButtonModule, IconComponent],
+  imports: [FormsModule, MatButtonModule, IconComponent, FitDialogDirective],
   templateUrl: './folder-editor.component.html',
   styleUrl: './folder-editor.component.scss'
 })
@@ -28,6 +29,7 @@ export class FolderEditorComponent implements OnInit {
   readonly folderId = input<string | undefined>(undefined)
 
   readonly AppIconType = AppIconType
+  readonly fitOpts = { minHeight: 360 } as const
 
   /** false = list view, true = edit form */
   readonly editing = signal(false)
