@@ -51,20 +51,48 @@ export class HttpItemSource implements VsSource<ChatItemData> {
     this.wsSub = wsService.eventSubject.subscribe((msg) => this.onWsEvent(msg));
   }
 
-  /** 初始化：取最新 olderCount 条（desc → 升序），标边界、设游标。返回升序原始 msg。 */
-  async init(_realMsgId: number, olderCount: number, _newerCount: number, _opts?: VsSourceInitOpts): Promise<VsItem<ChatItemData>[]> {
-    const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 0, take: olderCount, orderBy: 'desc' }),
-    );
-    if (res.code !== 0 || !res.data) return [];
-    const list = [...res.data].reverse(); // desc → 升序（旧→新）
-    this.noOlder = !res.hasMore || list.length < olderCount;
-    this.noNewer = true; // 锚点=最新
+  /**
+   * 初始化 / 重锚：
+   *  - anchorId === -1：取最新 olderCount 条（desc→升序），锚点=最新（noNewer=true，WS 单向推）。
+   *  - 其他（真实 msgId）：双向取——older（desc, skip:0, 含 anchorId）+ newer（asc, skip:1, 不含 anchorId），
+   *    合并升序；按各自 hasMore 设 noOlder/noNewer（中段两者皆 false → 向上/下加载可达全局边界）。
+   * 返回升序原始 msg，全局最旧/最新带 boundary。
+   */
+  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: VsSourceInitOpts): Promise<VsItem<ChatItemData>[]> {
+    if (anchorId === -1) {
+      const res = await firstValueFrom(
+        this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 0, take: olderCount, orderBy: 'desc' }),
+      );
+      if (res.code !== 0 || !res.data) return [];
+      const list = [...res.data].reverse(); // desc → 升序（旧→新）
+      this.noOlder = !res.hasMore || list.length < olderCount;
+      this.noNewer = true; // 锚点=最新
+      await this.ensureProfiles(list);
+      const items = this.rawToItems(list);
+      if (items.length > 0) {
+        if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
+        items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+        this.oldestMsgId = firstMsgId(items);
+        this.newestMsgId = lastMsgId(items);
+      }
+      return items;
+    }
+    // 真实 msgId：双向取（跳转到指定消息 / 从通知打开会话）
+    const [olderRes, newerRes] = await Promise.all([
+      firstValueFrom(this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 0, take: olderCount, lastId: String(anchorId), orderBy: 'desc' })),
+      firstValueFrom(this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: newerCount, lastId: String(anchorId), orderBy: 'asc' })),
+    ]);
+    if (olderRes.code !== 0 || !olderRes.data || olderRes.data.length === 0) return []; // 目标 msgId 不存在
+    const older = [...olderRes.data].reverse(); // desc→升序：[older..anchorId]（含 anchorId）
+    const newer = newerRes.code === 0 && newerRes.data ? newerRes.data : []; // asc 已升序：(anchorId..newer]
+    const list = [...older, ...newer];
+    this.noOlder = !olderRes.hasMore;
+    this.noNewer = !newerRes.hasMore;
     await this.ensureProfiles(list);
     const items = this.rawToItems(list);
     if (items.length > 0) {
       if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
-      items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      if (this.noNewer) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
       this.oldestMsgId = firstMsgId(items);
       this.newestMsgId = lastMsgId(items);
     }

@@ -63,6 +63,8 @@ export class MessageThreadComponent implements OnDestroy {
 
   private scroller?: ScrollerApi<ChatItemData>;
   private currentTrdId: number | null = null;
+  /** 已以此 id 为锚初始化/跳转过（去重，防 init 锚点又被跳转 effect 重跳）。 */
+  private lastJumpId: string | number | null = null;
 
   readonly atBottom = signal(true);
   readonly stickyDate = signal<string | null>(null);
@@ -78,9 +80,20 @@ export class MessageThreadComponent implements OnDestroy {
       this.initScroller(vp.nativeElement, ct.nativeElement, trd);
       this.currentTrdId = trd.id;
     });
+    // 会话已开后 startMsgId 变化（同 thread，如搜索结果点跳）→ 跳转到该消息（未挂载则内核 re-seed）。
+    effect(() => {
+      const startId = this.startMsgId();
+      const trd = this.userMsgTrd();
+      if (!trd || startId === undefined || this.currentTrdId !== trd.id) return;
+      if (startId === this.lastJumpId) return; // 已是 init 锚点 / 已跳过
+      this.lastJumpId = startId;
+      this.scroller?.scrollToIndex(startId, 'center', true);
+    });
   }
 
   private initScroller(viewport: HTMLDivElement, content: HTMLDivElement, trd: UserMessageThread): void {
+    const startId = this.startMsgId() ?? null; // 开会话时若已带 startMsgId → 开在该消息（重锚）
+    this.lastJumpId = startId;
     const source = new HttpItemSource(
       trd, this.msgService, this.userService, this.wsService,
       { onLive: (items) => this.scroller?.appendLive(items) },
@@ -92,7 +105,7 @@ export class MessageThreadComponent implements OnDestroy {
       hooks: { createItem: (item, prev) => this.createItem(item, prev), mergeItems: mergeAlbumItems },
       onScroll: (info) => this.onScroll(info),
     });
-    void this.scroller.init();
+    void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined);
   }
 
   /** 内核 createItem 钩子：内核传更老邻居 prev，按它算分组标，调 createMsgVsElement 包装组件。 */

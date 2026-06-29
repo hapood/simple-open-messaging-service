@@ -99,12 +99,24 @@ export interface VsDebugStats {
   inflightNewer: boolean;
 }
 
+/** init() 选项：跳转/重锚（开在指定消息）。 */
+export interface VsInitOpts {
+  /** 以该 msgId 为锚双向取数（默认无 = 从全局最新首屏）。 */
+  startMsgId?: string | number | null;
+  /** 目标在视口对齐方式（默认 'center'）。 */
+  anchor?: 'top' | 'center' | 'bottom';
+  /** 定位后给目标加一次高亮闪烁（默认 false）。 */
+  highlight?: boolean;
+}
+
 /** 内核对外公共能力（方案 A/B 共同满足）。 */
 export interface ScrollerApi<T = unknown> {
-  init(): Promise<void>;
+  /** 首屏加载；传 opts.startMsgId 则开在指定消息（重锚），否则从全局最新铺底。 */
+  init(opts?: VsInitOpts): Promise<void>;
   scrollToBottom(): void;
   scrollToTop(): void;
-  scrollToIndex(id: string | number, anchor?: 'top' | 'center' | 'bottom'): void;
+  /** 跳转到 id：已挂载则直接定位；未挂载则重置窗口围绕 id（re-seed）再定位。anchor 默认 'center'。highlight 给目标加一次高亮。 */
+  scrollToIndex(id: string | number, anchor?: 'top' | 'center' | 'bottom', highlight?: boolean): void;
   appendLive(items: VsItem<T>[]): void;
   getInfo(): VsScrollInfo;
   refresh(): void;
@@ -140,6 +152,10 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
   private ghostEntry: Entry<T> | null = null;
   private inflightOlder = false;
   private inflightNewer = false;
+  /** 重置代：openAround 自增；loadOlder/loadNewer 的 await 后比对，过期批不挂（防跳转超越在途加载）。 */
+  private gen = 0;
+  /** re-seed 进行中（resetWindowState→mount 之间）：appendLive 期间丢弃 WS（已在 source 缓存，回滑 getNewer 取回）。 */
+  private resetting = false;
   /** 调试开关：关闭挂载检查点（balance 不触发 loadOlder/loadNewer）。balance 内 ngDevMode 守卫 → 生产 AOT 移除。默认 false（检查点正常加载）。 */
   closeCheckpoint = false;
 
@@ -177,7 +193,10 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
     return Math.max(this.vh + this.cfg.vhExtra, this.cfg.thresholdFloor);
   }
 
-  async init(): Promise<void> {
+  async init(opts?: VsInitOpts): Promise<void> {
+    // 跳转/重锚：开在指定消息（双向取数 + 居中定位），不走最新铺底。
+    const startId = opts?.startMsgId ?? null;
+    if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); return; }
     let batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
     let merged = this.mergeBatch(batch);
     if (merged.length === 0) return;
@@ -197,7 +216,7 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   appendLive(rawItems: VsItem<T>[]): void {
-    if (this.destroyed || rawItems.length === 0) return;
+    if (this.destroyed || this.resetting || rawItems.length === 0) return;
     const wasAtBottom = this.isAtBottom();
     const items = this.source.appendLive(rawItems);
     const merged = this.mergeBatch(items);
@@ -227,10 +246,119 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
     this.emit();
   }
 
-  scrollToIndex(id: string | number, anchor: 'top' | 'center' | 'bottom' = 'top'): void {
+  scrollToIndex(id: string | number, anchor: 'top' | 'center' | 'bottom' = 'center', highlight = false): void {
     if (this.destroyed) return;
     const idx = this.indexOfId(id);
-    if (idx < 0) return; // 不在挂载窗口（load-from-middle 是未来项）
+    if (idx >= 0) { // 已挂载：直接定位
+      this.positionMounted(idx, anchor);
+      if (highlight) this.flashHighlight(idx);
+      return;
+    }
+    // 未挂载：重置窗口围绕 id（re-seed），完成后再定位
+    void this.openAround(id, anchor, highlight);
+  }
+
+  /**
+   * 重置窗口围绕 id：卸载当前窗口 → source.init(id, older, newer) 双向取一批 → 挂载 → fillAround 双向填满 → 定位到 id。
+   * gen 自增使在途的 loadOlder/loadNewer 作废；resetting 期间丢弃 appendLive（WS 消息在 source 缓存，回滑取回）。
+   * 居中锚需两侧都有足够内容才「真居中」；fillAround 保证窗口达 threshold（近边界时 best-effort，clamp 自动妥协）。
+   */
+  private async openAround(id: string | number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
+    const g = ++this.gen;
+    this.resetWindowState();
+    try {
+      const batch = await this.source.init(id, this.cfg.mountItem, this.cfg.mountItem, this.initOpts);
+      if (this.destroyed || g !== this.gen) return; // 被更新的跳转/destroy 超越
+      const merged = this.mergeBatch(batch);
+      const key = String(id);
+      if (merged.length === 0 || !merged.some(it => String(it.id) === key)) { this.updateGhost(); this.emit(); return; } // source 未返回目标
+      this.absorbBoundary(merged);
+      this.mountBatch(merged, 'init');
+      this.measurePending();
+      await this.fillAround(id, g); // 双向填到各 threshold/2（边界例外）+ 一侧到界时另一侧补到 threshold
+      if (this.destroyed || g !== this.gen) return;
+      const idx = this.indexOfId(id);
+      if (idx >= 0) {
+        this.positionMounted(idx, anchor);
+        if (highlight) this.flashHighlight(idx);
+      }
+      this.updateGhost();
+      this.emit();
+    } finally {
+      this.resetting = false;
+    }
+  }
+
+  /**
+   * 居中跳转的窗口填充：
+   *  1) 上方 while 填到 aboveTarget ≥ threshold/2（或撞 noOlder）；下方 while 填到 belowTarget ≥ threshold/2（或撞 noNewer）。
+   *  2) 补偿：若一侧到界（不足 threshold/2）→ 向【未到界】的另一侧补，直到 totalH ≥ threshold（两侧都到界则无法补，直接渲染）。
+   * 视口尚未定位（scrollTop=0），故加载不补偿/不 trim（区别于 loadOlder/loadNewer）。gen 守卫防跳转超越在途批。
+   */
+  private async fillAround(targetId: string | number, g: number): Promise<void> {
+    const halfTh = this.threshold / 2;
+    while (this.aboveTarget(targetId) < halfTh && !this.noOlder && this.mounted.length > 0) {
+      if (await this.loadOlderIntoFresh(g) === 0) break; // 到界 / 超越 / 无数据
+    }
+    while (this.belowTarget(targetId) < halfTh && !this.noNewer && this.mounted.length > 0) {
+      if (await this.loadNewerIntoFresh(g) === 0) break;
+    }
+    if (this.totalH() < this.threshold) {
+      const fillUp = this.noNewer && !this.noOlder;   // 下方到底 → 上方补
+      const fillDown = this.noOlder && !this.noNewer; // 上方到顶 → 下方补
+      while (this.totalH() < this.threshold && (fillUp || fillDown) && this.mounted.length > 0) {
+        const n = fillUp ? await this.loadOlderIntoFresh(g) : await this.loadNewerIntoFresh(g);
+        if (n === 0) break; // 另一侧也到界
+      }
+    }
+  }
+
+  /** targetId 上方所有挂载项总高（= topOf(targetIdx)）。target 不在窗口 → 视为全部在上方。 */
+  private aboveTarget(targetId: string | number): number {
+    const idx = this.indexOfId(targetId);
+    return idx < 0 ? this.totalH() : this.topOf(idx);
+  }
+  /** targetId 下方所有挂载项总高（不含 target 自身）。target 不在窗口 → 0。 */
+  private belowTarget(targetId: string | number): number {
+    const idx = this.indexOfId(targetId);
+    if (idx < 0) return 0;
+    this.flushPrefix();
+    return this.totalH() - this.prefix[idx + 1];
+  }
+
+  /** 构建中窗口向更老加载一批（不补偿/不 trim/不 revalidate——视口未定位）；含旧 ghost 显形 rebuild。空批→noOlder。返回挂载数（0=到界/超越/无数据）。 */
+  private async loadOlderIntoFresh(g: number): Promise<number> {
+    if (this.destroyed || g !== this.gen || this.noOlder || this.mounted.length === 0) return 0;
+    const cursor = this.mounted[0].item.id;
+    const batch = await this.source.getOlder(cursor, this.cfg.mountItem);
+    if (this.destroyed || g !== this.gen) return 0;
+    const merged = this.mergeBatch(batch);
+    if (merged.length === 0) { this.noOlder = true; return 0; }
+    this.absorbBoundary(merged);
+    const oldGhost = this.ghostEntry;
+    this.mountBatch(merged, 'older');
+    if (oldGhost && this.mounted.indexOf(oldGhost) > 0) { oldGhost.el.classList.remove('vs-ghost'); this.rebuildEntry(oldGhost); }
+    this.measurePending();
+    this.updateGhost();
+    return merged.length;
+  }
+  /** 构建中窗口向更新加载一批（append）。空批→noNewer。返回挂载数（0=到界/超越/无数据）。 */
+  private async loadNewerIntoFresh(g: number): Promise<number> {
+    if (this.destroyed || g !== this.gen || this.noNewer || this.mounted.length === 0) return 0;
+    const cursor = this.mounted[this.mounted.length - 1].item.id;
+    const batch = await this.source.getNewer(cursor, this.cfg.mountItem);
+    if (this.destroyed || g !== this.gen) return 0;
+    const merged = this.mergeBatch(batch);
+    if (merged.length === 0) { this.noNewer = true; return 0; }
+    this.absorbBoundary(merged);
+    this.mountBatch(merged, 'newer');
+    this.measurePending();
+    this.updateGhost();
+    return merged.length;
+  }
+
+  /** 已挂载 idx 的定位数学（scrollToIndex / openAround 共用）。shifting 屏蔽方向误判。 */
+  private positionMounted(idx: number, anchor: 'top' | 'center' | 'bottom'): void {
     this.flushPrefix();
     let st = this.prefix[idx];
     const h = this.mounted[idx].height;
@@ -242,6 +370,32 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
     this.shifting = false;
     this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
+  }
+
+  /** 清空窗口 + 复位所有加载/边界状态（openAround 开头调）。unmountAll 已清 mounted/prefix/pending/ghost。 */
+  private resetWindowState(): void {
+    if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
+    this.dirty = false;
+    this.unmountAll();
+    this.noOlder = false;
+    this.noNewer = false;
+    this.inflightOlder = false;
+    this.inflightNewer = false;
+    this.lastScrollTop = 0;
+    this.resetting = true;
+    this.shifting = true;
+    this.viewport.scrollTop = 0; // content 已空，归零
+    this.shifting = false;
+  }
+
+  /** 给目标 entry 加一次性高亮闪烁（animationend 移除 class；reflow 保证重复跳转能重启动画）。 */
+  private flashHighlight(idx: number): void {
+    const el = this.mounted[idx]?.el;
+    if (!el) return;
+    el.classList.remove('vs-jump-highlight');
+    void el.offsetWidth; // 强制 reflow → 重新触发动画
+    el.classList.add('vs-jump-highlight');
+    el.addEventListener('animationend', () => el.classList.remove('vs-jump-highlight'), { once: true });
   }
 
   getInfo(): VsScrollInfo {
@@ -463,9 +617,11 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
   private async loadOlder(): Promise<void> {
     if (this.inflightOlder || this.noOlder || this.mounted.length === 0) return;
     this.inflightOlder = true;
+    const g = this.gen;
     try {
       const cursor = this.mounted[0].item.id;
       const batch = await this.source.getOlder(cursor, this.cfg.mountItem);
+      if (this.destroyed || g !== this.gen) return; // 跳转 re-seed 超越 → 丢弃在途批
       if (!this.revalidateTop()) return; // await 期间 fling 反向 → 不挂不 absorb（阶段0：revalidate 通过后才吸收边界）
       const merged = this.mergeBatch(batch);
       if (this.destroyed || merged.length === 0) { if (merged.length === 0) this.noOlder = true; return; }
@@ -496,15 +652,18 @@ export class VirtualScroller<T = unknown> implements ScrollerApi<T> {
   private async loadNewer(): Promise<void> {
     if (this.inflightNewer || this.noNewer || this.mounted.length === 0) return;
     this.inflightNewer = true;
+    const g = this.gen;
     let merged: VsItem<T>[];
     try {
       const cursor = this.mounted[this.mounted.length - 1].item.id;
       const batch = await this.source.getNewer(cursor, this.cfg.mountItem);
+      if (this.destroyed || g !== this.gen) return; // 跳转 re-seed 超越 → 丢弃在途批
       merged = this.mergeBatch(batch);
     } finally {
       this.inflightNewer = false;
     }
-    if (this.destroyed || merged.length === 0) { if (merged.length === 0) this.noNewer = true; return; }
+    if (this.destroyed || g !== this.gen) return;
+    if (merged.length === 0) { this.noNewer = true; return; }
     if (!this.revalidateBottom()) return;
     const wasAtBottom = this.isAtBottom(); // 加载前贴底 → 加载后跟随到新底（点定位底部 / 向下滚贴底时滚到新加载段）
     this.absorbBoundary(merged); // 阶段0：通过后才吸收边界

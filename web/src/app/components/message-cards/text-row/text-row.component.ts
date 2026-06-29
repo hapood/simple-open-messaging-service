@@ -1,6 +1,7 @@
 import { Component, computed, input } from '@angular/core';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
+import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 
 /**
  * 纯文本消息行（WhatsApp 风：头像 + 名字 + 气泡 + 尾尖 + 右下时间戳）。
@@ -14,11 +15,12 @@ import { DateRowComponent } from '../date-row/date-row.component';
 @Component({
   selector: 'app-msg-text-row',
   standalone: true,
-  imports: [DateRowComponent],
+  imports: [DateRowComponent, UserAvatarComponent],
   templateUrl: './text-row.component.html',
   styleUrl: './text-row.component.scss',
 })
 export class TextRowComponent {
+  readonly UserAvatarType = UserAvatarType
   readonly data = input.required<ChatMsgData>();
   /** 组首（显头像 + 他方名字）/ 组内。 */
   readonly isShowHead = input(false);

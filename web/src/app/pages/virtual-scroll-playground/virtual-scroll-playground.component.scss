@@ -52,10 +52,6 @@
 .pg-header-avatar {
   flex: 0 0 auto;
   width: 32px; height: 32px;
-  display: flex; align-items: center; justify-content: center;
-  border-radius: 8px;
-  background: var(--im-avatar-other); color: #fff;
-  font-size: 13px; font-weight: 600;
 }
 .pg-header-meta { display: flex; flex-direction: column; min-width: 0; }
 .pg-header-name { font-size: 14px; font-weight: 600; color: var(--app-text); }

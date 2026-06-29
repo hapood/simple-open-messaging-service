@@ -13,6 +13,11 @@
  *  （`getOlder(cursorId, count)` / `getNewer(cursorId, count)`）。不依赖连续数值 id —— 内核位置（array
  *  index）与数据 id（msgId）彻底解耦。
  *
+ * 【init 锚点】init(anchorId, olderCount, newerCount) 的 anchorId：
+ *  - `-1` = 全局最新（锚点=最新，newerCount 忽略、out[last] 恒 'newest'；首屏从最新往更老铺）。
+ *  - 其他（string|number）= 真实 msgId：**双向取**——olderCount 条更老（含 anchorId）+ newerCount 条更新，
+ *    返回以 anchorId 居中的升序窗口（跳转到指定消息 / 从通知打开会话用）。全局最旧/最新仍按 boundary 标记。
+ *
  * 【升序约定】init / getOlder / getNewer 均返回**升序**（旧→新）：out[0]=最老、out[last]=最新。
  *  内核 prepend（older）时 `mounted = [...batch, ...mounted]`、append（newer）时 `mounted = [...mounted, ...batch]`。
  *
@@ -41,12 +46,13 @@ export interface VsSourceInitOpts {
  */
 export interface VsSource<T = unknown> {
   /**
-   * 初始化：以 realMsgId 为锚加载 olderCount 条更老 + newerCount 条更新。
-   *  - realMsgId: -1 = 最新 / 0 = 最旧 / 其他 = 真实 DB msgId。
+   * 初始化 / 重锚：以 anchorId 为锚加载 olderCount 条更老 + newerCount 条更新。
+   *  - anchorId: `-1` = 全局最新（newerCount 忽略、out[last] 恒 'newest'）；
+   *    其他（string|number）= 真实 msgId → 双向取（olderCount 含 anchorId + newerCount 更新）。
    * 返回【原始 msg】items（升序：旧→新；VsItem.id = msgId；全局最旧/最新带 boundary）。
-   * 本场景：init(-1, 100, 0) —— 从最新开始，向更老加载 100 条。
+   * 内核 init() 首屏用 -1；scrollToIndex(id)/init({startMsgId}) 跳转用真实 msgId。
    */
-  init(realMsgId: number, olderCount: number, newerCount: number, opts?: VsSourceInitOpts): Promise<VsItem<T>[]>;
+  init(anchorId: string | number, olderCount: number, newerCount: number, opts?: VsSourceInitOpts): Promise<VsItem<T>[]>;
   /**
    * 从 cursorId（msgId）向【更老】方向取 count 条。返回【原始 msg】items（升序；id=msgId）。
    * 到 DB 最旧 → out[0]（最老）带 boundary:'oldest'。

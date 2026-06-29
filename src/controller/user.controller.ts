@@ -4,11 +4,20 @@ import {
   Body,
   Request,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiTags,
+  ApiConsumes,
+} from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { UserService } from '../user/user.service';
+import { UploadService } from '../upload/upload.service';
 import { GroupService } from 'src/group/group.service';
 import { MessageService } from '../message/message.service';
 import {
@@ -44,6 +53,7 @@ export class UserController {
     private readonly messageService: MessageService,
     private readonly authService: AuthService,
     private readonly groupService: GroupService,
+    private readonly uploadService: UploadService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -56,6 +66,40 @@ export class UserController {
     const data = await this.userService.findUniqueUser({ id: req.user.userId });
     delete data.hashPwd;
     return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/update-avatar')
+  @ApiOperation({
+    summary: '更新当前用户头像（multipart file；sharp 重写为 32/64/128/256/512 多档 webp）',
+  })
+  @UseInterceptors(FileInterceptor('file', UploadService.multerOptions))
+  @ApiConsumes('multipart/form-data')
+  async updateAvatar(
+    @Request() req,
+    @UploadedFile() file: Express.Multer.File,
+  ): Promise<ApiResult> {
+    if (!file) {
+      return { code: BusinessCode.VALIDATION_FAILED, message: 'no file' };
+    }
+    // magic number 前置：快速拒绝伪造 mimetype 的非图片（sharp 会在 saveAvatars 里二次校验）。
+    if (!this.uploadService.isImage(file.mimetype, file.buffer)) {
+      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+    }
+    // 先读旧头像 → 落盘新多档 → 写库 → 清旧全部尺寸（顺序保证 DB 已更新才删旧文件）。
+    const old = await this.userService.findUniqueUser({ id: req.user.userId });
+    let url: string;
+    try {
+      url = await this.uploadService.saveAvatars(file.buffer);
+    } catch {
+      // sharp decode 失败（损坏/像素炸弹/非图）→ 一律按 invalid image 拒绝，不落盘不写库。
+      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+    }
+    await this.userService.updateAvatar(req.user.userId, url);
+    await this.uploadService.deleteByUrl(old?.userExtra?.avatar ?? '');
+    return { code: BusinessCode.OK, message: 'successful', data: { avatar: url } };
   }
 
   @UseGuards(JwtAuthGuard)

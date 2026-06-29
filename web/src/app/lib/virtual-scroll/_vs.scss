@@ -68,3 +68,30 @@
 @keyframes vs-spin {
   to { transform: rotate(360deg); }       // 环形 spinner 匀速旋转
 }
+
+// .vs-jump-highlight：跳转到指定消息后给目标行加的一次性高亮（scrollToIndex/openAround 的 highlight 触发）。
+// 背景色由 --app-active（主题强调色）半透明起、淡出到透明；animationend 内核移除 class（flashHighlight）。
+// flashHighlight 重加 class 前强制 reflow（void offsetWidth）→ 连续跳转同一目标能重启动画。
+// 语义区别于 .vs-ghost-loading 的环形 spinner：spinner=「正在加载更老消息」（动效=进行中）；
+//  jump-highlight=「指给你看这条」（消息已加载，仅引注意）→ 用 Telegram/iMessage 式背景闪、不用 spinner，避免误导。
+// 不写 host 内部（_row-base 契约）——仅改宿主背景；气泡/头像自带背景叠在其上，高亮透出于行内留白处。
+.vs-jump-highlight {
+  animation: vs-jump-flash 1.6s ease-out;
+}
+
+@keyframes vs-jump-flash {
+  0%   { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // 半透强调色（不刺眼）
+  55%  { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // 稍作停留便于察觉
+  100% { background-color: transparent; }                                            // 淡出回常态
+}
+
+// 无障碍：用户偏好减少动效 → 不闪（保留一次极短淡入即静止，仍可察觉目标）。
+@media (prefers-reduced-motion: reduce) {
+  .vs-jump-highlight {
+    animation: vs-jump-flash-reduced 0.4s ease-out;
+  }
+  @keyframes vs-jump-flash-reduced {
+    from { background-color: color-mix(in srgb, var(--app-active) 45%, transparent); }
+    to   { background-color: transparent; }
+  }
+}

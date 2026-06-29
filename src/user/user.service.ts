@@ -47,6 +47,14 @@ export class UserService implements OnModuleInit {
     });
   }
 
+  /** 更新当前用户头像（嵌套更新 UserExtra.avatar）。 */
+  updateAvatar(userId: number, avatar: string) {
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { userExtra: { update: { avatar } } },
+    });
+  }
+
   queryUserThread(params: Prisma.UserMessageThreadFindManyArgs) {
     return this.prisma.userMessageThread.findMany(params);
   }

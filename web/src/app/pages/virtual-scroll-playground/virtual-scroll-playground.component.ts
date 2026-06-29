@@ -14,6 +14,7 @@ import { mergeAlbumItems } from '../../components/message-cards/merge-items';
 import { shouldShowDateSeparator, formatDateSeparator } from '../../components/message-cards/date-format';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
 import { MockItemSource, MockUserService } from './mock-chat-api';
+import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
 
 // Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除（与虚拟滚动内核同模式）。
 // 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
@@ -38,7 +39,7 @@ const VS_DEFAULTS: Required<VsConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-virtual-scroll-playground',
-  imports: [FormsModule],
+  imports: [FormsModule, UserAvatarComponent],
   templateUrl: './virtual-scroll-playground.component.html',
   styleUrl: './virtual-scroll-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -408,8 +409,8 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
   }
 
   /**
-   * 跳转到 msgId 序号（mock 'id-N'）：scrollToIndex 仅支持当前挂载窗口内。
-   * msgId 无数值序，靠 'id-' 前缀解析窗口边界序号判 N 是否在窗口内；区间外给提示（load-from-middle 是未来项）。
+   * 跳转到 msgId 序号（mock 'id-N'）：已挂载则直接定位；未挂载则内核重置窗口围绕该 id（re-seed）再定位。
+   * anchor='center' 居中（best-effort：近最新/最旧时 clamp 到顶/底）+ 高亮闪烁。id 不存在时 source 返回空 → 内核静默 no-op。
    */
   jumpToId(v: string): void {
     const scroller = this.scroller;
@@ -418,14 +419,8 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
     if (!s || !scroller) return;
     if (!/^-?\d+$/.test(s)) { this.showToast('跳转仅支持 id 数字'); return; }
     const n = parseInt(s, 10);
-    const info = scroller.getInfo();
-    const oldestN = info.oldestId !== null ? Number(String(info.oldestId).replace(/^id-/, '')) : null;
-    const newestN = info.newestId !== null ? Number(String(info.newestId).replace(/^id-/, '')) : null;
-    if (oldestN === null || newestN === null || n < oldestN || n > newestN) {
-      this.showToast('不在当前挂载窗口内');
-      return;
-    }
-    scroller.scrollToIndex(`id-${n}`, 'center');
+    if (n < 0) { this.showToast('id 须非负'); return; }
+    scroller.scrollToIndex(`id-${n}`, 'center', true);
     if (input) input.value = '';
   }
 

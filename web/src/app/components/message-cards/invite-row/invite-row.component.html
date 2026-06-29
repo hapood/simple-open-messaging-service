@@ -6,7 +6,7 @@
   class="pg-msg-row pg-{{ side() }}{{ showAvatar() ? ' pg-has-avatar' : '' }}{{ isGroupStart() ? ' pg-group-start' : '' }} pg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
-    <div class="pg-avatar pg-avatar-other">{{ data().name.slice(0, 1) }}</div>
+    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
   }
 
   <div class="pg-col pg-{{ side() }}">
@@ -33,6 +33,6 @@
   </div>
 
   @if (showAvatar() && side() === 'self') {
-    <div class="pg-avatar pg-avatar-self">{{ data().name.slice(0, 1) }}</div>
+    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
   }
 </div>

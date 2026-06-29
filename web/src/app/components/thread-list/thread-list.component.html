@@ -25,14 +25,14 @@
         @for (thread of filteredThreadList(); track thread.id) {
           <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
             @if(thread.toObjType==='P2P'){<div class="thread-avatar">
-              <app-user-avatar [type]="UserAvatarType.OTHER"></app-user-avatar>
+              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.userItem.uniqName"></app-user-avatar>
             </div>
             <div class="thread-info">
               <div class="thread-name">{{thread.userItem.uniqName}}</div>
               <div class="thread-msg">last message</div>
             </div>
             }@else if(thread.toObjType==='GROUP'){<div class="thread-avatar">
-              <app-user-avatar [type]="UserAvatarType.GROUP"></app-user-avatar>
+              <app-user-avatar [type]="UserAvatarType.GROUP" [name]="thread.groupItem.name"></app-user-avatar>
             </div>
             <div class="thread-info">
               <div class="thread-name">{{thread.groupItem.name}}</div>

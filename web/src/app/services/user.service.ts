@@ -33,6 +33,13 @@ export class UserService {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/my-profile`, {})
   }
 
+  /** 上传并绑定当前用户头像（multipart file → 后端 sharp 多档重写）。成功后调 updateSessionProfile() 刷新本地。 */
+  updateAvatar(file: File) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return this.http.post<StandardResponse<{ avatar: string }>>(`${apiPrefix}/user/update-avatar`, fd)
+  }
+
   queryUserThreadValid(params: QueryUserThreadParams) {
     return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/valid`, params)
   }
@@ -77,4 +84,18 @@ export class UserService {
     return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/user/thread-info`, params)
   }
 
+}
+
+/** 头像多档边长（与后端 UploadService.AVATAR_SIZES 对齐）。 */
+const AVATAR_SIZES = [32, 64, 128, 256, 512] as const
+export type AvatarSize = (typeof AVATAR_SIZES)[number]
+
+/**
+ * 多尺寸头像派生：把代表 URL（/uploads/<base>-512.webp）换成指定档；
+ * base 为空或非本地多尺寸图（正则不匹配）时原样返回，便于回退默认头像。
+ */
+export function avatarUrl(base: string | undefined | null, size: AvatarSize): string {
+  return base && AVATAR_SIZES.includes(size)
+    ? base.replace(/-\d+\.webp$/, `-${size}.webp`)
+    : (base ?? '')
 }

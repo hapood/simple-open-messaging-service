@@ -1,4 +1,4 @@
 
 export enum UserAvatarType {
-  SELF, OTHER, GROUP, URL
+  SELF, OTHER, GROUP
 }

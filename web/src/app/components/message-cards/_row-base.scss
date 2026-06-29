@@ -55,25 +55,14 @@
   transform: translateY(10px);
 }
 
-// 头像（微信式方形 8px 圆角，40px 业界规范；组首出现，self 右 other 左）。
+// 头像槽（40px 业界规范；组首出现，self 右 other 左）。
+// 仅管布局——尺寸/对齐/col-margin 契约不变（虚拟滚动测高稳定）；视觉（方圆角 + 配色 + 首字）
+// 全部交给内部 <app-user-avatar>，与列表/抽屉/面板复用同一组件。
 .pg-avatar {
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
   align-self: flex-start; // 贴该行顶部，与组首消息上沿对齐
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  font-size: 16px;
-  font-weight: 600;
-  color: #fff;
-  &.pg-avatar-self {
-    background: var(--im-avatar-self);
-  }
-  &.pg-avatar-other {
-    background: var(--im-avatar-other);
-  }
 }
 
 .pg-col {

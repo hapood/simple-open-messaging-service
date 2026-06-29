@@ -2,6 +2,7 @@ import { Component, inject, input } from '@angular/core';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { RouteService, RoutePage, PopupType } from '../../../services/route.service';
 import { AuthService } from '../../../services/auth.service';
+import { UserService } from '../../../services/user.service';
 import { WebsocketService } from '../../../services/websocket.service';
 
 /**
@@ -15,7 +16,7 @@ import { WebsocketService } from '../../../services/websocket.service';
     <div class="icon-rail">
       <div class="top">
         <button class="rail-btn avatar" aria-label="account">
-          <app-user-avatar [type]="UserAvatarType.SELF" />
+          <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'" />
         </button>
       </div>
       <div class="bottom">
@@ -73,7 +74,7 @@ import { WebsocketService } from '../../../services/websocket.service';
       cursor: pointer;
     }
     .rail-btn:hover { background: var(--app-hover); }
-    .avatar { margin-bottom: 8px; }
+    .avatar { margin-bottom: 8px; border-radius: 8px; overflow: hidden; }
   `]
 })
 export class IconRailComponent {
@@ -83,7 +84,10 @@ export class IconRailComponent {
 
   private readonly routeService = inject(RouteService);
   private readonly authService = inject(AuthService);
+  private readonly userService = inject(UserService);
   private readonly wsService = inject(WebsocketService);
+  /** 当前登录用户资料（供 SELF 头像取首字）。 */
+  readonly sessionProfile = this.userService.sessionProfile
 
   friendRequests() {
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)

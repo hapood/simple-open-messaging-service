@@ -12,6 +12,13 @@ import type { VsSource } from './source';
 /** 'm-K' → K（msgId 解析为序号，供 fakeSource 游标定位）。 */
 function num(id: string | number): number { return Number(String(id).replace(/^m-/, '')); }
 
+/** content 子元素 offsetHeight 之和（验 totalH）。 */
+function sumChildrenHeight(el: HTMLElement): number {
+  let s = 0;
+  for (const c of Array.from(el.children)) s += (c as HTMLElement).offsetHeight || 0;
+  return s;
+}
+
 /** 可控 hooks：createItem(item)，每项高度固定。不依赖 id 数值（item.id 是 msgId 字符串）。 */
 function controllableHooks(itemHeight = 100): { hooks: { createItem: (item: VsItem<number>, prev: VsItem<number> | null) => VsElement<number> } } {
   return {
@@ -27,7 +34,7 @@ function controllableHooks(itemHeight = 100): { hooks: { createItem: (item: VsIt
 }
 
 /** Fake source：N 条 msg（'m-0'最老 .. 'm-(N-1)'最新）。游标 getOlder/getNewer，升序返回。 */
-function fakeSource(N: number): VsSource<number> & { gets: () => number } {
+function fakeSource(N: number): VsSource<number> & { gets: () => number; newers: () => number } {
   const itemAt = (i: number): VsItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
     const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
@@ -39,15 +46,55 @@ function fakeSource(N: number): VsSource<number> & { gets: () => number } {
     return out;
   };
   let gets = 0;
+  let newers = 0;
   const src: VsSource<number> = {
-    init: async (_r, older) => slice(N - older, N),
+    init: async (anchorId, older, newer) => {
+      if (anchorId === -1) return slice(N - older, N);
+      const idx = num(anchorId);
+      if (idx < 0 || idx >= N) return [];
+      const olderStart = Math.max(0, idx - older + 1);
+      const newerEnd = Math.min(N, idx + 1 + newer);
+      return [...slice(olderStart, idx + 1), ...slice(idx + 1, newerEnd)];
+    },
     getOlder: async (cursorId, count) => { gets++; const k = num(cursorId); return slice(k - count, k); },
-    getNewer: async (cursorId, count) => { const k = num(cursorId); return slice(k + 1, k + 1 + count); },
+    getNewer: async (cursorId, count) => { newers++; const k = num(cursorId); return slice(k + 1, k + 1 + count); },
     appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
     destroy: () => {},
   };
-  return Object.assign(src, { gets: () => gets });
+  return Object.assign(src, { gets: () => gets, newers: () => newers });
 }
+
+/** 可控 init 的 source：init 返回手动 resolve 的 Promise（测连续跳转 gen 超越）。 */
+function controllableInitSource(N: number): VsSource<number> & {
+  resolveInit: (items: VsItem<number>[]) => void; initPending: () => number; batchAround: (k: number) => VsItem<number>[];
+} {
+  const itemAt = (i: number): VsItem<number> | undefined => {
+    if (i < 0 || i >= N) return undefined;
+    const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
+    return boundary ? { id: `m-${i}`, data: i, boundary } : { id: `m-${i}`, data: i };
+  };
+  const slice = (lo: number, hi: number): VsItem<number>[] => {
+    const out: VsItem<number>[] = [];
+    for (let i = Math.max(0, lo); i < Math.min(N, hi); i++) { const it = itemAt(i); if (it) out.push(it); }
+    return out;
+  };
+  const queue: ((items: VsItem<number>[]) => void)[] = [];
+  const src: VsSource<number> = {
+    init: () => new Promise<VsItem<number>[]>(resolve => { queue.push(resolve); }),
+    getOlder: async (c, k) => { const i = num(c); return slice(i - k, i); },
+    getNewer: async (c, k) => { const i = num(c); return slice(i + 1, i + 1 + k); },
+    appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
+    destroy: () => {},
+  };
+  return Object.assign(src, {
+    resolveInit: (items: VsItem<number>[]) => { const r = queue.shift(); if (r) r(items); },
+    initPending: () => queue.length,
+    batchAround: (k: number) => [...slice(Math.max(0, k - 49), k + 1), ...slice(k + 1, k + 51)],
+  });
+}
+
+/** 排空微任务（openAround/fillAround 多跳 async）。 */
+async function flush(n = 30): Promise<void> { for (let i = 0; i < n; i++) await Promise.resolve(); }
 
 /** 可控 source：getOlder 返回手动 resolve 的 Promise，测「getOlder 在途」时改 scrollTop（fling 反向）。 */
 function controllableSource(N: number): VsSource<number> & {
@@ -216,5 +263,157 @@ describe('VirtualScrollerAnchor（方案 A · array index）', () => {
     await scroller.init();
     scroller.destroy();
     expect(content.children.length).toBe(0);
+  });
+
+  // ── 跳转到指定 id（方案 A 与 B 跳转路径同构：openAround/fillAround/positionMounted 一致）──
+
+  it('scrollToIndex 已挂载 → 按 anchor 定位（top/center/bottom）', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    scroller.scrollToIndex('m-450', 'top');
+    expect(viewport.scrollTop).toBe(5000);
+    scroller.scrollToIndex('m-450', 'center');
+    expect(viewport.scrollTop).toBe(4750);
+    scroller.scrollToIndex('m-450', 'bottom');
+    expect(viewport.scrollTop).toBe(4500);
+  });
+
+  it('init({startMsgId}) 中段 → 双向窗口围绕目标、居中（无 fill）', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init({ startMsgId: 'm-2500', anchor: 'center' });
+    const info = scroller.getInfo();
+    expect(info.oldestId).toBe('m-2451');
+    expect(info.newestId).toBe('m-2550');
+    expect(info.noOlder).toBe(false);
+    expect(info.noNewer).toBe(false);
+    expect(viewport.scrollTop).toBe(4650);
+  });
+
+  it('scrollToIndex 未挂载 → 重置窗口围绕 id（re-seed）、目标挂载并居中', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init();
+    scroller.scrollToIndex('m-100', 'center');
+    await flush();
+    const info = scroller.getInfo();
+    expect(info.oldestId).toBe('m-51');
+    expect(info.newestId).toBe('m-150');
+    expect(viewport.scrollTop).toBe(4650);
+  });
+
+  it('近最旧跳转 → noOlder、上方不足 threshold/2 → 下方补偿到 threshold', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init({ startMsgId: 'm-5', anchor: 'center' });
+    const info = scroller.getInfo();
+    expect(info.noOlder).toBe(true);
+    expect(info.newestId).toBe('m-105');
+    expect(info.noNewer).toBe(false);
+    expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
+  });
+
+  it('近最新跳转 → noNewer、下方不足 threshold/2 → 上方补偿到 threshold', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init({ startMsgId: 'm-4995', anchor: 'center' });
+    const info = scroller.getInfo();
+    expect(info.noNewer).toBe(true);
+    expect(info.oldestId).toBe('m-4896');
+    expect(info.noOlder).toBe(false);
+    expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
+  });
+
+  it('极小会话跳转 → 两侧均到界、totalH<threshold、直接渲染', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(30) });
+    await scroller.init({ startMsgId: 'm-15', anchor: 'center' });
+    const info = scroller.getInfo();
+    expect(info.noOlder).toBe(true);
+    expect(info.noNewer).toBe(true);
+    expect(info.mounted).toBe(30);
+  });
+
+  it('短 item 跳转 → fill 循环向两侧补到 threshold/2', async () => {
+    const { hooks } = controllableHooks(10);
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init({ startMsgId: 'm-2500', anchor: 'center' });
+    expect(scroller.getInfo().mounted).toBeGreaterThan(100);
+    expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
+  });
+
+  it('scrollToIndex highlight → 目标行加 vs-jump-highlight', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    scroller.scrollToIndex('m-450', 'top', true);
+    const el = content.querySelector<HTMLElement>('[data-vs-id="m-450"]');
+    expect(el?.classList.contains('vs-jump-highlight')).toBe(true);
+  });
+
+  // ── 补覆盖：scrollToTop / refresh / loadNewer（向下加载）/ openAround 边界 / gen 超越 ──
+
+  it('scrollToTop → scrollTop=0', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(viewport.scrollTop).toBeGreaterThan(0);
+    scroller.scrollToTop();
+    expect(viewport.scrollTop).toBe(0);
+  });
+
+  it('refresh → 重测 vh + balance，不抛错、窗口仍可用', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(() => scroller!.refresh()).not.toThrow();
+    scroller.scrollToIndex(scroller.getInfo().newestId!, 'top');
+    expect(viewport.scrollTop).toBeGreaterThanOrEqual(0);
+  });
+
+  it('向下滚到底边缘 → loadNewer 触发 getNewer、newestId 向最新推进', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(500);
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init(); // 贴底、noNewer=true
+    viewport.scrollTop = 0; // 向上滚 → loadOlder → trimNewer → noNewer=false
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(scroller.getInfo().noNewer).toBe(false);
+    const newestBefore = num(scroller.getInfo().newestId!);
+    viewport.scrollTop = content.scrollHeight - 600; // 贴底 → loadNewer
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(src.newers()).toBeGreaterThan(0);
+    expect(num(scroller.getInfo().newestId!)).toBeGreaterThan(newestBefore);
+  });
+
+  it('openAround：source 返回不含目标的批 → 安全 no-op（不挂载、不崩溃）', async () => {
+    const { hooks } = controllableHooks();
+    const src: VsSource<number> = {
+      init: async () => [{ id: 'other-1', data: 1 }, { id: 'other-2', data: 2 }],
+      getOlder: async () => [], getNewer: async () => [],
+      appendLive: (items) => items, destroy: () => {},
+    };
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    scroller.scrollToIndex('m-target', 'center');
+    await flush();
+    expect(scroller.getInfo().mounted).toBe(0);
+  });
+
+  it('连续两次跳转 → gen 守卫：在途的第一次被丢弃，最终窗口围绕第二次', async () => {
+    const { hooks } = controllableHooks();
+    const src = controllableInitSource(5000);
+    scroller = new VirtualScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    scroller.scrollToIndex('m-100', 'center'); // openAround#1（gen=1）
+    scroller.scrollToIndex('m-200', 'center'); // openAround#2（++gen=2）
+    expect(src.initPending()).toBe(2);
+    src.resolveInit(src.batchAround(100)); // #1 → gen≠ → 丢弃
+    src.resolveInit(src.batchAround(200)); // #2 → 挂 m-151..m-250
+    await flush();
+    const info = scroller.getInfo();
+    expect(info.oldestId).toBe('m-151');
+    expect(info.newestId).toBe('m-250');
   });
 });

@@ -4,6 +4,7 @@ import dayjs from 'dayjs';
 import { GroupService } from '../../../services/group.service';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
+import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 
 /**
  * 邀请消息行（WhatsApp 行外壳 + 内嵌邀请卡片 + Join 按钮）。
@@ -18,11 +19,12 @@ import { DateRowComponent } from '../date-row/date-row.component';
 @Component({
   selector: 'app-msg-invite-row',
   standalone: true,
-  imports: [MatButtonModule, DateRowComponent],
+  imports: [MatButtonModule, DateRowComponent, UserAvatarComponent],
   templateUrl: './invite-row.component.html',
   styleUrl: './invite-row.component.scss',
 })
 export class InviteRowComponent {
+  readonly UserAvatarType = UserAvatarType
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);

@@ -26,7 +26,7 @@ import { UserMessageThread } from '../../../services/model';
               </button>
             </div>
             <div class="profile">
-              <app-user-avatar [type]="UserAvatarType.OTHER" />
+              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="trd.userItem.uniqName" />
               <div class="name">{{ trd.userItem.uniqName }}</div>
               <div class="hint">共享媒体（即将上线）</div>
             </div>
@@ -47,6 +47,7 @@ import { UserMessageThread } from '../../../services/model';
     .close-btn { border: none; background: transparent; cursor: pointer; color: var(--app-text-muted); display: flex; padding: 4px; border-radius: var(--app-radius-sm); }
     .close-btn:hover { background: var(--app-hover); }
     .profile { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 32px 16px; }
+    .profile app-user-avatar { width: 72px; height: 72px; }
     .name { font-size: 16px; font-weight: 600; }
     .hint { font-size: 13px; color: var(--app-text-faint); }
   `]

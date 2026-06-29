@@ -64,18 +64,36 @@ export class MockItemSource implements VsSource<ChatItemData> {
     this.userId = userId;
   }
 
-  /** 初始化：取末 olderCount 条（最新 olderCount 条，含锚点=最新）。升序、标边界。 */
-  async init(_realMsgId: number, olderCount: number, _newerCount: number, _opts?: VsSourceInitOpts): Promise<VsItem<ChatItemData>[]> {
+  /**
+   * 初始化 / 重锚：
+   *  - anchorId === -1：取末 olderCount 条（最新 olderCount 条，含锚点=最新），升序、标边界。
+   *  - 其他（真实 msgId）：在 sequence 定位 anchorId，取 older（含 anchorId）+ newer 切片，合并升序
+   *    （镜像生产 HttpItemSource 双向取）；older 取到序列首 → out[0] 标 'oldest'；newer 取到序列末 → out[last] 标 'newest'。
+   */
+  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: VsSourceInitOpts): Promise<VsItem<ChatItemData>[]> {
     await this.wait();
-    void _realMsgId; void _newerCount;
     const seq = this.sequence();
-    const start = Math.max(0, seq.length - olderCount);
-    const raw = seq.slice(start);
+    if (anchorId === -1) {
+      const start = Math.max(0, seq.length - olderCount);
+      const raw = seq.slice(start);
+      if (raw.length === 0) return [];
+      await this.ensureProfiles(raw); // 按 creator 查 userService 填 profiles（镜像生产）
+      const items = raw.map(it => this.shape(it));
+      if (start === 0) items[0] = { ...items[0], boundary: 'oldest' };
+      items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      return items;
+    }
+    // 真实 msgId：双向切片（older 含 anchorId = olderCount 条；newer = newerCount 条）
+    const idx = seq.findIndex(it => String(it.id) === String(anchorId));
+    if (idx < 0) return [];
+    const olderStart = Math.max(0, idx - olderCount + 1);
+    const newerEnd = Math.min(seq.length, idx + 1 + newerCount);
+    const raw = [...seq.slice(olderStart, idx + 1), ...seq.slice(idx + 1, newerEnd)]; // [older..anchorId] ++ (anchorId..newer]
     if (raw.length === 0) return [];
-    await this.ensureProfiles(raw); // 按 creator 查 userService 填 profiles（镜像生产）
+    await this.ensureProfiles(raw);
     const items = raw.map(it => this.shape(it));
-    if (start === 0) items[0] = { ...items[0], boundary: 'oldest' };
-    items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+    if (olderStart === 0) items[0] = { ...items[0], boundary: 'oldest' };
+    if (newerEnd === seq.length) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
     return items;
   }
 
