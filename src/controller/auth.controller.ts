@@ -10,6 +10,7 @@ import {
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { ThrottleGuard, Throttle } from '../auth/throttle.guard';
 import { AuthService } from '../auth/auth.service';
 import { LoginAuthInfo } from 'src/auth/local.strategy';
 import { ApiResult } from '../common/api-result';
@@ -24,6 +25,7 @@ import {
 
 @ApiTags('auth')
 @Controller()
+@UseGuards(ThrottleGuard)
 export class AuthController {
   constructor(private authService: AuthService) {}
 
@@ -59,6 +61,7 @@ export class AuthController {
     }
   }
 
+  @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-access')
   @ApiOperation({
@@ -89,6 +92,7 @@ export class AuthController {
     }
   }
 
+  @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-refresh')
   @ApiOperation({
@@ -117,6 +121,7 @@ export class AuthController {
     }
   }
 
+  @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
   @ApiOperation({ summary: '登出（吊销 refresh；accessJti 可选，即时把当前 access 入黑名单）' })
@@ -141,6 +146,7 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
+  @Throttle(10, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/change-password')
   @ApiOperation({ summary: '修改密码（吊销所有其他会话，当前设备重发 token）' })

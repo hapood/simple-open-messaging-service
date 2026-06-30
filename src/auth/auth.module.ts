@@ -9,6 +9,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { jwtConstants } from './constants';
 import { UserService } from 'src/user/user.service';
 import { PrismaService } from '../prisma.service';
+import { ThrottleGuard } from './throttle.guard';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { PrismaService } from '../prisma.service';
     UserService,
     PrismaService,
     JwtStrategy,
+    ThrottleGuard,
   ],
   exports: [AuthService],
 })
