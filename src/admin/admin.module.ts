@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma.service';
 import { jwtConstants } from '../auth/constants';
 import { AuthModule } from '../auth/auth.module';
 import { UserManageModule } from '../user-manage/user-manage.module';
+import { GatewayModule } from '../gateway/gateway.module';
 
 @Module({
   imports: [
@@ -16,6 +17,8 @@ import { UserManageModule } from '../user-manage/user-manage.module';
     JwtModule.register({ secret: jwtConstants.adminSecret }),
     AuthModule,
     UserManageModule,
+    // SseService（导出自 GatewayModule）供 admin/connections 观测在线 SSE 连接。
+    GatewayModule,
   ],
   controllers: [AdminController],
   providers: [AdminAuthService, AdminJwtStrategy, AdminAuthGuard, PrismaService],

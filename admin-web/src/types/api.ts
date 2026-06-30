@@ -91,3 +91,16 @@ export interface ReuseAlert {
   userAgent: string | null
   revokedAt: number
 }
+
+// 在线 SSE 连接（POST /admin/connections，按用户聚合；since=该用户最早建连时刻 ms）
+export interface ConnectionClient {
+  userId: number
+  uniqName: string | null
+  connections: number
+  since: number
+}
+export interface ConnectionSnapshot {
+  total: number
+  uniqueUsers: number
+  clients: ConnectionClient[]
+}

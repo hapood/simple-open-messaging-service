@@ -4,6 +4,7 @@ import { ProtectedRoute } from '@/components/route/protected-route'
 import { LoginPage } from '@/routes/login/login-page'
 import { UsersPage } from '@/routes/users/users-page'
 import { SessionsPage } from '@/routes/sessions/sessions-page'
+import { ConnectionsPage } from '@/routes/connections/connections-page'
 import { AdminSessionsPage } from '@/routes/admin-sessions/admin-sessions-page'
 import { BansPage } from '@/routes/bans/bans-page'
 import { ReuseAlertsPage } from '@/routes/reuse/reuse-alerts-page'
@@ -29,6 +30,7 @@ export const router = createBrowserRouter([
           { path: '/', element: <Navigate to="/users" replace /> },
           { path: '/users', element: <UsersPage /> },
           { path: '/sessions', element: <SessionsPage /> },
+          { path: '/connections', element: <ConnectionsPage /> },
           { path: '/admin-sessions', element: <AdminSessionsPage /> },
           { path: '/bans', element: <BansPage /> },
           { path: '/reuse', element: <ReuseAlertsPage /> },

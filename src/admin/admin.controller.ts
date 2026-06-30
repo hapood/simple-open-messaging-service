@@ -26,6 +26,7 @@ import { AuthService } from '../auth/auth.service';
 import { UserManageService } from '../user-manage/user-manage.service';
 import { LocalStrategy } from '../auth/local.strategy';
 import { PrismaService } from '../prisma.service';
+import { SseService } from '../gateway/sse.service';
 
 /**
  * Admin 控制台鉴权端点（Phase A）：login / renew-access / logout。
@@ -40,6 +41,7 @@ export class AdminController {
     private readonly userManageService: UserManageService,
     private readonly localStrategy: LocalStrategy,
     private readonly prisma: PrismaService,
+    private readonly sseService: SseService,
   ) {}
 
   @HttpCode(HttpStatus.OK)
@@ -262,6 +264,37 @@ export class AdminController {
       code: BusinessCode.OK,
       message: 'success',
       data: { purgedUsers: active.length },
+    };
+  }
+
+  // ===== 实时连接观测（SSE 在线流，内存态，只读）=====
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/connections')
+  @ApiOperation({ summary: '当前在线 SSE 连接总览（按用户聚合）' })
+  async listConnections(): Promise<ApiResult> {
+    const snap = this.sseService.snapshot();
+    if (snap.clients.length === 0) {
+      return { code: BusinessCode.OK, message: 'success', data: snap };
+    }
+    // 一次性补全用户名，避免 N+1
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: snap.clients.map((c) => c.userId) } },
+      select: { id: true, uniqName: true },
+    });
+    const nameMap = new Map(users.map((u) => [u.id, u.uniqName]));
+    return {
+      code: BusinessCode.OK,
+      message: 'success',
+      data: {
+        total: snap.total,
+        uniqueUsers: snap.uniqueUsers,
+        clients: snap.clients.map((c) => ({
+          ...c,
+          uniqName: nameMap.get(c.userId) ?? null,
+        })),
+      },
     };
   }
 

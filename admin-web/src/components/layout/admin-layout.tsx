@@ -1,12 +1,13 @@
 import { type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
-import { BellRing, LogOut, Monitor, ShieldBan, ShieldCheck, Users } from 'lucide-react'
+import { BellRing, LogOut, Monitor, Radio, ShieldBan, ShieldCheck, Users } from 'lucide-react'
 import { useAuth } from '@/auth/auth-context'
 import { Button } from '@/components/ui/button'
 
 const NAV = [
   { to: '/users', label: '用户管理', icon: Users },
   { to: '/sessions', label: '会话总览', icon: Monitor },
+  { to: '/connections', label: '实时连接', icon: Radio },
   { to: '/admin-sessions', label: '管理员会话', icon: ShieldCheck },
   { to: '/bans', label: '封禁管理', icon: ShieldBan },
   { to: '/reuse', label: '重用告警', icon: BellRing },
