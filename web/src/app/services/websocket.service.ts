@@ -56,10 +56,19 @@ export class WebsocketService {
           const obj = JSON.parse(message.data)
           if (obj.event === 'AUTH') {
             if (obj.status === 1) {
+              // access 过期 → 刷新后重连
               this.authService.renewAccessToken()
+            } else if (obj.status === 3) {
+              // session 已吊销（全设备登出/改密/撤销）→ 强制重登，不再重连
+              this.disconnect()
+              this.authService.redoLoginAuth()
             } else {
               console.error(obj)
             }
+          } else if (obj.event === 'FORCE_LOGOUT') {
+            // 服务端主动踢（全设备登出/改密）→ 清 token 重登
+            this.disconnect()
+            this.authService.redoLoginAuth()
           } else {
             this.eventSubject.next(obj)
           }

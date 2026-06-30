@@ -7,13 +7,20 @@ import {
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
-import { ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthService } from '../auth/auth.service';
 import { LoginAuthInfo } from 'src/auth/local.strategy';
 import { ApiResult } from '../common/api-result';
 import { BusinessCode } from '../common/business-code';
-import { LoginDto, RefreshTokenDto } from '../dto/auth.dto';
+import {
+  LoginDto,
+  RefreshTokenDto,
+  LogoutDto,
+  ChangePasswordDto,
+  RevokeSessionDto,
+} from '../dto/auth.dto';
 
 @ApiTags('auth')
 @Controller()
@@ -112,14 +119,73 @@ export class AuthController {
 
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
-  @ApiOperation({ summary: '登出（吊销 refresh token）' })
-  async logout(@Body() dto: RefreshTokenDto): Promise<ApiResult> {
-    // refreshToken 从 body 取（原实现从 JWT payload 取，恒为 undefined）。
-    // 前端发 'public' 头 + body，故此端点无需 JWT 鉴权，以 refresh token 作为持有证明吊销。
+  @ApiOperation({ summary: '登出（吊销 refresh；accessJti 可选，即时把当前 access 入黑名单）' })
+  async logout(@Body() dto: LogoutDto): Promise<ApiResult> {
+    // 前端发 'public' 头 + body，无需 JWT 鉴权，以 refresh token 持有证明吊销。
     await this.authService.logout(dto.refreshToken);
+    if (dto.accessJti) {
+      await this.authService.blacklistAccessJti(dto.accessJti, 15 * 60);
+    }
+    return { code: BusinessCode.OK, message: 'success' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('auth/logout-all')
+  @ApiOperation({ summary: '全设备登出（吊销所有会话 + bump tokenVersion）' })
+  async logoutAll(@Request() req): Promise<ApiResult> {
+    await this.authService.invalidateAllSessions(req.user.userId, 'all_devices');
+    return { code: BusinessCode.OK, message: 'success' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('auth/change-password')
+  @ApiOperation({ summary: '修改密码（吊销所有其他会话，当前设备重发 token）' })
+  async changePassword(
+    @Request() req,
+    @Body() dto: ChangePasswordDto,
+  ): Promise<ApiResult> {
+    const r = await this.authService.changePassword(
+      req.user.userId,
+      dto.oldPassword,
+      dto.newPassword,
+    );
+    if (r.ok) {
+      return {
+        code: BusinessCode.OK,
+        message: 'success',
+        data: { access_token: r.access_token, refresh_token: r.refresh_token },
+      };
+    }
+    return { code: BusinessCode.VALIDATION_FAILED, message: 'old password wrong' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('auth/sessions')
+  @ApiOperation({ summary: '列当前用户活跃会话' })
+  async sessions(@Request() req): Promise<ApiResult> {
     return {
       code: BusinessCode.OK,
       message: 'success',
+      data: await this.authService.listActiveSessions(req.user.userId),
     };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('auth/revoke-session')
+  @ApiOperation({ summary: '吊销单个会话（按 jti + 属当前用户）' })
+  async revokeSession(
+    @Request() req,
+    @Body() dto: RevokeSessionDto,
+  ): Promise<ApiResult> {
+    await this.authService.revokeSession(req.user.userId, dto.jti, dto.accessJti);
+    return { code: BusinessCode.OK, message: 'success' };
   }
 }

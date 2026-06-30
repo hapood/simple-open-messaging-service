@@ -23,6 +23,7 @@ export enum BusinessCode {
   FORBIDDEN = 10004, // 无权限
   RATE_LIMITED = 10005, // 限流 / IP 封禁
   REFRESH_REUSE_DETECTED = 10006, // refresh token 重用 → 前端强制重登（家族已连根吊销）
+  SESSION_REVOKED = 10007, // 会话已被吊销（全设备登出/改密/单设备踢出）
   INTERNAL = 10999, // 服务器异常
 
   // 20xxx 好友·会话状态机

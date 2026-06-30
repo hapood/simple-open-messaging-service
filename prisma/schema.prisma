@@ -22,6 +22,7 @@ model User {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   isDeleted         Boolean             @default(false)
+  tokenVersion      Int                 @default(0) // bump 即令该用户所有 access token 失效（全设备登出/改密/强制下线）
   userExtraId       Int                 @unique
   userExtra         UserExtra           @relation(fields: [userExtraId], references: [id])
   userNotiBoxId     Int                 @unique

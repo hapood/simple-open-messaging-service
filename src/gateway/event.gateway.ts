@@ -1,16 +1,15 @@
 import {
-  SubscribeMessage,
   WebSocketGateway,
   WebSocketServer,
-  WsResponse,
   OnGatewayConnection,
   OnGatewayDisconnect,
   OnGatewayInit,
 } from '@nestjs/websockets';
+import { OnEvent } from '@nestjs/event-emitter';
 import { JwtService } from '@nestjs/jwt';
-import { from, Observable } from 'rxjs';
-import { map } from 'rxjs/operators';
 import { Server } from 'ws';
+import { RedisService } from '../redis/redis.service';
+import { PrismaService } from '../prisma.service';
 
 class Client {
   constructor(
@@ -31,6 +30,8 @@ class Client {
   }
 }
 
+type WsPayload = { sub: number; jti?: string; tver?: number; exp?: number };
+
 @WebSocketGateway()
 export class EventGateway
   implements OnGatewayConnection, OnGatewayDisconnect, OnGatewayInit
@@ -39,15 +40,18 @@ export class EventGateway
   server: Server;
   wsClientDict: Record<number, Client[]> = {};
 
-  constructor(private jwtService: JwtService) {}
+  constructor(
+    private jwtService: JwtService,
+    private redis: RedisService,
+    private prisma: PrismaService,
+  ) {}
 
   afterInit() {}
 
   handleConnection(client: WebSocket) {
-    // verify 默认校验过期：过期抛 TokenExpiredError，签名/格式错抛其它。
-    // A2：原实现把过期判断写在 verify 之后的 else 分支，永远走不到（过期已抛异常进 catch 被报成 invalid）。
-    // 现按异常类型区分：过期→AUTH 1（前端 renewAccessToken 后重连），无效→AUTH 2。
-    let payload: { sub: number; exp: number };
+    // verify：过期抛 TokenExpiredError，签名/格式错抛其它。
+    // 过期→AUTH 1（前端 renew 后重连），无效→AUTH 2，撤销→AUTH 3（强制重登）。
+    let payload: WsPayload;
     try {
       payload = this.jwtService.verify(client.protocol);
     } catch (e) {
@@ -62,22 +66,57 @@ export class EventGateway
       client.close();
       return;
     }
-    let list = this.wsClientDict[payload.sub];
-    if (list === undefined) {
-      list = this.wsClientDict[payload.sub] = [];
+    // 撤销感知（与 JwtStrategy 同口径）：黑名单 + tokenVersion。期间连接未入 dict。
+    this.assertRevoked(payload).then((revoked) => {
+      if (revoked) {
+        client.send(
+          JSON.stringify({ event: 'AUTH', status: 3, message: 'session revoked' }),
+        );
+        client.close();
+        return;
+      }
+      // 握手期（assertRevoked await 期间）client 可能已断开：不入 dict，避免残留无人清。
+      if (client.readyState !== WebSocket.OPEN) return;
+      let list = this.wsClientDict[payload.sub];
+      if (list === undefined) {
+        list = this.wsClientDict[payload.sub] = [];
+      }
+      list.push(new Client(client, { userId: payload.sub }));
+    });
+  }
+
+  /** true=已撤销（jti 命中黑名单 或 tokenVersion 不匹配）。旧 token（无 jti/tver）放行。 */
+  private async assertRevoked(payload: WsPayload): Promise<boolean> {
+    if (!payload.jti || payload.tver === undefined) return false;
+    if (this.redis.enabled) {
+      const blocked = await this.redis
+        .existsKey(`access:jti:${payload.jti}`)
+        .catch(() => false);
+      if (blocked) return true;
+      const cached = await this.redis
+        .get(`access:tver:${payload.sub}`)
+        .catch(() => null);
+      if (cached !== null) return Number(cached) !== payload.tver;
     }
-    list.push(new Client(client, { userId: payload.sub }));
+    const u = await this.prisma.user.findUnique({
+      where: { id: payload.sub },
+      select: { tokenVersion: true },
+    });
+    return (u ? u.tokenVersion : -1) !== payload.tver;
   }
 
   handleDisconnect(client: WebSocket) {
-    try {
-      const payload = this.jwtService.verify(client.protocol);
-      const { sub } = payload;
-      const list = this.wsClientDict[sub];
-      if (list !== undefined) {
-        this.wsClientDict[sub] = list.filter((item) => item.ws !== client);
+    // 不依赖 verify：token 可能已过期/吊销（verify 抛错），但仍需清理 dict，否则 ws 引用残留=内存泄漏。
+    // 按 ws 引用遍历定位所属 list，移除该连接；list 空则 delete，不留空数组壳。
+    for (const uid of Object.keys(this.wsClientDict)) {
+      const id = Number(uid);
+      const filtered = this.wsClientDict[id].filter((item) => item.ws !== client);
+      if (filtered.length === 0) {
+        delete this.wsClientDict[id];
+      } else {
+        this.wsClientDict[id] = filtered;
       }
-    } catch (e) {}
+    }
   }
 
   onNewMessage(userId: number, data: unknown) {
@@ -92,9 +131,19 @@ export class EventGateway
     );
   }
 
-  // @SubscribeMessage('events')
-  // onEvent(client: any, data: any): Observable<WsResponse<number>> {
-  //   console.log(data)
-  //   return from([1, 2, 3]).pipe(map(item => ({ event: 'events', data: item })));
-  // }
+  /** 全设备登出/改密/强制下线：踢该用户所有在线 WS 连接，前端清 token 重登。 */
+  @OnEvent('auth.sessions-invalidated')
+  onSessionsInvalidated(payload: { userId: number; reason: string }) {
+    const list = this.wsClientDict[payload.userId];
+    if (!list) return;
+    list.forEach((item) =>
+      item.send({ event: 'FORCE_LOGOUT', status: 0, message: payload.reason }),
+    );
+    list.forEach((item) => {
+      try {
+        item.ws.close();
+      } catch {}
+    });
+    delete this.wsClientDict[payload.userId];
+  }
 }

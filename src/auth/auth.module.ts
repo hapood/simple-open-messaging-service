@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuthService } from './auth.service';
 import { UserModule } from '../user/user.module';
 import { PassportModule } from '@nestjs/passport';
@@ -13,6 +14,7 @@ import { PrismaService } from '../prisma.service';
   imports: [
     UserModule,
     PassportModule,
+    EventEmitterModule,
     JwtModule.register({
       secret: jwtConstants.accessSecret,
     }),

@@ -1,5 +1,6 @@
 import {
   IsNotEmpty,
+  IsOptional,
   IsString,
   Matches,
   MaxLength,
@@ -41,9 +42,43 @@ export class RegisterDto {
   password: string;
 }
 
-/** refresh token 入参：renew-access / renew-refresh / logout 共用 */
+/** refresh token 入参：renew-access / renew-refresh 共用 */
 export class RefreshTokenDto {
   @IsString()
   @IsNotEmpty()
   refreshToken: string;
+}
+
+/** logout 入参：refreshToken 必填；accessJti 可选（即时把当前 access 入黑名单）。 */
+export class LogoutDto {
+  @IsString()
+  @IsNotEmpty()
+  refreshToken: string;
+
+  @IsString()
+  @IsOptional()
+  accessJti?: string;
+}
+
+/** 改密入参（newPassword 沿用 RegisterDto 的 6-20 位允许字符集规则）。 */
+export class ChangePasswordDto {
+  @IsString()
+  @IsNotEmpty()
+  oldPassword: string;
+
+  @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
+    message: 'newPassword must be 6-20 chars of allowed set',
+  })
+  newPassword: string;
+}
+
+/** 吊销单个会话入参。 */
+export class RevokeSessionDto {
+  @IsString()
+  @IsNotEmpty()
+  jti: string;
+
+  @IsString()
+  @IsOptional()
+  accessJti?: string;
 }

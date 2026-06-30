@@ -180,4 +180,16 @@ export class AuthService {
     }
     return EMPTY
   }
+
+  /** 改密：成功后服务端吊销其他会话并返回新登录对，本地替换为新 token。 */
+  changePassword(params: { oldPassword: string, newPassword: string }) {
+    return this.http.post<{ code: number, message: string, data?: { access_token: string, refresh_token: string } }>(
+      `${apiPrefix}/auth/change-password`, params
+    ).pipe(tap((res) => {
+      if (res.code === 0) {
+        this.setAcToken(res.data!.access_token)
+        this.setReToken(res.data!.refresh_token)
+      }
+    }))
+  }
 }

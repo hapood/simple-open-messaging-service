@@ -1,10 +1,12 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserService } from '../user/user.service';
 import { JwtService } from '@nestjs/jwt';
 import { User as UserModel } from '../prisma/generated/client';
 import * as argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service';
+import { RedisService } from '../redis/redis.service';
 import { jwtConstants } from './constants';
 
 const REFRESH_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 天，与 JWT expiresIn 对齐
@@ -26,6 +28,8 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     private userService: UserService,
     private jwtService: JwtService,
     private prisma: PrismaService,
+    private redis: RedisService,
+    private eventEmitter: EventEmitter2,
   ) {}
 
   async onModuleInit() {
@@ -63,7 +67,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   async login(userId: number) {
     return {
-      access_token: this.getAccessToken(userId),
+      access_token: await this.getAccessToken(userId),
       refresh_token: await this.getRefreshToken(userId),
     };
   }
@@ -155,7 +159,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       familyId: v.familyId,
       ...opts,
     });
-    return { access: this.getAccessToken(v.userId), refresh, userId: v.userId };
+    return { access: await this.getAccessToken(v.userId), refresh, userId: v.userId };
   }
 
   /** 连根吊销整个家族（重用检测触发）：所有未吊销成员一并失效。 */
@@ -174,8 +178,99 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  getAccessToken(userId: number) {
-    return this.jwtService.sign({ sub: userId }, { expiresIn: '15m' });
+  /**
+   * 签发 access token：claim 带 {sub, jti, tver}。
+   * - jti：该 token 唯一 id；单 token 吊销时入 Redis 黑名单（TTL=剩余寿命）。
+   * - tver：签发时的 User.tokenVersion，JwtStrategy 校验与当前一致；bump tver 即令所有 access 失效。
+   */
+  async getAccessToken(userId: number): Promise<string> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { tokenVersion: true },
+    });
+    return this.jwtService.sign(
+      { sub: userId, jti: randomUUID(), tver: user!.tokenVersion },
+      { expiresIn: '15m' },
+    );
+  }
+
+  /** 单个 access token 即时吊销（登出单设备）：jti 入 Redis 黑名单，TTL 取剩余寿命。 */
+  async blacklistAccessJti(jti: string, ttlSec: number) {
+    if (!this.redis.enabled) return;
+    await this.redis.setex(`access:jti:${jti}`, ttlSec, '1').catch(() => {});
+  }
+
+  /**
+   * 全设备登出 / 改密 / 强制下线：吊销所有 refresh + tokenVersion++（令所有 access 失效）。
+   * 清 Redis 的 tokenVersion 缓存让新版本即时生效；发事件让在线 WS 客户端 FORCE_LOGOUT。
+   */
+  async invalidateAllSessions(userId: number, reason: string): Promise<number> {
+    await this.prisma.refreshToken.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: reason },
+    });
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { tokenVersion: { increment: 1 } },
+      select: { tokenVersion: true },
+    });
+    if (this.redis.enabled) {
+      await this.redis.del(`access:tver:${userId}`).catch(() => {});
+    }
+    this.eventEmitter.emit('auth.sessions-invalidated', {
+      userId,
+      reason,
+      tokenVersion: user.tokenVersion,
+    });
+    return user.tokenVersion;
+  }
+
+  /** 改密：验旧密 → 换 hash → invalidateAllSessions → 返回新登录对（当前设备重登）。 */
+  async changePassword(
+    userId: number,
+    oldPassword: string,
+    newPassword: string,
+  ): Promise<
+    | { ok: true; access_token: string; refresh_token: string }
+    | { ok: false; reason: 'wrong_password' }
+  > {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { hashPwd: true },
+    });
+    if (!user || !(await argon2.verify(user.hashPwd, oldPassword))) {
+      return { ok: false, reason: 'wrong_password' };
+    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { hashPwd: await argon2.hash(newPassword) },
+    });
+    await this.invalidateAllSessions(userId, 'password_change');
+    return {
+      ok: true,
+      access_token: await this.getAccessToken(userId),
+      refresh_token: await this.getRefreshToken(userId),
+    };
+  }
+
+  /** 列活跃 refresh 会话（未吊销未过期），按创建时间倒序。 */
+  async listActiveSessions(userId: number) {
+    return this.prisma.refreshToken.findMany({
+      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { jti: true, device: true, createdAt: true, expiresAt: true },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /** 吊销指定 refresh（按 jti + 属该 userId）+ 可选吊销其 access（黑名单）。 */
+  async revokeSession(userId: number, refreshJti: string, accessJti?: string) {
+    await this.prisma.refreshToken.updateMany({
+      where: { jti: refreshJti, userId, revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: 'logout' },
+    });
+    if (accessJti) {
+      await this.blacklistAccessJti(accessJti, 15 * 60);
+    }
   }
 
   private async cleanupExpiredRefreshTokens() {
