@@ -28,6 +28,6 @@ import { ThrottleGuard } from './throttle.guard';
     JwtStrategy,
     ThrottleGuard,
   ],
-  exports: [AuthService],
+  exports: [AuthService, LocalStrategy],
 })
 export class AuthModule {}

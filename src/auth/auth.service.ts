@@ -129,6 +129,11 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     if (!rec) return { ok: false, reason: 'invalid' };
     if (rec.revokedAt !== null) {
       await this.revokeFamily(rec.familyId, 'reuse');
+      this.eventEmitter.emit('auth.refresh-reuse-detected', {
+        userId: rec.userId,
+        familyId: rec.familyId,
+        jti: rec.jti,
+      });
       return { ok: false, reason: 'reuse' };
     }
     if (rec.expiresAt <= new Date()) return { ok: false, reason: 'expired' };
@@ -154,6 +159,11 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     });
     if (claim.count === 0) {
       await this.revokeFamily(v.familyId, 'reuse');
+      this.eventEmitter.emit('auth.refresh-reuse-detected', {
+        userId: v.userId,
+        familyId: v.familyId,
+        jti: v.jti,
+      });
       throw 'reuse';
     }
     const refresh = await this.getRefreshToken(v.userId, {

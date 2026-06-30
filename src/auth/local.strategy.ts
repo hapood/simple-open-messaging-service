@@ -162,6 +162,37 @@ export class LocalStrategy
     return max;
   }
 
+  /** 列当前未过期封禁（admin 看板用）。 */
+  listBans(): Array<{ key: string; type: string; value: string; until: number; remainingMs: number }> {
+    const now = Date.now();
+    const out: Array<{ key: string; type: string; value: string; until: number; remainingMs: number }> = [];
+    for (const [key, until] of this._banned) {
+      if (until > now) {
+        const idx = key.indexOf(':');
+        out.push({
+          key,
+          type: key.slice(0, idx),
+          value: key.slice(idx + 1),
+          until,
+          remainingMs: until - now,
+        });
+      }
+    }
+    return out;
+  }
+
+  /** 解封（admin 用）：清指定 IP 和/或账户的封禁 + 失败记录。 */
+  clearBan(opts: { ip?: string; uniqName?: string }) {
+    if (opts.ip) {
+      this._banned.delete(`${RULES.ip.prefix}:${opts.ip}`);
+      this._failLog.delete(`${RULES.ip.prefix}:${opts.ip}`);
+    }
+    if (opts.uniqName) {
+      this._banned.delete(`${RULES.user.prefix}:${opts.uniqName}`);
+      this._failLog.delete(`${RULES.user.prefix}:${opts.uniqName}`);
+    }
+  }
+
   private cleanup() {
     const now = Date.now();
     for (const [key, list] of this._failLog) {

@@ -7,11 +7,15 @@ import { AdminJwtStrategy } from './admin.jwt.strategy';
 import { AdminAuthGuard } from './admin-auth.guard';
 import { PrismaService } from '../prisma.service';
 import { jwtConstants } from '../auth/constants';
+import { AuthModule } from '../auth/auth.module';
+import { UserManageModule } from '../user-manage/user-manage.module';
 
 @Module({
   imports: [
     PassportModule,
     JwtModule.register({ secret: jwtConstants.adminSecret }),
+    AuthModule,
+    UserManageModule,
   ],
   controllers: [AdminController],
   providers: [AdminAuthService, AdminJwtStrategy, AdminAuthGuard, PrismaService],
