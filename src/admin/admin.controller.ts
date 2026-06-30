@@ -18,6 +18,7 @@ import {
   AdminListUsersDto,
   AdminResetPasswordDto,
   AdminUnbanDto,
+  AdminListSessionsDto,
 } from './admin.dto';
 import { ApiResult } from '../common/api-result';
 import { BusinessCode } from '../common/business-code';
@@ -206,5 +207,106 @@ export class AdminController {
       take: dto.take ?? 50,
     });
     return { code: BusinessCode.OK, message: 'success', data: rows };
+  }
+
+  // ===== 全系统活跃会话总览 =====
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/sessions')
+  @ApiOperation({ summary: '全系统活跃会话总览（跨用户，可筛 userId/ip）' })
+  async listAllSessions(@Body() dto: AdminListSessionsDto): Promise<ApiResult> {
+    const where = {
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+      ...(dto.userId ? { userId: dto.userId } : {}),
+      ...(dto.ip ? { ip: { contains: dto.ip } } : {}),
+    };
+    const [list, total] = await Promise.all([
+      this.prisma.refreshToken.findMany({
+        where,
+        skip: dto.skip ?? 0,
+        take: dto.take ?? 50,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          userId: true,
+          jti: true,
+          device: true,
+          userAgent: true,
+          ip: true,
+          createdAt: true,
+          expiresAt: true,
+          user: { select: { id: true, uniqName: true } },
+        },
+      }),
+      this.prisma.refreshToken.count({ where }),
+    ]);
+    return { code: BusinessCode.OK, message: 'success', data: { list, total } };
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/sessions/purge')
+  @ApiOperation({ summary: '一键清理所有活跃会话（强制全部用户重登，access 立即失效）' })
+  async purgeAllSessions(): Promise<ApiResult> {
+    // 找所有有活跃会话的用户，逐个 invalidateAllSessions（bump tokenVersion + 吊销 refresh）
+    const active = await this.prisma.refreshToken.findMany({
+      where: { revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+    for (const { userId } of active) {
+      await this.authService.invalidateAllSessions(userId, 'admin_purge');
+    }
+    return {
+      code: BusinessCode.OK,
+      message: 'success',
+      data: { purgedUsers: active.length },
+    };
+  }
+
+  // ===== 管理员会话（独立 AdminRefreshToken 表）=====
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/admin-sessions')
+  @ApiOperation({ summary: '管理员活跃会话列表（join Admin 出 username）' })
+  async listAdminSessions(@Body() dto: AdminListSessionsDto): Promise<ApiResult> {
+    const where = {
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+      ...(dto.ip ? { ip: { contains: dto.ip } } : {}),
+    };
+    const [list, total] = await Promise.all([
+      this.prisma.adminRefreshToken.findMany({
+        where,
+        skip: dto.skip ?? 0,
+        take: dto.take ?? 50,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          adminId: true,
+          jti: true,
+          userAgent: true,
+          ip: true,
+          createdAt: true,
+          expiresAt: true,
+          admin: { select: { id: true, username: true } },
+        },
+      }),
+      this.prisma.adminRefreshToken.count({ where }),
+    ]);
+    return { code: BusinessCode.OK, message: 'success', data: { list, total } };
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/admin-sessions/:jti/revoke')
+  @ApiOperation({ summary: '吊销指定管理员会话（按 jti；其 access 15m 内仍有效）' })
+  async revokeAdminSession(@Param('jti') jti: string): Promise<ApiResult> {
+    await this.prisma.adminRefreshToken.updateMany({
+      where: { jti, revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: 'admin_revoke' },
+    });
+    return { code: BusinessCode.OK, message: 'success' };
   }
 }

@@ -54,3 +54,25 @@ export class AdminUnbanDto {
   @IsOptional()
   uniqName?: string;
 }
+
+/** 全系统活跃会话列表入参（分页 + 按 userId/ip 筛选）。 */
+export class AdminListSessionsDto {
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  skip?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  take?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  userId?: number;
+
+  @IsOptional()
+  @IsString()
+  ip?: string;
+}

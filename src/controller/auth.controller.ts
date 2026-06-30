@@ -35,7 +35,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
   @ApiOperation({ summary: '登录（凭据换 access/refresh token）' })
-  // login 走 LocalStrategy，body 不经 @Body DTO；用 @ApiBody 文档化请求体即可。
+  // login 凭据由 LocalStrategy 校验；@Body DTO 仅取 device，并经全局 ValidationPipe 白名单。
   @ApiBody({ type: LoginDto })
   async login(
     @Request() req,

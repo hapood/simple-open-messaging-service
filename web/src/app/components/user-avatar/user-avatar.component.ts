@@ -41,7 +41,7 @@ export class UserAvatarComponent {
     effect(() => {
       this.src()
       this.imgFailed.set(false)
-    }, { allowSignalWrites: true })
+    })
   }
 
   /** 是否渲染真实图片（有 src 且未失败）。 */

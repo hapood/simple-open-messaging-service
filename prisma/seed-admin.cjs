@@ -1,7 +1,7 @@
 /**
  * 首次种子 admin 账户：node prisma/seed-admin.cjs
  * 读 ADMIN_BOOTSTRAP_PASSWORD 环境变量，argon2 哈希后 upsert username=admin。
- * 仅首次初始化用；生产应改密或删除本脚本。
+ * 仅首次初始化用（update:{} 已存在则不动）；生产应改密或删除本脚本。
  */
 require('dotenv').config();
 // Prisma 7 生成 .ts（运行时需编译），CJS require 指向 dist（先 npm run build）

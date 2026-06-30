@@ -51,7 +51,7 @@ export class RegisterComponent {
         this.isUniqNameVld.set(true)
         this.uniqNameHint.set('')
       }
-    }, { allowSignalWrites: true })
+    })
     effect(() => {
       const password = this.password()
       if (!this._passwordRegx.test(password)) {
@@ -61,7 +61,7 @@ export class RegisterComponent {
         this.isPwdVld.set(true)
         this.passwordHint.set('')
       }
-    }, { allowSignalWrites: true })
+    })
   }
 
   togglePassword() {

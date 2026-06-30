@@ -13,7 +13,7 @@ import {
  * 故无需手写 @ApiProperty。
  */
 
-/** 登录入参（仅用于 login 的 @ApiBody 文档；login 走 LocalStrategy，body 不经 @Body DTO） */
+/** 登录入参：凭据由 LocalStrategy 校验，@Body 走全局 ValidationPipe 白名单。请求体只含服务器消费字段；前端"记住登录"等本地策略不入契约。 */
 export class LoginDto {
   @IsString()
   @IsNotEmpty()

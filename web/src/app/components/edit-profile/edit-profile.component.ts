@@ -53,7 +53,7 @@ export class EditProfileComponent {
         this.isNameValid.set(true)
         this.nameHint.set('')
       }
-    }, { allowSignalWrites: true })
+    })
   }
 
   /** 仅当昵称合法、未在请求中、且至少一项相对当前 session 改动时才可保存。 */

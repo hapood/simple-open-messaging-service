@@ -36,13 +36,16 @@ export class AuthService {
   }
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
+    // isKeep 是前端"记住登录"的本地存储策略（refresh token 存 localStorage 还是 sessionStorage），
+    // 后端不消费，故从请求体剥离；仍用于成功后决定 token 落盘位置。
+    const { isKeep, ...credentials } = params;
     return this.http.post<RefreshTokenRes>
-      (`${apiPrefix}/auth/login`, { ...params, device: this.getDeviceId() }, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
+      (`${apiPrefix}/auth/login`, { ...credentials, device: this.getDeviceId() }, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
         if (res.code === 0) {
           const data = res.data
-          this._isKeep = params.isKeep
+          this._isKeep = isKeep
           this.clearToken()
-          this.setReToken(data!.refresh_token, params.isKeep)
+          this.setReToken(data!.refresh_token, isKeep)
           this.setAcToken(data!.access_token)
         }
       }))

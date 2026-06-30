@@ -5,6 +5,7 @@
     "test",
     "dist",
     "**/*spec.ts",
-    "web"
+    "web",
+    "admin-web"
   ]
 }

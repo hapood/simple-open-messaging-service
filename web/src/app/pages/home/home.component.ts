@@ -34,7 +34,10 @@ export class HomeComponent implements OnInit {
 
   ngOnInit() {
     this.userService.updateSessionProfile();
-    this.authService.renewAccessToken();
+    // 必须 subscribe：HttpClient.post 是冷 Observable，不订阅不会发请求。
+    // 不订阅则 renew-access 不发 → access token 拿不到 → 拦截器挂起所有受保护请求，
+    // 直到 setTimerToRefresh 的 setTimeout 兜底触发 renewRefreshToken 才解锁（表现为启动卡几秒）。
+    this.authService.renewAccessToken().subscribe();
     // 单例 constructor 不会在登出后重登时再跑，需在此重连 WS
     this.wsService.connect();
   }

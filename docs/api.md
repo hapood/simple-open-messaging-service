@@ -1,6 +1,6 @@
 # API 参考
 
-SOMS 后端监听 `http://localhost:3000`。除特别说明外，**所有接口均为 `POST`**（含查询类接口），请求体为 JSON，响应为统一格式。
+SOMS 后端监听 `http://localhost:3000`，全局前缀 `/api/v1`。除特别说明外，**所有接口均为 `POST`**（含查询类接口），请求体为 JSON，响应为统一格式。文件上传类接口为 `multipart/form-data`。
 
 ## 目录
 
@@ -10,6 +10,7 @@ SOMS 后端监听 `http://localhost:3000`。除特别说明外，**所有接口�
 - [消息 API](#消息-api)
 - [群组 API](#群组-api)
 - [文件 API](#文件-api)
+- [Admin API](#admin-api)
 - [WebSocket 事件](#websocket-事件)
 
 ---
@@ -20,9 +21,10 @@ SOMS 后端监听 `http://localhost:3000`。除特别说明外，**所有接口�
 
 ```ts
 interface StandardResponse<T = any> {
-  code: number;   // 0 = 成功；非 0 = 业务错误码（按域分段，见下）
+  code: number;        // 0 = 成功；非 0 = 业务错误码（按域分段，见下）
   message: string;
   data?: T;
+  hasMore?: boolean;   // 分页接口填充：是否还有更多数据
 }
 ```
 
@@ -35,12 +37,12 @@ interface StandardResponse<T = any> {
 | 段 | 含义 | 主要码值 |
 | --- | --- | --- |
 | `0` | 成功 | |
-| `10xxx` | 通用 | `10000` 参数校验 / `10001` 不存在 / `10002` 已存在 / `10003` 未认证 / `10005` 限流·IP封禁 / `10999` 服务器异常 |
+| `10xxx` | 通用 | `10000` 参数校验 / `10001` 不存在 / `10002` 已存在 / `10003` 未认证 / `10004` 无权限 / `10005` 限流·IP封禁 / `10006` refresh 重用→强制重登 / `10007` 会话已吊销 / `10999` 服务器异常 |
 | `20xxx` | 好友·会话状态机 | `20001` 自加好友 / `20002` 未知状态 / `20003` 无待处理请求 |
 | `30xxx` | 消息域 | `30001` 空内容 / `30002` 会话未批准 / `30003` 无此会话 |
 | `40xxx` | 群组域 | `40001` 非群成员 / `40002` 非好友不可邀请 / `40003` 无效邀请 token |
 
-> 示例：登录凭据错 → `code:10003`；IP 封禁 → `code:10005` + `data.bannedUntil`（解封时间戳）；注册重复 → `code:10002`。
+> 示例：登录凭据错 → `code:10003`；IP 封禁 → `code:10005` + `data.bannedUntil`（解封时间戳）；注册重复 → `code:10002`；refresh token 重用 → `code:10006`（家族已连根吊销，前端强制重登）。
 > 说明：HTTP 响应信封字段为 `code`（见上表）。下文仍出现 `status` 的两处为**有意保留**：① WebSocket 帧的 `status` 字段（见「消息格式」，当前实现即此）；② 好友请求内部状态机的 `status 0/1/2/3/5`（不直接体现在响应 `code`）。
 
 ### 鉴权
@@ -48,6 +50,7 @@ interface StandardResponse<T = any> {
 - 需鉴权的接口要求请求头：`Authorization: Bearer <access_token>`。
 - 注册、登录、续期接口无需鉴权（前端以 `Authorization: 'public'` 标记，拦截器放行）。
 - `userId` 从 JWT 的 `sub` 取得，挂在 `req.user.userId`，控制器据此识别调用者。
+- **Admin 接口**使用独立 JWT（独立 `adminSecret` + `scope: 'admin'` claim），由 `AdminAuthGuard` 守卫，与用户体系物理隔离、互不通用。
 
 ### 数据类型约定
 
@@ -63,30 +66,60 @@ interface StandardResponse<T = any> {
 ### POST `/auth/login` — 登录
 
 - **鉴权**：Local（body 提供 `uniqName` + `password`）
-- **请求体**：`{ uniqName: string, password: string }`
+- **请求体**：`{ uniqName: string, password: string, device?: string }`（`device` 为前端生成的设备标识，用于多端会话区分）
 - **响应 `data`**（code=0）：`{ access_token: string, refresh_token: string }`
 - **错误**：凭据错 `code:10003`；IP 封禁 `code:10005`，`data.bannedUntil` 为解封时间戳
 - **限流**：同 IP 累计失败 >3 次封禁 30 分钟、>6 次封禁 3 小时、>9 次封禁 24 小时
 
-### POST `/auth/renew-access` — 刷新 access_token
+### POST `/auth/renew-access` — 用 refresh token 轮换（家族化 + 重用检测）
 
-- **鉴权**：无
-- **请求体**：`{ refreshToken: string }`
-- **响应 `data`**：`{ access_token: string }`
+- **鉴权**：无（`public`）
+- **请求体**：`{ refreshToken: string, device?: string }`
+- **响应 `data`**：`{ access_token: string, refresh_token: string }`（**完整轮换**：旧 refresh 置为吊销 `rotated`，签发新 access + 新 refresh）
+- **错误**：`code:10006` 重用检测命中（家族已连根吊销，前端须强制重登）；`code:10003` refresh 无效/过期
+- **限流**：`@Throttle(30, 60)`
 
-### POST `/auth/renew-refresh` — 同时刷新 access + refresh
+> 命名是历史遗留——尽管叫 `renew-access`，实际做的是 access + refresh 的完整轮换（与 `renew-refresh` 实现相同，保留双名仅为兼容）。
 
-- **鉴权**：无
-- **请求体**：`{ refreshToken: string }`
-- **响应 `data`**：`{ access_token: string, refresh_token: string }`
+### POST `/auth/renew-refresh` — refresh 轮换（`renew-access` 的别名）
+
+- **鉴权**：无（`public`）
+- **请求体 / 响应 / 行为**：与 `renew-access` 完全一致（同一 `rotateRefreshToken` 实现），保留双端点仅为向后兼容。
 
 ### POST `/auth/logout` — 登出
 
 - **鉴权**：无（`public`，前端在 header 标记 `Authorization: 'public'`，refresh_token 在 body）
-- **请求体**：`{ refreshToken: string }`
-- **响应**：`{ code: 0, message: 'success' }`，成功将对应 refresh_token 置为吊销（`revokedAt`）
+- **请求体**：`{ refreshToken: string, accessJti?: string }`
+- **行为**：将对应 refresh_token 置为吊销（`revokeReason='logout'`）；若传 `accessJti`，**立即**把当前 access token 加入 jti 黑名单（TTL = access 剩余寿命），实现即时踢下线。
+- **响应**：`{ code: 0, message: 'success' }`
+- **限流**：`@Throttle(30, 60)`
 
-> ✅ P0 已修复：refresh_token 落库 `RefreshToken` 表（存 sha256 哈希），重启不失效、登出真正吊销、续期轮换。`logout` 的 refreshToken 从 body 取（原实现从 JWT payload 取，恒为 undefined）。
+### POST `/auth/logout-all` — 全设备登出
+
+- **鉴权**：JWT
+- **行为**：`invalidateAllSessions(userId, 'all_devices')` —— bump `User.tokenVersion`（令该用户所有 access token 即时失效）+ 吊销其全部 refresh token + 清 access jti 缓存，并通过 `auth.sessions-invalidated` 事件强制断开其全部 WebSocket 连接。
+- **响应**：`{ code: 0, message: 'success' }`
+
+### POST `/auth/change-password` — 修改密码
+
+- **鉴权**：JWT
+- **请求体**：`{ oldPassword: string, newPassword: string }`（`newPassword` 沿用 6–20 位允许字符集规则）
+- **行为**：校验旧密 → 改密 → 吊销该用户**其他所有**会话（当前设备重发一对新 token）
+- **响应**：成功 `data: { access_token, refresh_token }`；旧密错 `code:10000`（`VALIDATION_FAILED`，message=`old password wrong`）
+- **限流**：`@Throttle(10, 60)`
+
+### POST `/auth/sessions` — 列当前用户活跃会话
+
+- **鉴权**：JWT
+- **响应 `data`**：当前用户的活跃会话列表（每条含 `device` / `userAgent` / `ip` / `createdAt` / `expiresAt` 等）
+
+### POST `/auth/revoke-session` — 吊销单个会话
+
+- **鉴权**：JWT
+- **请求体**：`{ jti: string, accessJti?: string }`（`jti` 须属于当前用户）
+- **行为**：吊销指定 refresh（按 `jti`）；若传 `accessJti`，同时把当前 access 入黑名单。
+
+> 会话加固细节（access 可撤销、tokenVersion、家族化 refresh + 重用检测、进程内 KV、WS 联动）见 [architecture.md → 认证机制](./architecture.md#认证机制)。
 
 ---
 
@@ -109,23 +142,44 @@ interface StandardResponse<T = any> {
 - **鉴权**：JWT
 - **响应 `data`**：当前用户信息（不含密码哈希）
 
+### POST `/user/update-avatar` — 更新头像
+
+- **鉴权**：JWT
+- **请求体**：`multipart/form-data`，字段 `file` = 图片二进制
+- **允许格式**：jpg / png / gif / webp（magic number 二次校验）
+- **行为**：经 `sharp` 重写为 32/64/128/256/512 多档 webp（按 EXIF 正向、cover 裁剪、剥离 EXIF/恶意 chunk、像素上限防解压炸弹）；落盘新档 → 写库 → 删旧档。
+- **响应 `data`**：`{ avatar: string }`（最大档 512px 的完整 URL，其余档由前端派生）
+- **错误**：无文件 / 非图片 → `code:10000`
+
+### POST `/user/update-profile` — 更新昵称 / 简介
+
+- **鉴权**：JWT
+- **请求体**：`{ name?: string, bio?: string }`（`uniqName`/handle 不可改；`bio` ≤ 120 字符）
+- **响应 `data`**：更新后的用户信息（不含密码哈希）
+
 ### POST `/user/query-thread/valid` — 有效会话列表
 
 - **鉴权**：JWT
 - **请求体**：`{ skip: number, take: number, lastId?: number, toObjType?: 'P2P'|'GROUP' }`
 - **响应 `data`**：当前用户所有 `APPROVED` 会话；P2P 附带对方用户信息，GROUP 附带群组信息
 
-### POST `/user/query-thread/to-pending` — 待处理好友请求
+### POST `/user/query-thread/to-pending` — 收到的待处理好友请求
 
 - **鉴权**：JWT
 - **请求体**：`{ beforeDate: number, take: number, skip: number }`
 - **响应 `data`**：当前用户收到的、`TO_PENDING` 状态的好友请求列表
 
+### POST `/user/query-thread/from-pending` — 我发出的待处理好友请求
+
+- **鉴权**：JWT
+- **请求体**：`{ beforeDate: number, take: number, skip: number }`
+- **响应 `data`**：当前用户发出的、`FROM_PENDING` 状态的好友请求列表
+
 ### POST `/user/send-friend-request` — 发送好友请求
 
 - **鉴权**：JWT
 - **请求体**：`{ userId: number }`（目标用户）
-- **响应 `code`**：`0` 请求已发送（涵盖首次发送 / 已是好友 / 重新发起 / 对方已先请求直接建立 / 不再打扰）；`20002` 好友状态机未知状态（不应发生）
+- **响应 `code`**：`0` 请求已发送（涵盖首次发送 / 已是好友 / 重新发起 / 对方已先请求直接建立 / 不再打扰）；`20001` 自加好友；`20002` 状态机未知状态
 - **内部状态机**：`makeFriendRequest` 返回 status `0/1/2/3/5` 驱动上述行为，不直接体现在响应 `code`
 - **详见**：[architecture.md → 好友请求状态机](./architecture.md#好友请求状态机)
 
@@ -134,18 +188,33 @@ interface StandardResponse<T = any> {
 - **鉴权**：JWT
 - **请求体**：`{ userId: number }`（请求发起方）
 - **行为**：建立 P2P 会话（首次创建 `MessageThread`），双方状态置为 `APPROVED`
+- **错误**：`20003` 无该用户发来的待处理请求
+
+### POST `/user/decline-friend-request` — 拒绝好友请求
+
+- **鉴权**：JWT
+- **请求体**：`{ userId: number }`（请求发起方）
+- **行为**：拒绝对方发来的待处理请求
+- **错误**：`20003` 无该用户发来的待处理请求
+
+### POST `/user/cancel-friend-request` — 撤回我发出的好友请求
+
+- **鉴权**：JWT
+- **请求体**：`{ userId: number }`（目标用户）
+- **行为**：撤回当前用户已发出的待处理请求
+- **错误**：`20003` 当前用户对该目标无待处理请求
 
 ### POST `/user/query` — 批量查询用户
 
 - **鉴权**：JWT
-- **请求体**：`{ userIds: number[] }`（最多 100 个）
+- **请求体**：`{ userIds: number[] }`（最多 100 个，`@ArrayMaxSize(100)`）
 - **响应 `data`**：用户信息数组（`isDeleted=false`）
 
 ### POST `/user/by-uniq-name` — 按用户名查询
 
 - **鉴权**：JWT
 - **请求体**：`{ uniqName: string }`
-- **响应 `data`**：单个用户信息
+- **响应 `data`**：单个用户信息；不存在 `code:10001`
 
 ### POST `/user/thread-info` — 会话线程详情
 
@@ -224,18 +293,109 @@ interface StandardResponse<T = any> {
 
 ## 文件 API
 
-🚧 **未实现**：原 `file.controller.ts` / `src/file/*` 为未完成的死代码（未注册、handler 仅 `console.log`、`send-video` 路由重复、类名误写），已于 P1b 清理删除。文件上传计划在 **P3** 基于下述设计意图重新实现。
+> 控制器：[src/upload/upload.controller.ts](../src/upload/upload.controller.ts) · 服务：[src/upload/upload.service.ts](../src/upload/upload.service.ts)
 
-设计意图（P3 参考）：
+### POST `/upload` — 上传图片（聊天相册）
 
-| 路径 | 字段名 | 允许的 MIME |
-| --- | --- | --- |
-| `POST /file/send-image` | `file` | jpg / jpeg / png / webp |
-| `POST /file/send-video` | `file` | mp4 / webm / ogg |
-| `POST /file/send-audio` | `file` | mp3 / wav / acc |
-| `POST /file/send-general-file` | `file` | 任意 |
+- **鉴权**：JWT
+- **请求体**：`multipart/form-data`，字段 `file` = 图片二进制；另带表单字段 `w` / `h`（前端 `createImageBitmap` 读出的宽高，后端原样保留不解析图片内容）
+- **允许格式**：jpg / jpeg / png / gif / webp（multer `fileFilter` mimetype 粗筛 + `isImage` 读文件头 magic number 防伪造）
+- **大小限制**：10MB
+- **行为**：`multer` memoryStorage → magic number 校验 → 落盘 `process.cwd()/uploads/<ts>-<rand>.<ext>` → 返回可访问 URL
+- **响应 `data`**：`{ url: string, w: number, h: number }`（`url` 形如 `/uploads/...`，由 `main.ts` 的 `useStaticAssets` 静态服务）
+- **错误**：无文件 `code:10000` message=`no file`；非真实图片 `code:10000` message=`invalid image`
 
-请求为 `multipart/form-data`，使用 `FileInterceptor('file')` + `FileTypeValidator` 校验；按会话计算存储路径，落库到 `Message` 并返回可访问 URL。
+> 头像上传不在此端点，走 [`/user/update-avatar`](#post-userupdate-avatar--更新头像)（`sharp` 服务端重写为多档 webp）。
+> 生产换对象存储（S3/OSS/MinIO）时，仅改 `save()` / `saveAvatars()` 的写入目标与 url 生成，接口契约不变。
+
+---
+
+## Admin API
+
+> 控制器：[src/admin/admin.controller.ts](../src/admin/admin.controller.ts) · 服务：[src/admin/admin-auth.service.ts](../src/admin/admin-auth.service.ts)
+
+Admin 使用**独立的 JWT 体系**（独立 `adminSecret` + `scope: 'admin'` claim，`AdminAuthGuard` 守卫），与用户体系物理隔离。除 `admin/login` / `admin/renew-access` 外，所有 admin 接口都要求 `Authorization: Bearer <admin_access_token>`。
+
+### 鉴权
+
+#### POST `/admin/login` — 管理员登录
+
+- **鉴权**：无
+- **请求体**：`{ username: string, password: string }`
+- **响应 `data`**（code=0）：`{ access_token: string, refresh_token: string }`；同时更新 `Admin.lastLoginAt` / `lastLoginIp`
+- **错误**：凭据错 / 账户禁用 → `code:10003` message=`invalid credentials`
+
+#### POST `/admin/renew-access` — 管理员 refresh 轮换
+
+- **鉴权**：无
+- **请求体**：`{ refreshToken: string }`
+- **响应 `data`**：`{ access_token: string, refresh_token: string }`（家族化轮换 + 重用检测）
+- **错误**：`code:10006` 重用（家族连根吊销）；`code:10003` 无效
+
+#### POST `/admin/logout` — 管理员登出
+
+- **鉴权**：AdminJWT
+- **请求体**：`{ refreshToken: string }`
+- **行为**：吊销该 refresh（`revokeReason='logout'`）
+
+### 用户管理
+
+#### POST `/admin/users` — 用户列表
+
+- **请求体**：`{ skip?: number, take?: number, search?: string }`（`search` 对 `uniqName` 不分大小写模糊匹配）
+- **响应 `data`**：`{ list: User[], total: number }`（按 `createdAt desc`，已剔除 `hashPwd`）
+
+#### POST `/admin/users/:id/disable` — 封禁用户
+
+- **行为**：软删除（`isDeleted=true`）+ `invalidateAllSessions(id, 'admin_disabled')` 强制下线
+
+#### POST `/admin/users/:id/enable` — 解禁用户
+
+- **行为**：`isDeleted=false`
+
+#### POST `/admin/users/:id/force-logout` — 强制下线
+
+- **行为**：`invalidateAllSessions(id, 'admin_force_logout')`（吊销该用户所有会话）
+
+#### POST `/admin/users/:id/sessions` — 查指定用户活跃会话
+
+- **响应 `data`**：该用户的活跃会话列表
+
+#### POST `/admin/users/:id/reset-password` — 重置密码
+
+- **请求体**：`{ newPassword: string }`（6–20 位允许字符集）
+- **行为**：改密 + `invalidateAllSessions(id, 'admin_reset_password')`（吊销所有会话，强制重登）
+
+### 封禁管理
+
+> 登录封禁（IP / 账户）存在 `LocalStrategy` 进程内字典，**无独立数据表**。
+
+#### POST `/admin/bans` — 列当前登录封禁
+
+- **响应 `data`**：当前生效的 IP / 账户封禁列表
+
+#### POST `/admin/bans/unban` — 解封
+
+- **请求体**：`{ ip?: string, uniqName?: string }`（至少传一个）
+
+### 审计
+
+#### POST `/admin/reuse-alerts` — refresh token 重用告警
+
+- **请求体**：`{ take?: number }`（默认 50）
+- **响应 `data`**：`RefreshToken` 中 `revokeReason='reuse'` 的记录（`userId` / `familyId` / `jti` / `ip` / `userAgent` / `revokedAt`，按 `revokedAt desc`）
+
+#### POST `/admin/sessions` — 全系统活跃用户会话总览
+
+- **请求体**：`{ skip?: number, take?: number, userId?: number, ip?: string }`（`ip` 模糊匹配）
+- **响应 `data`**：`{ list, total }`，每条含 `userId` / `jti` / `device` / `userAgent` / `ip` / `createdAt` / `expiresAt` / `user{id,uniqName}`（仅未吊销且未过期）
+
+> 该总览只查用户会话表 `RefreshToken`；管理员自身的活跃会话在独立的 `AdminRefreshToken` 表，不在此列。
+
+#### POST `/admin/sessions/purge` — 一键清理所有活跃会话
+
+- **行为**：找出所有仍有活跃会话的用户，逐个 `invalidateAllSessions(userId, 'admin_purge')`（全部强制重登、access 即时失效）
+- **响应 `data`**：`{ purgedUsers: number }`
 
 ---
 
@@ -251,6 +411,7 @@ const ws = new WebSocket('ws://<host>:3000', [accessToken])
 
 - access_token 通过**子协议**（`Sec-WebSocket-Protocol`）传入。
 - 鉴权失败：服务端发送 `AUTH` 事件后关闭连接。
+- 连接时校验 jti 黑名单与 `tokenVersion`；收到 `auth.sessions-invalidated` 事件时强制断开该用户全部连接。
 - 客户端断线后应自动重连（前端默认 10 秒重连）。
 
 ### 消息格式
