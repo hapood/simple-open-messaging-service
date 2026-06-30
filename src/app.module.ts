@@ -11,6 +11,7 @@ import { GroupModule } from './group/group.module';
 import { GroupController } from './controller/group.controller';
 import { UploadModule } from './upload/upload.module';
 import { RedisModule } from './redis/redis.module';
+import { AdminModule } from './admin/admin.module';
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
@@ -21,6 +22,7 @@ import { RedisModule } from './redis/redis.module';
     MessageModule,
     GroupModule,
     UploadModule,
+    AdminModule,
   ],
   controllers: [
     MessageController,

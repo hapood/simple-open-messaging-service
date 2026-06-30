@@ -172,3 +172,37 @@ model RefreshToken {
   @@index([userId])
   @@index([familyId])
 }
+
+/// 管理员账户（独立于聊天 User：拖库隔离 + 消除提权路径 + 可施加更严安全策略）
+model Admin {
+  id          Int       @id @default(autoincrement())
+  username    String    @unique @db.VarChar(31)
+  hashPwd     String    @db.VarChar(127)
+  enabled     Boolean   @default(true)
+  lastLoginIp String?   @db.VarChar(64)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  refreshTokens AdminRefreshToken[]
+
+  @@index([username])
+}
+
+/// admin refresh token（家族化 + 重用检测，镜像 RefreshToken，独立实例避免与用户会话混用）
+model AdminRefreshToken {
+  id         BigInt   @id @default(autoincrement())
+  adminId    Int
+  admin      Admin    @relation(fields: [adminId], references: [id])
+  tokenHash  String   @unique
+  jti        String   @unique
+  familyId   String
+  userAgent  String?  @db.VarChar(255)
+  ip         String?  @db.VarChar(64)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  revokeReason String? @db.VarChar(32)
+
+  @@index([adminId])
+  @@index([familyId])
+}
