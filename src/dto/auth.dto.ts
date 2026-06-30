@@ -22,6 +22,10 @@ export class LoginDto {
   @IsString()
   @IsNotEmpty()
   password: string;
+
+  @IsString()
+  @IsOptional()
+  device?: string;
 }
 
 /**
@@ -47,6 +51,10 @@ export class RefreshTokenDto {
   @IsString()
   @IsNotEmpty()
   refreshToken: string;
+
+  @IsString()
+  @IsOptional()
+  device?: string;
 }
 
 /** logout 入参：refreshToken 必填；accessJti 可选（即时把当前 access 入黑名单）。 */

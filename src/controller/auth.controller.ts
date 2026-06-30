@@ -4,6 +4,8 @@ import {
   Request,
   UseGuards,
   Body,
+  Headers,
+  Ip,
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
@@ -35,13 +37,22 @@ export class AuthController {
   @ApiOperation({ summary: '登录（凭据换 access/refresh token）' })
   // login 走 LocalStrategy，body 不经 @Body DTO；用 @ApiBody 文档化请求体即可。
   @ApiBody({ type: LoginDto })
-  async login(@Request() req): Promise<ApiResult> {
+  async login(
+    @Request() req,
+    @Body() body: LoginDto,
+    @Headers('user-agent') userAgent: string,
+    @Ip() ip: string,
+  ): Promise<ApiResult> {
     const authInfo: LoginAuthInfo = req.user;
     if (authInfo.status === 0) {
       return {
         code: BusinessCode.OK,
         message: 'successful',
-        data: await this.authService.login(authInfo.userId),
+        data: await this.authService.login(authInfo.userId, {
+          device: body.device,
+          userAgent,
+          ip,
+        }),
       };
     } else {
       if (authInfo.bannedUntil !== undefined) {
@@ -69,10 +80,13 @@ export class AuthController {
   })
   async renewaccessTokens(
     @Body() dto: RefreshTokenDto,
+    @Headers('user-agent') userAgent: string,
+    @Ip() ip: string,
   ): Promise<ApiResult<{ access_token: string; refresh_token: string }>> {
     try {
       const { access, refresh } = await this.authService.rotateRefreshToken(
         dto.refreshToken,
+        { device: dto.device, userAgent, ip },
       );
       return {
         code: BusinessCode.OK,
@@ -100,10 +114,13 @@ export class AuthController {
   })
   async renewRefreshTokens(
     @Body() dto: RefreshTokenDto,
+    @Headers('user-agent') userAgent: string,
+    @Ip() ip: string,
   ): Promise<ApiResult<{ access_token: string; refresh_token: string }>> {
     try {
       const { access, refresh } = await this.authService.rotateRefreshToken(
         dto.refreshToken,
+        { device: dto.device, userAgent, ip },
       );
       return {
         code: BusinessCode.OK,
@@ -129,7 +146,7 @@ export class AuthController {
     // 前端发 'public' 头 + body，无需 JWT 鉴权，以 refresh token 持有证明吊销。
     await this.authService.logout(dto.refreshToken);
     if (dto.accessJti) {
-      await this.authService.blacklistAccessJti(dto.accessJti, 15 * 60);
+      await this.authService.blacklistAccessJti(dto.accessJti);
     }
     return { code: BusinessCode.OK, message: 'success' };
   }

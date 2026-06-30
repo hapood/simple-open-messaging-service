@@ -7,13 +7,14 @@ import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { GroupInfoComponent } from '../components/group-info/group-info.component';
 import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
+import { SessionsComponent } from '../components/sessions/sessions.component';
 import { UserMessageThread } from './model';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
-export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO, FOLDER_EDITOR, EDIT_PROFILE }
+export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
@@ -21,7 +22,8 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.NEW_GROUP]: NewGroupComponent,
   [PopupType.GROUP_INFO]: GroupInfoComponent,
   [PopupType.FOLDER_EDITOR]: FolderEditorComponent,
-  [PopupType.EDIT_PROFILE]: EditProfileComponent
+  [PopupType.EDIT_PROFILE]: EditProfileComponent,
+  [PopupType.SESSIONS]: SessionsComponent
 }
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -32,6 +34,7 @@ export interface PopupInput {
   [PopupType.GROUP_INFO]: { userMsgTrd: UserMessageThread }
   [PopupType.FOLDER_EDITOR]: { folderId?: string }
   [PopupType.EDIT_PROFILE]: undefined
+  [PopupType.SESSIONS]: undefined
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -42,6 +45,7 @@ export interface PopupResult {
   [PopupType.GROUP_INFO]: undefined
   [PopupType.FOLDER_EDITOR]: boolean
   [PopupType.EDIT_PROFILE]: boolean
+  [PopupType.SESSIONS]: undefined
 }
 
 export interface DlgInfo {

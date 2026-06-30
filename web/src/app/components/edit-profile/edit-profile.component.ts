@@ -1,7 +1,7 @@
 import { Component, signal, computed, inject, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
-import { RouteService } from '../../services/route.service';
+import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -102,5 +102,9 @@ export class EditProfileComponent {
 
   goBack() {
     this.routeService.closeDlg()
+  }
+
+  openSessions() {
+    this.routeService.popupDlg(PopupType.SESSIONS)
   }
 }

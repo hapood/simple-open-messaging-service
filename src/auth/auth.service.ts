@@ -9,11 +9,10 @@ import { PrismaService } from '../prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { jwtConstants } from './constants';
 
-const REFRESH_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 天，与 JWT expiresIn 对齐
 const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 每日清理一次过期记录
 
 /** refresh token 签发/轮换选项：familyId 省略→铸造新家族（登录），传入→继承（轮换）。 */
-type RefreshOpts = { familyId?: string; device?: string };
+type RefreshOpts = { familyId?: string; device?: string; userAgent?: string; ip?: string };
 
 /** verifyRefreshToken 判别结果：区分重用(reuse)以触发前端强制重登，区别于普通失效。 */
 type VerifyResult =
@@ -65,10 +64,10 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return argon2.hash(str);
   }
 
-  async login(userId: number) {
+  async login(userId: number, opts: RefreshOpts = {}) {
     return {
       access_token: await this.getAccessToken(userId),
-      refresh_token: await this.getRefreshToken(userId),
+      refresh_token: await this.getRefreshToken(userId, opts),
     };
   }
 
@@ -86,7 +85,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     const jti = randomUUID();
     const token = this.jwtService.sign(
       { sub: userId, jti, fam: familyId },
-      { secret: jwtConstants.refreshSecret, expiresIn: '14d' },
+      { secret: jwtConstants.refreshSecret, expiresIn: jwtConstants.refreshTtlDays },
     );
     await this.prisma.refreshToken.create({
       data: {
@@ -95,7 +94,9 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
         jti,
         familyId,
         device: opts.device ?? null,
-        expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
+        userAgent: opts.userAgent ?? null,
+        ip: opts.ip ?? null,
+        expiresAt: new Date(Date.now() + jwtConstants.refreshTtlMs),
       },
     });
     return token;
@@ -190,12 +191,12 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     });
     return this.jwtService.sign(
       { sub: userId, jti: randomUUID(), tver: user!.tokenVersion },
-      { expiresIn: '15m' },
+      { expiresIn: jwtConstants.accessTtl },
     );
   }
 
-  /** 单个 access token 即时吊销（登出单设备）：jti 入 Redis 黑名单，TTL 取剩余寿命。 */
-  async blacklistAccessJti(jti: string, ttlSec: number) {
+  /** 单个 access token 即时吊销（登出单设备）：jti 入黑名单，TTL 默认取 access 剩余寿命。 */
+  async blacklistAccessJti(jti: string, ttlSec: number = jwtConstants.accessTtlSec) {
     if (!this.redis.enabled) return;
     await this.redis.setex(`access:jti:${jti}`, ttlSec, '1').catch(() => {});
   }
@@ -257,7 +258,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   async listActiveSessions(userId: number) {
     return this.prisma.refreshToken.findMany({
       where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
-      select: { jti: true, device: true, createdAt: true, expiresAt: true },
+      select: { jti: true, device: true, userAgent: true, ip: true, createdAt: true, expiresAt: true },
       orderBy: { createdAt: 'desc' },
     });
   }
@@ -269,7 +270,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       data: { revokedAt: new Date(), revokeReason: 'logout' },
     });
     if (accessJti) {
-      await this.blacklistAccessJti(accessJti, 15 * 60);
+      await this.blacklistAccessJti(accessJti);
     }
   }
 

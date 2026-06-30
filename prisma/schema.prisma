@@ -161,7 +161,9 @@ model RefreshToken {
   tokenHash  String   @unique // 存 sha256 哈希，不存明文
   jti        String   @unique // 该 token 的 JWT id；精确吊销键，与 claim 对齐
   familyId   String // 登录时铸造、轮换时继承；重用检测锚点（重放已吊销 token→全家族失效）
-  device     String? // 多端标识（P0 暂不填）
+  device     String? // 多端标识（前端 localStorage uuid）
+  userAgent  String? @db.VarChar(255) // 签发/轮换时的 UA，会话列表展示用
+  ip         String? @db.VarChar(64) // 签发/轮换时的 IP，会话列表展示用
   createdAt  DateTime @default(now())
   expiresAt  DateTime
   revokedAt  DateTime? // 软吊销

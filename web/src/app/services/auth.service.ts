@@ -37,7 +37,7 @@ export class AuthService {
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
     return this.http.post<RefreshTokenRes>
-      (`${apiPrefix}/auth/login`, params, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
+      (`${apiPrefix}/auth/login`, { ...params, device: this.getDeviceId() }, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
         if (res.code === 0) {
           const data = res.data
           this._isKeep = params.isKeep
@@ -70,7 +70,7 @@ export class AuthService {
     this.acTkSub.next(undefined)
     const req$ = this.http.post<AccessTokenRes>(
       `${apiPrefix}/auth/renew-access`,
-      { refreshToken: rfToken },
+      { refreshToken: rfToken, device: this.getDeviceId() },
       { 'headers': { Authorization: 'public' } },
     ).pipe(
       tap((res) => {
@@ -100,7 +100,8 @@ export class AuthService {
     } else {
       this.http.post<RefreshTokenRes>
         (`${apiPrefix}/auth/renew-refresh`, {
-          refreshToken: rfToken
+          refreshToken: rfToken,
+          device: this.getDeviceId()
         }, { 'headers': { Authorization: 'public' } }).subscribe({
           next: ({ code, message, data }) => {
             if (code === 0) {
@@ -191,5 +192,23 @@ export class AuthService {
         this.setReToken(res.data!.refresh_token)
       }
     }))
+  }
+
+  /** 会话管理：列活跃会话 / 踢单个设备。 */
+  getSessions() {
+    return this.http.post<{ code: number, message: string, data?: any[] }>(`${apiPrefix}/auth/sessions`, {})
+  }
+  revokeSession(jti: string) {
+    return this.http.post<{ code: number, message: string }>(`${apiPrefix}/auth/revoke-session`, { jti })
+  }
+
+  /** 设备标识：localStorage 持久 uuid（区分多端会话）。 */
+  private getDeviceId(): string {
+    let id = localStorage.getItem('device_id')
+    if (!id) {
+      id = crypto.randomUUID?.() ?? (Date.now().toString(36) + Math.random().toString(36).slice(2))
+      localStorage.setItem('device_id', id)
+    }
+    return id
   }
 }
