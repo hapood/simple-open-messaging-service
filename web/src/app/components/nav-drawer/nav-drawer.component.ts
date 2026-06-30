@@ -36,6 +36,11 @@ export class NavDrawerComponent {
   toggle() { this.sidenav()?.toggle() }
   close() { this.sidenav()?.close() }
 
+  editProfile() {
+    this.close()
+    this.routeService.popupDlg(PopupType.EDIT_PROFILE)
+  }
+
   // 每个菜单动作先关抽屉，再触发对应弹窗/跳转（逻辑迁自原 home-header.clickMenu）
   friendRequests() {
     this.close()

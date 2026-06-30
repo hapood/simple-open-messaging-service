@@ -1,0 +1,144 @@
+@use "../../assets/utils.scss" as *;
+
+.edit-profile {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  overflow-y: auto;
+}
+
+.msg-header {
+  height: 56px;
+  width: 100%;
+  background: var(--app-surface);
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--app-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px;
+
+  .title {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--app-text);
+  }
+}
+
+.icon-btn {
+  @include styless-button;
+  display: flex;
+  align-items: center;
+}
+
+.body {
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.avatar-wrap {
+  position: relative;
+  margin-bottom: 24px;
+}
+
+.avatar {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  border-radius: var(--app-radius-lg);
+  overflow: visible; // 让编辑按钮可越出圆角
+}
+
+.avatar-edit {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--app-radius-pill);
+  border: 2px solid var(--app-surface);
+  background: var(--app-brand);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+
+  &:hover { filter: brightness(0.95); }
+  &:disabled { cursor: progress; opacity: 0.8; }
+}
+
+// 头像上传中的旋转指示
+.spin {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: ua-spin 0.7s linear infinite;
+}
+@keyframes ua-spin { to { transform: rotate(360deg); } }
+
+.field {
+  display: block;
+  width: 100%;
+  margin-bottom: 18px;
+}
+
+.label {
+  display: block;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  margin-bottom: 6px;
+}
+
+.text,
+.textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--app-radius-md);
+  font-size: 14px;
+  font-family: inherit;
+  outline: none;
+
+  &:focus { border-color: var(--app-brand); }
+}
+
+.text {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.textarea {
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 64px;
+}
+
+.hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-danger);
+}
+
+.counter {
+  display: block;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--app-text-faint);
+  text-align: right;
+}
+
+.handle {
+  width: 100%;
+  margin-top: 4px;
+  padding: 10px 0;
+  border-top: 1px solid var(--app-border);
+  font-size: 13px;
+  color: var(--app-text-faint);
+  text-align: center;
+}

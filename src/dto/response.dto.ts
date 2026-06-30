@@ -20,6 +20,9 @@ export class UserExtraResponseDto {
 
   @ApiProperty({ example: 'https://.../a.png', description: '头像 URL' })
   avatar: string;
+
+  @ApiProperty({ example: 'Hey there! I am using SOMS.', description: '简介（about）' })
+  bio: string;
 }
 
 export class UserNotiBoxResponseDto {

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "UserExtra" ADD COLUMN     "bio" VARCHAR(255) NOT NULL DEFAULT '';

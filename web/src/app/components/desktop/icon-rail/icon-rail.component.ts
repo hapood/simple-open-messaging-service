@@ -15,8 +15,9 @@ import { WebsocketService } from '../../../services/websocket.service';
   template: `
     <div class="icon-rail">
       <div class="top">
-        <button class="rail-btn avatar" aria-label="account">
-          <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'" />
+        <button class="rail-btn avatar" (click)="editProfile()" title="编辑资料" aria-label="edit profile">
+          <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'"
+            [src]="sessionProfile()?.userExtra?.avatar" />
         </button>
       </div>
       <div class="bottom">
@@ -91,6 +92,10 @@ export class IconRailComponent {
 
   friendRequests() {
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)
+  }
+
+  editProfile() {
+    this.routeService.popupDlg(PopupType.EDIT_PROFILE)
   }
 
   newGroup() {

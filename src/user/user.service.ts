@@ -55,6 +55,18 @@ export class UserService implements OnModuleInit {
     });
   }
 
+  /** 更新当前用户昵称/简介（嵌套更新 UserExtra，带 include 返回完整 User）。 */
+  updateProfile(userId: number, data: { name?: string; bio?: string }) {
+    const extra: Record<string, string> = {};
+    if (data.name !== undefined) extra.name = data.name;
+    if (data.bio !== undefined) extra.bio = data.bio;
+    return this.prisma.user.update({
+      where: { id: userId },
+      data: { userExtra: { update: extra } },
+      include: { userExtra: true },
+    });
+  }
+
   queryUserThread(params: Prisma.UserMessageThreadFindManyArgs) {
     return this.prisma.userMessageThread.findMany(params);
   }

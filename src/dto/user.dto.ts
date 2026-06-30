@@ -7,6 +7,8 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Length,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { MessageThreadType } from '../prisma/generated/client';
@@ -35,6 +37,22 @@ export class UserByUniqNameDto {
   @IsString()
   @IsNotEmpty()
   uniqName: string;
+}
+
+/**
+ * 更新当前用户资料（昵称/简介）。字段都可选，仅传需更新的。
+ * handle（uniqName）不可在此改——身份变更走独立流程。
+ */
+export class UpdateProfileDto {
+  @IsOptional()
+  @IsString()
+  @Length(1, 30, { message: 'name must be 1-30 chars' })
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120, { message: 'bio must be at most 120 chars' })
+  bio?: string;
 }
 
 export class QueryUsersDto {

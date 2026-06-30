@@ -54,51 +54,59 @@ export class AuthController {
 
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-access')
-  @ApiOperation({ summary: '用 refresh token 换新的 access token（不轮换 refresh）' })
+  @ApiOperation({
+    summary: '用 refresh token 轮换出新的 access + refresh（检测重用即全家族吊销）',
+  })
   async renewaccessTokens(
     @Body() dto: RefreshTokenDto,
-  ): Promise<ApiResult<{ access_token: string }>> {
-    const userId = await this.authService.verifyRefreshToken(dto.refreshToken);
-    if (userId !== undefined) {
-      // 仅刷新 access，不动 refresh（原实现会 removeRefreshToken，误删后 7 天定时续期会失效）
+  ): Promise<ApiResult<{ access_token: string; refresh_token: string }>> {
+    try {
+      const { access, refresh } = await this.authService.rotateRefreshToken(
+        dto.refreshToken,
+      );
       return {
         code: BusinessCode.OK,
         message: 'success',
-        data: {
-          access_token: this.authService.getAccessToken(userId),
-        },
+        data: { access_token: access, refresh_token: refresh },
       };
-    } else {
-      return {
-        code: BusinessCode.UNAUTHENTICATED,
-        message: 'refresh_token is invalid',
-      };
+    } catch (e) {
+      // rotateRefreshToken 失败抛 reason 字符串：reuse → 家族已连根吊销，前端须强制重登；
+      // invalid/expired → 普通 401。
+      if (e === 'reuse') {
+        return {
+          code: BusinessCode.REFRESH_REUSE_DETECTED,
+          message: 'refresh token reuse detected',
+        };
+      }
+      return { code: BusinessCode.UNAUTHENTICATED, message: 'refresh_token is invalid' };
     }
   }
 
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-refresh')
-  @ApiOperation({ summary: '用 refresh token 轮换出新的 access + refresh' })
+  @ApiOperation({
+    summary: '用 refresh token 轮换出新的 access + refresh（与 renew-access 同义，保留兼容）',
+  })
   async renewRefreshTokens(
     @Body() dto: RefreshTokenDto,
   ): Promise<ApiResult<{ access_token: string; refresh_token: string }>> {
-    const userId = await this.authService.verifyRefreshToken(dto.refreshToken);
-    // 先校验有效性再吊销（原实现 info 可能为 undefined 即 removeRefreshToken → 抛 500）
-    if (userId !== undefined) {
-      await this.authService.revokeRefreshToken(dto.refreshToken);
+    try {
+      const { access, refresh } = await this.authService.rotateRefreshToken(
+        dto.refreshToken,
+      );
       return {
         code: BusinessCode.OK,
         message: 'success',
-        data: {
-          access_token: this.authService.getAccessToken(userId),
-          refresh_token: await this.authService.getRefreshToken(userId),
-        },
+        data: { access_token: access, refresh_token: refresh },
       };
-    } else {
-      return {
-        code: BusinessCode.UNAUTHENTICATED,
-        message: 'refresh_token is invalid',
-      };
+    } catch (e) {
+      if (e === 'reuse') {
+        return {
+          code: BusinessCode.REFRESH_REUSE_DETECTED,
+          message: 'refresh token reuse detected',
+        };
+      }
+      return { code: BusinessCode.UNAUTHENTICATED, message: 'refresh_token is invalid' };
     }
   }
 

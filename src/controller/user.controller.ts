@@ -43,6 +43,7 @@ import {
   QueryUsersDto,
   QueryValidThreadDto,
   QueryPendingThreadDto,
+  UpdateProfileDto,
 } from '../dto/user.dto';
 
 @ApiTags('user')
@@ -100,6 +101,21 @@ export class UserController {
     await this.userService.updateAvatar(req.user.userId, url);
     await this.uploadService.deleteByUrl(old?.userExtra?.avatar ?? '');
     return { code: BusinessCode.OK, message: 'successful', data: { avatar: url } };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/update-profile')
+  @ApiOperation({ summary: '更新当前用户昵称/简介（handle 不可改）' })
+  @ApiResultResponse(UserResponseDto)
+  async updateProfile(
+    @Request() req,
+    @Body() dto: UpdateProfileDto,
+  ): Promise<ApiResult> {
+    const data = await this.userService.updateProfile(req.user.userId, dto);
+    delete data.hashPwd;
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard)

@@ -40,6 +40,11 @@ export class UserService {
     return this.http.post<StandardResponse<{ avatar: string }>>(`${apiPrefix}/user/update-avatar`, fd)
   }
 
+  /** 更新当前用户昵称/简介。成功后调 updateSessionProfile() 刷新本地。 */
+  updateProfile(params: { name?: string, bio?: string }) {
+    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/update-profile`, params)
+  }
+
   queryUserThreadValid(params: QueryUserThreadParams) {
     return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/valid`, params)
   }

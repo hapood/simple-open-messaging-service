@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, EMPTY, tap } from 'rxjs';
+import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
 
@@ -9,7 +9,7 @@ const TOKEN_CREATE_TIME = "token_create_time",
   IS_KEEP_LOGIN = "is_keep_login"
 
 type RefreshTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
-type AccessTokenRes = { code: number, message: string, data?: { access_token: string } }
+type AccessTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
 
 @Injectable({
   providedIn: 'root',
@@ -18,7 +18,7 @@ export class AuthService {
   private _tokenCreateTime = localStorage.getItem(TOKEN_CREATE_TIME)
   private _isKeep = localStorage.getItem(IS_KEEP_LOGIN) === '1' || false
   private _isReReTk = false
-  private _isReACTk = false
+  private _renewAccessInFlight?: Observable<AccessTokenRes>
   private _timerHandler: ReturnType<typeof setTimeout> | undefined = undefined
   private _lastAccTok: string | undefined
   public acTkSub = new BehaviorSubject<{ lastToken: string | undefined, nextToken: string } | undefined>(undefined)
@@ -53,33 +53,40 @@ export class AuthService {
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 
-  renewAccessToken() {
-    if (this._isReACTk === true) {
-      return
+  /**
+   * 刷新 access token：走 renew-access（后端会轮换 refresh）。
+   * 返回 Observable 供拦截器 await 后用新 token 重试；单飞：并发 401 共享同一在飞请求(shareReplay)。
+   * 成功→存新 access + 轮换后的 refresh；code 10006(重用)/10003(失效) 等 → redoLoginAuth 强制重登。
+   */
+  renewAccessToken(): Observable<AccessTokenRes> {
+    if (this._renewAccessInFlight) {
+      return this._renewAccessInFlight
     }
-    this.acTkSub.next(undefined)
     const rfToken = this.getRefreshToken()
     if (rfToken === undefined) {
       this.redoLoginAuth()
-    } else {
-      this.http.post<AccessTokenRes>
-        (`${apiPrefix}/auth/renew-access`, {
-          refreshToken: rfToken
-        }, { 'headers': { Authorization: 'public' } }).subscribe({
-          next: ({ code, message, data }) => {
-            this._isReACTk = false
-            if (code === 0) {
-              this.setAcToken(data!.access_token)
-            } else {
-              console.info(message)
-              this.redoLoginAuth()
-            }
-          },
-          error: () => {
-            this._isReACTk = false
-          }
-        })
+      return EMPTY
     }
+    this.acTkSub.next(undefined)
+    const req$ = this.http.post<AccessTokenRes>(
+      `${apiPrefix}/auth/renew-access`,
+      { refreshToken: rfToken },
+      { 'headers': { Authorization: 'public' } },
+    ).pipe(
+      tap((res) => {
+        if (res.code === 0) {
+          this.setAcToken(res.data!.access_token)
+          this.setReToken(res.data!.refresh_token)
+        } else {
+          // 10006 重用(家族已吊销) / 10003 invalid|expired 等 → 强制重登
+          this.redoLoginAuth()
+        }
+      }),
+      finalize(() => { this._renewAccessInFlight = undefined }),
+      shareReplay(1),
+    )
+    this._renewAccessInFlight = req$
+    return req$
   }
 
   renewRefreshToken() {

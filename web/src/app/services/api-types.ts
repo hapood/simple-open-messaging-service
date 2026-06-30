@@ -140,6 +140,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/update-avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 更新当前用户头像（multipart file；sharp 重写为 32/64/128/256/512 多档 webp） */
+        post: operations["UserController_updateAvatar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/update-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 更新当前用户昵称/简介（handle 不可改） */
+        post: operations["UserController_updateProfile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/query-thread/valid": {
         parameters: {
             query?: never;
@@ -488,6 +522,11 @@ export interface components {
              * @example https://.../a.png
              */
             avatar: string;
+            /**
+             * @description 简介（about）
+             * @example Hey there! I am using SOMS.
+             */
+            bio: string;
         };
         UserNotiBoxResponseDto: {
             /**
@@ -617,6 +656,10 @@ export interface components {
         };
         RefreshTokenDto: {
             refreshToken: string;
+        };
+        UpdateProfileDto: {
+            name?: string;
+            bio?: string;
         };
         QueryValidThreadDto: {
             skip: number;
@@ -845,6 +888,48 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    UserController_updateAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_updateProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateProfileDto"];
+            };
+        };
         responses: {
             200: {
                 headers: {

@@ -10,6 +10,14 @@ import { jwtConstants } from './constants';
 const REFRESH_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 天，与 JWT expiresIn 对齐
 const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 每日清理一次过期记录
 
+/** refresh token 签发/轮换选项：familyId 省略→铸造新家族（登录），传入→继承（轮换）。 */
+type RefreshOpts = { familyId?: string; device?: string };
+
+/** verifyRefreshToken 判别结果：区分重用(reuse)以触发前端强制重登，区别于普通失效。 */
+type VerifyResult =
+  | { ok: true; userId: number; familyId: string; jti: string }
+  | { ok: false; reason: 'invalid' | 'expired' | 'reuse' };
+
 @Injectable()
 export class AuthService implements OnModuleInit, OnModuleDestroy {
   private _cleanupTimer: NodeJS.Timeout | undefined;
@@ -65,20 +73,24 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 签发 refresh token：用 refreshSecret 签 JWT（14d）并入库（存 sha256 哈希，不存明文）。
-   * 返回 token 字符串。前端无需改动。
+   * 签发 refresh token：用 refreshSecret 签 JWT（14d）并入库（存 sha256 哈希 + jti + familyId）。
+   * - opts.familyId 省略 → 铸造新家族（登录）；传入 → 继承（轮换，维持重用检测链）。
+   * - jti 保证同秒多签互不冲突；familyId 是重用检测锚点（重放已吊销 token→全家族失效）。
    */
-  async getRefreshToken(userId: number, device?: string): Promise<string> {
-    // jti 保证同一秒内为同一用户签发的多个 refresh token 互不相同，避免 tokenHash 唯一冲突
+  async getRefreshToken(userId: number, opts: RefreshOpts = {}): Promise<string> {
+    const familyId = opts.familyId ?? randomUUID();
+    const jti = randomUUID();
     const token = this.jwtService.sign(
-      { sub: userId, jti: randomUUID() },
+      { sub: userId, jti, fam: familyId },
       { secret: jwtConstants.refreshSecret, expiresIn: '14d' },
     );
     await this.prisma.refreshToken.create({
       data: {
         userId,
         tokenHash: hashToken(token),
-        device: device ?? null,
+        jti,
+        familyId,
+        device: opts.device ?? null,
         expiresAt: new Date(Date.now() + REFRESH_TTL_MS),
       },
     });
@@ -86,35 +98,79 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 校验 refresh token：先验 JWT 签名/过期，再查 DB 记录是否有效（未吊销、未过期）。
-   * DB 记录是吊销与「重启存活」的事实源。有效返回 userId，否则 undefined。
+   * 校验 refresh token：先验 JWT 签名/过期，再查 DB 记录。
+   * - JWT 有效但 DB 记录已吊销 → 重用（token 链已泄露）→ 全家族连根吊销 + 返回 reason:'reuse'。
+   * - 旧 token（migration 前签发，JWT 无 fam claim 但 DB 行已回填 familyId/jti）仍可用，
+   *   下次轮换即升级为新格式 token。
    */
-  async verifyRefreshToken(refreshToken: string): Promise<number | undefined> {
-    let payload: { sub: number; exp: number };
+  async verifyRefreshToken(refreshToken: string): Promise<VerifyResult> {
     try {
-      payload = this.jwtService.verify(refreshToken, {
+      this.jwtService.verify(refreshToken, {
         secret: jwtConstants.refreshSecret,
       });
     } catch {
-      return undefined;
+      return { ok: false, reason: 'invalid' };
     }
-    const record = await this.prisma.refreshToken.findFirst({
-      where: {
-        tokenHash: hashToken(refreshToken),
-        userId: payload.sub,
-        revokedAt: null,
-        expiresAt: { gt: new Date() },
+    const rec = await this.prisma.refreshToken.findUnique({
+      where: { tokenHash: hashToken(refreshToken) },
+      select: {
+        userId: true,
+        familyId: true,
+        jti: true,
+        revokedAt: true,
+        expiresAt: true,
       },
-      select: { userId: true },
     });
-    return record?.userId;
+    if (!rec) return { ok: false, reason: 'invalid' };
+    if (rec.revokedAt !== null) {
+      await this.revokeFamily(rec.familyId, 'reuse');
+      return { ok: false, reason: 'reuse' };
+    }
+    if (rec.expiresAt <= new Date()) return { ok: false, reason: 'expired' };
+    return { ok: true, userId: rec.userId, familyId: rec.familyId, jti: rec.jti };
   }
 
-  /** 吊销 refresh token（幂等：不存在或已吊销则无操作）。 */
+  /**
+   * 轮换 refresh token：校验 → 原子 claim（翻 revokedAt）→ 签发新 access+refresh（继承 familyId）。
+   * - 并发 race：两调用方同时轮换同一 token，updateMany where revokedAt:null 只有一个 count===1，
+   *   失败方 count===0 视为重用 → 全家族吊销（"合法用户与攻击者同用旧 token → 同归于尽"）。
+   * - verifyRefreshToken 已对"已吊销"做 reuse 检测；此处 claim 兜底 verify 之后的并发窗口。
+   * 失败抛 reason 字符串（'invalid'|'expired'|'reuse'），调用方据此映射业务码。
+   */
+  async rotateRefreshToken(
+    refreshToken: string,
+    opts: RefreshOpts = {},
+  ): Promise<{ access: string; refresh: string; userId: number }> {
+    const v = await this.verifyRefreshToken(refreshToken);
+    if (v.ok === false) throw v.reason;
+    const claim = await this.prisma.refreshToken.updateMany({
+      where: { tokenHash: hashToken(refreshToken), revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: 'rotated' },
+    });
+    if (claim.count === 0) {
+      await this.revokeFamily(v.familyId, 'reuse');
+      throw 'reuse';
+    }
+    const refresh = await this.getRefreshToken(v.userId, {
+      familyId: v.familyId,
+      ...opts,
+    });
+    return { access: this.getAccessToken(v.userId), refresh, userId: v.userId };
+  }
+
+  /** 连根吊销整个家族（重用检测触发）：所有未吊销成员一并失效。 */
+  async revokeFamily(familyId: string, reason: string) {
+    await this.prisma.refreshToken.updateMany({
+      where: { familyId, revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: reason },
+    });
+  }
+
+  /** 吊销单个 refresh token（logout 用；幂等：不存在或已吊销则无操作）。 */
   async revokeRefreshToken(refreshToken: string) {
     await this.prisma.refreshToken.updateMany({
       where: { tokenHash: hashToken(refreshToken), revokedAt: null },
-      data: { revokedAt: new Date() },
+      data: { revokedAt: new Date(), revokeReason: 'logout' },
     });
   }
 

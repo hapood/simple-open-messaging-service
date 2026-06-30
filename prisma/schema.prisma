@@ -38,6 +38,7 @@ model UserExtra {
   id        Int      @id @default(autoincrement())
   name      String
   avatar    String
+  bio       String   @default("") @db.VarChar(255)
   User      User?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -157,10 +158,14 @@ model RefreshToken {
   userId     Int
   user       User     @relation(fields: [userId], references: [id])
   tokenHash  String   @unique // 存 sha256 哈希，不存明文
+  jti        String   @unique // 该 token 的 JWT id；精确吊销键，与 claim 对齐
+  familyId   String // 登录时铸造、轮换时继承；重用检测锚点（重放已吊销 token→全家族失效）
   device     String? // 多端标识（P0 暂不填）
   createdAt  DateTime @default(now())
   expiresAt  DateTime
   revokedAt  DateTime? // 软吊销
+  revokeReason String? @db.VarChar(32) // 吊销原因：logout|rotated|reuse|all_devices|password_change（仅观测/取证）
 
   @@index([userId])
+  @@index([familyId])
 }

@@ -1,4 +1,4 @@
-import { Component, computed, input } from '@angular/core';
+import { Component, computed, input, signal, effect } from '@angular/core';
 import { UserAvatarType } from './model'
 
 /**
@@ -30,7 +30,22 @@ const PALETTE = [
 export class UserAvatarComponent {
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER)
   readonly name = input<string>('')
+  /** 真实头像图 URL（可选）。有值且加载成功 → 显示图片；否则回退首字母。 */
+  readonly src = input<string | undefined | null>(undefined)
   readonly UserAvatarType = UserAvatarType
+
+  /** 图片加载失败（损坏/404）→ 回退首字母。src 变化时重置，以重试新图。 */
+  readonly imgFailed = signal(false)
+
+  constructor() {
+    effect(() => {
+      this.src()
+      this.imgFailed.set(false)
+    }, { allowSignalWrites: true })
+  }
+
+  /** 是否渲染真实图片（有 src 且未失败）。 */
+  readonly showImage = computed(() => !!this.src() && !this.imgFailed())
 
   /** 首字符（中文取首字、英文取首字母大写）；空名 fallback '?'。 */
   readonly initial = computed(() => {

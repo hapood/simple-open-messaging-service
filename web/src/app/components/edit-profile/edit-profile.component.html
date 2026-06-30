@@ -1,0 +1,50 @@
+<div class="edit-profile" [appFitDialog]="fitOpts">
+  <div class="msg-header">
+    <button class="icon-btn" (click)="goBack()" aria-label="返回">
+      <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+    </button>
+    <span class="title">资料</span>
+    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">保存</button>
+  </div>
+
+  <div class="body">
+    <div class="avatar-wrap">
+      <div class="avatar">
+        <app-user-avatar [type]="UserAvatarType.SELF"
+          [name]="name() || sessionProfile()?.uniqName || 'SOMS'"
+          [src]="sessionProfile()?.userExtra?.avatar" />
+        <button class="avatar-edit" type="button" (click)="fileInput.click()"
+          [disabled]="uploading()" aria-label="更换头像">
+          @if (uploading()) {
+            <span class="spin"></span>
+          } @else {
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+          }
+        </button>
+      </div>
+      <input #fileInput type="file" accept="image/*" hidden (change)="onAvatarPicked($event)" />
+    </div>
+
+    <label class="field">
+      <span class="label">昵称</span>
+      <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)"
+        maxlength="30" placeholder="你的名字" />
+      @if (nameHint()) {
+        <span class="hint">{{ nameHint() }}</span>
+      }
+    </label>
+
+    <label class="field">
+      <span class="label">简介</span>
+      <textarea class="textarea" rows="3" [ngModel]="bio()" (ngModelChange)="bio.set($event)"
+        maxlength="120" placeholder="介绍一下自己"></textarea>
+      <span class="counter">{{ bio().length }}/120</span>
+    </label>
+
+    <div class="handle">登录账号 @{{ sessionProfile()?.uniqName }}（不可更改）</div>
+  </div>
+</div>

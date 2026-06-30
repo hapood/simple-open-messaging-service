@@ -10,6 +10,11 @@
   height: 100%;
 }
 
+.ua.img {
+  object-fit: cover;
+  border-radius: 20%; // 匹配首字母 SVG 的 rect rx=20% 方圆角，真实图也圆角
+}
+
 .ua text {
   fill: #ffffff;
   font-size: 44px;

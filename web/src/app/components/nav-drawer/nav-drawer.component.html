@@ -2,8 +2,11 @@
   <mat-sidenav #nav class="nav-drawer" mode="over" position="start"
     (openedChange)="drawerOpenChange.emit($event)">
     <div class="drawer-header">
-      <div class="avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'" /></div>
-      <div class="user-name">{{ sessionProfile()?.uniqName || 'SOMS' }}</div>
+      <button class="avatar" type="button" (click)="editProfile()" aria-label="编辑资料">
+        <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'"
+          [src]="sessionProfile()?.userExtra?.avatar" />
+      </button>
+      <div class="user-name">{{ sessionProfile()?.userExtra?.name || sessionProfile()?.uniqName || 'SOMS' }}</div>
     </div>
 
     <nav class="drawer-menu">
