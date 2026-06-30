@@ -8,3 +8,7 @@ Project-level guidance for Claude working in this repository. **These instructio
   - Never trade correctness, security, maintainability, or architectural cleanliness for "faster delivery," "fewer changes," or "lower regression risk."
   - When multiple implementation paths exist, select and execute the recognized best option directly — do not ship a suboptimal solution first and wait to be challenged. Extra effort is not a decision factor.
   - Scope clarification: this means "choose by best practice," not "rewrite everything by default." If the best practice is the minimal change, do that; if it requires more work, do that.
+
+## Language
+
+- Code comments and documentation are written in **English** — inline comments, doc comments (`/** */`), and standalone `.md` docs alike. Do not mix languages within a single file or document.

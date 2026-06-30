@@ -2,7 +2,7 @@
 
 本文档是 SOMS **后端接口与前后端交互协议栈**的目标设计基准，用于团队对齐与后续渐进式实施。它基于对现有代码（后端 5 个 controller、`EventGateway`、`AuthService`，前端 `AuthInterceptor` / `WebsocketService`）的审查，提出分层目标契约、错误码体系、WS 事件目录与演进路线图。
 
-- **状态**：P0/P1 已完成并验证；本文档仅保留待办（P2/P3 + ESM 外挂）。最后更新 2026-06-26。
+- **状态**：P0/P1 已完成并验证；实时通信已于 2026-06-30 由 WebSocket 迁移至 **SSE**（§4.5 / §5.5 / §六 P2 已据此重写）；本文档仅保留待办（P2 增量 / P2+ / P3 + ESM 外挂）。最后更新 2026-06-30。
 - **范围**：HTTP 接口、数据契约、认证、实时通信、前后端协同
 - **目标**：在「简洁、易被第三方应用接入」的定位下，补齐契约、正确性与可靠性
 
@@ -35,7 +35,7 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 
 ## 二、现状评估（P0/P1 前基线，仅供回溯）
 
-> 以下为规划时（2026-06-22）的协议栈快照，其中标 ⚠️ 的项（无 `/api/v1` 前缀、错误全走 HTTP 200、refresh 仅内存字典、`Date.toJSON` hack、无 OpenAPI、无全局过滤器/ValidationPipe）**均已在 P0/P1 修复**。唯一遗留：WS「无心跳、无序号」——见 [六、P2](#六演进路线图)。
+> 以下为规划时（2026-06-22）的协议栈快照，其中标 ⚠️ 的项（无 `/api/v1` 前缀、错误全走 HTTP 200、refresh 仅内存字典、`Date.toJSON` hack、无 OpenAPI、无全局过滤器/ValidationPipe）**均已在 P0/P1 修复**。原「WS 无心跳、无序号」遗留已随 2026-06-30 的 **WS→SSE 迁移**消除（SSE `:ping` 心跳 + 帧 `id` + 重连游标补拉）——见 [§4.5](#45-实时通信sse-下行) / [§六 P2](#六演进路线图)。
 
 ### 已发现的协议层 bug 与隐患
 
@@ -48,10 +48,10 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 ### 保留的现有设计（规划围绕它们展开）
 
 1. **会话统一抽象**：`MessageThread` / `UserMessageThread` 统一 P2P 与 GROUP，`status` 驱动生命周期。
-2. **职责分离**：HTTP 负责「写与查」，WebSocket 负责「推」。
+2. **职责分离**：HTTP 负责「写与查」，SSE 负责「推」。
 3. **双 Token 续期**：access 短(无状态) + refresh 长(可吊销)。
 4. **游标分页**：`lastId` + `skip/take`。
-5. **WS 薄载荷推送**：只推 `{threadId, msgId}` 触发客户端增量拉取——利于多端一致性、WS 小包。**保持不变。**
+5. **下行推送（SSE）**：SSE 单向推**完整消息体**（`{ threadId, ...message }`，已 `serializeBody` 序列化），前端收到即可直接渲染、无需二次拉取。HTTP 负责「写与查」+ SSE 负责「推」的职责分离不变。（原 WS 时代的「薄载荷 `{threadId, msgId}` + 二次拉取」设计已在 2026-06-30 的 WS→SSE 迁移中废止——见 [§4.5](#45-实时通信sse-下行)。）
 
 ### 设计原则
 
@@ -95,21 +95,24 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 5. **生产安全**：CORS 显式 origin 白名单、`helmet`、强制 HTTPS/WSS、请求体大小限制。
 6. access_token 保持纯 JWT 短期无状态；需「立即踢下线」时再加短 TTL 吊销列表（Redis 黑名单）。
 
-### 4.5 实时通信（WebSocket）
+### 4.5 实时通信（SSE 下行）
 
-保留「薄载荷 + 二次拉取」与子协议鉴权，补齐可靠性与事件：
+> 2026-06-30 已由 WebSocket 迁移至 **SSE（Server-Sent Events）**：WS 只承担下行推送却背负连接/重连/心跳/子协议鉴权全部复杂度（曾滋生 31 条 token/WS bug），改用 SSE「只推送」专用通道一次根除。下行为 SSE 单向流，**所有客户端上行（发消息、未来的已读上报/typing）一律走 HTTP**。
 
-1. **心跳**：服务端 30s ping（原生 ping/pong 帧），3 次无 pong 判死并清理 `wsClientDict`。
-2. **消息 `seq`**：每连接维护递增 seq，前端据 seq 去重 + 检测缺口触发补拉（解决弱网丢推送）。
-3. **事件目录枚举**：前后端共享 `WsEvent` 常量表。
-4. **鉴权方式**：子协议方案保留（优点：不进 URL 日志）；若需更标准，改为「连接后首条消息 `{type:'AUTH',token}` 握手」。择一并文档化。
-5. **扩展事件**（按优先级）：`MESSAGE_READ`（配合已建模却未用的 `UserMessageThread.lastRead`）、`USER_TYPING`、`USER_PRESENCE`、`NOTIFY`（接入已建模却未用的 `Notify` 表）。
+1. **通道**：`GET /api/v1/events`（`text/event-stream`），手动 `res.writeHead` + `X-Accel-Buffering: no`（防 Nginx 攒批缓冲）；首帧 `: connected` 注释冲头触发前端 `onopen`。一个用户可有多条连接（多标签/多端），`res.on('close')` 清理。
+2. **鉴权**：复用与普通受保护路由同一套 `JwtAuthGuard`（验签 + 过期 + jti 黑名单 + `tokenVersion` 撤销感知），token 走 `Authorization: Bearer` 头，**不进 URL**（无日志/Referer 泄漏）。失败 → HTTP 401，前端 `onopen` 收到后 renew + 重开。不再需要 WS 的 `AUTH` 握手帧。
+3. **心跳与判死**：服务端每 25s 写 `: ping` 注释帧（< Nginx `proxy_read_timeout` 60s）；SSE 单向无 pong，靠 `res.write` 返回 `false`（对端已断/背压）感知断开 → `res.end()` → `close` 回调清理。判死窗口 ≤ 25s。
+4. **推送载荷**：推**完整消息体**（`serializeBody({ threadId, ...message })`，BigInt→string / Date→ms，与 HTTP 响应同口径），前端收到即可直接渲染、**无需二次 `query-messages`**（原 WS「薄载荷 `{threadId, msgId}` + 二次拉取」设计已废止）。帧带 `id: <msgId>`。
+5. **顺序与完整性**：单条 SSE 连接存活期间，消息**严格有序、完整**到达——由底层 TCP 保证（服务端 `write` 顺序即客户端收到顺序，字节流可靠重组）。SSE 层无需自加 `seq`，这正是迁移省掉的复杂度。
+6. **断线续传**：SSE 流本身不回放历史（服务端不消费 `Last-Event-ID`）。连接断开（含 ≤25s 假死窗口）期间的消息会丢，重连成功后前端发 `reconnect$` 信号，各会话按 `newestMsgId` 游标走 HTTP 增量补拉（`refillNewer`）。同一用户的多条连接各自有序、跨连接不保证。
+7. **强制下线**：全设备登出 / 改密 / admin 踢下线触发 `auth.sessions-invalidated` 事件 → `SseService` 向该用户所有连接推 `FORCE_LOGOUT` 后立即断开。
+8. **扩展事件**（均下行）：`MESSAGE_READ`（配合已建模却未用的 `UserMessageThread.lastRead`）、`USER_PRESENCE`、`NOTIFY`（接入已建模却未用的 `Notify` 表）。注意 `USER_TYPING` / 已读上报属**客户端上行**，SSE 不能承载，须新增 HTTP 端点（见 [§六 P2](#p2--实时体验与可靠性)）。
 
 ### 4.6 前后端协同
 
-1. **续期单飞（single-flight）**：HTTP 401 续期并发时只发一次，其余请求 `await` 同一 Promise，替换手写的 `_isReACTk` 标志位。
-2. **WS 重连指数退避 + 抖动**：1s→2s→…→30s 封顶，替代固定 10s。
-3. **前端统一错误处理**：401 续期/重登、429 退避、5xx 降级提示。
+1. **续期单飞（single-flight）** ✅ 已落地：`renewAccessToken()` 用 `shareReplay({ bufferSize:1, refCount:true })` + `finalize`，并发 401 共享同一在飞请求，替换手写标志位。统一只走 `/auth/renew-access`（后端同时轮换 refresh），删除旧的 7 天定时器 / `renewRefreshToken` / `tokenCreateTime` 机制。
+2. **SSE 重连：指数退避 + 全抖动** ✅ 已落地：`delay = random(0, min(1000·2^attempt, 30000))`，base 1s、封顶 30s、成功连上归零（抗惊群）；401 单独走 renew 后立即重开（不计退避）。替代原固定 10s。
+3. **前端统一错误处理** ✅ 部分落地：401 → 单飞 renew + 重试 1 次（上限、不递归）；renew 失败（reuse `10006` / 失效 `10003`）→ `redoLoginAuth` 强制重登；SSE `FORCE_LOGOUT` → 断开 + 强登。**待补**：429 退避、5xx 降级提示（见 P3）。
 
 ---
 
@@ -203,30 +206,27 @@ interface CursorPage<T> {
 }
 ```
 
-### 5.5 WebSocket 事件目录
+### 5.5 SSE 事件目录
 
-通用帧：
+通用帧（SSE 文本流，空行 `\n\n` 分帧；`event` 行定事件名，`id` 行做游标，`data` 行为 JSON 字符串）：
 
-```ts
-interface WsFrame<T = unknown> {
-  event: WsEvent;
-  code: number;       // 0 = 成功
-  message: string;
-  data?: T;
-  seq?: number;       // 服务端→客户端递增，用于去重/补拉
-}
 ```
+event: <EVENT_NAME>
+id: <msgId>          # 仅 NEW_MESSAGE 带此行
+data: <json>
+```
+
+鉴权不在帧里——走 HTTP：连接时 `JwtAuthGuard` 失败直接 401（前端 renew + 重开），故**无 `AUTH` 帧**。`: connected` / `: ping` 是 SSE 注释行（不计为事件），用于冲头与心跳。
 
 | 事件 | 方向 | `data` | 说明 |
 | --- | --- | --- | --- |
-| `AUTH` | S→C | — | 鉴权结果（已有，保留） |
-| `NEW_MESSAGE` | S→C | `{ threadId: number, msgId: string }` | 已有，加 `seq` |
-| `MESSAGE_READ` | S→C | `{ threadId: number, userId: number, lastRead: string }` | 已读回执，消费 `lastRead` 字段 |
-| `USER_TYPING` | S→C | `{ threadId: number, userId: number }` | 输入中 |
-| `USER_PRESENCE` | S→C | `{ userId: number, online: boolean }` | 在线状态 |
-| `NOTIFY` | S→C | `{ type: NotifyType, ... }` | 接入 `Notify` 表 |
+| `NEW_MESSAGE` | S→C | `{ threadId, id, content, contentType, createdAt, ... }`（完整消息体，已序列化） | 对方/群成员发新消息；前端收到即可渲染，无需二次拉取。帧 `id` = 消息 id |
+| `FORCE_LOGOUT` | S→C | `{ event:'FORCE_LOGOUT', status:0, message:<reason> }` | 全设备登出 / 改密 / admin 踢下线；前端断开 + 强制重登 |
+| `MESSAGE_READ` | S→C（待实现） | `{ threadId, userId, lastRead }` | 已读回执，消费 `UserMessageThread.lastRead` |
+| `USER_PRESENCE` | S→C（待实现） | `{ userId, online }` | 在线状态 |
+| `NOTIFY` | S→C（待实现） | `{ type: NotifyType, ... }` | 接入 `Notify` 表（新好友请求 / 系统通知） |
 
-> 客户端→服务端当前不发业务消息（保持）。`USER_TYPING` 等若需上行，再开启对应 `@SubscribeMessage`。
+> **上行约束**：SSE 单向，客户端→服务端不发业务消息。`USER_TYPING`（输入中）、已读上报等上行一律走 HTTP `POST`（待新增端点）。原 WS 时代的 `@SubscribeMessage` 上行通道随迁移删除。
 
 ---
 
@@ -247,12 +247,16 @@ Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、cl
 
 ### P2 — 实时体验与可靠性
 
-| 内容 | 影响文件 | 验收 |
-| --- | --- | --- |
-| WS 心跳 | `src/gateway/event.gateway.ts` | 假死连接 90s 内被清理 |
-| 消息 `seq` + 补拉 | gateway + 前端 `websocket.service.ts` | 弱网下推送缺口能补齐 |
-| 已读回执 / 输入中 / 在线状态 | gateway、前端组件 | `lastRead` 被消费、状态实时刷新 |
-| 接入 Notify | `src/notify/*`、`app.module.ts` | 通知表被写入与推送 |
+> 2026-06-30 WS→SSE 迁移后重对账：原 P2 前两项（WS 心跳 / seq 补拉）是为修 WS 可靠性，SSE 已用更简方式达成；后两项（已读·在线·Notify）是纯增量功能，且因 SSE 单向，上行部分须走 HTTP。
+
+| 内容 | 状态 | 影响 | 验收 |
+| --- | --- | --- | --- |
+| 心跳与判死 | ✅ SSE 已落地 | `src/gateway/sse.service.ts` | `: ping @25s` + `write` 失败判死；假死连接 ≤25s 清理（原 90s 目标已超越） |
+| 断线续传补拉 | ✅ SSE 已落地 | 前端 `websocket.service.ts`（`reconnect$` + `refillNewer`） | 重连后按 `newestMsgId` 游标 HTTP 补齐断线期间漏消息 |
+| 已读回执 / 输入中 / 在线状态 | ⏳ 待办 | 新增 HTTP 上行端点（已读上报/typing）+ SSE 下行事件（`MESSAGE_READ` / `USER_PRESENCE`）+ 前端组件 | `lastRead` 被消费；在线状态实时刷新。**注意**：SSE 单向，已读上报/typing 须走 HTTP POST，不能再 `@SubscribeMessage` |
+| 接入 Notify | ⏳ 待办 | `src/notify/*` 导入 `AppModule` + SSE `NOTIFY` 事件 | 通知表被写入并以 SSE 推送（新好友请求等） |
+
+> **下一步工作重心** = P2 后两项（已读 / 在线 / Notify），这是 SSE 迁移后实时体验的主要缺口，也是当前分支 `refactor/sse-token` 合并 `dev` 后的首选续作。
 
 ### P2+ — 好友域功能补全（产品对齐）
 
@@ -288,7 +292,7 @@ Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、cl
 | DTO 与校验 | [src/controller/*](../src/controller/)、新增 `src/common/dto/` |
 | 响应信封合并 | [src/model.ts](../src/model.ts)、[src/controller/utils.ts](../src/controller/utils.ts) |
 | refresh 落库 + 修 bug + 密钥 | [src/auth/auth.service.ts](../src/auth/auth.service.ts)、[src/auth/constants.ts](../src/auth/constants.ts)、[src/controller/auth.controller.ts](../src/controller/auth.controller.ts)、[prisma/schema.prisma](../prisma/schema.prisma) |
-| WS 心跳/seq/事件 | [src/gateway/event.gateway.ts](../src/gateway/event.gateway.ts) |
-| 文件上传 | P3 新增 `src/file/*` + controller（原死代码 P1b 已删） |
-| 前端续期单飞 + WS 退避 | [web/src/app/auth.interceptor.ts](../web/src/app/auth.interceptor.ts)、[web/src/app/services/auth.service.ts](../web/src/app/services/auth.service.ts)、[web/src/app/services/websocket.service.ts](../web/src/app/services/websocket.service.ts) |
+| SSE 下行（鉴权 / 心跳 / 推送 / 判死 / 强制下线） | [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts) |
+| 文件上传 | [src/upload/](../src/upload/)（`upload.controller` + `upload.service`，聊天图片上传已实现；头像 `sharp` 多档重写共用 `src/upload/`） |
+| 前端续期单飞 + SSE 重连退避 | [web/src/app/auth.interceptor.ts](../web/src/app/auth.interceptor.ts)、[web/src/app/services/auth.service.ts](../web/src/app/services/auth.service.ts)、[web/src/app/services/websocket.service.ts](../web/src/app/services/websocket.service.ts)（文件名保留，内部已改 `@microsoft/fetch-event-source`） |
 | 前端类型生成 | [web/](../web/)（新增 openapi-typescript 流水线） |

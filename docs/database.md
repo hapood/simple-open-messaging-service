@@ -196,5 +196,5 @@ enum NotifyType {
 1. **多态会话关联**：`UserMessageThread` 用 `(toObjType, toObjId)` 同时表达「与某用户的 P2P 会话」和「与某群组的会话」，避免分别建表。
 2. **状态驱动生命周期**：会话的建立/屏蔽/删除全部由 `UserMessageThread.status` 表达，好友请求即是一次状态迁移（详见 [architecture.md → 好友请求状态机](./architecture.md#好友请求状态机)）。
 3. **延迟绑定线程**：好友请求阶段 `threadId` 为空，仅在 `approveFriendRequest` 时才创建 `MessageThread` 并回填，避免产生无意义空线程。
-4. **BigInt 消息 ID**：`Message.id` / `Notify.id` / `UserMessageThread.lastRead` 用 BigInt，序列化时需经 `convertBigIntId()` 转字符串。
+4. **BigInt 消息 ID**：`Message.id` / `Notify.id` / `UserMessageThread.lastRead` 用 BigInt，由全局 `SerializeInterceptor` 统一序列化为字符串（见 [architecture.md → 统一响应格式](./architecture.md#统一响应格式)）。
 5. **群组 = 线程**：每个群组与一个 `MessageThread(GROUP)` 一对一，群消息直接写入该线程；成员资格同时体现在 `GroupMember` 与 `UserMessageThread` 两处。

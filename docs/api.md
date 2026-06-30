@@ -11,7 +11,7 @@ SOMS 后端监听 `http://localhost:3000`，全局前缀 `/api/v1`。除特别�
 - [群组 API](#群组-api)
 - [文件 API](#文件-api)
 - [Admin API](#admin-api)
-- [WebSocket 事件](#websocket-事件)
+- [SSE 事件](#sse-事件)
 
 ---
 
@@ -43,7 +43,7 @@ interface StandardResponse<T = any> {
 | `40xxx` | 群组域 | `40001` 非群成员 / `40002` 非好友不可邀请 / `40003` 无效邀请 token |
 
 > 示例：登录凭据错 → `code:10003`；IP 封禁 → `code:10005` + `data.bannedUntil`（解封时间戳）；注册重复 → `code:10002`；refresh token 重用 → `code:10006`（家族已连根吊销，前端强制重登）。
-> 说明：HTTP 响应信封字段为 `code`（见上表）。下文仍出现 `status` 的两处为**有意保留**：① WebSocket 帧的 `status` 字段（见「消息格式」，当前实现即此）；② 好友请求内部状态机的 `status 0/1/2/3/5`（不直接体现在响应 `code`）。
+> 说明：HTTP 响应信封字段为 `code`（见上表）。下文 `status` 仍出现在好友请求内部状态机的 `status 0/1/2/3/5`（`makeFriendRequest` 返回值，不直接体现在响应 `code`）。
 
 ### 鉴权
 
@@ -97,7 +97,7 @@ interface StandardResponse<T = any> {
 ### POST `/auth/logout-all` — 全设备登出
 
 - **鉴权**：JWT
-- **行为**：`invalidateAllSessions(userId, 'all_devices')` —— bump `User.tokenVersion`（令该用户所有 access token 即时失效）+ 吊销其全部 refresh token + 清 access jti 缓存，并通过 `auth.sessions-invalidated` 事件强制断开其全部 WebSocket 连接。
+- **行为**：`invalidateAllSessions(userId, 'all_devices')` —— bump `User.tokenVersion`（令该用户所有 access token 即时失效）+ 吊销其全部 refresh token + 清 access jti 缓存，并通过 `auth.sessions-invalidated` 事件强制断开其全部 SSE 连接。
 - **响应**：`{ code: 0, message: 'success' }`
 
 ### POST `/auth/change-password` — 修改密码
@@ -232,7 +232,7 @@ interface StandardResponse<T = any> {
 
 - **鉴权**：JWT
 - **请求体**：`{ userThreadId: number, content: string }`
-- **行为**：校验发送者会话为 `APPROVED`（P2P 还需对方 `APPROVED`），写入 `Message(PURE_TEXT)`，并通过 WebSocket 向对方/群成员推送 `NEW_MESSAGE`
+- **行为**：校验发送者会话为 `APPROVED`（P2P 还需对方 `APPROVED`），写入 `Message(PURE_TEXT)`，并通过 **SSE** 向对方/群成员推送 `NEW_MESSAGE`（载荷为完整消息体，前端收到即渲染）
 - **响应 `data`**：包含新消息的 `msgId`（字符串）
 
 ### POST `/query-messages` — 分页查询历史消息
@@ -399,39 +399,41 @@ Admin 使用**独立的 JWT 体系**（独立 `adminSecret` + `scope: 'admin'` c
 
 ---
 
-## WebSocket 事件
+## SSE 事件
 
-> 网关：[src/gateway/event.gateway.ts](../src/gateway/event.gateway.ts) · 协议：原生 `ws`，与 HTTP 同端口 3000
+> 端点：[src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts) · `GET /api/v1/events`（`text/event-stream`，与 HTTP 同端口 3000）
 
 ### 连接与鉴权
 
 ```
-const ws = new WebSocket('ws://<host>:3000', [accessToken])
+// 浏览器原生 EventSource 不支持自定义 header，故前端用 @microsoft/fetch-event-source
+fetchEventSource(`${apiPrefix}/events`, { headers: { Authorization: 'Bearer <access_token>' } })
 ```
 
-- access_token 通过**子协议**（`Sec-WebSocket-Protocol`）传入。
-- 鉴权失败：服务端发送 `AUTH` 事件后关闭连接。
-- 连接时校验 jti 黑名单与 `tokenVersion`；收到 `auth.sessions-invalidated` 事件时强制断开该用户全部连接。
-- 客户端断线后应自动重连（前端默认 10 秒重连）。
+- access_token 通过 `Authorization: Bearer` 头传入（**不进 URL**）。鉴权复用与 HTTP 同一套 `JwtAuthGuard`（验签 + 过期 + jti 黑名单 + `tokenVersion`）。
+- 鉴权失败：`JwtAuthGuard` 直接返回 HTTP 401（**无 `AUTH` 帧**），前端 `onopen` 收到后续期 + 重开。
+- 全设备登出 / 改密 / admin 踢下线触发 `auth.sessions-invalidated` 事件 → `SseService` 推 `FORCE_LOGOUT` 后断开该用户全部连接。
+- 心跳：服务端每 25s 发 `: ping` 注释帧；断线由前端指数退避（全抖动，封顶 30s）重连，重连后按 `newestMsgId` 游标补拉漏掉的消息。
 
-### 消息格式
+### 消息格式（SSE 文本帧）
 
-```ts
-interface StandardMessage<T = any> {
-  event: string;
-  status: number;     // 0 = 成功
-  message: string;
-  data?: T;
-}
 ```
+event: <EVENT_NAME>
+id: <msgId>          # 仅 NEW_MESSAGE 带
+data: <json>         # JSON 字符串
+```
+
+> 鉴权不在帧内（走 HTTP 401），故无 WS 时代的 `AUTH` 帧。`: connected` / `: ping` 为注释行，不计为事件。
 
 ### 事件列表（后端 → 前端）
 
 | 事件 | 触发时机 | `data` | 客户端处理 |
 | --- | --- | --- | --- |
-| `AUTH` | 连接鉴权结果 | – | `status:0` 通过；`status:1` token 过期 → 续期；`status:2` 无效 |
-| `NEW_MESSAGE` | 对方/群成员发送了新消息 | `{ threadId: number, msgId: string }` | 匹配当前会话则增量拉取并渲染 |
+| `NEW_MESSAGE` | 对方/群成员发送了新消息 | 完整消息体 `{ threadId, id, content, contentType, createdAt, ... }`（已序列化） | 直接渲染（无需二次拉取） |
+| `FORCE_LOGOUT` | 全设备登出 / 改密 / admin 踢下线 | `{ event:'FORCE_LOGOUT', status:0, message:<reason> }` | 断开 + 强制重登 |
+
+> 顺序与完整性：单条连接存活期间由 TCP 保证严格有序、完整；断线期间的消息靠重连后游标补拉。
 
 ### 客户端 → 服务端
 
-当前 `@SubscribeMessage` 未启用，**客户端不通过 WebSocket 发送业务消息**。所有写入（发消息、邀请等）走 HTTP。
+SSE 单向，**客户端不通过 SSE 发送业务消息**。所有写入（发消息、邀请、未来的已读上报 / typing）走 HTTP `POST`。

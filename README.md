@@ -2,7 +2,7 @@
 
 一个简洁的即时通讯（IM）服务，提供用户体系、好友/群组会话、实时消息推送与文件上传能力，设计目标是「易于被第三方应用接入」。
 
-- **后端**：NestJS 11 + Prisma 7 + PostgreSQL + 原生 WebSocket (`ws`) + Passport (Local + JWT)
+- **后端**：NestJS 11 + Prisma 7 + PostgreSQL + SSE（Server-Sent Events，下行推送）+ Passport (Local + JWT)
 - **前端**：Angular 18（Standalone + Signal + 实验性 Zoneless），自研 Material 风格组件库
 
 > 应用代号 **SOMS**（Simple Open Message Service）。仓库内同时包含后端服务（根目录）与 Angular 前端（`web/`）。
@@ -17,7 +17,7 @@
 - [快速开始](#快速开始)
 - [配置说明](#配置说明)
 - [架构与设计](#架构与设计)
-- [API 与 WebSocket 速查](#api-与-websocket-速查)
+- [API 与实时通信速查](#api-与实时通信速查)
 - [开发命令](#开发命令)
 - [项目状态](#项目状态)
 - [更多文档](#更多文档)
@@ -32,7 +32,7 @@
 | 用户 | 个人资料、按用户名搜索、批量查询 |
 | 好友 | 发送/接受好友请求（基于 `UserMessageThread` 状态机）、待处理请求列表 |
 | 会话 | P2P 会话、群组会话，统一的 `MessageThread` 抽象 |
-| 消息 | 纯文本消息发送、游标分页历史查询、WebSocket 实时推送 |
+| 消息 | 纯文本消息发送、游标分页历史查询、SSE 实时推送 |
 | 群组 | 创建群组、通过 JWT 邀请链接邀请好友加入 |
 | 文件 | 图片/视频/音频/通用文件上传（🚧 见 [项目状态](#项目状态)） |
 | 通知 | 通知表与通知盒子已建模（🚧 模块尚未接入） |
@@ -45,7 +45,7 @@
 | --- | --- |
 | 框架 | NestJS 11 |
 | 数据库 | PostgreSQL（Prisma 7 ORM，Rust-free 客户端 + `@prisma/adapter-pg` driver adapter） |
-| 实时通信 | `@nestjs/platform-ws` + `@nestjs/websockets`（原生 WebSocket） |
+| 实时通信 | SSE（`GET /api/v1/events`，`text/event-stream`）—— 下行推送专用单向通道 |
 | 认证 | Passport `local` + `jwt`，`@nestjs/jwt`，`argon2` 密码哈希 |
 | 工具 | `dayjs` 时间、`jsonwebtoken` 群组邀请 token |
 
@@ -57,14 +57,14 @@
 | 变更检测 | `provideExperimentalZonelessChangeDetection()`（无 zone.js） |
 | 状态 | Angular Signal + RxJS |
 | UI | 自研 Material Design 风格组件（无 Angular Material 依赖） |
-| 实时通信 | 浏览器原生 `WebSocket` API |
+| 实时通信 | `@microsoft/fetch-event-source`（SSE 客户端，可控重连） |
 
 ## 项目结构
 
 ```
 simple-open-chat-service/
 ├── src/                      # 后端 NestJS 服务
-│   ├── main.ts               # 应用入口，监听 3000 端口，启用 CORS + WsAdapter
+│   ├── main.ts               # 应用入口，监听 3000 端口，CORS + helmet + 全局 ValidationPipe
 │   ├── app.module.ts         # 根模块
 │   ├── config.ts             # 全局配置（域名）
 │   ├── prisma.service.ts     # PrismaClient 封装
@@ -73,7 +73,7 @@ simple-open-chat-service/
 │   ├── message/              # 消息与好友请求状态机
 │   ├── user/                 # 用户查询与注册
 │   ├── group/                # 群组与邀请 token
-│   ├── gateway/              # WebSocket 网关（消息推送）
+│   ├── gateway/              # SSE 下行推送（events.controller + sse.service）
 │   ├── notify/               # 通知（🚧 尚未接入）
 │   ├── user-manage/          # 用户管理（🚧 尚未接入）
 │   └── file/                 # 文件上传（🚧 尚未接入）
@@ -85,7 +85,7 @@ simple-open-chat-service/
 │   └── src/app/
 │       ├── app.config.ts     # 全局 providers（zoneless / router / http / 拦截器）
 │       ├── app.routes.ts     # 路由
-│       ├── services/         # HTTP 服务、WebSocket 服务、路由/弹窗服务
+│       ├── services/         # HTTP 服务、SSE 服务、路由/弹窗服务
 │       ├── pages/            # 页面组件（home / login / register / ...）
 │       └── components/       # 业务组件 + 自研 Material 组件
 ├── config.ts
@@ -157,12 +157,12 @@ npm start --prefix web
 
 - **统一响应格式**：所有 HTTP 接口返回 `{ status, message, data? }`，`status: 0` 表示成功。
 - **会话抽象**：P2P 与群组都抽象为 `MessageThread`；每个用户对每个会话持有一条 `UserMessageThread` 记录，其 `status` 字段驱动会话生命周期（待处理 / 已建立 / 屏蔽 / 删除）。
-- **HTTP 负责「写与查」，WebSocket 负责「推」**：消息发送走 HTTP，服务端通过 WebSocket 单向推送新消息通知。WebSocket 鉴权使用子协议（`Sec-WebSocket-Protocol`）传递 access_token。
+- **HTTP 负责「写与查」，SSE 负责「推」**：消息发送走 HTTP，服务端通过 SSE（`GET /api/v1/events`）单向推送**完整消息体**，客户端收到即可渲染、无需二次拉取。SSE 鉴权复用 `Authorization: Bearer <access_token>` 头（与 HTTP 同一套 `JwtAuthGuard`），不进 URL。
 - **双 Token 认证**：access_token（15 分钟，内存）+ refresh_token（14 天，存储），前端自动续期。
 
-## API 与 WebSocket 速查
+## API 与实时通信速查
 
-完整文档见 [docs/api.md](docs/api.md)。所有写/读接口均为 `POST`。
+完整文档见 [docs/api.md](docs/api.md)。除 SSE 下行流（`GET /api/v1/events`）外，所有写/读接口均为 `POST`。
 
 **HTTP（部分）**
 
@@ -184,12 +184,14 @@ npm start --prefix web
 | POST | `/group/invite` | JWT | 邀请好友入群 |
 | POST | `/group/join` | JWT | 通过 token 入群 |
 
-**WebSocket 事件（后端 → 前端）**
+**SSE 事件（后端 → 前端，`GET /api/v1/events`）**
 
 | 事件 | 说明 |
 | --- | --- |
-| `AUTH` | 连接鉴权结果（`status: 0` 成功，`1` token 过期，`2` 无效） |
-| `NEW_MESSAGE` | 新消息通知，`data: { threadId, msgId }` |
+| `NEW_MESSAGE` | 新消息通知，`data` 为完整消息体（`threadId` / `id` / `content` / `createdAt`…），前端收到即渲染 |
+| `FORCE_LOGOUT` | 全设备登出 / 改密 / admin 踢下线，前端断开并强制重登 |
+
+> SSE 鉴权不在帧内——走 HTTP：`Authorization: Bearer <access_token>` 失效则连接被 `JwtAuthGuard` 拒绝（401），前端自动续期重连。故无 WS 时代的 `AUTH` 帧。
 
 ## 开发命令
 
@@ -226,8 +228,8 @@ npm test --prefix web           # Karma 测试
 
 ## 更多文档
 
-- [docs/architecture.md](docs/architecture.md) — 系统架构、模块职责、认证流程、WebSocket、核心业务流程
-- [docs/api.md](docs/api.md) — 完整 HTTP API 与 WebSocket 事件参考
+- [docs/architecture.md](docs/architecture.md) — 系统架构、模块职责、认证流程、SSE 实时通信、核心业务流程
+- [docs/api.md](docs/api.md) — 完整 HTTP API 与 SSE 事件参考
 - [docs/database.md](docs/database.md) — 数据模型与关系图
 - [docs/protocol-plan.md](docs/protocol-plan.md) — 后端接口与前后端交互协议栈规划（分层目标契约、错误码、WS 事件目录、P0–P3 路线图）
 - [docs/chat-message-list-design.md](docs/chat-message-list-design.md) — 移动端 1v1 聊天消息列表设计规范（WhatsApp 风：气泡/头像/名字/尾尖/分组/明暗主题/尺寸）
