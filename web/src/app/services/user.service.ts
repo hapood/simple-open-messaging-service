@@ -26,7 +26,7 @@ export class UserService {
 
   register(params: { uniqName: string, password: string }) {
     return this.http.post<{ code: number, message: string, data?: { id: number, uniqName: string } }>(`${apiPrefix}/user/register`,
-      params, { 'headers': { Authorization: 'public' } })
+      params)
   }
 
   getMyProfile() {

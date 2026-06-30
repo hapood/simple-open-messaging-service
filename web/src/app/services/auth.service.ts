@@ -4,49 +4,51 @@ import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from '
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
 
-const TOKEN_CREATE_TIME = "token_create_time",
-  REFRESH_TOKEN = 'refresh_token', SEVEN_DAY_TIME = 7 * 24 * 60 * 60 * 1000,
-  IS_KEEP_LOGIN = "is_keep_login"
+const REFRESH_TOKEN = 'refresh_token',
+  IS_KEEP_LOGIN = 'is_keep_login'
 
-type RefreshTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
 type AccessTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
 
+/**
+ * Token 管理（简化版）：
+ * - 统一只走 `/auth/renew-access`（后端 renew-access 与 renew-refresh 完全同义，会同时轮换 refresh）。
+ *   access 15m 过期 → 被动刷新；每次 renew-access 也轮换 refresh，故无需 7 天主动刷新。
+ * - 删掉旧的 7 天定时器 / renewRefreshToken / tokenCreateTime 机制（曾滋生 _connecting 锁死、401 死循环、
+ *   非记住登录定时器失效等多条 bug）。
+ * - acTkSub = 当前 access token（或 null）。拦截器有 token 直接用；无 token 主动驱动 renewAccessToken（有确定
+ *   终点，失败→redoLoginAuth→放弃请求），不再靠「等 acTkSub 推非空」从而杜绝永挂。
+ */
 @Injectable({
   providedIn: 'root',
 })
 export class AuthService {
-  private _tokenCreateTime = localStorage.getItem(TOKEN_CREATE_TIME)
   private _isKeep = localStorage.getItem(IS_KEEP_LOGIN) === '1' || false
-  private _isReReTk = false
   private _renewAccessInFlight?: Observable<AccessTokenRes>
-  private _timerHandler: ReturnType<typeof setTimeout> | undefined = undefined
-  private _lastAccTok: string | undefined
-  public acTkSub = new BehaviorSubject<{ lastToken: string | undefined, nextToken: string } | undefined>(undefined)
+  /** 当前 access token；null = 无 token（启动期 / renew 进行中）。拦截器据此决定直接发还是先 renew。 */
+  public acTkSub = new BehaviorSubject<string | null>(null)
 
-  constructor(private http: HttpClient, private routeService: RouteService) {
-    const tkCrtTm = this._tokenCreateTime
-    if (tkCrtTm !== null) {
-      const leftTime = new Date().getTime() - parseInt(tkCrtTm)
-      if (leftTime < SEVEN_DAY_TIME) {
-        this.setTimerToRefresh(leftTime)
-      } else {
-        this.setTimerToRefresh(SEVEN_DAY_TIME)
-      }
-    }
+  constructor(private http: HttpClient, private routeService: RouteService) {}
+
+  /** 当前 access token（同步快照），供拦截器无延迟判断。 */
+  get accessToken(): string | null {
+    return this.acTkSub.value
   }
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
     // isKeep 是前端"记住登录"的本地存储策略（refresh token 存 localStorage 还是 sessionStorage），
     // 后端不消费，故从请求体剥离；仍用于成功后决定 token 落盘位置。
     const { isKeep, ...credentials } = params;
-    return this.http.post<RefreshTokenRes>
-      (`${apiPrefix}/auth/login`, { ...credentials, device: this.getDeviceId() }, { 'headers': { Authorization: 'public' } }).pipe(tap((res) => {
+    return this.http.post<AccessTokenRes>
+      (`${apiPrefix}/auth/login`, { ...credentials, device: this.getDeviceId() }).pipe(tap((res) => {
         if (res.code === 0) {
-          const data = res.data
+          const data = res.data!
           this._isKeep = isKeep
-          this.clearToken()
-          this.setReToken(data!.refresh_token, isKeep)
-          this.setAcToken(data!.access_token)
+          // 全新登录：清两处存储，避免 isKeep 切换留下旧 token 孤儿。
+          // （与登出 clearToken「仅清本 tab」区分——登出要尊重同账号其它 tab 的独立 session。）
+          sessionStorage.removeItem(REFRESH_TOKEN)
+          localStorage.removeItem(REFRESH_TOKEN)
+          this.setReToken(data.refresh_token, isKeep)
+          this.setAcToken(data.access_token)
         }
       }))
   }
@@ -58,8 +60,10 @@ export class AuthService {
 
   /**
    * 刷新 access token：走 renew-access（后端会轮换 refresh）。
-   * 返回 Observable 供拦截器 await 后用新 token 重试；单飞：并发 401 共享同一在飞请求(shareReplay)。
-   * 成功→存新 access + 轮换后的 refresh；code 10006(重用)/10003(失效) 等 → redoLoginAuth 强制重登。
+   * 单飞：并发调用共享同一在飞请求（shareReplay bufferSize:1）；
+   * refCount:true → 最后一个订阅取消时拆内层订阅，避免长驻 service 下的内存泄漏；
+   * finalize → 完成后清 _renewAccessInFlight，使下一次过期触发全新 renew。
+   * 成功→存新 access + 轮换后的 refresh；code≠0（重用 10006 / 失效 10003 等）→ redoLoginAuth 强制重登。
    */
   renewAccessToken(): Observable<AccessTokenRes> {
     if (this._renewAccessInFlight) {
@@ -70,61 +74,28 @@ export class AuthService {
       this.redoLoginAuth()
       return EMPTY
     }
-    this.acTkSub.next(undefined)
+    this.acTkSub.next(null) // 暂停受保护请求，等新 token
     const req$ = this.http.post<AccessTokenRes>(
       `${apiPrefix}/auth/renew-access`,
       { refreshToken: rfToken, device: this.getDeviceId() },
-      { 'headers': { Authorization: 'public' } },
     ).pipe(
       tap((res) => {
         if (res.code === 0) {
           this.setAcToken(res.data!.access_token)
           this.setReToken(res.data!.refresh_token)
         } else {
-          // 10006 重用(家族已吊销) / 10003 invalid|expired 等 → 强制重登
           this.redoLoginAuth()
         }
       }),
       finalize(() => { this._renewAccessInFlight = undefined }),
-      shareReplay(1),
+      shareReplay({ bufferSize: 1, refCount: true }),
     )
     this._renewAccessInFlight = req$
     return req$
   }
 
-  renewRefreshToken() {
-    if (this._isReReTk === true) {
-      return
-    }
-    this.acTkSub.next(undefined)
-    const rfToken = this.getRefreshToken()
-    if (rfToken === undefined) {
-      this.redoLoginAuth()
-    } else {
-      this.http.post<RefreshTokenRes>
-        (`${apiPrefix}/auth/renew-refresh`, {
-          refreshToken: rfToken,
-          device: this.getDeviceId()
-        }, { 'headers': { Authorization: 'public' } }).subscribe({
-          next: ({ code, message, data }) => {
-            if (code === 0) {
-              this.setAcToken(data!.access_token)
-              this.setReToken(data!.refresh_token)
-            } else {
-              console.info(message)
-              this.redoLoginAuth()
-            }
-          }, complete: () => {
-            this._isReReTk = false
-          }
-        }
-        )
-    }
-  }
-
   setAcToken(accessToken: string) {
-    this.acTkSub.next({ lastToken: this._lastAccTok, nextToken: accessToken })
-    this._lastAccTok = accessToken
+    this.acTkSub.next(accessToken)
   }
 
   setReToken(refreshToken: string, isKeep?: boolean) {
@@ -135,23 +106,11 @@ export class AuthService {
       this._isKeep = false
       localStorage.removeItem(IS_KEEP_LOGIN)
     }
-    const curIsKeep = this._isKeep
-    if (curIsKeep) {
+    if (this._isKeep) {
       localStorage.setItem(REFRESH_TOKEN, refreshToken)
-      localStorage.setItem(TOKEN_CREATE_TIME, new Date().getTime().toString())
     } else {
       sessionStorage.setItem(REFRESH_TOKEN, refreshToken)
     }
-    this.setTimerToRefresh(SEVEN_DAY_TIME)
-  }
-
-  setTimerToRefresh(leftTime: number) {
-    if (this._timerHandler !== undefined) {
-      clearTimeout(this._timerHandler)
-    }
-    this._timerHandler = setTimeout(() => {
-      this.renewRefreshToken()
-    }, leftTime)
   }
 
   getRefreshToken(): string | undefined {
@@ -162,15 +121,17 @@ export class AuthService {
     return this.getRefreshToken() !== undefined
   }
 
+  /**
+   * 只清当前 tab 的 token 存储（按 isKeep 选 sessionStorage/localStorage）：
+   * 一个非记住 tab 登出不再误清另一记住 tab 共享的 localStorage token。
+   * sessionStorage 本就 per-tab，故仅 localStorage 场景需注意——这里按当前 isKeep 精准清理。
+   */
   clearToken() {
-    this._lastAccTok = undefined
-    this.acTkSub.next(undefined)
-    sessionStorage.removeItem(REFRESH_TOKEN)
-    localStorage.removeItem(REFRESH_TOKEN)
-    localStorage.removeItem(TOKEN_CREATE_TIME)
-    if (this._timerHandler !== undefined) {
-      clearTimeout(this._timerHandler)
-      this._timerHandler = undefined
+    this.acTkSub.next(null)
+    if (this._isKeep) {
+      localStorage.removeItem(REFRESH_TOKEN)
+    } else {
+      sessionStorage.removeItem(REFRESH_TOKEN)
     }
   }
 
@@ -180,7 +141,7 @@ export class AuthService {
       this.clearToken()
       return this.http.post<{ code: number; message: string }>(`${apiPrefix}/auth/logout`, {
         refreshToken
-      }, { 'headers': { Authorization: 'public' } })
+      })
     }
     return EMPTY
   }

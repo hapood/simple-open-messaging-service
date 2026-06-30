@@ -24,7 +24,7 @@ import {
 } from '../dto/response.dto';
 import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
 import { UserIdDto } from '../dto/user.dto';
-import { EventGateway } from 'src/gateway/event.gateway';
+import { SseService } from 'src/gateway/sse.service';
 import { GroupService } from 'src/group/group.service';
 import { serializeBody } from '../common/serialize.interceptor';
 
@@ -33,7 +33,7 @@ import { serializeBody } from '../common/serialize.interceptor';
 export class MessageController {
   constructor(
     private readonly messageService: MessageService,
-    private readonly eventGateway: EventGateway,
+    private readonly sseService: SseService,
     private readonly groupService: GroupService,
   ) {}
 
@@ -80,7 +80,7 @@ export class MessageController {
           userMsgTr.toObjId,
         );
         userIds.forEach((item) => {
-          this.eventGateway.onNewMessage(item.userId, msgData);
+          this.sseService.onNewMessage(item.userId, msgData);
         });
         return { code: BusinessCode.OK, message: 'successful', data };
       }
@@ -109,8 +109,8 @@ export class MessageController {
           threadId: userMsgTr.threadId,
           ...data,
         });
-        this.eventGateway.onNewMessage(req.user.userId, msgData);
-        this.eventGateway.onNewMessage(userMsgTr.toObjId, msgData);
+        this.sseService.onNewMessage(req.user.userId, msgData);
+        this.sseService.onNewMessage(userMsgTr.toObjId, msgData);
         return { code: BusinessCode.OK, message: 'successful', data };
       }
     }

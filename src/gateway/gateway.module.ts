@@ -1,18 +1,13 @@
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { EventGateway } from './event.gateway';
-import { JwtModule } from '@nestjs/jwt';
-import { jwtConstants } from '../auth/constants';
-import { PrismaService } from '../prisma.service';
+import { EventsController } from './events.controller';
+import { SseService } from './sse.service';
 
 @Module({
-  imports: [
-    EventEmitterModule,
-    JwtModule.register({
-      secret: jwtConstants.accessSecret,
-    }),
-  ],
-  providers: [EventGateway, PrismaService],
-  exports: [EventGateway],
+  imports: [EventEmitterModule],
+  controllers: [EventsController],
+  providers: [SseService],
+  // SseService 供 MessageController 推送新消息、AdminController 观测在线连接。
+  exports: [SseService],
 })
 export class GatewayModule {}

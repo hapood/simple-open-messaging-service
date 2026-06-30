@@ -4,7 +4,6 @@ import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { WsAdapter } from '@nestjs/platform-ws';
 import helmet from 'helmet';
 import { parseCorsOrigins } from './common/env';
 import { AllExceptionsFilter } from './common/exception.filter';
@@ -16,7 +15,6 @@ async function bootstrap() {
   // 反代/隧道后取真实客户端 IP（限流按 IP 精确计数；见 local.strategy.ts）。
   // 值=信任的反代跳数：1 适合单层 nginx/隧道；生产按实际拓扑调整，勿设 true（X-Forwarded-For 可被伪造）。
   app.set('trust proxy', 1);
-  app.useWebSocketAdapter(new WsAdapter(app));
 
   app.use(helmet());
 
@@ -50,9 +48,9 @@ async function bootstrap() {
   // 异常过滤器不经拦截器链，但其响应体只含 {code,message} 原语，无需转换。
   app.useGlobalInterceptors(new SerializeInterceptor());
 
-  // P1b：全局路由前缀。所有 HTTP 端点统一挂 /api/v1 下（须在 Swagger createDocument 前调用，
-  // 文档内端点路径会自动带上此前缀）。Swagger UI 仍挂 /api/v1/docs —— SwaggerModule.setup
-  // 不受 setGlobalPrefix 影响，不会双重前缀。WS（WsAdapter）与 CORS 不受影响。
+  // P1b：全局路由前缀。所有 HTTP 端点（含 SSE /events）统一挂 /api/v1 下（须在 Swagger
+  // createDocument 前调用，文档内端点路径会自动带上此前缀）。Swagger UI 仍挂 /api/v1/docs ——
+  // SwaggerModule.setup 不受 setGlobalPrefix 影响，不会双重前缀。CORS 不受影响。
   app.setGlobalPrefix('api/v1');
 
   // P1a：Swagger。文档 UI 挂 /api/v1/docs。

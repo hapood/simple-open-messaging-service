@@ -23,6 +23,9 @@ import type { VsItem } from '../../lib/virtual-scroll/virtual-scroller';
 import type { VsSource, VsSourceInitOpts } from '../../lib/virtual-scroll/source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 
+/** SSE 重连后一次性补拉的最大条数（断线期间漏掉的消息）。超过则需用户滚动加载更早分页。 */
+const RECONNECT_REFILL_BATCH = 100;
+
 export interface HttpItemSourceLiveOpts {
   /** WS 新消息回调（组件据此调 kernel.appendLive）。 */
   onLive: (items: VsItem<ChatItemData>[]) => void;
@@ -38,6 +41,7 @@ export class HttpItemSource implements VsSource<ChatItemData> {
   private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
   private readonly knownMsgIds = new Set<string>();
   private wsSub?: Subscription;
+  private reconnectSub?: Subscription;
   private readonly onLive: (items: VsItem<ChatItemData>[]) => void;
 
   constructor(
@@ -49,6 +53,8 @@ export class HttpItemSource implements VsSource<ChatItemData> {
   ) {
     this.onLive = live.onLive;
     this.wsSub = wsService.eventSubject.subscribe((msg) => this.onWsEvent(msg));
+    // SSE 重连成功 → 用 newestMsgId 游标补拉断线期间漏掉的消息（SSE 流本身不回放历史）。
+    this.reconnectSub = wsService.reconnect$.subscribe(() => { void this.refillNewer(); });
   }
 
   /**
@@ -162,6 +168,30 @@ export class HttpItemSource implements VsSource<ChatItemData> {
   destroy(): void {
     this.wsSub?.unsubscribe();
     this.wsSub = undefined;
+    this.reconnectSub?.unsubscribe();
+    this.reconnectSub = undefined;
+  }
+
+  /**
+   * SSE 重连后补拉：从 newestMsgId 游标向更新取一批（asc），填补断线期间漏掉的消息。
+   * 直连 query（绕过 getNewer 的 noNewer 守卫——那是滚动游标态，与一次性补拉无关），
+   * 复用 rawToItems 去重 + ensureProfiles + onLive，与 WS 实时路径同口径。
+   * 未加载初始消息（newestMsgId==null）时跳过。
+   */
+  private async refillNewer(): Promise<void> {
+    if (this.newestMsgId == null) return;
+    const res = await firstValueFrom(
+      this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: RECONNECT_REFILL_BATCH, lastId: this.newestMsgId, orderBy: 'asc' }),
+    );
+    if (res.code !== 0 || !res.data || res.data.length === 0) return;
+    const list = res.data; // asc 已升序（旧→新）
+    if (!res.hasMore) this.noNewer = true; // 追到 DB 最新
+    await this.ensureProfiles(list);
+    const items = this.rawToItems(list);
+    if (items.length > 0) {
+      this.newestMsgId = lastMsgId(items) ?? this.newestMsgId;
+      this.onLive(items);
+    }
   }
 
   // ---------- rawToItems（原始 msg 整形：去重 + 单 msg 解析；不合并相册——合并归内核 mergeItems） ----------
