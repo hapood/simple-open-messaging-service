@@ -4,9 +4,9 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
 } from 'class-validator';
 import { ContentType } from '../prisma/generated/client.js';
@@ -14,11 +14,11 @@ import { ContentType } from '../prisma/generated/client.js';
 /** Message-domain request DTOs. Validation rules are ported from the original message.controller inline types. */
 
 export class SendMessageDto {
-  @ApiProperty({ example: 1, description: 'User thread id' })
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userThreadId: number;
+  threadId: number;
 
   @ApiProperty({ example: 'hello', description: 'Message content' })
   @IsString()
@@ -36,22 +36,26 @@ export class SendMessageDto {
 }
 
 export class QueryMessagesDto {
-  @ApiProperty({ example: 1, description: 'User thread id' })
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userThreadId: number;
+  threadId: number;
 
-  @ApiProperty({ example: 0, description: 'Number of records to skip (pagination)' })
+  @ApiProperty({
+    example: 0,
+    description: 'Number of records to skip (pagination)',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   skip: number;
 
-  @ApiProperty({ example: 20, description: 'Number of records to take (pagination)' })
+  @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(50, { message: 'take must be at most 50' })
   take: number;
 
   @ApiProperty({
@@ -63,7 +67,11 @@ export class QueryMessagesDto {
   @IsString()
   lastId?: string;
 
-  @ApiProperty({ enum: ['desc', 'asc'], example: 'desc', description: 'Sort direction' })
+  @ApiProperty({
+    enum: ['desc', 'asc'],
+    example: 'desc',
+    description: 'Sort direction',
+  })
   @IsIn(['desc', 'asc'])
   orderBy: 'desc' | 'asc';
 }

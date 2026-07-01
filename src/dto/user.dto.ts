@@ -5,10 +5,10 @@ import {
   IsArray,
   IsInt,
   IsNotEmpty,
-  IsNumber,
   IsOptional,
   IsString,
   Length,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -28,12 +28,12 @@ export class UserIdDto {
   userId: number;
 }
 
-export class UserThreadIdDto {
-  @ApiProperty({ example: 1, description: 'User thread id' })
+export class ThreadIdDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userThreadId: number;
+  threadId: number;
 }
 
 export class UserByUniqNameDto {
@@ -48,13 +48,21 @@ export class UserByUniqNameDto {
  * handle (uniqName) cannot be changed here — identity changes go through a separate flow.
  */
 export class UpdateProfileDto {
-  @ApiProperty({ required: false, example: 'Alice', description: 'Display name (1-30 chars)' })
+  @ApiProperty({
+    required: false,
+    example: 'Alice',
+    description: 'Display name (1-30 chars)',
+  })
   @IsOptional()
   @IsString()
   @Length(1, 30, { message: 'name must be 1-30 chars' })
   name?: string;
 
-  @ApiProperty({ required: false, example: 'Hey there!', description: 'Bio (≤120 chars)' })
+  @ApiProperty({
+    required: false,
+    example: 'Hey there!',
+    description: 'Bio (≤120 chars)',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(120, { message: 'bio must be at most 120 chars' })
@@ -75,19 +83,27 @@ export class QueryUsersDto {
 }
 
 export class QueryValidThreadDto {
-  @ApiProperty({ example: 0, description: 'Number of records to skip (pagination)' })
+  @ApiProperty({
+    example: 0,
+    description: 'Number of records to skip (pagination)',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(0)
   skip: number;
 
-  @ApiProperty({ example: 20, description: 'Number of records to take (pagination)' })
+  @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(50, { message: 'take must be at most 50' })
   take: number;
 
-  @ApiProperty({ required: false, example: 100, description: 'Last id of the previous page (cursor, optional)' })
+  @ApiProperty({
+    required: false,
+    example: 100,
+    description: 'Last id of the previous page (cursor, optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
@@ -96,27 +112,35 @@ export class QueryValidThreadDto {
   @ApiProperty({
     enum: MessageThreadType,
     required: false,
-    description: 'Peer type P2P|GROUP (optional filter)',
+    description: 'Conversation type P2P|GROUP (optional filter)',
   })
   @IsOptional()
-  toObjType?: MessageThreadType;
+  type?: MessageThreadType;
 }
 
 export class QueryPendingThreadDto {
-  @ApiProperty({ example: 1_700_000_000_000, description: 'Millisecond timestamp: fetch pending items before this time' })
+  @ApiProperty({
+    example: 1_700_000_000_000,
+    description: 'Millisecond timestamp: fetch pending items before this time',
+  })
   @Type(() => Number)
   @IsInt()
   beforeDate: number;
 
-  @ApiProperty({ example: 20, description: 'Number of records to take' })
+  @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(50, { message: 'take must be at most 50' })
   take: number;
 
   // Frontend queryToPending sends only { take, beforeDate } with no skip (relies on Prisma skip:undefined = no pagination).
   // Hence optional; when provided it is still validated as a non-negative integer.
-  @ApiProperty({ required: false, example: 0, description: 'Number of records to skip (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 0,
+    description: 'Number of records to skip (optional)',
+  })
   @IsOptional()
   @Type(() => Number)
   @IsInt()

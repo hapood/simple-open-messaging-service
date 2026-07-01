@@ -1,11 +1,6 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import {
-  User,
-  Prisma,
-  MessageThreadType,
-  UserMessageThreadStatus,
-} from '../prisma/generated/client.js';
+import { User, Prisma } from '../prisma/generated/client.js';
 
 @Injectable()
 export class UserService implements OnModuleInit {
@@ -65,10 +60,6 @@ export class UserService implements OnModuleInit {
       data: { userExtra: { update: extra } },
       include: { userExtra: true },
     });
-  }
-
-  queryUserThread(params: Prisma.UserMessageThreadFindManyArgs) {
-    return this.prisma.userMessageThread.findMany(params);
   }
 
   queryUsers(params: Prisma.UserFindManyArgs) {

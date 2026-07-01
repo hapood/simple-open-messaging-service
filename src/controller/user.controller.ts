@@ -17,13 +17,13 @@ import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { GroupService } from '../group/group.service.js';
-import { MessageService } from '../message/message.service.js';
+import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { FriendshipService } from '../friendship/friendship.service.js';
 import {
-  Prisma,
-  UserMessageThreadStatus,
+  FriendshipStatus,
+  GroupRole,
   MessageThreadType,
-  User,
-  Group,
+  Prisma,
 } from '../prisma/generated/client.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
@@ -32,13 +32,14 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import {
+  ConversationItemDto,
+  FriendshipDto,
   UserResponseDto,
-  UserMessageThreadResponseDto,
 } from '../dto/response.dto.js';
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
-  UserThreadIdDto,
+  ThreadIdDto,
   UserByUniqNameDto,
   QueryUsersDto,
   QueryValidThreadDto,
@@ -51,7 +52,8 @@ import {
 export class UserController {
   constructor(
     private readonly userService: UserService,
-    private readonly messageService: MessageService,
+    private readonly friendshipService: FriendshipService,
+    private readonly participantService: ThreadParticipantService,
     private readonly authService: AuthService,
     private readonly groupService: GroupService,
     private readonly uploadService: UploadService,
@@ -134,109 +136,108 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/valid')
   @ApiOperation({ summary: '查询有效会话列表（含对端 user/group 信息）' })
-  @ApiResultResponse(UserMessageThreadResponseDto, true)
+  @ApiResultResponse(ConversationItemDto, true)
   async queryValidThread(
     @Request() req,
     @Body() dto: QueryValidThreadDto,
   ): Promise<ApiResult> {
-    const newParams: Prisma.UserMessageThreadFindManyArgs = {
+    const me = req.user.userId;
+    const where: Prisma.ThreadParticipantWhereInput = {
+      userId: me,
+      leftAt: null,
+    };
+    if (dto.type) {
+      where.thread = { is: { type: dto.type } };
+    }
+    const list = await this.participantService.queryParticipants({
+      where,
       skip: dto.skip,
       take: dto.take,
+      orderBy: { id: 'asc' },
+      include: { thread: true },
+    });
+    // Hydrate P2P peers: the other active participant on each P2P thread.
+    const p2pThreadIds = list
+      .filter((p) => p.thread.type === 'P2P')
+      .map((p) => p.threadId);
+    const peers = await this.participantService.findP2PPeers(p2pThreadIds, me);
+    const peerByThread = new Map(peers.map((p) => [p.threadId, p.userId]));
+    const peerUsers = await this.userService.queryUsers({
       where: {
-        userId: req.user.userId,
-        toObjType: dto.toObjType,
-        status: UserMessageThreadStatus.APPROVED,
+        id: { in: peers.map((p) => p.userId) },
+        isDeleted: false,
       },
-      orderBy: {
-        id: 'asc',
-      },
-    };
-    const list = await this.userService.queryUserThread(newParams);
-    const userIds = [],
-      groupIds = [];
-    list.forEach((item) => {
-      if (item.toObjType === MessageThreadType.P2P) {
-        userIds.push(item.toObjId);
-      } else if (item.toObjType === MessageThreadType.GROUP) {
-        groupIds.push(item.toObjId);
+      include: { userExtra: true },
+    });
+    const userDict: Record<number, (typeof peerUsers)[number]> = {};
+    peerUsers.forEach((u) => {
+      delete u.hashPwd;
+      userDict[u.id] = u;
+    });
+    // Hydrate GROUP conversations by their threadId.
+    const groupThreadIds = list
+      .filter((p) => p.thread.type === 'GROUP')
+      .map((p) => p.threadId);
+    const groups =
+      groupThreadIds.length > 0
+        ? await this.groupService.queryGroups({
+            where: { threadId: { in: groupThreadIds } },
+          })
+        : [];
+    const groupByThread = new Map(groups.map((g) => [g.threadId, g]));
+    const data = list.map((p) => {
+      const item = {
+        id: p.id,
+        threadId: p.threadId,
+        type: p.thread.type,
+        lastReadMsgId: p.lastReadMsgId ?? undefined,
+        role: p.role ?? undefined,
+      } as {
+        id: number;
+        threadId: number;
+        type: MessageThreadType;
+        lastReadMsgId: bigint | undefined;
+        role: GroupRole | undefined;
+        peerUser?: unknown;
+        group?: unknown;
+      };
+      if (p.thread.type === 'P2P') {
+        const peerId = peerByThread.get(p.threadId);
+        if (peerId !== undefined) item.peerUser = userDict[peerId];
+      } else {
+        item.group = groupByThread.get(p.threadId);
       }
+      return item;
     });
-    const [userList, groupList] = await Promise.all([
-      this.userService.queryUsers({
-        where: {
-          id: {
-            in: userIds,
-          },
-          isDeleted: false,
-        },
-        include: {
-          userExtra: true,
-        },
-      }),
-      this.groupService.queryGroups({
-        where: {
-          id: {
-            in: groupIds,
-          },
-        },
-      }),
-    ]);
-    const userDict: Record<number, User> = {};
-    userList.forEach((item) => {
-      delete item.hashPwd;
-      userDict[item.id] = item;
-    });
-    const groupDict: Record<number, Group> = {};
-    groupList.forEach((item) => {
-      groupDict[item.id] = item;
-    });
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: list.map((item) => {
-        if (item.toObjType === MessageThreadType.P2P) {
-          (item as any).userItem = userDict[item.toObjId];
-        } else if (item.toObjType === MessageThreadType.GROUP) {
-          (item as any).groupItem = groupDict[item.toObjId];
-        }
-        return item;
-      }),
-    };
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/to-pending')
-  @ApiOperation({ summary: '查询待处理好友请求会话' })
-  @ApiResultResponse(UserMessageThreadResponseDto, true)
+  @ApiOperation({ summary: '查询待处理（对方发起的）好友请求' })
+  @ApiResultResponse(FriendshipDto, true)
   async queryPendingThread(
     @Request() req,
     @Body() dto: QueryPendingThreadDto,
   ): Promise<ApiResult> {
-    const newParams: Prisma.UserMessageThreadFindManyArgs = {
+    const me = req.user.userId;
+    const list = await this.friendshipService.queryFriendships({
       take: dto.take,
       skip: dto.skip,
       where: {
-        userId: req.user.userId,
-        toObjType: MessageThreadType.P2P,
-        status: UserMessageThreadStatus.TO_PENDING,
-        updatedAt: {
-          lt: new Date(dto.beforeDate),
-        },
+        status: FriendshipStatus.PENDING,
+        requesterId: { not: me },
+        OR: [{ userAId: me }, { userBId: me }],
+        updatedAt: { lt: new Date(dto.beforeDate) },
       },
-      orderBy: {
-        updatedAt: 'desc',
-      },
-      include: {
-        threadItem: true,
-      },
-    };
-    const data = await this.userService.queryUserThread(newParams);
+      orderBy: { updatedAt: 'desc' },
+    });
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data,
+      data: list.map((f) => this.withPeerUser(f, me)),
     };
   }
 
@@ -245,35 +246,35 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/from-pending')
   @ApiOperation({ summary: '查询我发出的待处理好友请求' })
-  @ApiResultResponse(UserMessageThreadResponseDto, true)
+  @ApiResultResponse(FriendshipDto, true)
   async queryFromPendingThread(
     @Request() req,
     @Body() dto: QueryPendingThreadDto,
   ): Promise<ApiResult> {
-    const newParams: Prisma.UserMessageThreadFindManyArgs = {
+    const me = req.user.userId;
+    const list = await this.friendshipService.queryFriendships({
       take: dto.take,
       skip: dto.skip,
       where: {
-        userId: req.user.userId,
-        toObjType: MessageThreadType.P2P,
-        status: UserMessageThreadStatus.FROM_PENDING,
-        updatedAt: {
-          lt: new Date(dto.beforeDate),
-        },
+        status: FriendshipStatus.PENDING,
+        requesterId: me,
+        updatedAt: { lt: new Date(dto.beforeDate) },
       },
-      orderBy: {
-        updatedAt: 'desc',
-      },
-      include: {
-        threadItem: true,
-      },
-    };
-    const data = await this.userService.queryUserThread(newParams);
+      orderBy: { updatedAt: 'desc' },
+    });
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data,
+      data: list.map((f) => this.withPeerUser(f, me)),
     };
+  }
+
+  /** Attach the other user's id to a friendship row so the client can resolve the peer profile. */
+  private withPeerUser<T extends { userAId: number; userBId: number }>(
+    f: T,
+    me: number,
+  ): T & { peerUserId: number } {
+    return { ...f, peerUserId: f.userAId === me ? f.userBId : f.userAId };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -301,14 +302,13 @@ export class UserController {
         message: 'friend does not exist',
       };
     }
-    // makeFriendRequest 状态语义见 message.service.ts：
-    //  0 首次发请求 / 1 已是好友 / 2 删除后重发 / 3 对端先发过→互加成功 / 4 不应发生 / 5 对端待处理或已拉黑
-    // 不同结果给前端准确文案（前端按 code===0 判成功、回显 message），而非一律 "request sent"。
-    const res = await this.messageService.makeFriendRequest(
+    // makeFriendRequest 状态语义见 friendship.service.ts：
+    //  0 首次发请求 / 1 已是好友 / 2 删除后重发 / 3 对端先发过→互加成功 / 5 对端待处理或已拉黑
+    const res = await this.friendshipService.makeFriendRequest(
       req.user.userId,
       friend.id,
     );
-    // status 0 (first request) and 2 (deleted→reset) both create a fresh TO_PENDING
+    // status 0 (first request) and 2 (deleted→reset) both create a fresh pending request
     // for the recipient → push a live NOTIFY so their badge arms instantly (the
     // Notify row + hasUrFriendReq flag were already written atomically in the tx).
     if (res.status === 0 || res.status === 2) {
@@ -330,10 +330,9 @@ export class UserController {
       case 3:
         return { code: BusinessCode.OK, message: 'you are now friends' };
       case 5:
-        // 对端 TO_PENDING（已发过、幂等）或 BLOCKED。后者不回显"被拉黑"以免泄露屏蔽状态。
+        // 对端已发过（幂等）或已拉黑。后者不回显"被拉黑"以免泄露屏蔽状态。
         return { code: BusinessCode.OK, message: 'friend request sent' };
       default:
-        // status 4：状态机不应到达
         return {
           code: BusinessCode.FRIEND_UNKNOWN_STATE,
           message: 'unknown error',
@@ -350,15 +349,12 @@ export class UserController {
     @Request() req,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
-    const res = await this.messageService.approveFriendRequest(
+    const res = await this.friendshipService.approveFriendRequest(
       dto.userId,
       req.user.userId,
     );
     if (res.status === 0) {
-      return {
-        code: BusinessCode.OK,
-        message: 'friend request approved',
-      };
+      return { code: BusinessCode.OK, message: 'friend request approved' };
     } else {
       return {
         code: BusinessCode.FRIEND_NO_INCOMING,
@@ -376,15 +372,12 @@ export class UserController {
     @Request() req,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
-    const res = await this.messageService.declineFriendRequest(
+    const res = await this.friendshipService.declineFriendRequest(
       dto.userId,
       req.user.userId,
     );
     if (res.status === 0) {
-      return {
-        code: BusinessCode.OK,
-        message: 'friend request declined',
-      };
+      return { code: BusinessCode.OK, message: 'friend request declined' };
     } else {
       return {
         code: BusinessCode.FRIEND_NO_INCOMING,
@@ -402,15 +395,12 @@ export class UserController {
     @Request() req,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
-    const res = await this.messageService.cancelFriendRequest(
+    const res = await this.friendshipService.cancelFriendRequest(
       req.user.userId,
       dto.userId,
     );
     if (res.status === 0) {
-      return {
-        code: BusinessCode.OK,
-        message: 'friend request cancelled',
-      };
+      return { code: BusinessCode.OK, message: 'friend request cancelled' };
     } else {
       return {
         code: BusinessCode.FRIEND_NO_INCOMING,
@@ -426,26 +416,14 @@ export class UserController {
   @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
   @ApiResultResponse(UserResponseDto, true)
   async queryUserBase(@Body() dto: QueryUsersDto): Promise<ApiResult> {
-    // 上限 100 的校验已移入 QueryUsersDto 的 @ArrayMaxSize(100) → 失败走 ValidationPipe → 200/10000
     const list = await this.userService.queryUsers({
-      where: {
-        id: {
-          in: dto.userIds,
-        },
-        isDeleted: false,
-      },
-      include: {
-        userExtra: true,
-      },
+      where: { id: { in: dto.userIds }, isDeleted: false },
+      include: { userExtra: true },
     });
     list.forEach((item) => {
       delete item.hashPwd;
     });
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: list,
-    };
+    return { code: BusinessCode.OK, message: 'successful', data: list };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -456,19 +434,12 @@ export class UserController {
   @ApiResultResponse(UserResponseDto)
   async getUserByUniqName(@Body() dto: UserByUniqNameDto): Promise<ApiResult> {
     const user = await this.userService.findUniqueUser(
-      {
-        uniqName: dto.uniqName,
-        isDeleted: false,
-      },
+      { uniqName: dto.uniqName, isDeleted: false },
       true,
     );
     if (user !== null) {
       delete user.hashPwd;
-      return {
-        code: BusinessCode.OK,
-        message: 'successful',
-        data: user,
-      };
+      return { code: BusinessCode.OK, message: 'successful', data: user };
     } else {
       return {
         code: BusinessCode.NOT_FOUND,
@@ -482,37 +453,61 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('/user/thread-info')
   @ApiOperation({ summary: '查询会话详情（含对端 user/group）' })
-  @ApiResultResponse(UserMessageThreadResponseDto)
+  @ApiResultResponse(ConversationItemDto)
   async queryUserThreadInfo(
     @Request() req,
-    @Body() dto: UserThreadIdDto,
+    @Body() dto: ThreadIdDto,
   ): Promise<ApiResult> {
-    const thread = await this.messageService.findUniqueUserMessageThread({
-      where: {
-        id: dto.userThreadId,
-      },
+    const me = req.user.userId;
+    const [p] = await this.participantService.queryParticipants({
+      where: { userId: me, threadId: dto.threadId, leftAt: null },
+      include: { thread: true },
+      take: 1,
     });
-    if (
-      thread !== null &&
-      thread.userId === req.user.userId &&
-      thread.status !== UserMessageThreadStatus.DELETED
-    ) {
-      if (thread.toObjType === 'P2P') {
-        (thread as any).userItem = await this.userService.findUniqueUser({
-          id: thread.toObjId,
-        });
-      } else if (thread.toObjType === 'GROUP') {
-        (thread as any).groupItem = await this.groupService.findUniqeGroup({
-          id: thread.toObjId,
-        });
-      }
-      return { code: BusinessCode.OK, message: 'successful', data: thread };
-    } else {
+    if (!p) {
       return {
         code: BusinessCode.NOT_FOUND,
-        message: `user has no thread [${dto.userThreadId}]`,
+        message: `no thread [${dto.threadId}]`,
       };
     }
+    const item = {
+      id: p.id,
+      threadId: p.threadId,
+      type: p.thread.type,
+      lastReadMsgId: p.lastReadMsgId ?? undefined,
+      role: p.role ?? undefined,
+    } as {
+      id: number;
+      threadId: number;
+      type: MessageThreadType;
+      lastReadMsgId: bigint | undefined;
+      role: GroupRole | undefined;
+      peerUser?: unknown;
+      group?: unknown;
+    };
+    if (p.thread.type === 'P2P') {
+      const peers = await this.participantService.findP2PPeers(
+        [p.threadId],
+        me,
+      );
+      const peerId = peers[0]?.userId;
+      if (peerId !== undefined) {
+        const [peerUser] = await this.userService.queryUsers({
+          where: { id: peerId },
+          include: { userExtra: true },
+        });
+        if (peerUser) {
+          delete peerUser.hashPwd;
+          item.peerUser = peerUser;
+        }
+      }
+    } else {
+      const [group] = await this.groupService.queryGroups({
+        where: { threadId: p.threadId },
+      });
+      item.group = group;
+    }
+    return { code: BusinessCode.OK, message: 'successful', data: item };
   }
 
   @ApiTags('auth')

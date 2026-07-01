@@ -12,7 +12,10 @@ import { IsInt, IsString, MaxLength, Min } from 'class-validator';
 
 export class CreateGroupDto {
   /** Group name, max 31 chars (original controller checked length <= 31). */
-  @ApiProperty({ example: 'dev-team', description: 'Group name (≤31 chars, empty allowed)' })
+  @ApiProperty({
+    example: 'dev-team',
+    description: 'Group name (≤31 chars, empty allowed)',
+  })
   @IsString()
   @MaxLength(31, { message: 'group name must less than 32 characters' })
   groupName: string;

@@ -26,7 +26,11 @@ export class LoginDto {
   @IsNotEmpty()
   password: string;
 
-  @ApiProperty({ required: false, example: 'web-chrome', description: 'Device identifier (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'web-chrome',
+    description: 'Device identifier (optional)',
+  })
   @IsString()
   @IsOptional()
   device?: string;
@@ -61,12 +65,19 @@ export class RegisterDto {
 
 /** refresh token input: shared by renew-access / renew-refresh. */
 export class RefreshTokenDto {
-  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...', description: 'refresh token' })
+  @ApiProperty({
+    example: 'eyJhbGciOiJIUzI1NiIs...',
+    description: 'refresh token',
+  })
   @IsString()
   @IsNotEmpty()
   refreshToken: string;
 
-  @ApiProperty({ required: false, example: 'web-chrome', description: 'Device identifier (optional)' })
+  @ApiProperty({
+    required: false,
+    example: 'web-chrome',
+    description: 'Device identifier (optional)',
+  })
   @IsString()
   @IsOptional()
   device?: string;
@@ -74,7 +85,10 @@ export class RefreshTokenDto {
 
 /** logout input: refreshToken is required; accessJti is optional (immediately blacklists the current access). */
 export class LogoutDto {
-  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...', description: 'refresh token' })
+  @ApiProperty({
+    example: 'eyJhbGciOiJIUzI1NiIs...',
+    description: 'refresh token',
+  })
   @IsString()
   @IsNotEmpty()
   refreshToken: string;
@@ -82,7 +96,8 @@ export class LogoutDto {
   @ApiProperty({
     required: false,
     example: 'a1b2c3d4-e5f6-...',
-    description: 'jti of the current access token (optional; used to immediately blacklist it)',
+    description:
+      'jti of the current access token (optional; used to immediately blacklist it)',
   })
   @IsString()
   @IsOptional()
@@ -108,7 +123,10 @@ export class ChangePasswordDto {
 
 /** Revoke a single session. */
 export class RevokeSessionDto {
-  @ApiProperty({ example: 'a1b2c3d4-e5f6-...', description: 'jti of the session to revoke' })
+  @ApiProperty({
+    example: 'a1b2c3d4-e5f6-...',
+    description: 'jti of the session to revoke',
+  })
   @IsString()
   @IsNotEmpty()
   jti: string;
@@ -116,7 +134,8 @@ export class RevokeSessionDto {
   @ApiProperty({
     required: false,
     example: 'a1b2c3d4-e5f6-...',
-    description: 'jti of the current access token (optional; used to immediately blacklist it)',
+    description:
+      'jti of the current access token (optional; used to immediately blacklist it)',
   })
   @IsString()
   @IsOptional()

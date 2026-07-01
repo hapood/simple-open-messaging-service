@@ -14,6 +14,8 @@ import { RedisModule } from './redis/redis.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { NotifyModule } from './notify/notify.module.js';
 import { NotifyController } from './controller/notify.controller.js';
+import { ThreadParticipantModule } from './thread-participant/thread-participant.module.js';
+import { FriendshipModule } from './friendship/friendship.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -31,6 +33,8 @@ import { NotifyController } from './controller/notify.controller.js';
     UploadModule,
     AdminModule,
     NotifyModule,
+    ThreadParticipantModule,
+    FriendshipModule,
   ],
   controllers: [
     MessageController,

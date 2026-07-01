@@ -1,11 +1,6 @@
-import { Injectable, OnModuleInit, ConflictException } from '@nestjs/common';
+import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import {
-  User,
-  Prisma,
-  MessageThreadType,
-  UserMessageThreadStatus,
-} from '../prisma/generated/client.js';
+import { User, Prisma } from '../prisma/generated/client.js';
 import { AuthService } from '../auth/auth.service.js';
 @Injectable()
 export class UserManageService implements OnModuleInit {

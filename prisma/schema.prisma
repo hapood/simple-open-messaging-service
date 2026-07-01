@@ -14,23 +14,25 @@ datasource db {
 }
 
 model User {
-  id                Int                 @id @default(autoincrement())
-  uniqName          String              @unique @db.VarChar(31)
-  hashPwd           String              @db.VarChar(127)
-  isForeigner       Boolean
-  domain            String?             @db.VarChar(63)
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  isDeleted         Boolean             @default(false)
-  tokenVersion      Int                 @default(0) // bump 即令该用户所有 access token 失效（全设备登出/改密/强制下线）
-  userExtraId       Int                 @unique
-  userExtra         UserExtra           @relation(fields: [userExtraId], references: [id])
-  userNotiBoxId     Int                 @unique
-  userNotiBox       userNotiBox         @relation(fields: [userNotiBoxId], references: [id])
-  Group             Group[]
-  GroupMember       GroupMember[]
-  UserMessageThread UserMessageThread[]
-  refreshTokens     RefreshToken[]
+  id                 Int                 @id @default(autoincrement())
+  uniqName           String              @unique @db.VarChar(31)
+  hashPwd            String              @db.VarChar(127)
+  isForeigner        Boolean
+  domain             String?             @db.VarChar(63)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  isDeleted          Boolean             @default(false)
+  tokenVersion       Int                 @default(0) // bump 即令该用户所有 access token 失效（全设备登出/改密/强制下线）
+  userExtraId        Int                 @unique
+  userExtra          UserExtra           @relation(fields: [userExtraId], references: [id])
+  userNotiBoxId      Int                 @unique
+  userNotiBox        userNotiBox         @relation(fields: [userNotiBoxId], references: [id])
+  Group              Group[]
+  threadParticipants ThreadParticipant[]
+  friendshipsAsA     Friendship[]        @relation("FriendA")
+  friendshipsAsB     Friendship[]        @relation("FriendB")
+  messages           Message[]           @relation("AuthoredMessages")
+  refreshTokens      RefreshToken[]
 
   @@unique([uniqName, domain])
 }
@@ -54,26 +56,15 @@ model userNotiBox {
 }
 
 model Group {
-  id          Int           @id @default(autoincrement())
-  name        String
-  ownerId     Int
-  owner       User          @relation(fields: [ownerId], references: [id])
-  avatar      String
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  threadId    Int
-  threadItem  MessageThread @relation(fields: [threadId], references: [id])
-  GroupMember GroupMember[]
-}
-
-model GroupMember {
-  id       Int   @id @default(autoincrement())
-  groupId  Int
-  group    Group @relation(fields: [groupId], references: [id])
-  userId   Int
-  userItem User  @relation(fields: [userId], references: [id])
-
-  @@unique([groupId, userId])
+  id         Int           @id @default(autoincrement())
+  name       String
+  ownerId    Int
+  owner      User          @relation(fields: [ownerId], references: [id])
+  avatar     String
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  threadId   Int
+  threadItem MessageThread @relation(fields: [threadId], references: [id])
 }
 
 enum MessageThreadType {
@@ -81,31 +72,61 @@ enum MessageThreadType {
   GROUP
 }
 
-enum UserMessageThreadStatus {
-  FROM_PENDING
-  TO_PENDING
+/// Group member role (only meaningful when the thread type is GROUP; null for P2P participants).
+enum GroupRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+/// P2P relationship / friend-request state. Replaces the old UserMessageThreadStatus overload.
+enum FriendshipStatus {
+  PENDING
   APPROVED
   BLOCKED
   DELETED
 }
 
-model UserMessageThread {
-  id         Int                     @id @default(autoincrement())
-  userId     Int
-  userItem   User                   @relation(fields: [userId], references: [id])
-  status     UserMessageThreadStatus
-  toObjType  MessageThreadType
-  toObjId    Int
-  reqMessage String
-  threadId   Int?
-  threadItem MessageThread?          @relation(fields: [threadId], references: [id])
-  createdAt  DateTime                @default(now())
-  updatedAt  DateTime                @updatedAt
-  isDeleted  Boolean                 @default(false)
-  lastRead   BigInt?
+/// One row per (user, conversation) — the single source of truth for who is in a thread and their per-user
+/// state (read position, mute, role for GROUP). P2P and GROUP share this table; role is null for P2P.
+/// Replaces the participation half of UserMessageThread and the whole GroupMember table.
+model ThreadParticipant {
+  id            Int           @id @default(autoincrement())
+  userId        Int
+  user          User          @relation(fields: [userId], references: [id])
+  threadId      Int
+  thread        MessageThread @relation(fields: [threadId], references: [id])
+  lastReadMsgId BigInt? // read watermark; unread = count(Message where threadId=T and id > lastReadMsgId)
+  role GroupRole? // OWNER/ADMIN/MEMBER for GROUP; null for P2P (no default — set explicitly on group create/join)
+  joinedAt      DateTime      @default(now())
+  muted         Boolean       @default(false)
+  leftAt        DateTime? // soft-leave / hidden; null = active member
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 
-  @@unique([userId, toObjType, toObjId])
   @@unique([userId, threadId])
+  @@index([threadId]) // roster of a conversation
+  @@index([userId]) // "my conversations"
+}
+
+/// P2P relationship / friend-request state machine — exactly ONE row per unordered user pair (userAId < userBId).
+/// Replaces the old two-half-edge UserMessageThread rows; direction is carried by requesterId.
+model Friendship {
+  id          Int              @id @default(autoincrement())
+  userAId     Int // normalized: min(a, b)
+  userBId     Int // normalized: max(a, b)
+  userA       User             @relation("FriendA", fields: [userAId], references: [id])
+  userB       User             @relation("FriendB", fields: [userBId], references: [id])
+  requesterId Int // who initiated (direction without two rows)
+  status      FriendshipStatus @default(PENDING)
+  reqMessage  String           @default("")
+  threadId    Int? // the P2P MessageThread, created on APPROVED
+  thread      MessageThread?   @relation(fields: [threadId], references: [id])
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  @@unique([userAId, userBId])
+  @@index([userBId]) // with userAId covers "friendships involving a user"
 }
 
 model MessageThread {
@@ -114,7 +135,8 @@ model MessageThread {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   isDeleted         Boolean             @default(false)
-  UserMessageThread UserMessageThread[]
+  ThreadParticipant ThreadParticipant[]
+  Friendship        Friendship[]
   Message           Message[]
   Group             Group[]
 }
@@ -135,9 +157,14 @@ model Message {
   threadId    Int
   creator     Int
   threadItem  MessageThread @relation(fields: [threadId], references: [id])
+  creatorItem User          @relation("AuthoredMessages", fields: [creator], references: [id])
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
   isDeleted   Boolean       @default(false)
+
+  @@index([threadId, id]) // history pagination — the hot path
+  @@index([threadId, createdAt])
+  @@index([creator])
 }
 
 enum NotifyType {
@@ -155,19 +182,19 @@ model Notify {
 
 /// refresh_token 落库（替换原内存字典）：支持重启存活、多端、可吊销
 model RefreshToken {
-  id         BigInt   @id @default(autoincrement())
-  userId     Int
-  user       User     @relation(fields: [userId], references: [id])
-  tokenHash  String   @unique // 存 sha256 哈希，不存明文
-  jti        String   @unique // 该 token 的 JWT id；精确吊销键，与 claim 对齐
-  familyId   String // 登录时铸造、轮换时继承；重用检测锚点（重放已吊销 token→全家族失效）
-  device     String? // 多端标识（前端 localStorage uuid）
-  userAgent  String? @db.VarChar(255) // 签发/轮换时的 UA，会话列表展示用
-  ip         String? @db.VarChar(64) // 签发/轮换时的 IP，会话列表展示用
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime
-  revokedAt  DateTime? // 软吊销
-  revokeReason String? @db.VarChar(32) // 吊销原因：logout|rotated|reuse|all_devices|password_change（仅观测/取证）
+  id           BigInt    @id @default(autoincrement())
+  userId       Int
+  user         User      @relation(fields: [userId], references: [id])
+  tokenHash    String    @unique // 存 sha256 哈希，不存明文
+  jti          String    @unique // 该 token 的 JWT id；精确吊销键，与 claim 对齐
+  familyId     String // 登录时铸造、轮换时继承；重用检测锚点（重放已吊销 token→全家族失效）
+  device       String? // 多端标识（前端 localStorage uuid）
+  userAgent    String?   @db.VarChar(255) // 签发/轮换时的 UA，会话列表展示用
+  ip           String?   @db.VarChar(64) // 签发/轮换时的 IP，会话列表展示用
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime? // 软吊销
+  revokeReason String?   @db.VarChar(32) // 吊销原因：logout|rotated|reuse|all_devices|password_change（仅观测/取证）
 
   @@index([userId])
   @@index([familyId])
@@ -175,14 +202,14 @@ model RefreshToken {
 
 /// 管理员账户（独立于聊天 User：拖库隔离 + 消除提权路径 + 可施加更严安全策略）
 model Admin {
-  id          Int       @id @default(autoincrement())
-  username    String    @unique @db.VarChar(31)
-  hashPwd     String    @db.VarChar(127)
-  enabled     Boolean   @default(true)
-  lastLoginIp String?   @db.VarChar(64)
-  lastLoginAt DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id            Int                 @id @default(autoincrement())
+  username      String              @unique @db.VarChar(31)
+  hashPwd       String              @db.VarChar(127)
+  enabled       Boolean             @default(true)
+  lastLoginIp   String?             @db.VarChar(64)
+  lastLoginAt   DateTime?
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
   refreshTokens AdminRefreshToken[]
 
   @@index([username])
@@ -190,18 +217,18 @@ model Admin {
 
 /// admin refresh token（家族化 + 重用检测，镜像 RefreshToken，独立实例避免与用户会话混用）
 model AdminRefreshToken {
-  id         BigInt   @id @default(autoincrement())
-  adminId    Int
-  admin      Admin    @relation(fields: [adminId], references: [id])
-  tokenHash  String   @unique
-  jti        String   @unique
-  familyId   String
-  userAgent  String?  @db.VarChar(255)
-  ip         String?  @db.VarChar(64)
-  createdAt  DateTime @default(now())
-  expiresAt  DateTime
-  revokedAt  DateTime?
-  revokeReason String? @db.VarChar(32)
+  id           BigInt    @id @default(autoincrement())
+  adminId      Int
+  admin        Admin     @relation(fields: [adminId], references: [id])
+  tokenHash    String    @unique
+  jti          String    @unique
+  familyId     String
+  userAgent    String?   @db.VarChar(255)
+  ip           String?   @db.VarChar(64)
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime
+  revokedAt    DateTime?
+  revokeReason String?   @db.VarChar(32)
 
   @@index([adminId])
   @@index([familyId])

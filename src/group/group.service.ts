@@ -1,15 +1,22 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import {
-  Prisma,
+  GroupRole,
   MessageThreadType,
-  UserMessageThreadStatus,
+  Prisma,
 } from '../prisma/generated/client.js';
-import * as jsonwebtoken from 'jsonwebtoken';
+import jsonwebtoken from 'jsonwebtoken';
 import { requireEnv } from '../common/env.js';
 
 const secret = requireEnv('GROUP_INVITE_SECRET');
 
+/**
+ * Group lifecycle: creation, invite-token mint/verify, and joining.
+ *
+ * Membership is no longer stored here — ThreadParticipant is the single source of truth. createNewGroup
+ * and joinGroup write ThreadParticipant rows (role OWNER for the creator, MEMBER for joiners); roster
+ * lookups and SSE fan-out go through ThreadParticipantService elsewhere.
+ */
 @Injectable()
 export class GroupService implements OnModuleInit {
   constructor(private prisma: PrismaService) {}
@@ -22,10 +29,6 @@ export class GroupService implements OnModuleInit {
 
   queryGroups(params: Prisma.GroupFindManyArgs) {
     return this.prisma.group.findMany(params);
-  }
-
-  findUniqeGroupMember(params: Prisma.GroupMemberFindUniqueArgs) {
-    return this.prisma.groupMember.findUnique(params);
   }
 
   generateInviteToken(params: {
@@ -45,7 +48,6 @@ export class GroupService implements OnModuleInit {
 
   /**
    * 校验邀请 token：验签 + 过期检查。
-   * 原实现用 jsonwebtoken.decode（仅解 payload 不验签），任何人伪造 token 即可入群。
    * - status 0：有效，返回 payload
    * - status 1：签名无效 / 格式错误
    * - status 2：已过期
@@ -70,12 +72,11 @@ export class GroupService implements OnModuleInit {
     }
   }
 
+  /** Create a group: GROUP thread + Group metadata + the owner as an OWNER participant. */
   async createNewGroup(params: { groupName: string; owner: number }) {
     return this.prisma.$transaction(async (prisma) => {
       const trdData = await prisma.messageThread.create({
-        data: {
-          type: MessageThreadType.GROUP,
-        },
+        data: { type: MessageThreadType.GROUP },
       });
       const grpData = await prisma.group.create({
         data: {
@@ -85,60 +86,54 @@ export class GroupService implements OnModuleInit {
           threadId: trdData.id,
         },
       });
-      await prisma.userMessageThread.create({
+      await prisma.threadParticipant.create({
         data: {
           userId: params.owner,
-          status: UserMessageThreadStatus.APPROVED,
-          toObjType: MessageThreadType.GROUP,
-          toObjId: grpData.id,
-          reqMessage: '',
           threadId: grpData.threadId,
-        },
-      });
-      await prisma.groupMember.create({
-        data: {
-          groupId: grpData.id,
-          userId: params.owner,
+          role: GroupRole.OWNER,
         },
       });
       return grpData;
     });
   }
 
-  async joinGroup(params: { groupId: number; userId: number }) {
-    await this.prisma.$transaction(async (prisma) => {
+  /**
+   * Join a group by adding the user as a MEMBER participant on the group's thread.
+   * - 'ok': newly joined.
+   * - 'already-member': the row pre-existed (re-activates it if the user had previously left).
+   * Idempotent by construction — never throws P2002 on duplicate join.
+   */
+  async joinGroup(params: {
+    groupId: number;
+    userId: number;
+  }): Promise<{ status: 'ok' | 'already-member' }> {
+    return this.prisma.$transaction(async (prisma) => {
       const group = await prisma.group.findUnique({
+        where: { id: params.groupId },
+      });
+      const existing = await prisma.threadParticipant.findUnique({
         where: {
-          id: params.groupId,
+          userId_threadId: { userId: params.userId, threadId: group.threadId },
         },
       });
-      await prisma.groupMember.create({
+      if (existing !== null) {
+        // Re-activate a previously-left member; otherwise this is an idempotent re-join.
+        if (existing.leftAt !== null) {
+          await prisma.threadParticipant.update({
+            where: { id: existing.id },
+            data: { leftAt: null, role: GroupRole.MEMBER },
+          });
+        }
+        return { status: 'already-member' };
+      }
+      await prisma.threadParticipant.create({
         data: {
-          groupId: group.id,
           userId: params.userId,
-        },
-      });
-      await prisma.userMessageThread.create({
-        data: {
-          userId: params.userId,
-          status: UserMessageThreadStatus.APPROVED,
-          toObjType: MessageThreadType.GROUP,
-          toObjId: group.id,
-          reqMessage: '',
           threadId: group.threadId,
+          role: GroupRole.MEMBER,
         },
       });
-    });
-  }
-
-  async getAllGroupUserIds(groupId: number) {
-    return this.prisma.groupMember.findMany({
-      where: {
-        groupId,
-      },
-      select: {
-        userId: true,
-      },
+      return { status: 'ok' };
     });
   }
 }
