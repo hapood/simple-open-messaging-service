@@ -75,3 +75,25 @@ export class QueryMessagesDto {
   @IsIn(['desc', 'asc'])
   orderBy: 'desc' | 'asc';
 }
+
+/**
+ * Mark a conversation read up to a given message. Omit lastReadMessageId to mark ALL current messages
+ * read (uses the thread's denormalized lastMessageId). The id is BigInt → carried as a string on the wire.
+ */
+export class MarkReadDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+
+  @ApiProperty({
+    required: false,
+    example: '9007199254740993',
+    description:
+      'Mark read up to (and including) this message id (BigInt→string). Omit to mark all current messages read.',
+  })
+  @IsOptional()
+  @IsString()
+  lastReadMessageId?: string;
+}

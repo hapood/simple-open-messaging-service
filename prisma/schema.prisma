@@ -135,6 +135,17 @@ model MessageThread {
   createdAt         DateTime            @default(now())
   updatedAt         DateTime            @updatedAt
   isDeleted         Boolean             @default(false)
+
+  // Denormalized "last message" read-cache for the conversation list (the hottest read path).
+  // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
+  // the same tx as the Message insert); the source of truth — Message.id / creator / createdAt — keeps
+  // its FKs. Nullable: empty threads (no messages yet) stay NULL. lastMessageId is the BigInt cursor
+  // (not the unread watermark, which is per-participant on ThreadParticipant.lastReadMsgId).
+  lastMessageId       BigInt?
+  lastMessagePreview  String? @db.VarChar(255)
+  lastMessageSenderId Int?
+  lastMessageAt       DateTime?
+
   ThreadParticipant ThreadParticipant[]
   Friendship        Friendship[]
   Message           Message[]

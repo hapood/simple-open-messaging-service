@@ -16,6 +16,7 @@ import {
 import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { UploadService } from '../upload/upload.service.js';
+import { MessageService } from '../message/message.service.js';
 import { GroupService } from '../group/group.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
@@ -58,6 +59,7 @@ export class UserController {
     private readonly groupService: GroupService,
     private readonly uploadService: UploadService,
     private readonly sseService: SseService,
+    private readonly messageService: MessageService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -156,6 +158,18 @@ export class UserController {
       orderBy: { id: 'asc' },
       include: { thread: true },
     });
+    // Unread counts for every thread in one batched query (uses the Message(threadId,id) index).
+    const unread = await this.messageService.countUnreadByThread(
+      me,
+      list.map((p) => p.threadId),
+    );
+    // Sort recent-first (by the thread's denormalized lastMessageAt); empty threads sink to the bottom.
+    // In-memory sort of ≤take rows is trivial and avoids a new index; threadId breaks ties deterministically.
+    list.sort((a, b) => {
+      const ta = a.thread.lastMessageAt?.getTime() ?? -Infinity;
+      const tb = b.thread.lastMessageAt?.getTime() ?? -Infinity;
+      return tb - ta || a.threadId - b.threadId;
+    });
     // Hydrate P2P peers: the other active participant on each P2P thread.
     const p2pThreadIds = list
       .filter((p) => p.thread.type === 'P2P')
@@ -192,12 +206,20 @@ export class UserController {
         type: p.thread.type,
         lastReadMsgId: p.lastReadMsgId ?? undefined,
         role: p.role ?? undefined,
+        unreadCount: unread.get(p.threadId) ?? 0,
+        lastMessagePreview: p.thread.lastMessagePreview ?? null,
+        lastMessageAt: p.thread.lastMessageAt ?? null,
+        lastMessageSenderId: p.thread.lastMessageSenderId ?? null,
       } as {
         id: number;
         threadId: number;
         type: MessageThreadType;
         lastReadMsgId: bigint | undefined;
         role: GroupRole | undefined;
+        unreadCount: number;
+        lastMessagePreview: string | null;
+        lastMessageAt: Date | null;
+        lastMessageSenderId: number | null;
         peerUser?: unknown;
         group?: unknown;
       };
@@ -470,18 +492,29 @@ export class UserController {
         message: `no thread [${dto.threadId}]`,
       };
     }
+    const unread = await this.messageService.countUnreadByThread(me, [
+      p.threadId,
+    ]);
     const item = {
       id: p.id,
       threadId: p.threadId,
       type: p.thread.type,
       lastReadMsgId: p.lastReadMsgId ?? undefined,
       role: p.role ?? undefined,
+      unreadCount: unread.get(p.threadId) ?? 0,
+      lastMessagePreview: p.thread.lastMessagePreview ?? null,
+      lastMessageAt: p.thread.lastMessageAt ?? null,
+      lastMessageSenderId: p.thread.lastMessageSenderId ?? null,
     } as {
       id: number;
       threadId: number;
       type: MessageThreadType;
       lastReadMsgId: bigint | undefined;
       role: GroupRole | undefined;
+      unreadCount: number;
+      lastMessagePreview: string | null;
+      lastMessageAt: Date | null;
+      lastMessageSenderId: number | null;
       peerUser?: unknown;
       group?: unknown;
     };

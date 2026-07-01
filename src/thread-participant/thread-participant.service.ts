@@ -84,11 +84,24 @@ export class ThreadParticipantService {
     return this.prisma.threadParticipant.create({ data });
   }
 
-  /** Advance the caller's read watermark for a conversation. */
-  markRead(userId: number, threadId: number, lastReadMsgId: bigint) {
-    return this.prisma.threadParticipant.update({
+  /**
+   * Advance the caller's read watermark for a conversation, but only forward (monotonic): a stale
+   * mark-read for an older message (e.g. an out-of-order retry, or marking read on an older message
+   * after newer ones arrived) never regresses the cursor. Returns whether the cursor actually moved,
+   * so the controller can tell "already read up to here" from a genuine update.
+   */
+  async advanceReadCursor(
+    userId: number,
+    threadId: number,
+    lastReadMsgId: bigint,
+  ): Promise<boolean> {
+    const p = await this.findParticipant(userId, threadId);
+    if (p === null) return false;
+    if (p.lastReadMsgId !== null && p.lastReadMsgId >= lastReadMsgId) return false;
+    await this.prisma.threadParticipant.update({
       where: { userId_threadId: { userId, threadId } },
       data: { lastReadMsgId },
     });
+    return true;
   }
 }

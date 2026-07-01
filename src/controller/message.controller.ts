@@ -15,7 +15,11 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FriendshipDto, MessageResponseDto } from '../dto/response.dto.js';
-import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto.js';
+import {
+  SendMessageDto,
+  QueryMessagesDto,
+  MarkReadDto,
+} from '../dto/message.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
@@ -140,5 +144,66 @@ export class MessageController {
       };
     }
     return { code: BusinessCode.OK, message: 'successful', data: friendship };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @Throttle(60, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/mark-read')
+  @ApiOperation({
+    summary: 'Mark a conversation read (advances the per-user read cursor)',
+  })
+  async markRead(
+    @Request() req,
+    @Body() dto: MarkReadDto,
+  ): Promise<ApiResult> {
+    // Authorization: the caller must be an active participant (same invariant as send/query).
+    const me = await this.participantService.findActiveParticipant(
+      req.user.userId,
+      dto.threadId,
+    );
+    if (me === null) {
+      return {
+        code: BusinessCode.THREAD_NOT_FOUND,
+        message: `no thread [${dto.threadId}]`,
+      };
+    }
+    // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
+    // (prevents pointing the cursor at a message from another conversation). Without one, mark all
+    // current messages read by using the thread's denormalized lastMessageId.
+    let cursor: bigint;
+    if (dto.lastReadMessageId !== undefined) {
+      if (!/^\d+$/.test(dto.lastReadMessageId)) {
+        return {
+          code: BusinessCode.VALIDATION_FAILED,
+          message: 'invalid lastReadMessageId',
+        };
+      }
+      const msg = await this.messageService.findMessageById(
+        BigInt(dto.lastReadMessageId),
+      );
+      if (msg === null || msg.threadId !== dto.threadId) {
+        return {
+          code: BusinessCode.NOT_FOUND,
+          message: `no such message in thread [${dto.threadId}]`,
+        };
+      }
+      cursor = msg.id;
+    } else {
+      const thread = await this.messageService.findThread(dto.threadId);
+      const last = thread?.lastMessageId ?? null;
+      if (last === null) {
+        // Empty thread — nothing to mark read.
+        return { code: BusinessCode.OK, message: 'successful' };
+      }
+      cursor = last;
+    }
+    await this.participantService.advanceReadCursor(
+      req.user.userId,
+      dto.threadId,
+      cursor,
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
   }
 }
