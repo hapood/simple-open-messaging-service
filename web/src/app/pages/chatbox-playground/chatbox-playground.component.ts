@@ -4,7 +4,7 @@ import {
   EnvironmentInjector,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { ChatBoxScroller, ScrollerApi, VsElement, VsItem, VsConfig, VsOptions, VsScrollInfo, VsDebugStats } from '../../lib/chat-box/chat-box-scroller';
+import { ChatBoxScroller, ScrollerApi, CbElement, CbItem, CbConfig, CbOptions, CbScrollInfo, CbDebugStats } from '../../lib/chat-box/chat-box-scroller';
 import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
 import { ActivatedRoute } from '@angular/router';
 import { classifyGroupFlags, GroupCtx } from '../../lib/chat-box/group-logic';
@@ -21,7 +21,7 @@ import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.co
 declare const ngDevMode: boolean | null | undefined;
 
 // 内核调参默认值（与内核 DEFAULTS 同步：chat-box-scroller.ts / anchor.ts）。mountPx 已删（array 内核死参数）。
-const VS_DEFAULTS: Required<VsConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
+const VS_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
 
 /**
  * 虚拟滚动实验场。
@@ -59,7 +59,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** 输入栏为避让软键盘上移的像素（visualViewport 计算，iOS 兜底）。 */
   readonly keyboardOffset = signal(0);
 
-  /** mock 数据源（实现 VsSource；buildItems 生成器分页）。setup 时按 count 创建。 */
+  /** mock 数据源（实现 CbSource；buildItems 生成器分页）。setup 时按 count 创建。 */
   private source?: MockItemSource;
   /** 生成器加载中（禁用数据量按钮，防重入）。 */
   readonly loading = signal(false);
@@ -90,11 +90,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly closeCheckpoint = signal(false);
   /** source get 延迟（ms，模拟 IO 慢加载）。默认 200，可调 0/1s/5s 测加载/补偿体验。 */
   readonly sourceLatency = signal(200);
-  /** 内核调参（VsConfig）。setup 传给内核；编辑弹窗改 → applyConfig 重建生效。 */
-  readonly config = signal<Required<VsConfig>>({ ...VS_DEFAULTS });
+  /** 内核调参（CbConfig）。setup 传给内核；编辑弹窗改 → applyConfig 重建生效。 */
+  readonly config = signal<Required<CbConfig>>({ ...VS_DEFAULTS });
   /** 参数编辑弹窗开关 + 草稿（确认才 apply，避免改一个字段就重建）。 */
   readonly configModalOpen = signal(false);
-  readonly configDraft = signal<Required<VsConfig>>({ ...VS_DEFAULTS });
+  readonly configDraft = signal<Required<CbConfig>>({ ...VS_DEFAULTS });
   /** Telegram 式粘性日期：当前视口顶所属日期标签（滚动实时更新；null=不显浮层）。 */
   readonly stickyDate = signal<string | null>(null);
   /** 主题：light / dark。默认跟随系统 prefers-color-scheme，可手动 toggle 临时覆盖（系统变化时再跟随）。 */
@@ -206,7 +206,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       this.scroller?.destroy();
       this.source = new MockItemSource(this.count(), this.sourceLatency(), new MockUserService(), 1);
       // 据路由 data 选内核实现：方案 A（借浏览器锚定）或方案 B（手动补偿），两者同构 ScrollerApi。
-      const Ctor: new (opts: VsOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
+      const Ctor: new (opts: CbOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
         this.useNativeAnchor ? ChatBoxScrollerAnchor : ChatBoxScroller;
       this.scroller = new Ctor({
         viewport, content, source: this.source,
@@ -241,7 +241,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
   cancelConfigModal(): void { this.configModalOpen.set(false); }
   /** 弹窗编辑：改 draft 某字段（确认才 apply）。模板内不直接调 signal.update —— strict 模板类型检查对模板内 signal 方法绑定推断不出签名 → TS2345 整编译失败、新代码全不进 bundle。 */
-  setConfigDraft(field: keyof VsConfig, value: number): void {
+  setConfigDraft(field: keyof CbConfig, value: number): void {
     this.configDraft.update(d => ({ ...d, [field]: value }));
   }
   /** 确认编辑：config ← draft + setup 重建（新参数生效）+ 关闭。 */
@@ -291,7 +291,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   // --- 内核 hooks ---
 
-  private createItemEl(item: VsItem<ChatItemData>, prev: VsItem<ChatItemData> | null): VsElement<ChatItemData> {
+  private createItemEl(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
     // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostVsElement）。
     // prev=null ⟺ 被 prepend 成新 oldest；boundary!=='oldest' 排除全局最老（那条 noOlder、非 ghost、须真实渲）。
     if (prev === null && item.boundary !== 'oldest') return createGhostVsElement();
@@ -317,7 +317,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /** 注入调试角标到 .pg-msg-row：首(绿)/续(橙) + 消息 id。仅 dev（ngDevMode）；destroy 随组件卸载。 */
-  private attachDevBadge(host: HTMLElement, item: VsItem<ChatItemData>, isHead: boolean): void {
+  private attachDevBadge(host: HTMLElement, item: CbItem<ChatItemData>, isHead: boolean): void {
     const d = item.data;
     if (d.type !== 'msg') return; // 仅消息行（date 行无分组概念）
     const row = host.querySelector('.pg-msg-row');
@@ -346,7 +346,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /** balance 诊断 → console.debug（调试模式 + 仅有挂载/卸载活动 + 节流，避免空闲刷屏）。 */
-  private onBalanceDebug(s: VsDebugStats) {
+  private onBalanceDebug(s: CbDebugStats) {
     if (!this.debugMode()) return;
     if (s.mount + s.unmount === 0) return;
     const now = performance.now();
@@ -355,7 +355,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     console.debug('[vs balance]', s);
   }
 
-  private onScroll(info: VsScrollInfo) {
+  private onScroll(info: CbScrollInfo) {
     this.atBottom.set(info.atBottom);
     this.updateStickyDate();
     if (!isDevMode()) return;
@@ -385,9 +385,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     for (const { d, top } of rects) {
       if (top <= fadeLo) current = d.textContent?.trim() ?? null;
     }
-    // 顶部 ghost 加载 spinner（.vs-ghost-loading，居中）显形时与居中日期浮层重叠 →
+    // 顶部 ghost 加载 spinner（.cb-ghost-loading，居中）显形时与居中日期浮层重叠 →
     // spinner 出现在视口顶（bottom 越过视口顶）时不显浮层让位（spinner 走后自然恢复；行内 date 仍在）。
-    const ghost = ct.querySelector('.vs-ghost-loading');
+    const ghost = ct.querySelector('.cb-ghost-loading');
     if (ghost && ghost.getBoundingClientRect().bottom > vTop) current = null;
     this.stickyDate.set(current);
     const hasFloat = current !== null;
@@ -520,8 +520,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     scroller.appendLive([this.makeMockItem('', true, 'IMAGE', imgs)]);
   }
 
-  /** 构造一条 mock ChatMsgData 并包成 VsItem（id 占位，appendLive 内由 source 覆盖为抽象 id）。 */
-  private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null): VsItem<ChatItemData> {
+  /** 构造一条 mock ChatMsgData 并包成 CbItem（id 占位，appendLive 内由 source 覆盖为抽象 id）。 */
+  private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null): CbItem<ChatItemData> {
     const now = new Date();
     const data: ChatMsgData = {
       type: 'msg',

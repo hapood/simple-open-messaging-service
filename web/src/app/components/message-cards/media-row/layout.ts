@@ -1,20 +1,25 @@
 /**
- * 相册布局纯函数（行式 justified：每行图等高、按真实比例横向排开、行内尽量保比例）。
+ * Album layout pure function (row-wise justified: every image in a row shares one height, laid out
+ * horizontally by true aspect ratio, preserving ratio within the row as much as possible).
  *
- * 返回每个 cell 的 { xPct, yPx, wPct, hPx }：
- * - xPct/wPct 相对 grid 容器宽（%）→ 窄屏 bubble<baseW 时 cell 宽自适应、不溢出；
- * - yPx/hPx 绝对像素（按 baseW 算）→ 高度恒定，bg 加载/解码绝不改变高度。
+ * Returns each cell's { xPct, yPx, wPct, hPx }:
+ * - xPct/wPct are relative to the grid container width (%) → the cell width adapts on narrow screens where the
+ *   bubble is narrower than baseW, without overflowing;
+ * - yPx/hPx are absolute pixels (computed from baseW) → the height is constant; background load/decode never
+ *   changes the height.
  *
- * 行式核心：一行 k 张图，行宽 W=baseW-(k-1)*gap，各图纵横比 r=h/w。
- * 等高行高 rawH = W / Σ(1/r_i)（行内保比例、横向填满 W）。
- * - rawH 落在 [minH, maxH] → 走 justified：cell 宽 = rawH/r_i（保比例、填满、不裁）。
- * - rawH 超界（全横图行太矮 / 全竖图行太高）→ 行高 clamp 到 [minH,maxH]，cell 改等宽，
- *   真实比例差交给 cell 既有 background-size:cover 裁。正常比例池（16:9~9:16）多数行落回
- *   justified 分支保比例展示；只有极端组合才 clamp。
- *   （注：不能"clamp 后行内等比重缩放回 W"——那会恒等于 rawH、抵消 clamp，故用分支。）
+ * Row-wise core: a row of k images has width W = baseW − (k−1)*gap, each image has aspect ratio r = h/w.
+ * The equal-height row height rawH = W / Σ(1/r_i) (preserves ratio within the row and fills W horizontally).
+ * - rawH within [minH, maxH] → justified: cell width = rawH/r_i (preserves ratio, fills, no cropping).
+ * - rawH out of range (an all-landscape row too short / an all-portrait row too tall) → clamp the row height
+ *   to [minH, maxH], cells become equal-width, and the residual ratio mismatch is absorbed by the existing
+ *   background-size: cover cropping. For a normal ratio pool (16:9..9:16) most rows land in the justified
+ *   branch and render with preserved ratio; only extreme combinations clamp.
+ *   (Note: you cannot "rescale the row back to W after clamp" — that would equal rawH and undo the clamp, so a
+ *   branch is used.)
  *
- * w/h 异常（NaN/0/负）→ fallback 4:3（DEFAULT_R），防坏数据毒化 totalH 波及虚拟滚动。
- * totalH 作为虚拟滚动 estimateHeight，与 onHeightChange 实测同口径。
+ * Bad w/h (NaN/0/negative) → fall back to 4:3 (DEFAULT_R), so corrupt data can't poison totalH and ripple into
+ * the virtual scroll. totalH is the grid height the kernel measures (same basis as onHeightChange).
  */
 
 export interface AlbumImageLike {
@@ -33,7 +38,7 @@ export interface AlbumRect {
 
 export interface AlbumLayout {
   rects: AlbumRect[];
-  /** grid 总高（px），= estimateHeight。 */
+  /** Grid total height (px) — the rendered row height the kernel measures. */
   totalH: number;
   /** >6 张时末格叠 "+moreCount" 角标；0 表示无。 */
   moreCount: number;

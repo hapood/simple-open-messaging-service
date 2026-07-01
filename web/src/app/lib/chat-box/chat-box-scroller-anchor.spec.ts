@@ -6,8 +6,8 @@
  *
  * mock source 用 msgId 游标（'m-K'，K=0 最老），不再连续抽象 id —— 验证内核 index 与 source id 解耦。
  */
-import { ChatBoxScrollerAnchor, VsElement, VsItem } from './chat-box-scroller-anchor';
-import type { VsSource } from './source';
+import { ChatBoxScrollerAnchor, CbElement, CbItem } from './chat-box-scroller-anchor';
+import type { CbSource } from './source';
 
 /** 'm-K' → K（msgId 解析为序号，供 fakeSource 游标定位）。 */
 function num(id: string | number): number { return Number(String(id).replace(/^m-/, '')); }
@@ -20,34 +20,34 @@ function sumChildrenHeight(el: HTMLElement): number {
 }
 
 /** 可控 hooks：createItem(item)，每项高度固定。不依赖 id 数值（item.id 是 msgId 字符串）。 */
-function controllableHooks(itemHeight = 100): { hooks: { createItem: (item: VsItem<number>, prev: VsItem<number> | null) => VsElement<number> } } {
+function controllableHooks(itemHeight = 100): { hooks: { createItem: (item: CbItem<number>, prev: CbItem<number> | null) => CbElement<number> } } {
   return {
     hooks: {
-      createItem: (item): VsElement<number> => {
+      createItem: (item): CbElement<number> => {
         void item;
         const el = document.createElement('div');
         Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => itemHeight });
-        return { el, estimateHeight: () => itemHeight, onHeightChange: () => () => {}, destroy: () => {} };
+        return { el, onHeightChange: () => () => {}, destroy: () => {} };
       },
     },
   };
 }
 
 /** Fake source：N 条 msg（'m-0'最老 .. 'm-(N-1)'最新）。游标 getOlder/getNewer，升序返回。 */
-function fakeSource(N: number): VsSource<number> & { gets: () => number; newers: () => number } {
-  const itemAt = (i: number): VsItem<number> | undefined => {
+function fakeSource(N: number): CbSource<number> & { gets: () => number; newers: () => number } {
+  const itemAt = (i: number): CbItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
     const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
     return boundary ? { id: `m-${i}`, data: i, boundary } : { id: `m-${i}`, data: i };
   };
-  const slice = (lo: number, hi: number): VsItem<number>[] => {
-    const out: VsItem<number>[] = [];
+  const slice = (lo: number, hi: number): CbItem<number>[] => {
+    const out: CbItem<number>[] = [];
     for (let i = Math.max(0, lo); i < Math.min(N, hi); i++) { const it = itemAt(i); if (it) out.push(it); }
     return out;
   };
   let gets = 0;
   let newers = 0;
-  const src: VsSource<number> = {
+  const src: CbSource<number> = {
     init: async (anchorId, older, newer) => {
       if (anchorId === -1) return slice(N - older, N);
       const idx = num(anchorId);
@@ -65,29 +65,29 @@ function fakeSource(N: number): VsSource<number> & { gets: () => number; newers:
 }
 
 /** 可控 init 的 source：init 返回手动 resolve 的 Promise（测连续跳转 gen 超越）。 */
-function controllableInitSource(N: number): VsSource<number> & {
-  resolveInit: (items: VsItem<number>[]) => void; initPending: () => number; batchAround: (k: number) => VsItem<number>[];
+function controllableInitSource(N: number): CbSource<number> & {
+  resolveInit: (items: CbItem<number>[]) => void; initPending: () => number; batchAround: (k: number) => CbItem<number>[];
 } {
-  const itemAt = (i: number): VsItem<number> | undefined => {
+  const itemAt = (i: number): CbItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
     const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
     return boundary ? { id: `m-${i}`, data: i, boundary } : { id: `m-${i}`, data: i };
   };
-  const slice = (lo: number, hi: number): VsItem<number>[] => {
-    const out: VsItem<number>[] = [];
+  const slice = (lo: number, hi: number): CbItem<number>[] => {
+    const out: CbItem<number>[] = [];
     for (let i = Math.max(0, lo); i < Math.min(N, hi); i++) { const it = itemAt(i); if (it) out.push(it); }
     return out;
   };
-  const queue: ((items: VsItem<number>[]) => void)[] = [];
-  const src: VsSource<number> = {
-    init: () => new Promise<VsItem<number>[]>(resolve => { queue.push(resolve); }),
+  const queue: ((items: CbItem<number>[]) => void)[] = [];
+  const src: CbSource<number> = {
+    init: () => new Promise<CbItem<number>[]>(resolve => { queue.push(resolve); }),
     getOlder: async (c, k) => { const i = num(c); return slice(i - k, i); },
     getNewer: async (c, k) => { const i = num(c); return slice(i + 1, i + 1 + k); },
     appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
     destroy: () => {},
   };
   return Object.assign(src, {
-    resolveInit: (items: VsItem<number>[]) => { const r = queue.shift(); if (r) r(items); },
+    resolveInit: (items: CbItem<number>[]) => { const r = queue.shift(); if (r) r(items); },
     initPending: () => queue.length,
     batchAround: (k: number) => [...slice(Math.max(0, k - 49), k + 1), ...slice(k + 1, k + 51)],
   });
@@ -97,28 +97,28 @@ function controllableInitSource(N: number): VsSource<number> & {
 async function flush(n = 30): Promise<void> { for (let i = 0; i < n; i++) await Promise.resolve(); }
 
 /** 可控 source：getOlder 返回手动 resolve 的 Promise，测「getOlder 在途」时改 scrollTop（fling 反向）。 */
-function controllableSource(N: number): VsSource<number> & {
-  gets: () => number; resolveOlder: (items?: VsItem<number>[]) => void; isPending: () => boolean;
+function controllableSource(N: number): CbSource<number> & {
+  gets: () => number; resolveOlder: (items?: CbItem<number>[]) => void; isPending: () => boolean;
 } {
-  const itemAt = (i: number): VsItem<number> | undefined => {
+  const itemAt = (i: number): CbItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
     const boundary = i === 0 ? 'oldest' as const : i === N - 1 ? 'newest' as const : undefined;
     return boundary ? { id: `m-${i}`, data: i, boundary } : { id: `m-${i}`, data: i };
   };
-  const slice = (lo: number, hi: number): VsItem<number>[] => {
-    const out: VsItem<number>[] = [];
+  const slice = (lo: number, hi: number): CbItem<number>[] => {
+    const out: CbItem<number>[] = [];
     for (let i = Math.max(0, lo); i < Math.min(N, hi); i++) { const it = itemAt(i); if (it) out.push(it); }
     return out;
   };
-  let resolver: ((items?: VsItem<number>[]) => void) | null = null;
+  let resolver: ((items?: CbItem<number>[]) => void) | null = null;
   let pendingRange = { lo: 0, hi: 0 };
   let gets = 0;
-  const src: VsSource<number> = {
+  const src: CbSource<number> = {
     init: async (_r, older) => slice(N - older, N),
     // 普通 function return Promise（不用 async，避免多一层 thenable assimilation microtask 阻塞测试 flush）
-    getOlder: function (cursorId: string | number, count: number): Promise<VsItem<number>[]> {
+    getOlder: function (cursorId: string | number, count: number): Promise<CbItem<number>[]> {
       gets++; const k = num(cursorId); pendingRange = { lo: k - count, hi: k };
-      return new Promise(resolve => { resolver = (items?: VsItem<number>[]) => resolve(items ?? slice(pendingRange.lo, pendingRange.hi)); });
+      return new Promise(resolve => { resolver = (items?: CbItem<number>[]) => resolve(items ?? slice(pendingRange.lo, pendingRange.hi)); });
     },
     getNewer: async (cursorId, count) => { const k = num(cursorId); return slice(k + 1, k + 1 + count); },
     appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
@@ -126,7 +126,7 @@ function controllableSource(N: number): VsSource<number> & {
   };
   return Object.assign(src, {
     gets: () => gets,
-    resolveOlder: (items?: VsItem<number>[]) => { if (resolver) { const r = resolver; resolver = null; r(items); } },
+    resolveOlder: (items?: CbItem<number>[]) => { if (resolver) { const r = resolver; resolver = null; r(items); } },
     isPending: () => resolver !== null,
   });
 }
@@ -185,11 +185,11 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(viewport.scrollTop).toBe(stBefore);
   });
 
-  it('measurePending 移除挂载元素 vs-pending', async () => {
+  it('measurePending 移除挂载元素 cb-pending', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
-    expect(content.querySelectorAll('.vs-pending').length).toBe(0);
+    expect(content.querySelectorAll('.cb-pending').length).toBe(0);
   });
 
   // ── 阶段0：noOlder absorb 时机（revalidate 通过后才吸收，方案 A 同修）──
@@ -222,18 +222,18 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(src.gets()).toBeGreaterThan(getsBefore);
   });
 
-  // ── 阶段1：骨架 item（vs-ghost，方案 A 同；不补偿 scrollTop）──
+  // ── 阶段1：骨架 item（cb-ghost，方案 A 同；不补偿 scrollTop）──
 
-  it('阶段1：init 后顶部 mounted[0] 显 vs-ghost（未到最老），且仅一条', async () => {
+  it('阶段1：init 后顶部 mounted[0] 显 cb-ghost（未到最老），且仅一条', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     const oldest = scroller.getInfo().oldestId!;
-    expect(content.querySelector(`[data-vs-id="${oldest}"]`)?.classList.contains('vs-ghost')).toBe(true);
-    expect(content.querySelectorAll('.vs-ghost').length).toBe(1);
+    expect(content.querySelector(`[data-cb-id="${oldest}"]`)?.classList.contains('cb-ghost')).toBe(true);
+    expect(content.querySelectorAll('.cb-ghost').length).toBe(1);
   });
 
-  it('阶段1：滚到全局最老（noOlder）→ vs-ghost 消失', async () => {
+  it('阶段1：滚到全局最老（noOlder）→ cb-ghost 消失', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(120) });
     await scroller.init();
@@ -243,7 +243,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
       await Promise.resolve();
     }
     expect(scroller.getInfo().noOlder).toBe(true);
-    expect(content.querySelectorAll('.vs-ghost').length).toBe(0);
+    expect(content.querySelectorAll('.cb-ghost').length).toBe(0);
   });
 
   it('loadOlder 截最新端 → noNewer 重置 false（loadNewer 可加载回，修向下滚/定位底部卡住）', async () => {
@@ -304,11 +304,11 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
   });
 
   // Regression (mirror of B-kernel): jumping to a NON-HEAD member of a merged album must resolve to its
-  // album item via VsItem.ids. Pre-fix the viewport ended up empty (hasTarget false → early return).
+  // album item via CbItem.ids. Pre-fix the viewport ended up empty (hasTarget false → early return).
   it('scrollToIndex to a non-head album member msgId → resolves to album item, window non-empty (ids member-resolution regression)', async () => {
     const { hooks } = controllableHooks();
-    const mergeItems = (items: VsItem<number>[]): VsItem<number>[] => {
-      const out: VsItem<number>[] = [];
+    const mergeItems = (items: CbItem<number>[]): CbItem<number>[] => {
+      const out: CbItem<number>[] = [];
       let i = 0;
       while (i < items.length) {
         const a = items[i], b = items[i + 1], c = items[i + 2];
@@ -370,13 +370,13 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
   });
 
-  it('scrollToIndex highlight → 目标行加 vs-jump-highlight', async () => {
+  it('scrollToIndex highlight → 目标行加 cb-jump-highlight', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     scroller.scrollToIndex('m-450', 'top', true);
-    const el = content.querySelector<HTMLElement>('[data-vs-id="m-450"]');
-    expect(el?.classList.contains('vs-jump-highlight')).toBe(true);
+    const el = content.querySelector<HTMLElement>('[data-cb-id="m-450"]');
+    expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
   });
 
   // ── 补覆盖：scrollToTop / refresh / loadNewer（向下加载）/ openAround 边界 / gen 超越 ──
@@ -418,7 +418,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
 
   it('openAround：source 返回不含目标的批 → 安全 no-op（不挂载、不崩溃）', async () => {
     const { hooks } = controllableHooks();
-    const src: VsSource<number> = {
+    const src: CbSource<number> = {
       init: async () => [{ id: 'other-1', data: 1 }, { id: 'other-2', data: 2 }],
       getOlder: async () => [], getNewer: async () => [],
       appendLive: (items) => items, destroy: () => {},

@@ -10,11 +10,11 @@
  * - boundary 继承：合并范围内任一带 boundary → 合并产物带（首条优先，续条仅在首条无时补）。
  * - scope = 一个 source batch（per-batch，跨 batch 切断 —— 与生产 PAGE_TAKE 不跨页等价）。
  */
-import type { VsItem } from '../../lib/chat-box/chat-box-scroller';
+import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatItemData } from './chat-item';
 
-export function mergeAlbumItems(items: VsItem<ChatItemData>[]): VsItem<ChatItemData>[] {
-  const out: VsItem<ChatItemData>[] = [];
+export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
+  const out: CbItem<ChatItemData>[] = [];
   let i = 0;
   while (i < items.length) {
     const it = items[i];

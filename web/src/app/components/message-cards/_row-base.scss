@@ -17,7 +17,7 @@
 //  3. estimateHeight 别太离谱：内核首帧按估算挂载，measurePending 会用实测修正，但偏差大 balance 会抖。
 //  4. host 内部自治：内核只挂 host（按抽象 id 定位），host 内部结构组件自理；外层（playground）禁止
 //     写作用到 host 内部的全局 CSS——会污染实测高度（见 playground-no-css-inside 记忆）。
-//  5. 别依赖内核运行时 class（vs-pending）：mount 时加、测完移除，组件不能假设它常驻。
+//  5. 别依赖内核运行时 class（cb-pending）：mount 时加、测完移除，组件不能假设它常驻。
 // ──────────────────────────────────────────────────────────────────────────────
 
 :host {
@@ -25,7 +25,7 @@
 }
 
 // item 根。纵向间距走 padding 不走 margin：内核用 offsetHeight 测高（不含 margin），
-// margin 会把盒子下推、下方气泡叠上来（见 vs-element-border-box 记忆）。
+// margin 会把盒子下推、下方气泡叠上来（见 cb-element-border-box 记忆）。
 .pg-msg-row {
   display: flex;
   position: relative;
@@ -49,7 +49,7 @@
 }
 
 // 新消息淡入：pg-msg-new 持 opacity:0，双 RAF 后移除触发 transition 淡入。
-// vs-pending（内核 mount 时加）用 visibility:hidden 占位测高、移除瞬时切换不淡入 → 滚动挂载不 fade。
+// cb-pending（内核 mount 时加）用 visibility:hidden 占位测高、移除瞬时切换不淡入 → 滚动挂载不 fade。
 .pg-msg-new {
   opacity: 0;
   transform: translateY(10px);

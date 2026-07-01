@@ -1,5 +1,5 @@
 /**
- * Playground mock 数据层：MockItemSource（实现 VsSource<ChatItemData>）+ 确定性生成器 buildItems。
+ * Playground mock 数据层：MockItemSource（实现 CbSource<ChatItemData>）+ 确定性生成器 buildItems。
  *
  * **镜像生产**：MockItemSource 给【原始 msg】（不合并相册、不分配展示用 id），用 msgId 当游标
  *  （getOlder/getNewer）——与 HttpItemSource 同构。相册合并由内核 mergeItems hook 做。
@@ -8,8 +8,8 @@
  * date 分隔不在数据层产生（由前端 createItem 派生）。
  */
 import { of, firstValueFrom, type Observable } from 'rxjs';
-import type { VsItem } from '../../lib/chat-box/chat-box-scroller';
-import type { VsSource, VsSourceInitOpts } from '../../lib/chat-box/source';
+import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
+import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
 
@@ -32,7 +32,7 @@ export class MockUserService {
 }
 
 /**
- * Playground mock 数据源：实现 {@link VsSource}<{@link ChatItemData}>，确定性生成器 buildItems 作后端。
+ * Playground mock 数据源：实现 {@link CbSource}<{@link ChatItemData}>，确定性生成器 buildItems 作后端。
  *
  * 【逻辑序列】`sequence() = [...full, ...live]` 升序（最老→最新）：full=buildItems 历史记录，
  *  live=appendLive 的 WS 新消息。cursorId（msgId）在此序列 findIndex 定位。
@@ -45,9 +45,9 @@ export class MockUserService {
  * @param total 生成器种子（确定性数据量 == full.length；buildItems 恰好产 total 条）。
  * @param latency 模拟 IO 延迟（ms）；测试传 0 使 init/getOlder/getNewer 同帧 resolve。
  */
-export class MockItemSource implements VsSource<ChatItemData> {
-  private readonly full: VsItem<ChatItemData>[];
-  private readonly live: VsItem<ChatItemData>[] = [];
+export class MockItemSource implements CbSource<ChatItemData> {
+  private readonly full: CbItem<ChatItemData>[];
+  private readonly live: CbItem<ChatItemData>[] = [];
   /** 模拟 IO 延迟（ms）；playground 可动态调（0/200/1s/5s）测慢加载体验。 */
   latency: number;
   /** mock 用户查询 service（镜像生产 UserService）；ensureProfiles 按 creator 查它填 profiles。 */
@@ -70,7 +70,7 @@ export class MockItemSource implements VsSource<ChatItemData> {
    *  - 其他（真实 msgId）：在 sequence 定位 anchorId，取 older（含 anchorId）+ newer 切片，合并升序
    *    （镜像生产 HttpItemSource 双向取）；older 取到序列首 → out[0] 标 'oldest'；newer 取到序列末 → out[last] 标 'newest'。
    */
-  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: VsSourceInitOpts): Promise<VsItem<ChatItemData>[]> {
+  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
     if (anchorId === -1) {
@@ -98,7 +98,7 @@ export class MockItemSource implements VsSource<ChatItemData> {
   }
 
   /** 从 cursorId 向更老取 count 条（升序；不含 cursor）。到序列首 → out[0] 标 'oldest'。 */
-  async getOlder(cursorId: string | number, count: number): Promise<VsItem<ChatItemData>[]> {
+  async getOlder(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
     const idx = seq.findIndex(it => String(it.id) === String(cursorId));
@@ -113,7 +113,7 @@ export class MockItemSource implements VsSource<ChatItemData> {
   }
 
   /** 从 cursorId 向更新取 count 条（升序；不含 cursor）。到序列末 → out[last] 标 'newest'。 */
-  async getNewer(cursorId: string | number, count: number): Promise<VsItem<ChatItemData>[]> {
+  async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
     const idx = seq.findIndex(it => String(it.id) === String(cursorId));
@@ -128,8 +128,8 @@ export class MockItemSource implements VsSource<ChatItemData> {
   }
 
   /** WS 新消息：入 live、标 newest。id 用调用方给的 msgId（playground makeMockItem）。 */
-  appendLive(rawItems: VsItem<ChatItemData>[]): VsItem<ChatItemData>[] {
-    const out: VsItem<ChatItemData>[] = [];
+  appendLive(rawItems: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
+    const out: CbItem<ChatItemData>[] = [];
     for (const raw of rawItems) {
       this.live.push(raw);
       out.push({ ...this.shape(raw), boundary: 'newest' }); // shape 填 name（playground makeMockItem 给的 raw 是占位）
@@ -142,12 +142,12 @@ export class MockItemSource implements VsSource<ChatItemData> {
   // ---------- 逻辑序列 ----------
 
   /** full（历史）+ live（WS）拼接，升序（最老→最新）。 */
-  private sequence(): VsItem<ChatItemData>[] {
+  private sequence(): CbItem<ChatItemData>[] {
     return [...this.full, ...this.live];
   }
 
   /** 按 creator 收集 missing → 查 userService 填 profiles（镜像生产 HttpItemSource.ensureProfiles）。 */
-  private async ensureProfiles(items: VsItem<ChatItemData>[]): Promise<void> {
+  private async ensureProfiles(items: CbItem<ChatItemData>[]): Promise<void> {
     const missing = new Set<number>();
     for (const it of items) if (!this.profiles.has(it.data.creator)) missing.add(it.data.creator);
     if (missing.size === 0) return;
@@ -158,7 +158,7 @@ export class MockItemSource implements VsSource<ChatItemData> {
   }
 
   /** 整形：克隆 item 去 boundary + 按 creator 从 profiles 填 name/isSelf（镜像生产 toMsgData；fallback '未知'/creator===userId）。 */
-  private shape(it: VsItem<ChatItemData>): VsItem<ChatItemData> {
+  private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
     const p = this.profiles.get(it.data.creator);
     return { id: it.id, data: { ...it.data, name: p?.name ?? '未知', isSelf: p?.isSelf ?? it.data.creator === this.userId } };
   }
@@ -227,9 +227,9 @@ const RATIOS: ReadonlyArray<[number, number]> = [
  * 跨天：每 step 条换一天（只让 createdAtMs 跨天分布；date 分隔由前端 createItem 派生，不在此产生）。
  * 随机切换发送者；高度天然随机（文本长短/相册张数不同）。item.id === data.msgId（id-N），稳定可寻址。
  */
-function buildItems(count: number): VsItem<ChatItemData>[] {
+function buildItems(count: number): CbItem<ChatItemData>[] {
   const rand = mulberry32(count * 2654435761); // seed 取 count（Knuth 乘数打散）
-  const items: VsItem<ChatItemData>[] = [];
+  const items: CbItem<ChatItemData>[] = [];
   let lastCreator: number | null = null;
   let minutes = 9 * 60;
   let day = 0;

@@ -3,7 +3,7 @@ import dayjs from 'dayjs';
 /**
  * 日期分隔标签的前端计算。
  *
- * date 不再是数据源的 VsItem（不再随 source 返回、不占抽象 id），而是 createItem 工厂挂载时
+ * date 不再是数据源的 CbItem（不再随 source 返回、不占抽象 id），而是 createItem 工厂挂载时
  * 按「相邻消息跨日」判定的【派生视图】——比较当前 msg 与窗口内前一条（更老邻居 prev）的
  * createdAtMs，跨日则在当前 msg 上方插一个 date pill。
  *

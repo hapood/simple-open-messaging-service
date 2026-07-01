@@ -5,11 +5,11 @@
  * latency=0 使 init/getOlder/getNewer 同帧 resolve。镜像生产语义（原始单图 msg，合并在内核 mergeItems）。
  */
 import { MockItemSource, MockUserService } from './mock-chat-api';
-import type { VsItem } from '../../lib/chat-box/chat-box-scroller';
+import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
 
 /** 构造一条最小 ChatMsgData（供 appendLive 测试）。 */
-function msg(msgId: string, isSelf = true): VsItem<ChatItemData> {
+function msg(msgId: string, isSelf = true): CbItem<ChatItemData> {
   const data: ChatMsgData = {
     type: 'msg', msgId, creator: isSelf ? 1 : 2, isSelf,
     name: isSelf ? '我' : '阿黄', text: 'x', time: '09:00',

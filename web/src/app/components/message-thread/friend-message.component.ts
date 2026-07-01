@@ -12,9 +12,9 @@ import {
 import {
   ChatBoxScroller,
   type ScrollerApi,
-  type VsElement,
-  type VsItem,
-  type VsScrollInfo,
+  type CbElement,
+  type CbItem,
+  type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
 import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
 import { HttpItemSource } from './http-item-source';
@@ -109,7 +109,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   /** 内核 createItem 钩子：内核传更老邻居 prev，按它算分组标，调 createMsgVsElement 包装组件。 */
-  private createItem(item: VsItem<ChatItemData>, prev: VsItem<ChatItemData> | null): VsElement<ChatItemData> {
+  private createItem(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
     // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostVsElement）。
     if (prev === null && item.boundary !== 'oldest') return createGhostVsElement();
     let isShowHead = true;
@@ -131,7 +131,7 @@ export class MessageThreadComponent implements OnDestroy {
     return createMsgVsElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector);
   }
 
-  private onScroll(info: VsScrollInfo): void {
+  private onScroll(info: CbScrollInfo): void {
     this.atBottom.set(info.atBottom);
     this.updateStickyDate();
   }

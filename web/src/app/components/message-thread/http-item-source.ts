@@ -1,12 +1,12 @@
 /**
- * HttpItemSource —— 生产数据源，实现 VsSource<ChatItemData>（吸收旧 ChatThreadController）。
+ * HttpItemSource —— 生产数据源，实现 CbSource<ChatItemData>（吸收旧 ChatThreadController）。
  *
  * 拥有 DB 游标分页（oldestMsgId/newestMsgId）+ WS。**只给原始 msg**（不合并相册、不分配展示用
  *  连续抽象 id）——相册合并是展示决策，由内核 `mergeItems` hook 做（per-batch，createItem 前）。
  *  date 分隔也由 createItem 渲染层按相邻消息跨日判定派生（见 message-cards/date-format.ts）。
  *
  * 【游标】getOlder(cursorId,count) 用 lastId 游标向更老分页（desc→升序）、getNewer 向更新（asc 已升序）。
- *  cursorId = 内核窗口边界 item 的 msgId。返回升序原始 msg（VsItem.id = msgId）。
+ *  cursorId = 内核窗口边界 item 的 msgId。返回升序原始 msg（CbItem.id = msgId）。
  * 【边界】到 DB 最老（hasMore=false）→ out[0]（升序首位=最老）标 'oldest'；锚点=最新 → out[last] 标 'newest'。
  *  内核 absorbBoundary 读 boundary 设内核 noOlder/noNewer。
  * 【去重】knownMsgIds 防 WS 与分页重复（IO 层，留 source）。
@@ -19,8 +19,8 @@ import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import type { StandardMessage } from '../../services/websocket.service';
 import type { Message, UserMessageThread } from '../../services/model';
-import type { VsItem } from '../../lib/chat-box/chat-box-scroller';
-import type { VsSource, VsSourceInitOpts } from '../../lib/chat-box/source';
+import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
+import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 
 /** SSE 重连后一次性补拉的最大条数（断线期间漏掉的消息）。超过则需用户滚动加载更早分页。 */
@@ -28,10 +28,10 @@ const RECONNECT_REFILL_BATCH = 100;
 
 export interface HttpItemSourceLiveOpts {
   /** WS 新消息回调（组件据此调 kernel.appendLive）。 */
-  onLive: (items: VsItem<ChatItemData>[]) => void;
+  onLive: (items: CbItem<ChatItemData>[]) => void;
 }
 
-export class HttpItemSource implements VsSource<ChatItemData> {
+export class HttpItemSource implements CbSource<ChatItemData> {
   /** DB 游标（最旧/最新已加载 msgId）。 */
   private oldestMsgId: string | null = null;
   private newestMsgId: string | null = null;
@@ -42,7 +42,7 @@ export class HttpItemSource implements VsSource<ChatItemData> {
   private readonly knownMsgIds = new Set<string>();
   private wsSub?: Subscription;
   private reconnectSub?: Subscription;
-  private readonly onLive: (items: VsItem<ChatItemData>[]) => void;
+  private readonly onLive: (items: CbItem<ChatItemData>[]) => void;
 
   constructor(
     private readonly userMsgTrd: UserMessageThread,
@@ -64,7 +64,7 @@ export class HttpItemSource implements VsSource<ChatItemData> {
    *    合并升序；按各自 hasMore 设 noOlder/noNewer（中段两者皆 false → 向上/下加载可达全局边界）。
    * 返回升序原始 msg，全局最旧/最新带 boundary。
    */
-  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: VsSourceInitOpts): Promise<VsItem<ChatItemData>[]> {
+  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
     if (anchorId === -1) {
       const res = await firstValueFrom(
         this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 0, take: olderCount, orderBy: 'desc' }),
@@ -106,7 +106,7 @@ export class HttpItemSource implements VsSource<ChatItemData> {
   }
 
   /** 从 cursorId（msgId）向更老取 count 条（desc→升序）。到 DB 最老 → out[0] 标 'oldest'。 */
-  async getOlder(cursorId: string | number, count: number): Promise<VsItem<ChatItemData>[]> {
+  async getOlder(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const res = await firstValueFrom(
       this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: count, lastId: String(cursorId), orderBy: 'desc' }),
@@ -124,7 +124,7 @@ export class HttpItemSource implements VsSource<ChatItemData> {
 
   /** 从 cursorId（msgId）向更新取 count 条（asc 已升序）。到 DB 最新 → out[last] 标 'newest'。
    *  生产锚点=最新时 noNewer=true，内核不调；实现以备未来「从中间加载」。 */
-  async getNewer(cursorId: string | number, count: number): Promise<VsItem<ChatItemData>[]> {
+  async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     if (this.noNewer) return [];
     const res = await firstValueFrom(
       this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: count, lastId: String(cursorId), orderBy: 'asc' }),
@@ -155,8 +155,8 @@ export class HttpItemSource implements VsSource<ChatItemData> {
   }
 
   /** kernel.appendLive 调：给 items 标 boundary:'newest'（id 已是 msgId，由调用方给）。不去重（WS 路径 rawToItems 已去重）。 */
-  appendLive(rawItems: VsItem<ChatItemData>[]): VsItem<ChatItemData>[] {
-    const out: VsItem<ChatItemData>[] = [];
+  appendLive(rawItems: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
+    const out: CbItem<ChatItemData>[] = [];
     for (const raw of rawItems) {
       const id = raw.data.type === 'msg' ? raw.data.msgId : String(raw.id);
       out.push({ ...raw, id, boundary: 'newest' });
@@ -196,8 +196,8 @@ export class HttpItemSource implements VsSource<ChatItemData> {
 
   // ---------- rawToItems（原始 msg 整形：去重 + 单 msg 解析；不合并相册——合并归内核 mergeItems） ----------
 
-  private rawToItems(msgs: Message[]): VsItem<ChatItemData>[] {
-    const out: VsItem<ChatItemData>[] = [];
+  private rawToItems(msgs: Message[]): CbItem<ChatItemData>[] {
+    const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = String(m.id);
       if (this.knownMsgIds.has(id)) continue; // IO 去重（防 WS/分页重复）
@@ -247,12 +247,12 @@ function parseImageContent(content: string): AlbumImage {
 }
 
 /** 区间首个 msg 的 id（source 只返回 msg，首项即首个 msg；守卫防御 + TS narrowing）。 */
-function firstMsgId(items: VsItem<ChatItemData>[]): string | null {
+function firstMsgId(items: CbItem<ChatItemData>[]): string | null {
   const first = items[0];
   return first && first.data.type === 'msg' ? first.data.msgId : null;
 }
 /** 区间末个 msg 的 id。 */
-function lastMsgId(items: VsItem<ChatItemData>[]): string | null {
+function lastMsgId(items: CbItem<ChatItemData>[]): string | null {
   const last = items[items.length - 1];
   return last && last.data.type === 'msg' ? last.data.msgId : null;
 }

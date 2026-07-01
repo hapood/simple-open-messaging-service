@@ -17,29 +17,29 @@
  */
 declare const ngDevMode: boolean | null | undefined;
 
-import type { VsSource } from './source';
+import type { CbSource } from './source';
 import type {
-  VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi, VsInitOpts,
+  CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts,
 } from './chat-box-scroller';
 
-export type { VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi, VsInitOpts } from './chat-box-scroller';
+export type { CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts } from './chat-box-scroller';
 
-const DEFAULTS: Required<VsConfig> = {
+const DEFAULTS: Required<CbConfig> = {
   edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
 };
 
 /** 挂载项：item（带 msgId）+ 元素句柄 + 缓存高度 + 高度退订。字段可变（rebuild 替换 el/vs/height/unsub）。 */
-interface Entry<T> { item: VsItem<T>; el: HTMLElement; vs: VsElement<T>; height: number; unsub: () => void; }
+interface Entry<T> { item: CbItem<T>; el: HTMLElement; vs: CbElement<T>; height: number; unsub: () => void; }
 
 export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private readonly viewport: HTMLElement;
   private readonly content: HTMLElement;
-  private readonly hooks: VsHooks<T>;
-  private readonly source: VsSource<T>;
-  private readonly cfg: Required<VsConfig>;
+  private readonly hooks: CbHooks<T>;
+  private readonly source: CbSource<T>;
+  private readonly cfg: Required<CbConfig>;
   private readonly initOpts: { chatId?: number };
-  private readonly onScroll?: (info: VsScrollInfo) => void;
-  private readonly onDebug?: (stats: VsDebugStats) => void;
+  private readonly onScroll?: (info: CbScrollInfo) => void;
+  private readonly onDebug?: (stats: CbDebugStats) => void;
 
   /** 有序挂载项：index 0=最老（DOM 顶）→ 末=最新（DOM 底）。下标=窗口局部 index。 */
   private mounted: Entry<T>[] = [];
@@ -75,7 +75,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private unmountTick = 0;
   private readonly viewportObs: ResizeObserver;
 
-  constructor(opts: VsOptions<T>) {
+  constructor(opts: CbOptions<T>) {
     this.viewport = opts.viewport;
     this.content = opts.content;
     this.hooks = opts.hooks;
@@ -94,7 +94,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return Math.max(this.vh + this.cfg.vhExtra, this.cfg.thresholdFloor);
   }
 
-  async init(opts?: VsInitOpts): Promise<void> {
+  async init(opts?: CbInitOpts): Promise<void> {
     // 跳转/重锚：开在指定消息（双向取数 + 居中定位），不走最新铺底。
     const startId = opts?.startMsgId ?? null;
     if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); return; }
@@ -116,7 +116,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.updateGhost();
   }
 
-  appendLive(rawItems: VsItem<T>[]): void {
+  appendLive(rawItems: CbItem<T>[]): void {
     if (this.destroyed || this.resetting || rawItems.length === 0) return;
     const wasAtBottom = this.isAtBottom();
     const items = this.source.appendLive(rawItems);
@@ -253,7 +253,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.absorbBoundary(merged);
     const oldGhost = this.ghostEntry;
     this.mountBatch(merged, 'older');
-    if (oldGhost && this.mounted.indexOf(oldGhost) > 0) { oldGhost.el.classList.remove('vs-ghost'); this.rebuildEntry(oldGhost); }
+    if (oldGhost && this.mounted.indexOf(oldGhost) > 0) { oldGhost.el.classList.remove('cb-ghost'); this.rebuildEntry(oldGhost); }
     this.measurePending();
     this.updateGhost();
     return merged.length;
@@ -309,13 +309,13 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private flashHighlight(idx: number): void {
     const el = this.mounted[idx]?.el;
     if (!el) return;
-    el.classList.remove('vs-jump-highlight');
+    el.classList.remove('cb-jump-highlight');
     void el.offsetWidth; // 强制 reflow → 重新触发动画
-    el.classList.add('vs-jump-highlight');
-    el.addEventListener('animationend', () => el.classList.remove('vs-jump-highlight'), { once: true });
+    el.classList.add('cb-jump-highlight');
+    el.addEventListener('animationend', () => el.classList.remove('cb-jump-highlight'), { once: true });
   }
 
-  getInfo(): VsScrollInfo {
+  getInfo(): CbScrollInfo {
     return {
       scrollTop: Math.round(this.viewport.scrollTop),
       scrollHeight: Math.round(this.content.scrollHeight),
@@ -366,7 +366,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   // ---------- 挂载（array index；DOM 按 mounted 顺序，不涉 scrollTop） ----------
 
   /** mergeItems hook（默认 noop）。在 createItem 前、对每个 source batch 调一次。scope=batch。 */
-  private mergeBatch(batch: VsItem<T>[]): VsItem<T>[] {
+  private mergeBatch(batch: CbItem<T>[]): CbItem<T>[] {
     return this.hooks.mergeItems ? this.hooks.mergeItems(batch) : batch;
   }
 
@@ -375,7 +375,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * older 不内部 measure（loadOlder 统一测 + ghost rebuild）；init/newer 末尾 measure。
    * prev = 更老邻居：batch 内前一个（升序），或 append 时旧末。
    */
-  private mountBatch(merged: VsItem<T>[], side: 'init' | 'older' | 'newer'): void {
+  private mountBatch(merged: CbItem<T>[], side: 'init' | 'older' | 'newer'): void {
     // merged 已由调用方经 mergeItems hook 合并（per-batch）；本方法只挂载，不再 merge。
     if (merged.length === 0) return;
     if (side === 'newer') {
@@ -397,15 +397,15 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /** 创建并挂一个 entry：createItem + DOM 插入（anchorEl 前 / append）+ pendingMeasure + 订阅高度。 */
-  private createEntry(item: VsItem<T>, prev: VsItem<T> | null, anchorEl?: HTMLElement | null): Entry<T> {
+  private createEntry(item: CbItem<T>, prev: CbItem<T> | null, anchorEl?: HTMLElement | null): Entry<T> {
     if (ngDevMode) this.mountTick++;
     const vs = this.hooks.createItem(item, prev);
     const el = vs.el;
-    el.dataset['vsId'] = String(item.id);
+    el.dataset['cbId'] = String(item.id);
     if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
     else this.content.appendChild(el);
-    const entry: Entry<T> = { item, el, vs, height: vs.estimateHeight(), unsub: () => {} };
-    el.classList.add('vs-pending');
+    const entry: Entry<T> = { item, el, vs, height: 0, unsub: () => {} }; // real height set by measurePending()
+    el.classList.add('cb-pending');
     this.pendingMeasure.push(entry);
     this.mounting = true; // 屏蔽首报（同 id-based）
     entry.unsub = vs.onHeightChange(h => this.onElHeight(entry, h));
@@ -427,14 +427,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null; // 更老邻居（index 小一条）
     const newVs = this.hooks.createItem(entry.item, newPrev);
     const newEl = newVs.el;
-    newEl.dataset['vsId'] = String(entry.item.id);
+    newEl.dataset['cbId'] = String(entry.item.id);
     this.content.insertBefore(newEl, entry.el);
     this.content.removeChild(entry.el);
     entry.unsub();
     entry.vs = newVs;
     entry.el = newEl;
-    entry.height = newVs.estimateHeight();
-    newEl.classList.add('vs-pending');
+    entry.height = 0; // real height set by measurePending() (loadOlder measures after rebuild)
+    newEl.classList.add('cb-pending');
     this.pendingMeasure.push(entry);
     this.mounting = true;
     entry.unsub = newVs.onHeightChange(h => this.onElHeight(entry, h));
@@ -482,14 +482,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   /**
    * 同步骨架态（纯 class）：骨架 = mounted[0]（最老挂载）在「未到全局最老」时。用 entry 引用比对
-   *（不怕数组位移）；变了则旧 ghost 移 vs-ghost、新 ghost 加 vs-ghost。
+   *（不怕数组位移）；变了则旧 ghost 移 cb-ghost、新 ghost 加 cb-ghost。
    * ghost 显形的 rebuild 由 loadOlder 在挂新批后显式做（并入统一 measure）。noOlder 时 target=null 永久消失。
    */
   private updateGhost(): void {
     const target = !this.noOlder && this.mounted.length > 0 ? this.mounted[0] : null;
     if (target === this.ghostEntry) return;
-    this.ghostEntry?.el.classList.remove('vs-ghost');
-    target?.el.classList.add('vs-ghost');
+    this.ghostEntry?.el.classList.remove('cb-ghost');
+    target?.el.classList.add('cb-ghost');
     this.ghostEntry = target;
   }
 
@@ -553,7 +553,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       this.mountBatch(merged, 'older'); // prepend（不内部 measure）
       // 旧 ghost 显形 rebuild（位置不变、用新 prev 重算组首/date），与新批共用一次 measure。
       if (oldGhost && this.mounted.indexOf(oldGhost) > 0) {
-        oldGhost.el.classList.remove('vs-ghost'); // 须在 rebuild 换 el 前
+        oldGhost.el.classList.remove('cb-ghost'); // 须在 rebuild 换 el 前
         this.rebuildEntry(oldGhost);
       }
       this.measurePending(); // 一次统一测：新批 + ghost 显形（方案 A 不补偿）
@@ -570,7 +570,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (this.inflightNewer || this.noNewer || this.mounted.length === 0) return;
     this.inflightNewer = true;
     const g = this.gen;
-    let merged: VsItem<T>[];
+    let merged: CbItem<T>[];
     try {
       const cursor = this.mounted[this.mounted.length - 1].item.id;
       const batch = await this.source.getNewer(cursor, this.cfg.mountItem);
@@ -631,9 +631,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (!this.mounting && !this.measuring) this.scheduleBalance();
   }
 
-  /** Whether an item represents the given msgId — matches VsItem.id OR any member in VsItem.ids
+  /** Whether an item represents the given msgId — matches CbItem.id OR any member in CbItem.ids
    *  (so a jump to a non-head album member still resolves to its album item). */
-  private itemHasId(item: VsItem<T>, id: string | number): boolean {
+  private itemHasId(item: CbItem<T>, id: string | number): boolean {
     const key = String(id);
     if (String(item.id) === key) return true;
     const ids = item.ids;
@@ -666,7 +666,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return total - this.vh - st < this.cfg.edge && this.scrollDir(st) !== 'up' && !this.noNewer;
   }
 
-  private absorbBoundary(items: VsItem<T>[]): void {
+  private absorbBoundary(items: CbItem<T>[]): void {
     for (const it of items) {
       if (it.boundary === 'oldest') this.noOlder = true;
       else if (it.boundary === 'newest') this.noNewer = true;
@@ -686,7 +686,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       const h = entry.el.offsetHeight;
       if (ngDevMode && h === 0) zeros++;
       this.onElHeight(entry, h);
-      entry.el.classList.remove('vs-pending');
+      entry.el.classList.remove('cb-pending');
     }
     this.measuring = false;
     if (ngDevMode && (zeros > 0 || this.resetting)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);

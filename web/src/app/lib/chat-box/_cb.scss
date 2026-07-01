@@ -1,23 +1,23 @@
 // 虚拟滚动内核所需的唯一全局样式契约（与核心库同目录，框架无关）。
 //
-// .vs-pending：内核 mount() 时为元素加上、measurePending() 测完真实 offsetHeight 后移除。
+// .cb-pending：内核 mount() 时为元素加上、measurePending() 测完真实 offsetHeight 后移除。
 // 用 visibility:hidden（保留布局、仍占高度可测）在「挂载→实测」这一帧把元素藏住，
 // 消除 estimateHeight→真实高度的跳变 flicker。消费方（styles.scss）@use 本文件一次即全局生效，
 // playground 与真实聊天共用内核 → 共享此规则，无需各处重复定义。
-.vs-pending {
+.cb-pending {
   visibility: hidden !important;
 }
 
-// .vs-ghost：内核给挂载窗口最顶条（oldestId 槽位、未到全局最老）加 vs-ghost，提示「上方还在加载」。
-// 两种承载：① createItem 对最顶条（prev=null、非全局最老）直接产【.vs-ghost-loading 居中 spinner】（见下：WhatsApp 风、
+// .cb-ghost：内核给挂载窗口最顶条（oldestId 槽位、未到全局最老）加 cb-ghost，提示「上方还在加载」。
+// 两种承载：① createItem 对最顶条（prev=null、非全局最老）直接产【.cb-ghost-loading 居中 spinner】（见下：WhatsApp 风、
 //    固定高度、不渲真实组件 / 图片）；② trim 后位置晋升的最顶条是真实组件 el（prev 可能过时），用 ::after overlay
 //    流光遮盖其内部（_row-base 契约：外部 CSS 不写 host 内部 → 用伪元素遮盖、不穿透组件 DOM）。
-//    故 overlay 用 :not(.vs-ghost-loading) 排除 spinner 宿主（spinner 自带 ::before、不需遮罩）。
-// loadOlder 挂上更老邻居后该条 rebuild 显形（spinner → 真实）、内核移除 vs-ghost；跟着 oldestId 传递，noOlder 时永久消失。
+//    故 overlay 用 :not(.cb-ghost-loading) 排除 spinner 宿主（spinner 自带 ::before、不需遮罩）。
+// loadOlder 挂上更老邻居后该条 rebuild 显形（spinner → 真实）、内核移除 cb-ghost；跟着 oldestId 传递，noOlder 时永久消失。
 // position:relative 强制（host 默认无 position，不设 ::after 会相对 .pg-content 撑满整列）；absolute 不撑高 host offsetHeight。
-.vs-ghost {
+.cb-ghost {
   position: relative;
-  &:not(.vs-ghost-loading)::after {
+  &:not(.cb-ghost-loading)::after {
     content: '';
     position: absolute;
     inset: 0;
@@ -27,18 +27,18 @@
     background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.5) 50%, transparent 70%);
     background-size: 200% 100%;
     background-repeat: no-repeat;
-    animation: vs-shimmer 1.4s ease-in-out infinite;
+    animation: cb-shimmer 1.4s ease-in-out infinite;
   }
 }
 
-// .vs-ghost-loading：ghost 加载指示——业界主流聊天「向上加载更老消息」的增量加载指示用居中 spinner
+// .cb-ghost-loading：ghost 加载指示——业界主流聊天「向上加载更老消息」的增量加载指示用居中 spinner
 //（WhatsApp 风；Telegram 骨架是初始空白填充用、非本场景）。骨架/消息形占位不适合此处：仅一行、且不知 self/other/
 // 内容类型，形状只能猜。spinner 与内容无关、轻、语义准（加载中）。结构由 createGhostVsElement 产（空 host + ::before 圆环）。
 // 固定高度（GHOST_H 由 JS inline）→ 不被内容撑变；host offsetHeight 恒定 = estimateHeight，rebuildDelta 由内核补偿。
 // 设计选择：spinner 用居中环形（border 圆环 + 顶色高亮 + 旋转），fg 取 --app-text-faint（与时间戳同档中性灰），track 浅灰。
-.vs-ghost-loading {
-  --vs-spin-track: rgba(0, 0, 0, 0.12);
-  --vs-spin-fg: var(--app-text-faint);     // 中性灰（与时间戳 / 占位同档）
+.cb-ghost-loading {
+  --cb-spin-track: rgba(0, 0, 0, 0.12);
+  --cb-spin-fg: var(--app-text-faint);     // 中性灰（与时间戳 / 占位同档）
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -49,37 +49,37 @@
     width: 22px;
     height: 22px;
     border-radius: 50%;
-    border: 2.5px solid var(--vs-spin-track);
-    border-top-color: var(--vs-spin-fg);   // 仅顶部高亮 → 旋转成「转圈」
-    animation: vs-spin 0.8s linear infinite;
+    border: 2.5px solid var(--cb-spin-track);
+    border-top-color: var(--cb-spin-fg);   // 仅顶部高亮 → 旋转成「转圈」
+    animation: cb-spin 0.8s linear infinite;
   }
 }
 
 // 深色模式（[data-theme="dark"]）：spinner token 翻成浅色（WhatsApp dark 底 #0b141a 上可辨；fg 走 --app-text-faint 已自适应）。
-[data-theme="dark"] .vs-ghost-loading {
-  --vs-spin-track: rgba(255, 255, 255, 0.14);
+[data-theme="dark"] .cb-ghost-loading {
+  --cb-spin-track: rgba(255, 255, 255, 0.14);
 }
 
-@keyframes vs-shimmer {
+@keyframes cb-shimmer {
   0%   { background-position: 200% 0; }   // 高光带在右外
   100% { background-position: -200% 0; }  // 滑到左外（从右往左流光）
 }
 
-@keyframes vs-spin {
+@keyframes cb-spin {
   to { transform: rotate(360deg); }       // 环形 spinner 匀速旋转
 }
 
-// .vs-jump-highlight：跳转到指定消息后给目标行加的一次性高亮（scrollToIndex/openAround 的 highlight 触发）。
+// .cb-jump-highlight：跳转到指定消息后给目标行加的一次性高亮（scrollToIndex/openAround 的 highlight 触发）。
 // 背景色由 --app-active（主题强调色）半透明起、淡出到透明；animationend 内核移除 class（flashHighlight）。
 // flashHighlight 重加 class 前强制 reflow（void offsetWidth）→ 连续跳转同一目标能重启动画。
-// 语义区别于 .vs-ghost-loading 的环形 spinner：spinner=「正在加载更老消息」（动效=进行中）；
+// 语义区别于 .cb-ghost-loading 的环形 spinner：spinner=「正在加载更老消息」（动效=进行中）；
 //  jump-highlight=「指给你看这条」（消息已加载，仅引注意）→ 用 Telegram/iMessage 式背景闪、不用 spinner，避免误导。
 // 不写 host 内部（_row-base 契约）——仅改宿主背景；气泡/头像自带背景叠在其上，高亮透出于行内留白处。
-.vs-jump-highlight {
-  animation: vs-jump-flash 1.6s ease-out;
+.cb-jump-highlight {
+  animation: cb-jump-flash 1.6s ease-out;
 }
 
-@keyframes vs-jump-flash {
+@keyframes cb-jump-flash {
   0%   { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // 半透强调色（不刺眼）
   55%  { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // 稍作停留便于察觉
   100% { background-color: transparent; }                                            // 淡出回常态
@@ -87,10 +87,10 @@
 
 // 无障碍：用户偏好减少动效 → 不闪（保留一次极短淡入即静止，仍可察觉目标）。
 @media (prefers-reduced-motion: reduce) {
-  .vs-jump-highlight {
-    animation: vs-jump-flash-reduced 0.4s ease-out;
+  .cb-jump-highlight {
+    animation: cb-jump-flash-reduced 0.4s ease-out;
   }
-  @keyframes vs-jump-flash-reduced {
+  @keyframes cb-jump-flash-reduced {
     from { background-color: color-mix(in srgb, var(--app-active) 45%, transparent); }
     to   { background-color: transparent; }
   }
