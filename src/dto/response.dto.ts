@@ -228,3 +228,32 @@ export class CreateGroupResponseDto {
   @ApiProperty({ example: 12, description: 'Group id' })
   groupId: number;
 }
+
+/**
+ * One row of a group roster (group/members). The caller's own row carries their role so the
+ * client can show role-gated actions; isOwner is derived from the group's ownerId rather than
+ * carried on the participant (the participant role is the source of truth, ownerId is a
+ * denormalized O(1) pointer kept in sync on transfer).
+ */
+export class GroupMemberDto {
+  @ApiProperty({ example: 7 })
+  userId: number;
+
+  @ApiProperty({ example: 'alice', description: 'Login unique name' })
+  uniqName: string;
+
+  @ApiProperty({ example: 'Alice', description: 'Display name' })
+  name: string;
+
+  @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
+  avatar: string;
+
+  @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })
+  role: GroupRole;
+
+  @ApiProperty({ example: 1_700_000_000_000, description: 'Joined at (ms timestamp)' })
+  joinedAt: number;
+
+  @ApiProperty({ example: false, description: 'Whether this member is the group owner' })
+  isOwner: boolean;
+}

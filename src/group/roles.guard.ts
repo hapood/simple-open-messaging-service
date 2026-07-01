@@ -1,0 +1,43 @@
+import {
+  CanActivate,
+  ExecutionContext,
+  Injectable,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import type { FastifyRequest } from 'fastify';
+import { ROLES_KEY } from './roles.decorator.js';
+import { GroupRole } from '../prisma/generated/client.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
+
+/**
+ * Role gate for group routes decorated with @Roles(...). Reads the caller's role from
+ * `req.groupAccess.participant` (populated by GroupAccessGuard) and rejects with
+ * GROUP_FORBIDDEN when it is absent or not in the allowed set. Runs strictly AFTER
+ * GroupAccessGuard in the guard chain.
+ *
+ * Must be combined as: `@UseGuards(JwtAuthGuard, GroupAccessGuard, RolesGuard)` + `@Roles(...)`.
+ */
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(ctx: ExecutionContext): boolean {
+    const required = this.reflector.getAllAndOverride<GroupRole[] | undefined>(
+      ROLES_KEY,
+      [ctx.getHandler(), ctx.getClass()],
+    );
+    // No @Roles metadata → this route only needs membership (GroupAccessGuard already enforced it).
+    if (!required || required.length === 0) return true;
+
+    const req = ctx.switchToHttp().getRequest<FastifyRequest>();
+    const role = req.groupAccess?.participant?.role;
+    if (role === undefined || role === null || !required.includes(role)) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'insufficient role for this action',
+      );
+    }
+    return true;
+  }
+}

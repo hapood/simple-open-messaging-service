@@ -3,6 +3,27 @@ import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 
 /**
+ * Group-lifecycle SSE event names. Carried on every group frame so the frontend dispatches by
+ * event name (matching NEW_MESSAGE / FORCE_LOGOUT). Payload shape (the `data` field) is common:
+ *   { groupId, threadId, ...event-specific fields, byUserId? }
+ * The frontend refreshes the roster / conversation list on receipt (Phase 4).
+ */
+export type GroupSseEvent =
+  | 'GROUP_MEMBER_JOINED'
+  | 'GROUP_MEMBER_LEFT'
+  | 'GROUP_MEMBER_KICKED'
+  | 'GROUP_ROLE_CHANGED'
+  | 'GROUP_UPDATED';
+
+export const GROUP_SSE: Record<GroupSseEvent, GroupSseEvent> = {
+  GROUP_MEMBER_JOINED: 'GROUP_MEMBER_JOINED',
+  GROUP_MEMBER_LEFT: 'GROUP_MEMBER_LEFT',
+  GROUP_MEMBER_KICKED: 'GROUP_MEMBER_KICKED',
+  GROUP_ROLE_CHANGED: 'GROUP_ROLE_CHANGED',
+  GROUP_UPDATED: 'GROUP_UPDATED',
+};
+
+/**
  * SSE（Server-Sent Events）下行推送服务：只推送，不收业务上行。
  *
  * 与 WS 相比，SSE 是「单向推送」专用通道，浏览器原生断线续传（Last-Event-ID）+
@@ -138,6 +159,15 @@ export class SseService implements OnModuleDestroy {
   /** 通知：推给该用户所有在线连接（如新好友请求）。无 id（非消息游标语义）。 */
   onNotify(userId: number, data: unknown) {
     this.pushToUser(userId, 'NOTIFY', data);
+  }
+
+  /**
+   * Group-lifecycle event (joined/left/kicked/role-changed/updated). No message-cursor id (these
+   * are not message-history events). Fan-out to each affected member is the caller's job — this
+   * pushes one frame to one user's online connections only.
+   */
+  onGroupEvent(userId: number, eventName: GroupSseEvent, data: unknown) {
+    this.pushToUser(userId, eventName, data);
   }
 
   /** 全设备登出/改密/强制下线：推 FORCE_LOGOUT 后立即断开该用户所有 SSE 连接。 */

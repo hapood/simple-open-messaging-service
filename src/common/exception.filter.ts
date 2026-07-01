@@ -8,6 +8,7 @@ import {
 import { Prisma } from '../prisma/generated/client.js';
 import type { FastifyReply } from 'fastify';
 import { BusinessCode } from './business-code.js';
+import { BusinessException } from './business.exception.js';
 
 /**
  * 全局异常过滤器：所有异常统一转 { code, message, data } 信封，code 为业务码段（见 business-code.ts）。
@@ -43,6 +44,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
     code: number;
     message: string;
   } {
+    // BusinessException carries a domain code that must reach the client verbatim (HTTP 200 +
+    // code by convention); handle it before the generic HttpException branch, which would
+    // otherwise derive the code from the HTTP status (FORBIDDEN → 10004, etc.).
+    if (exception instanceof BusinessException) {
+      const resp = exception.getResponse() as { code: number; message: string };
+      return {
+        httpStatus: exception.getStatus(),
+        code: resp.code,
+        message: resp.message,
+      };
+    }
+
     if (exception instanceof HttpException) {
       const httpStatus = exception.getStatus();
       const resp = exception.getResponse();

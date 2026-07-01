@@ -2,12 +2,24 @@
 // the request after a successful auth guard (JwtAuthGuard / LocalAuthGuard / AdminAuthGuard).
 // Augmenting the interface here gives the whole codebase type-safe access to `req.user`
 // (userId for the C-end auth, adminId for the admin console) without scattering casts.
+import type { Group, ThreadParticipant } from '../prisma/generated/client.js';
+
 declare module 'fastify' {
   interface FastifyRequest {
     user?: {
       userId?: number;
       adminId?: number;
       [key: string]: unknown;
+    };
+    /**
+     * Attached by GroupAccessGuard on group routes that carry a `groupId` in the body: the
+     * resolved group row + the caller's ACTIVE ThreadParticipant (membership + role). Present
+     * iff the guard ran and the caller is a current member; downstream RolesGuard and the
+     * controller read it instead of re-querying.
+     */
+    groupAccess?: {
+      group: Group;
+      participant: ThreadParticipant;
     };
   }
 }

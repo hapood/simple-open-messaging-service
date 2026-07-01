@@ -11,6 +11,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MessageService } from '../message/message.service.js';
 import { ContentType, Prisma } from '../prisma/generated/client.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FriendshipDto, MessageResponseDto } from '../dto/response.dto.js';
@@ -31,7 +32,8 @@ export class MessageController {
     private readonly friendshipService: FriendshipService,
   ) {}
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @Throttle(60, 60) // anti-spam ceiling: 60 sends/min
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('send-message')

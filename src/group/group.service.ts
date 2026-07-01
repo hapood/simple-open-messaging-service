@@ -7,15 +7,40 @@ import {
 } from '../prisma/generated/client.js';
 import jsonwebtoken from 'jsonwebtoken';
 import { requireEnv } from '../common/env.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
 
 const secret = requireEnv('GROUP_INVITE_SECRET');
 
+/** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
+function roleRank(role: GroupRole | null): number {
+  switch (role) {
+    case GroupRole.OWNER:
+      return 0;
+    case GroupRole.ADMIN:
+      return 1;
+    default:
+      return 2; // MEMBER (group participants always have a non-null role)
+  }
+}
+
+/** Strict outrank: the operator may act on the target iff their rank is strictly lower. */
+function outranks(operator: GroupRole, target: GroupRole | null): boolean {
+  return roleRank(operator) < roleRank(target);
+}
+
 /**
- * Group lifecycle: creation, invite-token mint/verify, and joining.
+ * Group lifecycle: creation, invite-token mint/verify, joining, and the membership/role mutations
+ * (leave/kick/transfer/set-role/update).
  *
- * Membership is no longer stored here — ThreadParticipant is the single source of truth. createNewGroup
- * and joinGroup write ThreadParticipant rows (role OWNER for the creator, MEMBER for joiners); roster
- * lookups and SSE fan-out go through ThreadParticipantService elsewhere.
+ * Membership is no longer stored ad-hoc here — ThreadParticipant is the single source of truth.
+ * createNewGroup/joinGroup write ThreadParticipant rows (OWNER for the creator, MEMBER for joiners
+ * and directly-added friends); roster lookups and SSE fan-out go through ThreadParticipantService.
+ *
+ * Authorization is split: GroupAccessGuard + RolesGuard decide the OPERATOR's membership and role
+ * (throwing BusinessException → HTTP 200 + domain code). The methods below then validate the
+ * TARGET-specific invariants (target is an active member, role-hierarchy for kick, no
+ * self-transfer, etc.) and mutate. Controllers emit SSE after a successful return.
  */
 @Injectable()
 export class GroupService implements OnModuleInit {
@@ -72,16 +97,28 @@ export class GroupService implements OnModuleInit {
     }
   }
 
-  /** Create a group: GROUP thread + Group metadata + the owner as an OWNER participant. */
-  async createNewGroup(params: { groupName: string; owner: number }) {
+  /**
+   * Create a group: GROUP thread + Group metadata + the owner as an OWNER participant, plus any
+   * directly-added friends as MEMBER participants (friendship is validated by the controller
+   * before calling). Returns the group; the controller emits GROUP_MEMBER_JOINED per added member.
+   */
+  async createNewGroup(params: {
+    name: string;
+    avatar?: string;
+    owner: number;
+    memberIds?: number[];
+  }) {
+    const memberIds = Array.from(
+      new Set((params.memberIds ?? []).filter((id) => id !== params.owner)),
+    );
     return this.prisma.$transaction(async (prisma) => {
       const trdData = await prisma.messageThread.create({
         data: { type: MessageThreadType.GROUP },
       });
       const grpData = await prisma.group.create({
         data: {
-          name: params.groupName,
-          avatar: '',
+          name: params.name,
+          avatar: params.avatar ?? '',
           ownerId: params.owner,
           threadId: trdData.id,
         },
@@ -93,6 +130,16 @@ export class GroupService implements OnModuleInit {
           role: GroupRole.OWNER,
         },
       });
+      if (memberIds.length > 0) {
+        await prisma.threadParticipant.createMany({
+          data: memberIds.map((id) => ({
+            userId: id,
+            threadId: grpData.threadId,
+            role: GroupRole.MEMBER,
+          })),
+          skipDuplicates: true,
+        });
+      }
       return grpData;
     });
   }
@@ -134,6 +181,204 @@ export class GroupService implements OnModuleInit {
         },
       });
       return { status: 'ok' };
+    });
+  }
+
+  /**
+   * Leave a group (soft: sets leftAt). The owner may NOT leave while other active members remain —
+   * they must transfer ownership first (GROUP_OWNER_MUST_TRANSFER). A sole-member owner may leave
+   * (the group is then abandoned). Returns the remaining active member ids so the controller can
+   * fan out GROUP_MEMBER_LEFT.
+   */
+  async leaveGroup(params: {
+    userId: number;
+    threadId: number;
+    role: GroupRole | null;
+  }): Promise<{ remainingMemberIds: number[] }> {
+    if (params.role === GroupRole.OWNER) {
+      const active = await this.prisma.threadParticipant.findMany({
+        where: { threadId: params.threadId, leftAt: null },
+        select: { userId: true },
+      });
+      if (active.length > 1) {
+        throw new BusinessException(
+          BusinessCode.GROUP_OWNER_MUST_TRANSFER,
+          'transfer ownership before leaving',
+        );
+      }
+    }
+    await this.prisma.threadParticipant.update({
+      where: {
+        userId_threadId: { userId: params.userId, threadId: params.threadId },
+      },
+      data: { leftAt: new Date() },
+    });
+    const remaining = await this.prisma.threadParticipant.findMany({
+      where: { threadId: params.threadId, leftAt: null },
+      select: { userId: true },
+    });
+    return { remainingMemberIds: remaining.map((r) => r.userId) };
+  }
+
+  /**
+   * Kick a member (soft: sets leftAt). The operator must strictly outrank the target; the owner
+   * cannot be kicked. Throws GROUP_TARGET_NOT_MEMBER / GROUP_FORBIDDEN on invariant violation.
+   */
+  async kickMember(params: {
+    threadId: number;
+    operatorRole: GroupRole;
+    targetUserId: number;
+  }): Promise<void> {
+    const target = await this.prisma.threadParticipant.findUnique({
+      where: {
+        userId_threadId: {
+          userId: params.targetUserId,
+          threadId: params.threadId,
+        },
+      },
+    });
+    if (target === null || target.leftAt !== null) {
+      throw new BusinessException(
+        BusinessCode.GROUP_TARGET_NOT_MEMBER,
+        'target is not an active member',
+      );
+    }
+    if (target.role === GroupRole.OWNER) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'cannot kick the owner',
+      );
+    }
+    if (!outranks(params.operatorRole, target.role)) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'you can only kick members below your role',
+      );
+    }
+    await this.prisma.threadParticipant.update({
+      where: { id: target.id },
+      data: { leftAt: new Date() },
+    });
+  }
+
+  /**
+   * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
+   * OWNER, and move the denormalized Group.ownerId pointer — all in one transaction so the group
+   * is never ownerless. The controller emits GROUP_ROLE_CHANGED for both affected users.
+   */
+  async transferOwnership(params: {
+    groupId: number;
+    threadId: number;
+    fromUserId: number;
+    toUserId: number;
+  }): Promise<void> {
+    if (params.toUserId === params.fromUserId) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'cannot transfer ownership to yourself',
+      );
+    }
+    await this.prisma.$transaction(async (tx) => {
+      const target = await tx.threadParticipant.findUnique({
+        where: {
+          userId_threadId: {
+            userId: params.toUserId,
+            threadId: params.threadId,
+          },
+        },
+      });
+      if (target === null || target.leftAt !== null) {
+        throw new BusinessException(
+          BusinessCode.GROUP_TARGET_NOT_MEMBER,
+          'target is not an active member',
+        );
+      }
+      if (target.role === GroupRole.OWNER) {
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'target is already the owner',
+        );
+      }
+      await tx.threadParticipant.update({
+        where: {
+          userId_threadId: {
+            userId: params.fromUserId,
+            threadId: params.threadId,
+          },
+        },
+        data: { role: GroupRole.MEMBER },
+      });
+      await tx.threadParticipant.update({
+        where: { id: target.id },
+        data: { role: GroupRole.OWNER },
+      });
+      await tx.group.update({
+        where: { id: params.groupId },
+        data: { ownerId: params.toUserId },
+      });
+    });
+  }
+
+  /**
+   * Set a member's role to ADMIN or MEMBER. OWNER-only (enforced by @Roles); ownership changes go
+   * through transferOwnership, so role=OWNER is rejected here, as is touching the current owner.
+   */
+  async setRole(params: {
+    threadId: number;
+    targetUserId: number;
+    role: GroupRole;
+    operatorUserId: number;
+  }): Promise<void> {
+    if (params.role === GroupRole.OWNER) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'use transfer to change ownership',
+      );
+    }
+    if (params.targetUserId === params.operatorUserId) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        'cannot change your own role',
+      );
+    }
+    const target = await this.prisma.threadParticipant.findUnique({
+      where: {
+        userId_threadId: {
+          userId: params.targetUserId,
+          threadId: params.threadId,
+        },
+      },
+    });
+    if (target === null || target.leftAt !== null) {
+      throw new BusinessException(
+        BusinessCode.GROUP_TARGET_NOT_MEMBER,
+        'target is not an active member',
+      );
+    }
+    if (target.role === GroupRole.OWNER) {
+      throw new BusinessException(
+        BusinessCode.GROUP_FORBIDDEN,
+        "cannot change the owner's role",
+      );
+    }
+    await this.prisma.threadParticipant.update({
+      where: { id: target.id },
+      data: { role: params.role },
+    });
+  }
+
+  /** Update a group's name and/or avatar (only provided fields are written). */
+  async updateGroup(params: {
+    groupId: number;
+    name?: string;
+    avatar?: string;
+  }) {
+    const data: Prisma.GroupUpdateInput = {};
+    if (params.name !== undefined) data.name = params.name;
+    if (params.avatar !== undefined) data.avatar = params.avatar;
+    return this.prisma.group.update({
+      where: { id: params.groupId },
+      data,
     });
   }
 }

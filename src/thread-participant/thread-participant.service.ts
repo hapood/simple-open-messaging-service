@@ -38,6 +38,19 @@ export class ThreadParticipantService {
   }
 
   /**
+   * Active roster of a conversation with each member's profile (login name + display name +
+   * avatar) and role — the data behind group/members. Ordered by join time; the controller sorts
+   * by role for display. P2P threads have exactly two rows with role null.
+   */
+  getRoster(threadId: number) {
+    return this.prisma.threadParticipant.findMany({
+      where: { threadId, leftAt: null },
+      include: { user: { include: { userExtra: true } } },
+      orderBy: { joinedAt: 'asc' },
+    });
+  }
+
+  /**
    * Generic list query (used by the conversation-list endpoint). Generic over the args so that
    * `include`/`select` are reflected in the returned payload type — Prisma can't infer includes
    * passed through a plain `FindManyArgs`-typed variable.

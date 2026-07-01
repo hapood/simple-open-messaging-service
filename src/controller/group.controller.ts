@@ -9,24 +9,42 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { MessageService } from '../message/message.service.js';
-import { ContentType } from '../prisma/generated/client.js';
+import { ContentType, GroupRole } from '../prisma/generated/client.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
 import dayjs from 'dayjs';
 import { GroupService } from '../group/group.service.js';
+import { GroupAccessGuard } from '../group/group-access.guard.js';
+import { RolesGuard } from '../group/roles.guard.js';
+import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
+import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
   JoinGroupDto,
   GroupIdDto,
+  KickGroupDto,
+  TransferGroupDto,
+  SetRoleGroupDto,
+  UpdateGroupDto,
 } from '../dto/group.dto.js';
 import {
   CreateGroupResponseDto,
   GroupResponseDto,
+  GroupMemberDto,
 } from '../dto/response.dto.js';
+
+/** Privilege rank for roster display ordering: OWNER, then ADMIN, then MEMBER. */
+const ROLE_DISPLAY_RANK: Record<GroupRole, number> = {
+  [GroupRole.OWNER]: 0,
+  [GroupRole.ADMIN]: 1,
+  [GroupRole.MEMBER]: 2,
+};
 
 @ApiTags('group')
 @Controller()
@@ -36,59 +54,92 @@ export class GroupController {
     private readonly groupService: GroupService,
     private readonly participantService: ThreadParticipantService,
     private readonly friendshipService: FriendshipService,
+    private readonly sseService: SseService,
   ) {}
 
-  @UseGuards(JwtAuthGuard)
+  /**
+   * Fan a group-lifecycle event to every active member of the thread, plus any extra users (e.g.
+   * a kicked member who just ceased to be active). Each payload carries groupId+threadId so the
+   * client can route it without a follow-up lookup.
+   */
+  private async fanoutGroup(
+    threadId: number,
+    groupId: number,
+    eventName: (typeof GROUP_SSE)[keyof typeof GROUP_SSE],
+    payload: Record<string, unknown>,
+    extraUserIds: number[] = [],
+  ) {
+    const members = await this.participantService.getActiveParticipantUserIds(threadId);
+    const ids = new Set<number>([
+      ...members.map((m) => m.userId),
+      ...extraUserIds,
+    ]);
+    const data = { groupId, threadId, ...payload };
+    ids.forEach((uid) => this.sseService.onGroupEvent(uid, eventName, data));
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @Throttle(10, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/create')
-  @ApiOperation({ summary: '创建群组' })
+  @ApiOperation({ summary: 'Create a group (optionally add friends as members)' })
   @ApiResultResponse(CreateGroupResponseDto)
   async createNewGroup(
     @Request() req,
     @Body() dto: CreateGroupDto,
   ): Promise<ApiResult> {
-    const userId = req.user.userId;
-    // groupName 长度校验已迁入 CreateGroupDto @MaxLength(31)（超长 → 200/10000）。
-    const trd = await this.groupService.createNewGroup({
-      owner: userId,
-      groupName: dto.groupName,
+    const owner = req.user.userId;
+    // Only friends can be added directly at creation; validate up front so the transaction never
+    // partially succeeds. Dedup + drop self defensively (the DTO layer already coerced types).
+    const memberIds = Array.from(
+      new Set((dto.memberIds ?? []).filter((id) => id !== owner)),
+    );
+    for (const id of memberIds) {
+      const { isFriend } = await this.friendshipService.getFriendship(owner, id);
+      if (!isFriend) {
+        return {
+          code: BusinessCode.GROUP_NOT_FRIEND,
+          message: `[${id}] is not your friend`,
+        };
+      }
+    }
+    const grp = await this.groupService.createNewGroup({
+      name: dto.name,
+      avatar: dto.avatar,
+      owner,
+      memberIds,
     });
+    // Announce each directly-added member to their own online connections (the owner learns of the
+    // group via the response; other existing members see GROUP_MEMBER_JOINED if they exist later).
+    for (const id of memberIds) {
+      this.sseService.onGroupEvent(id, GROUP_SSE.GROUP_MEMBER_JOINED, {
+        groupId: grp.id,
+        threadId: grp.threadId,
+        userId: id,
+        role: GroupRole.MEMBER,
+        byUserId: owner,
+      });
+    }
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: { threadId: trd.threadId, groupId: trd.id },
+      data: { threadId: grp.threadId, groupId: grp.id },
     };
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, GroupAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/invite')
-  @ApiOperation({ summary: '邀请好友入群（生成邀请 token 写入 P2P 消息）' })
+  @ApiOperation({ summary: 'Invite a friend to the group (invite token written to the P2P thread)' })
   async inviteUsers(
     @Request() req,
     @Body() dto: InviteGroupDto,
   ): Promise<ApiResult> {
-    const group = await this.groupService.findUniqeGroup({ id: dto.groupId });
-    if (group === null) {
-      return {
-        code: BusinessCode.NOT_FOUND,
-        message: `no group [${dto.groupId}]`,
-      };
-    }
-    // Inviter must be an active member of the group.
-    const me = await this.participantService.findActiveParticipant(
-      req.user.userId,
-      group.threadId,
-    );
-    if (me === null) {
-      return {
-        code: BusinessCode.GROUP_NOT_MEMBER,
-        message: `you are not in group [${dto.groupId}]`,
-      };
-    }
-    // ...and must be friends with the invitee (with an established P2P thread to carry the invite).
+    const group = req.groupAccess!.group;
+    // Inviter membership is already enforced by GroupAccessGuard; require friendship (and an
+    // established P2P thread to carry the invite message).
     const { friendship, isFriend } = await this.friendshipService.getFriendship(
       req.user.userId,
       dto.userId,
@@ -130,7 +181,7 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/join')
-  @ApiOperation({ summary: '凭邀请 token 加入群组' })
+  @ApiOperation({ summary: 'Join a group by invite token' })
   async joinGroup(
     @Request() req,
     @Body() dto: JoinGroupDto,
@@ -138,7 +189,7 @@ export class GroupController {
     const res = this.groupService.decodeInviteToken(dto.token);
     switch (res.status) {
       case 0:
-        // Fix for the invite-token identity bypass: the caller must be the token's intended recipient.
+        // Invite-token identity check: the caller must be the token's intended recipient.
         if (res.data.sub !== req.user.userId) {
           return {
             code: BusinessCode.GROUP_INVALID_TOKEN,
@@ -149,6 +200,20 @@ export class GroupController {
           groupId: res.data.gid,
           userId: req.user.userId,
         });
+        if (r.status === 'ok') {
+          // Notify existing members of the join.
+          const group = await this.groupService.findUniqeGroup({
+            id: res.data.gid,
+          });
+          if (group) {
+            await this.fanoutGroup(
+              group.threadId,
+              group.id,
+              GROUP_SSE.GROUP_MEMBER_JOINED,
+              { userId: req.user.userId, role: GroupRole.MEMBER },
+            );
+          }
+        }
         return {
           code: BusinessCode.OK,
           message: r.status === 'ok' ? 'successful' : 'already a member',
@@ -166,34 +231,182 @@ export class GroupController {
     }
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, GroupAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/info')
-  @ApiOperation({ summary: '查询群信息（仅成员）' })
+  @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
-  async getGroupInfo(
-    @Request() req,
-    @Body() dto: GroupIdDto,
-  ): Promise<ApiResult> {
-    const group = await this.groupService.findUniqeGroup({ id: dto.groupId });
-    if (group === null) {
-      return {
-        code: BusinessCode.NOT_FOUND,
-        message: `invalid groupId [${dto.groupId}]`,
-      };
-    }
-    // Fix for the info leak: only active members may read group details.
-    const me = await this.participantService.findActiveParticipant(
-      req.user.userId,
-      group.threadId,
+  async getGroupInfo(@Request() req): Promise<ApiResult> {
+    // Membership already enforced by GroupAccessGuard; group is attached.
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: req.groupAccess!.group,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard, GroupAccessGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/members')
+  @ApiOperation({ summary: 'Group roster with roles (members only)' })
+  @ApiResultResponse(GroupMemberDto, true)
+  async getMembers(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
+    const { group } = req.groupAccess!;
+    const rows = await this.participantService.getRoster(group.threadId);
+    const data = rows.map((r) => ({
+      userId: r.userId,
+      uniqName: r.user.uniqName,
+      name: r.user.userExtra.name,
+      avatar: r.user.userExtra.avatar,
+      role: r.role,
+      joinedAt: r.joinedAt,
+      isOwner: group.ownerId === r.userId,
+    }));
+    // Owner first, then admins, then members; within a role, by join time.
+    data.sort(
+      (a, b) =>
+        ROLE_DISPLAY_RANK[a.role as GroupRole] -
+          ROLE_DISPLAY_RANK[b.role as GroupRole] ||
+        a.joinedAt.getTime() - b.joinedAt.getTime(),
     );
-    if (me === null) {
-      return {
-        code: BusinessCode.GROUP_NOT_MEMBER,
-        message: `you are not in group [${dto.groupId}]`,
-      };
-    }
-    return { code: BusinessCode.OK, message: 'successful', data: group };
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: serializeBody(data),
+    };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard)
+  @Throttle(20, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/leave')
+  @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
+  async leaveGroup(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
+    const { group, participant } = req.groupAccess!;
+    const { remainingMemberIds } = await this.groupService.leaveGroup({
+      userId: req.user.userId,
+      threadId: group.threadId,
+      role: participant.role,
+    });
+    remainingMemberIds.forEach((uid) =>
+      this.sseService.onGroupEvent(uid, GROUP_SSE.GROUP_MEMBER_LEFT, {
+        groupId: group.id,
+        threadId: group.threadId,
+        userId: req.user.userId,
+      }),
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @Throttle(20, 60)
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/kick')
+  @ApiOperation({ summary: 'Kick a member (owner/admin, must outrank target)' })
+  async kickMember(
+    @Request() req,
+    @Body() dto: KickGroupDto,
+  ): Promise<ApiResult> {
+    const { group, participant } = req.groupAccess!;
+    await this.groupService.kickMember({
+      threadId: group.threadId,
+      operatorRole: participant.role as GroupRole,
+      targetUserId: dto.userId,
+    });
+    await this.fanoutGroup(
+      group.threadId,
+      group.id,
+      GROUP_SSE.GROUP_MEMBER_KICKED,
+      { userId: dto.userId, byUserId: req.user.userId },
+      [dto.userId], // the kicked user may no longer be "active" after the soft-leave
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @Throttle(20, 60)
+  @Roles(GroupRole.OWNER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/transfer')
+  @ApiOperation({ summary: 'Transfer ownership to a member (owner only)' })
+  async transferOwnership(
+    @Request() req,
+    @Body() dto: TransferGroupDto,
+  ): Promise<ApiResult> {
+    const { group } = req.groupAccess!;
+    await this.groupService.transferOwnership({
+      groupId: group.id,
+      threadId: group.threadId,
+      fromUserId: req.user.userId,
+      toUserId: dto.toUserId,
+    });
+    // Two role changes: old owner → MEMBER, new owner → OWNER.
+    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_ROLE_CHANGED, {
+      userId: req.user.userId,
+      role: GroupRole.MEMBER,
+      byUserId: req.user.userId,
+    });
+    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_ROLE_CHANGED, {
+      userId: dto.toUserId,
+      role: GroupRole.OWNER,
+      byUserId: req.user.userId,
+    });
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @Throttle(20, 60)
+  @Roles(GroupRole.OWNER)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/set-role')
+  @ApiOperation({ summary: "Set a member's role to ADMIN/MEMBER (owner only)" })
+  async setRole(
+    @Request() req,
+    @Body() dto: SetRoleGroupDto,
+  ): Promise<ApiResult> {
+    const { group } = req.groupAccess!;
+    await this.groupService.setRole({
+      threadId: group.threadId,
+      targetUserId: dto.userId,
+      role: dto.role,
+      operatorUserId: req.user.userId,
+    });
+    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_ROLE_CHANGED, {
+      userId: dto.userId,
+      role: dto.role,
+      byUserId: req.user.userId,
+    });
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @Throttle(20, 60)
+  @Roles(GroupRole.OWNER, GroupRole.ADMIN)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('group/update')
+  @ApiOperation({ summary: 'Update group name/avatar (admin+)' })
+  async updateGroup(
+    @Request() req,
+    @Body() dto: UpdateGroupDto,
+  ): Promise<ApiResult> {
+    const { group } = req.groupAccess!;
+    const updated = await this.groupService.updateGroup({
+      groupId: group.id,
+      name: dto.name,
+      avatar: dto.avatar,
+    });
+    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_UPDATED, {
+      name: updated.name,
+      avatar: updated.avatar,
+    });
+    return { code: BusinessCode.OK, message: 'successful' };
   }
 }

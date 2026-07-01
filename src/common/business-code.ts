@@ -40,4 +40,7 @@ export enum BusinessCode {
   GROUP_NOT_MEMBER = 40001, // 非群成员
   GROUP_NOT_FRIEND = 40002, // 非好友不可邀请
   GROUP_INVALID_TOKEN = 40003, // 无效邀请 token
+  GROUP_OWNER_MUST_TRANSFER = 40004, // 群主退出前须先转让
+  GROUP_FORBIDDEN = 40005, // 角色权限不足（不可踢/改/转让该对象）
+  GROUP_TARGET_NOT_MEMBER = 40006, // 操作目标不是群内活跃成员
 }
