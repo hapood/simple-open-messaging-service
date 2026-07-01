@@ -438,7 +438,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 创建群组 */
+        /** Create a group (optionally add friends as members) */
         post: operations["GroupController_createNewGroup"];
         delete?: never;
         options?: never;
@@ -455,7 +455,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 邀请好友入群（生成邀请 token 写入 P2P 消息） */
+        /** Invite a friend to the group (invite token written to the P2P thread) */
         post: operations["GroupController_inviteUsers"];
         delete?: never;
         options?: never;
@@ -472,7 +472,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 凭邀请 token 加入群组 */
+        /** Join a group by invite token */
         post: operations["GroupController_joinGroup"];
         delete?: never;
         options?: never;
@@ -489,8 +489,110 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询群信息（仅成员） */
+        /** Group info (members only) */
         post: operations["GroupController_getGroupInfo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/members": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Group roster with roles (members only) */
+        post: operations["GroupController_getMembers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/leave": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Leave a group (owner must transfer first) */
+        post: operations["GroupController_leaveGroup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/kick": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Kick a member (owner/admin, must outrank target) */
+        post: operations["GroupController_kickMember"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/transfer": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Transfer ownership to a member (owner only) */
+        post: operations["GroupController_transferOwnership"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/set-role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a member's role to ADMIN/MEMBER (owner only) */
+        post: operations["GroupController_setRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/group/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Update group name/avatar (admin+) */
+        post: operations["GroupController_updateGroup"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1257,10 +1359,23 @@ export interface components {
         };
         CreateGroupDto: {
             /**
-             * @description Group name (≤31 chars, empty allowed)
+             * @description Group name (≤31 chars)
              * @example dev-team
              */
-            groupName: string;
+            name: string;
+            /**
+             * @description Group avatar URL (optional)
+             * @example https://.../g.webp
+             */
+            avatar?: string;
+            /**
+             * @description Friend user ids to add as members at creation (must be friends)
+             * @example [
+             *       3,
+             *       7
+             *     ]
+             */
+            memberIds?: number[];
         };
         InviteGroupDto: {
             /**
@@ -1281,12 +1396,105 @@ export interface components {
              */
             token: string;
         };
+        GroupMemberDto: {
+            /** @example 7 */
+            userId: number;
+            /**
+             * @description Login unique name
+             * @example alice
+             */
+            uniqName: string;
+            /**
+             * @description Display name
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Avatar URL
+             * @example https://.../a.webp
+             */
+            avatar: string;
+            /**
+             * @description Member role in this group
+             * @enum {string}
+             */
+            role: "OWNER" | "ADMIN" | "MEMBER";
+            /**
+             * @description Joined at (ms timestamp)
+             * @example 1700000000000
+             */
+            joinedAt: number;
+            /**
+             * @description Whether this member is the group owner
+             * @example false
+             */
+            isOwner: boolean;
+        };
         GroupIdDto: {
             /**
              * @description Group id
              * @example 12
              */
             groupId: number;
+        };
+        KickGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Member to remove
+             * @example 7
+             */
+            userId: number;
+        };
+        TransferGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Active member to promote to owner
+             * @example 7
+             */
+            toUserId: number;
+        };
+        SetRoleGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description Member whose role is changed
+             * @example 7
+             */
+            userId: number;
+            /**
+             * @description New role (ADMIN | MEMBER)
+             * @example ADMIN
+             * @enum {string}
+             */
+            role: "OWNER" | "ADMIN" | "MEMBER";
+        };
+        UpdateGroupDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
+            groupId: number;
+            /**
+             * @description New group name (≤31 chars)
+             * @example dev-team
+             */
+            name?: string;
+            /**
+             * @description New group avatar URL
+             * @example https://.../g.webp
+             */
+            avatar?: string;
         };
         AdminLoginDto: {
             /**
@@ -2007,6 +2215,27 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["GroupResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    GroupController_getMembers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
         requestBody: {
             content: {
                 "application/json": components["schemas"]["GroupIdDto"];
@@ -2019,9 +2248,114 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["GroupResponseDto"];
+                        data?: components["schemas"]["GroupMemberDto"][];
                     };
                 };
+            };
+        };
+    };
+    GroupController_leaveGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GroupIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_kickMember: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["KickGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_transferOwnership: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TransferGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_setRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetRoleGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupController_updateGroup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateGroupDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

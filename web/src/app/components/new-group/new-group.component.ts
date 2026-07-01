@@ -38,21 +38,21 @@ export class NewGroupComponent {
 
   create() {
     const list = this.selectedList();
-    let groupName = this.userService.sessionProfile()!.userExtra.name
+    // Derive a group name from the members (a real name input lands with the Phase 4 form).
+    let name = this.userService.sessionProfile()!.userExtra.name
     for (let i = 0; i < list.length; i++) {
-      groupName += ' ' + list[i].peerUser.userExtra.name
-      if (groupName.length > 26) {
-        groupName = groupName.slice(0, 22) + ' ...'
+      name += ' ' + list[i].peerUser.userExtra.name
+      if (name.length > 26) {
+        name = name.slice(0, 22) + ' ...'
         break;
       }
     }
-    this.groupService.createGroup({ groupName }).subscribe(res => {
+    // Add the selected friends as members directly at creation (WhatsApp-style) — they are all
+    // friends by construction (the picker lists conversations), so no invite-token round-trip.
+    const memberIds = list.map(item => item.peerUser.id)
+    this.groupService.createGroup({ name, memberIds }).subscribe(res => {
       if (res.code === 0) {
-        const groupId = res.data!.groupId
-        list.forEach(item => {
-          this.groupService.inviteUser({ groupId, userId: item.peerUser.id }).subscribe()
-        })
-        this.routeService.closeDlg({ groupId })
+        this.routeService.closeDlg({ groupId: res.data!.groupId })
       }
     })
   }
