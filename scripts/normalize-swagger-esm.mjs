@@ -1,16 +1,23 @@
 // Post-build workaround for @nestjs/swagger CLI plugin + native ESM.
 //
-// The swagger CLI plugin (nest-cli.json compilerOptions.plugins) generates same-file
-// DTO self-references as `require("./file", { with: { "resolution-mode": "import" } })`.
-// Under "type":"module", tsc rewrites single-argument top-level `require("pkg")` to a
-// createRequire-based `__require`, but leaves these multi-argument (import-attribute)
-// ones as bare `require()` — which is undefined in ESM and crashes SwaggerModule at boot
-// (`require is not defined`). Every affected file already defines `__require`, so we
-// only need to retarget the bare RELATIVE requires (the self-refs) onto it.
-// Bare-package requires are already `__require`; relative specifiers only ever appear
-// in these swagger self-refs (source imports are real ESM `import` statements).
+// The swagger CLI plugin generates same-file DTO self-references as
+// `require("./file", { with: { "resolution-mode": "import" } })`. Under
+// "type":"module", tsc rewrites single-argument top-level `require("pkg")` to a
+// createRequire-based `__require`, but leaves these multi-arg (import-attribute)
+// ones as bare `require()` — undefined in ESM, crashing SwaggerModule at boot.
 //
-// Remove this script once @nestjs/swagger emits ESM-compatible self-references upstream.
+// The plugin's own `esmCompatible` option is the intended fix, but in 11.4.x its
+// codegen is buggy: it emits `() => (await import("./file")).X` — `await` in a
+// non-async arrow → SyntaxError. So neither default nor esmCompatible works
+// unaided for same-file DTO refs. This script instead retargets the bare
+// RELATIVE requires onto each file's already-defined `__require` (createRequire),
+// which is synchronous and returns the module namespace. Only relative
+// specifiers are touched (bare-package requires are already `__require`; source
+// imports are real ESM import statements). Dev (tsx) is unaffected — the plugin
+// only runs at `nest build`.
+//
+// Revisit once @nestjs/swagger ships an `esmCompatible` that emits valid code,
+// then delete this and set `esmCompatible: true` in nest-cli.json.
 import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
