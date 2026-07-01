@@ -2,7 +2,7 @@ import { Component, input, signal, computed, EventEmitter, Output, inject, OnIni
 import { NgClass } from '@angular/common';
 import { UserService } from '../../services/user.service'
 import { RouteService, PopupType } from '../../services/route.service'
-import { User, UserMessageThread } from '../../services/model'
+import { User, ConversationItem } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { ChatFolder, inFolder } from '../../services/folder.service'
@@ -24,7 +24,7 @@ export class ThreadListComponent implements OnInit {
   readonly folder = input<ChatFolder | undefined>(undefined)
   /** local name search; '' = no filter. */
   readonly searchText = input('')
-  readonly threadList = signal<UserMessageThread[]>([])
+  readonly threadList = signal<ConversationItem[]>([])
 
   /** 列表加载状态机：LOADING(首次/重试中) → READY | ERROR */
   readonly status = signal<ThreadListStatus>(ThreadListStatus.LOADING)
@@ -36,7 +36,7 @@ export class ThreadListComponent implements OnInit {
     return this.threadList().filter(t => {
       if (folder && !inFolder(t, folder)) return false
       if (q) {
-        const name = (t.toObjType === 'P2P' ? t.userItem?.uniqName : t.groupItem?.name) ?? ''
+        const name = (t.type === 'P2P' ? t.peerUser?.uniqName : t.group?.name) ?? ''
         if (!name.toLowerCase().includes(q)) return false
       }
       return true
@@ -48,7 +48,7 @@ export class ThreadListComponent implements OnInit {
     this.searchText().trim().length > 0 && this.filteredThreadList().length === 0
   )
 
-  @Output() onSelect = new EventEmitter<UserMessageThread>()
+  @Output() onSelect = new EventEmitter<ConversationItem>()
 
   private readonly userService = inject(UserService)
   private readonly routeService = inject(RouteService)
@@ -67,13 +67,13 @@ export class ThreadListComponent implements OnInit {
           // 修正：原代码 `throw new Error(res.message)` 写在 next 回调里，RxJS 会吞掉它
           // （既不进 error 分支也不向调用者传播），导致接口失败时列表永久卡空白。
           // 改为显式进 ERROR 态并回显后端 message，让用户能感知并重试。
-          this.errorMsg.set(res.message || '加载会话列表失败')
+          this.errorMsg.set(res.message || 'Failed to load chats')
           this.status.set(ThreadListStatus.ERROR)
         }
       },
       error: () => {
         // HTTP 层失败（断网 / 5xx）——原代码完全没覆盖这条路径
-        this.errorMsg.set('网络错误，请重试')
+        this.errorMsg.set('Network error, please retry')
         this.status.set(ThreadListStatus.ERROR)
       },
     })
@@ -84,7 +84,7 @@ export class ThreadListComponent implements OnInit {
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)
   }
 
-  onUsrTrdClick(userMsgTrd: UserMessageThread) {
+  onUsrTrdClick(userMsgTrd: ConversationItem) {
     this.onSelect.emit(userMsgTrd)
   }
 

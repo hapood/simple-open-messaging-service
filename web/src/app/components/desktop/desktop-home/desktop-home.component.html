@@ -3,7 +3,7 @@
   <app-chat-list-pane class="list" [style.width.px]="listWidth()"
     (selectThread)="onThreadSelect($event)" />
   <div class="resizer" (mousedown)="startResize($event)" (dblclick)="resetWidth()"
-    title="拖拽调整宽度；双击重置"></div>
+    title="Drag to resize; double-click to reset"></div>
   <app-chat-pane class="chat" [userMsgTrd]="selectedThread()" />
   @if (infoThread(); as trd) {
     <app-info-pane class="info" [userMsgTrd]="trd" (close)="infoPanel.close()" />

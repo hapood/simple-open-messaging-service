@@ -5,7 +5,7 @@ import { RouteService } from '../../services/route.service';
 import { FolderService, ChatFolder, FolderTypeFilter } from '../../services/folder.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserService } from '../../services/user.service';
-import { UserMessageThread } from '../../services/model';
+import { ConversationItem } from '../../services/model';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 /**
@@ -38,7 +38,7 @@ export class FolderEditorComponent implements OnInit {
   readonly name = signal('')
   readonly typeFilter = signal<FolderTypeFilter>('ALL')
   readonly includedIds = signal<number[]>([])
-  readonly threadOptions = signal<UserMessageThread[]>([])
+  readonly threadOptions = signal<ConversationItem[]>([])
 
   /** id of the folder being edited; undefined when creating */
   private editingExistingId: string | undefined
@@ -46,9 +46,9 @@ export class FolderEditorComponent implements OnInit {
   readonly folders = computed(() => this.folderService.folders())
 
   readonly typeOptions: ReadonlyArray<{ value: FolderTypeFilter; label: string }> = [
-    { value: 'ALL', label: '全部类型' },
-    { value: 'P2P', label: '个人' },
-    { value: 'GROUP', label: '群组' },
+    { value: 'ALL', label: 'All types' },
+    { value: 'P2P', label: 'Direct' },
+    { value: 'GROUP', label: 'Group' },
   ]
 
   ngOnInit() {
@@ -64,12 +64,12 @@ export class FolderEditorComponent implements OnInit {
   }
 
   summary(f: ChatFolder): string {
-    const t = f.typeFilter === 'ALL' ? '全部类型' : f.typeFilter === 'P2P' ? '个人' : '群组'
-    return f.includedIds.length ? `${t} · 指定 ${f.includedIds.length}` : t
+    const t = f.typeFilter === 'ALL' ? 'All types' : f.typeFilter === 'P2P' ? 'Direct' : 'Group'
+    return f.includedIds.length ? `${t} · ${f.includedIds.length} selected` : t
   }
 
-  threadLabel(t: UserMessageThread): string {
-    return t.toObjType === 'P2P' ? (t.userItem?.uniqName ?? '') : (t.groupItem?.name ?? '')
+  threadLabel(t: ConversationItem): string {
+    return t.type === 'P2P' ? (t.peerUser?.uniqName ?? '') : (t.group?.name ?? '')
   }
 
   beginCreate() {

@@ -4,7 +4,7 @@ import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from "../icon/icon.component";
 import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
-import { UserMessageThread } from '../../services/model';
+import { ConversationItem } from '../../services/model';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 @Component({
@@ -15,20 +15,20 @@ import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 })
 export class GroupInfoComponent {
   readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
-  readonly userMsgTrd = input<UserMessageThread>()
+  readonly userMsgTrd = input<ConversationItem>()
   /** optional close handler; when set, goBack() calls it instead of closeDlg
    *  (lets this component be reused in the desktop side panel). */
   readonly closeFn = input<(() => void) | undefined>(undefined)
 
   selectedDict = signal<Record<number, boolean | undefined>>({})
-  selectedList = signal<UserMessageThread[]>([])
+  selectedList = signal<ConversationItem[]>([])
   AppIconType = AppIconType
 
   constructor(private routeService: RouteService, private groupService: GroupService) {
 
   }
 
-  onTrdSelect(trdItem: UserMessageThread) {
+  onTrdSelect(trdItem: ConversationItem) {
     let dict = { ...this.selectedDict() }, list = this.selectedList();
     if (dict[trdItem.id]) {
       dict[trdItem.id] = false
@@ -45,7 +45,7 @@ export class GroupInfoComponent {
     const list = this.selectedList(), userMsgTrd = this.userMsgTrd();
     if (userMsgTrd !== undefined) {
       list.forEach(item => {
-        this.groupService.inviteUser({ groupId: userMsgTrd.toObjId, userId: item.toObjId }).subscribe()
+        this.groupService.inviteUser({ groupId: userMsgTrd.group.id, userId: item.peerUser.id }).subscribe()
       })
       alert('success')
     }

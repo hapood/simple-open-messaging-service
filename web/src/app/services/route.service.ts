@@ -1,6 +1,7 @@
 import { Injectable, signal, Type } from '@angular/core';
 import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
+import { AvatarEditorComponent } from '../components/avatar-editor/avatar-editor.component';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
 import { MessageThreadComponent } from '../components/message-thread/friend-message.component';
 import { NewGroupComponent } from '../components/new-group/new-group.component';
@@ -8,13 +9,13 @@ import { GroupInfoComponent } from '../components/group-info/group-info.componen
 import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { SessionsComponent } from '../components/sessions/sessions.component';
-import { UserMessageThread } from './model';
+import { ConversationItem } from './model';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
-export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS }
+export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
@@ -23,18 +24,20 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.GROUP_INFO]: GroupInfoComponent,
   [PopupType.FOLDER_EDITOR]: FolderEditorComponent,
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
-  [PopupType.SESSIONS]: SessionsComponent
+  [PopupType.SESSIONS]: SessionsComponent,
+  [PopupType.AVATAR_EDITOR]: AvatarEditorComponent
 }
 
 // per-popup input contracts — what each dialog's input() fields accept
 export interface PopupInput {
   [PopupType.FRIEND_REQUESTS]: { subject?: Subject<any> }
-  [PopupType.MSG_THREAD]: { userThreadId: number, userMsgTrd: UserMessageThread, startMsgId?: string }
+  [PopupType.MSG_THREAD]: { threadId: number, userMsgTrd: ConversationItem, startMsgId?: string }
   [PopupType.NEW_GROUP]: undefined
-  [PopupType.GROUP_INFO]: { userMsgTrd: UserMessageThread }
+  [PopupType.GROUP_INFO]: { userMsgTrd: ConversationItem }
   [PopupType.FOLDER_EDITOR]: { folderId?: string }
   [PopupType.EDIT_PROFILE]: undefined
   [PopupType.SESSIONS]: undefined
+  [PopupType.AVATAR_EDITOR]: { file: File }
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -46,6 +49,8 @@ export interface PopupResult {
   [PopupType.FOLDER_EDITOR]: boolean
   [PopupType.EDIT_PROFILE]: boolean
   [PopupType.SESSIONS]: undefined
+  // cropped File on Save; undefined on Cancel/back.
+  [PopupType.AVATAR_EDITOR]: { file: File } | undefined
 }
 
 export interface DlgInfo {

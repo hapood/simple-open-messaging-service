@@ -1,5 +1,5 @@
 import { Injectable, signal } from '@angular/core';
-import { UserMessageThread } from './model';
+import { ConversationItem } from './model';
 
 /**
  * Desktop right-side info panel state. Shared so the deeply-nested
@@ -9,12 +9,12 @@ import { UserMessageThread } from './model';
  */
 @Injectable({ providedIn: 'root' })
 export class InfoPanelService {
-  private readonly _thread = signal<UserMessageThread | undefined>(undefined)
+  private readonly _thread = signal<ConversationItem | undefined>(undefined)
   readonly thread = this._thread.asReadonly()
 
-  open(thread: UserMessageThread) { this._thread.set(thread) }
+  open(thread: ConversationItem) { this._thread.set(thread) }
   close() { this._thread.set(undefined) }
-  toggle(thread: UserMessageThread) {
+  toggle(thread: ConversationItem) {
     this._thread.update(t => (t?.id === thread.id ? undefined : thread))
   }
 }

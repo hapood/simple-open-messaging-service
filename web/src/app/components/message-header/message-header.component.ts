@@ -1,7 +1,7 @@
 import { Component, computed, inject, input } from '@angular/core';
 import { IconComponent, AppIconType } from "../icon/icon.component";
 import { RouteService, PopupType } from '../../services/route.service';
-import { UserMessageThread } from '../../services/model';
+import { ConversationItem } from '../../services/model';
 import { LayoutService } from '../../services/layout.service';
 import { InfoPanelService } from '../../services/info-panel.service';
 @Component({
@@ -12,14 +12,14 @@ import { InfoPanelService } from '../../services/info-panel.service';
 })
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType
-  readonly userMsgTrd = input<UserMessageThread>()
+  readonly userMsgTrd = input<ConversationItem>()
   readonly title = computed(() => {
     const userMsgTrd = this.userMsgTrd()
     if (userMsgTrd !== undefined) {
-      if (userMsgTrd.toObjType === 'P2P') {
-        return userMsgTrd.userItem.uniqName
-      } else if (userMsgTrd.toObjType === 'GROUP') {
-        return userMsgTrd.groupItem.name
+      if (userMsgTrd.type === 'P2P') {
+        return userMsgTrd.peerUser.uniqName
+      } else if (userMsgTrd.type === 'GROUP') {
+        return userMsgTrd.group.name
       }
     }
     return ''
@@ -41,7 +41,7 @@ export class MessageHeaderComponent {
       if (this.isDesktop()) {
         // desktop: GROUP shows members/invite, P2P shows profile — both in the side panel
         this.infoPanel.toggle(userMsgTrd)
-      } else if (userMsgTrd.toObjType === 'GROUP') {
+      } else if (userMsgTrd.type === 'GROUP') {
         this.routeService.popupDlg(PopupType.GROUP_INFO, { userMsgTrd })
       }
     }

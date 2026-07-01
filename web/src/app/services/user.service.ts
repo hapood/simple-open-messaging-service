@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
-import { User, QueryUserThreadParams, UserMessageThread, StandardResponse } from './model'
+import { User, QueryUserThreadParams, ConversationItem, FriendshipWithPeer, StandardResponse } from './model'
 
 export type { User } from './model'
 
@@ -46,7 +46,7 @@ export class UserService {
   }
 
   queryUserThreadValid(params: QueryUserThreadParams) {
-    return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/valid`, params)
+    return this.http.post<StandardResponse<ConversationItem[]>>(`${apiPrefix}/user/query-thread/valid`, params)
   }
 
   queryUserInfo(params: { userIds: number[] }) {
@@ -64,13 +64,13 @@ export class UserService {
   queryToPending(params: {
     take: number, beforeDate: number
   }) {
-    return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
+    return this.http.post<StandardResponse<FriendshipWithPeer[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
   }
 
   queryFromPending(params: {
     take: number, beforeDate: number
   }) {
-    return this.http.post<StandardResponse<UserMessageThread[]>>(`${apiPrefix}/user/query-thread/from-pending`, params)
+    return this.http.post<StandardResponse<FriendshipWithPeer[]>>(`${apiPrefix}/user/query-thread/from-pending`, params)
   }
 
   approveFriendRequest(params: { userId: number }) {
@@ -90,8 +90,8 @@ export class UserService {
     return this.http.post<StandardResponse>(`${apiPrefix}/notify/mark-friend-req-read`, {})
   }
 
-  getUserThreadInfo(params: { userThreadId: number }) {
-    return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/user/thread-info`, params)
+  getThreadInfo(params: { threadId: number }) {
+    return this.http.post<StandardResponse<ConversationItem>>(`${apiPrefix}/user/thread-info`, params)
   }
 
 }

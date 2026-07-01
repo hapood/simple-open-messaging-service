@@ -422,9 +422,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const input = this.jumpInput()?.nativeElement;
     const s = (v ?? '').trim();
     if (!s || !scroller) return;
-    if (!/^-?\d+$/.test(s)) { this.showToast('跳转仅支持 id 数字'); return; }
+    if (!/^-?\d+$/.test(s)) { this.showToast('Jump supports id numbers only'); return; }
     const n = parseInt(s, 10);
-    if (n < 0) { this.showToast('id 须非负'); return; }
+    if (n < 0) { this.showToast('id must be non-negative'); return; }
     scroller.scrollToIndex(`id-${n}`, 'center', true);
     if (input) input.value = '';
   }
@@ -439,14 +439,14 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const input = this.insertInput()?.nativeElement;
     const s = (v ?? '').trim();
     if (!s || !scroller) return;
-    if (!/^-?\d+$/.test(s)) { this.showToast('插入仅支持 id 数字'); return; }
+    if (!/^-?\d+$/.test(s)) { this.showToast('Insert supports id numbers only'); return; }
     const n = parseInt(s, 10);
-    if (n < 0) { this.showToast('id 须非负'); return; }
+    if (n < 0) { this.showToast('id must be non-negative'); return; }
     const afterId = `id-${n}`;
     const item = this.makeInsertItem();
     const ok = this.insertMsg('FAKE_MSG', afterId, item);
     if (input) input.value = '';
-    this.showToast(ok ? `已插入 ${item.id}（在 ${afterId} 之后）` : `${afterId} 未挂载，忽略插入`);
+    this.showToast(ok ? `Inserted ${item.id} (after ${afterId})` : `${afterId} not mounted, insert ignored`);
   }
 
   /**
@@ -463,7 +463,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const ids = parts.map(p => (/^\d+$/.test(p) ? `id-${p}` : p)); // plain number -> history 'id-N'; else literal id
     const removed = scroller.removeItem(ids);
     if (input) input.value = '';
-    this.showToast(removed > 0 ? `已移除 ${removed} 条` : '未挂载，忽略');
+    this.showToast(removed > 0 ? `Removed ${removed} item(s)` : 'Not mounted, ignored');
   }
 
   /** Build a mock debug-insert message (creator alternates 1=me/isSelf / 2=阿黄; name/isSelf filled directly since
@@ -477,8 +477,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       msgId: `insert-${seq}`,
       creator,
       isSelf: creator === 1,
-      name: creator === 1 ? '我' : '阿黄',
-      text: `[插入 ${seq}] 插在指定消息之后`,
+      name: creator === 1 ? 'Me' : 'Alice',
+      text: `[Insert ${seq}] inserted after the specified message`,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
       contentType: 'PURE_TEXT',
       images: null,
@@ -641,7 +641,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       msgId: `pending-${this.pendingSeq++}`,
       creator: 1,
       isSelf: true,
-      name: '我',
+      name: 'Me',
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
       contentType, images, createdAtMs: now.getTime(),
@@ -676,7 +676,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 }
 
 /** 对方回复候选（mock）。 */
-const REPLY_PHRASES = ['在吗？', '收到', '哈哈', '好的', '虚拟滚动稳吗？', '看看挂载数'];
+const REPLY_PHRASES = ['You there?', 'Got it', 'Haha', 'OK', 'Is virtual scroll stable?', 'Check the mount count'];
 
 /** 本地读取图片为 AlbumImage（dataURL + 真实尺寸；读失败用 400×300 兜底）。 */
 function readImages(files: File[]): Promise<AlbumImage[]> {

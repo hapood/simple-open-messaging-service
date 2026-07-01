@@ -4,8 +4,8 @@
       <button class="icon-btn" (click)="goBack()">
         <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
       </button>
-      <span class="title">文件夹</span>
-      <button mat-button (click)="beginCreate()">新建</button>
+      <span class="title">Folders</span>
+      <button mat-button (click)="beginCreate()">New</button>
     </div>
     <div class="folder-list">
       @for (f of folders(); track f.id) {
@@ -14,7 +14,7 @@
           <span class="folder-summary">{{ summary(f) }}</span>
         </button>
       } @empty {
-        <div class="empty">还没有文件夹。点"新建"创建一个来归类你的会话。</div>
+        <div class="empty">No folders yet. Click "New" to create one and organize your chats.</div>
       }
     </div>
   } @else {
@@ -22,17 +22,17 @@
       <button class="icon-btn" (click)="backToList()">
         <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
       </button>
-      <span class="title">{{ isEditingExisting() ? '编辑文件夹' : '新建文件夹' }}</span>
-      <button mat-button (click)="save()">保存</button>
+      <span class="title">{{ isEditingExisting() ? 'Edit folder' : 'New folder' }}</span>
+      <button mat-button (click)="save()">Save</button>
     </div>
     <div class="form">
       <label class="field">
-        <span class="label">名称</span>
-        <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)" placeholder="例如：工作、家人" />
+        <span class="label">Name</span>
+        <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)" placeholder="e.g. Work, Family" />
       </label>
 
       <div class="field">
-        <span class="label">自动包含的类型</span>
+        <span class="label">Auto-include types</span>
         <div class="type-options">
           @for (opt of typeOptions; track opt.value) {
             <button type="button" class="type-opt" [class.active]="typeFilter() === opt.value"
@@ -42,7 +42,7 @@
       </div>
 
       <div class="field">
-        <span class="label">额外指定的会话（可选）</span>
+        <span class="label">Specific chats (optional)</span>
         <div class="thread-pick">
           @for (t of threadOptions(); track t.id) {
             <label class="pick-row">
@@ -50,13 +50,13 @@
               <span class="pick-name">{{ threadLabel(t) }}</span>
             </label>
           } @empty {
-            <div class="empty">暂无会话</div>
+            <div class="empty">No chats</div>
           }
         </div>
       </div>
 
       @if (isEditingExisting()) {
-        <button type="button" class="delete-btn" (click)="remove()">删除文件夹</button>
+        <button type="button" class="delete-btn" (click)="remove()">Delete folder</button>
       }
     </div>
   }

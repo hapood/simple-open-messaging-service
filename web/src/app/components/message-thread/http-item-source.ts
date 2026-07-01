@@ -18,7 +18,7 @@ import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import type { StandardMessage } from '../../services/websocket.service';
-import type { Message, UserMessageThread } from '../../services/model';
+import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../message-cards/chat-item';
@@ -45,7 +45,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly onLive: (items: CbItem<ChatItemData>[]) => void;
 
   constructor(
-    private readonly userMsgTrd: UserMessageThread,
+    private readonly conv: ConversationItem,
+    private readonly myUserId: number,
     private readonly msgService: MsgService,
     private readonly userService: UserService,
     wsService: WebsocketService,
@@ -67,7 +68,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
     if (anchorId === -1) {
       const res = await firstValueFrom(
-        this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 0, take: olderCount, orderBy: 'desc' }),
+        this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 0, take: olderCount, orderBy: 'desc' }),
       );
       if (res.code !== 0 || !res.data) return [];
       const list = [...res.data].reverse(); // desc → 升序（旧→新）
@@ -85,8 +86,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     }
     // 真实 msgId：双向取（跳转到指定消息 / 从通知打开会话）
     const [olderRes, newerRes] = await Promise.all([
-      firstValueFrom(this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 0, take: olderCount, lastId: String(anchorId), orderBy: 'desc' })),
-      firstValueFrom(this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: newerCount, lastId: String(anchorId), orderBy: 'asc' })),
+      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 0, take: olderCount, lastId: String(anchorId), orderBy: 'desc' })),
+      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: newerCount, lastId: String(anchorId), orderBy: 'asc' })),
     ]);
     if (olderRes.code !== 0 || !olderRes.data || olderRes.data.length === 0) return []; // 目标 msgId 不存在
     const older = [...olderRes.data].reverse(); // desc→升序：[older..anchorId]（含 anchorId）
@@ -109,7 +110,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   async getOlder(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: count, lastId: String(cursorId), orderBy: 'desc' }),
+      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: count, lastId: String(cursorId), orderBy: 'desc' }),
     );
     if (res.code !== 0 || !res.data || res.data.length === 0) { this.noOlder = true; return []; }
     const list = [...res.data].reverse(); // desc → 升序
@@ -127,7 +128,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     if (this.noNewer) return [];
     const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: count, lastId: String(cursorId), orderBy: 'asc' }),
+      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: count, lastId: String(cursorId), orderBy: 'asc' }),
     );
     if (res.code !== 0 || !res.data || res.data.length === 0) { this.noNewer = true; return []; }
     const list = [...res.data]; // asc 已升序（旧→新）
@@ -144,7 +145,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private onWsEvent(msg: StandardMessage): void {
     if (msg.event !== 'NEW_MESSAGE' || msg.status !== 0 || !msg.data) return;
     const data = msg.data as Message & { threadId: number };
-    if (data.threadId !== this.userMsgTrd.threadId) return;
+    if (data.threadId !== this.conv.threadId) return;
     const id = String(data.id);
     if (this.knownMsgIds.has(id)) return; // 去重
     data.id = id;
@@ -181,7 +182,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private async refillNewer(): Promise<void> {
     if (this.newestMsgId == null) return;
     const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ userThreadId: this.userMsgTrd.id, skip: 1, take: RECONNECT_REFILL_BATCH, lastId: this.newestMsgId, orderBy: 'asc' }),
+      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: RECONNECT_REFILL_BATCH, lastId: this.newestMsgId, orderBy: 'asc' }),
     );
     if (res.code !== 0 || !res.data || res.data.length === 0) return;
     const list = res.data; // asc 已升序（旧→新）
@@ -215,8 +216,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const p = this.profiles.get(m.creator);
     return {
       type: 'msg', msgId: String(m.id), creator: m.creator,
-      isSelf: p?.isSelf ?? m.creator === this.userMsgTrd.userId,
-      name: p?.name ?? '未知', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
+      isSelf: p?.isSelf ?? m.creator === this.myUserId,
+      name: p?.name ?? 'Unknown', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
       contentType: m.contentType, images, createdAtMs: m.createdAt,
     };
   }
@@ -227,7 +228,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (missing.size === 0) return;
     const res = await firstValueFrom(this.userService.queryUserInfo({ userIds: [...missing] }));
     if (res.code === 0 && res.data) {
-      for (const u of res.data) this.profiles.set(u.id, { name: u.uniqName, isSelf: u.id === this.userMsgTrd.userId });
+      for (const u of res.data) this.profiles.set(u.id, { name: u.uniqName, isSelf: u.id === this.myUserId });
     }
   }
 }

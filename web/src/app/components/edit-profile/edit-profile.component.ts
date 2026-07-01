@@ -5,7 +5,6 @@ import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 /**
  * 编辑资料弹窗（WhatsApp 极简）：头像 + 昵称 + 简介；登录 handle 只读。
@@ -14,7 +13,7 @@ import { FitDialogDirective } from '../../directives/fit-dialog.directive';
  */
 @Component({
   selector: 'app-edit-profile',
-  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent, FitDialogDirective],
+  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent],
   templateUrl: './edit-profile.component.html',
   styleUrl: './edit-profile.component.scss',
 })
@@ -24,7 +23,6 @@ export class EditProfileComponent {
 
   readonly UserAvatarType = UserAvatarType
   readonly AppIconType = AppIconType
-  readonly fitOpts = { minHeight: 380 } as const
 
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -45,10 +43,10 @@ export class EditProfileComponent {
       const n = this.name().trim()
       if (n.length === 0) {
         this.isNameValid.set(false)
-        this.nameHint.set('昵称不能为空')
+        this.nameHint.set('Name cannot be empty')
       } else if (n.length > 30) {
         this.isNameValid.set(false)
-        this.nameHint.set('不超过 30 个字符')
+        this.nameHint.set('Must be 30 characters or fewer')
       } else {
         this.isNameValid.set(true)
         this.nameHint.set('')
@@ -70,6 +68,14 @@ export class EditProfileComponent {
     const file = input.files?.[0]
     input.value = '' // 清空，允许重复选同一文件
     if (!file) return
+    // Hand the raw file to the cropper; upload only the cropped square it returns.
+    // Cancel/back yields no result, so nothing uploads.
+    this.routeService.popupDlg(PopupType.AVATAR_EDITOR, { file }, (res) => {
+      if (res?.file) this.uploadAvatarFile(res.file)
+    })
+  }
+
+  private uploadAvatarFile(file: File) {
     this.uploading.set(true)
     this.userService.updateAvatar(file).subscribe({
       next: () => {

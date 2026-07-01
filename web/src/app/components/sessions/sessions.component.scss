@@ -5,11 +5,16 @@
   background: #fff;
 
   .msg-header {
-    display: flex;
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
     align-items: center;
-    justify-content: space-between;
     padding: 8px 12px;
     border-bottom: 1px solid #eee;
+
+    // Equal 1fr side tracks keep the title centered even when the back and action
+    // buttons differ in width (flex `space-between` skews it off-center).
+    > :first-child { justify-self: start; }
+    > :last-child { justify-self: end; }
 
     .title {
       font-size: 16px;

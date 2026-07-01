@@ -19,10 +19,15 @@ app-user-list {
   background: var(--app-surface);
   box-sizing: border-box;
   border-bottom: 1px solid var(--app-border);
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   padding: 0 10px;
+
+  // Equal 1fr side tracks keep the title centered even when the back and action
+  // buttons differ in width (flex `space-between` skews it off-center).
+  > :first-child { justify-self: start; }
+  > :last-child { justify-self: end; }
 }
 
 .icon-btn{

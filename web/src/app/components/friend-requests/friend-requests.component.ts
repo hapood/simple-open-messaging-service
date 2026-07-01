@@ -14,7 +14,11 @@ import dayjs from 'dayjs';
 enum AddTabStatus {
   INIT, EMPTY, SEARCHING, SUCCESS, ERROR
 }
-type PendingReq = User & { status: number, date: string, errText: string }
+// The underlying User data is optional: the degraded "Unknown user" fallback row
+// (built when a pending/sent request's user can't be resolved) lacks userExtra,
+// so the avatar falls back to the initial letter. Resolved rows spread a full User.
+type PendingReq = Omit<User, 'userExtra'> & { userExtra?: User['userExtra'] }
+  & { status: number, date: string, errText: string }
 
 @Component({
     selector: 'app-friend-requests',
@@ -92,17 +96,19 @@ export class FriendRequestsComponent {
                   this.canAdd.set(false)
                   this.reqRspTxt.set('already friends')
                   break
-                case 'FROM_PENDING':
-                  this.canAdd.set(false)
-                  this.reqRspTxt.set('friend request already sent')
-                  break
-                case 'TO_PENDING':
-                  // 对方已发请求给你 → 引导去 Pending 标签同意，而非重复发起
-                  this.canAdd.set(false)
-                  this.reqRspTxt.set('sent you a request — check Pending')
+                case 'PENDING':
+                  // Direction disambiguates incoming vs outgoing (the friendship is one row per pair).
+                  if (res2.data?.requesterId === this.userService.sessionProfile()!.id) {
+                    this.canAdd.set(false)
+                    this.reqRspTxt.set('friend request already sent')
+                  } else {
+                    // 对方已发请求给你 → 引导去 Pending 标签同意，而非重复发起
+                    this.canAdd.set(false)
+                    this.reqRspTxt.set('sent you a request — check Pending')
+                  }
                   break
                 default:
-                  // DELETED / BLOCKED 等仍允许（重新）发起
+                  // BLOCKED / DELETED 仍允许（重新）发起
                   this.canAdd.set(true)
                   this.reqRspTxt.set('')
               }
@@ -179,7 +185,7 @@ export class FriendRequestsComponent {
           this.pendingLoading.set(false)
           return
         }
-        const userIds = res.data!.map(item => item.toObjId)
+        const userIds = res.data!.map(item => item.peerUserId)
         this.userService.queryUserInfo({ userIds }).subscribe({
           next: (res2) => {
             if (res2.code !== 0) {
@@ -189,11 +195,11 @@ export class FriendRequestsComponent {
             }
             const dict = arrayToDictIndex(res2.data!, 'id')
             const list = res.data!.map(item => {
-              const userData = dict[item.toObjId]
+              const userData = dict[item.peerUserId]
               if (userData) {
                 return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.toObjId, uniqName: 'Unknown user', status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, uniqName: 'Unknown user', status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.pendingReqList.set(list)
@@ -218,7 +224,7 @@ export class FriendRequestsComponent {
           this.sentLoading.set(false)
           return
         }
-        const userIds = res.data!.map(item => item.toObjId)
+        const userIds = res.data!.map(item => item.peerUserId)
         this.userService.queryUserInfo({ userIds }).subscribe({
           next: (res2) => {
             if (res2.code !== 0) {
@@ -228,11 +234,11 @@ export class FriendRequestsComponent {
             }
             const dict = arrayToDictIndex(res2.data!, 'id')
             const list = res.data!.map(item => {
-              const userData = dict[item.toObjId]
+              const userData = dict[item.peerUserId]
               if (userData) {
                 return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.toObjId, uniqName: 'Unknown user', status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, uniqName: 'Unknown user', status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.sentReqList.set(list)

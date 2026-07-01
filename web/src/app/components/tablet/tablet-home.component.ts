@@ -1,5 +1,5 @@
 import { Component, signal, viewChild } from '@angular/core';
-import { UserMessageThread } from '../../services/model';
+import { ConversationItem } from '../../services/model';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
 import { ChatPaneComponent } from '../desktop/chat-pane/chat-pane.component';
@@ -19,10 +19,10 @@ import { RootPopupComponent } from '../root-popup/root-popup.component';
   styleUrl: './tablet-home.component.scss',
 })
 export class TabletHomeComponent {
-  readonly selectedThread = signal<UserMessageThread | undefined>(undefined)
+  readonly selectedThread = signal<ConversationItem | undefined>(undefined)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
-  onThreadSelect(thread: UserMessageThread) {
+  onThreadSelect(thread: ConversationItem) {
     this.selectedThread.set(thread)
   }
 

@@ -37,7 +37,7 @@ const EMOJIS = [
   styleUrl: './msg-input-bar.component.scss',
 })
 export class MsgInputBarComponent {
-  readonly userThreadId = input<number>();
+  readonly threadId = input<number>();
   readonly onAfterSent = output<void>();
 
   private readonly msgService = inject(MsgService);
@@ -113,12 +113,12 @@ export class MsgInputBarComponent {
   }
 
   sendText() {
-    const tid = this.userThreadId();
+    const tid = this.threadId();
     const text = this.draft().trim();
     if (!tid || !text || this.sending()) return;
     this.sending.set(true);
     this.msgService
-      .sendMessage({ userThreadId: tid, content: text, contentType: 'PURE_TEXT' })
+      .sendMessage({ threadId: tid, content: text, contentType: 'PURE_TEXT' })
       .subscribe({
         next: (res) => {
           this.sending.set(false);
@@ -134,7 +134,7 @@ export class MsgInputBarComponent {
 
   /** 逐张上传图片并发送 IMAGE 消息（多图连续发，前端合并相册显示）。 */
   async sendImage(files: FileList | null) {
-    const tid = this.userThreadId();
+    const tid = this.threadId();
     if (!tid || !files) return;
     const list = Array.from(files).filter((f) => f.type.startsWith('image/'));
     for (const f of list) {
@@ -147,7 +147,7 @@ export class MsgInputBarComponent {
         if (up.code !== 0 || !up.data) continue;
         await firstValueFrom(
           this.msgService.sendMessage({
-            userThreadId: tid,
+            threadId: tid,
             content: JSON.stringify({ url: up.data.url, w, h }),
             contentType: 'IMAGE',
           }),

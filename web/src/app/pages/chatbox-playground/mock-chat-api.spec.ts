@@ -114,9 +114,9 @@ describe('MockItemSource（游标契约）', () => {
     const items = await s.init(-1, 100, 0);
     const self = items.find(i => i.data.creator === 1)!;
     const other = items.find(i => i.data.creator === 2)!;
-    expect(self.data.name).toBe('我');   // ensureProfiles 从 MockUserService 查填（buildItems 的原始 msg name 占位 ''）
+    expect(self.data.name).toBe('Me');   // ensureProfiles 从 MockUserService 查填（buildItems 的原始 msg name 占位 ''）
     expect(self.data.isSelf).toBe(true);  // isSelf = creator === userId(1)
-    expect(other.data.name).toBe('阿黄');
+    expect(other.data.name).toBe('Alice');
     expect(other.data.isSelf).toBe(false);
   });
 });

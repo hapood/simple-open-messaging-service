@@ -13,15 +13,17 @@ import dayjs from 'dayjs';
  *  ③ oldest：prev = null（全局最老，无更老邻居）。
  */
 
-/** 日期分隔文案：今天/昨天/周X/M月D日/YYYY年M月D日。 */
+/** Date separator label: Today / Yesterday / weekday name / MMM D / MMM D, YYYY. */
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
 export function formatDateSeparator(ms: number): string {
   const d = dayjs(ms);
   const now = dayjs();
-  if (d.isSame(now, 'day')) return '今天';
-  if (d.isSame(now.subtract(1, 'day'), 'day')) return '昨天';
-  if (d.isAfter(now.subtract(7, 'day'))) return '周' + '日一二三四五六'[d.day()];
-  if (d.isSame(now, 'year')) return d.format('M月D日');
-  return d.format('YYYY年M月D日');
+  if (d.isSame(now, 'day')) return 'Today';
+  if (d.isSame(now.subtract(1, 'day'), 'day')) return 'Yesterday';
+  if (d.isAfter(now.subtract(7, 'day'))) return WEEKDAYS[d.day()];
+  if (d.isSame(now, 'year')) return d.format('MMM D');
+  return d.format('MMM D, YYYY');
 }
 
 /** 两时刻是否同一天（日历日，跨年同月日也算不同天）。 */

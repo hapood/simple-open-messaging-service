@@ -1,7 +1,7 @@
 import { Component, input } from '@angular/core';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { BrandLogoComponent } from '../../brand-logo/brand-logo.component';
-import { UserMessageThread } from '../../../services/model';
+import { ConversationItem } from '../../../services/model';
 
 /**
  * Desktop right pane: renders the selected thread INLINE (not as a popup) via
@@ -14,11 +14,11 @@ import { UserMessageThread } from '../../../services/model';
   template: `
     <div class="chat-pane">
       @if (userMsgTrd(); as trd) {
-        <app-message-thread [userThreadId]="trd.id" [userMsgTrd]="trd" />
+        <app-message-thread [threadId]="trd.threadId" [userMsgTrd]="trd" />
       } @else {
         <div class="empty">
           <div class="empty-main">
-            <app-brand-logo [size]="72" tagline="选择一个会话，开始你的对话" />
+            <app-brand-logo [size]="72" tagline="Select a chat to start your conversation" />
           </div>
           <div class="empty-foot">
             <svg class="lock" width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -26,7 +26,7 @@ import { UserMessageThread } from '../../../services/model';
               <rect x="3" y="11" width="18" height="11" rx="2" />
               <path d="M7 11V7a5 5 0 0 1 10 0v4" />
             </svg>
-            <span>你的消息在传输中受到端到端保护。SOMS 无法读取。</span>
+            <span>Your messages are protected end-to-end in transit. SOMS cannot read them.</span>
           </div>
         </div>
       }
@@ -74,5 +74,5 @@ import { UserMessageThread } from '../../../services/model';
   `]
 })
 export class ChatPaneComponent {
-  readonly userMsgTrd = input<UserMessageThread>()
+  readonly userMsgTrd = input<ConversationItem>()
 }

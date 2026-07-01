@@ -44,16 +44,16 @@ describe('date-format', () => {
 
   describe('formatDateSeparator', () => {
     const day = 86_400_000;
-    it('今天', () => { expect(formatDateSeparator(Date.now())).toBe('今天'); });
-    it('昨天', () => { expect(formatDateSeparator(Date.now() - day)).toBe('昨天'); });
-    it('本周内（3 天前）→ 周X', () => {
-      expect(formatDateSeparator(Date.now() - 3 * day)).toMatch(/^周[日一二三四五六]$/);
+    it('today', () => { expect(formatDateSeparator(Date.now())).toBe('Today'); });
+    it('yesterday', () => { expect(formatDateSeparator(Date.now() - day)).toBe('Yesterday'); });
+    it('within this week (3 days ago) → weekday name', () => {
+      expect(formatDateSeparator(Date.now() - 3 * day)).toMatch(/^(Sunday|Monday|Tuesday|Wednesday|Thursday|Friday|Saturday)$/);
     });
-    it('本年更早（100 天前）→ M月D日', () => {
-      expect(formatDateSeparator(Date.now() - 100 * day)).toMatch(/^\d{1,2}月\d{1,2}日$/);
+    it('earlier this year (100 days ago) → MMM D', () => {
+      expect(formatDateSeparator(Date.now() - 100 * day)).toMatch(/^[A-Z][a-z]{2} \d{1,2}$/);
     });
-    it('跨年（800 天前）→ YYYY年M月D日', () => {
-      expect(formatDateSeparator(Date.now() - 800 * day)).toMatch(/^\d{4}年\d{1,2}月\d{1,2}日$/);
+    it('other year (800 days ago) → MMM D, YYYY', () => {
+      expect(formatDateSeparator(Date.now() - 800 * day)).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
     });
   });
 });

@@ -7,18 +7,18 @@
     </div>
   }
   <div class="pg-input-wrap">
-    <button type="button" class="pg-input-ico" (click)="toggleEmoji()" aria-label="表情">
+    <button type="button" class="pg-input-ico" (click)="toggleEmoji()" aria-label="Emoji">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" />
         <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
       </svg>
     </button>
-    <textarea #draftInput class="pg-input" rows="1" placeholder="输入消息…"
+    <textarea #draftInput class="pg-input" rows="1" placeholder="Type a message…"
               [ngModel]="draft()" [ngModelOptions]="{ standalone: true }"
               (ngModelChange)="onDraftChange($event)"
               (keydown)="onInputKeydown($event)"></textarea>
-    <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="发送图片">
+    <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="Send image">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -26,7 +26,7 @@
     </button>
   </div>
   <button type="button" class="pg-send" [class.pg-send-media]="!draft().trim()" (click)="onSendClick()"
-          [attr.aria-label]="draft().trim() ? '发送' : '发送图片'">
+          [attr.aria-label]="draft().trim() ? 'Send' : 'Send image'">
     @if (draft().trim()) {
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

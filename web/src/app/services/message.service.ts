@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Message, QueryMessageLogParams, StandardResponse, UserMessageThread } from './model'
+import { Message, QueryMessageLogParams, StandardResponse, Friendship } from './model'
 import { apiPrefix } from './constants';
 
 @Injectable({
@@ -17,7 +17,7 @@ export class MsgService {
     return this.http.post(`${apiPrefix}/add-friend`, { uniqName })
   }
 
-  sendMessage(params: { userThreadId: number, content: string, contentType?: string }) {
+  sendMessage(params: { threadId: number, content: string, contentType?: string }) {
     return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
   }
 
@@ -34,7 +34,8 @@ export class MsgService {
     return this.http.post<StandardResponse<Message[]>>(`${apiPrefix}/query-messages`, params)
   }
 
+  /** Resolve the P2P relationship (status + threadId) with a peer user. */
   getThreadByUserId(params: { userId: number }) {
-    return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/thread/by-user-id`, params)
+    return this.http.post<StandardResponse<Friendship>>(`${apiPrefix}/thread/by-user-id`, params)
   }
 }

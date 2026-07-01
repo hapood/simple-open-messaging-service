@@ -1,5 +1,5 @@
 import { Component, inject, signal, viewChild } from '@angular/core';
-import { UserMessageThread } from '../../../services/model';
+import { ConversationItem } from '../../../services/model';
 import { IconRailComponent } from '../icon-rail/icon-rail.component';
 import { ChatListPaneComponent } from '../chat-list-pane/chat-list-pane.component';
 import { ChatPaneComponent } from '../chat-pane/chat-pane.component';
@@ -26,12 +26,12 @@ export class DesktopHomeComponent {
   protected readonly infoPanel = inject(InfoPanelService)
   readonly infoThread = this.infoPanel.thread
 
-  readonly selectedThread = signal<UserMessageThread | undefined>(undefined)
+  readonly selectedThread = signal<ConversationItem | undefined>(undefined)
   /** chat-list width, persisted across sessions */
   readonly listWidth = signal<number>(this.readListWidth())
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
-  onThreadSelect(thread: UserMessageThread) {
+  onThreadSelect(thread: ConversationItem) {
     this.selectedThread.set(thread)
     // if the info panel is open, follow the newly selected thread
     if (this.infoThread()) this.infoPanel.open(thread)

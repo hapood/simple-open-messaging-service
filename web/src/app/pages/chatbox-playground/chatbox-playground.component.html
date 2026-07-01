@@ -4,13 +4,13 @@
     <!-- 顶部 header：聊天头 + 右上主题切换 -->
     <header class="pg-header">
       <div class="pg-header-chat">
-        <div class="pg-header-avatar"><app-user-avatar [name]="'阿黄'" /></div>
+        <div class="pg-header-avatar"><app-user-avatar [name]="'Alice'" /></div>
         <div class="pg-header-meta">
-          <span class="pg-header-name">阿黄</span>
-          <span class="pg-header-sub">Playground · {{ useNativeAnchor ? '方案 A · 借浏览器锚定' : '方案 B · 手动补偿' }}</span>
+          <span class="pg-header-name">Alice</span>
+          <span class="pg-header-sub">Playground · {{ useNativeAnchor ? 'Plan A · browser anchor' : 'Plan B · manual offset' }}</span>
         </div>
       </div>
-      <button type="button" class="pg-icon-btn pg-theme-toggle" (click)="toggleTheme()" aria-label="切换主题">
+      <button type="button" class="pg-icon-btn pg-theme-toggle" (click)="toggleTheme()" aria-label="Toggle theme">
         <svg class="pg-ico-moon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" /></svg>
         <svg class="pg-ico-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -32,7 +32,7 @@
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }
     <!-- 移动端：唤起控制面板抽屉（可拖动重定位） -->
-    <button type="button" class="pg-fab" #fab (pointerdown)="onFabDown($event)" aria-label="控制面板（可拖动）">
+    <button type="button" class="pg-fab" #fab (pointerdown)="onFabDown($event)" aria-label="Control panel (draggable)">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="3" />
@@ -51,18 +51,18 @@
         </div>
       }
       <div class="pg-input-wrap">
-        <button type="button" class="pg-input-ico" (click)="toggleEmoji()" aria-label="表情">
+        <button type="button" class="pg-input-ico" (click)="toggleEmoji()" aria-label="Emoji">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" />
             <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
           </svg>
         </button>
-        <textarea #draftInput class="pg-input" rows="1" placeholder="输入消息…"
+        <textarea #draftInput class="pg-input" rows="1" placeholder="Type a message…"
                   [ngModel]="draft()" [ngModelOptions]="{ standalone: true }"
                   (ngModelChange)="onDraftChange($event)"
                   (keydown)="onInputKeydown($event)"></textarea>
-        <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="发送图片">
+        <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="Send image">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -71,7 +71,7 @@
       </div>
       <!-- 发送键：有文字=纸飞机（发文字）；无文字=相机（发图片），接入媒体拼盘 -->
       <button type="button" class="pg-send" [class.pg-send-media]="!draft().trim()" (click)="onSendClick()"
-              [attr.aria-label]="draft().trim() ? '发送' : '发送图片'">
+              [attr.aria-label]="draft().trim() ? 'Send' : 'Send image'">
         @if (draft().trim()) {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -95,12 +95,12 @@
   <aside class="pg-panel" [class.open]="panelOpen()" (click)="$event.stopPropagation()">
     <div class="pg-panel-head">
       <h3>Virtual Scroll Playground</h3>
-      <button type="button" class="pg-panel-close" (click)="closePanel()" aria-label="关闭">×</button>
+      <button type="button" class="pg-panel-close" (click)="closePanel()" aria-label="Close">×</button>
     </div>
-    <p class="pg-hint">纯 TS 内核 + 假数据。点列表区域后可用键盘（Home/End/PgUp/PgDn/↑↓）滚动。</p>
+    <p class="pg-hint">Pure TS kernel + mock data. Click the list area, then scroll with the keyboard (Home/End/PgUp/PgDn/↑↓).</p>
 
     <section>
-      <h4>数据量 <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? '生成中…' : 'generator' }}</span></h4>
+      <h4>Data volume <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? 'Generating…' : 'generator' }}</span></h4>
       <div class="pg-btns">
         <button (click)="setCount(1000)" [disabled]="loading()" [class.active]="count() === 1000 && !loading()">1k</button>
         <button (click)="setCount(5000)" [disabled]="loading()" [class.active]="count() === 5000 && !loading()">5k</button>
@@ -109,7 +109,7 @@
     </section>
 
     <section>
-      <h4>source 延迟 <span class="pg-sec-tag">调试</span></h4>
+      <h4>Source latency <span class="pg-sec-tag">debug</span></h4>
       <div class="pg-btns">
         <button (click)="setSourceLatency(0)" [class.active]="sourceLatency() === 0">0</button>
         <button (click)="setSourceLatency(200)" [class.active]="sourceLatency() === 200">200ms</button>
@@ -119,64 +119,64 @@
     </section>
 
     <section>
-      <h4>定位</h4>
+      <h4>Jump</h4>
       <div class="pg-btns">
-        <button (click)="toTop()" [disabled]="loading()">顶部</button>
-        <button (click)="toBottom()" [disabled]="loading()">底部</button>
+        <button (click)="toTop()" [disabled]="loading()">Top</button>
+        <button (click)="toBottom()" [disabled]="loading()">Bottom</button>
       </div>
       <div class="pg-jump">
-        <input #jumpInput class="pg-jump-input" placeholder="id 或 序号"
+        <input #jumpInput class="pg-jump-input" placeholder="id or index"
                (keydown.enter)="jumpToId(jumpInput.value)" />
-        <button (click)="jumpToId(jumpInput.value)" [disabled]="loading()">跳转</button>
+        <button (click)="jumpToId(jumpInput.value)" [disabled]="loading()">Jump</button>
       </div>
     </section>
 
     <section>
-      <h4>插入消息 <span class="pg-sec-tag">调试</span></h4>
-      <p class="pg-hint">输入已挂载消息 id，在其后插入一条新消息：不触发 balance，仅做滚动高度补偿（视口钉住）。未挂载则忽略。</p>
+      <h4>Insert message <span class="pg-sec-tag">debug</span></h4>
+      <p class="pg-hint">Enter a mounted message id to insert a new message after it: no balance is triggered, only scroll-height compensation (viewport stays pinned). Unmounted ids are ignored.</p>
       <div class="pg-jump">
         <input #insertInput class="pg-jump-input" placeholder="after id"
                (keydown.enter)="insertAfterId(insertInput.value)" />
-        <button (click)="insertAfterId(insertInput.value)" [disabled]="loading()">插入</button>
+        <button (click)="insertAfterId(insertInput.value)" [disabled]="loading()">Insert</button>
       </div>
     </section>
 
     <section>
-      <h4>移除消息 <span class="pg-sec-tag">调试</span></h4>
-      <p class="pg-hint">按 id 移除已挂载消息（相册任一图 id 即移除整条相册；逗号分隔多条）：带退场动画并发移除，动画期间 balance 暂停。纯数字按历史序号（id-N），否则按字面 id（pending-N / insert-0）。未挂载则忽略。</p>
+      <h4>Remove message <span class="pg-sec-tag">debug</span></h4>
+      <p class="pg-hint">Remove mounted messages by id (any image id in an album removes the whole album; comma-separate multiple): concurrent removal with exit animation; balance is paused during the animation. Plain numbers are read as history index (id-N), otherwise as a literal id (pending-N / insert-0). Unmounted ids are ignored.</p>
       <div class="pg-jump">
-        <input #removeInput class="pg-jump-input" placeholder="id / 序号（可逗号分隔）"
+        <input #removeInput class="pg-jump-input" placeholder="id / index (comma-separated)"
                (keydown.enter)="removeById(removeInput.value)" />
-        <button (click)="removeById(removeInput.value)" [disabled]="loading()">移除</button>
+        <button (click)="removeById(removeInput.value)" [disabled]="loading()">Remove</button>
       </div>
     </section>
 
     <section>
-      <h4>运行模式</h4>
+      <h4>Run mode</h4>
       <div class="pg-btns">
-        <button (click)="debugMode.set(false)" [class.active]="!debugMode()">性能</button>
-        <button (click)="debugMode.set(true)" [class.active]="debugMode()">调试</button>
+        <button (click)="debugMode.set(false)" [class.active]="!debugMode()">Performance</button>
+        <button (click)="debugMode.set(true)" [class.active]="debugMode()">Debug</button>
       </div>
     </section>
 
     <section>
-      <h4>挂载检查点 <span class="pg-sec-tag">调试</span></h4>
+      <h4>Mount checkpoint <span class="pg-sec-tag">debug</span></h4>
       <div class="pg-btns">
-        <button (click)="closeCheckpoint.set(false); applyCloseCheckpoint()" [class.active]="!closeCheckpoint()">开（正常加载）</button>
-        <button (click)="closeCheckpoint.set(true); applyCloseCheckpoint()" [class.active]="closeCheckpoint()">关（不触发加载）</button>
+        <button (click)="closeCheckpoint.set(false); applyCloseCheckpoint()" [class.active]="!closeCheckpoint()">On (normal loading)</button>
+        <button (click)="closeCheckpoint.set(true); applyCloseCheckpoint()" [class.active]="closeCheckpoint()">Off (no loading)</button>
       </div>
     </section>
 
     <section>
-      <h4>视口位置 <span class="pg-sec-tag">调试</span></h4>
-      <p class="pg-hint">↑ 上方剩余 {{ viewportAbove() }} px · ↓ 下方剩余 {{ viewportBelow() }} px（&lt; 1000 触发对应方向加载）</p>
+      <h4>Viewport position <span class="pg-sec-tag">debug</span></h4>
+      <p class="pg-hint">↑ {{ viewportAbove() }} px above · ↓ {{ viewportBelow() }} px below (&lt; 1000 triggers loading in that direction)</p>
     </section>
 
     <section>
-      <h4>内核参数 <span class="pg-sec-tag">调试</span></h4>
-      <p class="pg-hint">每次 {{ config().mountItem }} · init {{ config().initBatch }} · 阈值 {{ config().thresholdFloor }} · vh+{{ config().vhExtra }} · 边缘 {{ config().edge }}</p>
+      <h4>Kernel params <span class="pg-sec-tag">debug</span></h4>
+      <p class="pg-hint">per batch {{ config().mountItem }} · init {{ config().initBatch }} · threshold {{ config().thresholdFloor }} · vh+{{ config().vhExtra }} · edge {{ config().edge }}</p>
       <div class="pg-btns">
-        <button (click)="openConfigModal()">编辑参数</button>
+        <button (click)="openConfigModal()">Edit params</button>
       </div>
     </section>
   </aside>
@@ -184,15 +184,15 @@
   @if (configModalOpen()) {
     <div class="pg-config-overlay" (click)="cancelConfigModal()">
       <div class="pg-config-modal" (click)="$event.stopPropagation()">
-        <h3>内核参数</h3>
-        <label>initBatch（init 首批/补批）<input type="number" [ngModel]="configDraft().initBatch" (ngModelChange)="setConfigDraft('initBatch', +$event)" /></label>
-        <label>mountItem（loadOlder/loadNewer 每次）<input type="number" [ngModel]="configDraft().mountItem" (ngModelChange)="setConfigDraft('mountItem', +$event)" /></label>
-        <label>thresholdFloor（窗口阈值下限）<input type="number" [ngModel]="configDraft().thresholdFloor" (ngModelChange)="setConfigDraft('thresholdFloor', +$event)" /></label>
-        <label>vhExtra（vh 之外额外）<input type="number" [ngModel]="configDraft().vhExtra" (ngModelChange)="setConfigDraft('vhExtra', +$event)" /></label>
-        <label>edge（检查点触发距离）<input type="number" [ngModel]="configDraft().edge" (ngModelChange)="setConfigDraft('edge', +$event)" /></label>
+        <h3>Kernel params</h3>
+        <label>initBatch (init first / top-up batch)<input type="number" [ngModel]="configDraft().initBatch" (ngModelChange)="setConfigDraft('initBatch', +$event)" /></label>
+        <label>mountItem (per loadOlder/loadNewer)<input type="number" [ngModel]="configDraft().mountItem" (ngModelChange)="setConfigDraft('mountItem', +$event)" /></label>
+        <label>thresholdFloor (min window threshold)<input type="number" [ngModel]="configDraft().thresholdFloor" (ngModelChange)="setConfigDraft('thresholdFloor', +$event)" /></label>
+        <label>vhExtra (extra beyond vh)<input type="number" [ngModel]="configDraft().vhExtra" (ngModelChange)="setConfigDraft('vhExtra', +$event)" /></label>
+        <label>edge (checkpoint trigger distance)<input type="number" [ngModel]="configDraft().edge" (ngModelChange)="setConfigDraft('edge', +$event)" /></label>
         <div class="pg-config-actions">
-          <button (click)="cancelConfigModal()">取消</button>
-          <button class="pg-config-primary" (click)="applyConfig()">确认（重建）</button>
+          <button (click)="cancelConfigModal()">Cancel</button>
+          <button class="pg-config-primary" (click)="applyConfig()">Apply (rebuild)</button>
         </div>
       </div>
     </div>

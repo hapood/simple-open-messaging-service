@@ -2,35 +2,49 @@ import { Directive, ElementRef, Input, OnDestroy, OnInit, inject } from '@angula
 import { LayoutService } from '../services/layout.service';
 
 /**
- * 弹窗"首次最佳高度 + 锁定"机制（仅 desktop）。
+ * Dialog "best-fit height on first paint, then lock" mechanism (desktop only).
  *
- * 背景：所有 dlg 共用 `.popup-com-wrapper.desktop`（height:auto; max-height:80vh;
- * overflow:auto）。容器 height:auto 时，dlg 内部 `flex:1 + overflow-y:auto` 的列表
- * 失去高度约束 → 内容一路撑高直到撞 80vh，滚动条跑到外层 wrapper、高度随条数忽高忽低，
- * 显得廉价。本指令让 dlg 在首次内容稳定后锁定一个最佳高度，之后内部列表自行滚动。
+ * Background: every dialog shares `.popup-com-wrapper.desktop` (height:auto;
+ * max-height:80vh; overflow:auto). While the wrapper is height:auto, an inner
+ * `flex:1 + overflow-y:auto` list inside a dialog loses its height constraint →
+ * content keeps stretching until it hits 80vh, the scrollbar lands on the outer
+ * wrapper, and the height jumps around with item count — looking cheap. This
+ * directive pins the dialog to an optimal height so the inner list scrolls on its own.
  *
- * 工作方式（zoneless 友好：全程只读写原生 DOM，不依赖变更检测）：
- *  - ResizeObserver 观察 host，感知异步内容渲染完成（无需各 dlg 上报就绪信号）。
- *  - 每次尺寸变化重排一个 settleMs 防抖；静止 settleMs 后视为稳定。
- *  - 稳定时【只读】host.scrollHeight 取内容自然高（wrapper 已 overflow:auto，
- *    scrollHeight 即无裁剪内容高；不在 RO 回调里 mutate style，避免反馈循环/闪烁），
- *    clamp 到 [min,max]，【只写一次】host.style.height 并锁定、断开 RO。
- *  - 锁定后 host 有了确定 px 高度，内部 flex:1 滚动区正常在内部滚动。
- *    inline style 特异性高于各 dlg 的 height:100% / min-height:100%，无需 !important。
+ * How it works (zoneless-friendly: reads/writes raw DOM only, no change detection):
+ *  - On the first frame (ngOnInit) it reads host.scrollHeight to get the natural
+ *    content height and pins host.style.height = clamp(natural, [min,max]) — so the
+ *    dialog is at its final height from the very first paint. This eliminates the
+ *    "starts at the minHeight floor, then grows to natural after settling" jump
+ *    (the root cause of edit-profile and other static-content dialogs visibly
+ *    growing: minHeight 380 < natural ≈510).
+ *  - A ResizeObserver watches the host to pick up async content rendering
+ *    (lists/images) — no readiness signal needed from each dialog.
+ *  - Each size change reschedules a settleMs debounce; once quiet for settleMs the
+ *    content is considered stable.
+ *  - When stable it reads host.scrollHeight once more (the wrapper is overflow:auto,
+ *    so scrollHeight is the unclipped content height; we never mutate style inside
+ *    the RO callback, avoiding feedback loops/flicker), clamps it, and writes
+ *    host.style.height exactly once, then locks and disconnects the RO. For static
+ *    dialogs already sized on the first frame this is an idempotent no-op.
+ *  - Once locked the host has a definite px height, so inner flex:1 scroll regions
+ *    scroll internally. The inline style outweighs each dialog's height:100% /
+ *    min-height:100%, so no !important is needed.
  *
- * mobile/tablet（非 .desktop wrapper，全屏 100%/100%）整体 no-op。
+ * mobile/tablet (non-.desktop wrapper, full-screen 100%/100%) is a no-op.
  */
 export interface FitDialogOptions {
-  /** px 下限；默认 200。防空列表时弹窗过矮显廉价。 */
+  /** px lower bound; default 200. Keeps an empty list from rendering a too-short, cheap-looking dialog. */
   minHeight?: number;
-  /** px 上限；默认 0.8 * window.innerHeight（对齐 wrapper 的 80vh）。 */
+  /** px upper bound; default 0.8 * window.innerHeight (matches the wrapper's 80vh). */
   maxHeight?: number;
-  /** 内容静止多久后锁定；默认 180。异步数据在子组件的 dlg 调大（如 600）。 */
+  /** How long content must be quiet before locking; default 180. Bump for dialogs whose async data lives in child components (e.g. 600). */
   settleMs?: number;
   /**
-   * 可选：互斥内容 pane 的选择器（如 '.tab-pane'）。设置后，锁定时逐个临时取消
-   * [hidden] 读各 pane 自然高取最大，再恢复。要求 pane 异步数据在锁定时已就绪
-   * （调用方负责）。多数 dlg 不用——直接测当前可见内容的自然高即可。
+   * Optional selector for mutually-exclusive content panes (e.g. '.tab-pane'). When set, locking
+   * temporarily unhides each pane to read the host's natural height and takes the max, then restores.
+   * The caller is responsible for ensuring each pane's async data is ready at lock time. Most dialogs
+   * don't need this — measuring the currently-visible content's natural height is enough.
    */
   paneSelector?: string;
 }
@@ -44,27 +58,33 @@ export class FitDialogDirective implements OnInit, OnDestroy {
   private settleTimer?: ReturnType<typeof setTimeout>;
   private locked = false;
 
-  /** 绑定 `[appFitDialog]="opts"`；裸用 `[appFitDialog]` 时为 '' → 全默认值。 */
+  /** Bound via `[appFitDialog]="opts"`; bare `[appFitDialog]` yields '' → all defaults. */
   @Input('appFitDialog') opts: FitDialogOptions | '' = '';
 
   ngOnInit(): void {
-    if (!this.layout.isDesktop()) return; // mobile/tablet 全屏，无需 fit
+    if (!this.layout.isDesktop()) return; // mobile/tablet are full-screen, no fit needed
     const el = this.host.nativeElement;
-    // host（app-xxx / 根 div）默认 display:inline 会破坏 scrollHeight 与 flex 布局；
-    // 仅当确为 inline 系时抬到 block，绝不破坏已有的 flex 列。
+    // The host (app-xxx / root div) defaults to display:inline, which breaks scrollHeight and flex
+    // layout; promote to block only when it's actually inline — never disturb an existing flex column.
     const disp = getComputedStyle(el).display;
     if (disp === 'inline' || disp === 'inline-block') el.style.display = 'block';
-    // 打开即设 minHeight 下限，避免「先 auto 撑小 → settle 后跳到锁定值」的可见跳变；
-    // settle 后 lockNow 会按内容自然高 clamp 出最终值（多数情况仍 = minHeight，不再变）。
-    el.style.height = this.minHeight() + 'px';
-    // 临时诊断：校准各 dlg 的 minHeight 后删除。
-    console.log('[appFitDialog] init host=%s minHeight=%d', el.tagName, this.minHeight());
+    // First paint: pin to the natural content height (clamped), so the dialog is at its final size
+    // from the very first frame — neither "auto-shrinks then jumps to the locked value" nor "sits at
+    // the minHeight floor then grows to natural" (the latter is the edit-profile symptom). The RO
+    // below still catches height changes from async content loads. If an ancestor is still
+    // display:none here, measure() returns 0 and clamp falls back to the minHeight floor — identical
+    // to the old behavior, and the RO corrects to the real natural height once visible.
+    const natural = this.measure();
+    const height = this.clamp(natural);
+    el.style.height = height + 'px';
+    // Temporary diagnostic: confirms first paint == final (natural should equal height → no grow). Remove after verifying.
+    console.log('[appFitDialog] init %s natural=%d height=%d', el.tagName, natural, height);
     this.ro = new ResizeObserver(() => this.onResize());
     this.ro.observe(el);
   }
 
   private onResize(): void {
-    if (this.locked) return; // 锁定后这一次回写触发的 RO 被忽略
+    if (this.locked) return; // ignore the RO fire triggered by our own write-back after locking
     clearTimeout(this.settleTimer!);
     this.settleTimer = setTimeout(() => this.lockNow(), this.settleMs());
   }
@@ -74,27 +94,29 @@ export class FitDialogDirective implements OnInit, OnDestroy {
     this.locked = true;
     this.ro?.disconnect();
     const el = this.host.nativeElement;
-    const natural = this.measure();
-    const target = Math.max(this.minHeight(), Math.min(natural, this.maxHeight()));
-    const px = target + 'px';
-    // 临时诊断：natural 是内容真实自然高，据此校准 minHeight（校准后删除）。
-    console.log('[appFitDialog] lock natural=%d target=%d prev=%s', natural, target, el.style.height);
-    if (el.style.height !== px) el.style.height = px; // 只写一次，盖过 height:100%
+    const px = this.clamp(this.measure()) + 'px';
+    if (el.style.height !== px) el.style.height = px; // write once, overriding height:100%
   }
 
-  /** 内容自然高：paneSelector 时取各 pane 最大，否则 host.scrollHeight（只读）。 */
+  /** Clamp natural height to [minHeight, maxHeight]; first paint and lockNow share one definition so the two never disagree and cause a jump. */
+  private clamp(natural: number): number {
+    return Math.max(this.minHeight(), Math.min(natural, this.maxHeight()));
+  }
+
+  /** Natural content height: max across panes when paneSelector is set, otherwise host.scrollHeight (read-only). */
   private measure(): number {
     const el = this.host.nativeElement;
     const sel = this.options.paneSelector;
-    // 临时解除高度约束读「内容自然高」。仅在 lockNow（RO 已断开）一次性执行，
-    // 同步恢复，浏览器不 paint 中间态——故不会闪烁、也不触发 RO 反馈。
+    // Temporarily lift the height constraint to read the "natural" content height. Runs synchronously
+    // only in ngOnInit (RO not yet observing) and lockNow (RO already disconnected), and restores
+    // inline — the browser never paints the intermediate state, so there's no flicker and no RO feedback.
     const prev = el.style.height;
     el.style.height = 'auto';
     try {
       if (!sel) return el.scrollHeight;
       const panes = Array.from(el.querySelectorAll(sel)) as unknown as HTMLElement[];
       if (panes.length === 0) return el.scrollHeight;
-      // 逐个临时显现 pane 读 host 自然高，取最大后恢复。
+      // Temporarily reveal each pane to read the host's natural height, take the max, then restore.
       let max = 0;
       for (const p of panes) {
         const wasHidden = p.hidden;
@@ -108,7 +130,7 @@ export class FitDialogDirective implements OnInit, OnDestroy {
     }
   }
 
-  /** opts 为 ''（裸用）时归一化为空对象，避免 `'' && x ?? d` 返回 '' 的陷阱。 */
+  /** Normalize '' (bare usage) to an empty object, avoiding the `'' && x ?? d` returns-'' trap. */
   private get options(): FitDialogOptions {
     return typeof this.opts === 'object' && this.opts !== null ? this.opts : {};
   }

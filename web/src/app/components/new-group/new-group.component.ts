@@ -4,7 +4,7 @@ import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from "../icon/icon.component";
 import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
-import { UserMessageThread } from '../../services/model';
+import { ConversationItem } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 @Component({
@@ -16,14 +16,14 @@ import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 export class NewGroupComponent {
   readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
   selectedDict = signal<Record<number, boolean | undefined>>({})
-  selectedList = signal<UserMessageThread[]>([])
+  selectedList = signal<ConversationItem[]>([])
   AppIconType = AppIconType
 
   constructor(private routeService: RouteService, private groupService: GroupService, private userService: UserService) {
 
   }
 
-  onTrdSelect(trdItem: UserMessageThread) {
+  onTrdSelect(trdItem: ConversationItem) {
     let dict = { ...this.selectedDict() }, list = this.selectedList();
     if (dict[trdItem.id]) {
       dict[trdItem.id] = false
@@ -40,7 +40,7 @@ export class NewGroupComponent {
     const list = this.selectedList();
     let groupName = this.userService.sessionProfile()!.userExtra.name
     for (let i = 0; i < list.length; i++) {
-      groupName += ' ' + list[i].userItem.userExtra
+      groupName += ' ' + list[i].peerUser.userExtra.name
       if (groupName.length > 26) {
         groupName = groupName.slice(0, 22) + ' ...'
         break;
@@ -50,7 +50,7 @@ export class NewGroupComponent {
       if (res.code === 0) {
         const groupId = res.data!.groupId
         list.forEach(item => {
-          this.groupService.inviteUser({ groupId, userId: item.toObjId }).subscribe()
+          this.groupService.inviteUser({ groupId, userId: item.peerUser.id }).subscribe()
         })
         this.routeService.closeDlg({ groupId })
       }

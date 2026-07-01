@@ -1,10 +1,10 @@
-<div class="edit-profile" [appFitDialog]="fitOpts">
+<div class="edit-profile">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" aria-label="返回">
+    <button class="icon-btn" (click)="goBack()" aria-label="Back">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
-    <span class="title">资料</span>
-    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">保存</button>
+    <span class="title">Profile</span>
+    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">Save</button>
   </div>
 
   <div class="body">
@@ -14,7 +14,7 @@
           [name]="name() || sessionProfile()?.uniqName || 'SOMS'"
           [src]="sessionProfile()?.userExtra?.avatar" />
         <button class="avatar-edit" type="button" (click)="fileInput.click()"
-          [disabled]="uploading()" aria-label="更换头像">
+          [disabled]="uploading()" aria-label="Change avatar">
           @if (uploading()) {
             <span class="spin"></span>
           } @else {
@@ -30,22 +30,22 @@
     </div>
 
     <label class="field">
-      <span class="label">昵称</span>
+      <span class="label">Name</span>
       <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)"
-        maxlength="30" placeholder="你的名字" />
+        maxlength="30" placeholder="Your name" />
       @if (nameHint()) {
         <span class="hint">{{ nameHint() }}</span>
       }
     </label>
 
     <label class="field">
-      <span class="label">简介</span>
+      <span class="label">Bio</span>
       <textarea class="textarea" rows="3" [ngModel]="bio()" (ngModelChange)="bio.set($event)"
-        maxlength="120" placeholder="介绍一下自己"></textarea>
+        maxlength="120" placeholder="Say something about yourself"></textarea>
       <span class="counter">{{ bio().length }}/120</span>
     </label>
 
-    <div class="handle">登录账号 @{{ sessionProfile()?.uniqName }}（不可更改）</div>
-    <button mat-raised-button class="sessions-entry" (click)="openSessions()">登录会话管理</button>
+    <div class="handle">Username @{{ sessionProfile()?.uniqName }} (cannot be changed)</div>
+    <button mat-raised-button class="sessions-entry" (click)="openSessions()">Manage sessions</button>
   </div>
 </div>

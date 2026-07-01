@@ -1,19 +1,19 @@
 <div class="thread-list">
   @switch (status()) {
     @case (ThreadListStatus.LOADING) {
-      <app-empty-state title="加载中…" />
+      <app-empty-state title="Loading…" />
     }
     @case (ThreadListStatus.ERROR) {
-      <app-empty-state tone="error" [title]="errorMsg()" subtitle="无法加载会话列表"
-        ctaLabel="重试" (ctaClick)="genThreadList()" />
+      <app-empty-state tone="error" [title]="errorMsg()" subtitle="Couldn't load chats"
+        ctaLabel="Retry" (ctaClick)="genThreadList()" />
     }
     @case (ThreadListStatus.READY) {
       @if (filteredThreadList().length === 0) {
         @if (isSearchEmpty()) {
-          <app-empty-state title="没有匹配的会话" subtitle="试试其他关键词，或清空搜索。" />
+          <app-empty-state title="No matching chats" subtitle="Try a different keyword, or clear the search." />
         } @else {
-          <app-empty-state title="还没有聊天" subtitle="添加好友，开始你的第一次对话。"
-            ctaLabel="添加好友" (ctaClick)="openFriendRequests()">
+          <app-empty-state title="No chats yet" subtitle="Add a friend to start your first conversation."
+            ctaLabel="Add friend" (ctaClick)="openFriendRequests()">
             <svg width="40" height="40" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <rect width="64" height="64" rx="14" fill="#2196f3" />
               <path transform="translate(6 7) scale(2.2)" fill="#ffffff"
@@ -24,18 +24,20 @@
       } @else {
         @for (thread of filteredThreadList(); track thread.id) {
           <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
-            @if(thread.toObjType==='P2P'){<div class="thread-avatar">
-              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.userItem.uniqName"></app-user-avatar>
+            @if(thread.type==='P2P'){<div class="thread-avatar">
+              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
+                [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
             </div>
             <div class="thread-info">
-              <div class="thread-name">{{thread.userItem.uniqName}}</div>
+              <div class="thread-name">{{thread.peerUser.uniqName}}</div>
               <div class="thread-msg">last message</div>
             </div>
-            }@else if(thread.toObjType==='GROUP'){<div class="thread-avatar">
-              <app-user-avatar [type]="UserAvatarType.GROUP" [name]="thread.groupItem.name"></app-user-avatar>
+            }@else if(thread.type==='GROUP'){<div class="thread-avatar">
+              <app-user-avatar [type]="UserAvatarType.GROUP" [name]="thread.group.name"
+                [src]="thread.group.avatar"></app-user-avatar>
             </div>
             <div class="thread-info">
-              <div class="thread-name">{{thread.groupItem.name}}</div>
+              <div class="thread-name">{{thread.group.name}}</div>
               <div class="thread-msg">last message</div>
             </div>
             }

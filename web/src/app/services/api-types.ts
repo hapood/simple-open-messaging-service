@@ -13,7 +13,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 发送消息（P2P/群） */
+        /** 发送消息（P2P/群统一） */
         post: operations["MessageController_sendMessage"];
         delete?: never;
         options?: never;
@@ -47,8 +47,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 按对端 userId 查 P2P 会话 */
-        post: operations["MessageController_getThreadByUniqName"];
+        /** 按对端 userId 查 P2P 关系（好友状态/会话） */
+        post: operations["MessageController_getThreadByUserId"];
         delete?: never;
         options?: never;
         head?: never;
@@ -268,7 +268,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询待处理好友请求会话 */
+        /** 查询待处理（对方发起的）好友请求 */
         post: operations["UserController_queryPendingThread"];
         delete?: never;
         options?: never;
@@ -455,7 +455,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 邀请用户入群（生成邀请 token 写入消息） */
+        /** 邀请好友入群（生成邀请 token 写入 P2P 消息） */
         post: operations["GroupController_inviteUsers"];
         delete?: never;
         options?: never;
@@ -489,7 +489,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询群信息 */
+        /** 查询群信息（仅成员） */
         post: operations["GroupController_getGroupInfo"];
         delete?: never;
         options?: never;
@@ -856,27 +856,27 @@ export interface components {
         };
         MessageResponseDto: {
             /**
-             * @description 消息 id（BigInt→string）
+             * @description Message id (BigInt→string)
              * @example 9007199254740993
              */
             id: string;
             /**
-             * @description 消息内容类型
+             * @description Content type
              * @enum {string}
              */
             contentType: "PURE_TEXT" | "INVITE" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO";
             /**
-             * @description 消息内容
+             * @description Message content
              * @example hello
              */
             content: string;
             /**
-             * @description 所属会话 id
+             * @description Owning thread id
              * @example 12
              */
             threadId: number;
             /**
-             * @description 发送者 userId
+             * @description Sender userId
              * @example 1
              */
             creator: number;
@@ -889,10 +889,10 @@ export interface components {
         };
         SendMessageDto: {
             /**
-             * @description User thread id
-             * @example 1
+             * @description Conversation (MessageThread) id
+             * @example 12
              */
-            userThreadId: number;
+            threadId: number;
             /**
              * @description Message content
              * @example hello
@@ -906,17 +906,17 @@ export interface components {
         };
         QueryMessagesDto: {
             /**
-             * @description User thread id
-             * @example 1
+             * @description Conversation (MessageThread) id
+             * @example 12
              */
-            userThreadId: number;
+            threadId: number;
             /**
              * @description Number of records to skip (pagination)
              * @example 0
              */
             skip: number;
             /**
-             * @description Number of records to take (pagination)
+             * @description Number of records to take (1-50)
              * @example 20
              */
             take: number;
@@ -932,141 +932,38 @@ export interface components {
              */
             orderBy: "desc" | "asc";
         };
-        UserExtraResponseDto: {
-            /**
-             * @description 昵称
-             * @example Alice
-             */
-            name: string;
-            /**
-             * @description 头像 URL
-             * @example https://.../a.png
-             */
-            avatar: string;
-            /**
-             * @description 简介（about）
-             * @example Hey there! I am using SOMS.
-             */
-            bio: string;
-        };
-        UserNotiBoxResponseDto: {
-            /**
-             * @description 是否有未读好友请求
-             * @example false
-             */
-            hasUrFriendReq: boolean;
-        };
-        UserResponseDto: {
+        FriendshipDto: {
             /** @example 1 */
             id: number;
             /**
-             * @description 登录唯一名
-             * @example alice
-             */
-            uniqName: string;
-            /**
-             * @description 是否外部用户
-             * @example false
-             */
-            isForeigner: boolean;
-            /**
-             * @description 所属域（可空）
-             * @example example.com
-             */
-            domain: string;
-            /**
-             * @description 创建时间（毫秒时间戳）
-             * @example 1700000000000
-             */
-            createdAt: number;
-            /**
-             * @description 更新时间（毫秒时间戳）
-             * @example 1700000000000
-             */
-            updatedAt: number;
-            /** @example false */
-            isDeleted: boolean;
-            /** @description 用户扩展信息 */
-            userExtra: components["schemas"]["UserExtraResponseDto"];
-            /** @description 通知盒子 */
-            userNotiBox: components["schemas"]["UserNotiBoxResponseDto"];
-        };
-        GroupResponseDto: {
-            /** @example 12 */
-            id: number;
-            /**
-             * @description 群名
-             * @example dev-team
-             */
-            name: string;
-            /**
-             * @description 群主 userId
-             * @example 1
-             */
-            ownerId: number;
-            /**
-             * @description 群头像 URL
-             * @example https://.../g.png
-             */
-            avatar: string;
-            /**
-             * @description 群消息线程 id
-             * @example 12
-             */
-            threadId: number;
-            /** @example 1700000000000 */
-            createdAt: number;
-            /** @example 1700000000000 */
-            updatedAt: number;
-        };
-        UserMessageThreadResponseDto: {
-            /** @example 1 */
-            id: number;
-            /**
-             * @description 所属用户 id
-             * @example 1
-             */
-            userId: number;
-            /**
-             * @description 会话状态（域枚举，非响应信封 code）
-             * @enum {string}
-             */
-            status: "FROM_PENDING" | "TO_PENDING" | "APPROVED" | "BLOCKED" | "DELETED";
-            /**
-             * @description 对端类型 P2P|GROUP
-             * @enum {string}
-             */
-            toObjType: "P2P" | "GROUP";
-            /**
-             * @description 对端 id（userId 或 groupId）
+             * @description One side of the pair (min userId)
              * @example 2
              */
-            toObjId: number;
+            userAId: number;
             /**
-             * @description 好友请求附言
-             * @example
+             * @description Other side of the pair (max userId)
+             * @example 3
              */
-            reqMessage: string;
+            userBId: number;
             /**
-             * @description 底层消息线程 id（可空）
+             * @description The user who initiated the request
+             * @example 2
+             */
+            requesterId: number;
+            /**
+             * @description PENDING | APPROVED | BLOCKED | DELETED
+             * @enum {string}
+             */
+            status: "PENDING" | "APPROVED" | "BLOCKED" | "DELETED";
+            /**
+             * @description The P2P MessageThread id (set once APPROVED)
              * @example 12
              */
-            threadId: number;
+            threadId?: number;
             /** @example 1700000000000 */
             createdAt: number;
             /** @example 1700000000000 */
             updatedAt: number;
-            /** @example false */
-            isDeleted: boolean;
-            /**
-             * @description 已读位置（BigInt→string，可空）
-             * @example 9007199254740993
-             */
-            lastRead: string;
-            /** @description 对端用户（P2P 时） */
-            userItem: components["schemas"]["UserResponseDto"];
-            /** @description 对端群组（GROUP 时） */
-            groupItem: components["schemas"]["GroupResponseDto"];
         };
         UserIdDto: {
             /**
@@ -1140,6 +1037,65 @@ export interface components {
              */
             accessJti?: string;
         };
+        UserExtraResponseDto: {
+            /**
+             * @description Display name
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Avatar URL
+             * @example https://.../a.png
+             */
+            avatar: string;
+            /**
+             * @description Bio (about)
+             * @example Hey there! I am using SOMS.
+             */
+            bio: string;
+        };
+        UserNotiBoxResponseDto: {
+            /**
+             * @description Whether there are unread friend requests
+             * @example false
+             */
+            hasUrFriendReq: boolean;
+        };
+        UserResponseDto: {
+            /** @example 1 */
+            id: number;
+            /**
+             * @description Login unique name
+             * @example alice
+             */
+            uniqName: string;
+            /**
+             * @description Whether an external user
+             * @example false
+             */
+            isForeigner: boolean;
+            /**
+             * @description Domain (nullable)
+             * @example example.com
+             */
+            domain: string;
+            /**
+             * @description Created at (ms timestamp)
+             * @example 1700000000000
+             */
+            createdAt: number;
+            /**
+             * @description Updated at (ms timestamp)
+             * @example 1700000000000
+             */
+            updatedAt: number;
+            /** @example false */
+            isDeleted: boolean;
+            /** @description User extra info */
+            userExtra: components["schemas"]["UserExtraResponseDto"];
+            /** @description Notification box */
+            userNotiBox: components["schemas"]["UserNotiBoxResponseDto"];
+        };
         UpdateProfileDto: {
             /**
              * @description Display name (1-30 chars)
@@ -1152,6 +1108,65 @@ export interface components {
              */
             bio?: string;
         };
+        GroupResponseDto: {
+            /** @example 12 */
+            id: number;
+            /**
+             * @description Group name
+             * @example dev-team
+             */
+            name: string;
+            /**
+             * @description Owner userId
+             * @example 1
+             */
+            ownerId: number;
+            /**
+             * @description Group avatar URL
+             * @example https://.../g.png
+             */
+            avatar: string;
+            /**
+             * @description Group message thread id
+             * @example 12
+             */
+            threadId: number;
+            /** @example 1700000000000 */
+            createdAt: number;
+            /** @example 1700000000000 */
+            updatedAt: number;
+        };
+        ConversationItemDto: {
+            /**
+             * @description This user's ThreadParticipant row id
+             * @example 1
+             */
+            id: number;
+            /**
+             * @description Conversation (MessageThread) id — the key for send-message / query-messages
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Conversation type
+             * @enum {string}
+             */
+            type: "P2P" | "GROUP";
+            /**
+             * @description Last-read message id (BigInt→string, nullable)
+             * @example 9007199254740993
+             */
+            lastReadMsgId: string;
+            /**
+             * @description Member role for GROUP conversations; null for P2P
+             * @enum {string|null}
+             */
+            role: "OWNER" | "ADMIN" | "MEMBER" | null;
+            /** @description Peer user (P2P conversations only) */
+            peerUser: components["schemas"]["UserResponseDto"];
+            /** @description Group (GROUP conversations only) */
+            group: components["schemas"]["GroupResponseDto"];
+        };
         QueryValidThreadDto: {
             /**
              * @description Number of records to skip (pagination)
@@ -1159,7 +1174,7 @@ export interface components {
              */
             skip: number;
             /**
-             * @description Number of records to take (pagination)
+             * @description Number of records to take (1-50)
              * @example 20
              */
             take: number;
@@ -1169,10 +1184,10 @@ export interface components {
              */
             lastId?: number;
             /**
-             * @description Peer type P2P|GROUP (optional filter)
+             * @description Conversation type P2P|GROUP (optional filter)
              * @enum {string}
              */
-            toObjType?: "P2P" | "GROUP";
+            type?: "P2P" | "GROUP";
         };
         QueryPendingThreadDto: {
             /**
@@ -1181,7 +1196,7 @@ export interface components {
              */
             beforeDate: number;
             /**
-             * @description Number of records to take
+             * @description Number of records to take (1-50)
              * @example 20
              */
             take: number;
@@ -1209,12 +1224,12 @@ export interface components {
              */
             uniqName: string;
         };
-        UserThreadIdDto: {
+        ThreadIdDto: {
             /**
-             * @description User thread id
-             * @example 1
+             * @description Conversation (MessageThread) id
+             * @example 12
              */
-            userThreadId: number;
+            threadId: number;
         };
         RegisterDto: {
             /**
@@ -1230,12 +1245,12 @@ export interface components {
         };
         CreateGroupResponseDto: {
             /**
-             * @description 群消息线程 id
+             * @description Group message thread id
              * @example 12
              */
             threadId: number;
             /**
-             * @description 群 id
+             * @description Group id
              * @example 12
              */
             groupId: number;
@@ -1409,7 +1424,7 @@ export interface operations {
             };
         };
     };
-    MessageController_getThreadByUniqName: {
+    MessageController_getThreadByUserId: {
         parameters: {
             query?: never;
             header?: never;
@@ -1428,7 +1443,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserMessageThreadResponseDto"];
+                        data?: components["schemas"]["FriendshipDto"];
                     };
                 };
             };
@@ -1682,7 +1697,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserMessageThreadResponseDto"][];
+                        data?: components["schemas"]["ConversationItemDto"][];
                     };
                 };
             };
@@ -1707,7 +1722,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserMessageThreadResponseDto"][];
+                        data?: components["schemas"]["FriendshipDto"][];
                     };
                 };
             };
@@ -1732,7 +1747,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserMessageThreadResponseDto"][];
+                        data?: components["schemas"]["FriendshipDto"][];
                     };
                 };
             };
@@ -1881,7 +1896,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserThreadIdDto"];
+                "application/json": components["schemas"]["ThreadIdDto"];
             };
         };
         responses: {
@@ -1891,7 +1906,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["UserMessageThreadResponseDto"];
+                        data?: components["schemas"]["ConversationItemDto"];
                     };
                 };
             };

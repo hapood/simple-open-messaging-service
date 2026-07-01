@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 
-/** Folder type rule — reuses the thread's toObjType dimension. */
+/** Folder type rule — reuses the thread type dimension. */
 export type FolderTypeFilter = 'ALL' | 'P2P' | 'GROUP'
 
 /** A user-defined chat folder. Persisted to localStorage (soms.chatFolders). */
@@ -9,9 +9,9 @@ export interface ChatFolder {
   name: string
   /** type rule; 'ALL' = no type restriction */
   typeFilter: FolderTypeFilter
-  /** manually included UserMessageThread.id */
+  /** manually included ConversationItem.id */
   includedIds: number[]
-  /** manually excluded UserMessageThread.id */
+  /** manually excluded ConversationItem.id */
   excludedIds: number[]
   order: number
 }
@@ -22,9 +22,9 @@ const STORAGE_KEY = 'soms.chatFolders'
  * A thread belongs to a folder ⇔ NOT excluded AND (matches the type rule OR is
  * manually included) — same semantics as Telegram folders.
  */
-export function inFolder(thread: { id: number; toObjType: string }, folder: ChatFolder): boolean {
+export function inFolder(thread: { id: number; type: string }, folder: ChatFolder): boolean {
   if (folder.excludedIds.includes(thread.id)) return false
-  const typeMatch = folder.typeFilter === 'ALL' || thread.toObjType === folder.typeFilter
+  const typeMatch = folder.typeFilter === 'ALL' || thread.type === folder.typeFilter
   return typeMatch || folder.includedIds.includes(thread.id)
 }
 

@@ -1,5 +1,5 @@
 import { Component, signal, viewChild } from '@angular/core';
-import { UserMessageThread } from '../../../services/model'
+import { ConversationItem } from '../../../services/model'
 import { HomeHeaderComponent } from '../../home-header/home-header.component';
 import { ThreadListComponent } from '../../thread-list/thread-list.component';
 import { NavDrawerComponent } from '../../nav-drawer/nav-drawer.component';
@@ -25,7 +25,7 @@ export class MobileHomeComponent {
     this.threadListCmp()?.genThreadList()
   }
 
-  onThreadSelect(userMsgTrd: UserMessageThread) {
-    this.routeService.popupDlg(PopupType.MSG_THREAD, { userThreadId: userMsgTrd.id, userMsgTrd })
+  onThreadSelect(userMsgTrd: ConversationItem) {
+    this.routeService.popupDlg(PopupType.MSG_THREAD, { threadId: userMsgTrd.threadId, userMsgTrd })
   }
 }

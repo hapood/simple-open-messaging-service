@@ -1,31 +1,31 @@
 <div class="sessions" [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" aria-label="返回">
+    <button class="icon-btn" (click)="goBack()" aria-label="Back">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
-    <span class="title">登录会话</span>
+    <span class="title">Sessions</span>
     <span></span>
   </div>
 
   <div class="body">
     @if (loading()) {
-      <div class="empty">加载中…</div>
+      <div class="empty">Loading…</div>
     } @else if (list().length === 0) {
-      <div class="empty">无活跃会话</div>
+      <div class="empty">No active sessions</div>
     } @else {
       @for (s of list(); track s.jti) {
         <div class="row" [class.current]="s.device === myDevice">
           <div class="info">
             <div class="dev">
-              {{ s.device === myDevice ? '当前设备' : (s.device || '未知设备') }}
+              {{ s.device === myDevice ? 'This device' : (s.device || 'Unknown device') }}
             </div>
             <div class="ua">{{ s.userAgent || '-' }}</div>
             <div class="meta">IP {{ s.ip || '-' }}</div>
-            <div class="meta">登录 {{ fmt(s.createdAt) }}</div>
-            <div class="meta">过期 {{ fmt(s.expiresAt) }}</div>
+            <div class="meta">Signed in {{ fmt(s.createdAt) }}</div>
+            <div class="meta">Expires {{ fmt(s.expiresAt) }}</div>
           </div>
           @if (s.device !== myDevice) {
-            <button mat-raised-button (click)="revoke(s.jti)">踢出</button>
+            <button mat-raised-button (click)="revoke(s.jti)">Revoke</button>
           }
         </div>
       }

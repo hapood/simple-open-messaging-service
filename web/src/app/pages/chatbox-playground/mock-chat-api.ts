@@ -15,8 +15,8 @@ import type { StandardResponse, User } from '../../services/model';
 
 /** Mock 用户表（id → User）。镜像生产后端用户表；MockItemSource.ensureProfiles 按 creator 查此表。 */
 const MOCK_USERS: ReadonlyMap<number, User> = new Map([
-  [1, { id: 1, uniqName: '我', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
-  [2, { id: 2, uniqName: '阿黄', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
+  [1, { id: 1, uniqName: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
+  [2, { id: 2, uniqName: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
 ]);
 
 /**
@@ -175,7 +175,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
   /** 整形：克隆 item 去 boundary + 按 creator 从 profiles 填 name/isSelf（镜像生产 toMsgData；fallback '未知'/creator===userId）。 */
   private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
     const p = this.profiles.get(it.data.creator);
-    return { id: it.id, data: { ...it.data, name: p?.name ?? '未知', isSelf: p?.isSelf ?? it.data.creator === this.userId } };
+    return { id: it.id, data: { ...it.data, name: p?.name ?? 'Unknown', isSelf: p?.isSelf ?? it.data.creator === this.userId } };
   }
 
   private wait(): Promise<void> {
@@ -186,9 +186,9 @@ export class MockItemSource implements CbSource<ChatItemData> {
 // ---------- 数据生产（确定性）----------
 
 const PHRASES = [
-  '在吗？', '虚拟滚动内核跑起来了', '你那边列表卡不卡', '我把容器改成了恒定高度',
-  'Telegram 那套确实稳', '气泡用的是项目设计 token', '晚上一起复盘下手感', '收到',
-  '滚轮惯性还得再调调', '这消息列表能扛几万条了', '你看右边「已挂载节点」', '切数据量它不会涨',
+  'You there?', 'The virtual scroll kernel is running', 'Is the list smooth on your side?', 'I switched the container to a fixed height',
+  "Telegram's approach is rock solid", 'Bubbles use the project design tokens', "Let's review the feel tonight", 'Got it',
+  'Wheel inertia still needs tuning', 'This list holds tens of thousands now', 'Check the "mounted nodes" on the right', 'Switch the data volume, it stays flat',
 ];
 
 /** mulberry32：seeded PRNG，同 seed 同序列 → generate(count) 数据确定性。 */

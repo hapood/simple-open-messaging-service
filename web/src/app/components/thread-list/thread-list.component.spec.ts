@@ -61,11 +61,11 @@ describe('ThreadListComponent 状态机', () => {
     comp.ngOnInit();
     const req = httpMock.expectOne(r => r.url.endsWith('/user/query-thread/valid'));
     req.flush('network down', { status: 500, statusText: 'Server Error' });
-    expect(comp.errorMsg()).toBe('网络错误，请重试');
+    expect(comp.errorMsg()).toBe('Network error, please retry');
   });
 
   it('有搜索词且无匹配 → isSearchEmpty 为 true（搜索无结果态）', () => {
-    flushList({ code: 0, data: [{ id: 1, toObjType: 'P2P', userItem: { uniqName: 'alice' } }] });
+    flushList({ code: 0, data: [{ id: 1, type: 'P2P', peerUser: { uniqName: 'alice' } }] });
     fixture.componentRef.setInput('searchText', '不存在的人');
     expect(comp.isSearchEmpty()).toBe(true);
   });

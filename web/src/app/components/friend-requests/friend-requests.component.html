@@ -57,7 +57,8 @@
         @case(AddTabStatus.SUCCESS){
         <div class="user-card">
           <div class="user-main">
-            <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="userData()!.uniqName"></app-user-avatar></div>
+            <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="userData()!.uniqName"
+                [src]="userData()!.userExtra.avatar"></app-user-avatar></div>
             <div class="user-meta">
               <div class="user-name">{{userData()!.uniqName}}</div>
             </div>
@@ -90,7 +91,8 @@
       } @else {
         @for(req of pendingReqList();track req.id){
         <div class="pending-row">
-          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.uniqName"></app-user-avatar></div>
+          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.uniqName"
+              [src]="req.userExtra?.avatar"></app-user-avatar></div>
           <div class="pending-meta">
             <div class="user-name">{{req.uniqName}}</div>
             <div class="pending-date">{{req.date}}</div>
@@ -125,7 +127,8 @@
       } @else {
         @for(req of sentReqList();track req.id){
         <div class="pending-row">
-          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.uniqName"></app-user-avatar></div>
+          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.uniqName"
+              [src]="req.userExtra?.avatar"></app-user-avatar></div>
           <div class="pending-meta">
             <div class="user-name">{{req.uniqName}}</div>
             <div class="pending-date">{{req.date}}</div>

@@ -1,7 +1,7 @@
 import { Component, EventEmitter, Output, input } from '@angular/core';
 import { GroupInfoComponent } from '../../group-info/group-info.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
-import { UserMessageThread } from '../../../services/model';
+import { ConversationItem } from '../../../services/model';
 
 /**
  * Desktop right-side info panel. GROUP reuses the shared group-info (its own
@@ -14,21 +14,21 @@ import { UserMessageThread } from '../../../services/model';
   template: `
     <div class="info-pane">
       @if (userMsgTrd(); as trd) {
-        @if (trd.toObjType === 'GROUP') {
+        @if (trd.type === 'GROUP') {
           <app-group-info [userMsgTrd]="trd" [closeFn]="closeHandler" />
         } @else {
           <div class="p2p">
             <div class="panel-header">
-              <span class="title">{{ trd.userItem.uniqName }}</span>
+              <span class="title">{{ trd.peerUser.uniqName }}</span>
               <button class="close-btn" (click)="close.emit()" aria-label="close">
                 <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                   stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18" /></svg>
               </button>
             </div>
             <div class="profile">
-              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="trd.userItem.uniqName" />
-              <div class="name">{{ trd.userItem.uniqName }}</div>
-              <div class="hint">共享媒体（即将上线）</div>
+              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="trd.peerUser.uniqName" />
+              <div class="name">{{ trd.peerUser.uniqName }}</div>
+              <div class="hint">Shared media (coming soon)</div>
             </div>
           </div>
         }
@@ -54,7 +54,7 @@ import { UserMessageThread } from '../../../services/model';
 })
 export class InfoPaneComponent {
   readonly UserAvatarType = UserAvatarType
-  readonly userMsgTrd = input<UserMessageThread>()
+  readonly userMsgTrd = input<ConversationItem>()
   @Output() close = new EventEmitter<void>()
   readonly closeHandler = () => this.close.emit()
 }

@@ -27,7 +27,7 @@ import { MsgInputBarComponent } from '../message-cards/input-bar/msg-input-bar.c
 import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
-import type { UserMessageThread } from '../../services/model';
+import type { ConversationItem } from '../../services/model';
 
 /**
  * 消息线程容器（桌面 chat-pane 内联 + 移动 root-popup 弹窗共用本组件）。
@@ -50,9 +50,9 @@ import type { UserMessageThread } from '../../services/model';
   styleUrl: './friend-message.component.scss',
 })
 export class MessageThreadComponent implements OnDestroy {
-  readonly userThreadId = input<number>();
+  readonly threadId = input<number>();
   readonly startMsgId = input<string>();
-  readonly userMsgTrd = input<UserMessageThread>();
+  readonly userMsgTrd = input<ConversationItem>();
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
@@ -91,11 +91,11 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
-  private initScroller(viewport: HTMLDivElement, content: HTMLDivElement, trd: UserMessageThread): void {
+  private initScroller(viewport: HTMLDivElement, content: HTMLDivElement, trd: ConversationItem): void {
     const startId = this.startMsgId() ?? null; // 开会话时若已带 startMsgId → 开在该消息（重锚）
     this.lastJumpId = startId;
     const source = new HttpItemSource(
-      trd, this.msgService, this.userService, this.wsService,
+      trd, this.userService.sessionProfile()?.id ?? 0, this.msgService, this.userService, this.wsService,
       { onLive: (items) => this.scroller?.appendLive(items) },
     );
     this.scroller = new ChatBoxScroller<ChatItemData>({

@@ -1,7 +1,7 @@
 import { Component, EventEmitter, Output, signal, computed, inject, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ThreadListComponent } from '../../thread-list/thread-list.component';
-import { UserMessageThread } from '../../../services/model';
+import { ConversationItem } from '../../../services/model';
 import { FolderService, ChatFolder } from '../../../services/folder.service';
 
 /**
@@ -15,13 +15,13 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
   template: `
     <div class="chat-list-pane">
       <div class="search">
-        <input type="text" placeholder="搜索"
+        <input type="text" placeholder="Search"
           [ngModel]="searchText()" (ngModelChange)="searchText.set($event)" />
       </div>
       @if (folders().length) {
         <div class="folder-tabs">
           <button class="ftab" [class.active]="!activeFolder()"
-            (click)="activeFolderId.set(undefined)">全部</button>
+            (click)="activeFolderId.set(undefined)">All</button>
           @for (f of folders(); track f.id) {
             <button class="ftab" [class.active]="activeFolder()?.id === f.id"
               (click)="activeFolderId.set(f.id)">{{ f.name }}</button>
@@ -97,7 +97,7 @@ export class ChatListPaneComponent {
     return id ? this.folderService.getById(id) : undefined
   })
 
-  @Output() selectThread = new EventEmitter<UserMessageThread>()
+  @Output() selectThread = new EventEmitter<ConversationItem>()
 
   refresh() {
     this.threadListCmp()?.genThreadList()
