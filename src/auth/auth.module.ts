@@ -7,7 +7,7 @@ import { LocalStrategy } from './local.strategy';
 import { JwtStrategy } from './jwt.strategy';
 import { JwtModule } from '@nestjs/jwt';
 import { jwtConstants } from './constants';
-import { UserService } from 'src/user/user.service';
+import { UserService } from '../user/user.service';
 import { PrismaService } from '../prisma.service';
 import { ThrottleGuard } from './throttle.guard';
 

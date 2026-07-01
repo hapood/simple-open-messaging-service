@@ -14,7 +14,7 @@ import { LocalAuthGuard } from '../auth/local-auth.guard';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard';
 import { AuthService } from '../auth/auth.service';
-import { LoginAuthInfo } from 'src/auth/local.strategy';
+import { LoginAuthInfo } from '../auth/local.strategy';
 import { ApiResult } from '../common/api-result';
 import { BusinessCode } from '../common/business-code';
 import {

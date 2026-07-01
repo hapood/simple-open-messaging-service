@@ -14,7 +14,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
 import { BusinessCode } from '../common/business-code';
 import * as dayjs from 'dayjs';
-import { GroupService } from 'src/group/group.service';
+import { GroupService } from '../group/group.service';
 import {
   CreateGroupDto,
   InviteGroupDto,

@@ -6,7 +6,7 @@ import {
   MessageThreadType,
   UserMessageThreadStatus,
 } from '../prisma/generated/client';
-import { AuthService } from 'src/auth/auth.service';
+import { AuthService } from '../auth/auth.service';
 @Injectable()
 export class UserManageService implements OnModuleInit {
   constructor(

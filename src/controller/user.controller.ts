@@ -18,7 +18,7 @@ import {
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UserService } from '../user/user.service';
 import { UploadService } from '../upload/upload.service';
-import { GroupService } from 'src/group/group.service';
+import { GroupService } from '../group/group.service';
 import { MessageService } from '../message/message.service';
 import {
   Prisma,
@@ -28,8 +28,8 @@ import {
   Group,
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { AuthService } from 'src/auth/auth.service';
-import { SseService } from 'src/gateway/sse.service';
+import { AuthService } from '../auth/auth.service';
+import { SseService } from '../gateway/sse.service';
 import { serializeBody } from '../common/serialize.interceptor';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
 import { BusinessCode } from '../common/business-code';

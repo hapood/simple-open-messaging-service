@@ -24,8 +24,8 @@ import {
 } from '../dto/response.dto';
 import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
 import { UserIdDto } from '../dto/user.dto';
-import { SseService } from 'src/gateway/sse.service';
-import { GroupService } from 'src/group/group.service';
+import { SseService } from '../gateway/sse.service';
+import { GroupService } from '../group/group.service';
 import { serializeBody } from '../common/serialize.interceptor';
 
 @ApiTags('message')
