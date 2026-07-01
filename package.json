@@ -8,6 +8,7 @@
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",
+    "postbuild": "node scripts/normalize-swagger-esm.mjs",
     "postinstall": "prisma generate",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "node --import tsx ./src/main.ts",
