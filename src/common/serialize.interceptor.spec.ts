@@ -1,3 +1,4 @@
+import { describe, it, expect } from 'vitest';
 import { serializeBody } from './serialize.interceptor.js';
 
 describe('serializeBody', () => {
