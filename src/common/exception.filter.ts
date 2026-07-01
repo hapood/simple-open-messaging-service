@@ -6,7 +6,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { Prisma } from '../prisma/generated/client.js';
-import { Response } from 'express';
+import type { FastifyReply } from 'fastify';
 import { BusinessCode } from './business-code.js';
 
 /**
@@ -25,13 +25,13 @@ import { BusinessCode } from './business-code.js';
 export class AllExceptionsFilter implements ExceptionFilter {
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
-    const response = ctx.getResponse<Response>();
+    const response = ctx.getResponse<FastifyReply>();
 
     const { httpStatus, code, message } = this.map(exception);
 
     console.error('[AllExceptionsFilter]', exception);
 
-    response.status(httpStatus).json({
+    response.status(httpStatus).send({
       code,
       message,
       data: null,

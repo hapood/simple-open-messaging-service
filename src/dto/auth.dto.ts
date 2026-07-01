@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import {
   IsNotEmpty,
   IsOptional,
@@ -8,84 +9,115 @@ import {
 } from 'class-validator';
 
 /**
- * 认证相关请求 DTO。验证规则从原 controller 内联校验 1:1 搬来，避免行为漂移。
- * nest-cli swagger 插件（classValidationShim）会据 class-validator 装饰器自动生成 OpenAPI schema，
- * 故无需手写 @ApiProperty。
+ * Auth request DTOs. Validation rules are ported 1:1 from the original inline controller checks to avoid
+ * behavior drift. OpenAPI schema is annotated per-field with @ApiProperty (consistent with the response
+ * DTOs; the swagger plugin shim is intentionally not used).
  */
 
-/** 登录入参：凭据由 LocalStrategy 校验，@Body 走全局 ValidationPipe 白名单。请求体只含服务器消费字段；前端"记住登录"等本地策略不入契约。 */
+/** Login input. Credentials are verified by LocalStrategy; @Body goes through the global ValidationPipe whitelist. The body holds only server-consumed fields — client-side concerns like "remember me" are out of contract. */
 export class LoginDto {
+  @ApiProperty({ example: 'alice', description: 'Login unique name' })
   @IsString()
   @IsNotEmpty()
   uniqName: string;
 
+  @ApiProperty({ example: 'P@ssw0rd', description: 'Password' })
   @IsString()
   @IsNotEmpty()
   password: string;
 
+  @ApiProperty({ required: false, example: 'web-chrome', description: 'Device identifier (optional)' })
   @IsString()
   @IsOptional()
   device?: string;
 }
 
 /**
- * 注册入参。格式校验（regex）移入此处 → 失败走 ValidationPipe → 400（符合 P0 ValidationPipe 验收）。
- * 业务校验（uniqName 重复）仍在 service，走 200 + code:2。
+ * Registration input. Format validation (regex) lives here → failure flows through ValidationPipe → 400
+ * (per the P0 ValidationPipe acceptance). Business validation (uniqName collision) stays in the service,
+ * returning 200 + code:2.
  */
 export class RegisterDto {
-  // 1-20 字符，且至少含 3 个字母（原 user.controller.register 的 nameRegex）
+  // 1-20 chars, at least 3 letters (original user.controller.register nameRegex)
+  @ApiProperty({
+    example: 'alice',
+    description: 'Login unique name: 1-20 chars [\\w.-], at least 3 letters',
+  })
   @Matches(/^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/, {
     message: 'uniqName must be 1-20 chars ([\\w.-]) with at least 3 letters',
   })
   uniqName: string;
 
-  // 6-20 位，允许 [a-zA-Z0-9.@!#$%^&*()]（原 pwdRegex）
+  // 6-20 chars, allowed [a-zA-Z0-9.@!#$%^&*()] (original pwdRegex)
+  @ApiProperty({
+    example: 'P@ssw0rd',
+    description: 'Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]',
+  })
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
     message: 'password must be 6-20 chars of allowed set',
   })
   password: string;
 }
 
-/** refresh token 入参：renew-access / renew-refresh 共用 */
+/** refresh token input: shared by renew-access / renew-refresh. */
 export class RefreshTokenDto {
+  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...', description: 'refresh token' })
   @IsString()
   @IsNotEmpty()
   refreshToken: string;
 
+  @ApiProperty({ required: false, example: 'web-chrome', description: 'Device identifier (optional)' })
   @IsString()
   @IsOptional()
   device?: string;
 }
 
-/** logout 入参：refreshToken 必填；accessJti 可选（即时把当前 access 入黑名单）。 */
+/** logout input: refreshToken is required; accessJti is optional (immediately blacklists the current access). */
 export class LogoutDto {
+  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...', description: 'refresh token' })
   @IsString()
   @IsNotEmpty()
   refreshToken: string;
 
+  @ApiProperty({
+    required: false,
+    example: 'a1b2c3d4-e5f6-...',
+    description: 'jti of the current access token (optional; used to immediately blacklist it)',
+  })
   @IsString()
   @IsOptional()
   accessJti?: string;
 }
 
-/** 改密入参（newPassword 沿用 RegisterDto 的 6-20 位允许字符集规则）。 */
+/** Change-password input (newPassword reuses RegisterDto's 6-20 allowed-character rule). */
 export class ChangePasswordDto {
+  @ApiProperty({ example: 'OldP@ss1', description: 'Current password' })
   @IsString()
   @IsNotEmpty()
   oldPassword: string;
 
+  @ApiProperty({
+    example: 'NewP@ss2',
+    description: 'New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]',
+  })
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
     message: 'newPassword must be 6-20 chars of allowed set',
   })
   newPassword: string;
 }
 
-/** 吊销单个会话入参。 */
+/** Revoke a single session. */
 export class RevokeSessionDto {
+  @ApiProperty({ example: 'a1b2c3d4-e5f6-...', description: 'jti of the session to revoke' })
   @IsString()
   @IsNotEmpty()
   jti: string;
 
+  @ApiProperty({
+    required: false,
+    example: 'a1b2c3d4-e5f6-...',
+    description: 'jti of the current access token (optional; used to immediately blacklist it)',
+  })
   @IsString()
   @IsOptional()
   accessJti?: string;

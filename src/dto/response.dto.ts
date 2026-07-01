@@ -6,27 +6,28 @@ import {
 } from '../prisma/generated/client.js';
 
 /**
- * 响应实体 DTO（供 OpenAPI 响应 schema 用）。字段类型反映线上序列化结果，
- * 统一由全局 SerializeInterceptor 完成（见 src/common/serialize.interceptor.ts）：
- * Date → 毫秒时间戳(number)；BigInt（如 Message.id、UserMessageThread.lastRead）→ string。
+ * Response entity DTOs (for OpenAPI response schemas). Field types reflect the on-the-wire serialized
+ * result, uniformly applied by the global SerializeInterceptor (see src/common/serialize.interceptor.ts):
+ * Date → millisecond timestamp (number); BigInt (e.g. Message.id, UserMessageThread.lastRead) → string.
  *
- * 注意类定义顺序：被 @ApiProperty({ type: X }) 引用的类须先于引用方定义
- * （属性装饰器在类声明时求值，ES class 不提升，否则命中 TDZ → 运行时 ReferenceError）。
+ * Note on class definition order: a class referenced via @ApiProperty({ type: X }) must be declared
+ * before the class that references it (property decorators are evaluated at class-declaration time; ES
+ * classes are not hoisted — otherwise you hit the TDZ → runtime ReferenceError).
  */
 
 export class UserExtraResponseDto {
-  @ApiProperty({ example: 'Alice', description: '昵称' })
+  @ApiProperty({ example: 'Alice', description: 'Display name' })
   name: string;
 
-  @ApiProperty({ example: 'https://.../a.png', description: '头像 URL' })
+  @ApiProperty({ example: 'https://.../a.png', description: 'Avatar URL' })
   avatar: string;
 
-  @ApiProperty({ example: 'Hey there! I am using SOMS.', description: '简介（about）' })
+  @ApiProperty({ example: 'Hey there! I am using SOMS.', description: 'Bio (about)' })
   bio: string;
 }
 
 export class UserNotiBoxResponseDto {
-  @ApiProperty({ example: false, description: '是否有未读好友请求' })
+  @ApiProperty({ example: false, description: 'Whether there are unread friend requests' })
   hasUrFriendReq: boolean;
 }
 
@@ -34,47 +35,47 @@ export class UserResponseDto {
   @ApiProperty({ example: 1 })
   id: number;
 
-  @ApiProperty({ example: 'alice', description: '登录唯一名' })
+  @ApiProperty({ example: 'alice', description: 'Login unique name' })
   uniqName: string;
 
-  @ApiProperty({ example: false, description: '是否外部用户' })
+  @ApiProperty({ example: false, description: 'Whether an external user' })
   isForeigner: boolean;
 
-  @ApiProperty({ example: 'example.com', description: '所属域（可空）' })
+  @ApiProperty({ example: 'example.com', description: 'Domain (nullable)' })
   domain?: string;
 
-  @ApiProperty({ example: 1_700_000_000_000, description: '创建时间（毫秒时间戳）' })
+  @ApiProperty({ example: 1_700_000_000_000, description: 'Created at (ms timestamp)' })
   createdAt: number;
 
-  @ApiProperty({ example: 1_700_000_000_000, description: '更新时间（毫秒时间戳）' })
+  @ApiProperty({ example: 1_700_000_000_000, description: 'Updated at (ms timestamp)' })
   updatedAt: number;
 
   @ApiProperty({ example: false })
   isDeleted: boolean;
 
-  @ApiProperty({ description: '用户扩展信息' })
+  @ApiProperty({ description: 'User extra info' })
   userExtra: UserExtraResponseDto;
 
-  @ApiProperty({ description: '通知盒子' })
+  @ApiProperty({ description: 'Notification box' })
   userNotiBox: UserNotiBoxResponseDto;
 
-  // 注意：hashPwd 永不出现在响应里
+  // Note: hashPwd never appears in responses.
 }
 
 export class MessageResponseDto {
-  @ApiProperty({ example: '9007199254740993', description: '消息 id（BigInt→string）' })
+  @ApiProperty({ example: '9007199254740993', description: 'Message id (BigInt→string)' })
   id: string;
 
-  @ApiProperty({ enum: ContentType, description: '消息内容类型' })
+  @ApiProperty({ enum: ContentType, description: 'Content type' })
   contentType: ContentType;
 
-  @ApiProperty({ example: 'hello', description: '消息内容' })
+  @ApiProperty({ example: 'hello', description: 'Message content' })
   content: string;
 
-  @ApiProperty({ example: 12, description: '所属会话 id' })
+  @ApiProperty({ example: 12, description: 'Owning thread id' })
   threadId: number;
 
-  @ApiProperty({ example: 1, description: '发送者 userId' })
+  @ApiProperty({ example: 1, description: 'Sender userId' })
   creator: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
@@ -91,16 +92,16 @@ export class GroupResponseDto {
   @ApiProperty({ example: 12 })
   id: number;
 
-  @ApiProperty({ example: 'dev-team', description: '群名' })
+  @ApiProperty({ example: 'dev-team', description: 'Group name' })
   name: string;
 
-  @ApiProperty({ example: 1, description: '群主 userId' })
+  @ApiProperty({ example: 1, description: 'Owner userId' })
   ownerId: number;
 
-  @ApiProperty({ example: 'https://.../g.png', description: '群头像 URL' })
+  @ApiProperty({ example: 'https://.../g.png', description: 'Group avatar URL' })
   avatar: string;
 
-  @ApiProperty({ example: 12, description: '群消息线程 id' })
+  @ApiProperty({ example: 12, description: 'Group message thread id' })
   threadId: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
@@ -114,25 +115,25 @@ export class UserMessageThreadResponseDto {
   @ApiProperty({ example: 1 })
   id: number;
 
-  @ApiProperty({ example: 1, description: '所属用户 id' })
+  @ApiProperty({ example: 1, description: 'Owning user id' })
   userId: number;
 
   @ApiProperty({
     enum: UserMessageThreadStatus,
-    description: '会话状态（域枚举，非响应信封 code）',
+    description: 'Thread status (domain enum, not the response envelope code)',
   })
   status: UserMessageThreadStatus;
 
-  @ApiProperty({ enum: MessageThreadType, description: '对端类型 P2P|GROUP' })
+  @ApiProperty({ enum: MessageThreadType, description: 'Peer type P2P|GROUP' })
   toObjType: MessageThreadType;
 
-  @ApiProperty({ example: 2, description: '对端 id（userId 或 groupId）' })
+  @ApiProperty({ example: 2, description: 'Peer id (userId or groupId)' })
   toObjId: number;
 
-  @ApiProperty({ example: '', description: '好友请求附言' })
+  @ApiProperty({ example: '', description: 'Friend-request message' })
   reqMessage: string;
 
-  @ApiProperty({ example: 12, description: '底层消息线程 id（可空）' })
+  @ApiProperty({ example: 12, description: 'Underlying message thread id (nullable)' })
   threadId?: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
@@ -146,22 +147,22 @@ export class UserMessageThreadResponseDto {
 
   @ApiProperty({
     example: '9007199254740993',
-    description: '已读位置（BigInt→string，可空）',
+    description: 'Read position (BigInt→string, nullable)',
   })
   lastRead?: string;
 
-  // P2P 项附带 userItem: UserResponseDto；GROUP 项附带 groupItem: GroupResponseDto
-  @ApiProperty({ type: UserResponseDto, description: '对端用户（P2P 时）' })
+  // P2P items carry userItem: UserResponseDto; GROUP items carry groupItem: GroupResponseDto.
+  @ApiProperty({ type: UserResponseDto, description: 'Peer user (for P2P)' })
   userItem?: UserResponseDto;
 
-  @ApiProperty({ type: GroupResponseDto, description: '对端群组（GROUP 时）' })
+  @ApiProperty({ type: GroupResponseDto, description: 'Peer group (for GROUP)' })
   groupItem?: GroupResponseDto;
 }
 
 export class CreateGroupResponseDto {
-  @ApiProperty({ example: 12, description: '群消息线程 id' })
+  @ApiProperty({ example: 12, description: 'Group message thread id' })
   threadId: number;
 
-  @ApiProperty({ example: 12, description: '群 id' })
+  @ApiProperty({ example: 12, description: 'Group id' })
   groupId: number;
 }

@@ -7,6 +7,7 @@ import {
   SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import type { FastifyRequest } from 'fastify';
 import { RedisService } from '../redis/redis.service.js';
 
 export const THROTTLE_KEY = 'throttle';
@@ -33,11 +34,18 @@ export class ThrottleGuard implements CanActivate {
       ctx.getHandler(),
     );
     if (!cfg) return true; // 未标 @Throttle 的端点不限流
-    const req = ctx.switchToHttp().getRequest();
-    const ip = req.ip || req.socket?.remoteAddress || 'unknown';
-    const n = await this.redis.incrWithExpire(`rl:${req.path}:${ip}`, cfg.ttlSec);
+    // FastifyRequest exposes `.ip` (resolves the real client IP via the adapter's trustProxy),
+    // but has no `.socket`/`.path` — fall back to the raw Node socket and derive the path from
+    // `.url` (Express's `.path` does not exist here).
+    const req = ctx.switchToHttp().getRequest<FastifyRequest>();
+    const ip = req.ip ?? req.raw?.socket?.remoteAddress ?? 'unknown';
+    const path = req.url?.split('?')[0] ?? 'unknown';
+    const n = await this.redis.incrWithExpire(`rl:${path}:${ip}`, cfg.ttlSec);
     if (n > cfg.limit) {
-      throw new HttpException('too many requests', HttpStatus.TOO_MANY_REQUESTS);
+      throw new HttpException(
+        'too many requests',
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
     return true;
   }

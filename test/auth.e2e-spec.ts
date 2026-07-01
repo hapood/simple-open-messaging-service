@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { INestApplication } from '@nestjs/common';
+import { FastifyAdapter } from '@nestjs/platform-fastify';
 import request from 'supertest';
 import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
 
 /**
@@ -12,7 +14,7 @@ import { PrismaService } from '../src/prisma.service';
  *   register (argon2.hash + Prisma write)
  *   -> login (argon2.verify + JwtService) -> access token
  *   -> guarded route (JwtAuthGuard validates the signed token)
- * Must stay green after the CJS->ESM flip.
+ * Must stay green after the CJS->ESM flip and the Express→Fastify adapter swap.
  */
 describe('Auth e2e (register -> login -> guarded)', () => {
   let app: INestApplication;
@@ -22,16 +24,14 @@ describe('Auth e2e (register -> login -> guarded)', () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
-    app = moduleFixture.createNestApplication();
-    app.setGlobalPrefix('api/v1');
-    app.useGlobalPipes(
-      new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        transform: true,
-      }),
-    );
-    await app.init();
+    // Plain Fastify adapter (no http2/TLS) configured exactly like production via configureApp.
+    // No explicit app.init(): setGlobalPrefix must run before routes are registered, and
+    // listen() performs init + route registration + Fastify ready()/preReady (without which
+    // route-context lifecycle hooks like preParsing are undefined and the first request crashes).
+    const adapter = new FastifyAdapter();
+    app = moduleFixture.createNestApplication(adapter);
+    await configureApp(app, adapter);
+    await app.listen(0);
     prisma = app.get(PrismaService);
   });
 

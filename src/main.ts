@@ -1,63 +1,54 @@
 import 'dotenv/config'; // Load .env first so the AppModule import chain (requireEnv, Prisma) sees the vars.
 import { NestFactory } from '@nestjs/core';
-import { NestExpressApplication } from '@nestjs/platform-express';
-import { ValidationPipe } from '@nestjs/common';
-import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
+import {
+  FastifyAdapter,
+  NestFastifyApplication,
+} from '@nestjs/platform-fastify';
+import { readFileSync } from 'fs';
 import { AppModule } from './app.module.js';
-import helmet from 'helmet';
-import compression from 'compression';
-import { AllExceptionsFilter } from './common/exception.filter.js';
-import { SerializeInterceptor } from './common/serialize.interceptor.js';
-import { join } from 'path';
+import { configureApp } from './bootstrap.js';
+
+// HTTP/2 requires TLS — browsers do not negotiate h2 over cleartext. When both TLS_CERT and
+// TLS_KEY (PEM file paths) are provided the service speaks real ALPN h2 directly, which is
+// useful when it runs as the edge. Without them it stays plain HTTP/1.1, the correct mode for
+// local dev or a prod topology where a reverse proxy terminates TLS+h2 at the edge and the
+// origin leg is h1.1. Never set http2 without https: that yields h2c, which browsers can't use.
+//
+// The options object is built inline so TypeScript checks it against FastifyAdapter's
+// constructor union (FastifyServerOptions | FastifyHttp2SecureOptions | ...); pre-typing it as
+// FastifyServerOptions would reject http2/https, which live on the h2-secure superset.
+const tlsCert = process.env.TLS_CERT;
+const tlsKey = process.env.TLS_KEY;
+const enableH2 = Boolean(tlsCert && tlsKey);
 
 async function bootstrap() {
-  const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  // Trust a single reverse-proxy hop so rate limiting sees the real client IP (see local.strategy.ts).
-  // Set to the actual hop count in prod; never `true` (X-Forwarded-For is spoofable).
-  app.set('trust proxy', 1);
-
-  app.use(helmet());
-  // gzip/brotli for static assets + API responses.
-  app.use(compression());
-
-  // Uploaded images land in process.cwd()/uploads and are served at /uploads/*.
-  // NestExpressAdapter's prefix option mounts the dir under /uploads/, matching UploadService.save's url prefix.
-  app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
-
-  // Same-origin in production (single-image, path-prefix deploy) → no CORS needed.
-  // Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
-  const isDev = process.env.NODE_ENV !== 'production';
-  app.enableCors({ origin: isDev });
-
-  // Global ValidationPipe. Only applies to @Body() of DTO-class routes; P1b routes with inline destructured
-  // types have no metatype and are skipped.
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true, // strip fields not declared on the DTO
-      forbidNonWhitelisted: true, // reject requests with undeclared fields (400)
-      transform: true, // convert plain objects to DTO instances and coerce scalars via @Type
-    }),
+  const adapter = new FastifyAdapter(
+    enableH2
+      ? {
+          // Trust a single reverse-proxy hop so rate limiting sees the real client IP
+          // (see local.strategy.ts). Number = trust the last N hops; never `true`.
+          trustProxy: 1,
+          http2: true,
+          https: {
+            cert: readFileSync(tlsCert as string),
+            key: readFileSync(tlsKey as string),
+          },
+        }
+      : { trustProxy: 1 },
   );
 
-  app.useGlobalFilters(new AllExceptionsFilter());
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    adapter,
+  );
+  await configureApp(app, adapter);
 
-  // Global response serializer: BigInt→string, Date→ms. Replaces the former toJSON hack / convertBigIntId.
-  app.useGlobalInterceptors(new SerializeInterceptor());
-
-  // Global route prefix. All HTTP endpoints (incl. SSE /events) live under /api/v1 (must be set before Swagger
-  // createDocument so doc paths include it). Swagger UI mounts at /api/v1/docs (SwaggerModule.setup ignores the prefix).
-  app.setGlobalPrefix('api/v1');
-
-  // Swagger UI at /api/v1/docs.
-  const config = new DocumentBuilder()
-    .setTitle('Simple Open Chat API')
-    .setDescription('Third-party IM integration API (P1a contract layer)')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/v1/docs', app, document);
-
-  await app.listen(3000);
+  const port = Number(process.env.PORT ?? 3000);
+  await app.listen(port, '0.0.0.0');
+  console.log(
+    `[main] listening on ${enableH2 ? 'https' : 'http'}://0.0.0.0:${port} ` +
+      `(${enableH2 ? 'HTTP/2 over TLS' : 'HTTP/1.1'})`,
+  );
 }
+
 bootstrap();

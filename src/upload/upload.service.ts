@@ -1,15 +1,14 @@
 import { Injectable } from '@nestjs/common';
-import { memoryStorage } from 'multer';
 import { existsSync, mkdirSync, writeFile, unlink } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { promisify } from 'util';
 import sharp from 'sharp';
+import type { FastifyRequest } from 'fastify';
+import type { MultipartFile } from '@fastify/multipart';
 
 const writeFileAsync = promisify(writeFile);
 const unlinkAsync = promisify(unlink);
-
-const MAX_SIZE = 10 * 1024 * 1024; // 10MB
 
 /** 允许的图片 mimetype → 扩展名（白名单 + 落盘扩展名映射）。 */
 const IMG_EXT: Record<string, string> = {
@@ -20,9 +19,23 @@ const IMG_EXT: Record<string, string> = {
 };
 
 /**
+ * consumeImage 的返回：成功带 buffer/宽高；失败按原因区分（控制器据 reason 映射业务码）。
+ * 体积上限由 main.ts 的 @fastify/multipart limits.fileSize 兜底 → reason 'too-large'。
+ */
+export type ConsumedImage =
+  | {
+      kind: 'file';
+      mimetype: string;
+      buffer: Buffer;
+      w: number;
+      h: number;
+    }
+  | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
+
+/**
  * 图片上传服务。
  *
- * 普通图片（聊天相册）：零图片库依赖——multer memoryStorage 落盘 + magic number 校验，
+ * 普通图片（聊天相册）：零图片库依赖——@fastify/multipart 读到 buffer + magic number 校验，
  * 宽高由前端 createImageBitmap 读后随 FormData 带上（后端不解析图片内容）。
  *
  * 头像管线（saveAvatars）：引入 sharp 做服务端重写——decode→按 EXIF 正向→cover 裁剪→
@@ -30,11 +43,10 @@ const IMG_EXT: Record<string, string> = {
  * decode 非图片即抛错，像素上限防解压炸弹；多档供前端按位置取用省带宽。
  *
  * 设计：
- * - multer 用 memoryStorage：文件进 buffer，先做 magic number 校验再落盘（diskStorage
- *   会先落盘再校验，伪造文件会残留在磁盘）。
- * - 真实性校验两道：multer fileFilter 看 mimetype（粗筛）+ isImage 读文件头 magic number（防伪造）。
+ * - @fastify/multipart 内存模式：文件进 buffer，先做 magic number 校验再落盘。
+ * - 真实性校验两道：consumeImage 看 mimetype（粗筛，buffer 前即拒）+ isImage 读文件头 magic number（防伪造）。
  *
- * 存储目录 process.cwd()/uploads，与 main.ts 的 useStaticAssets prefix:'/uploads/' 对齐。
+ * 存储目录 process.cwd()/uploads，与 main.ts 的 @fastify/static prefix:'/uploads/' 对齐。
  * 生产换对象存储（S3/OSS/MinIO）时，仅改 save()/saveAvatars() 的写入目标 + url 生成，接口契约不变。
  */
 @Injectable()
@@ -48,22 +60,54 @@ export class UploadService {
   /** 头像像素上限（防解压炸弹：小文件解压成超大画布吃内存）。 */
   static readonly MAX_AVATAR_PIXELS = 4000 * 4000;
 
-  /** multer 配置（静态：装饰器 @UseInterceptors 求值时无实例可用）。 */
-  static readonly multerOptions = {
-    storage: memoryStorage(),
-    limits: { fileSize: MAX_SIZE },
-    fileFilter: (
-      _req: Express.Request,
-      file: Express.Multer.File,
-      cb: (error: Error | null, acceptFile: boolean) => void,
-    ) => {
-      cb(null, file.mimetype in IMG_EXT);
-    },
-  };
+  /**
+   * 从 multipart/form-data 请求里消费单张图片：单遍遍历 parts，粗筛 mimetype 后 toBuffer。
+   * 替代 Express 时代的 multer FileInterceptor（Fastify 适配器下不可用）。
+   * 10MB 上限由 main.ts 注册插件时的 limits.fileSize 兜底——超出时 toBuffer 抛
+   * RequestFileTooLargeError，此处归一为 rejected('too-large')，避免被全局过滤器当 500。
+   */
+  async consumeImage(req: FastifyRequest): Promise<ConsumedImage> {
+    let filePart: MultipartFile | undefined;
+    const fields: Record<string, string> = {};
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        if (filePart) {
+          // 单文件契约：多出的文件直接排空，避免背压卡住解析流。
+          part.file.resume();
+          continue;
+        }
+        // 粗筛 mimetype（可伪造）：不匹配白名单立即拒，不进 buffer。
+        if (!(part.mimetype in IMG_EXT)) {
+          part.file.resume();
+          return { kind: 'rejected', reason: 'wrong-type' };
+        }
+        filePart = part;
+      } else {
+        fields[part.fieldname] = String(part.value);
+      }
+    }
+
+    if (!filePart) return { kind: 'rejected', reason: 'no-file' };
+
+    let buffer: Buffer;
+    try {
+      buffer = await filePart.toBuffer();
+    } catch {
+      // 体积超限（RequestFileTooLargeError）或流错误：统一归为 too-large。
+      return { kind: 'rejected', reason: 'too-large' };
+    }
+    return {
+      kind: 'file',
+      mimetype: filePart.mimetype,
+      buffer,
+      w: Number(fields.w) || 0,
+      h: Number(fields.h) || 0,
+    };
+  }
 
   /**
    * magic number 二次校验：读真实文件头字节判定是否为声明的图片格式。
-   * multer 的 fileFilter 只看客户端声明的 mimetype（可伪造），此处不可绕过。
+   * consumeImage 的粗筛只看客户端声明的 mimetype（可伪造），此处不可绕过。
    */
   isImage(mimetype: string, buf: Buffer): boolean {
     if (!buf || buf.length < 12) return false;
@@ -98,7 +142,7 @@ export class UploadService {
     }
   }
 
-  /** 落盘到 uploads/，返回可访问的 url（与 main.ts useStaticAssets prefix 对齐）。 */
+  /** 落盘到 uploads/，返回可访问的 url（与 main.ts 的 @fastify/static prefix:'/uploads/' 对齐）。 */
   async save(mimetype: string, buf: Buffer): Promise<string> {
     this.ensureDir();
     const ext = IMG_EXT[mimetype];
@@ -116,7 +160,10 @@ export class UploadService {
   async saveAvatars(buf: Buffer): Promise<string> {
     this.ensureDir();
     const meta = await sharp(buf).metadata();
-    if ((meta.width ?? 0) * (meta.height ?? 0) > UploadService.MAX_AVATAR_PIXELS) {
+    if (
+      (meta.width ?? 0) * (meta.height ?? 0) >
+      UploadService.MAX_AVATAR_PIXELS
+    ) {
       throw new Error('avatar too large in pixels');
     }
     const base = `${Date.now()}-${randomBytes(6).toString('hex')}`;

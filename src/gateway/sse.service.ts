@@ -1,6 +1,6 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
-import type { Response } from 'express';
+import type { ServerResponse } from 'http';
 
 /**
  * SSE（Server-Sent Events）下行推送服务：只推送，不收业务上行。
@@ -17,7 +17,7 @@ export class SseService implements OnModuleDestroy {
   private static readonly HEARTBEAT_MS = 25000;
   private readonly clients: Record<
     number,
-    { res: Response; ping: NodeJS.Timeout; since: number }[]
+    { res: ServerResponse; ping: NodeJS.Timeout; since: number }[]
   > = {};
 
   /**
@@ -30,13 +30,22 @@ export class SseService implements OnModuleDestroy {
    * 鉴权已由 JwtAuthGuard 在进入本服务前完成（verify 签名/过期 + 撤销感知 jti 黑名单/tokenVersion），
    * 故此处只做推送，不再校验。
    */
-  register(userId: number, res: Response) {
-    res.writeHead(200, {
+  /**
+   * res 是 Fastify 经 reply.hijack() 后交出的 reply.raw：h1.1 下为 ServerResponse，
+   * HTTP/2 下为 Http2ServerResponse（两者 writeHead/write/end/on('close') 接口一致）。
+   * HTTP/2 禁止 Connection 头（Node http2 会抛 "HTTP/1 Connection specific headers are
+   * forbidden"），而 h2 连接本身即为持久，故仅在 h1.1 写入 Connection: keep-alive。
+   * 通过 res.stream 是否存在判定协议（仅 Http2ServerResponse 有 stream 属性）。
+   */
+  register(userId: number, res: ServerResponse) {
+    const isH2 = (res as unknown as { stream?: unknown }).stream !== undefined;
+    const headers: Record<string, string> = {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
-      Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
-    });
+    };
+    if (!isH2) headers['Connection'] = 'keep-alive';
+    res.writeHead(200, headers);
     res.write(': connected\n\n');
 
     const ping = setInterval(() => {

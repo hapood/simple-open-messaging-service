@@ -1,8 +1,8 @@
 import { Strategy } from 'passport-local';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import type { FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service.js';
-import { Request } from 'express';
 
 export interface LoginAuthInfo {
   status: number;
@@ -17,7 +17,7 @@ export interface LoginAuthInfo {
  * 相对原「累计计数 + 仅按 IP」的改进：
  *  - 滑动窗口：只统计 WINDOW_MS 内的失败次数，旧的自动失忆，避免正常用户偶尔输错的累计误封；
  *  - 双维度：按 IP 防分布式扫描、按账户(uniqName)防针对单号的密码暴破（原仅按 IP 防不住后者）；
- *  - 取真实 IP：配合 main.ts 的 trust proxy，反代/隧道下 req.ip 为真实客户端 IP。
+ *  - 取真实 IP：配合 main.ts 的 FastifyAdapter trustProxy，反代/隧道下 req.ip 为真实客户端 IP。
  *
  * 仍属进程内内存（单实例）；下列项留待 P3（见 protocol-plan）：
  *  - 多实例共享存储（Redis）；
@@ -85,11 +85,13 @@ export class LocalStrategy
   }
 
   async validate(
-    req: Request,
+    req: FastifyRequest,
     uniqName: string,
     password: string,
   ): Promise<LoginAuthInfo> {
-    const ip = req.ip ?? req.socket?.remoteAddress ?? 'unknown';
+    // FastifyRequest exposes `.ip` (honors the adapter's trustProxy); `.socket` does not exist
+    // on it, so the raw Node socket is the fallback.
+    const ip = req.ip ?? req.raw?.socket?.remoteAddress ?? 'unknown';
 
     // 任一维度仍在封禁期 → 直接拒（顺带返回剩余封禁时间供前端提示）
     const bannedUntil = this.activeBanUntil(ip, uniqName);
@@ -163,9 +165,21 @@ export class LocalStrategy
   }
 
   /** 列当前未过期封禁（admin 看板用）。 */
-  listBans(): Array<{ key: string; type: string; value: string; until: number; remainingMs: number }> {
+  listBans(): Array<{
+    key: string;
+    type: string;
+    value: string;
+    until: number;
+    remainingMs: number;
+  }> {
     const now = Date.now();
-    const out: Array<{ key: string; type: string; value: string; until: number; remainingMs: number }> = [];
+    const out: Array<{
+      key: string;
+      type: string;
+      value: string;
+      until: number;
+      remainingMs: number;
+    }> = [];
     for (const [key, until] of this._banned) {
       if (until > now) {
         const idx = key.indexOf(':');
