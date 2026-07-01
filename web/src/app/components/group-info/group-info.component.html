@@ -1,9 +1,100 @@
 <div [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
+    <button class="icon-btn" (click)="goBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    Group Info
-    <button mat-button (click)="invite()">Invite</button>
+    <span class="title">Group Info</span>
+    @if (isAdmin() && !editing()) {
+      <button mat-button (click)="beginEdit()">Edit</button>
+    } @else if (editing()) {
+      <button mat-button (click)="cancelEdit()">Cancel</button>
+    } @else {
+      <span></span>
+    }
   </div>
-  <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
+
+  <div class="body">
+    <!-- Identity -->
+    <div class="identity">
+      @if (editing()) {
+        <label class="avatar-edit">
+          <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [src]="avatarUrl()"></app-user-avatar>
+          <span class="avatar-hint">Change</span>
+          <input type="file" accept="image/*" hidden (change)="pickAvatar($any($event.target))" />
+        </label>
+        <input class="name-input" [ngModel]="nameEdit()" (ngModelChange)="nameEdit.set($event)"
+          maxlength="31" placeholder="Group name" (keydown.enter)="saveEdit()" />
+      } @else {
+        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="group()?.name ?? ''" [src]="avatarUrl()"></app-user-avatar>
+        <div class="name">{{ group()?.name }}</div>
+      }
+    </div>
+    @if (editing()) {
+      <div class="edit-actions">
+        <button mat-raised-button color="primary" [disabled]="busy() || !nameEdit().trim()" (click)="saveEdit()">Save</button>
+      </div>
+    }
+
+    <!-- Roster -->
+    <div class="section-label">{{ roster().length }} members</div>
+    @if (loading()) {
+      <div class="muted center">Loading…</div>
+    } @else {
+      @for (m of roster(); track m.userId) {
+        <div class="member">
+          <div class="member-main">
+            <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.uniqName" [src]="m.avatar"></app-user-avatar>
+            <div class="member-info">
+              <span class="member-name">{{ m.name || m.uniqName }}@if (m.userId === myUserId()) { (you)}</span>
+              <span class="role-badge" [class.owner]="m.role === 'OWNER'" [class.admin]="m.role === 'ADMIN'">{{ m.role }}</span>
+            </div>
+          </div>
+          @if (canActOn(m)) {
+            <button class="more-btn" [class.active]="openMenuFor() === m.userId" (click)="toggleMenu(m.userId)" aria-label="actions">⋯</button>
+          }
+        </div>
+        @if (openMenuFor() === m.userId) {
+          <div class="action-sheet">
+            @if (confirmAction()?.userId === m.userId) {
+              <div class="confirm-row">
+                <span>Confirm {{ confirmAction()!.action }} {{ m.name || m.uniqName }}?</span>
+                <button mat-stroked-button (click)="cancelConfirm()">Cancel</button>
+                <button mat-raised-button color="warn" [disabled]="busy()" (click)="doConfirm()">Confirm</button>
+              </div>
+            } @else {
+              @if (isOwner() && m.role !== 'OWNER') {
+                <button mat-stroked-button (click)="doSetRole(m)">Make {{ toggleRoleLabel(m) }}</button>
+                <button mat-stroked-button [disabled]="busy()" (click)="askTransfer(m)">Make owner</button>
+                <button mat-stroked-button color="warn" [disabled]="busy()" (click)="askKick(m)">Kick</button>
+              }
+            }
+          </div>
+        }
+      }
+    }
+
+    <!-- Add members -->
+    @if (showInvite()) {
+      <div class="invite-pane">
+        <div class="section-label">Add members</div>
+        <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
+        <div class="invite-actions">
+          <button mat-button (click)="showInvite.set(false)">Cancel</button>
+          <button mat-raised-button color="primary" [disabled]="selectedList().length === 0"
+            (click)="invite()">Invite {{ selectedList().length || '' }}</button>
+        </div>
+      </div>
+    } @else {
+      <button class="add-members" (click)="showInvite.set(true)">
+        <span class="plus">＋</span> Add members
+      </button>
+    }
+
+    <!-- Leave -->
+    <button class="leave" [disabled]="busy()" (click)="leave()">
+      @if (isOwner()) { Leave (transfer ownership first) } @else { Leave group }
+    </button>
+    @if (isOwner()) {
+      <div class="muted center hint">The owner must transfer ownership before leaving.</div>
+    }
+  </div>
 </div>

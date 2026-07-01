@@ -49,6 +49,10 @@ export class InviteRowComponent {
   readonly expiryLabel = signal('');
   /** 0=有效可加入；1=已过期。 */
   readonly status = signal(0);
+  /** Set once a Join succeeds (covers first-time join and idempotent re-join) → button flips to "Joined". */
+  readonly joined = signal(false);
+  /** Error/status line from the last Join attempt (e.g. invalid token). Cleared on success. */
+  readonly resultMsg = signal('');
 
   constructor(private groupService: GroupService) {}
 
@@ -84,7 +88,11 @@ export class InviteRowComponent {
   joinGroup() {
     this.groupService.joinGroup({ token: this.invite().token }).subscribe((res) => {
       if (res.code === 0) {
-        alert('joinGroup ok');
+        // Covers both a fresh join and the idempotent "already a member" reply.
+        this.joined.set(true);
+        this.resultMsg.set('');
+      } else {
+        this.resultMsg.set(res.message || 'Failed to join');
       }
     });
   }

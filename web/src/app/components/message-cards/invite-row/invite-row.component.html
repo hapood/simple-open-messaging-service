@@ -22,7 +22,14 @@
         }
         @switch (status()) {
           @case (0) {
-            <button mat-raised-button color="primary" (click)="joinGroup()">Join</button>
+            @if (joined()) {
+              <button mat-raised-button disabled>Joined</button>
+            } @else {
+              <button mat-raised-button color="primary" (click)="joinGroup()">Join</button>
+            }
+            @if (resultMsg()) {
+              <div class="pg-invite-result">{{ resultMsg() }}</div>
+            }
           }
           @case (1) {
             <button mat-raised-button disabled>EXPIRED</button>

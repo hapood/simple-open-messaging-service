@@ -1,9 +1,19 @@
 <div [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
+    <button class="icon-btn" (click)="goBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    New Group
-    <button mat-button (click)="create()">Create</button>
+    <span class="title">New Group</span>
+    <button mat-button [disabled]="!name().trim()" (click)="create()">Create</button>
+  </div>
+  <div class="name-field">
+    <input
+      type="text"
+      class="name-input"
+      placeholder="Group name"
+      maxlength="31"
+      [ngModel]="name()"
+      (ngModelChange)="onNameInput($event)"
+      (keydown.enter)="create()" />
   </div>
   <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
 </div>

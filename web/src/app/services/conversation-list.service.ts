@@ -90,7 +90,9 @@ export class ConversationListService {
 
   /**
    * Apply an inbound NEW_MESSAGE SSE frame. Refreshes preview/at/senderId and bumps the thread to the
-   * top; increments unread unless it is the currently-open thread. If the thread isn't in the list yet
+   * top; increments unread unless it is the currently-open thread OR the caller's own message (the
+   * sender's own message is never unread — the server advances their read cursor on send, and this
+   * mirrors that so a background tab's badge stays consistent). If the thread isn't in the list yet
    * (a brand-new conversation), reloads to fetch it from the server.
    */
   onNewMessage(msg: {
@@ -102,18 +104,26 @@ export class ConversationListService {
   }) {
     const preview = previewFor(msg.contentType, msg.content);
     const open = this._openThreadId();
+    const mine = msg.creator === this.userService.sessionProfile()?.id;
     let existed = false;
     this._items.update((list) => {
       const idx = list.findIndex((t) => t.threadId === msg.threadId);
       if (idx === -1) return list;
       existed = true;
       const item = list[idx];
+      // Open thread → 0 (the user is viewing it). Own message in a closed thread → unchanged (the
+      // sender's own message is never unread; the server advances their cursor on send). Someone
+      // else's message in a closed thread → +1.
+      let unread: number;
+      if (open === msg.threadId) unread = 0;
+      else if (mine) unread = item.unreadCount ?? 0;
+      else unread = (item.unreadCount ?? 0) + 1;
       const updated: ConversationItem = {
         ...item,
         lastMessagePreview: preview,
         lastMessageAt: msg.createdAt,
         lastMessageSenderId: msg.creator,
-        unreadCount: open === msg.threadId ? 0 : (item.unreadCount ?? 0) + 1,
+        unreadCount: unread,
       };
       const next = list.slice();
       next.splice(idx, 1);

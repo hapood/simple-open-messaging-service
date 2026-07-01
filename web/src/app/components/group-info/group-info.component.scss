@@ -10,11 +10,6 @@
   flex-direction: column;
   height: 100%;
 }
-app-user-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
 
 .msg-header {
   height: 56px;
@@ -32,9 +27,185 @@ app-user-list {
   // buttons differ in width (flex `space-between` skews it off-center).
   > :first-child { justify-self: start; }
   > :last-child { justify-self: end; }
+
+  .title { font-size: 16px; font-weight: 600; color: var(--app-text); }
 }
 
-.icon-btn{
-  @include styless-button;
+.icon-btn { @include styless-button; }
 
+.body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 12px 0 24px;
+}
+
+.muted { color: var(--app-text-muted); font-size: 13px; }
+.center { text-align: center; padding: 8px 0; }
+.hint { padding: 4px 16px 0; }
+
+// ── identity ──
+.identity {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px 12px;
+  app-user-avatar { width: 72px; height: 72px; }
+  .name { font-size: 17px; font-weight: 600; color: var(--app-text); }
+  .name-input {
+    width: min(80%, 280px);
+    height: 36px;
+    padding: 0 10px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: var(--app-radius-md);
+    font-size: 15px;
+    text-align: center;
+    outline: none;
+  }
+}
+.avatar-edit {
+  position: relative;
+  cursor: pointer;
+  app-user-avatar { opacity: 0.85; }
+  .avatar-hint {
+    position: absolute;
+    inset: auto 0 -2px 0;
+    text-align: center;
+    font-size: 12px;
+    color: var(--app-brand);
+  }
+}
+.edit-actions {
+  display: flex;
+  justify-content: center;
+  padding: 0 16px 12px;
+}
+
+// ── roster ──
+.section-label {
+  padding: 8px 16px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--app-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.member {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+
+  .member-main {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    app-user-avatar { width: 40px; height: 40px; flex: 0 0 auto; }
+  }
+  .member-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .member-name {
+    font-size: 15px;
+    color: var(--app-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    .you { color: var(--app-text-muted); font-size: 13px; }
+  }
+  .role-badge {
+    align-self: flex-start;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--app-text-muted);
+    line-height: 1;
+    &.owner { color: var(--app-brand); }
+    &.admin { color: var(--app-accent, #2196f3); }
+  }
+  .more-btn {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    border: none;
+    background: transparent;
+    cursor: pointer;
+    color: var(--app-text-muted);
+    border-radius: var(--app-radius-sm);
+    font-size: 18px;
+    line-height: 1;
+    &:hover, &.active { background: var(--app-hover); }
+  }
+}
+
+.action-sheet {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 4px 16px 10px;
+  border-bottom: 1px solid var(--app-border);
+  .confirm-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    span { font-size: 13px; color: var(--app-text); flex: 1 1 100%; }
+  }
+}
+
+// ── invite ──
+.invite-pane {
+  display: flex;
+  flex-direction: column;
+  margin-top: 8px;
+  app-user-list {
+    flex: 1 1 auto;
+    min-height: 120px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .invite-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 10px 16px;
+  }
+}
+.add-members {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: calc(100% - 32px);
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  border: 1px dashed var(--app-border-strong);
+  background: transparent;
+  border-radius: var(--app-radius-md);
+  cursor: pointer;
+  color: var(--app-brand);
+  font-size: 14px;
+  .plus { font-size: 18px; line-height: 1; }
+  &:hover { background: var(--app-hover); }
+}
+
+// ── leave ──
+.leave {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 24px 16px 0;
+  padding: 10px;
+  border: none;
+  border-radius: var(--app-radius-md);
+  background: transparent;
+  color: #e53935;
+  cursor: pointer;
+  font-size: 15px;
+  &:hover { background: rgba(229, 57, 53, 0.08); }
+  &:disabled { opacity: 0.5; cursor: default; }
 }

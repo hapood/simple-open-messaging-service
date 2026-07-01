@@ -13,6 +13,22 @@ app-user-list {
   overflow-y: auto;
 }
 
+.name-field {
+  flex: 0 0 auto;
+  padding: 10px;
+  border-bottom: 1px solid var(--app-border);
+}
+.name-input {
+  width: 100%;
+  box-sizing: border-box;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--app-radius-md);
+  font-size: 15px;
+  outline: none;
+}
+
 .msg-header {
   height: 56px;
   width: 100%;
