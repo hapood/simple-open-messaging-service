@@ -13,11 +13,14 @@
     @if (showName()) {
       <div class="pg-name pg-{{ side() }}">{{ data().name }}</div>
     }
-    <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }}">
+    <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }}" [class.pg-sending]="isSending()">
       <p class="pg-bubble-text">
         {{ data().text
         }}<span class="pg-time-shadow" aria-hidden="true">{{ data().time }}</span>
       </p>
+      @if (statusTick()) {
+        <span class="pg-status pg-status--{{ data().status }}" aria-hidden="true"></span>
+      }
       <span class="pg-time pg-{{ side() }}">{{ data().time }}</span>
     </div>
   </div>

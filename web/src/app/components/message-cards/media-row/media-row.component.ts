@@ -32,6 +32,10 @@ export class MediaRowComponent {
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
+  /** Render a status tick (clock/check) only for self-sent messages that carry a delivery status. */
+  readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
+  /** Dim the bubble while a self message is still in flight (status === 'sending'); clears on confirm. */
+  readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
 
   private readonly layout = computed(() => layoutAlbum(this.data().images ?? []));
   readonly totalH = computed(() => this.layout().totalH);

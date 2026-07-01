@@ -443,4 +443,195 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(info.oldestId).toBe('m-151');
     expect(info.newestId).toBe('m-250');
   });
+
+  // ── insertAfter：中段插入（不触发 balance；方案 A 不补偿 scrollTop —— 与 B 的关键区别）──
+
+  it('insertAfter 未挂载 id → no-op（返回 false、不挂载、不加载）', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(500);
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    const mountedBefore = scroller.getInfo().mounted;
+    const ok = scroller.insertAfter('m-9999', { id: 'ins', data: -1 });
+    expect(ok).toBe(false);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore);
+    expect(content.querySelector('[data-cb-id="ins"]')).toBeNull();
+    expect(src.gets()).toBe(0);
+    expect(src.newers()).toBe(0);
+  });
+
+  it('insertAfter 中段 → 挂到 idx+1 正确 DOM 位（target 与后继之间）', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init(); // m-400..m-499
+    const mountedBefore = scroller.getInfo().mounted;
+    const ok = scroller.insertAfter('m-450', { id: 'ins', data: -1 });
+    expect(ok).toBe(true);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore + 1);
+    const ids = Array.from(content.children).map(c => (c as HTMLElement).dataset['cbId']);
+    const i = ids.indexOf('m-450');
+    expect(i).toBeGreaterThanOrEqual(0);
+    expect(ids[i + 1]).toBe('ins');
+    expect(ids[i + 2]).toBe('m-451');
+  });
+
+  it('insertAfter 用新 prev 重建后继；新项以 target 为 prev 仅创建一次', async () => {
+    const calls: { id: string; prev: string | null }[] = [];
+    const hooks = {
+      createItem: (item: CbItem<number>, prev: CbItem<number> | null): CbElement<number> => {
+        const id = String(item.id);
+        calls.push({ id, prev: prev ? String(prev.id) : null });
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 100 });
+        return { el, onHeightChange: () => () => ({}), destroy: () => {} };
+      },
+    };
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    scroller.insertAfter('m-450', { id: 'ins', data: -1 });
+    const ins = calls.filter(c => c.id === 'ins');
+    expect(ins.length).toBe(1);
+    expect(ins[0].prev).toBe('m-450');
+    const succ = calls.filter(c => c.id === 'm-451');
+    expect(succ.length).toBe(2);         // init 挂载 + rebuild
+    expect(succ[1].prev).toBe('ins');    // 用新 prev 重建
+  });
+
+  it('方案 A：insertAfter 即便在视口上方也不补偿 scrollTop（浏览器 overflow-anchor 负责；mock 下即「未改动」）', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(500);
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init(); // 贴底（scrollTop=9400）；m-400（top 0）在视口上方
+    const stBefore = viewport.scrollTop;
+    const ok = scroller.insertAfter('m-400', { id: 'ins', data: -1 });
+    expect(ok).toBe(true);
+    expect(viewport.scrollTop).toBe(stBefore); // 方案 A 不补偿（与 B 的 +=100 区别）
+    expect(src.gets()).toBe(0);                 // 不触发 balance
+    expect(src.newers()).toBe(0);
+  });
+
+  it('游标守卫：transient 到达末尾不污染 loadNewer（不误锁 noNewer）', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(500);
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    viewport.scrollTop = 0; // 向上滚 → trimNewer → noNewer=false
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(scroller.getInfo().noNewer).toBe(false);
+    const tailId = scroller.getInfo().newestId as string;
+    const ok = scroller.insertAfter(tailId, { id: 'ins', data: -1 }); // transient 成新末
+    expect(ok).toBe(true);
+    expect(scroller.getInfo().newestId).toBe('ins');
+    // drain the cb-enter so the checkpoint is not deferred when scrolling to the bottom edge
+    content.querySelector<HTMLElement>('[data-cb-id="ins"]')?.dispatchEvent(new Event('animationend'));
+    viewport.scrollTop = content.scrollHeight - 600; // 滚到底边缘 → loadNewer
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(src.newers()).toBeGreaterThan(0);
+    expect(scroller.getInfo().newestId).not.toBe('ins');
+    expect(num(scroller.getInfo().newestId as string)).toBeGreaterThan(num(tailId));
+    // 方案 A 贴底跟随链（loadNewer wasAtBottom→scrollToBottom→loadNewer 直到全局最新）：游标始终跳过 transient，
+    // 一路取到 m-499 —— 证明 transient 从未污染游标（无守卫则首批 getNewer('ins')=[] 误锁 noNewer、卡在 'ins'）。
+    expect(scroller.getInfo().newestId).toBe('m-499');
+  });
+
+  // ── Phase A/B/C (方案 A mirror): enter animation, transient-safe trim, settle, removeItem (no scrollTop compensation) ──
+
+  /** Dispatch animationend on a host (drain cb-enter/cb-leave synchronously in tests). */
+  function animEnd(id: string): void {
+    content.querySelector<HTMLElement>(`[data-cb-id="${id}"]`)?.dispatchEvent(new Event('animationend'));
+  }
+
+  it('Phase A: insertAfter plays cb-enter; init/loadOlder mounts do not', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(content.querySelectorAll('.cb-enter').length).toBe(0);
+    scroller.insertAfter('m-450', { id: 'ins', data: -1 });
+    expect(content.querySelector<HTMLElement>('[data-cb-id="ins"]')?.classList.contains('cb-enter')).toBe(true);
+    animEnd('ins');
+    expect(content.querySelector<HTMLElement>('[data-cb-id="ins"]')?.classList.contains('cb-enter')).toBe(false);
+  });
+
+  it('Phase A: trimNewer skips a transient at the tail (in-flight optimistic survives loadOlder)', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    scroller.insertAfter('m-499', { id: 'ins', data: -1 });
+    animEnd('ins');
+    await flush();
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(scroller.getInfo().newestId).toBe('ins');
+    expect(content.querySelector('[data-cb-id="ins"]')).not.toBeNull();
+  });
+
+  it('Phase B: appendLive settles a matching transient in place (no duplicate mount)', async () => {
+    const { hooks } = controllableHooks();
+    const base = fakeSource(500);
+    const src: CbSource<number> = { ...base, appendLive: (items) => items.map(it => ({ ...it, boundary: 'newest' as const })) };
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    const mountedBefore = scroller.getInfo().mounted;
+    scroller.insertAfter('m-499', { id: 'pending-0', data: -1 });
+    animEnd('pending-0');
+    scroller.appendLive([{ id: 'pending-0', data: 777 }]);
+    await flush();
+    expect(scroller.getInfo().mounted).toBe(mountedBefore + 1); // no duplicate
+    expect(content.querySelector('[data-cb-id="pending-0"]')).not.toBeNull();
+  });
+
+  it('Phase C: removeItem(mountedId) plays cb-leave then unmounts on animationend; returns 1', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const mountedBefore = scroller.getInfo().mounted;
+    expect(scroller.removeItem('m-450')).toBe(1);
+    expect(content.querySelector<HTMLElement>('[data-cb-id="m-450"]')?.classList.contains('cb-leave')).toBe(true);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore); // still mounted during the animation
+    animEnd('m-450');
+    await flush();
+    expect(scroller.getInfo().mounted).toBe(mountedBefore - 1);
+    expect(content.querySelector('[data-cb-id="m-450"]')).toBeNull();
+  });
+
+  it('Phase C: removeItem(array) removes multiple concurrently; not-mounted id contributes 0', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const mountedBefore = scroller.getInfo().mounted;
+    expect(scroller.removeItem(['m-450', 'm-9999'])).toBe(1); // only m-450 mounted
+    animEnd('m-450');
+    await flush();
+    expect(scroller.getInfo().mounted).toBe(mountedBefore - 1);
+  });
+
+  it('Phase C (方案 A): removeItem does NOT compensate scrollTop (browser overflow-anchor owns the viewport)', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const stBefore = viewport.scrollTop;
+    scroller.removeItem('m-400'); // above the fold — Plan A leaves scrollTop untouched
+    animEnd('m-400');
+    await flush();
+    expect(viewport.scrollTop).toBe(stBefore);
+  });
+
+  it('Phase C: while a cb-leave is in flight, balance is deferred; it resumes on animationend', async () => {
+    const { hooks } = controllableHooks();
+    const src = fakeSource(500);
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    const getsBefore = src.gets();
+    scroller.removeItem('m-400');
+    viewport.scrollTop = 0;
+    viewport.dispatchEvent(new Event('scroll'));
+    await flush();
+    expect(src.gets()).toBe(getsBefore); // deferred (animating>0)
+    animEnd('m-400');
+    await flush();
+    expect(src.gets()).toBeGreaterThan(getsBefore); // resumed
+  });
 });

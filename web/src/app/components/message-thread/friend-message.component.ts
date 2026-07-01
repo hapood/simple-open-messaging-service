@@ -18,7 +18,7 @@ import {
 } from '../../lib/chat-box/chat-box-scroller';
 import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
 import { HttpItemSource } from './http-item-source';
-import { createMsgVsElement, createGhostVsElement } from '../message-cards/create-item';
+import { createMsgCbElement, createGhostCbElement } from '../message-cards/create-item';
 import { mergeAlbumItems } from '../message-cards/merge-items';
 import { shouldShowDateSeparator, formatDateSeparator } from '../message-cards/date-format';
 import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
@@ -108,10 +108,10 @@ export class MessageThreadComponent implements OnDestroy {
     void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined);
   }
 
-  /** 内核 createItem 钩子：内核传更老邻居 prev，按它算分组标，调 createMsgVsElement 包装组件。 */
+  /** 内核 createItem 钩子：内核传更老邻居 prev，按它算分组标，调 createMsgCbElement 包装组件。 */
   private createItem(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
-    // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostVsElement）。
-    if (prev === null && item.boundary !== 'oldest') return createGhostVsElement();
+    // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostCbElement）。
+    if (prev === null && item.boundary !== 'oldest') return createGhostCbElement();
     let isShowHead = true;
     let isGroupStart = false;
     let dateLabel: string | null = null;
@@ -128,7 +128,7 @@ export class MessageThreadComponent implements OnDestroy {
       dateLabel = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest')
         ? formatDateSeparator(msg.createdAtMs) : null;
     }
-    return createMsgVsElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector);
+    return createMsgCbElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector);
   }
 
   private onScroll(info: CbScrollInfo): void {

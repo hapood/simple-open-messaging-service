@@ -32,6 +32,13 @@ export interface ChatMsgData {
   images: AlbumImage[] | null;
   /** 原始毫秒（日期分隔判定）。 */
   createdAtMs: number;
+  /** Delivery state for self-sent messages, rendered as a status tick (sending=clock, sent=check). Absent on received
+   *  messages (no tick). The kernel treats this opaquely; only the row component reads it. */
+  status?: 'sending' | 'sent';
+  /** Why a transient item exists — mirrors the playground insert orchestrator's `type` ('pending' = optimistic in
+   *  flight, 'fake' = debug insert). Absent on history messages. Used by the dev badge / debug UI only; the kernel
+   *  ignores it (a transient is a transient regardless of kind). */
+  kind?: 'pending' | 'fake';
 }
 
 /**

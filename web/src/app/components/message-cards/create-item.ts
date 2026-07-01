@@ -23,7 +23,7 @@ import { TextRowComponent } from './text-row/text-row.component';
  * async changes (font/image/data updates). Do not use the RO's contentRect.height — content-box would miss
  * the padding.
  */
-export function createMsgVsElement(
+export function createMsgCbElement(
   item: CbItem<ChatItemData>,
   isShowHead: boolean,
   isGroupStart: boolean,
@@ -62,7 +62,7 @@ export function createMsgVsElement(
  * Angular component is built, no image/typography rendered — an empty host + a ::before ring (CSS-driven),
  * zero render cost.
  */
-export function createGhostVsElement(): CbElement<ChatItemData> {
+export function createGhostCbElement(): CbElement<ChatItemData> {
   const GHOST_H = 48; // fixed spinner row height (compact, WhatsApp-style), not stretched by content
   const el = document.createElement('div');
   el.className = 'cb-ghost-loading'; // the kernel's updateGhost still adds cb-ghost (visual marker, no functional dependency)

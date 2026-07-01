@@ -48,12 +48,10 @@
   }
 }
 
-// 新消息淡入：pg-msg-new 持 opacity:0，双 RAF 后移除触发 transition 淡入。
-// cb-pending（内核 mount 时加）用 visibility:hidden 占位测高、移除瞬时切换不淡入 → 滚动挂载不 fade。
-.pg-msg-new {
-  opacity: 0;
-  transform: translateY(10px);
-}
+// Enter/exit animations are owned by the kernel host classes (.cb-enter / .cb-leave in lib/chat-box/_cb.scss),
+// added to the host after .cb-pending is dropped. .cb-pending uses visibility:hidden to hold layout for one frame while
+// the real offsetHeight is measured, then is removed instantly (no fade) so scroll-mounted rows never flash.
+// The previous .pg-msg-new fade-in rule (opacity:0 + double-RAF removal) was dead code and is removed.
 
 // 头像槽（40px 业界规范；组首出现，self 右 other 左）。
 // 仅管布局——尺寸/对齐/col-margin 契约不变（虚拟滚动测高稳定）；视觉（方圆角 + 配色 + 首字）
@@ -172,4 +170,45 @@
   font-size: 11px; // 必须与 .pg-time 同字号 → 同宽度精确占位
   white-space: nowrap;
   visibility: hidden;
+}
+
+// Status tick for self messages (sending clock / sent check) — WhatsApp/iMessage style, sits just left of the
+// timestamp in the bubble's bottom-right corner. Data-owned: driven by ChatMsgData.status, rendered by the row
+// component (not a kernel class). Absent on received messages.
+.pg-status {
+  position: absolute;
+  right: 44px;        // left of the timestamp (time ~32px wide + .pg-time right:10px)
+  bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--im-time);
+  &.pg-status--sending::before {
+    content: '';
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    border: 1.5px solid currentColor;
+    border-top-color: transparent;   // top gap -> reads as a spinning ring
+    animation: pg-status-spin 0.8s linear infinite;
+  }
+  &.pg-status--sent::before {
+    content: '✓';
+    font-size: 13px;
+    line-height: 1;
+    font-weight: 700;
+  }
+}
+
+@keyframes pg-status-spin {
+  to { transform: rotate(360deg); }
+}
+
+// Subtle dim while a self message is still in flight (status === 'sending'); clears on confirm. The status tick stays
+// crisp (it is the progress affordance), only the bubble content dims.
+.pg-bubble.pg-sending {
+  opacity: 0.72;
+  transition: opacity 0.2s ease-out;
 }

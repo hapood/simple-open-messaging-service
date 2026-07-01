@@ -48,6 +48,10 @@ export class MockUserService {
 export class MockItemSource implements CbSource<ChatItemData> {
   private readonly full: CbItem<ChatItemData>[];
   private readonly live: CbItem<ChatItemData>[] = [];
+  /** In-flight optimistic (pending-post) messages, held separately from the reloadable sequence. Not part of
+   *  sequence() -> getOlder/getNewer never see them. On confirm (appendLive with a matching id) the entry is removed
+   *  from here and cached into `live` (the user's "delete from pending when new msg id == sent id"). */
+  private readonly pending: CbItem<ChatItemData>[] = [];
   /** 模拟 IO 延迟（ms）；playground 可动态调（0/200/1s/5s）测慢加载体验。 */
   latency: number;
   /** mock 用户查询 service（镜像生产 UserService）；ensureProfiles 按 creator 查它填 profiles。 */
@@ -131,11 +135,22 @@ export class MockItemSource implements CbSource<ChatItemData> {
   appendLive(rawItems: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
     const out: CbItem<ChatItemData>[] = [];
     for (const raw of rawItems) {
+      // Reconcile pending: a pushed msg whose id matches an in-flight optimistic entry confirms it -> drop the pending
+      // copy (the user's "if new msg id == sent id, delete it from the pending area"). Then cache to `live` as usual.
+      const pi = this.pending.findIndex(p => String(p.id) === String(raw.id));
+      if (pi >= 0) this.pending.splice(pi, 1);
       this.live.push(raw);
       out.push({ ...this.shape(raw), boundary: 'newest' }); // shape 填 name（playground makeMockItem 给的 raw 是占位）
     }
     return out;
   }
+
+  /** Store an in-flight optimistic message (separate from the reloadable sequence). */
+  addPending(item: CbItem<ChatItemData>): void { this.pending.push(item); }
+
+  /** Whether any optimistic message is still awaiting confirmation (used to gate simulated replies so the demo's
+   *  chronological order stays clean while an insert is in flight). */
+  hasPending(): boolean { return this.pending.length > 0; }
 
   destroy(): void {}
 

@@ -33,7 +33,7 @@
 
 // .cb-ghost-loading：ghost 加载指示——业界主流聊天「向上加载更老消息」的增量加载指示用居中 spinner
 //（WhatsApp 风；Telegram 骨架是初始空白填充用、非本场景）。骨架/消息形占位不适合此处：仅一行、且不知 self/other/
-// 内容类型，形状只能猜。spinner 与内容无关、轻、语义准（加载中）。结构由 createGhostVsElement 产（空 host + ::before 圆环）。
+// 内容类型，形状只能猜。spinner 与内容无关、轻、语义准（加载中）。结构由 createGhostCbElement 产（空 host + ::before 圆环）。
 // 固定高度（GHOST_H 由 JS inline）→ 不被内容撑变；host offsetHeight 恒定 = estimateHeight，rebuildDelta 由内核补偿。
 // 设计选择：spinner 用居中环形（border 圆环 + 顶色高亮 + 旋转），fg 取 --app-text-faint（与时间戳同档中性灰），track 浅灰。
 .cb-ghost-loading {
@@ -94,4 +94,30 @@
     from { background-color: color-mix(in srgb, var(--app-active) 45%, transparent); }
     to   { background-color: transparent; }
   }
+}
+
+// .cb-enter / .cb-leave: host-level enter/exit animation classes added by the kernel (insertAfter + appendLive enter;
+// removeItem exits). Same tier as .cb-pending/.cb-ghost/.cb-jump-highlight — kernel mechanism classes, global
+// (styles.scss @use's this file once).
+// Height-model constraint: opacity + transform only (transform never affects offsetHeight) -> the kernel's measured
+// height is unchanged during the animation, no jitter.
+// Exit uses forwards (holds the `to` state at end); the kernel only unmounts the DOM on animationend, and the entry
+// keeps counting its height until then, so the height model stays exact.
+// No "height collapse" exit — it would fight the kernel's offsetHeight model (left as a future enhancement).
+.cb-enter { animation: cb-enter 0.28s ease-out; }
+.cb-leave { animation: cb-leave 0.26s ease-in forwards; }
+
+@keyframes cb-enter {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes cb-leave {
+  from { opacity: 1; transform: none; }
+  to   { opacity: 0; transform: scale(0.96); }
+}
+
+// A11y: reduced motion -> near-instant (still fires animationend so the kernel completes its lifecycle; animating drains).
+@media (prefers-reduced-motion: reduce) {
+  .cb-enter, .cb-leave { animation-duration: 0.01s; }
 }

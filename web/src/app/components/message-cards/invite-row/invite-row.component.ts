@@ -35,6 +35,12 @@ export class InviteRowComponent {
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
+  /** Render a status tick only for self-sent messages with a delivery status. Invites are always "other" -> always false,
+   *  but the member is required so this component stays structurally aligned with TextRow/MediaRow (createMsgCbElement
+   *  picks the component by contentType and relies on the shared shape). */
+  readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
+  /** Dim while in flight (never true for invites). */
+  readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
 
   readonly invite = signal<{ groupName: string; token: string; expiryDate?: string }>({
     groupName: '',

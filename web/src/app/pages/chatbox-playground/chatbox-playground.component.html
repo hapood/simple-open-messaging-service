@@ -132,6 +132,26 @@
     </section>
 
     <section>
+      <h4>插入消息 <span class="pg-sec-tag">调试</span></h4>
+      <p class="pg-hint">输入已挂载消息 id，在其后插入一条新消息：不触发 balance，仅做滚动高度补偿（视口钉住）。未挂载则忽略。</p>
+      <div class="pg-jump">
+        <input #insertInput class="pg-jump-input" placeholder="after id"
+               (keydown.enter)="insertAfterId(insertInput.value)" />
+        <button (click)="insertAfterId(insertInput.value)" [disabled]="loading()">插入</button>
+      </div>
+    </section>
+
+    <section>
+      <h4>移除消息 <span class="pg-sec-tag">调试</span></h4>
+      <p class="pg-hint">按 id 移除已挂载消息（相册任一图 id 即移除整条相册；逗号分隔多条）：带退场动画并发移除，动画期间 balance 暂停。纯数字按历史序号（id-N），否则按字面 id（pending-N / insert-0）。未挂载则忽略。</p>
+      <div class="pg-jump">
+        <input #removeInput class="pg-jump-input" placeholder="id / 序号（可逗号分隔）"
+               (keydown.enter)="removeById(removeInput.value)" />
+        <button (click)="removeById(removeInput.value)" [disabled]="loading()">移除</button>
+      </div>
+    </section>
+
+    <section>
       <h4>运行模式</h4>
       <div class="pg-btns">
         <button (click)="debugMode.set(false)" [class.active]="!debugMode()">性能</button>
