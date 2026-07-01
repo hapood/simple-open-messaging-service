@@ -6,9 +6,9 @@
 # Base images. Override via --build-arg if Docker Hub is unreachable, e.g. behind a CN mirror:
 #   --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim \
 #   --build-arg NODE_IMAGE_FULL=docker.m.daocloud.io/library/node:22-bookworm
-# Pin 24.16: 24.18 has a regression that loads the Prisma-generated CJS client as ESM
-# (`exports is not defined in ES module scope`). 24.16 runs the same dist cleanly.
-ARG NODE_IMAGE=node:24.16-bookworm-slim
+# Node 24 slim. The project is ESM-native now, so the former 24.16 pin (a workaround for a
+# CJS/Prisma module-detection regression) is no longer needed — track the latest 24.x.
+ARG NODE_IMAGE=node:24-bookworm-slim
 
 # ---- Stage 1: build web (Angular) ----
 FROM ${NODE_IMAGE} AS web-build
@@ -36,9 +36,9 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
     && apt-get update && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /build
-# `npm ci` triggers the postinstall `prisma generate`, so the schema + config + tsconfig must precede it.
-# tsconfig is required at generate time: prisma reads `module` to decide CJS vs ESM output — without it
-# prisma defaults to ESM (emits import.meta.url) and the CJS project breaks under Node's module detection.
+# `npm ci` triggers the postinstall `prisma generate`, so schema + config + tsconfig must precede it.
+# tsconfig is still consulted at generate time (prisma reads `module` to shape its output); with the
+# project now ESM-native this is the natural state, not a CJS workaround.
 COPY package.json package-lock.json prisma.config.ts tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY prisma ./prisma
 RUN npm ci
