@@ -81,7 +81,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 用 refresh token 换新的 access token（不轮换 refresh） */
+        /** 用 refresh token 轮换出新的 access + refresh（检测重用即全家族吊销） */
         post: operations["AuthController_renewaccessTokens"];
         delete?: never;
         options?: never;
@@ -98,7 +98,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 用 refresh token 轮换出新的 access + refresh */
+        /** 用 refresh token 轮换出新的 access + refresh（与 renew-access 同义，保留兼容） */
         post: operations["AuthController_renewRefreshTokens"];
         delete?: never;
         options?: never;
@@ -115,8 +115,76 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 登出（吊销 refresh token） */
+        /** 登出（吊销 refresh；accessJti 可选，即时把当前 access 入黑名单） */
         post: operations["AuthController_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/logout-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 全设备登出（吊销所有会话 + bump tokenVersion） */
+        post: operations["AuthController_logoutAll"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 修改密码（吊销所有其他会话，当前设备重发 token） */
+        post: operations["AuthController_changePassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 列当前用户活跃会话 */
+        post: operations["AuthController_sessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/revoke-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 吊销单个会话（按 jti + 属当前用户） */
+        post: operations["AuthController_revokeSession"];
         delete?: never;
         options?: never;
         head?: never;
@@ -429,6 +497,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/notify/mark-friend-req-read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 清除好友请求未读标记（用户已查看好友请求面板） */
+        post: operations["NotifyController_markFriendReqRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["EventsController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/upload": {
         parameters: {
             query?: never;
@@ -446,22 +547,311 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员登录（独立 admin JWT + 家族化 refresh） */
+        post: operations["AdminController_login"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/renew-access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员 refresh 轮换（家族化 + 重用检测） */
+        post: operations["AdminController_renewAccess"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员登出 */
+        post: operations["AdminController_logout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 用户列表（分页 + 搜索） */
+        post: operations["AdminController_listUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 封禁用户（软删除 + 强制下线） */
+        post: operations["AdminController_disableUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 解禁用户 */
+        post: operations["AdminController_enableUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/force-logout": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 强制下线（吊销该用户所有会话） */
+        post: operations["AdminController_forceLogout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 查指定用户活跃会话 */
+        post: operations["AdminController_userSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/{id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 重置用户密码（吊销所有会话） */
+        post: operations["AdminController_resetPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/bans": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 列当前登录封禁（IP/账户） */
+        post: operations["AdminController_listBans"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/bans/unban": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 解封（IP 和/或账户） */
+        post: operations["AdminController_unban"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/reuse-alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** refresh token 重用告警（revokeReason=reuse） */
+        post: operations["AdminController_reuseAlerts"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 全系统活跃会话总览（跨用户，可筛 userId/ip） */
+        post: operations["AdminController_listAllSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/sessions/purge": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 一键清理所有活跃会话（强制全部用户重登，access 立即失效） */
+        post: operations["AdminController_purgeAllSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 当前在线 SSE 连接总览（按用户聚合） */
+        post: operations["AdminController_listConnections"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admin-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 管理员活跃会话列表（join Admin 出 username） */
+        post: operations["AdminController_listAdminSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admin-sessions/{jti}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 吊销指定管理员会话（按 jti；其 access 15m 内仍有效） */
+        post: operations["AdminController_revokeAdminSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         ApiResult: {
             /**
-             * @description 0 = 成功；非 0 = 业务错误码，按域分段：10xxx 通用(10000 参数校验/10001 不存在/10002 已存在/10003 未认证/10005 限流)、20xxx 好友会话、30xxx 消息、40xxx 群组。详见 BusinessCode。
+             * @description 0 = success; non-zero = business error code, segmented by domain: 10xxx general (10000 validation / 10001 not-found / 10002 already-exists / 10003 unauthenticated / 10005 rate-limited), 20xxx friends & sessions, 30xxx messages, 40xxx groups. See BusinessCode.
              * @example 0
              */
             code: number;
             /**
-             * @description 人类可读的提示信息
+             * @description Human-readable status message
              * @example successful
              */
             message: string;
-            /** @description 仅分页接口（如 query-messages）填充：是否还有更早一页。非分页接口为 undefined。 */
+            /** @description Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints. */
             hasMore: boolean | null;
         };
         MessageResponseDto: {
@@ -498,17 +888,48 @@ export interface components {
             isDeleted: boolean;
         };
         SendMessageDto: {
+            /**
+             * @description User thread id
+             * @example 1
+             */
             userThreadId: number;
+            /**
+             * @description Message content
+             * @example hello
+             */
             content: string;
-            /** @enum {string} */
+            /**
+             * @description Content type (defaults to PURE_TEXT)
+             * @enum {string}
+             */
             contentType?: "PURE_TEXT" | "INVITE" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO";
         };
         QueryMessagesDto: {
+            /**
+             * @description User thread id
+             * @example 1
+             */
             userThreadId: number;
+            /**
+             * @description Number of records to skip (pagination)
+             * @example 0
+             */
             skip: number;
+            /**
+             * @description Number of records to take (pagination)
+             * @example 20
+             */
             take: number;
+            /**
+             * @description Cursor (BigInt→string, optional)
+             * @example 9007199254740993
+             */
             lastId?: string;
-            /** @enum {string} */
+            /**
+             * @description Sort direction
+             * @example desc
+             * @enum {string}
+             */
             orderBy: "desc" | "asc";
         };
         UserExtraResponseDto: {
@@ -552,7 +973,7 @@ export interface components {
              * @description 所属域（可空）
              * @example example.com
              */
-            domain?: string;
+            domain: string;
             /**
              * @description 创建时间（毫秒时间戳）
              * @example 1700000000000
@@ -630,7 +1051,7 @@ export interface components {
              * @description 底层消息线程 id（可空）
              * @example 12
              */
-            threadId?: number;
+            threadId: number;
             /** @example 1700000000000 */
             createdAt: number;
             /** @example 1700000000000 */
@@ -641,49 +1062,170 @@ export interface components {
              * @description 已读位置（BigInt→string，可空）
              * @example 9007199254740993
              */
-            lastRead?: string;
+            lastRead: string;
             /** @description 对端用户（P2P 时） */
-            userItem?: components["schemas"]["UserResponseDto"];
+            userItem: components["schemas"]["UserResponseDto"];
             /** @description 对端群组（GROUP 时） */
-            groupItem?: components["schemas"]["GroupResponseDto"];
+            groupItem: components["schemas"]["GroupResponseDto"];
         };
         UserIdDto: {
+            /**
+             * @description User id
+             * @example 1
+             */
             userId: number;
         };
         LoginDto: {
+            /**
+             * @description Login unique name
+             * @example alice
+             */
             uniqName: string;
+            /**
+             * @description Password
+             * @example P@ssw0rd
+             */
             password: string;
+            /**
+             * @description Device identifier (optional)
+             * @example web-chrome
+             */
+            device?: string;
         };
         RefreshTokenDto: {
+            /**
+             * @description refresh token
+             * @example eyJhbGciOiJIUzI1NiIs...
+             */
             refreshToken: string;
+            /**
+             * @description Device identifier (optional)
+             * @example web-chrome
+             */
+            device?: string;
+        };
+        LogoutDto: {
+            /**
+             * @description refresh token
+             * @example eyJhbGciOiJIUzI1NiIs...
+             */
+            refreshToken: string;
+            /**
+             * @description jti of the current access token (optional; used to immediately blacklist it)
+             * @example a1b2c3d4-e5f6-...
+             */
+            accessJti?: string;
+        };
+        ChangePasswordDto: {
+            /**
+             * @description Current password
+             * @example OldP@ss1
+             */
+            oldPassword: string;
+            /**
+             * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+             * @example NewP@ss2
+             */
+            newPassword: string;
+        };
+        RevokeSessionDto: {
+            /**
+             * @description jti of the session to revoke
+             * @example a1b2c3d4-e5f6-...
+             */
+            jti: string;
+            /**
+             * @description jti of the current access token (optional; used to immediately blacklist it)
+             * @example a1b2c3d4-e5f6-...
+             */
+            accessJti?: string;
         };
         UpdateProfileDto: {
+            /**
+             * @description Display name (1-30 chars)
+             * @example Alice
+             */
             name?: string;
+            /**
+             * @description Bio (≤120 chars)
+             * @example Hey there!
+             */
             bio?: string;
         };
         QueryValidThreadDto: {
+            /**
+             * @description Number of records to skip (pagination)
+             * @example 0
+             */
             skip: number;
+            /**
+             * @description Number of records to take (pagination)
+             * @example 20
+             */
             take: number;
+            /**
+             * @description Last id of the previous page (cursor, optional)
+             * @example 100
+             */
             lastId?: number;
-            /** @enum {string} */
+            /**
+             * @description Peer type P2P|GROUP (optional filter)
+             * @enum {string}
+             */
             toObjType?: "P2P" | "GROUP";
         };
         QueryPendingThreadDto: {
+            /**
+             * @description Millisecond timestamp: fetch pending items before this time
+             * @example 1700000000000
+             */
             beforeDate: number;
+            /**
+             * @description Number of records to take
+             * @example 20
+             */
             take: number;
+            /**
+             * @description Number of records to skip (optional)
+             * @example 0
+             */
             skip?: number;
         };
         QueryUsersDto: {
+            /**
+             * @description List of user ids (≤100 per query)
+             * @example [
+             *       1,
+             *       2,
+             *       3
+             *     ]
+             */
             userIds: number[];
         };
         UserByUniqNameDto: {
+            /**
+             * @description Login unique name
+             * @example alice
+             */
             uniqName: string;
         };
         UserThreadIdDto: {
+            /**
+             * @description User thread id
+             * @example 1
+             */
             userThreadId: number;
         };
         RegisterDto: {
+            /**
+             * @description Login unique name: 1-20 chars [\w.-], at least 3 letters
+             * @example alice
+             */
             uniqName: string;
+            /**
+             * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+             * @example P@ssw0rd
+             */
             password: string;
         };
         CreateGroupResponseDto: {
@@ -699,18 +1241,114 @@ export interface components {
             groupId: number;
         };
         CreateGroupDto: {
-            /** @description 群名，最长 31 字符（原 controller 校验 length <= 31） */
+            /**
+             * @description Group name (≤31 chars, empty allowed)
+             * @example dev-team
+             */
             groupName: string;
         };
         InviteGroupDto: {
+            /**
+             * @description Invited user id
+             * @example 1
+             */
             userId: number;
+            /**
+             * @description Group id
+             * @example 12
+             */
             groupId: number;
         };
         JoinGroupDto: {
+            /**
+             * @description Invitation token
+             * @example invite-token
+             */
             token: string;
         };
         GroupIdDto: {
+            /**
+             * @description Group id
+             * @example 12
+             */
             groupId: number;
+        };
+        AdminLoginDto: {
+            /**
+             * @description Admin username
+             * @example admin
+             */
+            username: string;
+            /**
+             * @description Password
+             * @example P@ssw0rd
+             */
+            password: string;
+        };
+        AdminRefreshDto: {
+            /**
+             * @description refresh token
+             * @example eyJhbGciOiJIUzI1NiIs...
+             */
+            refreshToken: string;
+        };
+        AdminListUsersDto: {
+            /**
+             * @description Number of records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Number of records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search by uniqName/display name (optional)
+             * @example alice
+             */
+            search?: string;
+        };
+        AdminResetPasswordDto: {
+            /**
+             * @description New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
+             * @example NewP@ss2
+             */
+            newPassword: string;
+        };
+        AdminUnbanDto: {
+            /**
+             * @description Banned IP (optional)
+             * @example 1.2.3.4
+             */
+            ip?: string;
+            /**
+             * @description Banned account uniqName (optional)
+             * @example alice
+             */
+            uniqName?: string;
+        };
+        AdminListSessionsDto: {
+            /**
+             * @description Number of records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Number of records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Filter by user id (optional)
+             * @example 1
+             */
+            userId?: number;
+            /**
+             * @description Filter by IP (optional)
+             * @example 1.2.3.4
+             */
+            ip?: string;
         };
     };
     responses: never;
@@ -799,7 +1437,9 @@ export interface operations {
     AuthController_login: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "user-agent": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -820,7 +1460,9 @@ export interface operations {
     AuthController_renewaccessTokens: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "user-agent": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -841,7 +1483,9 @@ export interface operations {
     AuthController_renewRefreshTokens: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                "user-agent": string;
+            };
             path?: never;
             cookie?: never;
         };
@@ -868,7 +1512,83 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["RefreshTokenDto"];
+                "application/json": components["schemas"]["LogoutDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_logoutAll: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_changePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_sessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeSessionDto"];
             };
         };
         responses: {
@@ -1290,11 +2010,382 @@ export interface operations {
             };
         };
     };
+    NotifyController_markFriendReqRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    EventsController_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     UploadController_upload: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_login: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminLoginDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_renewAccess: {
+        parameters: {
+            query?: never;
+            header: {
+                "user-agent": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRefreshDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_logout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminRefreshDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListUsersDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_disableUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_enableUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_forceLogout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_userSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_resetPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminResetPasswordDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listBans: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_unban: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUnbanDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_reuseAlerts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listAllSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListSessionsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_purgeAllSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listConnections: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listAdminSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListSessionsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_revokeAdminSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                jti: string;
+            };
             cookie?: never;
         };
         requestBody?: never;
