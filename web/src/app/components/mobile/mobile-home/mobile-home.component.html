@@ -2,8 +2,7 @@
   <div class="mobile-home-body">
     <app-home-header (toggleDrawer)="d.toggle()" />
     <div class="thread-list">
-      <app-thread-list [profile]="profile()" [selectedId]="curUsrtrdId()"
-        (onSelect)="onThreadSelect($event)"></app-thread-list>
+      <app-thread-list (onSelect)="onThreadSelect($event)"></app-thread-list>
     </div>
   </div>
 </app-nav-drawer>

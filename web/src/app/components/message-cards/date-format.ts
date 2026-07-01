@@ -32,6 +32,21 @@ export function sameDay(a: number, b: number): boolean {
 }
 
 /**
+ * Conversation-list timestamp: HH:mm for today, weekday for this week, MMM D same year, MMM D, YYYY
+ * otherwise. Mirrors the date-separator vocabulary so the list and the chat use one mental model.
+ */
+export function formatListTime(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined) return '';
+  const d = dayjs(ms);
+  const now = dayjs();
+  if (d.isSame(now, 'day')) return d.format('HH:mm');
+  if (d.isSame(now.subtract(1, 'day'), 'day')) return 'Yesterday';
+  if (d.isAfter(now.subtract(7, 'day'))) return WEEKDAYS[d.day()];
+  if (d.isSame(now, 'year')) return d.format('MMM D');
+  return d.format('MMM D, YYYY');
+}
+
+/**
  * 当前 msg 上方是否需要 date 分隔。
  *
  *  - prev 存在且同天 → 否（组内连续）。

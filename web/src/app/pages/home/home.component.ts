@@ -4,6 +4,7 @@ import { LayoutService } from '../../services/layout.service';
 import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import { DesktopHomeComponent } from '../../components/desktop/desktop-home/desktop-home.component';
 import { MobileHomeComponent } from '../../components/mobile/mobile-home/mobile-home.component';
 import { TabletHomeComponent } from '../../components/tablet/tablet-home.component';
@@ -32,6 +33,7 @@ export class HomeComponent implements OnInit, OnDestroy {
   private readonly userService = inject(UserService);
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
+  private readonly convList = inject(ConversationListService);
 
   private readonly subs: Subscription[] = [];
 
@@ -51,10 +53,19 @@ export class HomeComponent implements OnInit, OnDestroy {
         .pipe(filter((m) => m.event === 'NOTIFY'))
         .subscribe(() => this.userService.updateSessionProfile()),
     );
+    // Live conversation list: an incoming message refreshes that thread's preview + bumps unread
+    // (unless it's the thread the user is currently viewing). On reconnect, the server (source of
+    // truth) is re-read — the SSE stream does not replay frames missed during the disconnect.
     this.subs.push(
-      this.wsService.reconnect$.subscribe(() =>
-        this.userService.updateSessionProfile(),
-      ),
+      this.wsService.eventSubject
+        .pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.data !== undefined))
+        .subscribe((m) => this.convList.onNewMessage(m.data)),
+    );
+    this.subs.push(
+      this.wsService.reconnect$.subscribe(() => {
+        this.userService.updateSessionProfile();
+        this.convList.load();
+      }),
     );
   }
 

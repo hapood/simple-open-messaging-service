@@ -1,13 +1,13 @@
 <div class="thread-list">
   @switch (status()) {
-    @case (ThreadListStatus.LOADING) {
+    @case (LoadStatus.LOADING) {
       <app-empty-state title="Loading…" />
     }
-    @case (ThreadListStatus.ERROR) {
+    @case (LoadStatus.ERROR) {
       <app-empty-state tone="error" [title]="errorMsg()" subtitle="Couldn't load chats"
         ctaLabel="Retry" (ctaClick)="genThreadList()" />
     }
-    @case (ThreadListStatus.READY) {
+    @case (LoadStatus.READY) {
       @if (filteredThreadList().length === 0) {
         @if (isSearchEmpty()) {
           <app-empty-state title="No matching chats" subtitle="Try a different keyword, or clear the search." />
@@ -23,23 +23,41 @@
         }
       } @else {
         @for (thread of filteredThreadList(); track thread.id) {
-          <div class="thread-item" [ngClass]="{'active ':thread.id===selectedId()}" (click)="onUsrTrdClick(thread)">
-            @if(thread.type==='P2P'){<div class="thread-avatar">
-              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
-                [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
-            </div>
-            <div class="thread-info">
-              <div class="thread-name">{{thread.peerUser.uniqName}}</div>
-              <div class="thread-msg">last message</div>
-            </div>
-            }@else if(thread.type==='GROUP'){<div class="thread-avatar">
-              <app-user-avatar [type]="UserAvatarType.GROUP" [name]="thread.group.name"
-                [src]="thread.group.avatar"></app-user-avatar>
-            </div>
-            <div class="thread-info">
-              <div class="thread-name">{{thread.group.name}}</div>
-              <div class="thread-msg">last message</div>
-            </div>
+          <div class="thread-item" [ngClass]="{ active: thread.threadId === openThreadId() }" (click)="onUsrTrdClick(thread)">
+            @if (thread.type === 'P2P') {
+              <div class="thread-avatar">
+                <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
+                  [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
+              </div>
+              <div class="thread-info">
+                <div class="thread-row">
+                  <span class="thread-name">{{ thread.peerUser.uniqName }}</span>
+                  <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
+                </div>
+                <div class="thread-row">
+                  <span class="thread-msg">{{ previewText(thread) }}</span>
+                  @if (thread.unreadCount > 0) {
+                    <span class="unread-badge">{{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}</span>
+                  }
+                </div>
+              </div>
+            } @else {
+              <div class="thread-avatar">
+                <app-user-avatar [type]="UserAvatarType.GROUP" [name]="thread.group.name"
+                  [src]="thread.group.avatar"></app-user-avatar>
+              </div>
+              <div class="thread-info">
+                <div class="thread-row">
+                  <span class="thread-name">{{ thread.group.name }}</span>
+                  <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
+                </div>
+                <div class="thread-row">
+                  <span class="thread-msg">{{ previewText(thread) }}</span>
+                  @if (thread.unreadCount > 0) {
+                    <span class="unread-badge">{{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}</span>
+                  }
+                </div>
+              </div>
             }
           </div>
         }

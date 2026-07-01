@@ -55,6 +55,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/thread/mark-read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mark a conversation read (advances the per-user read cursor) */
+        post: operations["MessageController_markRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1074,6 +1091,18 @@ export interface components {
              */
             userId: number;
         };
+        MarkReadDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Mark read up to (and including) this message id (BigInt→string). Omit to mark all current messages read.
+             * @example 9007199254740993
+             */
+            lastReadMessageId?: string;
+        };
         LoginDto: {
             /**
              * @description Login unique name
@@ -1264,6 +1293,26 @@ export interface components {
              * @enum {string|null}
              */
             role: "OWNER" | "ADMIN" | "MEMBER" | null;
+            /**
+             * @description Unread message count for the caller (messages newer than their lastReadMsgId). 0 when caught up.
+             * @example 3
+             */
+            unreadCount: number;
+            /**
+             * @description Short preview of the thread's last message (content-type aware: "[Photo]" / "[Group invite]" / text). Null on empty threads.
+             * @example hi group
+             */
+            lastMessagePreview: string | null;
+            /**
+             * @description When the last message was sent (ms timestamp). Null on empty threads.
+             * @example 1700000000000
+             */
+            lastMessageAt: number | null;
+            /**
+             * @description Sender userId of the last message. Null on empty threads.
+             * @example 7
+             */
+            lastMessageSenderId: number | null;
             /** @description Peer user (P2P conversations only) */
             peerUser: components["schemas"]["UserResponseDto"];
             /** @description Group (GROUP conversations only) */
@@ -1654,6 +1703,27 @@ export interface operations {
                         data?: components["schemas"]["FriendshipDto"];
                     };
                 };
+            };
+        };
+    };
+    MessageController_markRead: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MarkReadDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
         };
     };

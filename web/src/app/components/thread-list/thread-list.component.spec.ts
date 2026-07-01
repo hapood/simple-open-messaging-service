@@ -48,7 +48,7 @@ describe('ThreadListComponent 状态机', () => {
 
   it('code===0 空列表 → 加载完成，列表为空，无搜索词时不判搜索空', () => {
     flushList({ code: 0, data: [] });
-    expect(comp.threadList()).toEqual([]);
+    expect(comp.items()).toEqual([]);
     expect(comp.isSearchEmpty()).toBe(false);
   });
 
@@ -76,7 +76,7 @@ describe('ThreadListComponent 状态机', () => {
     comp.genThreadList();
     expect(comp.errorMsg()).toBe(''); // 已重置回 LOADING
     httpMock.expectOne(r => r.url.endsWith('/user/query-thread/valid')).flush({ code: 0, data: [] });
-    expect(comp.threadList()).toEqual([]);
+    expect(comp.items()).toEqual([]);
   });
 
   it('真空态 CTA：openFriendRequests → 调用 routeService.popupDlg', () => {

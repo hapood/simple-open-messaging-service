@@ -6,6 +6,7 @@ import { ChatPaneComponent } from '../chat-pane/chat-pane.component';
 import { InfoPaneComponent } from '../info-pane/info-pane.component';
 import { RootPopupComponent } from '../../root-popup/root-popup.component';
 import { InfoPanelService } from '../../../services/info-panel.service';
+import { ConversationListService } from '../../../services/conversation-list.service';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
@@ -24,6 +25,7 @@ const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
 })
 export class DesktopHomeComponent {
   protected readonly infoPanel = inject(InfoPanelService)
+  private readonly convList = inject(ConversationListService)
   readonly infoThread = this.infoPanel.thread
 
   readonly selectedThread = signal<ConversationItem | undefined>(undefined)
@@ -33,6 +35,8 @@ export class DesktopHomeComponent {
 
   onThreadSelect(thread: ConversationItem) {
     this.selectedThread.set(thread)
+    // Mark the thread open (fires mark-read + clears its unread badge in the shared list).
+    this.convList.open(thread.threadId)
     // if the info panel is open, follow the newly selected thread
     if (this.infoThread()) this.infoPanel.open(thread)
   }

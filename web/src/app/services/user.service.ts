@@ -94,6 +94,14 @@ export class UserService {
     return this.http.post<StandardResponse<ConversationItem>>(`${apiPrefix}/user/thread-info`, params)
   }
 
+  /**
+   * Mark a conversation read. Omit lastReadMessageId to mark all current messages read; pass it to
+   * mark read up to (and including) a specific message. Fires the per-user read-cursor advance.
+   */
+  markRead(params: { threadId: number, lastReadMessageId?: string }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/thread/mark-read`, params)
+  }
+
 }
 
 /** 头像多档边长（与后端 UploadService.AVATAR_SIZES 对齐）。 */

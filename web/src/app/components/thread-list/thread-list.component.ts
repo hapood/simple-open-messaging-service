@@ -1,14 +1,18 @@
 import { Component, input, signal, computed, EventEmitter, Output, inject, OnInit } from '@angular/core';
 import { NgClass } from '@angular/common';
-import { UserService } from '../../services/user.service'
 import { RouteService, PopupType } from '../../services/route.service'
-import { User, ConversationItem } from '../../services/model'
+import { ConversationListService, ConversationLoadStatus } from '../../services/conversation-list.service'
+import { ConversationItem } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { ChatFolder, inFolder } from '../../services/folder.service'
+import { formatListTime } from '../message-cards/date-format'
 
-enum ThreadListStatus { LOADING, READY, ERROR }
-
+/**
+ * Conversation list view. A thin view over the shared ConversationListService (the client-side source
+ * of truth, also driven by mark-read and realtime SSE). Folder + local-search filtering stay here as
+ * computeds over the shared items; the active row is the store's openThreadId.
+ */
 @Component({
     selector: 'app-thread-list',
     imports: [UserAvatarComponent, NgClass, EmptyStateComponent],
@@ -17,23 +21,25 @@ enum ThreadListStatus { LOADING, READY, ERROR }
 })
 export class ThreadListComponent implements OnInit {
   readonly UserAvatarType = UserAvatarType
-  readonly ThreadListStatus = ThreadListStatus
-  readonly profile = input<User>()
-  readonly selectedId = input<number>()
   /** active folder; undefined = no folder filter (show all) */
   readonly folder = input<ChatFolder | undefined>(undefined)
   /** local name search; '' = no filter. */
   readonly searchText = input('')
-  readonly threadList = signal<ConversationItem[]>([])
 
-  /** 列表加载状态机：LOADING(首次/重试中) → READY | ERROR */
-  readonly status = signal<ThreadListStatus>(ThreadListStatus.LOADING)
-  readonly errorMsg = signal('')
+  private readonly routeService = inject(RouteService)
+  private readonly convList = inject(ConversationListService)
+
+  readonly items = this.convList.items
+  readonly status = this.convList.status
+  readonly errorMsg = this.convList.error
+  readonly openThreadId = this.convList.openThreadId
+  /** exposes the enum to the template's @switch */
+  readonly LoadStatus: typeof ConversationLoadStatus = ConversationLoadStatus
 
   /** view model after applying the folder + search filters. */
   readonly filteredThreadList = computed(() => {
     const folder = this.folder(), q = this.searchText().trim().toLowerCase()
-    return this.threadList().filter(t => {
+    return this.items().filter(t => {
       if (folder && !inFolder(t, folder)) return false
       if (q) {
         const name = (t.type === 'P2P' ? t.peerUser?.uniqName : t.group?.name) ?? ''
@@ -50,33 +56,15 @@ export class ThreadListComponent implements OnInit {
 
   @Output() onSelect = new EventEmitter<ConversationItem>()
 
-  private readonly userService = inject(UserService)
-  private readonly routeService = inject(RouteService)
+  /** Short label for a thread's last message (a group sender-name prefix is a Phase-4 refinement). */
+  previewText(t: ConversationItem): string {
+    return t.lastMessagePreview ?? 'No messages yet'
+  }
+
+  fmtTime = formatListTime
 
   genThreadList() {
-    // take:200 — folders must filter over the full thread set, not the first page.
-    // (true infinite scroll is a follow-up; 200 covers personal thread counts.)
-    this.status.set(ThreadListStatus.LOADING)
-    this.errorMsg.set('')
-    return this.userService.queryUserThreadValid({ take: 200, skip: 0 }).subscribe({
-      next: res => {
-        if (res.code === 0) {
-          this.threadList.set(res.data ?? [])
-          this.status.set(ThreadListStatus.READY)
-        } else {
-          // 修正：原代码 `throw new Error(res.message)` 写在 next 回调里，RxJS 会吞掉它
-          // （既不进 error 分支也不向调用者传播），导致接口失败时列表永久卡空白。
-          // 改为显式进 ERROR 态并回显后端 message，让用户能感知并重试。
-          this.errorMsg.set(res.message || 'Failed to load chats')
-          this.status.set(ThreadListStatus.ERROR)
-        }
-      },
-      error: () => {
-        // HTTP 层失败（断网 / 5xx）——原代码完全没覆盖这条路径
-        this.errorMsg.set('Network error, please retry')
-        this.status.set(ThreadListStatus.ERROR)
-      },
-    })
+    this.convList.load()
   }
 
   /** 真空态 CTA：打开好友请求弹窗（与 icon-rail 同路径） */
@@ -89,6 +77,7 @@ export class ThreadListComponent implements OnInit {
   }
 
   ngOnInit() {
-    this.genThreadList();
+    // Load only if we don't already have data (the store is shared across layout switches).
+    if (this.status() === 'LOADING' && this.items().length === 0) this.convList.load()
   }
 }
