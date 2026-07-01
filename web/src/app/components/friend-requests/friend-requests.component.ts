@@ -249,5 +249,8 @@ export class FriendRequestsComponent {
         this.sentLoading.set(false)
       },
     })
+
+    // 用户打开面板即视为已查看 → 清除好友请求未读角标（后端回写 hasUrFriendReq=false，再刷新本地 profile）。
+    this.userService.markFriendReqRead().subscribe(() => this.userService.updateSessionProfile())
   }
 }

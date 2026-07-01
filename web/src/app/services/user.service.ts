@@ -85,6 +85,11 @@ export class UserService {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/cancel-friend-request`, params)
   }
 
+  /** 清除好友请求未读标记（用户已查看好友请求面板，回写后角标消失）。 */
+  markFriendReqRead() {
+    return this.http.post<StandardResponse>(`${apiPrefix}/notify/mark-friend-req-read`, {})
+  }
+
   getUserThreadInfo(params: { userThreadId: number }) {
     return this.http.post<StandardResponse<UserMessageThread>>(`${apiPrefix}/user/thread-info`, params)
   }

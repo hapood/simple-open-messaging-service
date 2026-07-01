@@ -19,8 +19,8 @@ import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import type { StandardMessage } from '../../services/websocket.service';
 import type { Message, UserMessageThread } from '../../services/model';
-import type { VsItem } from '../../lib/virtual-scroll/virtual-scroller';
-import type { VsSource, VsSourceInitOpts } from '../../lib/virtual-scroll/source';
+import type { VsItem } from '../../lib/chat-box/chat-box-scroller';
+import type { VsSource, VsSourceInitOpts } from '../../lib/chat-box/source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../message-cards/chat-item';
 
 /** SSE 重连后一次性补拉的最大条数（断线期间漏掉的消息）。超过则需用户滚动加载更早分页。 */

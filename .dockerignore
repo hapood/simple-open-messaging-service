@@ -1,0 +1,20 @@
+# Keep build context small and prevent local artifacts/secrets from leaking into images.
+# Explicit paths (no **) so the legacy builder matches them reliably.
+/node_modules
+/web/node_modules
+/admin-web/node_modules
+/web/.angular
+/web/.vscode
+/dist
+/web/dist
+/admin-web/dist
+/src/prisma/generated
+/.git
+/.env
+/.env.local
+/.env.production
+/uploads
+/coverage
+/test
+/Dockerfile
+/.dockerignore

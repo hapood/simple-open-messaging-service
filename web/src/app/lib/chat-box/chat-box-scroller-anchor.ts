@@ -1,11 +1,11 @@
 /**
- * VirtualScrollerAnchor —— 方案 A：借浏览器 overflow-anchor 锚定（与方案 B 硬分叉，便于 a/b 对比）。
+ * ChatBoxScrollerAnchor —— 方案 A：借浏览器 overflow-anchor 锚定（与方案 B 硬分叉，便于 a/b 对比）。
  *
  * 【array index-based】内核维护 `mounted: Entry[]` 有序数组（mounted[0]=最老/DOM 顶 → 末=最新/底），
  *  下标=窗口局部 index（不累积、不依赖方向、天然支持双向）。item.id（msgId）仅作 source 游标，
  *  **不参与位置算术**。前缀和 `prefix[]`（flushPrefix 懒失效）让 topOf/totalH O(1) 摊销。
  *
- * 与方案 B（{@link VirtualScroller}）同构：array index + 数据源驱动、像素阈值窗口、检查点加载、trim、
+ * 与方案 B（{@link ChatBoxScroller}）同构：array index + 数据源驱动、像素阈值窗口、检查点加载、trim、
  *  mergeItems hook（相册合并在内核，per-batch）。唯一区别：**不写 scrollTop 补偿**——prepend 更老 /
  *  上方高度变化 / 截上方 都不动 scrollTop，交由浏览器 `overflow-anchor: auto`（默认）钉住首个可见元素。
  *
@@ -20,9 +20,9 @@ declare const ngDevMode: boolean | null | undefined;
 import type { VsSource } from './source';
 import type {
   VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi, VsInitOpts,
-} from './virtual-scroller';
+} from './chat-box-scroller';
 
-export type { VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi, VsInitOpts } from './virtual-scroller';
+export type { VsItem, VsElement, VsHooks, VsOptions, VsScrollInfo, VsDebugStats, VsConfig, ScrollerApi, VsInitOpts } from './chat-box-scroller';
 
 const DEFAULTS: Required<VsConfig> = {
   edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
@@ -31,7 +31,7 @@ const DEFAULTS: Required<VsConfig> = {
 /** 挂载项：item（带 msgId）+ 元素句柄 + 缓存高度 + 高度退订。字段可变（rebuild 替换 el/vs/height/unsub）。 */
 interface Entry<T> { item: VsItem<T>; el: HTMLElement; vs: VsElement<T>; height: number; unsub: () => void; }
 
-export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
+export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private readonly viewport: HTMLElement;
   private readonly content: HTMLElement;
   private readonly hooks: VsHooks<T>;
@@ -150,12 +150,13 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   scrollToIndex(id: string | number, anchor: 'top' | 'center' | 'bottom' = 'center', highlight = false): void {
     if (this.destroyed) return;
     const idx = this.indexOfId(id);
-    if (idx >= 0) { // 已挂载：直接定位
+    if (ngDevMode) console.log('[JUMP] scrollToIndex id=', id, 'alreadyMounted idx=', idx);
+    if (idx >= 0) { // already mounted: position directly
       this.positionMounted(idx, anchor);
       if (highlight) this.flashHighlight(idx);
       return;
     }
-    // 未挂载：重置窗口围绕 id（re-seed），完成后再定位
+    // not mounted: re-seed the window around id, then position
     void this.openAround(id, anchor, highlight);
   }
 
@@ -167,23 +168,27 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    */
   private async openAround(id: string | number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
     const g = ++this.gen;
+    if (ngDevMode) console.log('[JUMP] openAround start id=', id, 'gen=', g, 'vh=', this.vh, 'threshold=', this.threshold);
     this.resetWindowState();
     try {
       const batch = await this.source.init(id, this.cfg.mountItem, this.cfg.mountItem, this.initOpts);
-      if (this.destroyed || g !== this.gen) return; // 被更新的跳转/destroy 超越
+      if (this.destroyed || g !== this.gen) { if (ngDevMode) console.log('[JUMP] bail: gen overtaken / destroyed'); return; } // overtaken by newer jump / destroyed
       const merged = this.mergeBatch(batch);
-      const key = String(id);
-      if (merged.length === 0 || !merged.some(it => String(it.id) === key)) { this.updateGhost(); this.emit(); return; } // source 未返回目标
+      const hasTarget = merged.some(it => this.itemHasId(it, id));
+      if (ngDevMode) console.log('[JUMP] init batch merged=', merged.length, 'hasTarget=', hasTarget, 'ids=', merged.slice(0, 2).map(i => i.id), '..', merged.slice(-2).map(i => i.id), 'noOlder/noNewer=', this.noOlder, this.noNewer);
+      if (merged.length === 0 || !hasTarget) { this.updateGhost(); this.emit(); return; } // source did not return target
       this.absorbBoundary(merged);
       this.mountBatch(merged, 'init');
       this.measurePending();
-      await this.fillAround(id, g); // 双向填到各 threshold/2（边界例外）+ 一侧到界时另一侧补到 threshold
-      if (this.destroyed || g !== this.gen) return;
+      if (ngDevMode) console.log('[JUMP] after init mount+measure: mounted=', this.mounted.length, 'totalH=', Math.round(this.totalH()), 'sampleH=', this.mounted.slice(0, 5).map(e => Math.round(e.height)));
+      await this.fillAround(id, g); // fill both ways to threshold/2 (boundary exceptions) + compensate the open side when one side hits a boundary
+      if (this.destroyed || g !== this.gen) { if (ngDevMode) console.log('[JUMP] bail after fill: gen overtaken'); return; }
+      if (ngDevMode) console.log('[JUMP] fill done: mounted=', this.mounted.length, 'range=', this.mounted[0]?.item.id, '..', this.mounted[this.mounted.length - 1]?.item.id, 'totalH=', Math.round(this.totalH()), 'noOlder/noNewer=', this.noOlder, this.noNewer);
       const idx = this.indexOfId(id);
       if (idx >= 0) {
         this.positionMounted(idx, anchor);
         if (highlight) this.flashHighlight(idx);
-      }
+      } else if (ngDevMode) console.log('[JUMP] target not found after fill (idx=-1)!');
       this.updateGhost();
       this.emit();
     } finally {
@@ -199,20 +204,29 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    */
   private async fillAround(targetId: string | number, g: number): Promise<void> {
     const halfTh = this.threshold / 2;
+    let upIter = 0;
     while (this.aboveTarget(targetId) < halfTh && !this.noOlder && this.mounted.length > 0) {
-      if (await this.loadOlderIntoFresh(g) === 0) break; // 到界 / 超越 / 无数据
+      const n = await this.loadOlderIntoFresh(g);
+      upIter++;
+      if (n === 0) break; // reached boundary / overtaken / no data
     }
+    let downIter = 0;
     while (this.belowTarget(targetId) < halfTh && !this.noNewer && this.mounted.length > 0) {
-      if (await this.loadNewerIntoFresh(g) === 0) break;
+      const n = await this.loadNewerIntoFresh(g);
+      downIter++;
+      if (n === 0) break;
     }
+    let compIter = 0;
     if (this.totalH() < this.threshold) {
-      const fillUp = this.noNewer && !this.noOlder;   // 下方到底 → 上方补
-      const fillDown = this.noOlder && !this.noNewer; // 上方到顶 → 下方补
+      const fillUp = this.noNewer && !this.noOlder;   // bottom reached → fill upward
+      const fillDown = this.noOlder && !this.noNewer; // top reached → fill downward
       while (this.totalH() < this.threshold && (fillUp || fillDown) && this.mounted.length > 0) {
         const n = fillUp ? await this.loadOlderIntoFresh(g) : await this.loadNewerIntoFresh(g);
-        if (n === 0) break; // 另一侧也到界
+        compIter++;
+        if (n === 0) break; // other side also reached boundary
       }
     }
+    if (ngDevMode) console.log('[JUMP] fill iters up/down/comp=', upIter, downIter, compIter, 'totalH=', Math.round(this.totalH()));
   }
 
   /** targetId 上方所有挂载项总高（= topOf(targetIdx)）。target 不在窗口 → 视为全部在上方。 */
@@ -271,6 +285,7 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.viewport.scrollTop = Math.max(0, Math.min(st, max));
     this.shifting = false;
     this.lastScrollTop = this.viewport.scrollTop;
+    if (ngDevMode) console.log('[JUMP] positionMounted idx=', idx, 'id=', this.mounted[idx]?.item.id, 'topOf=', Math.round(this.prefix[idx]), 'h=', Math.round(h), 'rawSt=', Math.round(st), 'max=', Math.round(max), 'vh=', this.vh, '-> scrollTop=', Math.round(this.viewport.scrollTop));
     this.emit();
   }
 
@@ -616,9 +631,17 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (!this.mounting && !this.measuring) this.scheduleBalance();
   }
 
-  private indexOfId(id: string | number): number {
+  /** Whether an item represents the given msgId — matches VsItem.id OR any member in VsItem.ids
+   *  (so a jump to a non-head album member still resolves to its album item). */
+  private itemHasId(item: VsItem<T>, id: string | number): boolean {
     const key = String(id);
-    return this.mounted.findIndex(e => String(e.item.id) === key);
+    if (String(item.id) === key) return true;
+    const ids = item.ids;
+    return ids !== undefined && ids.some(x => String(x) === key);
+  }
+
+  private indexOfId(id: string | number): number {
+    return this.mounted.findIndex(e => this.itemHasId(e.item, id));
   }
 
   private isAtBottom(): boolean {
@@ -657,12 +680,16 @@ export class VirtualScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     const entries = this.pendingMeasure;
     this.pendingMeasure = [];
     this.measuring = true;
+    let zeros = 0;
     for (const entry of entries) {
-      if (this.mounted.indexOf(entry) < 0) continue; // 已卸载（防 trim 后残留）
-      this.onElHeight(entry, entry.el.offsetHeight);
+      if (this.mounted.indexOf(entry) < 0) continue; // already unmounted (guard against trim leftovers)
+      const h = entry.el.offsetHeight;
+      if (ngDevMode && h === 0) zeros++;
+      this.onElHeight(entry, h);
       entry.el.classList.remove('vs-pending');
     }
     this.measuring = false;
+    if (ngDevMode && (zeros > 0 || this.resetting)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
   }
 
   private emit(): void { this.onScroll?.(this.getInfo()); }

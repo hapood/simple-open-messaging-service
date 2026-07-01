@@ -4,10 +4,10 @@ import {
   EnvironmentInjector,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { VirtualScroller, ScrollerApi, VsElement, VsItem, VsConfig, VsOptions, VsScrollInfo, VsDebugStats } from '../../lib/virtual-scroll/virtual-scroller';
-import { VirtualScrollerAnchor } from '../../lib/virtual-scroll/virtual-scroller-anchor';
+import { ChatBoxScroller, ScrollerApi, VsElement, VsItem, VsConfig, VsOptions, VsScrollInfo, VsDebugStats } from '../../lib/chat-box/chat-box-scroller';
+import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
 import { ActivatedRoute } from '@angular/router';
-import { classifyGroupFlags, GroupCtx } from '../../lib/virtual-scroll/group-logic';
+import { classifyGroupFlags, GroupCtx } from '../../lib/chat-box/group-logic';
 import { LayoutService } from '../../services/layout.service';
 import { createMsgVsElement, createGhostVsElement } from '../../components/message-cards/create-item';
 import { mergeAlbumItems } from '../../components/message-cards/merge-items';
@@ -20,7 +20,7 @@ import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.co
 // 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
 declare const ngDevMode: boolean | null | undefined;
 
-// 内核调参默认值（与内核 DEFAULTS 同步：virtual-scroller.ts / anchor.ts）。mountPx 已删（array 内核死参数）。
+// 内核调参默认值（与内核 DEFAULTS 同步：chat-box-scroller.ts / anchor.ts）。mountPx 已删（array 内核死参数）。
 const VS_DEFAULTS: Required<VsConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
 
 /**
@@ -38,14 +38,14 @@ const VS_DEFAULTS: Required<VsConfig> = { edge: 1000, mountItem: 50, thresholdFl
  * 实测高度、干扰内核 offsetHeight 判断。本文件只管外壳：stage/header/viewport 容器/面板/输入栏/FAB。
  */
 @Component({
-  selector: 'app-virtual-scroll-playground',
+  selector: 'app-chatbox-playground',
   imports: [FormsModule, UserAvatarComponent],
-  templateUrl: './virtual-scroll-playground.component.html',
-  styleUrl: './virtual-scroll-playground.component.scss',
+  templateUrl: './chatbox-playground.component.html',
+  styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
   encapsulation: ViewEncapsulation.None,
 })
-export class VirtualScrollPlaygroundComponent implements OnDestroy {
+export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly layout = inject(LayoutService);
   private readonly route = inject(ActivatedRoute);
   /** 动态创建消息组件（zoneless 下 createComponent + detectChanges 驱动渲染）。 */
@@ -207,7 +207,7 @@ export class VirtualScrollPlaygroundComponent implements OnDestroy {
       this.source = new MockItemSource(this.count(), this.sourceLatency(), new MockUserService(), 1);
       // 据路由 data 选内核实现：方案 A（借浏览器锚定）或方案 B（手动补偿），两者同构 ScrollerApi。
       const Ctor: new (opts: VsOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
-        this.useNativeAnchor ? VirtualScrollerAnchor : VirtualScroller;
+        this.useNativeAnchor ? ChatBoxScrollerAnchor : ChatBoxScroller;
       this.scroller = new Ctor({
         viewport, content, source: this.source,
         config: this.config(),

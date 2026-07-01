@@ -1,5 +1,5 @@
 /**
- * VirtualScroller（方案 B · array index）单元测试。
+ * ChatBoxScroller（方案 B · array index）单元测试。
  *
  * 内核框架无关、只通过 VsElement + VsSource 接口交互，故用 mock 驱动：
  *  - controllableHooks：真 div + Object.defineProperty(offsetHeight)，createItem(item, prev)。
@@ -9,7 +9,7 @@
  * 重点：方案 B 的 scrollTop 补偿（loadOlder prepend 后视口不跳）、ghost rebuild（以新 prev 再 createItem）、
  *  阶段0 noOlder absorb 时机。msgId 游标验证内核 index 与 source id 解耦。
  */
-import { VirtualScroller, VsElement, VsItem } from './virtual-scroller';
+import { ChatBoxScroller, VsElement, VsItem } from './chat-box-scroller';
 import type { VsSource } from './source';
 
 /** 'm-K' → K（msgId 解析为序号）。 */
@@ -164,10 +164,10 @@ function controllableSource(N: number): VsSource<number> & {
 /** 排空微任务（openAround/fillAround 的多跳 async await）：scrollToIndex 是 fire-and-forget，需手动 flush。 */
 async function flush(n = 30): Promise<void> { for (let i = 0; i < n; i++) await Promise.resolve(); }
 
-describe('VirtualScroller（方案 B · array index）', () => {
+describe('ChatBoxScroller（方案 B · array index）', () => {
   let viewport: HTMLDivElement;
   let content: HTMLDivElement;
-  let scroller: VirtualScroller<number> | undefined;
+  let scroller: ChatBoxScroller<number> | undefined;
   let rafSpy: jasmine.Spy;
   let savedNgDev: unknown;
 
@@ -195,7 +195,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('init 取最新一批、贴底、窗口边界 msgId 正确', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     const info = scroller.getInfo();
     expect(info.mounted).toBe(100);
@@ -209,7 +209,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
   it('上滑到顶边缘 → loadOlder 触发 getOlder、挂更老、oldestId 变更老', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
     await scroller.init();
     const oldestBefore = scroller.getInfo().oldestId!;
     viewport.scrollTop = 0;
@@ -223,7 +223,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('方案 B：loadOlder 后 scrollTop 补偿（视口不跳）', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     viewport.scrollTop = 50;
     viewport.dispatchEvent(new Event('scroll'));
@@ -236,7 +236,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
   it('到最老边界后继续上滑 → 不再 getOlder（noOlder 熔断）', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(120); // 仅 120 条，init 100 + 一次补批即到最老
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
     await scroller.init();
     for (let i = 0; i < 5; i++) {
       viewport.scrollTop = 0;
@@ -253,7 +253,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('appendLive（WS）挂到底部、贴底跟随', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     scroller.appendLive([{ id: 'x', data: -1 }]);
     await Promise.resolve();
@@ -264,7 +264,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('trim：连续 loadOlder 窗口稳定不无限增长（保留视口 buffer）', async () => {
     const { hooks } = controllableHooks(); // 100px/项
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init();
     const totals: number[] = [];
     for (let i = 0; i < 10; i++) {
@@ -281,7 +281,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('measurePending 移除挂载元素 vs-pending', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     expect(content.querySelectorAll('.vs-pending').length).toBe(0);
   });
@@ -291,7 +291,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
   it('阶段0：fling 反向时含 oldest 边界批不挂 → noOlder 不锁死、回顶仍能 getOlder', async () => {
     const { hooks } = controllableHooks();
     const src = controllableSource(120); // init 100 → 第一次 getOlder 返回 m-0..m-19（含 oldest=m-0）
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
     await scroller.init();
     expect(scroller.getInfo().noOlder).toBe(false);
 
@@ -320,7 +320,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('阶段1：init 后顶部 mounted[0] 显 vs-ghost（未到最老），且仅一条', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     const oldest = scroller.getInfo().oldestId!;
     expect(content.querySelector(`[data-vs-id="${oldest}"]`)?.classList.contains('vs-ghost')).toBe(true);
@@ -329,7 +329,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('阶段1：滚到全局最老（noOlder）→ vs-ghost 消失', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(120) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(120) });
     await scroller.init();
     for (let i = 0; i < 6; i++) {
       viewport.scrollTop = 0;
@@ -342,7 +342,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('阶段1：loadOlder 挂更老邻居 → 旧 ghost rebuild（createItem 以新 prev 再调）', async () => {
     const { hooks, calls } = recordingHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     const ghostId = scroller.getInfo().oldestId!; // 'm-400'：挂载时 prev=null（顶部）
     expect(calls.filter(c => c.id === ghostId)[0].prev).toBeNull();
@@ -359,7 +359,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('loadOlder 截最新端 → noNewer 重置 false（loadNewer 可加载回，修向下滚/定位底部卡住）', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     expect(scroller.getInfo().noNewer).toBe(true); // init 贴底=全局最新
     // 向上滚 loadOlder：prepend 更老 + trimNewer 截最新端（含全局最新 m-499）
@@ -371,7 +371,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('destroy 清空所有挂载元素', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     expect(content.children.length).toBeGreaterThan(0);
     scroller.destroy();
@@ -382,7 +382,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('scrollToIndex 已挂载 → 按 anchor 定位（top/center/bottom）', async () => {
     const { hooks } = controllableHooks(); // 100px/项
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init(); // 挂 m-400..m-499
     scroller.scrollToIndex('m-450', 'top');     // m-450 index=50 → prefix[50]=5000
     expect(viewport.scrollTop).toBe(5000);
@@ -394,7 +394,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('init({startMsgId}) 中段 → 双向窗口围绕目标、居中、两侧均足 threshold/2（无 fill）', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 'm-2500', anchor: 'center' });
     const info = scroller.getInfo();
     expect(info.oldestId).toBe('m-2451'); // older 50（m-2451..m-2500，含目标）
@@ -406,7 +406,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('scrollToIndex 未挂载 → 重置窗口围绕 id（re-seed）、目标挂载并居中', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init(); // 挂 m-4900..m-4999
     expect(scroller.getInfo().oldestId).toBe('m-4900');
     scroller.scrollToIndex('m-100', 'center'); // 未挂载 → 异步 re-seed
@@ -417,9 +417,38 @@ describe('VirtualScroller（方案 B · array index）', () => {
     expect(viewport.scrollTop).toBe(4650); // m-100 index=49 居中
   });
 
+  // Regression: jumping to a NON-HEAD member of a merged album must still resolve to its album item.
+  // Before the fix, openAround's hasTarget check (item.id === targetId) failed because the album item only
+  // carries the head's id → early return → empty viewport. itemHasId now matches any member in VsItem.ids.
+  it('scrollToIndex to a non-head album member msgId → resolves to album item, window non-empty (ids member-resolution regression)', async () => {
+    const { hooks } = controllableHooks();
+    // mergeItems: collapse m-10,m-11,m-12 into one album item (id=head m-10, ids=all three) — mirrors mergeAlbumItems.
+    const mergeItems = (items: VsItem<number>[]): VsItem<number>[] => {
+      const out: VsItem<number>[] = [];
+      let i = 0;
+      while (i < items.length) {
+        const a = items[i], b = items[i + 1], c = items[i + 2];
+        if (String(a.id) === 'm-10' && b && String(b.id) === 'm-11' && c && String(c.id) === 'm-12') {
+          out.push({ ...a, ids: ['m-10', 'm-11', 'm-12'] });
+          i += 3;
+        } else { out.push(a); i++; }
+      }
+      return out;
+    };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: { ...hooks, mergeItems }, source: fakeSource(5000) });
+    await scroller.init();
+    scroller.scrollToIndex('m-11', 'center'); // non-head album member → pre-fix: hasTarget=false → empty
+    await flush();
+    const info = scroller.getInfo();
+    expect(info.mounted).toBeGreaterThan(0);               // regression: was 0 (empty viewport) before fix
+    expect(num(info.oldestId as string)).toBeLessThanOrEqual(10); // window brackets the album (m-10..m-12)
+    expect(num(info.newestId as string)).toBeGreaterThanOrEqual(12);
+    expect(viewport.scrollTop).toBe(750);                  // album (idx 10 · topOf 1000 · h 100) centered
+  });
+
   it('近最旧跳转 → noOlder、上方不足 threshold/2 → 下方补偿到 threshold', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 'm-5', anchor: 'center' });
     const info = scroller.getInfo();
     expect(info.noOlder).toBe(true);
@@ -431,7 +460,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('近最新跳转 → noNewer、下方不足 threshold/2 → 上方补偿到 threshold', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 'm-4995', anchor: 'center' });
     const info = scroller.getInfo();
     expect(info.noNewer).toBe(true);
@@ -443,7 +472,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('极小会话跳转 → 两侧均到界、totalH<threshold、无法补偿直接渲染', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(30) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(30) });
     await scroller.init({ startMsgId: 'm-15', anchor: 'center' });
     const info = scroller.getInfo();
     expect(info.noOlder).toBe(true);
@@ -456,7 +485,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('短 item 跳转 → fill 循环向两侧补到 threshold/2（不无限增长）', async () => {
     const { hooks } = controllableHooks(10); // 10px/项 → seed 100 项仅 1000px<3000，需 fill
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 'm-2500', anchor: 'center' });
     const info = scroller.getInfo();
     expect(info.mounted).toBeGreaterThan(100);          // fill 触发
@@ -466,7 +495,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('scrollToIndex highlight → 目标行加 vs-jump-highlight', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     scroller.scrollToIndex('m-450', 'top', true);
     const el = content.querySelector<HTMLElement>('[data-vs-id="m-450"]');
@@ -477,7 +506,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('scrollToTop → scrollTop=0', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     expect(viewport.scrollTop).toBeGreaterThan(0); // init 贴底
     scroller.scrollToTop();
@@ -486,7 +515,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
 
   it('refresh → 重测 vh + balance，不抛错、窗口仍可用', async () => {
     const { hooks } = controllableHooks();
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     expect(() => scroller!.refresh()).not.toThrow();
     // 仍可定位（内核未坏）
@@ -497,7 +526,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
   it('向下滚到底边缘 → loadNewer 触发 getNewer、挂更新、newestId 向最新推进', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
     await scroller.init(); // m-400..m-499 贴底、noNewer=true
     // 向上滚：loadOlder → trimNewer 截最新端 → noNewer=false（loadNewer 解禁）
     viewport.scrollTop = 0;
@@ -520,7 +549,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
       getOlder: async () => [], getNewer: async () => [],
       appendLive: (items) => items, destroy: () => {},
     };
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
     scroller.scrollToIndex('m-target', 'center');
     await flush();
     expect(scroller.getInfo().mounted).toBe(0); // !hasTarget 早退，未挂载
@@ -529,7 +558,7 @@ describe('VirtualScroller（方案 B · array index）', () => {
   it('连续两次跳转 → gen 守卫：在途的第一次被丢弃，最终窗口围绕第二次', async () => {
     const { hooks } = controllableHooks();
     const src = controllableInitSource(5000);
-    scroller = new VirtualScroller<number>({ viewport, content, hooks, source: src });
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
     scroller.scrollToIndex('m-100', 'center'); // openAround#1：init pending（gen=1）
     scroller.scrollToIndex('m-200', 'center'); // openAround#2：++gen=2、reset、init pending
     expect(src.initPending()).toBe(2);

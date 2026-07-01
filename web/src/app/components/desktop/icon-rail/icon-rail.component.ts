@@ -25,6 +25,9 @@ import { WebsocketService } from '../../../services/websocket.service';
           <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
             <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
           </svg>
+          @if (sessionProfile()?.userNotiBox?.hasUrFriendReq) {
+            <span class="friend-badge" aria-label="new friend requests"></span>
+          }
         </button>
         <button class="rail-btn" (click)="newGroup()" title="新建群组" aria-label="new group">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
@@ -61,6 +64,7 @@ import { WebsocketService } from '../../../services/websocket.service';
       box-sizing: border-box;
     }
     .rail-btn {
+      position: relative;
       display: flex;
       align-items: center;
       justify-content: center;
@@ -75,6 +79,16 @@ import { WebsocketService } from '../../../services/websocket.service';
       cursor: pointer;
     }
     .rail-btn:hover { background: var(--app-hover); }
+    .friend-badge {
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #e53935;
+      border: 2px solid var(--app-bg-muted);
+    }
     .avatar { margin-bottom: 8px; border-radius: 8px; overflow: hidden; }
   `]
 })

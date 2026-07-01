@@ -29,6 +29,8 @@ import {
 } from '../prisma/generated/client';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { AuthService } from 'src/auth/auth.service';
+import { SseService } from 'src/gateway/sse.service';
+import { serializeBody } from '../common/serialize.interceptor';
 import { ApiResult, ApiResultResponse } from '../common/api-result';
 import { BusinessCode } from '../common/business-code';
 import {
@@ -55,6 +57,7 @@ export class UserController {
     private readonly authService: AuthService,
     private readonly groupService: GroupService,
     private readonly uploadService: UploadService,
+    private readonly sseService: SseService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -297,6 +300,19 @@ export class UserController {
       req.user.userId,
       friend.id,
     );
+    // status 0 (first request) and 2 (deleted→reset) both create a fresh TO_PENDING
+    // for the recipient → push a live NOTIFY so their badge arms instantly (the
+    // Notify row + hasUrFriendReq flag were already written atomically in the tx).
+    if (res.status === 0 || res.status === 2) {
+      this.sseService.onNotify(
+        friend.id,
+        serializeBody({
+          event: 'NOTIFY',
+          type: 'FRIEND_REQUEST',
+          fromUserId: req.user.userId,
+        }),
+      );
+    }
     switch (res.status) {
       case 0:
       case 2:

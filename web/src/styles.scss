@@ -1,6 +1,6 @@
 @use '@angular/material' as mat;
 @use './app/assets/tokens';
-@use './app/lib/virtual-scroll/vs'; // 虚拟滚动内核样式契约（.vs-pending），与核心库同目录
+@use './app/lib/chat-box/vs'; // 虚拟滚动内核样式契约（.vs-pending），与核心库同目录
 
 /* === M3 theme: 主色 #2196f3（mat.$blue-palette 500 色阶，与原手搓版一致） === */
 $theme: mat.define-theme((

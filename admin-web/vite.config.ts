@@ -4,7 +4,9 @@ import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  // Prod is served under /admin/ (single-image, path-prefix deploy); dev stays at root for the vite dev server.
+  base: command === 'build' ? '/admin/' : '/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -13,16 +15,16 @@ export default defineConfig({
   },
   server: {
     port: 5180,
-    // 端口被占直接报错而非静默切换，保证访问地址确定
+    // Fail hard if the port is taken, so the access URL is deterministic.
     strictPort: true,
-    // 绑定 0.0.0.0，局域网/其他设备可访问（与 C 端 ng serve host:0.0.0.0 一致）
+    // Bind 0.0.0.0 so LAN/other devices can reach it (matches the C-end ng serve host:0.0.0.0).
     host: true,
     proxy: {
-      // dev 下 /api 转发到后端 :3000，避免硬编码 host + 生产同源
+      // In dev, proxy /api to the backend :3000 (avoids hard-coding the host; prod is same-origin).
       '/api': {
         target: 'http://localhost:3000',
         changeOrigin: true,
       },
     },
   },
-})
+}))

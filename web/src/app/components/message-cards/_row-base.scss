@@ -5,7 +5,7 @@
 // 组件根 host（app-msg-*-row）是内核挂载的滚动 item，padding 直接设在 .pg-msg-row 上。
 //
 // ── 虚拟滚动挂载组件契约（所有 app-msg-*-row 必须遵守）──────────────────────────
-// 内核（virtual-scroller）只管「按抽象 id 邻居插入 host + offsetHeight 测高 + 窗口/trim」，
+// 内核（chat-box-scroller）只管「按抽象 id 邻居插入 host + offsetHeight 测高 + 窗口/trim」，
 // 不干预组件内部 CSS。故组件须自满足下列约束（每条都是踩过的坑）：
 //  1. 高度 border-box：纵向留白走 padding 不走 margin。内核用 offsetHeight 测高（不含 margin），
 //     margin 会把盒子下推、下方叠上来。date-row / .pg-msg-row 的间距都走 padding（见 :host 注释）。

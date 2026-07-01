@@ -88,16 +88,23 @@ export class SseService implements OnModuleDestroy {
     };
   }
 
-  /** 新消息：推给该用户的所有在线 SSE 连接。id=消息 id（前端据此做 Last-Event-ID 断线续传游标）。 */
-  onNewMessage(userId: number, data: unknown) {
+  /**
+   * 向某用户的所有在线 SSE 连接写一帧。
+   * 倒序遍历 + 写失败/已断的连接边写边清，避免坏连接中断群发；背压（write 返回 false）
+   * 暂不处理，留给下一帧/心跳感知断开，保持连接不主动 end。该用户连接清空时删除其槽位。
+   */
+  private pushToUser(
+    userId: number,
+    eventName: string,
+    data: unknown,
+    id?: string | number,
+  ) {
     const list = this.clients[userId];
     if (!list || list.length === 0) return;
-    const id = (data as { id?: string | number } | null)?.id;
     const frame =
-      `event: NEW_MESSAGE\n` +
+      `event: ${eventName}\n` +
       (id !== undefined && id !== null ? `id: ${id}\n` : '') +
       `data: ${JSON.stringify(data)}\n\n`;
-    // 倒序遍历，写失败/已断的连接边写边清，避免残留。
     for (let i = list.length - 1; i >= 0; i--) {
       const { res } = list[i];
       try {
@@ -111,6 +118,17 @@ export class SseService implements OnModuleDestroy {
       }
     }
     if (list.length === 0) delete this.clients[userId];
+  }
+
+  /** 新消息：推完整消息体。id=消息 id（前端 Last-Event-ID 断线续传游标）。 */
+  onNewMessage(userId: number, data: unknown) {
+    const id = (data as { id?: string | number } | null)?.id;
+    this.pushToUser(userId, 'NEW_MESSAGE', data, id);
+  }
+
+  /** 通知：推给该用户所有在线连接（如新好友请求）。无 id（非消息游标语义）。 */
+  onNotify(userId: number, data: unknown) {
+    this.pushToUser(userId, 'NOTIFY', data);
   }
 
   /** 全设备登出/改密/强制下线：推 FORCE_LOGOUT 后立即断开该用户所有 SSE 连接。 */

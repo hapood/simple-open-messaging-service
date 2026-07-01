@@ -4,7 +4,7 @@
 // 绝不写作用于聊天内容内部的 CSS（.pg-msg-row / .pg-bubble / .pg-media-* 等）——那些由
 // message-cards 组件的 _row-base.scss 自治。全局规则一旦改消息行实测高度，会干扰内核的
 // offsetHeight 判断（曾因重复定义 padding/bubble 把高度改小而不易察觉）。唯一例外是
-// .vs-pending（内核机制），已移至 lib/virtual-scroll/_vs.scss 由 styles.scss 全局引入。
+// .vs-pending（内核机制），已移至 lib/chat-box/_vs.scss 由 styles.scss 全局引入。
 //
 // 调试角标 .pg-dev-badge 会注入到 .pg-msg-row 内，但 absolute 定位、脱离文档流，不改行高，
 // 且 ngDevMode 守卫（生产不创建）→ 不影响组件工作。

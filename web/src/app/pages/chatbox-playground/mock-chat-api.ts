@@ -8,8 +8,8 @@
  * date 分隔不在数据层产生（由前端 createItem 派生）。
  */
 import { of, firstValueFrom, type Observable } from 'rxjs';
-import type { VsItem } from '../../lib/virtual-scroll/virtual-scroller';
-import type { VsSource, VsSourceInitOpts } from '../../lib/virtual-scroll/source';
+import type { VsItem } from '../../lib/chat-box/chat-box-scroller';
+import type { VsSource, VsSourceInitOpts } from '../../lib/chat-box/source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
 

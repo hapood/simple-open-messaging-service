@@ -6,9 +6,13 @@ import {
   UserMessageThreadStatus,
   MessageThreadType,
 } from '../prisma/generated/client';
+import { NotifyService } from '../notify/notify.service';
 @Injectable()
 export class MessageService implements OnModuleInit {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly notifyService: NotifyService,
+  ) {}
 
   async onModuleInit() {}
 
@@ -135,6 +139,8 @@ export class MessageService implements OnModuleInit {
               status: UserMessageThreadStatus.TO_PENDING,
             },
           });
+          // Recipient got a fresh TO_PENDING → record notify atomically (Notify row + badge).
+          await this.notifyService.recordFriendRequest(prisma, fromUserId, toUserId);
           return {
             //deleted and reset to TO_PENDING
             status: 2,
@@ -194,6 +200,8 @@ export class MessageService implements OnModuleInit {
             },
           ],
         });
+        // Recipient got a fresh TO_PENDING → record notify atomically (Notify row + badge).
+        await this.notifyService.recordFriendRequest(prisma, fromUserId, toUserId);
         return {
           status: 0,
         };

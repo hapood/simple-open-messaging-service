@@ -436,4 +436,4 @@ data: <json>         # JSON 字符串
 
 ### 客户端 → 服务端
 
-SSE 单向，**客户端不通过 SSE 发送业务消息**。所有写入（发消息、邀请、未来的已读上报 / typing）走 HTTP `POST`。
+SSE 单向，**客户端不通过 SSE 发送业务消息**。所有写入（发消息、邀请、未来的 typing）走 HTTP `POST`。

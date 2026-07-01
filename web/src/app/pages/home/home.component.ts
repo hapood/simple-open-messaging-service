@@ -1,4 +1,5 @@
-import { Component, inject, OnInit } from '@angular/core';
+import { Component, inject, OnInit, OnDestroy } from '@angular/core';
+import { Subscription, filter } from 'rxjs';
 import { LayoutService } from '../../services/layout.service';
 import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
@@ -26,11 +27,13 @@ import { TabletHomeComponent } from '../../components/tablet/tablet-home.compone
     }
   `,
 })
-export class HomeComponent implements OnInit {
+export class HomeComponent implements OnInit, OnDestroy {
   protected readonly layout = inject(LayoutService);
   private readonly userService = inject(UserService);
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
+
+  private readonly subs: Subscription[] = [];
 
   ngOnInit() {
     this.userService.updateSessionProfile();
@@ -40,5 +43,22 @@ export class HomeComponent implements OnInit {
     this.authService.renewAccessToken().subscribe();
     // 单例 constructor 不会在登出后重登时再跑，需在此重连 WS
     this.wsService.connect();
+
+    // 实时好友请求角标：收到 NOTIFY（新好友请求）或 SSE 重连（断线期间可能错过 NOTIFY）
+    // 都刷新 profile，让 hasUrFriendReq 角标与服务端（唯一事实源）保持一致。
+    this.subs.push(
+      this.wsService.eventSubject
+        .pipe(filter((m) => m.event === 'NOTIFY'))
+        .subscribe(() => this.userService.updateSessionProfile()),
+    );
+    this.subs.push(
+      this.wsService.reconnect$.subscribe(() =>
+        this.userService.updateSessionProfile(),
+      ),
+    );
+  }
+
+  ngOnDestroy() {
+    this.subs.forEach((s) => s.unsubscribe());
   }
 }

@@ -2,7 +2,7 @@
 
 本文档固化 SOMS **移动端一对一聊天「消息列表」**的视觉与布局设计规范，作为前端实现（`MsgGroupComponent` 及其外围）的单一事实源。所有数值、结构、配色以本文档为准。
 
-> **状态**：已在虚拟滚动 playground（`/playground/virtual-scroll`）中验证；待 phase-4 落地为真实消息组件。关键设计的演进见文末[决策记录](#决策记录)。
+> **状态**：已在虚拟滚动 playground（`/playground/chatbox-a`）中验证；待 phase-4 落地为真实消息组件。关键设计的演进见文末[决策记录](#决策记录)。
 
 ## 目录
 
@@ -171,7 +171,7 @@ col = flex-column：[名字?(仅他方组首)] → [气泡(内嵌右下时间戳
 
 ## 10. 分组规则
 
-复用 [`web/src/app/lib/virtual-scroll/group-logic.ts`](../web/src/app/lib/virtual-scroll/group-logic.ts) 的 `classifyGroupFlags`（已带单测）：
+复用 [`web/src/app/lib/chat-box/group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts) 的 `classifyGroupFlags`（已带单测）：
 
 - **同发送者 + 5 分钟窗口**内连续消息归为一组。
 - `isShowHead`：换发送者 / 超过 5 分钟 / 日期分隔后 → 新组首（显头像 + 名字）。
@@ -194,15 +194,15 @@ col = flex-column：[名字?(仅他方组首)] → [气泡(内嵌右下时间戳
 ## 13. 参考实现
 
 - 验证用 playground（手写 DOM，`pg-` 前缀，phase-4 后随真实组件废弃）：
-  - [`web/src/app/pages/virtual-scroll-playground/virtual-scroll-playground.component.ts`](../web/src/app/pages/virtual-scroll-playground/virtual-scroll-playground.component.ts)（`createItemEl` 渲染消息行）
-  - [`...virtual-scroll-playground.component.scss`](../web/src/app/pages/virtual-scroll-playground/virtual-scroll-playground.component.scss)（全部视觉规则）
-  - [`...virtual-scroll-playground.component.html`](../web/src/app/pages/virtual-scroll-playground/virtual-scroll-playground.component.html)
-- 分组逻辑：[`group-logic.ts`](../web/src/app/lib/virtual-scroll/group-logic.ts)
+  - [`web/src/app/pages/chatbox-playground/chatbox-playground.component.ts`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.ts)（`createItemEl` 渲染消息行）
+  - [`...chatbox-playground.component.scss`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.scss)（全部视觉规则）
+  - [`...chatbox-playground.component.html`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.html)
+- 分组逻辑：[`group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts)
 - 设计 token：[`_tokens.scss`](../web/src/app/assets/_tokens.scss)
 
 ## 14. 滚动架构（相对滚动）
 
-消息列表虚拟滚动采用**相对滚动 + sentinel**，非「绝对定位 + 全局前缀和」。内核实现：[`virtual-scroller.ts`](../web/src/app/lib/virtual-scroll/virtual-scroller.ts)。决策背景见[决策记录](#决策记录)。
+消息列表虚拟滚动采用**相对滚动 + sentinel**，非「绝对定位 + 全局前缀和」。内核实现：[`chat-box-scroller.ts`](../web/src/app/lib/chat-box/chat-box-scroller.ts)。决策背景见[决策记录](#决策记录)。
 
 ### 为什么不是绝对定位
 
@@ -226,7 +226,7 @@ col = flex-column：[名字?(仅他方组首)] → [气泡(内嵌右下时间戳
 
 ### 元素接口化（VsElement）
 
-每个挂载元素实现 [`VsElement`](../web/src/app/lib/virtual-scroll/virtual-scroller.ts) 接口，内核只通过它与元素交互，**框架无关**（ng 组件 / 手写 DOM 各自实现）：
+每个挂载元素实现 [`VsElement`](../web/src/app/lib/chat-box/chat-box-scroller.ts) 接口，内核只通过它与元素交互，**框架无关**（ng 组件 / 手写 DOM 各自实现）：
 
 | 方法 | 用途 |
 | --- | --- |

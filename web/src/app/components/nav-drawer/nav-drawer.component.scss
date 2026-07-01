@@ -53,6 +53,7 @@
 }
 
 .nav-item {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -70,6 +71,17 @@
   box-sizing: border-box;
 
   svg { flex: 0 0 auto; }
+
+  .friend-badge {
+    position: absolute;
+    top: 50%;
+    right: 14px;
+    transform: translateY(-50%);
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--app-danger, #e53935);
+  }
 
   &:hover { background: var(--app-hover); }
   &:active { background: var(--app-active); }

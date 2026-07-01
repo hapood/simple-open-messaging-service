@@ -10,13 +10,13 @@ import {
   viewChild,
 } from '@angular/core';
 import {
-  VirtualScroller,
+  ChatBoxScroller,
   type ScrollerApi,
   type VsElement,
   type VsItem,
   type VsScrollInfo,
-} from '../../lib/virtual-scroll/virtual-scroller';
-import { classifyGroupFlags, type GroupCtx } from '../../lib/virtual-scroll/group-logic';
+} from '../../lib/chat-box/chat-box-scroller';
+import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
 import { HttpItemSource } from './http-item-source';
 import { createMsgVsElement, createGhostVsElement } from '../message-cards/create-item';
 import { mergeAlbumItems } from '../message-cards/merge-items';
@@ -32,7 +32,7 @@ import type { UserMessageThread } from '../../services/model';
 /**
  * 消息线程容器（桌面 chat-pane 内联 + 移动 root-popup 弹窗共用本组件）。
  *
- * 渲染核心：虚拟滚动内核 B（VirtualScroller 手动补偿，array index）+ HttpItemSource 数据层（msgId 游标 + HTTP 分页 + WS）。
+ * 渲染核心：虚拟滚动内核 B（ChatBoxScroller 手动补偿，array index）+ HttpItemSource 数据层（msgId 游标 + HTTP 分页 + WS）。
  *  - 内核驱动加载（检查点 getOlder/getNewer），不再组件 onScroll 手动 fetchOlder。
  *  - WS：HttpItemSource 收 NEW_MESSAGE → onLive 回调 → 本组件 scroller.appendLive（→ source 标 newest + 挂载）。
  *  - mergeItems：相册合并在内核（连续同 creator IMAGE），source 只给原始单图 msg。
@@ -98,7 +98,7 @@ export class MessageThreadComponent implements OnDestroy {
       trd, this.msgService, this.userService, this.wsService,
       { onLive: (items) => this.scroller?.appendLive(items) },
     );
-    this.scroller = new VirtualScroller<ChatItemData>({
+    this.scroller = new ChatBoxScroller<ChatItemData>({
       viewport,
       content,
       source,

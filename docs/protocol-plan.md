@@ -2,7 +2,7 @@
 
 本文档是 SOMS **后端接口与前后端交互协议栈**的目标设计基准，用于团队对齐与后续渐进式实施。它基于对现有代码（后端 5 个 controller、`EventGateway`、`AuthService`，前端 `AuthInterceptor` / `WebsocketService`）的审查，提出分层目标契约、错误码体系、WS 事件目录与演进路线图。
 
-- **状态**：P0/P1 已完成并验证；实时通信已于 2026-06-30 由 WebSocket 迁移至 **SSE**（§4.5 / §5.5 / §六 P2 已据此重写）；本文档仅保留待办（P2 增量 / P2+ / P3 + ESM 外挂）。最后更新 2026-06-30。
+- **状态**：P0/P1 已完成并验证；实时通信已于 2026-06-30 由 WebSocket 迁移至 **SSE**（§4.5 / §5.5 / §六 P2 已据此重写）；本文档仅保留待办（P2 增量 / P2+ / P3 + ESM 外挂）。最后更新 2026-07-01。
 - **范围**：HTTP 接口、数据契约、认证、实时通信、前后端协同
 - **目标**：在「简洁、易被第三方应用接入」的定位下，补齐契约、正确性与可靠性
 
@@ -97,7 +97,7 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 
 ### 4.5 实时通信（SSE 下行）
 
-> 2026-06-30 已由 WebSocket 迁移至 **SSE（Server-Sent Events）**：WS 只承担下行推送却背负连接/重连/心跳/子协议鉴权全部复杂度（曾滋生 31 条 token/WS bug），改用 SSE「只推送」专用通道一次根除。下行为 SSE 单向流，**所有客户端上行（发消息、未来的已读上报/typing）一律走 HTTP**。
+> 2026-06-30 已由 WebSocket 迁移至 **SSE（Server-Sent Events）**：WS 只承担下行推送却背负连接/重连/心跳/子协议鉴权全部复杂度（曾滋生 31 条 token/WS bug），改用 SSE「只推送」专用通道一次根除。下行为 SSE 单向流，**所有客户端上行（发消息、未来的 typing）一律走 HTTP**。
 
 1. **通道**：`GET /api/v1/events`（`text/event-stream`），手动 `res.writeHead` + `X-Accel-Buffering: no`（防 Nginx 攒批缓冲）；首帧 `: connected` 注释冲头触发前端 `onopen`。一个用户可有多条连接（多标签/多端），`res.on('close')` 清理。
 2. **鉴权**：复用与普通受保护路由同一套 `JwtAuthGuard`（验签 + 过期 + jti 黑名单 + `tokenVersion` 撤销感知），token 走 `Authorization: Bearer` 头，**不进 URL**（无日志/Referer 泄漏）。失败 → HTTP 401，前端 `onopen` 收到后 renew + 重开。不再需要 WS 的 `AUTH` 握手帧。
@@ -106,7 +106,7 @@ SOMS 的核心链路（注册登录、好友、P2P/群组会话、消息收发�
 5. **顺序与完整性**：单条 SSE 连接存活期间，消息**严格有序、完整**到达——由底层 TCP 保证（服务端 `write` 顺序即客户端收到顺序，字节流可靠重组）。SSE 层无需自加 `seq`，这正是迁移省掉的复杂度。
 6. **断线续传**：SSE 流本身不回放历史（服务端不消费 `Last-Event-ID`）。连接断开（含 ≤25s 假死窗口）期间的消息会丢，重连成功后前端发 `reconnect$` 信号，各会话按 `newestMsgId` 游标走 HTTP 增量补拉（`refillNewer`）。同一用户的多条连接各自有序、跨连接不保证。
 7. **强制下线**：全设备登出 / 改密 / admin 踢下线触发 `auth.sessions-invalidated` 事件 → `SseService` 向该用户所有连接推 `FORCE_LOGOUT` 后立即断开。
-8. **扩展事件**（均下行）：`MESSAGE_READ`（配合已建模却未用的 `UserMessageThread.lastRead`）、`USER_PRESENCE`、`NOTIFY`（接入已建模却未用的 `Notify` 表）。注意 `USER_TYPING` / 已读上报属**客户端上行**，SSE 不能承载，须新增 HTTP 端点（见 [§六 P2](#p2--实时体验与可靠性)）。
+8. **扩展事件**（均下行）：`USER_PRESENCE`（待实现）、`NOTIFY`（**已实现**：好友请求触发 `NotifyService.recordFriendRequest` 原子写表 + 点亮角标，并由 `SseService.onNotify` 实时推送，前端 `home` 收到即点亮未读角标；详见 [§六 P2](#p2--实时体验与可靠性)）。注意 `USER_TYPING` 属**客户端上行**，SSE 不能承载，须新增 HTTP 端点。
 
 ### 4.6 前后端协同
 
@@ -222,11 +222,10 @@ data: <json>
 | --- | --- | --- | --- |
 | `NEW_MESSAGE` | S→C | `{ threadId, id, content, contentType, createdAt, ... }`（完整消息体，已序列化） | 对方/群成员发新消息；前端收到即可渲染，无需二次拉取。帧 `id` = 消息 id |
 | `FORCE_LOGOUT` | S→C | `{ event:'FORCE_LOGOUT', status:0, message:<reason> }` | 全设备登出 / 改密 / admin 踢下线；前端断开 + 强制重登 |
-| `MESSAGE_READ` | S→C（待实现） | `{ threadId, userId, lastRead }` | 已读回执，消费 `UserMessageThread.lastRead` |
 | `USER_PRESENCE` | S→C（待实现） | `{ userId, online }` | 在线状态 |
-| `NOTIFY` | S→C（待实现） | `{ type: NotifyType, ... }` | 接入 `Notify` 表（新好友请求 / 系统通知） |
+| `NOTIFY` | S→C（已实现） | `{ event:'NOTIFY', type:'FRIEND_REQUEST', fromUserId }` | 好友请求触发：原子写 `Notify` 表 + 点亮 `hasUrFriendReq` 角标 + SSE 实时推（`SseService.onNotify`） |
 
-> **上行约束**：SSE 单向，客户端→服务端不发业务消息。`USER_TYPING`（输入中）、已读上报等上行一律走 HTTP `POST`（待新增端点）。原 WS 时代的 `@SubscribeMessage` 上行通道随迁移删除。
+> **上行约束**：SSE 单向，客户端→服务端不发业务消息。`USER_TYPING`（输入中）等上行一律走 HTTP `POST`（待新增端点）。原 WS 时代的 `@SubscribeMessage` 上行通道随迁移删除。
 
 ---
 
@@ -242,34 +241,35 @@ data: <json>
 
 Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、class-validator DTO 全量、OpenAPI 全量、前端 `openapi-typescript` 类型生成、序列化拦截器（去 `Date.toJSON` hack）、业务码段规整均已落地。各端点入参/响应以**实时 OpenAPI**（`/api/v1/docs` + 前端生成类型）为唯一事实源。
 
-> **P1 外挂（工程基建）— 后端整体转 ESM**（独立小任务，可与 P1a/P1b 并行；非 P1 契约范畴，仅就近归档）。`type:"module"` + `tsconfig`(`module/moduleResolution: NodeNext`、`target ES2023`、`esModuleInterop`) + 相对导入补 `.js`(全仓库 ~50–100 处) + `__dirname`/`require` → `import.meta.url`/`fileURLToPath` + CJS-only 工具(loader/ts-node)处理。**非必需**：Prisma 7 已验证兼容 CJS 消费(`@prisma/client` exports 提供 `require` 条件)。**前置依赖**：本轮「依赖升级」(NestJS 11 / Prisma 7 / TS 5.9)落地后再做。**触发点**(择一即可动手)：需引入 ESM-only 依赖 / 换 Vitest / Node 对 CJS 收紧。**注意**：代价≈范围/风险翻倍，且当前零后端测试网——动手前先补 auth e2e 冒烟。
+> **P1 外挂（工程基建）— 后端整体转 ESM**（独立小任务，可与 P1a/P1b 并行；非 P1 契约范畴，仅就近归档）。`type:"module"` + `tsconfig`(`module/moduleResolution: NodeNext`、`target ES2023`、`esModuleInterop`) + 相对导入补 `.js`(全仓库 ~50–100 处) + `__dirname`/`require` → `import.meta.url`/`fileURLToPath` + CJS-only 工具(loader/ts-node)处理。**非必需**：Prisma 7 已验证兼容 CJS 消费(`@prisma/client` exports 提供 `require` 条件)。**前置依赖**：本轮「依赖升级」(NestJS 11 / Prisma 7 / TS 5.9)落地后再做。**触发点**(择一即可动手)：需引入 ESM-only 依赖 / 换 Vitest / Node 对 CJS 收紧。**触发已现（2026-07）**：Node 24 模块探测把 Prisma 7 `generate` 在缺 `tsconfig` 时产出的 ESM（`import.meta.url`）当 ESM 处理 → `exports is not defined in ES module scope`；已用 Dockerfile「`COPY tsconfig` 先于 `npm ci`」规避（根治仍需转 ESM，详见 memory `prisma-generate-tsconfig-order`）。**注意**：代价≈范围/风险翻倍，且当前零后端测试网——动手前先补 auth e2e 冒烟。
 
 
 ### P2 — 实时体验与可靠性
 
-> 2026-06-30 WS→SSE 迁移后重对账：原 P2 前两项（WS 心跳 / seq 补拉）是为修 WS 可靠性，SSE 已用更简方式达成；后两项（已读·在线·Notify）是纯增量功能，且因 SSE 单向，上行部分须走 HTTP。
+> 2026-06-30 WS→SSE 迁移后重对账：原 P2 前两项（WS 心跳 / seq 补拉）是为修 WS 可靠性，SSE 已用更简方式达成；后两项（在线状态·Notify）是纯增量功能，且因 SSE 单向，上行部分须走 HTTP。
+> 2026-06-30 已读回执从路线图移除（与 `docs/chat-message-list-design.md`「已读回执：不做」一致）；`UserMessageThread.lastRead` 字段保留为未用死字段（暂不迁移）。
 
 | 内容 | 状态 | 影响 | 验收 |
 | --- | --- | --- | --- |
 | 心跳与判死 | ✅ SSE 已落地 | `src/gateway/sse.service.ts` | `: ping @25s` + `write` 失败判死；假死连接 ≤25s 清理（原 90s 目标已超越） |
 | 断线续传补拉 | ✅ SSE 已落地 | 前端 `websocket.service.ts`（`reconnect$` + `refillNewer`） | 重连后按 `newestMsgId` 游标 HTTP 补齐断线期间漏消息 |
-| 已读回执 / 输入中 / 在线状态 | ⏳ 待办 | 新增 HTTP 上行端点（已读上报/typing）+ SSE 下行事件（`MESSAGE_READ` / `USER_PRESENCE`）+ 前端组件 | `lastRead` 被消费；在线状态实时刷新。**注意**：SSE 单向，已读上报/typing 须走 HTTP POST，不能再 `@SubscribeMessage` |
-| 接入 Notify | ⏳ 待办 | `src/notify/*` 导入 `AppModule` + SSE `NOTIFY` 事件 | 通知表被写入并以 SSE 推送（新好友请求等） |
+| 输入中 / 在线状态 | ⏳ 待办 | 新增 HTTP 上行端点（typing）+ SSE 下行事件（`USER_PRESENCE`）+ 前端组件 | 在线状态实时刷新。**注意**：SSE 单向，typing 须走 HTTP POST，不能再 `@SubscribeMessage` |
+| 接入 Notify | ✅ 已落地 | `notify.service.ts`（`recordFriendRequest` 原子写表+点角标）、`controller/notify.controller.ts`（`mark-friend-req-read` 清角标）、`gateway/sse.service.ts`（`onNotify` 实时推）、前端 `home.component.ts`（收 `NOTIFY` 点角标） | 新好友请求：原子写 `Notify` 表 + 点亮 `hasUrFriendReq` 角标 + SSE 实时推 `NOTIFY`；用户查看后 `mark-friend-req-read` 清角标 |
 
-> **下一步工作重心** = P2 后两项（已读 / 在线 / Notify），这是 SSE 迁移后实时体验的主要缺口，也是当前分支 `refactor/sse-token` 合并 `dev` 后的首选续作。
+> **下一步工作重心** = P2 在线状态 / typing（**Notify 已落地**）：SSE 单向下，typing 须新增 HTTP 上行端点 + `USER_PRESENCE` 下行事件 + 前端组件；这是 SSE 迁移后实时体验的主要缺口，也是当前分支 `refactor/sse-token` 合并 `dev` 后的首选续作。
 
 ### P2+ — 好友域功能补全（产品对齐）
 
 > 本轮（2026-06-26）已修：互加好友自动批准入参顺序 bug（`makeFriendRequest` FROM_PENDING 分支）、`sendFriendRequest`/`acceptFriendRequest` 状态文案不准确、前端搜索结果按会话状态区分「可加/已是好友/已发过/对方发过你」（不再恒显示 Send Request）、`ngOnInit` 成功时误置错误文案、若干拼写。
 > **拒绝好友请求**已实现：`POST user/decline-friend-request` + 前端 Pending 项 Decline 按钮。语义=删除这对请求行（双方 FROM_PENDING/TO_PENDING），回到初始态、不通知对方、允许重发（对标 Telegram）。
+> **撤回已发请求**已实现：`POST user/cancel-friend-request` + 前端「我发出的」项 Cancel 按钮。复用 decline 的「双方行 → DELETED」逻辑，语义=我主动撤回自己发出的待处理请求、对方不感知、可重发。
+> **实时通知**已实现（随 P2「接入 Notify」落地，见上）：新好友请求经 SSE `NOTIFY` 实时推送，不再依赖前端轮询。
 > 以下为遗留**功能缺口**（schema 已建模但无端点 / 无 UI），按产品对标（Telegram/Discord）应补，暂列待办：
 
 | 内容 | 现状 | 影响 |
 | --- | --- | --- |
-| 撤回已发请求 | `FROM_PENDING` 无法 cancel | 用户无法撤回误发请求 |
 | 删除好友 / 拉黑 | `DELETED`/`BLOCKED` 状态存在但无端点写入 | 无法解除好友、无防骚扰 |
 | 请求附言 | `UserMessageThread.reqMessage` 字段未用，`send-friend-request` 仅收 `userId` | 无法带验证信息（对标微信/Telegram 附言） |
-| 实时通知 | 新请求无推送，依赖前端轮询 Pending | 已纳入上方 P2「接入 Notify」 |
 
 ### P3 — 工程化与生产就绪
 
@@ -279,7 +279,7 @@ Swagger（`/api/v1/docs`）、`/api/v1` 版本前缀、HTTP 状态码对齐、cl
 | 响应信封结构化 `details` 字段 | `api-result.ts`、`exception.filter.ts` | 速率限制等附加数据（`bannedUntil`/`retry_after`）走 `details`，对标 Telegram `parameters` / WhatsApp `error_data`；P1b 暂放 `data` |
 | 健康检查 | 新增 controller | `/api/v1/health` 返回 DB 状态 |
 | 登录限流（共享存储 + 分层响应） | `src/auth/local.strategy.ts` → `@nestjs/throttler` / `rate-limiter-flexible` + Redis | **已落地（进程内内存）**：滑动窗口(15min) + IP/账户(uniqName)双维度 + `trust proxy` 取真实 IP + 渐进封禁（30min/3h/24h 阶梯，见 `local.strategy.ts`）。**P3 待办**：① 多实例共享存储(Redis，当前进程内重启即丢、多副本各自计数)；② 分层响应(CAPTCHA / 增加延迟 / 通知账户所有者，替代纯硬封禁)；③ 封禁时长温和化与阈值精调（当前 24h 偏长，有账号锁定型 DoS 风险）；④ 封禁可观测(结构化日志/告警)；⑤ 覆盖续期/发消息等端点 |
-| 实现文件上传 | 新增 `src/file/*` + controller | 落库到 Message、返回可访问 URL（参考 [api.md](./api.md) 文件 API 设计意图）；大文件可走分片/对象存储 |
+| 文件上传（大文件 / 对象存储） | `src/upload/*`（聊天图片上传 + 头像 `sharp` 多档重写**已落地**） | **已落地**：聊天图片 + 头像上传、返回 `/uploads/...` URL（聊天图不接 `sharp` 以保 GIF 画质，头像接 `sharp`）；**待办**：大文件分片 / 对象存储、速率限制 / 并发内存 / 孤儿清理（见 image-upload 安全路线图） |
 
 ---
 

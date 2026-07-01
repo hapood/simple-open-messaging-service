@@ -1,7 +1,7 @@
 /**
  * 数据源契约（VsSource）：虚拟滚动内核与「数据从哪来」之间的隔离层。
  *
- * 内核（VirtualScroller / VirtualScrollerAnchor）只管窗口策略 + 渲染（array index-based：
+ * 内核（ChatBoxScroller / ChatBoxScrollerAnchor）只管窗口策略 + 渲染（array index-based：
  * mounted[] 有序数组，下标=局部 index），通过本接口向数据层「要数据」；数据层拥有缓存 + IO
  *（HTTP / 生成器）。
  *
@@ -31,7 +31,7 @@
  *
  * 框架无关：不 import Angular/HTTP，仅 type-only 引用 VsItem（编译期擦除，无运行时循环依赖）。
  */
-import type { VsItem } from './virtual-scroller';
+import type { VsItem } from './chat-box-scroller';
 
 /** init 的业务参数（生产侧 HTTP 需要 chatId 等；mock 忽略。后续按需扩展 threadId 等）。 */
 export interface VsSourceInitOpts {

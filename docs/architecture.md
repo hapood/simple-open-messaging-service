@@ -36,7 +36,7 @@
 **职责划分原则**
 
 - **HTTP 负责「写与查」**：注册、登录、发消息、查历史、建群、邀请等全部通过 HTTP `POST`。
-- **SSE 负责「推」**：服务端通过 SSE（`GET /api/v1/events`）单向推送**完整消息体**，客户端收到即渲染、无需二次拉取。SSE 是下行专用通道，客户端→服务端的业务上行（发消息、未来的已读/typing）一律走 HTTP。
+- **SSE 负责「推」**：服务端通过 SSE（`GET /api/v1/events`）单向推送**完整消息体**，客户端收到即渲染、无需二次拉取。SSE 是下行专用通道，客户端→服务端的业务上行（发消息、未来的 typing）一律走 HTTP。
 
 ## 后端模块职责
 
@@ -146,7 +146,7 @@ interface ApiResult<T = any> {
 
 ## 实时通信（SSE 下行）
 
-**端点** [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts)：`GET /api/v1/events`（`text/event-stream`，与 HTTP 同端口 3000）。SSE 是单向下行通道——只推不收，客户端所有业务上行（发消息、未来的已读/typing）走 HTTP。
+**端点** [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts)：`GET /api/v1/events`（`text/event-stream`，与 HTTP 同端口 3000）。SSE 是单向下行通道——只推不收，客户端所有业务上行（发消息、未来的 typing）走 HTTP。
 
 ### 连接鉴权
 

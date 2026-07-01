@@ -1,5 +1,5 @@
 import { createComponent, EnvironmentInjector } from '@angular/core';
-import type { VsElement, VsItem } from '../../lib/virtual-scroll/virtual-scroller';
+import type { VsElement, VsItem } from '../../lib/chat-box/chat-box-scroller';
 import type { ChatItemData, ChatMsgData } from './chat-item';
 import { layoutAlbum } from './media-row/layout';
 import { InviteRowComponent } from './invite-row/invite-row.component';

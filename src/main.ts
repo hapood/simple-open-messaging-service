@@ -1,62 +1,59 @@
-import 'dotenv/config'; // 最先加载 .env，确保 AppModule 导入链中的 requireEnv 与 Prisma 能读到环境变量
+import 'dotenv/config'; // Load .env first so the AppModule import chain (requireEnv, Prisma) sees the vars.
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import helmet from 'helmet';
-import { parseCorsOrigins } from './common/env';
+// compression ships a CommonJS function export with no `default`, so (per project tsconfig without
+// esModuleInterop) it must be imported via `require`, otherwise it compiles but throws at runtime.
+import compression = require('compression');
 import { AllExceptionsFilter } from './common/exception.filter';
 import { SerializeInterceptor } from './common/serialize.interceptor';
 import { join } from 'path';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
-  // 反代/隧道后取真实客户端 IP（限流按 IP 精确计数；见 local.strategy.ts）。
-  // 值=信任的反代跳数：1 适合单层 nginx/隧道；生产按实际拓扑调整，勿设 true（X-Forwarded-For 可被伪造）。
+  // Trust a single reverse-proxy hop so rate limiting sees the real client IP (see local.strategy.ts).
+  // Set to the actual hop count in prod; never `true` (X-Forwarded-For is spoofable).
   app.set('trust proxy', 1);
 
   app.use(helmet());
+  // gzip/brotli for static assets + API responses.
+  app.use(compression());
 
-  // 静态资源：图片上传落到 process.cwd()/uploads，经 /uploads/* 直接访问。
-  // NestExpressAdapter 扩展了 prefix 选项——把目录挂到子路径 /uploads/ 下，
-  // 与 UploadService.save 返回的 url 前缀对齐。helmet 默认 CSP img-src 'self' data:（同源，允许）。
+  // Uploaded images land in process.cwd()/uploads and are served at /uploads/*.
+  // NestExpressAdapter's prefix option mounts the dir under /uploads/, matching UploadService.save's url prefix.
   app.useStaticAssets(join(process.cwd(), 'uploads'), { prefix: '/uploads/' });
-  // 开发模式（NODE_ENV !== 'production'）回显任意 Origin：配合 web 端 ng serve 绑 0.0.0.0，
-  // 可从 LAN/公网/隧道（任意 host）访问前端并正常调 :3000 接口。
-  // 生产模式（NODE_ENV=production）严格走 CORS_ORIGIN 白名单。
-  const isDev = process.env.NODE_ENV !== 'production';
-  app.enableCors({
-    origin: isDev ? true : parseCorsOrigins(process.env.CORS_ORIGIN),
-    credentials: true,
-  });
 
-  // P1a：全局 ValidationPipe。仅对 @Body() 类型为 DTO class 的路由生效；
-  // 仍用内联解构类型的 P1b 路由（group/file/thread-info/by-user-id）无 metatype，管道跳过，不受影响。
+  // Same-origin in production (single-image, path-prefix deploy) → no CORS needed.
+  // Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
+  const isDev = process.env.NODE_ENV !== 'production';
+  app.enableCors({ origin: isDev });
+
+  // Global ValidationPipe. Only applies to @Body() of DTO-class routes; P1b routes with inline destructured
+  // types have no metatype and are skipped.
   app.useGlobalPipes(
     new ValidationPipe({
-      whitelist: true, // 剥离 DTO 未定义的字段
-      forbidNonWhitelisted: true, // 出现未定义字段直接 400
-      transform: true, // 把 plain object 转成 DTO 实例，并按 @Type 转换标量
+      whitelist: true, // strip fields not declared on the DTO
+      forbidNonWhitelisted: true, // reject requests with undeclared fields (400)
+      transform: true, // convert plain objects to DTO instances and coerce scalars via @Type
     }),
   );
 
   app.useGlobalFilters(new AllExceptionsFilter());
 
-  // P1b：全局响应序列化拦截器。BigInt→string / Date→毫秒数，
-  // 替代原 main.ts 的 Date.prototype.toJSON hack 与 convertBigIntId（均移除）。
-  // 异常过滤器不经拦截器链，但其响应体只含 {code,message} 原语，无需转换。
+  // Global response serializer: BigInt→string, Date→ms. Replaces the former toJSON hack / convertBigIntId.
   app.useGlobalInterceptors(new SerializeInterceptor());
 
-  // P1b：全局路由前缀。所有 HTTP 端点（含 SSE /events）统一挂 /api/v1 下（须在 Swagger
-  // createDocument 前调用，文档内端点路径会自动带上此前缀）。Swagger UI 仍挂 /api/v1/docs ——
-  // SwaggerModule.setup 不受 setGlobalPrefix 影响，不会双重前缀。CORS 不受影响。
+  // Global route prefix. All HTTP endpoints (incl. SSE /events) live under /api/v1 (must be set before Swagger
+  // createDocument so doc paths include it). Swagger UI mounts at /api/v1/docs (SwaggerModule.setup ignores the prefix).
   app.setGlobalPrefix('api/v1');
 
-  // P1a：Swagger。文档 UI 挂 /api/v1/docs。
+  // Swagger UI at /api/v1/docs.
   const config = new DocumentBuilder()
     .setTitle('Simple Open Chat API')
-    .setDescription('面向第三方接入的 IM 开放接口（P1a 契约层）')
+    .setDescription('Third-party IM integration API (P1a contract layer)')
     .setVersion('1.0')
     .addBearerAuth()
     .build();
