@@ -1,9 +1,9 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable } from '@nestjs/common';
-import { jwtConstants } from './constants';
-import { RedisService } from '../redis/redis.service';
-import { PrismaService } from '../prisma.service';
+import { jwtConstants } from './constants.js';
+import { RedisService } from '../redis/redis.service.js';
+import { PrismaService } from '../prisma.service.js';
 
 type AccessPayload = {
   sub: number;

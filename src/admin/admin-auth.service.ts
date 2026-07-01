@@ -1,9 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import * as argon2 from 'argon2';
+import argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
-import { PrismaService } from '../prisma.service';
-import { jwtConstants } from '../auth/constants';
+import { PrismaService } from '../prisma.service.js';
+import { jwtConstants } from '../auth/constants.js';
 
 /**
  * Admin 鉴权服务：镜像 AuthService 的家族化 + 重用检测算法，但操作独立的 Admin/AdminRefreshToken 表，

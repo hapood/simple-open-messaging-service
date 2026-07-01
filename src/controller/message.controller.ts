@@ -8,25 +8,25 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { MessageService } from '../message/message.service';
+import { MessageService } from '../message/message.service.js';
 import {
   ContentType,
   MessageThreadType,
   Prisma,
   UserMessageThreadStatus,
-} from '../prisma/generated/client';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { ApiResult, ApiResultResponse } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
+} from '../prisma/generated/client.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
 import {
   MessageResponseDto,
   UserMessageThreadResponseDto,
-} from '../dto/response.dto';
-import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto';
-import { UserIdDto } from '../dto/user.dto';
-import { SseService } from '../gateway/sse.service';
-import { GroupService } from '../group/group.service';
-import { serializeBody } from '../common/serialize.interceptor';
+} from '../dto/response.dto.js';
+import { SendMessageDto, QueryMessagesDto } from '../dto/message.dto.js';
+import { UserIdDto } from '../dto/user.dto.js';
+import { SseService } from '../gateway/sse.service.js';
+import { GroupService } from '../group/group.service.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
 
 @ApiTags('message')
 @Controller()

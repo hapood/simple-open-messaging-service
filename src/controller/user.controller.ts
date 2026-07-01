@@ -16,28 +16,28 @@ import {
   ApiConsumes,
 } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { UserService } from '../user/user.service';
-import { UploadService } from '../upload/upload.service';
-import { GroupService } from '../group/group.service';
-import { MessageService } from '../message/message.service';
+import { UserService } from '../user/user.service.js';
+import { UploadService } from '../upload/upload.service.js';
+import { GroupService } from '../group/group.service.js';
+import { MessageService } from '../message/message.service.js';
 import {
   Prisma,
   UserMessageThreadStatus,
   MessageThreadType,
   User,
   Group,
-} from '../prisma/generated/client';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { AuthService } from '../auth/auth.service';
-import { SseService } from '../gateway/sse.service';
-import { serializeBody } from '../common/serialize.interceptor';
-import { ApiResult, ApiResultResponse } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
+} from '../prisma/generated/client.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { AuthService } from '../auth/auth.service.js';
+import { SseService } from '../gateway/sse.service.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
+import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
 import {
   UserResponseDto,
   UserMessageThreadResponseDto,
-} from '../dto/response.dto';
-import { RegisterDto } from '../dto/auth.dto';
+} from '../dto/response.dto.js';
+import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
   UserThreadIdDto,
@@ -46,7 +46,7 @@ import {
   QueryValidThreadDto,
   QueryPendingThreadDto,
   UpdateProfileDto,
-} from '../dto/user.dto';
+} from '../dto/user.dto.js';
 
 @ApiTags('user')
 @Controller()

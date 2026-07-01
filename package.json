@@ -4,6 +4,7 @@
   "description": "a simple message service , easy to connect by third part apps.",
   "author": "",
   "private": true,
+  "type": "module",
   "license": "UNLICENSED",
   "scripts": {
     "build": "nest build",

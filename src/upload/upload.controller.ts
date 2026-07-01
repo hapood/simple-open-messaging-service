@@ -11,10 +11,10 @@ import {
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { ApiResult } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
-import { UploadService } from './upload.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ApiResult } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
+import { UploadService } from './upload.service.js';
 
 /**
  * 图片上传：multipart/form-data，字段 file=图片二进制 + w/h（前端 createImageBitmap 读出的宽高）。

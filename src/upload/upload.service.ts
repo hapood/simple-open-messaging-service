@@ -4,12 +4,7 @@ import { existsSync, mkdirSync, writeFile, unlink } from 'fs';
 import { join } from 'path';
 import { randomBytes } from 'crypto';
 import { promisify } from 'util';
-// sharp 为 CJS 函数式导出（export = sharp）。本项目 tsconfig 未开 esModuleInterop，且 sharp 的
-// package.json exports 条件类型在 node10 解析下使 `import = require('sharp')` 被判 not callable、
-// `import sharp from 'sharp'` 运行时又编译成 sharp.default() 报错。用 require 直接拿运行时函数最稳
-// （noImplicitAny=false，require 返回 any 不报错；调用简单，类型补全取舍可接受）。
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-const sharp = require('sharp');
+import sharp from 'sharp';
 
 const writeFileAsync = promisify(writeFile);
 const unlinkAsync = promisify(unlink);

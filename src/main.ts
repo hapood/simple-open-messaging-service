@@ -3,13 +3,11 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import { AppModule } from './app.module';
+import { AppModule } from './app.module.js';
 import helmet from 'helmet';
-// compression ships a CommonJS function export with no `default`, so (per project tsconfig without
-// esModuleInterop) it must be imported via `require`, otherwise it compiles but throws at runtime.
-import compression = require('compression');
-import { AllExceptionsFilter } from './common/exception.filter';
-import { SerializeInterceptor } from './common/serialize.interceptor';
+import compression from 'compression';
+import { AllExceptionsFilter } from './common/exception.filter.js';
+import { SerializeInterceptor } from './common/serialize.interceptor.js';
 import { join } from 'path';
 
 async function bootstrap() {

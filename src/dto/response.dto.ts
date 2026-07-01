@@ -3,7 +3,7 @@ import {
   ContentType,
   MessageThreadType,
   UserMessageThreadStatus,
-} from '../prisma/generated/client';
+} from '../prisma/generated/client.js';
 
 /**
  * 响应实体 DTO（供 OpenAPI 响应 schema 用）。字段类型反映线上序列化结果，

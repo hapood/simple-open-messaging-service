@@ -1,4 +1,4 @@
-import { serializeBody } from './serialize.interceptor';
+import { serializeBody } from './serialize.interceptor.js';
 
 describe('serializeBody', () => {
   it('BigInt → string', () => {

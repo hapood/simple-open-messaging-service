@@ -1,7 +1,7 @@
 import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { SseService } from './sse.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { SseService } from './sse.service.js';
 
 /**
  * SSE 下行流端点：GET /api/v1/events

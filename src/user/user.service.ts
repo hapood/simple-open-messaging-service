@@ -1,11 +1,11 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { PrismaService } from '../prisma.service.js';
 import {
   User,
   Prisma,
   MessageThreadType,
   UserMessageThreadStatus,
-} from '../prisma/generated/client';
+} from '../prisma/generated/client.js';
 
 @Injectable()
 export class UserService implements OnModuleInit {

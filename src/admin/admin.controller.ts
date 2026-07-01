@@ -10,8 +10,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
-import { AdminAuthService } from './admin-auth.service';
-import { AdminAuthGuard } from './admin-auth.guard';
+import { AdminAuthService } from './admin-auth.service.js';
+import { AdminAuthGuard } from './admin-auth.guard.js';
 import {
   AdminLoginDto,
   AdminRefreshDto,
@@ -19,14 +19,14 @@ import {
   AdminResetPasswordDto,
   AdminUnbanDto,
   AdminListSessionsDto,
-} from './admin.dto';
-import { ApiResult } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
-import { AuthService } from '../auth/auth.service';
-import { UserManageService } from '../user-manage/user-manage.service';
-import { LocalStrategy } from '../auth/local.strategy';
-import { PrismaService } from '../prisma.service';
-import { SseService } from '../gateway/sse.service';
+} from './admin.dto.js';
+import { ApiResult } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
+import { AuthService } from '../auth/auth.service.js';
+import { UserManageService } from '../user-manage/user-manage.service.js';
+import { LocalStrategy } from '../auth/local.strategy.js';
+import { PrismaService } from '../prisma.service.js';
+import { SseService } from '../gateway/sse.service.js';
 
 /**
  * Admin 控制台鉴权端点（Phase A）：login / renew-access / logout。

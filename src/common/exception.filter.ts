@@ -5,9 +5,9 @@ import {
   HttpException,
   HttpStatus,
 } from '@nestjs/common';
-import { Prisma } from '../prisma/generated/client';
+import { Prisma } from '../prisma/generated/client.js';
 import { Response } from 'express';
-import { BusinessCode } from './business-code';
+import { BusinessCode } from './business-code.js';
 
 /**
  * 全局异常过滤器：所有异常统一转 { code, message, data } 信封，code 为业务码段（见 business-code.ts）。

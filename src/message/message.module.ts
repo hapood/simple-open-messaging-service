@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
-import { MessageService } from './message.service';
-import { PrismaService } from '../prisma.service';
-import { NotifyModule } from '../notify/notify.module';
+import { MessageService } from './message.service.js';
+import { PrismaService } from '../prisma.service.js';
+import { NotifyModule } from '../notify/notify.module.js';
 
 @Module({
   // NotifyModule exports NotifyService — MessageService injects it to write the

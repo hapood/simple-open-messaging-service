@@ -11,7 +11,7 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { MessageThreadType } from '../prisma/generated/client';
+import { MessageThreadType } from '../prisma/generated/client.js';
 
 /**
  * user 域请求 DTO。验证规则从原内联校验搬来。

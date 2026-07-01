@@ -8,23 +8,23 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { MessageService } from '../message/message.service';
-import { ContentType } from '../prisma/generated/client';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { ApiResult, ApiResultResponse } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
-import * as dayjs from 'dayjs';
-import { GroupService } from '../group/group.service';
+import { MessageService } from '../message/message.service.js';
+import { ContentType } from '../prisma/generated/client.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
+import dayjs from 'dayjs';
+import { GroupService } from '../group/group.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
   JoinGroupDto,
   GroupIdDto,
-} from '../dto/group.dto';
+} from '../dto/group.dto.js';
 import {
   CreateGroupResponseDto,
   GroupResponseDto,
-} from '../dto/response.dto';
+} from '../dto/response.dto.js';
 
 @ApiTags('group')
 @Controller()

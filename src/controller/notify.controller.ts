@@ -7,10 +7,10 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { NotifyService } from '../notify/notify.service';
-import { ApiResult } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { NotifyService } from '../notify/notify.service.js';
+import { ApiResult } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
 
 /**
  * Notification endpoints. The notify write path is triggered inside

@@ -7,7 +7,7 @@ import {
   SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { RedisService } from '../redis/redis.service';
+import { RedisService } from '../redis/redis.service.js';
 
 export const THROTTLE_KEY = 'throttle';
 

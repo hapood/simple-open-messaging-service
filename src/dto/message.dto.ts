@@ -8,7 +8,7 @@ import {
   IsString,
   Min,
 } from 'class-validator';
-import { ContentType } from '../prisma/generated/client';
+import { ContentType } from '../prisma/generated/client.js';
 
 /** 消息域请求 DTO。验证规则从原 message.controller 内联类型搬来。 */
 

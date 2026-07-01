@@ -1,12 +1,12 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { PrismaService } from '../prisma.service.js';
 import {
   Prisma,
   MessageThreadType,
   UserMessageThreadStatus,
-} from '../prisma/generated/client';
+} from '../prisma/generated/client.js';
 import * as jsonwebtoken from 'jsonwebtoken';
-import { requireEnv } from '../common/env';
+import { requireEnv } from '../common/env.js';
 
 const secret = requireEnv('GROUP_INVITE_SECRET');
 

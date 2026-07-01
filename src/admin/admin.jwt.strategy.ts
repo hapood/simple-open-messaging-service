@@ -1,7 +1,7 @@
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PassportStrategy } from '@nestjs/passport';
 import { Injectable } from '@nestjs/common';
-import { jwtConstants } from '../auth/constants';
+import { jwtConstants } from '../auth/constants.js';
 
 /**
  * Admin JWT 策略（独立 'admin-jwt'）：用独立 adminSecret 校验，且必须带 scope:'admin'。

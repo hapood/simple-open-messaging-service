@@ -1,12 +1,12 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
-import { PrismaService } from '../prisma.service';
+import { PrismaService } from '../prisma.service.js';
 import {
   ContentType,
   Prisma,
   UserMessageThreadStatus,
   MessageThreadType,
-} from '../prisma/generated/client';
-import { NotifyService } from '../notify/notify.service';
+} from '../prisma/generated/client.js';
+import { NotifyService } from '../notify/notify.service.js';
 @Injectable()
 export class MessageService implements OnModuleInit {
   constructor(

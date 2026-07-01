@@ -10,20 +10,20 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
-import { LocalAuthGuard } from '../auth/local-auth.guard';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { ThrottleGuard, Throttle } from '../auth/throttle.guard';
-import { AuthService } from '../auth/auth.service';
-import { LoginAuthInfo } from '../auth/local.strategy';
-import { ApiResult } from '../common/api-result';
-import { BusinessCode } from '../common/business-code';
+import { LocalAuthGuard } from '../auth/local-auth.guard.js';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
+import { AuthService } from '../auth/auth.service.js';
+import { LoginAuthInfo } from '../auth/local.strategy.js';
+import { ApiResult } from '../common/api-result.js';
+import { BusinessCode } from '../common/business-code.js';
 import {
   LoginDto,
   RefreshTokenDto,
   LogoutDto,
   ChangePasswordDto,
   RevokeSessionDto,
-} from '../dto/auth.dto';
+} from '../dto/auth.dto.js';
 
 @ApiTags('auth')
 @Controller()

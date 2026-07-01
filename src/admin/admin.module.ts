@@ -1,15 +1,15 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { AdminController } from './admin.controller';
-import { AdminAuthService } from './admin-auth.service';
-import { AdminJwtStrategy } from './admin.jwt.strategy';
-import { AdminAuthGuard } from './admin-auth.guard';
-import { PrismaService } from '../prisma.service';
-import { jwtConstants } from '../auth/constants';
-import { AuthModule } from '../auth/auth.module';
-import { UserManageModule } from '../user-manage/user-manage.module';
-import { GatewayModule } from '../gateway/gateway.module';
+import { AdminController } from './admin.controller.js';
+import { AdminAuthService } from './admin-auth.service.js';
+import { AdminJwtStrategy } from './admin.jwt.strategy.js';
+import { AdminAuthGuard } from './admin-auth.guard.js';
+import { PrismaService } from '../prisma.service.js';
+import { jwtConstants } from '../auth/constants.js';
+import { AuthModule } from '../auth/auth.module.js';
+import { UserManageModule } from '../user-manage/user-manage.module.js';
+import { GatewayModule } from '../gateway/gateway.module.js';
 
 @Module({
   imports: [

@@ -1,13 +1,13 @@
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { UserService } from '../user/user.service';
+import { UserService } from '../user/user.service.js';
 import { JwtService } from '@nestjs/jwt';
-import { User as UserModel } from '../prisma/generated/client';
-import * as argon2 from 'argon2';
+import { User as UserModel } from '../prisma/generated/client.js';
+import argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
-import { PrismaService } from '../prisma.service';
-import { RedisService } from '../redis/redis.service';
-import { jwtConstants } from './constants';
+import { PrismaService } from '../prisma.service.js';
+import { RedisService } from '../redis/redis.service.js';
+import { jwtConstants } from './constants.js';
 
 const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 每日清理一次过期记录
 

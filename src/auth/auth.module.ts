@@ -1,15 +1,15 @@
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
-import { AuthService } from './auth.service';
-import { UserModule } from '../user/user.module';
+import { AuthService } from './auth.service.js';
+import { UserModule } from '../user/user.module.js';
 import { PassportModule } from '@nestjs/passport';
-import { LocalStrategy } from './local.strategy';
-import { JwtStrategy } from './jwt.strategy';
+import { LocalStrategy } from './local.strategy.js';
+import { JwtStrategy } from './jwt.strategy.js';
 import { JwtModule } from '@nestjs/jwt';
-import { jwtConstants } from './constants';
-import { UserService } from '../user/user.service';
-import { PrismaService } from '../prisma.service';
-import { ThrottleGuard } from './throttle.guard';
+import { jwtConstants } from './constants.js';
+import { UserService } from '../user/user.service.js';
+import { PrismaService } from '../prisma.service.js';
+import { ThrottleGuard } from './throttle.guard.js';
 
 @Module({
   imports: [
