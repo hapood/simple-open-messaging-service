@@ -31,6 +31,18 @@
   }
 }
 
+// Centered spinner ring shared by the top ghost (.cb-ghost-loading) and the tail cap (.cb-tail-cap--loading). Factored so
+// the two loading edges stay visually identical; emit inside a ::before rule.
+@mixin cb-spin-ring {
+  content: '';
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2.5px solid var(--cb-spin-track);
+  border-top-color: var(--cb-spin-fg); // only the top arc is highlighted → rotates as a spinner
+  animation: cb-spin 0.8s linear infinite;
+}
+
 // .cb-ghost-loading：ghost 加载指示——业界主流聊天「向上加载更老消息」的增量加载指示用居中 spinner
 //（WhatsApp 风；Telegram 骨架是初始空白填充用、非本场景）。骨架/消息形占位不适合此处：仅一行、且不知 self/other/
 // 内容类型，形状只能猜。spinner 与内容无关、轻、语义准（加载中）。结构由 createGhostCbElement 产（空 host + ::before 圆环）。
@@ -45,18 +57,45 @@
   justify-content: center;
 
   &::before {
-    content: '';
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    border: 2.5px solid var(--cb-spin-track);
-    border-top-color: var(--cb-spin-fg);   // 仅顶部高亮 → 旋转成「转圈」
-    animation: cb-spin 0.8s linear infinite;
+    @include cb-spin-ring;
   }
 }
 
 // 深色模式（[data-theme="dark"]）：spinner token 翻成浅色（WhatsApp dark 底 #0b141a 上可辨；fg 走 --app-text-faint 已自适应）。
 [data-theme="dark"] .cb-ghost-loading {
+  --cb-spin-track: rgba(255, 255, 255, 0.14);
+}
+
+// .cb-tail-cap: the tail cap — a kernel-managed persistent non-message element that is always the last child of content
+//  (never in mounted[], so it neither corrupts the newer cursor mounted[last].item.id nor shifts any real item's topOf).
+//  Two modes, switched by the kernel from the newer boundary:
+//   ① noNewer (at the global newest) = gap: a small spacer between the last message and the input bar;
+//   ② !noNewer (more newer to load)  = loading: the same centered spinner as the top ghost (reuses @mixin cb-spin-ring).
+//  The height is MEASURED by the kernel (offsetHeight); CSS owns the dimension, the kernel reads it, so totalH stays
+//  exact even if the gap/spinner size is tuned here. It does NOT reuse .cb-ghost-loading: the playground sticky-date
+//  query targets .cb-ghost-loading (chatbox-playground.component.ts) meaning the TOP ghost — tagging the cap with it
+//  would make that query match the bottom and wrongly suppress the date float.
+.cb-tail-cap {
+  box-sizing: border-box;
+  // base = hidden (no height); --gap / --loading modifiers supply the height. Kernel measures the real offsetHeight.
+}
+.cb-tail-cap--gap {
+  height: 14px; // small breathing room between the last message and the input bar (at the global newest)
+}
+.cb-tail-cap--loading {
+  --cb-spin-track: rgba(0, 0, 0, 0.12);
+  --cb-spin-fg: var(--app-text-faint);
+  height: 48px; // same row height as the top ghost spinner (GHOST_H)
+  display: flex;
+  align-items: center;
+  justify-content: center;
+
+  &::before {
+    @include cb-spin-ring;
+  }
+}
+// Dark mode: spinner track flips to a light tint (fg via --app-text-faint is already adaptive).
+[data-theme="dark"] .cb-tail-cap--loading {
   --cb-spin-track: rgba(255, 255, 255, 0.14);
 }
 
@@ -117,7 +156,20 @@
   to   { opacity: 0; transform: scale(0.96); }
 }
 
+// .cb-move: FLIP reorder animation (reconcilePending sinking a failed send to the tail, etc.). The kernel sets a per-
+// element --cb-move-dy = (oldTop - newTop) BEFORE adding this class (after a forced reflow), so the element — already at
+// its new layout position — starts visually at its OLD position (translateY(var)) and slides to identity (new position).
+// `both` fill applies the `from` immediately so there is no one-frame flash at the un-inverted new position.
+// Height-model safe: transform never affects offsetHeight, so the kernel's measured height is unchanged during the move.
+.cb-move { animation: cb-move 0.3s ease-out both; }
+
+@keyframes cb-move {
+  from { transform: translateY(var(--cb-move-dy, 0px)); }
+  to   { transform: none; }
+}
+
 // A11y: reduced motion -> near-instant (still fires animationend so the kernel completes its lifecycle; animating drains).
 @media (prefers-reduced-motion: reduce) {
-  .cb-enter, .cb-leave { animation-duration: 0.01s; }
+  .cb-enter, .cb-leave, .cb-move { animation-duration: 0.01s; }
 }
+

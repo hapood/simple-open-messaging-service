@@ -1,0 +1,83 @@
+// FILE 消息行：复用共享规则（@use row-base）+ file 特有（固定宽气泡 + 类型图标 + 下载锚点）。
+@use '../row-base' as *;
+
+// file 气泡：固定 280px 宽（绝对宽度 + max-width:100% 收缩窄屏，遵循 _row-base 宽度自洽契约）。
+.pg-bubble.pg-file {
+  width: 280px;
+  max-width: 100%;
+  padding: 8px 10px;
+}
+
+// 点击区：图标 + 元信息 + 下载glyph 横排。整行是 <a download>（无 url 时退化为 div）。
+.pg-file-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-decoration: none;
+  color: inherit;
+}
+
+// 类型图标：圆角方块 + 类别色 tint + 居中文件 svg + 底部扩展名小条。
+.pg-file-ico {
+  position: relative;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #fff;
+  background: var(--pg-file-c, #6b7280);
+}
+.pg-file-svg {
+  width: 26px;
+  height: 26px;
+}
+.pg-file-ext {
+  position: absolute;
+  bottom: 5px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+// 类别 tint（pdf 红 / doc 蓝 / sheet 绿 / slides 橙 / archive 紫 / text 灰 / file 蓝灰）。
+.pg-file-ico--pdf { --pg-file-c: #e53935; }
+.pg-file-ico--doc { --pg-file-c: #2b6cb0; }
+.pg-file-ico--sheet { --pg-file-c: #2e7d32; }
+.pg-file-ico--slides { --pg-file-c: #ef6c00; }
+.pg-file-ico--archive { --pg-file-c: #7b1fa2; }
+.pg-file-ico--text { --pg-file-c: #546e7a; }
+.pg-file-ico--file { --pg-file-c: #6b7280; }
+
+// 元信息列：文件名（单行省略）+ 大小（弱化）。
+.pg-file-meta {
+  flex: 1 1 auto;
+  min-width: 0; // 允许 ellipsis 子项收缩
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pg-file-name {
+  font-size: 14px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-all;
+}
+.pg-file-size {
+  font-size: 12px;
+  opacity: 0.6;
+}
+
+// 下载 glyph（弱化，悬停加深；整行可点下载，这是辅助视觉提示）。
+.pg-file-dl {
+  flex: 0 0 auto;
+  opacity: 0.4;
+}
+.pg-file-row:hover .pg-file-dl {
+  opacity: 0.8;
+}

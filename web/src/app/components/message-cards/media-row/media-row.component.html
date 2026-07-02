@@ -31,9 +31,17 @@
         }
       </div>
       @if (statusTick()) {
-        <span class="pg-status pg-status--{{ data().status }}" aria-hidden="true"></span>
+        @if (isFailed()) {
+          <span class="pg-status pg-status--failed" role="button" tabindex="0"
+                aria-label="Retry send"
+                (click)="retry.emit(data().msgId)"
+                (keydown.enter)="retry.emit(data().msgId)"
+                (keydown.space)="retry.emit(data().msgId)"></span>
+        } @else {
+          <span class="pg-status pg-status--{{ data().status }}" aria-hidden="true"></span>
+        }
       }
-      <span class="pg-time pg-{{ side() }}">{{ data().time }}</span>
+      <span class="pg-time">{{ data().time }}</span>
     </div>
   </div>
 

@@ -89,19 +89,25 @@ export class ThreadParticipantService {
    * mark-read for an older message (e.g. an out-of-order retry, or marking read on an older message
    * after newer ones arrived) never regresses the cursor. Returns whether the cursor actually moved,
    * so the controller can tell "already read up to here" from a genuine update.
+   *
+   * Implemented as a single conditional updateMany so monotonicity is a DB-level guarantee under
+   * concurrency — two racing mark-reads (e.g. from two tabs) can no longer both observe a stale
+   * cursor and let the later write regress it. The WHERE clause matches only when the new id is
+   * strictly greater than the current watermark (or the watermark is NULL); count>0 means it moved.
    */
   async advanceReadCursor(
     userId: number,
     threadId: number,
     lastReadMsgId: bigint,
   ): Promise<boolean> {
-    const p = await this.findParticipant(userId, threadId);
-    if (p === null) return false;
-    if (p.lastReadMsgId !== null && p.lastReadMsgId >= lastReadMsgId) return false;
-    await this.prisma.threadParticipant.update({
-      where: { userId_threadId: { userId, threadId } },
+    const result = await this.prisma.threadParticipant.updateMany({
+      where: {
+        userId,
+        threadId,
+        OR: [{ lastReadMsgId: null }, { lastReadMsgId: { lt: lastReadMsgId } }],
+      },
       data: { lastReadMsgId },
     });
-    return true;
+    return result.count > 0;
   }
 }

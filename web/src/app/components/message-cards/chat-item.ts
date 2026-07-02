@@ -7,6 +7,18 @@ export interface AlbumImage {
   msgId?: string;
 }
 
+/** FILE 消息附件：服务端 POST /upload/file 返回的 { url, name, size, mimeType }（存于 Message.content 的 JSON）。 */
+export interface FileInfo {
+  /** 服务端相对 URL（/uploads/<name>），FileRow 的下载锚点 href。 */
+  url: string;
+  /** 安全化后的展示文件名。 */
+  name: string;
+  /** 字节数（卡片渲染为可读大小）。 */
+  size: number;
+  /** 校验过的 mimetype（决定文件类型图标）。 */
+  mimeType: string;
+}
+
 /**
  * 已解析、可渲染的消息数据。HttpItemSource 把后端 Message 翻成它。
  *
@@ -25,16 +37,23 @@ export interface ChatMsgData {
   name: string;
   /** PURE_TEXT 正文 / INVITE 的 JSON 原文 / 未支持类型兜底文本。 */
   text: string;
+  /** PURE_TEXT 是否为富文本 HTML（来自 Tiptap 编辑器：含 <strong>/<em>/<code>/@mention chip）。
+   *  true=用 [innerHTML] 渲染（Angular 自动 sanitize）；缺省/false=纯文本 {{}} 渲染（自动转义）。
+   *  这样区分既能展示编辑器的富文本/原子 @chip，又让含 `<` 的历史/收到的纯文本安全转义不破。 */
+  rich?: boolean;
   /** HH:mm（日期上下文交 date 分隔行）。 */
   time: string;
   contentType: 'PURE_TEXT' | 'INVITE' | 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO';
   /** IMAGE：相册图片（同发送者连续 IMAGE 已合并为一条）。null=非图片。 */
   images: AlbumImage[] | null;
+  /** FILE：附件元信息（url/name/size/mimeType）。null=非文件。 */
+  file: FileInfo | null;
   /** 原始毫秒（日期分隔判定）。 */
   createdAtMs: number;
-  /** Delivery state for self-sent messages, rendered as a status tick (sending=clock, sent=check). Absent on received
-   *  messages (no tick). The kernel treats this opaquely; only the row component reads it. */
-  status?: 'sending' | 'sent';
+  /** Delivery state for self-sent messages, rendered as a status tick (sending=animated spinner ring, sent=check,
+   *  failed=retry glyph — click on the row's retry output re-sends). Absent on received messages (no tick). The kernel
+   *  treats this opaquely; only the row component reads it. */
+  status?: 'sending' | 'sent' | 'failed';
   /** Why a transient item exists — mirrors the playground insert orchestrator's `type` ('pending' = optimistic in
    *  flight, 'fake' = debug insert). Absent on history messages. Used by the dev badge / debug UI only; the kernel
    *  ignores it (a transient is a transient regardless of kind). */

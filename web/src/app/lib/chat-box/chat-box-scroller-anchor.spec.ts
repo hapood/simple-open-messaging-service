@@ -7,7 +7,7 @@
  * mock source 用 msgId 游标（'m-K'，K=0 最老），不再连续抽象 id —— 验证内核 index 与 source id 解耦。
  */
 import { ChatBoxScrollerAnchor, CbElement, CbItem } from './chat-box-scroller-anchor';
-import type { CbSource } from './source';
+import type { CbSource } from './cb-source';
 
 /** 'm-K' → K（msgId 解析为序号，供 fakeSource 游标定位）。 */
 function num(id: string | number): number { return Number(String(id).replace(/^m-/, '')); }
@@ -27,10 +27,47 @@ function controllableHooks(itemHeight = 100): { hooks: { createItem: (item: CbIt
         void item;
         const el = document.createElement('div');
         Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => itemHeight });
-        return { el, onHeightChange: () => () => {}, destroy: () => {} };
+        return { el, onHeightChange: () => () => {}, update: () => {}, destroy: () => {} };
       },
     },
   };
+}
+
+/** Hooks that record createItem vs update so reconcilePending tests can assert in-place morph (update, NOT recreate). */
+function trackingHooks(itemHeight = 100): {
+  hooks: { createItem: (item: CbItem<number>, prev: CbItem<number> | null) => CbElement<number> };
+  createCount: () => number;
+  updateCount: () => number;
+  dataOf: (id: string) => number;
+} {
+  let creates = 0;
+  let updates = 0;
+  const dataMap = new Map<string, number>();
+  return {
+    hooks: {
+      createItem: (item): CbElement<number> => {
+        creates++;
+        const id = String(item.id);
+        dataMap.set(id, item.data);
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => itemHeight });
+        return {
+          el,
+          onHeightChange: () => () => {},
+          update: (next) => { updates++; dataMap.set(id, next.data); },
+          destroy: () => {},
+        };
+      },
+    },
+    createCount: () => creates,
+    updateCount: () => updates,
+    dataOf: (id) => dataMap.get(id) ?? -1,
+  };
+}
+
+/** fakeSource with a mutable pending array the test mutates to simulate MockItemSource.failPending/retryPending. */
+function pendingSource(total: number, pending: CbItem<number>[]): CbSource<number> {
+  return { ...fakeSource(total), getPending: () => pending.slice() };
 }
 
 /** Fake source：N 条 msg（'m-0'最老 .. 'm-(N-1)'最新）。游标 getOlder/getNewer，升序返回。 */
@@ -58,7 +95,8 @@ function fakeSource(N: number): CbSource<number> & { gets: () => number; newers:
     },
     getOlder: async (cursorId, count) => { gets++; const k = num(cursorId); return slice(k - count, k); },
     getNewer: async (cursorId, count) => { newers++; const k = num(cursorId); return slice(k + 1, k + 1 + count); },
-    appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
+    pushLive: (_items) => { /* cache-only: direct-mount path mounts the raw items */ },
+    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, { gets: () => gets, newers: () => newers });
@@ -83,7 +121,8 @@ function controllableInitSource(N: number): CbSource<number> & {
     init: () => new Promise<CbItem<number>[]>(resolve => { queue.push(resolve); }),
     getOlder: async (c, k) => { const i = num(c); return slice(i - k, i); },
     getNewer: async (c, k) => { const i = num(c); return slice(i + 1, i + 1 + k); },
-    appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
+    pushLive: (_items) => { /* cache-only: direct-mount path mounts the raw items */ },
+    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, {
@@ -121,7 +160,8 @@ function controllableSource(N: number): CbSource<number> & {
       return new Promise(resolve => { resolver = (items?: CbItem<number>[]) => resolve(items ?? slice(pendingRange.lo, pendingRange.hi)); });
     },
     getNewer: async (cursorId, count) => { const k = num(cursorId); return slice(k + 1, k + 1 + count); },
-    appendLive: (items) => items.map((it, i) => ({ ...it, id: `live-${i}`, boundary: 'newest' as const })),
+    pushLive: (_items) => { /* cache-only: direct-mount path mounts the raw items */ },
+    getPending: () => [],
     destroy: () => {},
   };
   return Object.assign(src, {
@@ -421,7 +461,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     const src: CbSource<number> = {
       init: async () => [{ id: 'other-1', data: 1 }, { id: 'other-2', data: 2 }],
       getOlder: async () => [], getNewer: async () => [],
-      appendLive: (items) => items, destroy: () => {},
+      pushLive: () => {}, getPending: () => [], destroy: () => {},
     };
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
     scroller.scrollToIndex('m-target', 'center');
@@ -483,7 +523,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
         calls.push({ id, prev: prev ? String(prev.id) : null });
         const el = document.createElement('div');
         Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 100 });
-        return { el, onHeightChange: () => () => ({}), destroy: () => {} };
+        return { el, onHeightChange: () => () => ({}), update: () => {}, destroy: () => {} };
       },
     };
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
@@ -528,12 +568,11 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     viewport.scrollTop = content.scrollHeight - 600; // 滚到底边缘 → loadNewer
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
-    expect(src.newers()).toBeGreaterThan(0);
-    expect(scroller.getInfo().newestId).not.toBe('ins');
-    expect(num(scroller.getInfo().newestId as string)).toBeGreaterThan(num(tailId));
-    // 方案 A 贴底跟随链（loadNewer wasAtBottom→scrollToBottom→loadNewer 直到全局最新）：游标始终跳过 transient，
-    // 一路取到 m-499 —— 证明 transient 从未污染游标（无守卫则首批 getNewer('ins')=[] 误锁 noNewer、卡在 'ins'）。
-    expect(scroller.getInfo().newestId).toBe('m-499');
+    expect(src.newers()).toBeGreaterThan(0);                      // getNewer called with the real cursor (skipped 'ins')
+    expect(scroller.getInfo().newestId).toBe('ins');              // transient stays at the tail (reals insert before the tail block)
+    expect(scroller.getInfo().noNewer).toBe(false);               // NOT falsely locked (would be true without the guard)
+    // reals were loaded before the transient: the item just newer than the original tail is now mounted
+    expect(content.querySelector(`[data-cb-id="m-${num(tailId) + 1}"]`)).not.toBeNull();
   });
 
   // ── Phase A/B/C (方案 A mirror): enter animation, transient-safe trim, settle, removeItem (no scrollTop compensation) ──
@@ -568,19 +607,39 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(content.querySelector('[data-cb-id="ins"]')).not.toBeNull();
   });
 
-  it('Phase B: appendLive settles a matching transient in place (no duplicate mount)', async () => {
+  it('Phase B: appendLive dedups an item matching a mounted optimistic (no duplicate mount)', async () => {
     const { hooks } = controllableHooks();
     const base = fakeSource(500);
-    const src: CbSource<number> = { ...base, appendLive: (items) => items.map(it => ({ ...it, boundary: 'newest' as const })) };
+    const src: CbSource<number> = { ...base, pushLive: () => {} };
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
     await scroller.init();
     const mountedBefore = scroller.getInfo().mounted;
-    scroller.insertAfter('m-499', { id: 'pending-0', data: -1 });
+    scroller.insertAfter('m-499', { id: 'pending-0', data: -1 }, { optimistic: true });
     animEnd('pending-0');
-    scroller.appendLive([{ id: 'pending-0', data: 777 }]);
+    scroller.appendLive([{ id: 'pending-0', data: 777 }]); // same id → dedup skips
     await flush();
     expect(scroller.getInfo().mounted).toBe(mountedBefore + 1); // no duplicate
     expect(content.querySelector('[data-cb-id="pending-0"]')).not.toBeNull();
+  });
+
+  it('onMessageSignal reconciles an optimistic send into its confirmed real (no duplicate, real revealed)', async () => {
+    const { hooks } = controllableHooks();
+    // The real confirm carries a FRESH server id + the SAME clientMessageId as the optimistic (reconcile key).
+    const base = fakeSource(500);
+    const src: CbSource<number> = { ...base, getNewer: async () => [{ id: 'real-0', data: 777, clientMessageId: 'cid-0', boundary: 'newest' as const }], pushLive: () => {} };
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    const mountedBefore = scroller.getInfo().mounted;
+    scroller.insertAfter('m-499', { id: 'pending-0', data: -1, clientMessageId: 'cid-0' }, { optimistic: true });
+    animEnd('pending-0');
+    expect(scroller.getInfo().mounted).toBe(mountedBefore + 1);
+    const p = scroller.onMessageSignal();
+    await flush(); // loadNewer mounts the real; reconcile is synchronous (no slide to drain)
+    await p;
+    await flush();
+    expect(content.querySelectorAll('[data-cb-id="pending-0"]').length).toBe(0); // optimistic removed
+    expect(content.querySelectorAll('[data-cb-id="real-0"]').length).toBe(1);    // real revealed
+    expect(content.querySelector('[data-cb-id="real-0"]')?.classList.contains('cb-confirmed')).toBe(true); // real tagged cb-confirmed
   });
 
   it('Phase C: removeItem(mountedId) plays cb-leave then unmounts on animationend; returns 1', async () => {
@@ -633,5 +692,188 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     animEnd('m-400');
     await flush();
     expect(src.gets()).toBeGreaterThan(getsBefore); // resumed
+  });
+
+  // ── Tail cap: persistent non-message element at the newer edge (mirrors the top ghost; never in mounted[]) ──
+
+  it('tail cap: always the last child of content, exactly one, after init', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const caps = content.querySelectorAll('.cb-tail-cap');
+    expect(caps.length).toBe(1);
+    expect(content.lastElementChild).toBe(caps[0]); // always last: every append inserts before it
+  });
+
+  it('tail cap: gap mode at the global newest (noNewer) — cb-tail-cap--gap, height measured + folded into totalH', async () => {
+    const { hooks } = controllableHooks(); // 100px/item
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init(); // pinned to bottom → noNewer=true
+    expect(scroller.getInfo().noNewer).toBe(true);
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
+    expect(cap.classList.contains('cb-tail-cap--loading')).toBe(false);
+    expect(cap.offsetHeight).toBe(14); // MEASURED: CSS owns the dimension, the kernel reads offsetHeight
+    expect(sumChildrenHeight(content)).toBe(100 * 100 + 14); // cap height folded into the content total
+  });
+
+  it('tail cap: loading mode (!noNewer) after a mid-history jump — cb-tail-cap--loading spinner', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init({ startMsgId: 'm-2500', anchor: 'center' }); // mid-history → noNewer=false
+    expect(scroller.getInfo().noNewer).toBe(false);
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    expect(cap.classList.contains('cb-tail-cap--loading')).toBe(true);
+    expect(cap.classList.contains('cb-tail-cap--gap')).toBe(false);
+    expect(cap.offsetHeight).toBe(48); // same row height as the top ghost spinner
+  });
+
+  it('tail cap: loading→gap when scrollToBottom reaches the global newest (re-measured on the reaching batch)', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init(); // noNewer=true → gap
+    scroller.scrollToIndex('m-100', 'center'); // re-seed mid-history → noNewer=false → loading
+    await flush();
+    expect(scroller.getInfo().noNewer).toBe(false);
+    expect(content.querySelector('.cb-tail-cap')!.classList.contains('cb-tail-cap--loading')).toBe(true);
+    scroller.scrollToBottom(); // chains (loadNewer→scrollToBottom) to the global newest
+    await flush();
+    expect(scroller.getInfo().noNewer).toBe(true);
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true);
+    expect(cap.offsetHeight).toBe(14); // height re-measured 48→14 on the batch that reached newest
+  });
+
+  it('tail cap: never in mounted[] — newestId is the last real item, the cap carries no data-cb-id', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    expect(cap.dataset['cbId']).toBeUndefined();        // not a rendered item → no cursor corruption
+    expect(scroller.getInfo().newestId).toBe('m-499');  // cursor is the last REAL item, never the cap
+  });
+
+  it('tail cap: persists across a re-seed (unmountAll keeps it; still exactly one after a jump)', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
+    await scroller.init();
+    expect(content.querySelectorAll('.cb-tail-cap').length).toBe(1);
+    scroller.scrollToIndex('m-100', 'center'); // re-seed: unmountAll does NOT remove the cap
+    await flush();
+    expect(content.querySelectorAll('.cb-tail-cap').length).toBe(1); // reused, not duplicated
+    expect(content.lastElementChild?.classList.contains('cb-tail-cap')).toBe(true);
+  });
+
+  it('tail cap: optimistic insert at the tail while noNewer stays gap (no phantom spinner under a sent message)', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init(); // noNewer=true
+    scroller.insertAfter('m-499', { id: 'ins', data: -1 }); // transient inserted before the cap
+    const cap = content.querySelector<HTMLElement>('.cb-tail-cap')!;
+    expect(cap.classList.contains('cb-tail-cap--gap')).toBe(true); // still gap, NOT loading
+    expect(content.lastElementChild).toBe(cap);                    // cap still last
+    expect(content.querySelector('[data-cb-id="ins"]')?.nextElementSibling).toBe(cap); // transient before the cap
+  });
+
+  it('tail cap: destroy removes it (content fully empty)', async () => {
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    expect(content.querySelector('.cb-tail-cap')).not.toBeNull();
+    scroller.destroy();
+    expect(content.querySelectorAll('.cb-tail-cap').length).toBe(0);
+    expect(content.children.length).toBe(0);
+  });
+
+  // ── reconcilePending: in-place failure morph + FLIP reorder (sending→failed, sink to tail, stable clientMessageId) ──
+
+  it('reconcilePending morphs a failed send IN PLACE (same node, update not recreate, no cb-leave/cb-enter)', async () => {
+    const t = trackingHooks();
+    const pending: CbItem<number>[] = [];
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks: t.hooks, source: pendingSource(500, pending) });
+    await scroller.init();
+    const opt: CbItem<number> = { id: 'cid-0', data: 1, clientMessageId: 'cid-0' };
+    pending.push(opt);
+    scroller.insertAfter('m-499', opt, { optimistic: true });
+    animEnd('cid-0');
+    const elBefore = content.querySelector('[data-cb-id="cid-0"]');
+    const mountedBefore = scroller.getInfo().mounted;
+    const createsBefore = t.createCount();
+    const updatesBefore = t.updateCount();
+
+    pending[0] = { id: 'cid-0', data: 2, clientMessageId: 'cid-0' }; // source flips status (new data ref, same id)
+    await scroller.reconcilePending();
+
+    expect(content.querySelector('[data-cb-id="cid-0"]')).toBe(elBefore);
+    expect(t.createCount()).toBe(createsBefore);
+    expect(t.updateCount()).toBe(updatesBefore + 1);
+    expect(t.dataOf('cid-0')).toBe(2);
+    expect(scroller.getInfo().mounted).toBe(mountedBefore);
+    expect(content.querySelector('[data-cb-id="cid-0"]')?.classList.contains('cb-move')).toBe(false);
+  });
+
+  it('reconcilePending FLIP-reorders a failed send to the tail; the shoved sibling animates too', async () => {
+    const { hooks } = controllableHooks();
+    const pending: CbItem<number>[] = [];
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: pendingSource(500, pending) });
+    await scroller.init();
+    const A: CbItem<number> = { id: 'cid-A', data: 10, clientMessageId: 'cid-A' };
+    const B: CbItem<number> = { id: 'cid-B', data: 20, clientMessageId: 'cid-B' };
+    pending.push(A, B);
+    scroller.insertAfter('m-499', A, { optimistic: true });
+    animEnd('cid-A');
+    scroller.insertAfter('cid-A', B, { optimistic: true });
+    animEnd('cid-B');
+    pending.splice(0, 2, { id: 'cid-B', data: 20, clientMessageId: 'cid-B' }, { id: 'cid-A', data: 11, clientMessageId: 'cid-A' });
+    await scroller.reconcilePending();
+
+    const ids = Array.from(content.children).filter(c => (c as HTMLElement).dataset['cbId']).map(c => (c as HTMLElement).dataset['cbId'] as string);
+    const i = ids.lastIndexOf('m-499');
+    expect(ids.slice(i + 1)).toEqual(['cid-B', 'cid-A']);
+    expect(content.querySelector('[data-cb-id="cid-A"]')?.classList.contains('cb-move')).toBe(true);
+    expect(content.querySelector('[data-cb-id="cid-B"]')?.classList.contains('cb-move')).toBe(true);
+    animEnd('cid-A'); animEnd('cid-B');
+    expect(content.querySelector('[data-cb-id="cid-A"]')?.classList.contains('cb-move')).toBe(false);
+    expect(content.querySelector('[data-cb-id="cid-B"]')?.classList.contains('cb-move')).toBe(false);
+  });
+
+  it('reconcilePending morphs a retried send back in place at its position (no remount, no move)', async () => {
+    const t = trackingHooks();
+    const pending: CbItem<number>[] = [];
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks: t.hooks, source: pendingSource(500, pending) });
+    await scroller.init();
+    pending.push({ id: 'cid-A', data: 10, clientMessageId: 'cid-A' });
+    scroller.insertAfter('m-499', pending[0], { optimistic: true });
+    animEnd('cid-A');
+    pending[0] = { id: 'cid-A', data: 11, clientMessageId: 'cid-A' };
+    await scroller.reconcilePending();
+    animEnd('cid-A');
+    const elFailed = content.querySelector('[data-cb-id="cid-A"]');
+    const createsBeforeRetry = t.createCount();
+
+    pending[0] = { id: 'cid-A', data: 12, clientMessageId: 'cid-A' };
+    await scroller.reconcilePending();
+
+    expect(content.querySelector('[data-cb-id="cid-A"]')).toBe(elFailed);
+    expect(t.createCount()).toBe(createsBeforeRetry);
+    expect(content.querySelector('[data-cb-id="cid-A"]')?.classList.contains('cb-move')).toBe(false);
+    expect(t.dataOf('cid-A')).toBe(12);
+  });
+
+  it('destroy during a FLIP move drains cleanly (moveTimer cleared, animating not leaked)', async () => {
+    const { hooks } = controllableHooks();
+    const pending: CbItem<number>[] = [];
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: pendingSource(500, pending) });
+    await scroller.init();
+    pending.push({ id: 'cid-A', data: 10, clientMessageId: 'cid-A' }, { id: 'cid-B', data: 20, clientMessageId: 'cid-B' });
+    scroller.insertAfter('m-499', pending[0], { optimistic: true });
+    animEnd('cid-A');
+    scroller.insertAfter('cid-A', pending[1], { optimistic: true });
+    animEnd('cid-B');
+    pending.splice(0, 2, { id: 'cid-B', data: 20, clientMessageId: 'cid-B' }, { id: 'cid-A', data: 11, clientMessageId: 'cid-A' });
+    await scroller.reconcilePending();
+    expect(content.querySelector('[data-cb-id="cid-A"]')?.classList.contains('cb-move')).toBe(true);
+    expect(() => scroller?.destroy()).not.toThrow();
+    scroller = undefined;
   });
 });

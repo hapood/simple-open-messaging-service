@@ -110,12 +110,12 @@ export class GroupController {
       owner,
       memberIds,
     });
-    // Announce each directly-added member to their own online connections (the owner learns of the
-    // group via the response; other existing members see GROUP_MEMBER_JOINED if they exist later).
+    // Announce each directly-added member through the SAME fan-out path as group/join. After
+    // createNewGroup the active set is {owner ∪ added members}, so each event reaches the owner's
+    // other devices (which only get {threadId, groupId} from the HTTP response otherwise) and every
+    // co-added member — letting every roster converge without a follow-up group/members fetch.
     for (const id of memberIds) {
-      this.sseService.onGroupEvent(id, GROUP_SSE.GROUP_MEMBER_JOINED, {
-        groupId: grp.id,
-        threadId: grp.threadId,
+      await this.fanoutGroup(grp.threadId, grp.id, GROUP_SSE.GROUP_MEMBER_JOINED, {
         userId: id,
         role: GroupRole.MEMBER,
         byUserId: owner,

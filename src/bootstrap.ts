@@ -14,9 +14,12 @@ import { join } from 'path';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
 
-// Multipart upload size cap. Single source of truth — consumeImage treats over-limit as a
-// 'too-large' rejection (not a 500).
-const MULTIPART_LIMIT = 10 * 1024 * 1024;
+// Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to the
+// generic-file limit so POST /upload/file can accept large documents; images stay bounded at
+// UploadService.MAX_IMAGE_BYTES (enforced in consumeImage) so this higher ceiling does not also
+// raise it for avatars/chat-images. consumeImage/consumeFile treat over-limit as a 'too-large'
+// rejection (not a 500).
+const MULTIPART_LIMIT = 50 * 1024 * 1024;
 
 /**
  * Shared Fastify/Nest wiring — the single place plugins, global pipes/filters/interceptors,

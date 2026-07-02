@@ -154,51 +154,133 @@
   word-break: break-word;
 }
 
-// 时间戳（WhatsApp：每条气泡右下角）。
+// Timestamp (WhatsApp: bottom-right of every bubble). The status tick lives at the TOP-RIGHT corner (its original
+// placement) — only the icon artwork was upgraded to SVG; the position was never meant to change.
 .pg-time {
   position: absolute;
   right: 10px;
   bottom: 4px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  height: 14px;
   font-size: 11px;
   white-space: nowrap;
   color: var(--im-time);
 }
-// 影子时间戳：与可见时间同文同宽、不可见但占位，逼正文末行让出右下角 → 正文永不与时间重叠。
+
+// Hidden timestamp shadow: same text, same width, invisible but occupies space → forces the last line to leave the
+// bottom-right corner clear so the body text never overlaps the timestamp. (Only the time is reserved — the status
+// tick is at the top-right corner, separate from the time, so it does not enter the shadow's width.)
 .pg-time-shadow {
   display: inline-block;
   margin-left: 8px;
-  font-size: 11px; // 必须与 .pg-time 同字号 → 同宽度精确占位
+  font-size: 11px;   // must match .pg-time's font-size → identical width
   white-space: nowrap;
   visibility: hidden;
 }
 
-// Status tick for self messages (sending clock / sent check) — WhatsApp/iMessage style, sits just left of the
-// timestamp in the bubble's bottom-right corner. Data-owned: driven by ChatMsgData.status, rendered by the row
-// component (not a kernel class). Absent on received messages.
+// Icon artwork — crisp SVG masks (font-independent, unlike the Unicode ✓/↻ glyphs whose strokes bow and round
+// differently per font). The mask shapes a currentColor fill, so each icon inherits its theme color automatically:
+// gray on text bubbles, white on the media pill, danger-red for retry. White-on-transparent strokes keep the mask
+// unambiguous under both alpha (mask) and luminance (-webkit-mask) interpretations.
+//  - check: STRAIGHT, angular strokes (miter join + butt cap) — no curves at the vertex or the ends.
+//  - arc: a 3/4 circle with round caps (dasharray on a full circle) — the classic progress spinner.
+//  - retry: a clockwise circular arrow with an arrowhead.
+$pg-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='butt' stroke-linejoin='miter' stroke-miterlimit='3'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+$pg-arc:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-dasharray='42 56'/%3E%3C/svg%3E");
+$pg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpath d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10'/%3E%3C/svg%3E");
+
+// Delivery receipt tick — at the bubble's TOP-RIGHT corner (its original placement; only the icon artwork was upgraded
+// to SVG — the position was never meant to change). The icon is a centered ::before painted via mask + currentColor;
+// the confirmed-spinner overlay and the failed hit-area extender use ::after.
 .pg-status {
-  position: absolute;
-  right: 44px;        // left of the timestamp (time ~32px wide + .pg-time right:10px)
-  bottom: 4px;
+  position: absolute;  // top-right corner of the bubble (also the positioning anchor for the ::after overlays)
+  right: 6px;
+  top: 4px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 14px;
   height: 14px;
   color: var(--im-time);
-  &.pg-status--sending::before {
+  &::before {
     content: '';
-    width: 12px;
-    height: 12px;
-    border-radius: 50%;
-    border: 1.5px solid currentColor;
-    border-top-color: transparent;   // top gap -> reads as a spinning ring
+    width: 13px;
+    height: 13px;
+    flex: none;
+    background-color: currentColor;
+    mask-position: center;
+    mask-size: contain;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    -webkit-mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+  }
+  &.pg-status--sending::before {
+    mask-image: $pg-arc;
+    -webkit-mask-image: $pg-arc;
     animation: pg-status-spin 0.8s linear infinite;
   }
+  // Static sent check (default): a plain, persistent angular check for any status:'sent' row that is NOT an
+  // optimistic-send confirm — e.g. a sent real that mounts without a resort, or future delivery receipts. No animation.
+  // Only the optimistic-confirm reals (kernel-tagged cb-confirmed at the resort reveal) get the spinner→check→fade
+  // choreography under :host(.cb-confirmed) below — so the fade is scoped to those "special" items, not every sent row.
   &.pg-status--sent::before {
-    content: '✓';
-    font-size: 13px;
-    line-height: 1;
-    font-weight: 700;
+    mask-image: $pg-check;
+    -webkit-mask-image: $pg-check;
+  }
+  // Failed send: a retry arrow in the same bottom-right slot as sending/sent — persistent until the user retries (no
+  // auto-fade) and interactive. Colored danger-red so it reads as an error affordance, not a status tick. The ::after
+  // extender enlarges the tap target around the compact glyph without disturbing the cluster layout (absolute, out of
+  // flow) — clicks on the pseudo hit the span, so a ~13px icon stays comfortably tappable.
+  &.pg-status--failed {
+    color: var(--im-danger, #e53935);
+    cursor: pointer;
+    &::before {
+      mask-image: $pg-retry;
+      -webkit-mask-image: $pg-retry;
+    }
+    &::after {
+      content: '';
+      position: absolute;
+      inset: -7px;     // expand the clickable box to ~28px without affecting flex layout (visual glyph stays 13px)
+    }
+  }
+}
+
+// Optimistic-send-confirm choreography — ONLY for reals that just confirmed a mounted optimistic send. The kernel tags
+// those cb-confirmed at the resort reveal handoff (after the optimistic bubble slid on and was removed), so the sequence
+// starts fresh right at reveal, synced with the outgoing optimistic spinner:
+//   1. spinner → check: the ::after arc fades out as the ::before check fades in (D1 = 0.4s); ::after mirrors the
+//      --sending arc so the spinner reads as continuing seamlessly from the outgoing optimistic bubble.
+//   2. check → transparent: the ::before check fades to 0 over D2, beginning at D1 (only AFTER the spinner→check
+//      crossfade), then stays gone (forwards).
+// ::before is an in-flow flex item (the check, centered); ::after is an absolute overlay (the arc, centered via
+// margin:auto) so the two overlap and the crossfade reads as a morph. Bare status:'sent' (no cb-confirmed) keeps the
+// static check above and never animates. opacity-only never affects offsetHeight.
+:host(.cb-confirmed) {
+  .pg-status--sent::before {
+    animation: pg-sent-check 1.2s ease-out forwards;        // 0→1 over D1 (check appears), 1→0 over D2 (check→transparent)
+  }
+  .pg-status--sent::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 13px;                                            // matches --sending arc box → seamless spinner handoff at reveal
+    height: 13px;
+    background-color: currentColor;
+    mask-image: $pg-arc;                                    // same arc as --sending → seamless spinner handoff at reveal
+    mask-position: center;
+    mask-size: contain;
+    mask-repeat: no-repeat;
+    -webkit-mask-image: $pg-arc;
+    -webkit-mask-position: center;
+    -webkit-mask-size: contain;
+    -webkit-mask-repeat: no-repeat;
+    animation: pg-sent-spinner 0.4s ease-out forwards,      // arc fades out over D1 (spinner → check)
+               pg-status-spin 0.8s linear infinite;         // keeps spinning through the crossfade
   }
 }
 
@@ -206,8 +288,22 @@
   to { transform: rotate(360deg); }
 }
 
-// Subtle dim while a self message is still in flight (status === 'sending'); clears on confirm. The status tick stays
-// crisp (it is the progress affordance), only the bubble content dims.
+// Check lifecycle: fade in over D1 (0.4s ≈ 33% of 1.2s), then fade out to transparent over D2. The fade-out begins at
+// D1 — i.e. only after the spinner→check crossfade — per the "delayed after spinner-to-check duration" requirement.
+@keyframes pg-sent-check {
+  from { opacity: 0; }
+  33%  { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+// Spinner ring fade-out: 1 → 0 over D1 (the spinner → check crossfade window).
+@keyframes pg-sent-spinner {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+// Subtle dim while a self message is still in flight (status === 'sending'); clears on confirm. The whole bubble dims
+// uniformly (text + meta); the animated spinner remains visible enough as the progress affordance.
 .pg-bubble.pg-sending {
   opacity: 0.72;
   transition: opacity 0.2s ease-out;

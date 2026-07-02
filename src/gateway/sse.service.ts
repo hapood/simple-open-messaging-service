@@ -170,6 +170,17 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, eventName, data);
   }
 
+  /**
+   * Read-cursor advance (mark-read). Tells the caller's OTHER online connections to drop the unread
+   * badge for a thread — multi-device/tab consistency for the same per-user state that send-message
+   * already syncs by fanning NEW_MESSAGE to the sender. Fanned to the user's OWN connections only:
+   * this is NOT a read receipt to peers (the app deliberately surfaces no read receipts). No
+   * message-cursor id (a read watermark is not a resumable history cursor).
+   */
+  onReadCursor(userId: number, data: unknown) {
+    this.pushToUser(userId, 'READ_CURSOR', data);
+  }
+
   /** 全设备登出/改密/强制下线：推 FORCE_LOGOUT 后立即断开该用户所有 SSE 连接。 */
   @OnEvent('auth.sessions-invalidated')
   onSessionsInvalidated(payload: { userId: number; reason: string }) {

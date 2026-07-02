@@ -21,6 +21,16 @@ declare module 'fastify' {
       group: Group;
       participant: ThreadParticipant;
     };
+    /**
+     * Attached by ThreadAccessGuard on message routes that carry a `threadId` in the body: the
+     * resolved thread id + the caller's ACTIVE ThreadParticipant (membership + read cursor). Present
+     * iff the guard ran and the caller is a current member; the controller reads it instead of
+     * re-querying. Mirrors `groupAccess` so P2P and GROUP message routes share one access shape.
+     */
+    threadAccess?: {
+      threadId: number;
+      participant: ThreadParticipant;
+    };
   }
 }
 

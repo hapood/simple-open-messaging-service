@@ -8,7 +8,7 @@ import { BusinessCode } from './business-code.js';
  * httpStatus given (default 200 — business outcomes return HTTP 200 + business code by
  * convention; only the protocol/system layer 401/404/409/500 retains its HTTP status).
  *
- * This lets guards and services *throw* domain codes (e.g. GROUP_NOT_MEMBER) the same way
+ * This lets guards and services *throw* domain codes (e.g. THREAD_NOT_FOUND) the same way
  * controllers *return* them, so authorization can move from inline controller checks into
  * declarative guards without breaking the HTTP-200-plus-code envelope the frontend relies on.
  *

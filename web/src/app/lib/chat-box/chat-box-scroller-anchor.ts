@@ -17,7 +17,7 @@
  */
 declare const ngDevMode: boolean | null | undefined;
 
-import type { CbSource } from './source';
+import type { CbSource } from './cb-source';
 import type {
   CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts,
 } from './chat-box-scroller';
@@ -38,6 +38,13 @@ interface Entry<T> {
   /** insertAfter 插入的项为 true（未注册到 source）。其 id 非 source 游标，故游标派生（olderCursorId/newerCursorId）
    *  跳过之——防 transient 到达首/末后让 getOlder/getNewer 返回 [] 误锁 noOlder/noNewer。 */
   transient: boolean;
+  /** True for an in-flight pending send (insertAfter {optimistic:true}): registered with source.pending, returned by
+   *  getNewer when the real batch is short. Skipped by cursor derivation and protected from trim (atomic block). */
+  optimistic: boolean;
+  /** True for a just-mounted real item confirming an optimistic send — mounted visibly and flagged so reconcileOptimistic
+   *  removes the matching optimistic duplicate and tags this real cb-confirmed. No hiding: the swap is synchronous within
+   *  the loadNewer→reconcile microtask (never painted as two bubbles). Set by the loadNewer mount-dispatch; cleared at reconcile. */
+  resortTarget: boolean;
   /** True on a mount that should play the cb-enter animation (insertAfter + appendLive only; scroll-loaded history
    *  batches never animate). Consumed once by measurePending (after cb-pending is dropped): calls enterAnim and clears it. */
   animate: boolean;
@@ -51,6 +58,10 @@ interface Entry<T> {
   /** enter-animation safety timer (cb-enter). Undefined when not animating or already finished; its presence is the
    *  "still in flight" signal used by teardown to decrement `animating` exactly once. */
   enterTimer?: ReturnType<typeof setTimeout>;
+  /** FLIP-move (cb-move) safety timer. Undefined when not moving or already finished; its presence is the "still in
+   *  flight" signal used by teardown (cancelEntryAnim) to decrement `animating` exactly once. Set by flipMove when a
+   *  reconcilePending reorder (or status-morph height delta) shifts the entry's absolute top. */
+  moveTimer?: ReturnType<typeof setTimeout>;
 }
 
 export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
@@ -73,6 +84,17 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private noNewer = false;
   /** 当前显骨架的 entry（= mounted[0] 当 !noOlder）；null=无骨架。用 entry 引用（不怕数组位移）。 */
   private ghostEntry: Entry<T> | null = null;
+
+  /** Tail cap: a persistent non-message element kept as the last child of content (NEVER in mounted[]), mirroring the top
+   *  ghost at the newer edge. Gap mode (noNewer, at the global newest) = a small spacer; loading mode (!noNewer) = the same
+   *  spinner as the top ghost. Its height is folded into totalH() but never into prefix[]/topOf, so it neither shifts any
+   *  real item's position nor corrupts the newer cursor (mounted[last].item.id). Created once in the ctor; reused, never
+   *  duplicated, across batches — every append inserts before it, so it is continuously the last child (no accumulation). */
+  private tailCapEl: HTMLElement | null = null;
+  private tailCapH = 0;
+  private readonly tailCapObs: ResizeObserver = new ResizeObserver(() => {
+    if (this.tailCapEl) this.tailCapH = this.tailCapEl.offsetHeight; // re-measure on async/responsive height change
+  });
   private inflightOlder = false;
   private inflightNewer = false;
   /** 重置代：openAround 自增；loadOlder/loadNewer 的 await 后比对，过期批不挂（防跳转超越在途加载）。 */
@@ -87,6 +109,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   private vh = 0;
   private shifting = false;   // 屏蔽程序化 scrollTop 写（scrollToBottom 等）引发的 scroll 方向误判
+  /** Set after a viewport-resize reflow re-pins to bottom; onNativeScroll consumes it once so the async scroll event
+   *  the pinToBottom write fires does not re-arm balance/load/trim during a viewport shrink (soft keyboard, etc.). */
+  private suppressScrollBalance = false;
   private mounting = false;
   private measuring = false;
   private destroyed = false;
@@ -101,6 +126,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private animating = 0;
   /** Set when a balance was requested while animating>0; fired once when animating drains to 0. */
   private deferBalance = false;
+  /** Set during reconcileOptimistic. Reconcile is synchronous (no slide) and never spans an await, so this is never
+   *  observed true by a deferred trim — kept so trimOlder/trimNewer (rule 4a) stay self-documenting. */
+  private resorting = false;
   private readonly viewportObs: ResizeObserver;
 
   constructor(opts: CbOptions<T>) {
@@ -112,10 +140,16 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.onDebug = opts.onDebug;
     this.initOpts = opts.initOpts ?? {};
     this.cfg = { ...DEFAULTS, ...opts.config };
-    this.viewportObs = new ResizeObserver(() => { this.measureVh(); this.scheduleBalance(); });
+    this.viewportObs = new ResizeObserver(() => this.onViewportResize());
     this.measureVh();
     this.viewportObs.observe(this.viewport);
     this.viewport.addEventListener('scroll', this.onNativeScroll, { passive: true });
+    // Tail cap: created once, appended as the only/last child. Every later createEntry inserts before it (see createEntry),
+    // so it stays the permanent last child of content across all mounts/re-seeds; removed only in destroy.
+    this.tailCapEl = document.createElement('div');
+    this.tailCapEl.className = 'cb-tail-cap';
+    this.content.appendChild(this.tailCapEl);
+    this.tailCapObs.observe(this.tailCapEl);
   }
 
   private get threshold(): number {
@@ -146,37 +180,42 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   appendLive(rawItems: CbItem<T>[]): void {
     if (this.destroyed || rawItems.length === 0) return;
-    // Always cache first (even during a re-seed) — a confirm/push arriving mid-jump must still reach the sequence so it
-    // loads back in order on scroll-down. The source also dedups its pending area here ("delete from pending when id matches").
-    const items = this.source.appendLive(rawItems);
-    if (this.resetting) { this.emit(); return; } // re-seed in progress: cached; settle/mount deferred to scroll-back
-    this.absorbBoundary(items);                  // settled + remaining boundaries (e.g. a confirmed msg -> 'newest')
+    // Direct-mount path for live items (production WS incoming). Cache via pushLive, then mount at the tail (dedup by
+    // id). Plan A relies on overflow-anchor to pin the viewport (no manual compensation). NOT the optimistic-confirm
+    // path — that goes through onMessageSignal (reconcile).
+    this.source.pushLive(rawItems);
+    if (this.resetting) { this.emit(); return; }
+    const remaining = rawItems.filter(it => this.indexOfId(it.id) < 0);
+    if (remaining.length === 0) { this.emit(); return; }
+    if (!this.noNewer) { this.emit(); return; }              // newer end trimmed → cache only
     const wasAtBottom = this.isAtBottom();
-    // Optimistic->confirmed: an incoming item whose id matches a mounted transient settles it in place (re-render +
-    // flip transient=false) instead of mounting a duplicate. Items with no matching transient are normal live messages.
-    const remaining: CbItem<T>[] = [];
-    for (const it of items) {
-      const idx = this.indexOfId(it.id);
-      if (idx >= 0 && this.mounted[idx].transient) this.settleTransient(this.mounted[idx], it);
-      else remaining.push(it);
-    }
-    if (remaining.length > 0) {
-      const merged = this.mergeBatch(remaining);
-      this.mountBatch(merged, 'newer', true); // animate=true: a live message arriving is a "new message appears" event
-    }
-    if (wasAtBottom) this.scrollToBottom(); // Plan A relies on overflow-anchor; pin to reveal the new message
+    const merged = this.mergeBatch(remaining);
+    this.mountBatch(merged, 'newer', true);
+    this.noNewer = true;
+    if (wasAtBottom) this.scrollToBottom();                  // overflow-anchor pins; pin to reveal the new message
     this.emit();
   }
 
-  /**
-   * Settle an optimistic transient in place: re-render it with the confirmed item and flip transient=false so it becomes
-   * a normal, reloadable, trimmable source member — no duplicate mount. The item id is unchanged (client id echoed by
-   * the server). Plan A does not compensate (browser overflow-anchor pins the viewport).
-   */
-  private settleTransient(entry: Entry<T>, item: CbItem<T>): void {
-    entry.transient = false;
-    this.rebuildEntry(entry, item); // re-render with confirmed data (new el, height=0, cb-pending)
-    this.measurePending();          // settle the real height (`measuring` suppresses onElHeight balance)
+  /** Signal that new messages are available (the source already cached them via pushLive). If the kernel still mounts
+   *  the global newest, pull via loadNewer, run reconcileOptimistic, follow to the bottom if pinned — pinning AFTER
+   *  reconcile so the target is the final bottom (the optimistic duplicate is already removed, not counted) — and trim.
+   *  Plan A relies on overflow-anchor (no manual scrollTop compensation). */
+  async onMessageSignal(): Promise<void> {
+    if (this.destroyed || this.resetting) return;
+    if (!this.noNewer) return;                               // newer end trimmed → cached only; load on scroll-back
+    const wasAtBottom = this.isAtBottom();
+    await this.loadNewer(true);                              // forced: the signal means new data is available (bypasses the noNewer/revalidate guards)
+    if (this.destroyed) return;
+    await this.reconcileOptimistic();                        // remove optimistic duplicates (synchronous) so the bottom is final
+    if (this.destroyed) return;
+    // Trim + ghost + cap BEFORE the pin: these mutate content (remove top items → scrollHeight shrinks), so pinning to the
+    // FINAL bottom must come after them (mirrors Kernel B). Pinning before trim anchored scrollTop to a pre-trim bottom and
+    // the subsequent trim shifted it off → the latest message dropped below the fold on the first send.
+    this.trimOlder();
+    this.updateGhost();
+    this.updateTailCap();
+    if (wasAtBottom) this.pinToBottom();                     // follow to the FINAL bottom (after reconcile + trim)
+    this.emit();
   }
 
   /**
@@ -189,7 +228,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * 后继项（原 idx+1）的 prev 变了（target → 新 item）→ 原地 rebuild 重算组首/date（同 ghost 显形 rebuild）；
    * 再往后的项 prev 不变、无需 rebuild。新 entry 标 transient（非 source 游标）。
    */
-  insertAfter(afterId: string | number, item: CbItem<T>): boolean {
+  insertAfter(afterId: string | number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean {
     if (this.destroyed || this.resetting) return false;
     const idx = this.indexOfId(afterId);
     if (idx < 0) return false;                  // 未挂载 → 忽略插入请求
@@ -200,7 +239,8 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     // New entry: prev = target item (older neighbor). DOM lands between target and successor (createEntry inserts
     // before anchorEl; no successor -> append). animate=true so it plays cb-enter once measured.
     const entry = this.createEntry(item, target.item, anchorEl, true);
-    entry.transient = true;
+    if (opts?.optimistic) entry.optimistic = true;   // pending send (in source.pending, returned by getNewer, atomic)
+    else entry.transient = true;                      // FAKE debug insert (viewport-only)
     this.mounted.splice(idx + 1, 0, entry);
     if (successor) this.rebuildEntry(successor); // prev 变了 → 重算组首/date（高度置 0、下面统一 measure）
 
@@ -255,13 +295,30 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   scrollToBottom(): void {
     if (this.destroyed) return;
+    this.pinToBottom();
+    // 最新端可能被 trimNewer 截掉（窗口后退、noNewer=false）→ 加载回全局最新（followToNewest 链式直到 noNewer）
+    if (!this.noNewer) void this.followToNewest();
+  }
+
+  /** Position the viewport at the content bottom (instant, shifting suppresses direction misdetection) and emit. */
+  private pinToBottom(): void {
     this.shifting = true;
     this.viewport.scrollTop = this.content.scrollHeight - this.vh;
     this.shifting = false;
     this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
-    // 最新端可能被 trimNewer 截掉（窗口后退、noNewer=false）→ 加载回全局最新（loadNewer 内 wasAtBottom 跟随再 scrollToBottom，链式直到 noNewer）
-    if (!this.noNewer) void this.loadNewer();
+  }
+
+  /** Explicit go-to-bottom follow (started by scrollToBottom): keep loading one newer batch and re-pinning until the
+   *  global newest (noNewer). Plan A re-pins explicitly (overflow-anchor also helps). gen guard bails if a jump overtakes. */
+  private async followToNewest(): Promise<void> {
+    const g = this.gen;
+    while (!this.noNewer && !this.destroyed && this.mounted.length > 0) {
+      const n = await this.loadNewer();
+      if (this.destroyed || g !== this.gen) return;
+      if (n === 0) break;
+      this.pinToBottom();
+    }
   }
 
   scrollToTop(): void {
@@ -393,7 +450,15 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     const merged = this.mergeBatch(batch);
     if (merged.length === 0) { this.noNewer = true; return 0; }
     this.absorbBoundary(merged);
+    // Authoritative: a newer batch reaches the global newest iff it carries the 'newest' marker. A full page WITHOUT it
+    // means more newer data remains (a large WS backlog spans multiple pages) → noNewer=false so the next load continues.
+    // absorbBoundary is sticky (only ever sets true), so without this a partial backlog page left the kernel falsely at
+    // the newest, stranding the remaining newer messages off-window.
+    this.noNewer = merged.some(it => it.boundary === 'newest');
     this.mountBatch(merged, 'newer');
+    // Reached the newest edge → (re)mount in-flight optimistic sends (getPending). loadNewerIntoFresh only runs when
+    // !noNewer (the guard above), so the unmount branch cannot fire here — only the follow/fill path uses this.
+    if (this.noNewer) this.elevatePending();
     this.measurePending();
     this.updateGhost();
     return merged.length;
@@ -429,6 +494,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.shifting = true;
     this.viewport.scrollTop = 0; // content 已空，归零
     this.shifting = false;
+    this.updateTailCap(); // window emptied → hide the cap (mounted.length === 0 → height 0) until the new batch mounts
   }
 
   /** 给目标 entry 加一次性高亮闪烁（animationend 移除 class；reflow 保证重复跳转能重启动画）。 */
@@ -467,8 +533,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
     this.viewportObs.disconnect();
+    this.tailCapObs.disconnect();
     this.viewport.removeEventListener('scroll', this.onNativeScroll);
     this.unmountAll();
+    if (this.tailCapEl) { this.tailCapEl.remove(); this.tailCapEl = null; } // cap persists across re-seed; torn down only here
     this.source.destroy();
   }
 
@@ -487,7 +555,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** idx 顶端距 content 顶 = Σ更老邻居高度 = prefix[idx]。 */
   private topOf(idx: number): number { this.flushPrefix(); return this.prefix[idx] ?? 0; }
 
-  private totalH(): number { this.flushPrefix(); return this.prefix.length > 0 ? this.prefix[this.prefix.length - 1] : 0; }
+  // totalH adds tailCapH (the cap is below every real item, so it never enters prefix[]/topOf — only the total). prefix
+  // stays real-items-only; this keeps belowTarget/atBottom honest (the cap really is below the last real item) and topOf exact.
+  private totalH(): number { this.flushPrefix(); return (this.prefix.length > 0 ? this.prefix[this.prefix.length - 1] : 0) + this.tailCapH; }
 
   // ---------- 挂载（array index；DOM 按 mounted 顺序，不涉 scrollTop） ----------
 
@@ -520,6 +590,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     }
     this.dirtyPrefix = true;
     if (side !== 'older') this.measurePending();
+    this.updateTailCap(); // re-measure the cap every batch mount: a newer batch reaching the global newest flips loading→gap
   }
 
   /** Create and mount one entry: createItem + DOM insert (before anchorEl / append) + pendingMeasure + subscribe to height.
@@ -531,8 +602,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
     if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
+    else if (this.tailCapEl) this.content.insertBefore(el, this.tailCapEl); // append path: keep the tail cap always last
     else this.content.appendChild(el);
-    const entry: Entry<T> = { item, el, vs, height: 0, unsub: () => {}, transient: false, animate, leaving: false, leaveDone: false }; // real height set by measurePending()
+    const entry: Entry<T> = { item, el, vs, height: 0, unsub: () => {}, transient: false, optimistic: false, resortTarget: false, animate, leaving: false, leaveDone: false }; // real height set by measurePending()
     el.classList.add('cb-pending');
     this.pendingMeasure.push(entry);
     this.mounting = true; // suppress the first report (same as id-based)
@@ -619,9 +691,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return true;
   }
 
-  /** Cancel any in-flight enter/leave animation on an entry being force-unmounted (jump re-seed / destroy). Decrements
-   *  `animating` exactly once per in-flight animation (guarded by enterTimer / leaveDone) so the counter does not leak
-   *  across a window reset, and the deferred animationend/timeout handlers become no-ops. */
+  /** Cancel any in-flight enter/leave/move animation on an entry being force-unmounted (jump re-seed / destroy).
+   *  Decrements `animating` exactly once per in-flight animation (guarded by enterTimer / leaveDone / moveTimer) so the
+   *  counter does not leak across a window reset, and the deferred animationend/timeout handlers become no-ops. */
   private cancelEntryAnim(entry: Entry<T>): void {
     if (entry.enterTimer !== undefined) {
       clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
@@ -631,6 +703,12 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (entry.leaving && !entry.leaveDone) {
       if (entry.leaveTimer !== undefined) clearTimeout(entry.leaveTimer);
       entry.leaveDone = true; entry.el.classList.remove('cb-leave');
+      this.animating--;
+    }
+    if (entry.moveTimer !== undefined) {
+      clearTimeout(entry.moveTimer); entry.moveTimer = undefined;
+      entry.el.classList.remove('cb-move');
+      entry.el.style.removeProperty('--cb-move-dy');
       this.animating--;
     }
   }
@@ -661,10 +739,49 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.ghostEntry = target;
   }
 
+  /**
+   * Sync the tail cap (class toggle + MEASURED height), mirroring {@link updateGhost} at the newer edge. The cap is a
+   * persistent non-message element kept as the last child of content (never in mounted[]), so it never corrupts the newer
+   * cursor (mounted[last].item.id) and never shifts a real item's topOf. Mode:
+   *  - mounted empty → hidden (height 0): no lone spinner during the empty first load / re-seed.
+   *  - noNewer       → gap: a small spacer below the last message (breathing room above the input bar).
+   *  - !noNewer      → loading: the same centered spinner as the top ghost (cb-tail-cap--loading).
+   * Height is READ via offsetHeight, never assumed — CSS owns the dimension (gap/spinner size), the kernel measures it so
+   * totalH stays exact even if the CSS is later tuned. Called at the end of every mountBatch (a newer batch reaching the
+   * global newest flips loading→gap and genuinely changes the height) and on resize via tailCapObs. Plan A does not
+   * compensate scrollTop (browser overflow-anchor pins the viewport); in either case the cap sits below every real item,
+   * so a height change moves nothing above it.
+   */
+  private updateTailCap(): void {
+    const el = this.tailCapEl;
+    if (!el) return;
+    const mode: 'hidden' | 'gap' | 'loading' = this.mounted.length === 0 ? 'hidden' : this.noNewer ? 'gap' : 'loading';
+    el.classList.toggle('cb-tail-cap--gap', mode === 'gap');
+    el.classList.toggle('cb-tail-cap--loading', mode === 'loading');
+    this.tailCapH = el.offsetHeight;
+  }
+
   // ---------- balance：检查点 + 加载（无补偿） ----------
+
+  /** Viewport resized (soft keyboard open/close, orientation change, window resize). Reflow, not a checkpoint:
+   *  re-measure vh and keep the reading position. Was-at-bottom → re-pin and skip load/trim (a shrink-triggered
+   *  balance is jitter); mid-screen → scheduleBalance is a no-op unless at an edge. Content-driven rebalances still
+   *  run via onElHeight + onNativeScroll. */
+  private onViewportResize(): void {
+    if (this.destroyed) return;
+    const wasAtBottom = this.isAtBottom();   // capture BEFORE re-measure (old vh)
+    this.measureVh();                         // apply the new vh
+    if (wasAtBottom && this.mounted.length > 0) {
+      this.pinToBottom();
+      this.suppressScrollBalance = true;  // swallow the async scroll event the pin fires (no load/trim at bottom)
+      return;
+    }
+    this.scheduleBalance();
+  }
 
   private onNativeScroll = () => {
     if (this.shifting || this.destroyed) return;
+    if (this.suppressScrollBalance) { this.suppressScrollBalance = false; return; }  // consume the reflow-pin's scroll event
     this.scheduleBalance();
   };
 
@@ -703,7 +820,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     entry.el.addEventListener('animationend', finish, { once: true });
   }
 
-  private balance(): void {
+  private async balance(): Promise<void> {
     if (this.destroyed || this.mounted.length === 0) return;
     if (ngDevMode && this.closeCheckpoint) return; // 调试：关闭挂载检查点（不触发 loadOlder/loadNewer；生产 AOT 移除）
     const t0 = ngDevMode ? performance.now() : 0;
@@ -716,8 +833,8 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     const atTop = st < this.cfg.edge;
     const atBottom = total - this.vh - st < this.cfg.edge;
 
-    if (atTop && dir !== 'down' && !this.noOlder) this.loadOlder();
-    else if (atBottom && dir !== 'up' && !this.noNewer) this.loadNewer();
+    if (atTop && dir !== 'down' && !this.noOlder) { await this.loadOlder(); this.trimNewer(); }
+    else if (atBottom && dir !== 'up' && !this.noNewer) { await this.loadNewer(); await this.reconcileOptimistic(); this.trimOlder(); }
 
     if (ngDevMode && this.onDebug) {
       this.onDebug({
@@ -754,7 +871,6 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
         this.rebuildEntry(oldGhost);
       }
       this.measurePending(); // 一次统一测：新批 + ghost 显形（方案 A 不补偿）
-      this.trimNewer();
       this.updateGhost();
     } finally {
       this.inflightOlder = false;
@@ -762,43 +878,289 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.emit();
   }
 
-  /** 向更新加载：getNewer（游标=mounted 末 item.id）+ mergeItems + append。方案 A：重校验后挂载 + 截顶，**不补偿**。 */
-  private async loadNewer(): Promise<void> {
-    if (this.inflightNewer || this.noNewer || this.mounted.length === 0) return;
+  /** Load ONE newer batch: getNewer + mergeItems, then a mount-dispatch. **Pure load — no trim** (split: the caller —
+   *  balance / onMessageSignal — trims + reconciles). Returns the count mounted (0 = boundary / overtaken / no data). */
+  private async loadNewer(force = false): Promise<number> {
+    if (this.inflightNewer || this.mounted.length === 0) return 0;
+    if (!force && this.noNewer) return 0;
     this.inflightNewer = true;
     const g = this.gen;
-    let merged: CbItem<T>[];
+    let batch: CbItem<T>[];
     try {
       const cursor = this.newerCursorId();
-      const batch = await this.source.getNewer(cursor, this.cfg.mountItem);
-      if (this.destroyed || g !== this.gen) return; // 跳转 re-seed 超越 → 丢弃在途批
-      merged = this.mergeBatch(batch);
+      batch = await this.source.getNewer(cursor, this.cfg.mountItem);
+      if (this.destroyed || g !== this.gen) return 0;
     } finally {
       this.inflightNewer = false;
     }
-    if (this.destroyed || g !== this.gen) return;
-    if (merged.length === 0) { this.noNewer = true; return; }
-    if (!this.revalidateBottom()) return;
-    const wasAtBottom = this.isAtBottom(); // 加载前贴底 → 加载后跟随到新底（点定位底部 / 向下滚贴底）
-    this.absorbBoundary(merged); // 阶段0：通过后才吸收边界
-    this.mountBatch(merged, 'newer'); // append（末尾 measure）
-    this.trimOlder();
-    if (wasAtBottom) this.scrollToBottom(); // 跟随到底（含触发后续 loadNewer 直到全局最新）
+    if (this.destroyed || g !== this.gen) return 0;
+    if (batch.length === 0) { this.noNewer = true; return 0; }
+    if (!force && !this.revalidateBottom()) return 0;
+    const wasAtNewest = this.noNewer;                        // pre-load edge state (transition gate for the optimistic dispatch)
+    this.absorbBoundary(batch);
+    // Authoritative: a newer batch reaches the global newest iff it carries the 'newest' marker. A full page WITHOUT it
+    // means more newer data remains (a large WS backlog spans multiple pages) → noNewer=false so the next load continues.
+    // absorbBoundary is sticky (only ever sets true), so without this a partial backlog page left the kernel falsely at
+    // the newest, stranding the remaining newer messages off-window.
+    this.noNewer = batch.some(it => it.boundary === 'newest');
+
+    const count0 = this.mounted.length;
+    // The batch is reals only — in-flight optimistic sends are mounted separately at the newest edge via elevatePending.
+    this.mountNewerReals(this.mergeBatch(batch));
+    // Symmetric optimistic lifecycle — (re)mount at the newest edge; unmount when a push extended the newest
+    // (wasAtNewest && !noNewer). Recoverable via getPending on returning to the newest.
+    if (this.noNewer) this.elevatePending();
+    else if (wasAtNewest) this.unmountAllOptimistic();
+    this.dirtyPrefix = true;
+    this.measurePending();
     this.updateGhost();
+    this.updateTailCap();
     this.emit();
+    return this.mounted.length - count0;
+  }
+
+  /**
+   * (Re)mount in-flight optimistic sends at the global newest edge (mirror of Plan B). Driven by source.getPending();
+   * a pending matching a mounted transient is promoted (transient→optimistic), one already mounted is skipped, one not
+   * mounted is appended at the tail as optimistic. No-op in the common case (insertAfter pre-mounts for display).
+   */
+  private elevatePending(): void {
+    for (const p of this.source.getPending()) {
+      const idx = this.indexOfClientMsgId(p.clientMessageId);
+      if (idx >= 0) {
+        const e = this.mounted[idx];
+        if (e.transient) { e.transient = false; e.optimistic = true; } // promote
+      } else {
+        const tail = this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item : null;
+        const entry = this.createEntry(p, tail, undefined, true);
+        entry.optimistic = true;
+        this.mounted.push(entry);
+      }
+    }
+  }
+
+  /**
+   * Remove every in-flight optimistic send (mirror of Plan B). Called when a push extended the newest (noNewer
+   * true→false). Not lost — re-mounted by elevatePending on returning to the newest. Synchronous (no cb-leave);
+   * iterate downward. Plan A relies on overflow-anchor (no manual scrollTop compensation).
+   */
+  private unmountAllOptimistic(): void {
+    let removed = false;
+    for (let i = this.mounted.length - 1; i >= 0; i--) {
+      if (this.mounted[i].optimistic) { this.unmountAt(i); removed = true; }
+    }
+    if (removed) this.dirtyPrefix = true;
+  }
+
+  /** Mount real items before the optimistic/transient tail block (mirror of Plan B; Plan A adds no scrollTop compensation). */
+  private mountNewerReals(reals: CbItem<T>[]): void {
+    if (reals.length === 0) return;
+    let insertIdx = this.mounted.length;
+    for (let i = this.mounted.length - 1; i >= 0; i--) {
+      const e = this.mounted[i];
+      if (!e.transient && !e.optimistic && !e.leaving && !e.resortTarget) { insertIdx = i + 1; break; }
+    }
+    for (const item of reals) {
+      // Confirm by clientMessageId: the real carries a fresh server id (≠ the optimistic's clientMessageId-as-id),
+      // so the pair is matched by clientMessageId, not id. No clientMessageId → a plain incoming message.
+      const confirm = this.indexOfClientMsgId(item.clientMessageId) >= 0;
+      if (!confirm && this.indexOfId(item.id) >= 0) continue;
+      const anchorEl = insertIdx < this.mounted.length ? this.mounted[insertIdx].el : null;
+      const prev = insertIdx > 0 ? this.mounted[insertIdx - 1].item : null;
+      const entry = this.createEntry(item, prev, anchorEl, !confirm);
+      if (confirm) { entry.resortTarget = true; }
+      this.mounted.splice(insertIdx, 0, entry);
+      insertIdx++;
+    }
+    this.dirtyPrefix = true;
+  }
+
+  /** Optimistic-confirm reconciliation (mirror of Plan B; Plan A relies on overflow-anchor — no manual scrollTop
+   *  compensation on removal). Synchronous: for each real flagged resortTarget, remove the optimistic duplicate and tag
+   *  the real cb-confirmed. No slide, no hiding — the swap is never painted as two bubbles (runs within the
+   *  loadNewer→reconcile microtask). No-op when there are no resortTargets. */
+  private async reconcileOptimistic(): Promise<void> {
+    const targets = this.mounted.filter(e => e.resortTarget);
+    if (targets.length === 0) return;
+    this.resorting = true;
+    try {
+      const pairs: { source: Entry<T>; target: Entry<T> }[] = [];
+      for (const target of targets) {
+        // Pair by clientMessageId (the real's fresh server id ≠ the optimistic's id → not id-matchable; and indexOfId
+        // would return the target itself since the real is mounted BEFORE the optimistic source).
+        const si = this.indexOfClientMsgId(target.item.clientMessageId);
+        if (si >= 0) pairs.push({ source: this.mounted[si], target });
+      }
+      if (pairs.length === 0) {
+        // No source mounted (e.g. a jump during pending unmounted it): the real is already visible — just tag it.
+        for (const t of targets) { t.resortTarget = false; t.el.classList.add('cb-confirmed'); }
+        return;
+      }
+      this.flushPrefix();
+      // Remove each optimistic source (the duplicate) — Plan A: overflow-anchor pins the viewport (no manual compensation).
+      // No slide: the real is already visible beside it and this pass is synchronous (before paint), so the swap reads as
+      // an in-place handoff, not a two-bubble flash.
+      for (const source of pairs.map(p => p.source)) {
+        const i = this.mounted.indexOf(source);
+        if (i < 0) continue;
+        this.unmountAt(i);
+      }
+      // The real is already visible — the cb-confirmed tag alone gates the spinner→check→fade choreography on these reals.
+      for (const target of pairs.map(p => p.target)) {
+        target.resortTarget = false;
+        target.el.classList.add('cb-confirmed');
+      }
+      this.dirtyPrefix = true;
+      this.measurePending();
+    } finally {
+      this.resorting = false;
+    }
+    this.emit();
+  }
+
+  /**
+   * Re-sync the mounted optimistic/pending entries to the source's current `getPending()` snapshot. The caller mutates
+   * the pending store first (e.g. the source marks a send failed and sinks it to the end) THEN calls this, so the
+   * source stays the single owner of pending order/status and the kernel only reflects it.
+   *
+   * For each mounted optimistic entry (a contiguous tail block), matched to `fresh` by clientMessageId:
+   *  - status change (new data ref) → morphed IN PLACE via `vs.update` (no remount — preserves the DOM node so a FLIP
+   *    move can animate it);
+   *  - order change → the optimistic tail block is reordered (mounted[] + DOM) to match `fresh`;
+   *  - then EVERY entry whose absolute top changed (the mover AND any sibling shoved up/down by it) is FLIP-animated
+   *    (cb-move) from its old top to its new top.
+   *
+   * Synchronous body (no I/O — a pure re-read of getPending); declared async to match reconcileOptimistic's shape so
+   * callers can `await` it uniformly. Status-morph height deltas are folded into prefix under the `measuring` guard.
+   * Plan A needs no scrollTop compensation for the reorder: a pure reorder within the optimistic tail leaves total
+   * height and all above-viewport positions invariant, and the transform is visual-only so overflow-anchor is undisturbed.
+   *
+   * Skips fresh ids not currently mounted (new sends mount via insertAfter) and mounted optimistic not in fresh (removal
+   * is reconcileOptimistic's job on confirm) — both are no-ops here.
+   */
+  async reconcilePending(): Promise<void> {
+    if (this.destroyed || this.resetting) return;
+    const fresh = this.source.getPending();
+
+    // Optimistic entries form a contiguous tail block; collect the non-leaving ones (leaving ones are mid-exit).
+    const suffix: Entry<T>[] = [];
+    for (let i = this.mounted.length - 1; i >= 0; i--) {
+      const e = this.mounted[i];
+      if (!e.optimistic) break;
+      if (!e.leaving) suffix.unshift(e);
+    }
+    if (suffix.length === 0) return;
+
+    // 1. Capture the OLD absolute top of EVERY suffix entry before any mutation (a shoved sibling must animate too, not
+    //    only the explicit mover). Keyed by entry ref — indices shift once we splice.
+    this.flushPrefix();
+    const oldTop = new Map<Entry<T>, number>();
+    for (const e of suffix) oldTop.set(e, this.topOf(this.mounted.indexOf(e)));
+
+    // 2. Morph: swap in the fresh item (new data ref ⇒ status changed) where the clientMessageId matches.
+    const freshByCid = new Map<string, CbItem<T>>();
+    for (const f of fresh) if (f.clientMessageId !== undefined) freshByCid.set(f.clientMessageId, f);
+    for (const e of suffix) {
+      const f = e.item.clientMessageId !== undefined ? freshByCid.get(e.item.clientMessageId) : undefined;
+      if (f && f !== e.item) e.item = f;
+    }
+
+    // 3. Reorder mounted[] + DOM so the suffix matches `fresh` order (only optimistic entries move; reals/transients
+    //    above stay put). desired = the suffix entries ordered by their position in fresh (defensively keeps any suffix
+    //    entry not found in fresh at the end so nothing is dropped).
+    const used = new Set<Entry<T>>();
+    const desired: Entry<T>[] = [];
+    for (const f of fresh) {
+      if (f.clientMessageId === undefined) continue;
+      const e = suffix.find(x => x.item.clientMessageId === f.clientMessageId);
+      if (e && !used.has(e)) { desired.push(e); used.add(e); }
+    }
+    for (const e of suffix) if (!used.has(e)) desired.push(e);
+    const reordered = desired.some((e, i) => e !== suffix[i]);
+    if (reordered) {
+      const suffixSet = new Set(suffix);
+      const rest = this.mounted.filter(e => !suffixSet.has(e));
+      this.mounted = [...rest, ...desired];
+      for (const e of desired) {
+        if (this.tailCapEl) this.content.insertBefore(e.el, this.tailCapEl); // keep the cap always last
+        else this.content.appendChild(e.el);
+      }
+      this.dirtyPrefix = true;
+    }
+
+    // 4. Apply data + grouping in place (prev is final now) and fold any status-morph height delta synchronously under
+    //    the measuring guard so prefix stays honest.
+    this.flushPrefix();
+    this.measuring = true;
+    for (const e of suffix) {
+      const idx = this.mounted.indexOf(e);
+      if (idx < 0) continue;
+      const newPrev = idx > 0 ? this.mounted[idx - 1].item : null;
+      e.vs.update(e.item, newPrev); // re-render data + recomputed grouping on the same node
+      const h = e.el.offsetHeight;   // real height after the re-render
+      if (h !== e.height) { e.height = h; this.dirtyPrefix = true; }
+    }
+    this.measuring = false;
+
+    // 5. FLIP every suffix entry whose absolute top changed (reorder and/or morph height delta).
+    this.flipMove(suffix, oldTop);
+
+    this.emit();
+  }
+
+  /**
+   * FLIP-move (cb-move) entries whose absolute top changed in a reconcilePending pass. FLIP = First-Last-Invert-Play:
+   * each mover's old top is passed in; after the reorder/height-change its new top is recomputed, an invert transform
+   * makes it APPEAR still at the old top, and the @keyframes animates the transform to identity so it slides to the new.
+   *
+   * Rides the existing animation/animationend/`animating` convention (no CSS transition — _cb.scss uses only keyframes;
+   * this keeps the animEnd test helper valid). The invert offset is a per-element CSS var (--cb-move-dy) consumed by the
+   * @keyframes, set before a forced reflow so the browser registers the inverted start. `moveTimer !== undefined` is the
+   * "still in flight" signal (mirrors enterTimer); cancelEntryAnim clears it on teardown. animating is bumped so balance
+   * defers until the moves drain. delta===0 entries are skipped (no motion).
+   */
+  private flipMove(entries: Entry<T>[], oldTop: Map<Entry<T>, number>): void {
+    this.flushPrefix();
+    const movers: { entry: Entry<T>; el: HTMLElement; delta: number }[] = [];
+    for (const e of entries) {
+      if (e.leaving) continue;
+      const idx = this.mounted.indexOf(e);
+      if (idx < 0) continue;
+      const newTop = this.topOf(idx);
+      const delta = (oldTop.get(e) ?? newTop) - newTop;
+      if (delta !== 0) movers.push({ entry: e, el: e.el, delta });
+    }
+    if (movers.length === 0) return;
+    // Invert: each mover visually sits at its old top (new layout position + translateY(delta)).
+    for (const m of movers) m.el.style.setProperty('--cb-move-dy', `${m.delta}px`);
+    void this.content.offsetWidth; // force reflow so the invert start registers before the animation class is added
+    // Play: add cb-move (the @keyframes animates translateY(var) → none = old top → new top). animating bumped → balance deferred.
+    for (const m of movers) {
+      const finish = (): void => {
+        if (m.entry.moveTimer === undefined) return; // already finished (animationend + safety timeout guard)
+        clearTimeout(m.entry.moveTimer); m.entry.moveTimer = undefined;
+        m.el.classList.remove('cb-move');
+        m.el.style.removeProperty('--cb-move-dy');
+        this.onAnimEnd();
+      };
+      m.el.classList.add('cb-move');
+      this.animating++;
+      m.entry.moveTimer = setTimeout(finish, 600); // safety if animationend is swallowed
+      m.el.addEventListener('animationend', finish, { once: true });
+    }
   }
 
   /** 截更新端（底部，mounted 末）。**保留视口下方 buffer**：截后 content 底（totalH-h）须仍 > 视口底（st+vh）+ edge，
    *  否则不截——防 compensateAbove 把 st 推大后 trim 截到视口内 → st 超出 total → atBottom 误判 → loadNewer 跳到底。
    *  截掉最新端 → 重置 noNewer。无补偿（底部在视口下方）。 */
   private trimNewer(): void {
+    if (this.resorting) return; // rule 4a: never trim during a resort
     let trimmed = false;
     while (this.mounted.length > 1) {
       const last = this.mounted[this.mounted.length - 1];
-      // Never trim an in-flight optimistic (transient) or exiting (leaving) item — it is not in the source, so trimming
-      // would permanently lose it. This is the "min mount height reserved" guarantee: while fakes sit at the tail, no
-      // bottom trim runs at all, so currently-displayed messages are never cut.
-      if (last.transient || last.leaving) break;
+      // Never trim an in-flight optimistic/transient send or an exiting (leaving) item. Rule 4c: the optimistic block
+      // is atomic — reaching it aborts the trim (only reconcileOptimistic removes a member, never trim).
+      if (last.transient || last.optimistic || last.leaving) break;
       this.flushPrefix();
       const h = last.height;
       if (this.totalH() - h > this.threshold && (this.totalH() - h) - (this.viewport.scrollTop + this.vh) > this.cfg.edge) {
@@ -811,10 +1173,12 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** 截更老端（顶部，mounted[0]）。**保留视口上方 buffer**：截后视口上方（st-h）须 > edge（对称 trimNewer）。
    *  方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉住视口）。截掉最老端 → 重置 noOlder。 */
   private trimOlder(): void {
+    if (this.resorting) return; // rule 4a: never trim during a resort
     let trimmed = false;
     while (this.mounted.length > 1) {
       const first = this.mounted[0];
-      if (first.transient || first.leaving) break; // defensive (transients are tail-inserted; leaving rows exit shortly)
+      // Never trim transient/optimistic/leaving, and rule 4b: never trim the global-newest real item.
+      if (first.transient || first.optimistic || first.leaving || first.item.boundary === 'newest') break;
       this.flushPrefix();
       const h = first.height;
       if (this.totalH() - h > this.threshold && this.viewport.scrollTop - h > this.cfg.edge) {
@@ -848,16 +1212,24 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return this.mounted.findIndex(e => this.itemHasId(e.item, id));
   }
 
-  /** 最老的【真实 source 成员】挂载项 id——跳过 transient（insertAfter 插入项），其 id 非 source 游标。
-   *  loadOlder 用它，防 transient 经 trim 到达 mounted[0] 后让 getOlder 返回 [] 误锁 noOlder。调用方保证 mounted 非空。 */
+  /** Index of the in-flight optimistic/transient entry carrying the given clientMessageId — the reconcile key
+   *  that pairs an optimistic send with its confirmed real (the real gets a fresh server id, so the pair cannot
+   *  be matched by id). Scans transient/optimistic entries only; -1 if none / cid absent. */
+  private indexOfClientMsgId(cid: string | undefined): number {
+    if (cid === undefined) return -1;
+    return this.mounted.findIndex(e => (e.transient || e.optimistic) && e.item.clientMessageId === cid);
+  }
+
+  /** 最老的【真实 source 成员】挂载项 id——跳过 transient/optimistic（insertAfter 插入项 / 在途 pending），其 id 非 source 游标。
+   *  loadOlder 用它，防 transient/optimistic 经 trim 到达 mounted[0] 后让 getOlder 返回 [] 误锁 noOlder。调用方保证 mounted 非空。 */
   private olderCursorId(): string | number {
-    for (const e of this.mounted) if (!e.transient && !e.leaving) return e.item.id;
+    for (const e of this.mounted) if (!e.transient && !e.optimistic && !e.leaving) return e.item.id;
     return this.mounted[0].item.id; // unreachable in practice (the insert/remove target is always a real neighbor)
   }
 
-  /** 最新的【真实 source 成员】挂载项 id——跳过 transient 与 leaving。与 olderCursorId 对称。 */
+  /** 最新的【真实 source 成员】挂载项 id——跳过 transient/optimistic 与 leaving。与 olderCursorId 对称。 */
   private newerCursorId(): string | number {
-    for (let i = this.mounted.length - 1; i >= 0; i--) if (!this.mounted[i].transient && !this.mounted[i].leaving) return this.mounted[i].item.id;
+    for (let i = this.mounted.length - 1; i >= 0; i--) if (!this.mounted[i].transient && !this.mounted[i].optimistic && !this.mounted[i].leaving) return this.mounted[i].item.id;
     return this.mounted[this.mounted.length - 1].item.id;
   }
 

@@ -9,7 +9,7 @@
  */
 import { of, firstValueFrom, type Observable } from 'rxjs';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
-import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/source';
+import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
 
@@ -49,9 +49,14 @@ export class MockItemSource implements CbSource<ChatItemData> {
   private readonly full: CbItem<ChatItemData>[];
   private readonly live: CbItem<ChatItemData>[] = [];
   /** In-flight optimistic (pending-post) messages, held separately from the reloadable sequence. Not part of
-   *  sequence() -> getOlder/getNewer never see them. On confirm (appendLive with a matching id) the entry is removed
-   *  from here and cached into `live` (the user's "delete from pending when new msg id == sent id"). */
+   *  sequence() -> getOlder/getNewer never see them. On confirm (a real whose clientMessageId matches the pending's)
+   *  the entry is removed from here — the real (with its fresh server msgId) is cached into `live` and reconciled
+   *  onto the optimistic bubble by the kernel via the shared clientMessageId. */
   private readonly pending: CbItem<ChatItemData>[] = [];
+  /** Next server-assigned msgId (autoincrement, mirroring production `Message.id`). Seeded to `total` so the first
+   *  send becomes `id-${total}`, continuing past buildItems history (`id-0..id-${total-1}`) without collision.
+   *  {@link allocateMsgId} is the mock "server write" that mints the real id for a confirmed optimistic send. */
+  private nextMsgId: number;
   /** 模拟 IO 延迟（ms）；playground 可动态调（0/200/1s/5s）测慢加载体验。 */
   latency: number;
   /** mock 用户查询 service（镜像生产 UserService）；ensureProfiles 按 creator 查它填 profiles。 */
@@ -66,6 +71,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.latency = latency;
     this.userService = userService;
     this.userId = userId;
+    this.nextMsgId = total; // first send → id-${total}, continuing the autoincrement past history
   }
 
   /**
@@ -116,37 +122,97 @@ export class MockItemSource implements CbSource<ChatItemData> {
     return items;
   }
 
-  /** 从 cursorId 向更新取 count 条（升序；不含 cursor）。到序列末 → out[last] 标 'newest'。 */
+  /**
+   * Fetch `count` items newer than cursorId (ascending; excludes cursor). Returns reals only — in-flight
+   * optimistic sends are mounted separately by the kernel at the newest edge via {@link getPending}. As a side
+   * effect, reconciles pending: any pending entry whose clientMessageId matches a returned real is dropped (the
+   * confirm arrived). Tags the last returned item 'newest' when the real batch reached the sequence end.
+   */
   async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
     const idx = seq.findIndex(it => String(it.id) === String(cursorId));
     if (idx < 0) return [];
     const end = Math.min(seq.length, idx + 1 + count);
-    const raw = seq.slice(idx + 1, end);
-    if (raw.length === 0) return [];
-    await this.ensureProfiles(raw);
-    const items = raw.map(it => this.shape(it));
-    if (end === seq.length) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+    const rawReal = seq.slice(idx + 1, end);
+    const reachedEnd = end === seq.length;
+
+    // Reconcile pending: a real whose clientMessageId matches an in-flight optimistic entry confirms it -> drop the
+    // pending. (The real carries a fresh server id ≠ the optimistic's id, so the match key is clientMessageId.)
+    for (const r of rawReal) {
+      if (r.clientMessageId === undefined) continue;
+      const pi = this.pending.findIndex(p => p.clientMessageId === r.clientMessageId);
+      if (pi >= 0) this.pending.splice(pi, 1);
+    }
+
+    const items: CbItem<ChatItemData>[] = [];
+    if (rawReal.length > 0) {
+      await this.ensureProfiles(rawReal);
+      for (const it of rawReal) items.push(this.shape(it));
+    }
+    if (items.length === 0) return [];
+
+    // Tag the last item 'newest' when the real batch reached the sequence end.
+    if (reachedEnd) {
+      items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+    }
     return items;
   }
 
-  /** WS 新消息：入 live、标 newest。id 用调用方给的 msgId（playground makeMockItem）。 */
-  appendLive(rawItems: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
-    const out: CbItem<ChatItemData>[] = [];
-    for (const raw of rawItems) {
-      // Reconcile pending: a pushed msg whose id matches an in-flight optimistic entry confirms it -> drop the pending
-      // copy (the user's "if new msg id == sent id, delete it from the pending area"). Then cache to `live` as usual.
-      const pi = this.pending.findIndex(p => String(p.id) === String(raw.id));
-      if (pi >= 0) this.pending.splice(pi, 1);
-      this.live.push(raw);
-      out.push({ ...this.shape(raw), boundary: 'newest' }); // shape 填 name（playground makeMockItem 给的 raw 是占位）
-    }
-    return out;
+  /** Return the in-flight optimistic sends (the `pending` array) — the backing store the kernel (re)mounts at the
+   *  global newest edge. A defensive copy so the kernel can iterate freely. Empty when none are in flight. */
+  getPending(): CbItem<ChatItemData>[] { return this.pending.slice(); }
+
+  /** Cache a live (WS-pushed) real message into `live`. Cache-only — no merge, no shape, no return; the kernel
+   *  pulls it back via getNewer on the next signal (where pending reconcile + shape happen). id = the caller-given
+   *  msgId (playground makeMockItem / the confirmed optimistic id). */
+  pushLive(rawItems: CbItem<ChatItemData>[]): void {
+    for (const raw of rawItems) this.live.push(raw);
   }
 
   /** Store an in-flight optimistic message (separate from the reloadable sequence). */
   addPending(item: CbItem<ChatItemData>): void { this.pending.push(item); }
+
+  /**
+   * Mark an in-flight optimistic send FAILED and sink it to the END of the pending queue. The source owns pending
+   * order/status; the kernel's reconcilePending re-reads getPending and reflects this (in-place status morph + FLIP
+   * reorder). The entry STAYS in `pending` — a failed send is still unconfirmed, not abandoned — so it remains
+   * mountable at the newest edge and the failure survives a remount (unlike the old fabricated failed-N ghost).
+   *
+   * Stable identity: the SAME clientMessageId is kept, and `data.msgId` with it (the row's retry output emits
+   * `data.msgId` = the clientMessageId, so the retry key stays valid). A NEW data ref carries `status: 'failed'`
+   * (signal-input ref change ⇒ the row re-renders). Returns false if no pending entry matches the clientMessageId.
+   *
+   * Mock-only: production (HttpItemSource) has no optimistic-send layer yet (getPending returns []); when one ships,
+   * the same mutation belongs there too.
+   */
+  failPending(clientMessageId: string): boolean {
+    const i = this.pending.findIndex(p => p.clientMessageId === clientMessageId);
+    if (i < 0) return false;
+    const entry = this.pending.splice(i, 1)[0];
+    const failed: CbItem<ChatItemData> = { ...entry, data: { ...entry.data, status: 'failed', kind: undefined } };
+    this.pending.push(failed); // sink to the end of the pending queue
+    return true;
+  }
+
+  /**
+   * Flip a failed send BACK to 'sending' (a retry) at its CURRENT position (the end), keeping the SAME clientMessageId —
+   * stable identity lets the kernel morph the bubble in place (failed→sending) instead of remounting it, and the
+   * subsequent confirm reconciles by this same clientMessageId. A NEW data ref carries `status: 'sending'`. Returns the
+   * updated item (the caller re-arms the confirm timer with it), or undefined if no pending entry matches.
+   */
+  retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
+    const i = this.pending.findIndex(p => p.clientMessageId === clientMessageId);
+    if (i < 0) return undefined;
+    const retrying: CbItem<ChatItemData> = { ...this.pending[i], data: { ...this.pending[i].data, status: 'sending', kind: 'pending' } };
+    this.pending[i] = retrying; // stay at the current position (the end)
+    return retrying;
+  }
+
+  /** Allocate the next server msgId for a confirmed optimistic send (mock autoincrement, mirroring production
+   *  `Message.id`). The playground's confirmPending calls this to mint the real id that replaces the optimistic's
+   *  clientMessageId-as-id. */
+  allocateMsgId(): string { return `id-${this.nextMsgId++}`; }
 
   /** Whether any optimistic message is still awaiting confirmation (used to gate simulated replies so the demo's
    *  chronological order stays clean while an insert is in flight). */
@@ -172,10 +238,13 @@ export class MockItemSource implements CbSource<ChatItemData> {
     }
   }
 
-  /** 整形：克隆 item 去 boundary + 按 creator 从 profiles 填 name/isSelf（镜像生产 toMsgData；fallback '未知'/creator===userId）。 */
+  /** 整形：克隆 item 去 boundary + 按 creator 从 profiles 填 name/isSelf（镜像生产 toMsgData；fallback '未知'/creator===userId）。
+   *  Preserves clientMessageId (the optimistic↔real reconcile key) so a confirmed real returned by getNewer still
+   *  carries it — shape must not strip the correlation key the kernel pairs on. */
   private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
     const p = this.profiles.get(it.data.creator);
-    return { id: it.id, data: { ...it.data, name: p?.name ?? 'Unknown', isSelf: p?.isSelf ?? it.data.creator === this.userId } };
+    const data: ChatMsgData = { ...it.data, name: p?.name ?? 'Unknown', isSelf: p?.isSelf ?? it.data.creator === this.userId };
+    return it.clientMessageId !== undefined ? { id: it.id, data, clientMessageId: it.clientMessageId } : { id: it.id, data };
   }
 
   private wait(): Promise<void> {
@@ -306,6 +375,7 @@ function makeSeedMsg(creator: number, text: string, contentType: ChatMsgData['co
     time: formatTime(date),
     contentType,
     images,
+    file: null,
     createdAtMs: date.getTime(),
   };
 }

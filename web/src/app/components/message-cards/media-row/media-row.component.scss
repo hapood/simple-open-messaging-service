@@ -30,7 +30,7 @@
   background-repeat: no-repeat;
 }
 
-// 媒体时间戳：叠在右下图上（半透明黑底药丸，任意图底色均可读）。
+// Media timestamp: dark pill at the bottom-right, overlaid on the image (readable on any photo).
 .pg-media .pg-time {
   right: 6px;
   bottom: 6px;
@@ -39,6 +39,22 @@
   color: #fff;
   border-radius: var(--app-radius-pill);
 }
+
+// Media status tick: TOP-RIGHT corner over the image (same placement as text bubbles). A bare icon on an arbitrary
+// photo is low-contrast, so it sits in a small dark circle badge (mirrors the timestamp pill's chrome). White tick;
+// the failed retry stays danger-red for emphasis.
+.pg-media .pg-status {
+  right: 6px;
+  top: 6px;
+  padding: 1px;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 50%;
+  color: #fff;
+  &.pg-status--failed {
+    color: var(--im-danger, #ff5252);
+  }
+}
+
 
 // 「+N」更多角标（相册 >6 张：末格蒙半透明黑底 + 居中数字）。
 .pg-cell-more::after {

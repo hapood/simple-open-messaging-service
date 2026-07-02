@@ -1,4 +1,4 @@
-import { Component, computed, input } from '@angular/core';
+import { Component, computed, input, output } from '@angular/core';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
@@ -32,10 +32,14 @@ export class MediaRowComponent {
   readonly showAvatar = computed(() => this.isShowHead());
   readonly pos = computed(() => (this.isShowHead() ? 'head' : 'body'));
   readonly showName = computed(() => this.isShowHead() && !this.data().isSelf);
-  /** Render a status tick (clock/check) only for self-sent messages that carry a delivery status. */
+  /** Render a status tick (clock/check/retry) only for self-sent messages that carry a delivery status. */
   readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
   /** Dim the bubble while a self message is still in flight (status === 'sending'); clears on confirm. */
   readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
+  /** Whether this row shows the failed retry affordance (drives the click binding + a11y on the status span). */
+  readonly isFailed = computed(() => this.data().isSelf && this.data().status === 'failed');
+  /** Emitted (with the msgId) when the user clicks the failed retry glyph; the parent re-sends. */
+  readonly retry = output<string>();
 
   private readonly layout = computed(() => layoutAlbum(this.data().images ?? []));
   readonly totalH = computed(() => this.layout().totalH);

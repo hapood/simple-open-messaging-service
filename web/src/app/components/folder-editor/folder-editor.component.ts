@@ -52,10 +52,9 @@ export class FolderEditorComponent implements OnInit {
   ]
 
   ngOnInit() {
-    // load thread candidates for the "included threads" picker
-    this.userService.queryUserThreadValid({ take: 200, skip: 0 }).subscribe(res => {
-      if (res.code === 0) this.threadOptions.set(res.data ?? [])
-    })
+    // load thread candidates for the "included threads" picker — page through the full set
+    // (query-thread/valid is @Max(50) per request) so any conversation can be included in a folder.
+    this.userService.queryAllUserThreads().subscribe(list => this.threadOptions.set(list))
     // open straight onto a specific folder when invoked with its id
     if (this.folderId()) {
       const f = this.folderService.getById(this.folderId()!)

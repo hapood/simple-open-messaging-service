@@ -1,9 +1,56 @@
-import { createComponent, EnvironmentInjector } from '@angular/core';
+import { createComponent, EnvironmentInjector, InputSignal, Type } from '@angular/core';
 import type { CbElement, CbItem } from '../../lib/chat-box/chat-box-scroller';
+import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
+import { shouldShowDateSeparator, formatDateSeparator } from './date-format';
 import type { ChatItemData, ChatMsgData } from './chat-item';
+import { FileRowComponent } from './file-row/file-row.component';
 import { InviteRowComponent } from './invite-row/invite-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
+
+/**
+ * Common shape of the three row components (text/media/invite): they all bind the same 4 signal inputs. Used to type
+ * the dynamically-selected component so createComponent infers one C — the components differ in extra members (invite
+ * state, album logic, the text row's retry output), which otherwise breaks union inference at the createComponent call.
+ */
+interface RowComponent {
+  data: InputSignal<ChatMsgData>;
+  isShowHead: InputSignal<boolean>;
+  isGroupStart: InputSignal<boolean>;
+  dateLabel: InputSignal<string | null>;
+}
+
+/**
+ * Compute a message row's grouping + date-separator inputs from its older neighbor `prev` — the shared logic behind
+ * both createMsgCbElement's initial mount and CbElement.update's in-place re-render. Centralized here (previously
+ * duplicated inline in the playground and friend-message createItem hooks) so the mount path and the in-place update
+ * path derive identical flags. A reconcilePending reorder changes an optimistic entry's prev, and update() must
+ * recompute grouping (isShowHead/isGroupStart) + dateLabel against the NEW prev on the same DOM node — without
+ * recreating it (which would break a FLIP move). Returns head-shown / no-group-start / no-date by default for non-msg.
+ */
+export function computeRowFlags(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): {
+  isShowHead: boolean;
+  isGroupStart: boolean;
+  dateLabel: string | null;
+} {
+  let isShowHead = true;
+  let isGroupStart = false;
+  let dateLabel: string | null = null;
+  if (item.data.type === 'msg') {
+    const msg = item.data;
+    const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
+    const curCtx: GroupCtx = { creator: msg.creator };
+    const prevCtx: GroupCtx | null = prevMsg ? { creator: prevMsg.creator } : null;
+    isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
+    isGroupStart = isShowHead && !!prevMsg; // a sender-change group start adds inter-group spacing
+    // date separator: derived per-window from the prev message's createdAtMs (date lives outside the source). The
+    // oldest boundary always shows date above; a non-oldest prev==null (trim re-mount) does not (anti-flicker).
+    dateLabel = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest')
+      ? formatDateSeparator(msg.createdAtMs)
+      : null;
+  }
+  return { isShowHead, isGroupStart, dateLabel };
+}
 
 /**
  * Wraps a ChatMsgData into a CbElement: pick the component by contentType, create it dynamically via
@@ -29,15 +76,18 @@ export function createMsgCbElement(
   isGroupStart: boolean,
   dateLabel: string | null,
   envInjector: EnvironmentInjector,
+  onRetry?: (msgId: string) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
-  const comp =
+  const comp: Type<RowComponent> =
     data.contentType === 'IMAGE'
       ? MediaRowComponent
       : data.contentType === 'INVITE'
         ? InviteRowComponent
-        : TextRowComponent;
+        : data.contentType === 'FILE'
+          ? FileRowComponent
+          : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   ref.setInput('data', data);
@@ -46,7 +96,31 @@ export function createMsgCbElement(
   ref.setInput('dateLabel', dateLabel);
   ref.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually (triggers ngOnInit)
 
-  return wrapEl(ref);
+  // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
+  // signal inputs on the SAME component instance + DOM node, then drive change detection synchronously so the kernel's
+  // immediate offsetHeight read reflects the new content. Used by reconcilePending to morph a pending send's status
+  // (sending→failed) and to re-group after a reorder — without remounting (which would break a FLIP move animation).
+  const update = (nextItem: CbItem<ChatItemData>, nextPrev: CbItem<ChatItemData> | null): void => {
+    const flags = computeRowFlags(nextItem, nextPrev);
+    ref.setInput('data', nextItem.data as ChatMsgData);
+    ref.setInput('isShowHead', flags.isShowHead);
+    ref.setInput('isGroupStart', flags.isGroupStart);
+    ref.setInput('dateLabel', flags.dateLabel);
+    ref.changeDetectorRef.detectChanges();
+  };
+
+  const el = wrapEl(ref, update);
+  // Wire the failed-send retry output (TextRowComponent only — media/invite have no retry output). The subscription is
+  // released on destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler.
+  if (onRetry) {
+    const inst = ref.instance as { retry?: { subscribe: (fn: (id: string) => void) => { unsubscribe(): void } } };
+    const retrySub = inst.retry?.subscribe(id => onRetry(id));
+    if (retrySub) {
+      const baseDestroy = el.destroy;
+      el.destroy = () => { retrySub.unsubscribe(); baseDestroy(); };
+    }
+  }
+  return el;
 }
 
 /**
@@ -70,6 +144,7 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
   return {
     el,
     onHeightChange: () => () => {}, // fixed height never changes (no ResizeObserver); settled by the kernel's measurePending reading offsetHeight
+    update: () => {}, // ghosts are placeholders, never morphed in place (no optimistic send is ever a ghost)
     destroy: () => {},
   };
 }
@@ -84,7 +159,7 @@ export function createGhostCbElement(): CbElement<ChatItemData> {
  * height=0 and measurePending reads the real offsetHeight synchronously to settle it; this RO only captures
  * post-render async changes (secondary height changes from font/image/data updates).
  */
-function wrapEl<T>(ref: { location: { nativeElement: HTMLElement }; destroy: () => void }): CbElement<T> {
+function wrapEl<T>(ref: { location: { nativeElement: HTMLElement }; destroy: () => void }, update: (item: CbItem<T>, prev: CbItem<T> | null) => void): CbElement<T> {
   const el = ref.location.nativeElement;
   let ro: ResizeObserver | null = null;
   let live: ((h: number) => void) | null = null;
@@ -103,6 +178,7 @@ function wrapEl<T>(ref: { location: { nativeElement: HTMLElement }; destroy: () 
         live = null;
       };
     },
+    update,
     destroy: () => {
       ro?.disconnect();
       ro = null;

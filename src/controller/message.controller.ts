@@ -24,7 +24,9 @@ import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
+import { parseFileContent } from '../upload/file-content.js';
 
 @ApiTags('message')
 @Controller()
@@ -36,7 +38,7 @@ export class MessageController {
     private readonly friendshipService: FriendshipService,
   ) {}
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
   @Throttle(60, 60) // anti-spam ceiling: 60 sends/min
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -47,28 +49,30 @@ export class MessageController {
     @Request() req,
     @Body() dto: SendMessageDto,
   ): Promise<ApiResult> {
-    // content 缺失/空串已由 SendMessageDto 的 @IsNotEmpty 拦截 → ValidationPipe 纳入业务流(200/10000)；
-    // 这里仅处理纯空白（业务码 MESSAGE_EMPTY）。
+    // Membership is resolved by ThreadAccessGuard (throws THREAD_NOT_FOUND for non-participants);
+    // req.threadAccess.participant is the caller's row. A missing/empty content string is already
+    // rejected by SendMessageDto's @IsNotEmpty/@MaxLength via ValidationPipe (HTTP 200 + code 10000);
+    // this check only catches whitespace-only bodies (business code MESSAGE_EMPTY).
     if (!dto.content?.trim()) {
       return { code: BusinessCode.MESSAGE_EMPTY, message: 'no content' };
     }
-    // Authorization (fixes the former IDOR): the caller must be an ACTIVE participant of the thread.
-    // P2P and GROUP share one check. Returns NOT_FOUND to avoid leaking thread existence to non-members.
-    const me = await this.participantService.findActiveParticipant(
-      req.user.userId,
-      dto.threadId,
-    );
-    if (me === null) {
+    const contentType = dto.contentType ?? ContentType.PURE_TEXT;
+    // FILE content is a server-trust contract: the client only forwards what POST /upload/file
+    // returned. parseFileContent rejects any non-upload URL, disallowed mimetype, or bad shape so a
+    // forged `javascript:`/external/traversal URL or oversized value can never be stored (and later
+    // rendered into a download link). PURE_TEXT/IMAGE keep their existing verbatim storage.
+    if (contentType === ContentType.FILE && !parseFileContent(dto.content)) {
       return {
-        code: BusinessCode.THREAD_NOT_FOUND,
-        message: `no thread [${dto.threadId}]`,
+        code: BusinessCode.VALIDATION_FAILED,
+        message: 'invalid file content',
       };
     }
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
       dto.content,
-      dto.contentType ?? ContentType.PURE_TEXT,
+      contentType,
+      dto.clientMessageId,
     );
     // WS 推完整消息体（serializeBody 把 BigInt→string / Date→ms，与 HTTP 响应同口径；
     // 前端收到即可直接渲染，无需二次 query-messages）。
@@ -83,7 +87,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('query-messages')
@@ -93,17 +97,8 @@ export class MessageController {
     @Request() req,
     @Body() dto: QueryMessagesDto,
   ): Promise<ApiResult> {
-    // Authorization: active participant only (fixes the former IDOR on history reads).
-    const me = await this.participantService.findActiveParticipant(
-      req.user.userId,
-      dto.threadId,
-    );
-    if (me === null) {
-      return {
-        code: BusinessCode.THREAD_NOT_FOUND,
-        message: `no thread [${dto.threadId}]`,
-      };
-    }
+    // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
+    // IDOR fix as send, now declarative. The participant row is on req.threadAccess.participant.
     // take+1 法：多取 1 条判断 hasMore，data 截断回 take 条。
     // 消除「总数恰为 take 整数倍时前端靠 <take 启发式多打一次空请求」的边界问题。
     const newParams: Prisma.MessageFindManyArgs = {
@@ -133,11 +128,15 @@ export class MessageController {
     @Request() req,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
-    const { friendship } = await this.friendshipService.getFriendship(
+    const { friendship, isFriend } = await this.friendshipService.getFriendship(
       req.user.userId,
       dto.userId,
     );
-    if (friendship === null) {
+    // Only an APPROVED friendship carries a usable P2P thread. Pending / DELETED / no-relationship
+    // all collapse to THREAD_NOT_FOUND — deliberately non-leaking, so a caller cannot probe whether
+    // a pending request or prior relationship with an arbitrary user exists (nor its direction).
+    // Matches ThreadAccessGuard's non-leak policy.
+    if (!isFriend || !friendship?.threadId) {
       return {
         code: BusinessCode.THREAD_NOT_FOUND,
         message: `no relationship with user [${dto.userId}]`,
@@ -146,7 +145,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful', data: friendship };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
   @Throttle(60, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -154,32 +153,15 @@ export class MessageController {
   @ApiOperation({
     summary: 'Mark a conversation read (advances the per-user read cursor)',
   })
-  async markRead(
-    @Request() req,
-    @Body() dto: MarkReadDto,
-  ): Promise<ApiResult> {
-    // Authorization: the caller must be an active participant (same invariant as send/query).
-    const me = await this.participantService.findActiveParticipant(
-      req.user.userId,
-      dto.threadId,
-    );
-    if (me === null) {
-      return {
-        code: BusinessCode.THREAD_NOT_FOUND,
-        message: `no thread [${dto.threadId}]`,
-      };
-    }
+  async markRead(@Request() req, @Body() dto: MarkReadDto): Promise<ApiResult> {
+    // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
+    // participant row is on req.threadAccess.participant.
     // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
     // (prevents pointing the cursor at a message from another conversation). Without one, mark all
-    // current messages read by using the thread's denormalized lastMessageId.
+    // current messages read by using the thread's denormalized lastMessageId. The numeric-string
+    // shape of lastReadMessageId is enforced by MarkReadDto's @Matches.
     let cursor: bigint;
     if (dto.lastReadMessageId !== undefined) {
-      if (!/^\d+$/.test(dto.lastReadMessageId)) {
-        return {
-          code: BusinessCode.VALIDATION_FAILED,
-          message: 'invalid lastReadMessageId',
-        };
-      }
       const msg = await this.messageService.findMessageById(
         BigInt(dto.lastReadMessageId),
       );
@@ -199,11 +181,21 @@ export class MessageController {
       }
       cursor = last;
     }
-    await this.participantService.advanceReadCursor(
+    const moved = await this.participantService.advanceReadCursor(
       req.user.userId,
       dto.threadId,
       cursor,
     );
+    if (moved) {
+      // Sync the caller's OTHER online devices/tabs so their unread badge for this thread clears
+      // immediately — the same multi-device consistency send-message already provides by fanning
+      // NEW_MESSAGE to the sender. advanceReadCursor's "did it move?" return suppresses the frame
+      // for an idempotent/stale mark-read (cursor already ≥ this id).
+      this.sseService.onReadCursor(
+        req.user.userId,
+        serializeBody({ threadId: dto.threadId, lastReadMsgId: cursor }),
+      );
+    }
     return { code: BusinessCode.OK, message: 'successful' };
   }
 }

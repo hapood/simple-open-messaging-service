@@ -149,6 +149,46 @@ export class FriendshipService {
     });
   }
 
+  /**
+   * End an APPROVED friendship (unfriend) — the P2P counterpart of group/leave. Sets status DELETED
+   * and soft-leaves BOTH participants of the P2P thread in one transaction, so the conversation
+   * disappears from both users' lists and neither can send to it. Without this, an APPROVED
+   * friendship+thread could never be ended: DELETED was only reachable from PENDING (decline/cancel).
+   *
+   * Mutual by construction (Friendship is one shared row), mirroring the shared-row data model the
+   * way group/leave mirrors the per-user ThreadParticipant model. Re-friending later creates a fresh
+   * thread (approveInTx), so the orphaned old thread — both sides leftAt — is harmless.
+   *
+   * Returns 'ok' + the thread id (so the controller can address the peer SSE) or 'not-friends' when
+   * there is no APPROVED relationship to end (idempotent — unfriending twice is a no-op).
+   */
+  async deleteFriendship(
+    userX: number,
+    userY: number,
+  ): Promise<{ status: 'ok' | 'not-friends'; threadId: number | null }> {
+    return this.prisma.$transaction(async (tx) => {
+      const f = await this.findFriendshipInTx(tx, userX, userY);
+      if (
+        f === null ||
+        f.status !== FriendshipStatus.APPROVED ||
+        f.threadId === null
+      ) {
+        return { status: 'not-friends', threadId: f?.threadId ?? null };
+      }
+      // Soft-leave both sides atomically with the status flip; updateMany (not update) so a missing
+      // row on one side — a invariant violation, not a normal state — cannot poison the transaction.
+      await tx.threadParticipant.updateMany({
+        where: { threadId: f.threadId, leftAt: null },
+        data: { leftAt: new Date() },
+      });
+      await tx.friendship.update({
+        where: { id: f.id },
+        data: { status: FriendshipStatus.DELETED, threadId: null },
+      });
+      return { status: 'ok', threadId: f.threadId };
+    });
+  }
+
   private findFriendshipInTx(
     tx: Prisma.TransactionClient,
     userX: number,

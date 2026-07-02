@@ -51,9 +51,15 @@
 
 .crop {
   display: block;
+  box-sizing: border-box;
   width: min(288px, 72vw);
   height: min(288px, 72vw);
   border-radius: var(--app-radius-lg);
+  // Delineate the editable region now that the darkening mask is gone. Keep the
+  // outer box at 288px (box-sizing: border-box) so it stays aligned with the
+  // 288px controls row below; the border is a cropper affordance, not avatar
+  // decoration — rendered avatars elsewhere stay bare.
+  border: 1px solid var(--app-border);
   background: #000;
   // the canvas owns pan/pinch gestures; the page must not scroll/zoom underneath
   touch-action: none;
@@ -112,6 +118,9 @@
 .preview {
   width: 64px;
   height: 64px;
-  border-radius: 50%;
+  // Match how a real avatar renders elsewhere (rounded square, not a circle):
+  // see user-avatar.component.scss `.ua.img { border-radius: 20% }` and the
+  // fallback SVG `rect rx="20"`. A circular preview would misrepresent the output.
+  border-radius: 20%;
   background: var(--app-border);
 }

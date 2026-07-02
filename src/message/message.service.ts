@@ -44,31 +44,77 @@ export class MessageService implements OnModuleInit {
   async onModuleInit() {}
 
   /**
-   * Append a message AND update the thread's denormalized last-message cache in one transaction, so the
-   * conversation list (which reads MessageThread.lastMessage*) can never observe a message whose preview
-   * hasn't been written. Returns the full Message (BigInt/Date serialized by the global interceptor).
+   * Append a message AND update the thread's denormalized last-message cache AND advance the sender's
+   * own read cursor — all in one transaction, so:
+   *  - the conversation list (which reads MessageThread.lastMessage*) can never observe a message
+   *    whose preview hasn't been written;
+   *  - the sender's own message never counts as unread to themselves (their lastReadMsgId jumps to
+   *    what they just sent), removing the need for a client post-send mark-read round-trip and keeping
+   *    multi-device badge counts correct.
+   * Returns the full Message (BigInt/Date serialized by the global interceptor).
+   *
+   * Idempotent when a clientMessageId is supplied: a retried send (network blip after the server
+   * committed) returns the ORIGINAL Message row instead of creating a duplicate. The partial unique
+   * index on Message.clientMessageId is the dedup authority; the pre-check avoids throwing in the
+   * common serial-retry case and the P2002 branch wins the concurrent-retry race (the interactive tx
+   * is poisoned by the error, so the re-fetch runs on the root client).
    */
   async writeMsgToThread(
     userId: number,
     threadId: number,
     content: string,
     type: ContentType,
+    clientMessageId?: string,
   ): Promise<Message> {
-    return this.prisma.$transaction(async (tx) => {
-      const msg = await tx.message.create({
-        data: { content, contentType: type, threadId, creator: userId },
+    if (clientMessageId !== undefined) {
+      const existing = await this.prisma.message.findUnique({
+        where: { clientMessageId },
       });
-      await tx.messageThread.update({
-        where: { id: threadId },
-        data: {
-          lastMessageId: msg.id,
-          lastMessagePreview: derivePreview(type, content),
-          lastMessageSenderId: userId,
-          lastMessageAt: msg.createdAt,
-        },
+      if (existing !== null) return existing; // retry → return the original message
+    }
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const msg = await tx.message.create({
+          data: {
+            content,
+            contentType: type,
+            threadId,
+            creator: userId,
+            clientMessageId,
+          },
+        });
+        await tx.messageThread.update({
+          where: { id: threadId },
+          data: {
+            lastMessageId: msg.id,
+            lastMessagePreview: derivePreview(type, content),
+            lastMessageSenderId: userId,
+            lastMessageAt: msg.createdAt,
+          },
+        });
+        // Sender has implicitly "read" what they just sent; msg.id is a fresh autoincrement so it is
+        // always strictly greater than the prior watermark — a forward move, never a regression.
+        await tx.threadParticipant.update({
+          where: { userId_threadId: { userId, threadId } },
+          data: { lastReadMsgId: msg.id },
+        });
+        return msg;
       });
-      return msg;
-    });
+    } catch (e) {
+      if (
+        clientMessageId !== undefined &&
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        // Lost the concurrent-retry race: another request inserted this clientMessageId first. Return
+        // theirs rather than surfacing the unique-violation.
+        const winner = await this.prisma.message.findUnique({
+          where: { clientMessageId },
+        });
+        if (winner !== null) return winner;
+      }
+      throw e;
+    }
   }
 
   async queryMessages(threadId: number, params: Prisma.MessageFindManyArgs) {

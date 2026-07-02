@@ -172,6 +172,10 @@ model Message {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
   isDeleted   Boolean       @default(false)
+  // Client-generated UUID for send idempotency: a retried send with the same value returns the original
+  // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
+  // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
+  clientMessageId String?   @unique @db.VarChar(36)
 
   @@index([threadId, id]) // history pagination — the hot path
   @@index([threadId, createdAt])

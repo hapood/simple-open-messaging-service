@@ -16,12 +16,10 @@ import {
   type CbItem,
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
-import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
 import { HttpItemSource } from './http-item-source';
-import { createMsgCbElement, createGhostCbElement } from '../message-cards/create-item';
+import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../message-cards/create-item';
 import { mergeAlbumItems } from '../message-cards/merge-items';
-import { shouldShowDateSeparator, formatDateSeparator } from '../message-cards/date-format';
-import type { ChatItemData, ChatMsgData } from '../message-cards/chat-item';
+import type { ChatItemData } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { MsgInputBarComponent } from '../message-cards/input-bar/msg-input-bar.component';
 import { MsgService } from '../../services/message.service';
@@ -112,22 +110,8 @@ export class MessageThreadComponent implements OnDestroy {
   private createItem(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
     // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostCbElement）。
     if (prev === null && item.boundary !== 'oldest') return createGhostCbElement();
-    let isShowHead = true;
-    let isGroupStart = false;
-    let dateLabel: string | null = null;
-    const data = item.data;
-    if (data.type === 'msg') {
-      const msg = data;
-      const prevMsg = prev?.data.type === 'msg' ? (prev.data as ChatMsgData) : null;
-      const curCtx: GroupCtx = { creator: msg.creator };
-      const prevCtx: GroupCtx | null = prevMsg ? { creator: prevMsg.creator } : null;
-      isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
-      isGroupStart = isShowHead && !!prevMsg; // 换发送者的新组首加组间留白
-      // date 分隔：前端按窗口内前一条 prev 跨日判定（date 已从 source 移出）。oldest 上方固定显
-      // date；trim 重挂 prev==null 非 oldest 不显（防闪烁，见 date-format.shouldShowDateSeparator）。
-      dateLabel = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest')
-        ? formatDateSeparator(msg.createdAtMs) : null;
-    }
+    // 分组标 + date 按 prev 算（computeRowFlags，与 CbElement.update 共用——重排序后 update 按新 prev 重算分组）。
+    const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
     return createMsgCbElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector);
   }
 

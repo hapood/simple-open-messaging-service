@@ -434,6 +434,46 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Post('user/delete-friend')
+  @ApiOperation({ summary: 'Unfriend — end a P2P conversation (mutual)' })
+  async deleteFriend(
+    @Request() req,
+    @Body() dto: UserIdDto,
+  ): Promise<ApiResult> {
+    if (req.user.userId === dto.userId) {
+      return {
+        code: BusinessCode.FRIEND_SELF,
+        message: 'can not unfriend self',
+      };
+    }
+    const res = await this.friendshipService.deleteFriendship(
+      req.user.userId,
+      dto.userId,
+    );
+    if (res.status !== 'ok') {
+      // No APPROVED relationship to end — idempotent. THREAD_NOT_FOUND matches the P2P "no
+      // conversation" signal the rest of the message/thread routes use.
+      return {
+        code: BusinessCode.THREAD_NOT_FOUND,
+        message: `not friends with [${dto.userId}]`,
+      };
+    }
+    // Tell the peer to drop the conversation immediately. Their participant row was soft-left in
+    // the same tx, so a refetch hides it too; the NOTIFY just avoids the round-trip latency.
+    this.sseService.onNotify(
+      dto.userId,
+      serializeBody({
+        event: 'NOTIFY',
+        type: 'FRIEND_DELETED',
+        byUserId: req.user.userId,
+      }),
+    );
+    return { code: BusinessCode.OK, message: 'friend removed' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/query')
   @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
   @ApiResultResponse(UserResponseDto, true)
@@ -487,8 +527,11 @@ export class UserController {
       take: 1,
     });
     if (!p) {
+      // Non-membership / no-such-thread collapse to THREAD_NOT_FOUND — the same code the message
+      // routes return via ThreadAccessGuard, so a client gets one consistent "no conversation"
+      // signal across thread-info / send / query / mark-read.
       return {
-        code: BusinessCode.NOT_FOUND,
+        code: BusinessCode.THREAD_NOT_FOUND,
         message: `no thread [${dto.threadId}]`,
       };
     }

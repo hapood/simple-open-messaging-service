@@ -309,14 +309,9 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
     ctx.setTransform(this.scale, 0, 0, this.scale, this.ox, this.oy)
     ctx.drawImage(this.bmp, 0, 0)
     ctx.restore()
-    // darken outside the circular guide (canonical avatar-cropper look)
-    ctx.save()
-    ctx.fillStyle = 'rgba(0,0,0,0.45)'
-    ctx.beginPath()
-    ctx.rect(0, 0, this.FRAME, this.FRAME)
-    ctx.arc(this.FRAME / 2, this.FRAME / 2, this.FRAME / 2, 0, Math.PI * 2)
-    ctx.fill('evenodd')
-    ctx.restore()
+    // The crop region is the full square canvas, so there's nothing to darken
+    // outside it. The rounded-square outer shape comes from the CSS border-radius
+    // on `.crop`, matching how a real avatar renders (see avatar-editor.scss).
     this.drawPreview()
   }
 
@@ -326,12 +321,9 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
     const r = computeCropRect(this.iw, this.ih, this.FRAME, this.scale, this.ox, this.oy, this.MAX_OUT)
     pctx.setTransform(1, 0, 0, 1, 0, 0)
     pctx.clearRect(0, 0, this.PREVIEW, this.PREVIEW)
-    pctx.save()
-    pctx.beginPath()
-    pctx.arc(this.PREVIEW / 2, this.PREVIEW / 2, this.PREVIEW / 2, 0, Math.PI * 2)
-    pctx.clip()
     pctx.imageSmoothingQuality = 'high'
+    // No circular clip: the preview is the full square, and the rounded-square
+    // avatar look comes from the CSS `border-radius: 20%` on `.preview`.
     pctx.drawImage(this.bmp, r.sx, r.sy, r.sw, r.sh, 0, 0, this.PREVIEW, this.PREVIEW)
-    pctx.restore()
   }
 }

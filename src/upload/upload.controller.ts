@@ -57,4 +57,39 @@ export class UploadController {
       data: { url, w: img.w, h: img.h },
     };
   }
+
+  /**
+   * Generic file upload: multipart/form-data, field file=<binary>. Returns the server-generated
+   * { url, name, size, mimeType } the client stores verbatim as a FILE message's content. The
+   * client cannot forge any of these — url/name/mimeType are produced by the server, size is the
+   * real buffer length, and parseFileContent re-validates the shape on send.
+   */
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('upload/file')
+  @ApiOperation({ summary: '上传通用文件（返回 url/name/size/mimeType）' })
+  @ApiConsumes('multipart/form-data')
+  async uploadFile(@Request() req: FastifyRequest): Promise<ApiResult> {
+    const f = await this.uploadService.consumeFile(req);
+    if (f.kind === 'rejected') {
+      return {
+        code: BusinessCode.VALIDATION_FAILED,
+        message:
+          f.reason === 'no-file'
+            ? 'no file'
+            : f.reason === 'too-large'
+              ? 'file too large'
+              : f.reason === 'bad-name'
+                ? 'invalid filename'
+                : 'invalid file type',
+      };
+    }
+    const data = await this.uploadService.saveFile(
+      f.mimetype,
+      f.filename,
+      f.buffer,
+    );
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
 }

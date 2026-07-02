@@ -30,6 +30,21 @@ export class MsgService {
     return this.http.post<StandardResponse<{ url: string, w: number, h: number }>>(`${apiPrefix}/upload`, fd)
   }
 
+  /**
+   * 上传通用文件（multipart：file），返回服务端生成的 {url,name,size,mimeType}，原样作为 FILE 消息内容。
+   * observe:'events' + reportProgress 让调用方能渲染上传进度（HttpProgressEvent）；final 响应体在最后一个
+   * HttpResponse 事件里。POST /upload/file 的 mimetype 白名单与体积上限由后端 enforce。
+   */
+  uploadFile(file: File) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
+      `${apiPrefix}/upload/file`,
+      fd,
+      { reportProgress: true, observe: 'events' },
+    )
+  }
+
   queryMessageLog(params: QueryMessageLogParams) {
     return this.http.post<StandardResponse<Message[]>>(`${apiPrefix}/query-messages`, params)
   }

@@ -36,7 +36,13 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
       const memberIds = imgs
         .map(im => im.msgId)
         .filter((x: string | undefined): x is string => typeof x === 'string' && x.length > 0);
-      out.push({ id: msg.msgId, ids: memberIds.length > 1 ? memberIds : undefined, data: { ...msg, images: imgs }, boundary });
+      // Spread the head item so kernel correlation fields survive the merge — most importantly clientMessageId, which
+      // pairs a confirmed real with its optimistic bubble (loadNewer → mountNewerReals matches the confirm by
+      // clientMessageId, not id). Rebuilding from only {id,ids,data,boundary} silently stripped it, so an optimistic
+      // IMAGE send's real was treated as a fresh incoming message and mounted beside the un-reconciled optimistic
+      // bubble → duplicate picture after the push signal (PURE_TEXT was unaffected: it takes the else branch, pushed
+      // as-is). it.id === msg.msgId holds throughout the source, so the explicit id is dropped as redundant.
+      out.push({ ...it, ids: memberIds.length > 1 ? memberIds : undefined, data: { ...msg, images: imgs }, boundary });
       i = j;
     } else {
       out.push(it);

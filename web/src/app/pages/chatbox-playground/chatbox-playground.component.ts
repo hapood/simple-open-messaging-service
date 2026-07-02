@@ -7,14 +7,13 @@ import { FormsModule } from '@angular/forms';
 import { ChatBoxScroller, ScrollerApi, CbElement, CbItem, CbConfig, CbOptions, CbScrollInfo, CbDebugStats } from '../../lib/chat-box/chat-box-scroller';
 import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
 import { ActivatedRoute } from '@angular/router';
-import { classifyGroupFlags, GroupCtx } from '../../lib/chat-box/group-logic';
 import { LayoutService } from '../../services/layout.service';
-import { createMsgCbElement, createGhostCbElement } from '../../components/message-cards/create-item';
+import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../../components/message-cards/create-item';
 import { mergeAlbumItems } from '../../components/message-cards/merge-items';
-import { shouldShowDateSeparator, formatDateSeparator } from '../../components/message-cards/date-format';
-import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
-import { MockItemSource, MockUserService } from './mock-chat-api';
+import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../../components/message-cards/chat-item';
+import { MockItemSource, MockUserService } from './http-item-source.mock';
 import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
+import { ChatEditorComponent, ChatMember } from '../../components/chat-editor/chat-editor.component';
 
 // Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除（与虚拟滚动内核同模式）。
 // 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
@@ -39,7 +38,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent],
+  imports: [FormsModule, UserAvatarComponent, ChatEditorComponent],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -71,9 +70,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
   private readonly pgStageRef = viewChild<ElementRef<HTMLDivElement>>('pgStage');
-  private readonly draftInput = viewChild<ElementRef<HTMLTextAreaElement>>('draftInput');
+  private readonly chatEditor = viewChild(ChatEditorComponent);
   private readonly inputBarRef = viewChild<ElementRef<HTMLFormElement>>('inputBar');
   private readonly attachInput = viewChild<ElementRef<HTMLInputElement>>('attachInput');
+  private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly jumpInput = viewChild<ElementRef<HTMLInputElement>>('jumpInput');
   private readonly insertInput = viewChild<ElementRef<HTMLInputElement>>('insertInput');
   private readonly removeInput = viewChild<ElementRef<HTMLInputElement>>('removeInput');
@@ -92,6 +92,27 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly closeCheckpoint = signal(false);
   /** source get 延迟（ms，模拟 IO 慢加载）。默认 200，可调 0/1s/5s 测加载/补偿体验。 */
   readonly sourceLatency = signal(200);
+  /** Mock server-echo delay (ms): how long an optimistic bubble stays 'sending' before confirm flips it to 'sent'. Default 800. */
+  readonly confirmDelay = signal(800);
+  /** Mock WS reply delay (ms): time after confirm before the other party's message is pushed via appendLive. Default 1500. */
+  readonly replyDelay = signal(1500);
+  /** Mock WS push-signal delay (ms): time after the server caches the confirmed message before the WS signal delivers
+   *  it (onMessageSignal → reconcile). Models broadcast latency — during it the optimistic bubble keeps showing the
+   *  'sending' spinner. Default 0 (reconcile on the next tick, as before). */
+  readonly pushSignalDelay = signal(0);
+  /** Opponent-interleave scenario: on each send, deliver an opponent message in the same confirm batch, ordered
+   *  BEFORE the sent message (it mounts above the optimistic bubble). Reproduces the "a reply lands above my sent
+   *  message" race for testing the kernel's optimistic-tail mount ordering. Default off (chronological below-reply). */
+  readonly opponentInterleave = signal(false);
+  /** How many opponent (incoming) messages are pushed after each send. 0 = none — only your self-sent message confirms
+   *  (the optimistic-send → check-fade flow in isolation, with no replies cluttering the chat). N > 0 = N opponent
+   *  messages arrive per send. Does NOT affect the confirm reconcile itself (the server echo of your own message still
+   *  arrives via onMessageSignal); only the "incoming reply" side of the mock WS. Default 1 (one below-reply). */
+  readonly opponentPushCount = signal(1);
+  /** Persistent setting: when on, EVERY send's confirm fails (network/timeout model) — the optimistic bubble is rebuilt
+   *  as a failed bubble (retry glyph) instead of confirming. Stays on until toggled off, so the failure/retry flow can be
+   *  exercised repeatedly without re-arming. To test "fail then succeed": turn on → send → turn off → click retry. */
+  readonly mockSendError = signal(false);
   /** 内核调参（CbConfig）。setup 传给内核；编辑弹窗改 → applyConfig 重建生效。 */
   readonly config = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
   /** 参数编辑弹窗开关 + 草稿（确认才 apply，避免改一个字段就重建）。 */
@@ -106,8 +127,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   // 控件
   readonly count = signal(5000);
-  readonly draft = signal(''); // 输入栏草稿
+  /** Tiptap 编辑器当前内容的 inline HTML（发送时存为 PURE_TEXT 富文本）。空编辑器 → ''。 */
+  readonly draftHtml = signal('');
   readonly emojiOpen = signal(false); // emoji 面板开关
+  /** @mention 候选（mock 群成员；生产替换为 GroupService.getMembers()）。 */
+  readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
   /** 输入栏实测高度（auto-grow 后更新），驱动 .pg-viewport bottom 紧贴输入栏上沿（多行不遮挡）。 */
   readonly inputBarHeight = signal(63);
   /** emoji 面板候选（模板访问，故为实例属性）。 */
@@ -235,6 +259,18 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.sourceLatency.set(ms);
     if (this.source) this.source.latency = ms;
   }
+  /** Set the mock server-echo delay (read live by the confirm timer — no rebuild needed). */
+  setConfirmDelay(ms: number): void { this.confirmDelay.set(ms); }
+  /** Set the mock WS reply delay (read live by the reply timer — no rebuild needed). */
+  setReplyDelay(ms: number): void { this.replyDelay.set(ms); }
+  /** Set the mock WS push-signal delay (read live by the confirm timer — no rebuild needed). */
+  setPushSignalDelay(ms: number): void { this.pushSignalDelay.set(ms); }
+  /** Toggle the opponent-interleave-before-mine scenario. */
+  toggleOpponentInterleave(): void { this.opponentInterleave.update(v => !v); }
+  /** Set how many opponent messages are pushed per send (read live by the confirm path — no rebuild needed). */
+  setOpponentPushCount(n: number): void { this.opponentPushCount.set(n); }
+  /** Toggle the persistent "mock send error" setting (every send fails while on). */
+  toggleMockSendError(): void { this.mockSendError.update(v => !v); }
 
   /** 打开参数编辑弹窗（草稿 = 当前 config 副本）。 */
   openConfigModal(): void {
@@ -299,22 +335,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostCbElement）。
     // prev=null ⟺ 被 prepend 成新 oldest；boundary!=='oldest' 排除全局最老（那条 noOlder、非 ghost、须真实渲）。
     if (prev === null && item.boundary !== 'oldest') return createGhostCbElement();
-    // 分组判定 + date 分隔均按【更老邻居 prev】算（内核传入；抽象 id+1）：追加新条时原末条高度不变、无需重渲。
-    let isShowHead = true, isGroupStart = false;
-    let dateLabel: string | null = null;
-    if (item.data.type === 'msg') {
-      const msg = item.data;
-      const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
-      const curCtx: GroupCtx = { creator: msg.creator };
-      const prevCtx: GroupCtx | null = prevMsg ? { creator: prevMsg.creator } : null;
-      isShowHead = classifyGroupFlags(prevCtx, curCtx, null).isShowHead;
-      isGroupStart = isShowHead && !!prevMsg;
-      // date 分隔：前端按窗口内前一条 prev 跨日判定（date 已从 source 移出）。oldest 上方固定显 date；
-      // trim 重挂 prev==null 非 oldest 不显（防闪烁，见 date-format.shouldShowDateSeparator）。
-      dateLabel = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest')
-        ? formatDateSeparator(msg.createdAtMs) : null;
-    }
-    const vs = createMsgCbElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector);
+    // 分组判定 + date 分隔按【更老邻居 prev】算（computeRowFlags，与 CbElement.update 共用同一逻辑——重排序后
+    // update 须按新 prev 重算分组，mount 与 in-place update 派生同款 flags）。
+    const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
+    const vs = createMsgCbElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector, id => this.retrySend(id));
     // 调试角标（首/续 + 消息 id）：playground 动态注入到行内，ngDevMode 守卫 → 生产 AOT 不创建。
     if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
     return vs;
@@ -347,7 +371,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       }
       if (ids.length === 1) return ids[0];
     }
-    return d.msgId;
+    return shortId(d.msgId);
   }
 
   /** balance 诊断 → console.debug（调试模式 + 仅有挂载/卸载活动 + 节流，避免空闲刷屏）。 */
@@ -361,6 +385,14 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   private onScroll(info: CbScrollInfo) {
+    // Drain optimistic sends queued while the newer end was trimmed: noNewer means the mounted tail IS the global
+    // newest, so tailAnchorId() is now safe to anchor on. (scrollToBottom's follow chain emits noNewer on the batch
+    // that reaches the global newest.) Runs before the throttle below so the insert is prompt, not delayed by 100ms.
+    if (info.noNewer && this.pendingOptimistic.length > 0) {
+      const queue = this.pendingOptimistic;
+      this.pendingOptimistic = [];
+      for (const item of queue) this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
+    }
     this.atBottom.set(info.atBottom);
     this.updateStickyDate();
     if (!isDevMode()) return;
@@ -482,6 +514,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
       contentType: 'PURE_TEXT',
       images: null,
+      file: null,
       createdAtMs: now.getTime(),
       kind: 'fake',
     };
@@ -497,35 +530,24 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   toTop() { this.scroller?.scrollToTop(); }
   toBottom() { this.scroller?.scrollToBottom(); }
 
-  // 输入栏：Enter 发送、Shift+Enter 换行
-  onInputKeydown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void this.send();
-    }
+  // 编辑器输出：更新 draftHtml（发送用）+ 重测输入栏高度（编辑器 auto-grow 会改变输入栏高度）。
+  onHtml(h: string) {
+    this.draftHtml.set(h);
+    this.measureInputBar();
   }
 
   toggleEmoji() { this.emojiOpen.update(v => !v); }
+  closeEmoji() { this.emojiOpen.set(false); }
 
-  /** emoji 插入到 textarea 光标处（无光标则追加），并恢复光标到插入点之后。 */
+  /** emoji 插入到 Tiptap 编辑器光标处（编辑器自管光标恢复），插入后聚焦。 */
   insertEmoji(e: string) {
-    const ta = this.draftInput()?.nativeElement;
-    const cur = this.draft();
-    const start = ta?.selectionStart ?? cur.length;
-    const end = ta?.selectionEnd ?? cur.length;
-    this.draft.set(cur.slice(0, start) + e + cur.slice(end));
-    this.autoGrow();
-    Promise.resolve().then(() => {
-      const t = this.draftInput()?.nativeElement;
-      if (t) { t.focus(); const pos = start + e.length; t.setSelectionRange(pos, pos); }
-    });
+    this.chatEditor()?.insertText(e);
+    this.chatEditor()?.focus();
   }
 
-  onDraftChange(v: string) { this.draft.set(v); this.autoGrow(); }
-
-  /** 发送键：有文字 → 发文字；无文字 → 唤起附件选图（WhatsApp 相机入口同义）。 */
+  /** 发送键：有内容 → 发文字；空 → 唤起附件选图（WhatsApp 相机入口同义）。 */
   onSendClick() {
-    if (this.draft().trim()) void this.send();
+    if (this.draftHtml()) void this.send();
     else this.onAttachClick();
   }
 
@@ -537,13 +559,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     input.value = '';
   }
 
-  /** textarea auto-grow：1~6 行自适应撑高，超过内部滚动；同步输入栏高度给 viewport bottom。 */
-  private autoGrow() {
-    const ta = this.draftInput()?.nativeElement;
-    if (ta) {
-      ta.style.height = 'auto';
-      ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
-    }
+  /** 输入栏高度随编辑器内容增长而变；每次编辑器更新后重测，驱动 .pg-viewport bottom 紧贴输入栏。 */
+  private measureInputBar() {
     requestAnimationFrame(() => {
       const bar = this.inputBarRef()?.nativeElement;
       if (bar) this.inputBarHeight.set(bar.offsetHeight);
@@ -557,21 +574,29 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    * Stacks naturally: each insert anchors on the current tail (a prior fake or the real newest).
    */
   async send(): Promise<void> {
-    const text = this.draft().trim();
+    const html = this.draftHtml();
     const scroller = this.scroller;
-    if (!text || !scroller) return;
-    const item = this.makeOptimisticItem(text, 'PURE_TEXT', null);
-    this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
-    this.draft.set('');
-    this.autoGrow();
+    if (!html || !scroller) return;
+    // rich=true → text-row renders the editor HTML (bold/italic/code/@mention chips) via sanitized [innerHTML].
+    const item = this.makeOptimisticItem(html, 'PURE_TEXT', null, null, true);
+    this.chatEditor()?.clear();
+    this.draftHtml.set('');
+    this.measureInputBar();
+    this.dispatchPending(item);
   }
 
-  /** Mock WS reply (the other party): a normal live message via appendLive; the kernel follows to the bottom if pinned. */
-  private async receiveReply(): Promise<void> {
+  /** Mock WS incoming batch (the other party): cache `count` live messages in one shot and signal the kernel once —
+   *  loadNewer pulls them via getNewer (shaping name/isSelf from profiles) and mounts them at the tail; the kernel
+   *  follows to the bottom if pinned. A single pushLive + signal keeps the batch atomic (one loadNewer pass). */
+  private async receiveMany(count: number): Promise<void> {
     const scroller = this.scroller;
-    if (!scroller) return;
-    const phrase = REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
-    scroller.appendLive([this.makeMockItem(phrase, false, 'PURE_TEXT', null)]);
+    if (!scroller || count <= 0) return;
+    const items = Array.from({ length: count }, () => {
+      const phrase = REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
+      return this.makeMockItem(phrase, false, 'PURE_TEXT', null);
+    });
+    this.source?.pushLive(items);
+    void scroller.onMessageSignal();
   }
 
   /**
@@ -586,13 +611,63 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const imgs = await readImages(list);
     if (imgs.length === 0) return;
     const item = this.makeOptimisticItem('', 'IMAGE', imgs);
-    this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
+    this.dispatchPending(item);
+  }
+
+  /**
+   * Optimistic file send: the playground is mock-only (no real backend round-trip), so the picked file is
+   * exposed via a client object URL — the FileRow download anchor then genuinely downloads the real bytes,
+   * making the card fully functional in the sandbox. (Production uses MsgService.uploadFile → POST /upload/file
+   * and stores the returned /uploads/<name> url; the optimistic card here is the same shape with a blob url.)
+   */
+  async sendFileFromFile(files: FileList | null): Promise<void> {
+    const scroller = this.scroller;
+    if (!files || files.length === 0 || !scroller) return;
+    for (const f of Array.from(files)) {
+      const url = URL.createObjectURL(f);
+      const file: FileInfo = {
+        url,
+        name: f.name,
+        size: f.size,
+        mimeType: f.type || 'application/octet-stream',
+      };
+      this.dispatchPending(this.makeOptimisticItem('', 'FILE', null, file));
+    }
+  }
+
+  onFileClick() { this.fileInput()?.nativeElement.click(); }
+
+  onFileChange(e: Event) {
+    const input = e.target as HTMLInputElement;
+    void this.sendFileFromFile(input.files);
+    input.value = '';
   }
 
   /** The id to anchor a newest-end insert after: the current tail (a prior fake/pending, or the real newest). '' if empty. */
   private tailAnchorId(): string {
     const id = this.scroller?.getInfo().newestId ?? null;
     return id != null ? String(id) : '';
+  }
+
+  /** Optimistic sends queued while the newer end was trimmed; drained in onScroll once noNewer is reported. */
+  private pendingOptimistic: CbItem<ChatItemData>[] = [];
+
+  /**
+   * Route an optimistic send so it anchors on the GLOBAL newest only once that end is mounted. When pinned (noNewer,
+   * the common case) this is synchronous: anchor and insert now. When the newer end is trimmed (scrolled into history),
+   * queue the item and scrollToBottom() — the follow chain mounts the newest and onScroll drains the queue, inserting
+   * each item on the now-correct tail. So tailAnchorId() never anchors on a mid-list item. A prior in-flight pending
+   * bubble counts as "the newest" (it IS the mounted tail once noNewer), so rapid-fire sends still stack in order.
+   */
+  private dispatchPending(item: CbItem<ChatItemData>): void {
+    const scroller = this.scroller;
+    if (!scroller) return;
+    if (scroller.getInfo().noNewer) {
+      this.insertMsg('PENDING_POST_MSG', this.tailAnchorId(), item);
+    } else {
+      this.pendingOptimistic.push(item);
+      scroller.scrollToBottom();
+    }
   }
 
   /**
@@ -605,78 +680,185 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const scroller = this.scroller;
     if (!scroller || !afterId) return false;
     if (type === 'PENDING_POST_MSG') {
+      // Register with the source pending area so the confirm echo (appendLive with a matching id) reconciles it.
       this.source?.addPending(item);
-      if (!this.atBottom()) scroller.scrollToBottom(); // ensure the newest end is mounted so insertAfter can anchor
+      // No pre-scroll: afterId IS the mounted tail (tailAnchorId → getInfo().newestId = mounted[last].id), so
+      // insertAfter always finds its anchor — there is nothing to mount first. The follow that reveals the bubble
+      // runs AFTER insertAfter (below) and is synchronous when pinned (noNewer → pinToBottom only, no source I/O).
     }
-    const ok = scroller.insertAfter(afterId, item);
+    const ok = scroller.insertAfter(afterId, item, { optimistic: type === 'PENDING_POST_MSG' });
     if (ok && type === 'PENDING_POST_MSG') {
+      // insertAfter is viewport-stable (it only compensates scrollTop for above-viewport growth), so a sent message —
+      // which lands at the newer end, below the fold when pinned — must be explicitly pinned to reveal the optimistic
+      // bubble. Mirrors appendLive/loadNewer's wasAtBottom follow. (A send always means "show my message".)
+      scroller.scrollToBottom();
       const optimistic = item;
-      const t = setTimeout(() => this.confirmPending(optimistic), 500 + Math.floor(Math.random() * 700));
+      const t = setTimeout(() => this.confirmPending(optimistic), this.confirmDelay());
       this.confirmTimers.push(t);
     }
     return ok;
   }
 
   /**
-   * Mock post-reply / push confirmation: deliver the real message via appendLive. The kernel caches it in the source
-   * (the source dedups the matching pending entry — "delete from pending when id matches") and settles the transient
-   * in place (status 'sending' -> 'sent', clock -> check, no duplicate). If the transient was unmounted meanwhile
-   * (e.g. a jump during pending), appendLive mounts the real message at the tail normally. A simulated reply fires
-   * after the confirm so it never interleaves with the in-flight optimistic bubble.
+   * Mock server confirm: allocate a fresh server msgId for the confirmed real (autoincrement, mirrors production
+   * Message.id) and cache it with the SAME clientMessageId as the optimistic (the reconcile key — the kernel pairs them
+   * by clientMessageId, not id, since the real's id is brand-new). After the push-signal delay, fire the WS signal so
+   * loadNewer reconciles the pending entry and reconcileOptimistic removes the optimistic bubble and tags the real
+   * cb-confirmed (status 'sending' → 'sent'; the check then fades out via CSS — see _row-base.scss). If the transient
+   * was unmounted meanwhile (e.g. a jump during pending), the real mounts at the tail normally.
+   *
+   * Opponent pushes per send are controlled by opponentPushCount: 0 = no incoming messages at all (only your confirm);
+   * N > 0 = N opponent messages. When opponentInterleave is on, ONE of those N is cached BEFORE the real so the source's
+   * ascending order is [opponent, mine] and mountNewerReals inserts it ABOVE the optimistic tail (the "reply lands above
+   * my sent message" race); the remaining N−1 arrive as a below batch after replyDelay. When interleave is off, all N
+   * arrive below.
    */
   private confirmPending(optimistic: CbItem<ChatItemData>): void {
     const scroller = this.scroller;
-    if (!scroller) return;
-    const realItem: CbItem<ChatItemData> = { id: optimistic.id, data: { ...optimistic.data, status: 'sent', kind: undefined } };
-    scroller.appendLive([realItem]);
-    setTimeout(() => { void this.receiveReply(); }, 600 + Math.floor(Math.random() * 1200));
+    if (!scroller || !this.source) return;
+    // Mock send error (persistent setting): the confirm "times out / errors" — the optimistic bubble is rebuilt as a
+    // failed bubble (retry glyph) instead of confirming. The real is NOT pushed (no confirm). Stays on until toggled off.
+    if (this.mockSendError()) {
+      this.failPending(optimistic);
+      return;
+    }
+    const realMsgId = this.source.allocateMsgId();
+    const realItem: CbItem<ChatItemData> = {
+      id: realMsgId,
+      data: { ...optimistic.data, msgId: realMsgId, status: 'sent', kind: undefined },
+      clientMessageId: optimistic.clientMessageId,
+    };
+
+    // Opponent budget for this send: 0 means no incoming messages at all (only the self-sent confirm below).
+    const count = this.opponentPushCount();
+
+    // Opponent-interleave: cache ONE opponent message BEFORE the real → ascending order [opponent, mine] → opponent
+    // mounts above the optimistic bubble. Consumes one slot of the budget; the rest go to the below batch.
+    let above = 0;
+    if (count > 0 && this.opponentInterleave()) {
+      const phrase = REPLY_PHRASES[Math.floor(Math.random() * REPLY_PHRASES.length)];
+      this.source?.pushLive([this.makeMockItem(phrase, false, 'PURE_TEXT', null)]);
+      above = 1;
+    }
+    this.source?.pushLive([realItem]);
+
+    // WS push delivery, optionally delayed to model broadcast latency. On a non-zero delay the optimistic bubble keeps
+    // showing the 'sending' spinner until the signal arrives and reconcile reveals the real (check → CSS fade).
+    const signalTimer = setTimeout(() => { void scroller.onMessageSignal(); }, this.pushSignalDelay());
+    this.confirmTimers.push(signalTimer);
+
+    // Remaining opponent budget delivered as one below-batch after replyDelay (atomic pushLive + single signal).
+    const below = count - above;
+    if (below > 0) {
+      const replyTimer = setTimeout(() => { void this.receiveMany(below); }, this.replyDelay());
+      this.confirmTimers.push(replyTimer);
+    }
   }
 
-  /** Build a fully-shaped optimistic self message (creator 1, name '我', status 'sending', kind 'pending'). insertAfter
-   *  bypasses source.shape, so name/isSelf must be filled directly (mirrors MockItemSource.shape for creator 1). */
-  private makeOptimisticItem(text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null): CbItem<ChatItemData> {
+  /**
+   * Failure path: the message stays the SAME entity (stable clientMessageId). The source owns the mutation — it flips
+   * the pending entry's status to 'failed' and sinks it to the END of the pending queue — then reconcilePending morphs
+   * the bubble IN PLACE (sending→failed, same DOM node) and FLIP-animates the slide to the tail. No removeItem /
+   * insertAfter, no fabricated failed-N id: the failure is durable (the entry stays in source.pending) and the kernel
+   * stays synced with the source's pending order.
+   */
+  private async failPending(optimistic: CbItem<ChatItemData>): Promise<void> {
+    const scroller = this.scroller;
+    if (!scroller || !this.source || optimistic.clientMessageId === undefined) return;
+    this.source.failPending(optimistic.clientMessageId);
+    await scroller.reconcilePending();
+  }
+
+  /**
+   * Retry a failed send (the row's retry output → createMsgCbElement onRetry → here, emitting `data.msgId` = the stable
+   * clientMessageId). Flip the SAME entry back to 'sending' at its current position (the end) via the source, then
+   * reconcilePending morphs it in place (failed→sending) — stable identity, no fresh clientMessageId, no remount — and
+   * re-arm the confirm timer for a normal confirm. No-op if the id is no longer pending (e.g. unmounted meanwhile).
+   */
+  async retrySend(msgId: string): Promise<void> {
+    const scroller = this.scroller;
+    if (!scroller || !this.source) return;
+    const item = this.source.retryPending(msgId);
+    if (!item) return;
+    await scroller.reconcilePending();
+    const t = setTimeout(() => this.confirmPending(item), this.confirmDelay());
+    this.confirmTimers.push(t);
+  }
+
+  /** Build a fully-shaped optimistic self message (creator 1, name 'Me', status 'sending', kind 'pending'). Generates a
+   *  client idempotency UUID (clientMessageId) that doubles as the bubble's tracking id until the server confirms —
+   *  mirrors production SendMessageDto.clientMessageId. insertAfter bypasses source.shape, so name/isSelf are filled
+   *  directly (mirrors MockItemSource.shape for creator 1). */
+  private makeOptimisticItem(text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, file: FileInfo | null = null, rich = false): CbItem<ChatItemData> {
     const now = new Date();
+    const clientMessageId = newClientMessageId();
     const data: ChatMsgData = {
       type: 'msg',
-      msgId: `pending-${this.pendingSeq++}`,
+      msgId: clientMessageId, // no server id yet — the client tracks the bubble by its clientMessageId (truncated in the dev badge)
       creator: 1,
       isSelf: true,
       name: 'Me',
       text,
+      rich,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images, createdAtMs: now.getTime(),
+      contentType, images, file, createdAtMs: now.getTime(),
       status: 'sending',
       kind: 'pending',
     };
-    return { id: data.msgId, data };
+    return { id: clientMessageId, data, clientMessageId };
   }
 
-  /** Build a mock received/sent ChatMsgData wrapped as a CbItem (id placeholder; appendLive caches it in the source). */
-  private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null): CbItem<ChatItemData> {
+  /** Build a mock received/sent ChatMsgData wrapped as a CbItem. The id is allocated from the source's autoincrement
+   *  counter — the same path a confirmed self-send takes (`source.allocateMsgId()` → `id-N`), mirroring a server-assigned
+   *  Message.id — so incoming messages carry a real id, not a synthetic placeholder. The `mock-N`/`recv-N` form is a
+   *  fallback only for the impossible case where the source is unbound while the scroller is live. appendLive caches it. */
+  private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, file: FileInfo | null = null): CbItem<ChatItemData> {
     const now = new Date();
     const data: ChatMsgData = {
       type: 'msg',
-      msgId: `${isSelf ? 'mock' : 'recv'}-${this.sendSeq++}`,
+      msgId: this.source?.allocateMsgId() ?? `${isSelf ? 'mock' : 'recv'}-${this.sendSeq++}`,
       creator: isSelf ? 1 : 2,
       isSelf: false, name: '',  // placeholder: source.appendLive's shape fills name from profiles by creator (mirrors production toMsgData)
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images, createdAtMs: now.getTime(),
+      contentType, images, file, createdAtMs: now.getTime(),
     };
     return { id: data.msgId, data };
   }
   private sendSeq = 0;
   /** 插入消息序号（msgId = `insert-N`，稳定唯一，不与 source 的 id-N / mock-N / recv-N 冲突）。 */
   private insertSeq = 0;
-  /** Optimistic-send sequence (msgId = `pending-N` — stable, unique, echoed as-is by the mock "server"; never collides
-   *  with id-N / mock-N / recv-N / insert-N). */
-  private pendingSeq = 0;
   /** In-flight mock confirm timers (cleared on teardown so no settle fires after destroy). */
   private readonly confirmTimers: ReturnType<typeof setTimeout>[] = [];
 }
 
 /** 对方回复候选（mock）。 */
 const REPLY_PHRASES = ['You there?', 'Got it', 'Haha', 'OK', 'Is virtual scroll stable?', 'Check the mount count'];
+
+/** @mention 候选成员（mock；生产替换为 GroupService.getMembers() 返回的 GroupMember[]）。 */
+const MOCK_MEMBERS: ChatMember[] = [
+  { id: '2', label: 'Alice' },
+  { id: '3', label: 'Bob' },
+  { id: '4', label: 'Carol' },
+  { id: '5', label: 'David' },
+  { id: '6', label: 'Eve' },
+  { id: '7', label: 'Frank' },
+  { id: '8', label: 'Grace' },
+  { id: '9', label: 'Heidi' },
+];
+
+/** Generate a client-side idempotency UUID for an optimistic send (mirrors production SendMessageDto.clientMessageId —
+ *  the correlation key between the in-flight bubble and the server-confirmed real). crypto.randomUUID is available in
+ *  secure contexts (localhost / https); the fallback preserves uniqueness elsewhere. */
+function newClientMessageId(): string {
+  return crypto.randomUUID?.() ?? `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+/** Truncate a clientMessageId UUID to its first 8 hex chars for the dev badge (a full 36-char uuid would dominate the
+ *  row). Non-uuid ids (id-N, recv-N, insert-N, …) pass through unchanged, so the uuid→real-msgId transition is visible. */
+function shortId(id: string): string {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(id) ? id.slice(0, 8) : id;
+}
 
 /** 本地读取图片为 AlbumImage（dataURL + 真实尺寸；读失败用 400×300 兜底）。 */
 function readImages(files: File[]): Promise<AlbumImage[]> {

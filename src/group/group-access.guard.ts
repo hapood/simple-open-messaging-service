@@ -13,11 +13,14 @@ import { BusinessCode } from '../common/business-code.js';
 /**
  * Membership gate for group routes keyed by `groupId` in the body.
  *
- * Resolves the group (NOT_FOUND when absent) and the caller's ACTIVE ThreadParticipant
- * (GROUP_NOT_MEMBER when they have no live membership), then attaches both to
+ * Resolves the group and the caller's ACTIVE ThreadParticipant, then attaches both to
  * `req.groupAccess` so the controller and RolesGuard read them without re-querying. This is the
  * single authorization check shared by P2P and GROUP conversations lifted into a declarative
  * guard, replacing the inline `findActiveParticipant` checks scattered through Phase 1.
+ *
+ * Both "no such group" and "exists but caller is not an active member" collapse to the SAME
+ * NOT_FOUND outcome — deliberately non-leaking (a non-member cannot tell the group exists),
+ * mirroring ThreadAccessGuard's policy for thread-keyed routes.
  *
  * Throws BusinessException so the HTTP-200-plus-domain-code envelope is preserved (see
  * AllExceptionsFilter); it does NOT map to a raw 403/404.
@@ -54,10 +57,10 @@ export class GroupAccessGuard implements CanActivate {
       group.threadId,
     );
     if (participant === null) {
-      throw new BusinessException(
-        BusinessCode.GROUP_NOT_MEMBER,
-        `you are not in group [${groupId}]`,
-      );
+      // Deliberately the SAME code+message as the missing-group branch above: a non-member must not
+      // be able to tell the group exists by distinguishing "no such group" from "not a member". This
+      // mirrors ThreadAccessGuard's non-leak policy for thread-keyed routes.
+      throw new BusinessException(BusinessCode.NOT_FOUND, `no group [${groupId}]`);
     }
 
     req.groupAccess = { group, participant };

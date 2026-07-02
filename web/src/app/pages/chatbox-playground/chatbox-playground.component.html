@@ -41,9 +41,12 @@
       <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
-    <!-- 输入栏（WhatsApp 式）：胶囊容器 [emoji + auto-grow textarea + 附件] + 容器外圆形发送键 -->
-    <form class="pg-input-bar" #inputBar [style.bottom.px]="keyboardOffset()" (submit)="$event.preventDefault()">
+    <!-- 输入栏（WhatsApp 式）：胶囊容器 [emoji + Tiptap 编辑器 + 附件] + 容器外圆形发送键 -->
+    <form class="pg-input-bar" #inputBar [style.bottom.px]="keyboardOffset()"
+          (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
       @if (emojiOpen()) {
+        <!-- 全屏透明遮罩：点击任意空白处关闭 emoji 面板（不阻挡面板自身的点击） -->
+        <div class="pg-backdrop" (click)="closeEmoji()"></div>
         <div class="pg-emoji-panel" (click)="$event.stopPropagation()">
           @for (e of EMOJIS; track e) {
             <button type="button" class="pg-emoji" (click)="insertEmoji(e)">{{ e }}</button>
@@ -58,21 +61,26 @@
             <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
           </svg>
         </button>
-        <textarea #draftInput class="pg-input" rows="1" placeholder="Type a message…"
-                  [ngModel]="draft()" [ngModelOptions]="{ standalone: true }"
-                  (ngModelChange)="onDraftChange($event)"
-                  (keydown)="onInputKeydown($event)"></textarea>
+        <app-chat-editor class="pg-input" [members]="members()" [isDesktop]="isDesktop()"
+                         (html)="onHtml($event)" (send)="send()"></app-chat-editor>
         <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="Send image">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
           </svg>
         </button>
+        <button type="button" class="pg-input-ico" (click)="onFileClick()" aria-label="Send file">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+            <path d="M14 3v5h5" />
+          </svg>
+        </button>
       </div>
-      <!-- 发送键：有文字=纸飞机（发文字）；无文字=相机（发图片），接入媒体拼盘 -->
-      <button type="button" class="pg-send" [class.pg-send-media]="!draft().trim()" (click)="onSendClick()"
-              [attr.aria-label]="draft().trim() ? 'Send' : 'Send image'">
-        @if (draft().trim()) {
+      <!-- 发送键：有内容=纸飞机（发文字）；空=相机（发图片），接入媒体拼盘 -->
+      <button type="button" class="pg-send" [class.pg-send-media]="!draftHtml()" (click)="onSendClick()"
+              [attr.aria-label]="draftHtml() ? 'Send' : 'Send image'">
+        @if (draftHtml()) {
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
@@ -86,6 +94,7 @@
         }
       </button>
       <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
+      <input #fileInput type="file" hidden (change)="onFileChange($event)" />
     </form>
   </div>
 
@@ -99,86 +108,147 @@
     </div>
     <p class="pg-hint">Pure TS kernel + mock data. Click the list area, then scroll with the keyboard (Home/End/PgUp/PgDn/↑↓).</p>
 
-    <section>
-      <h4>Data volume <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? 'Generating…' : 'generator' }}</span></h4>
-      <div class="pg-btns">
-        <button (click)="setCount(1000)" [disabled]="loading()" [class.active]="count() === 1000 && !loading()">1k</button>
-        <button (click)="setCount(5000)" [disabled]="loading()" [class.active]="count() === 5000 && !loading()">5k</button>
-        <button (click)="setCount(50000)" [disabled]="loading()" [class.active]="count() === 50000 && !loading()">50k</button>
-      </div>
-    </section>
+    <details class="pg-group" open>
+      <summary>Data</summary>
+      <section>
+        <h4>Data volume <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? 'Generating…' : 'generator' }}</span></h4>
+        <div class="pg-btns">
+          <button (click)="setCount(1000)" [disabled]="loading()" [class.active]="count() === 1000 && !loading()">1k</button>
+          <button (click)="setCount(5000)" [disabled]="loading()" [class.active]="count() === 5000 && !loading()">5k</button>
+          <button (click)="setCount(50000)" [disabled]="loading()" [class.active]="count() === 50000 && !loading()">50k</button>
+        </div>
+      </section>
+      <section>
+        <h4>Source latency</h4>
+        <div class="pg-btns">
+          <button (click)="setSourceLatency(0)" [class.active]="sourceLatency() === 0">0</button>
+          <button (click)="setSourceLatency(200)" [class.active]="sourceLatency() === 200">200ms</button>
+          <button (click)="setSourceLatency(1000)" [class.active]="sourceLatency() === 1000">1s</button>
+          <button (click)="setSourceLatency(5000)" [class.active]="sourceLatency() === 5000">5s</button>
+        </div>
+      </section>
+    </details>
 
-    <section>
-      <h4>Source latency <span class="pg-sec-tag">debug</span></h4>
-      <div class="pg-btns">
-        <button (click)="setSourceLatency(0)" [class.active]="sourceLatency() === 0">0</button>
-        <button (click)="setSourceLatency(200)" [class.active]="sourceLatency() === 200">200ms</button>
-        <button (click)="setSourceLatency(1000)" [class.active]="sourceLatency() === 1000">1s</button>
-        <button (click)="setSourceLatency(5000)" [class.active]="sourceLatency() === 5000">5s</button>
-      </div>
-    </section>
+    <details class="pg-group" open>
+      <summary>Send &amp; replies</summary>
+      <section>
+        <h4>Opponent messages / send</h4>
+        <p class="pg-hint">Incoming replies pushed per send. 0 = none (only your send confirms).</p>
+        <div class="pg-btns">
+          <button (click)="setOpponentPushCount(0)" [class.active]="opponentPushCount() === 0">0</button>
+          <button (click)="setOpponentPushCount(1)" [class.active]="opponentPushCount() === 1">1</button>
+          <button (click)="setOpponentPushCount(2)" [class.active]="opponentPushCount() === 2">2</button>
+          <button (click)="setOpponentPushCount(5)" [class.active]="opponentPushCount() === 5">5</button>
+        </div>
+      </section>
+      <section>
+        <h4>Opponent interleave</h4>
+        <p class="pg-hint">One reply lands ABOVE your message in the same batch.</p>
+        <div class="pg-btns">
+          <button (click)="toggleOpponentInterleave()" [class.active]="opponentInterleave()">{{ opponentInterleave() ? 'On' : 'Off' }}</button>
+        </div>
+      </section>
+      <section>
+        <h4>Mock send error</h4>
+        <p class="pg-hint">ON = every send fails with a retry glyph. Fail once: on → send → off → retry.</p>
+        <div class="pg-btns">
+          <button (click)="toggleMockSendError()" [class.active]="mockSendError()">{{ mockSendError() ? 'On' : 'Off' }}</button>
+        </div>
+      </section>
+      <section>
+        <h4>Send confirm delay</h4>
+        <p class="pg-hint">How long the bubble stays "sending" before the echo confirms it.</p>
+        <div class="pg-btns">
+          <button (click)="setConfirmDelay(0)" [class.active]="confirmDelay() === 0">0</button>
+          <button (click)="setConfirmDelay(300)" [class.active]="confirmDelay() === 300">300ms</button>
+          <button (click)="setConfirmDelay(800)" [class.active]="confirmDelay() === 800">800ms</button>
+          <button (click)="setConfirmDelay(2000)" [class.active]="confirmDelay() === 2000">2s</button>
+        </div>
+      </section>
+      <section>
+        <h4>Reply push delay</h4>
+        <p class="pg-hint">Delay before the opponent's reply is pushed (kernel follows only if pinned).</p>
+        <div class="pg-btns">
+          <button (click)="setReplyDelay(0)" [class.active]="replyDelay() === 0">0</button>
+          <button (click)="setReplyDelay(500)" [class.active]="replyDelay() === 500">500ms</button>
+          <button (click)="setReplyDelay(1500)" [class.active]="replyDelay() === 1500">1.5s</button>
+          <button (click)="setReplyDelay(4000)" [class.active]="replyDelay() === 4000">4s</button>
+        </div>
+      </section>
+      <section>
+        <h4>Push signal delay</h4>
+        <p class="pg-hint">Delay before the WS signal delivers the confirm (onMessageSignal).</p>
+        <div class="pg-btns">
+          <button (click)="setPushSignalDelay(0)" [class.active]="pushSignalDelay() === 0">0</button>
+          <button (click)="setPushSignalDelay(500)" [class.active]="pushSignalDelay() === 500">500ms</button>
+          <button (click)="setPushSignalDelay(1500)" [class.active]="pushSignalDelay() === 1500">1.5s</button>
+          <button (click)="setPushSignalDelay(3000)" [class.active]="pushSignalDelay() === 3000">3s</button>
+        </div>
+      </section>
+    </details>
 
-    <section>
-      <h4>Jump</h4>
-      <div class="pg-btns">
-        <button (click)="toTop()" [disabled]="loading()">Top</button>
-        <button (click)="toBottom()" [disabled]="loading()">Bottom</button>
-      </div>
-      <div class="pg-jump">
-        <input #jumpInput class="pg-jump-input" placeholder="id or index"
-               (keydown.enter)="jumpToId(jumpInput.value)" />
-        <button (click)="jumpToId(jumpInput.value)" [disabled]="loading()">Jump</button>
-      </div>
-    </section>
+    <details class="pg-group">
+      <summary>List actions</summary>
+      <section>
+        <h4>Jump</h4>
+        <div class="pg-btns">
+          <button (click)="toTop()" [disabled]="loading()">Top</button>
+          <button (click)="toBottom()" [disabled]="loading()">Bottom</button>
+        </div>
+        <div class="pg-jump">
+          <input #jumpInput class="pg-jump-input" placeholder="id or index"
+                 (keydown.enter)="jumpToId(jumpInput.value)" />
+          <button (click)="jumpToId(jumpInput.value)" [disabled]="loading()">Jump</button>
+        </div>
+      </section>
+      <section>
+        <h4>Insert message</h4>
+        <p class="pg-hint">Insert after a mounted id (unmounted ignored).</p>
+        <div class="pg-jump">
+          <input #insertInput class="pg-jump-input" placeholder="after id"
+                 (keydown.enter)="insertAfterId(insertInput.value)" />
+          <button (click)="insertAfterId(insertInput.value)" [disabled]="loading()">Insert</button>
+        </div>
+      </section>
+      <section>
+        <h4>Remove message</h4>
+        <p class="pg-hint">By id (album-aware); comma-separate. Numbers = index id-N.</p>
+        <div class="pg-jump">
+          <input #removeInput class="pg-jump-input" placeholder="id / index (comma-separated)"
+                 (keydown.enter)="removeById(removeInput.value)" />
+          <button (click)="removeById(removeInput.value)" [disabled]="loading()">Remove</button>
+        </div>
+      </section>
+    </details>
 
-    <section>
-      <h4>Insert message <span class="pg-sec-tag">debug</span></h4>
-      <p class="pg-hint">Enter a mounted message id to insert a new message after it: no balance is triggered, only scroll-height compensation (viewport stays pinned). Unmounted ids are ignored.</p>
-      <div class="pg-jump">
-        <input #insertInput class="pg-jump-input" placeholder="after id"
-               (keydown.enter)="insertAfterId(insertInput.value)" />
-        <button (click)="insertAfterId(insertInput.value)" [disabled]="loading()">Insert</button>
-      </div>
-    </section>
-
-    <section>
-      <h4>Remove message <span class="pg-sec-tag">debug</span></h4>
-      <p class="pg-hint">Remove mounted messages by id (any image id in an album removes the whole album; comma-separate multiple): concurrent removal with exit animation; balance is paused during the animation. Plain numbers are read as history index (id-N), otherwise as a literal id (pending-N / insert-0). Unmounted ids are ignored.</p>
-      <div class="pg-jump">
-        <input #removeInput class="pg-jump-input" placeholder="id / index (comma-separated)"
-               (keydown.enter)="removeById(removeInput.value)" />
-        <button (click)="removeById(removeInput.value)" [disabled]="loading()">Remove</button>
-      </div>
-    </section>
-
-    <section>
-      <h4>Run mode</h4>
-      <div class="pg-btns">
-        <button (click)="debugMode.set(false)" [class.active]="!debugMode()">Performance</button>
-        <button (click)="debugMode.set(true)" [class.active]="debugMode()">Debug</button>
-      </div>
-    </section>
-
-    <section>
-      <h4>Mount checkpoint <span class="pg-sec-tag">debug</span></h4>
-      <div class="pg-btns">
-        <button (click)="closeCheckpoint.set(false); applyCloseCheckpoint()" [class.active]="!closeCheckpoint()">On (normal loading)</button>
-        <button (click)="closeCheckpoint.set(true); applyCloseCheckpoint()" [class.active]="closeCheckpoint()">Off (no loading)</button>
-      </div>
-    </section>
-
-    <section>
-      <h4>Viewport position <span class="pg-sec-tag">debug</span></h4>
-      <p class="pg-hint">↑ {{ viewportAbove() }} px above · ↓ {{ viewportBelow() }} px below (&lt; 1000 triggers loading in that direction)</p>
-    </section>
-
-    <section>
-      <h4>Kernel params <span class="pg-sec-tag">debug</span></h4>
-      <p class="pg-hint">per batch {{ config().mountItem }} · init {{ config().initBatch }} · threshold {{ config().thresholdFloor }} · vh+{{ config().vhExtra }} · edge {{ config().edge }}</p>
-      <div class="pg-btns">
-        <button (click)="openConfigModal()">Edit params</button>
-      </div>
-    </section>
+    <details class="pg-group">
+      <summary>Engine &amp; diagnostics</summary>
+      <section>
+        <h4>Run mode</h4>
+        <div class="pg-btns">
+          <button (click)="debugMode.set(false)" [class.active]="!debugMode()">Performance</button>
+          <button (click)="debugMode.set(true)" [class.active]="debugMode()">Debug</button>
+        </div>
+      </section>
+      <section>
+        <h4>Mount checkpoint</h4>
+        <div class="pg-btns">
+          <button (click)="closeCheckpoint.set(false); applyCloseCheckpoint()" [class.active]="!closeCheckpoint()">On (normal loading)</button>
+          <button (click)="closeCheckpoint.set(true); applyCloseCheckpoint()" [class.active]="closeCheckpoint()">Off (no loading)</button>
+        </div>
+      </section>
+      <section>
+        <h4>Viewport position</h4>
+        <p class="pg-hint">↑ {{ viewportAbove() }} px · ↓ {{ viewportBelow() }} px (&lt; 1000 triggers loading).</p>
+      </section>
+      <section>
+        <h4>Kernel params</h4>
+        <p class="pg-hint">batch {{ config().mountItem }} · init {{ config().initBatch }} · threshold {{ config().thresholdFloor }} · vh+{{ config().vhExtra }} · edge {{ config().edge }}</p>
+        <div class="pg-btns">
+          <button (click)="openConfigModal()">Edit params</button>
+        </div>
+      </section>
+    </details>
   </aside>
 
   @if (configModalOpen()) {

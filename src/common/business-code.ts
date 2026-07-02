@@ -37,7 +37,6 @@ export enum BusinessCode {
   THREAD_NOT_FOUND = 30003, // 无此会话
 
   // 40xxx 群组域
-  GROUP_NOT_MEMBER = 40001, // 非群成员
   GROUP_NOT_FRIEND = 40002, // 非好友不可邀请
   GROUP_INVALID_TOKEN = 40003, // 无效邀请 token
   GROUP_OWNER_MUST_TRANSFER = 40004, // 群主退出前须先转让

@@ -47,19 +47,15 @@ export class ConversationListService {
   load() {
     this._status.set('LOADING');
     this._error.set('');
-    // take:200 — folders filter over the full thread set, not just the first page.
-    this.userService.queryUserThreadValid({ take: 200, skip: 0 }).subscribe({
-      next: (res) => {
-        if (res.code === 0) {
-          this._items.set(res.data ?? []);
-          this._status.set('READY');
-        } else {
-          this._error.set(res.message || 'Failed to load chats');
-          this._status.set('ERROR');
-        }
+    // Page through the full thread set (query-thread/valid is @Max(50) per request) so client-side
+    // folder filtering sees every conversation, not just the first page.
+    this.userService.queryAllUserThreads().subscribe({
+      next: (items) => {
+        this._items.set(items);
+        this._status.set('READY');
       },
-      error: () => {
-        this._error.set('Network error, please retry');
+      error: (err) => {
+        this._error.set(err?.message || 'Network error, please retry');
         this._status.set('ERROR');
       },
     });

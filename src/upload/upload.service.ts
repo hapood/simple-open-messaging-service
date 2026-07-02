@@ -1,11 +1,16 @@
 import { Injectable } from '@nestjs/common';
 import { existsSync, mkdirSync, writeFile, unlink } from 'fs';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { randomBytes } from 'crypto';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
 import type { MultipartFile } from '@fastify/multipart';
+import {
+  FILE_MIME_EXT,
+  MAX_FILE_BYTES,
+  MAX_FILE_NAME_LEN,
+} from './file-content.js';
 
 const writeFileAsync = promisify(writeFile);
 const unlinkAsync = promisify(unlink);
@@ -31,6 +36,22 @@ export type ConsumedImage =
       h: number;
     }
   | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
+
+/**
+ * consumeFile 的返回：成功带 buffer/原始文件名；失败按原因区分（控制器据 reason 映射业务码）。
+ * 体积上限 MAX_FILE_BYTES 由 main.ts 的 multipart limits.fileSize（已上调）兜底 + 此处二次校验。
+ */
+export type ConsumedFile =
+  | {
+      kind: 'file';
+      mimetype: string;
+      buffer: Buffer;
+      filename: string;
+    }
+  | {
+      kind: 'rejected';
+      reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name';
+    };
 
 /**
  * 图片上传服务。
@@ -59,6 +80,9 @@ export class UploadService {
   static readonly AVATAR_MAX = 512;
   /** 头像像素上限（防解压炸弹：小文件解压成超大画布吃内存）。 */
   static readonly MAX_AVATAR_PIXELS = 4000 * 4000;
+  /** Image size cap (avatars + chat images). Enforced in consumeImage so the global multipart
+   * ceiling can be raised for generic files (MAX_FILE_BYTES) without also raising it for images. */
+  static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
   /**
    * 从 multipart/form-data 请求里消费单张图片：单遍遍历 parts，粗筛 mimetype 后 toBuffer。
@@ -96,6 +120,11 @@ export class UploadService {
       // 体积超限（RequestFileTooLargeError）或流错误：统一归为 too-large。
       return { kind: 'rejected', reason: 'too-large' };
     }
+    // Explicit image cap independent of the multipart ceiling (which is raised to MAX_FILE_BYTES
+    // for generic-file uploads): a too-large image is rejected here, not buffered to the limit.
+    if (buffer.length > UploadService.MAX_IMAGE_BYTES) {
+      return { kind: 'rejected', reason: 'too-large' };
+    }
     return {
       kind: 'file',
       mimetype: filePart.mimetype,
@@ -103,6 +132,41 @@ export class UploadService {
       w: Number(fields.w) || 0,
       h: Number(fields.h) || 0,
     };
+  }
+
+  /**
+   * 从 multipart/form-data 请求里消费单个通用文件：单文件契约，粗筛 mimetype（白名单 FILE_MIME_EXT，
+   * 不含可执行/脚本），toBuffer 后再校验 MAX_FILE_BYTES。与 consumeImage 对称，但走通用文件白名单。
+   */
+  async consumeFile(req: FastifyRequest): Promise<ConsumedFile> {
+    let filePart: MultipartFile | undefined;
+    for await (const part of req.parts()) {
+      if (part.type === 'file') {
+        if (filePart) {
+          part.file.resume(); // 单文件契约：多出的文件直接排空。
+          continue;
+        }
+        if (!(part.mimetype in FILE_MIME_EXT)) {
+          part.file.resume();
+          return { kind: 'rejected', reason: 'wrong-type' };
+        }
+        filePart = part;
+      }
+      // 通用文件不接收额外字段（url/size 等由落盘后服务端生成，客户端无法伪造）。
+    }
+    if (!filePart) return { kind: 'rejected', reason: 'no-file' };
+    const filename = filePart.filename;
+    if (!filename) return { kind: 'rejected', reason: 'bad-name' };
+    let buffer: Buffer;
+    try {
+      buffer = await filePart.toBuffer();
+    } catch {
+      return { kind: 'rejected', reason: 'too-large' };
+    }
+    if (buffer.length > MAX_FILE_BYTES) {
+      return { kind: 'rejected', reason: 'too-large' };
+    }
+    return { kind: 'file', mimetype: filePart.mimetype, buffer, filename };
   }
 
   /**
@@ -149,6 +213,47 @@ export class UploadService {
     const filename = `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
     await writeFileAsync(join(this.uploadDir, filename), buf);
     return `/uploads/${filename}`;
+  }
+
+  /**
+   * 通用文件落盘：on-disk 文件名用 `<ts>-<randomHex>.<ext>`（ext 来自白名单，绝不信任客户端扩展名），
+   * 防碰撞/可预测/路径穿越；返回 { url, name, size, mimeType } 作为 FILE 消息内容。展示名 name 取客户端
+   * 原始文件名的安全化结果（剥目录 + 控制符 + 长度上限）。url 形态与 save() 一致，供 parseFileContent 校验。
+   */
+  async saveFile(
+    mimetype: string,
+    originalName: string,
+    buf: Buffer,
+  ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
+    this.ensureDir();
+    const ext = FILE_MIME_EXT[mimetype];
+    const diskName = `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
+    await writeFileAsync(join(this.uploadDir, diskName), buf);
+    return {
+      url: `/uploads/${diskName}`,
+      name: this.sanitizeName(originalName, ext),
+      size: buf.length,
+      mimeType: mimetype,
+    };
+  }
+
+  /**
+   * 安全化展示文件名：basename 剥离客户端传入的目录分量（防穿越）；剔除控制符与 Windows/Unix
+   * 非法字符；trim + 长度上限。空结果或无扩展名时回退为 `<ext>`，保证 name 始终带可信扩展名。
+   */
+  private sanitizeName(raw: string, ext: string): string {
+    let base = basename(raw ?? 'file');
+    base = base
+      .replace(/[\x00-\x1f<>:"/\\|?*]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (base.length > MAX_FILE_NAME_LEN)
+      base = base.slice(0, MAX_FILE_NAME_LEN).trim();
+    // Strip a trailing dot/dot-extension so we can re-append the trusted extension cleanly.
+    base = base.replace(/\.+$/, '');
+    if (!base) base = ext;
+    // Re-append the validated extension if the (sanitized) base lacks it.
+    return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;
   }
 
   /**
