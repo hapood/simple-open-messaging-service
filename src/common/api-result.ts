@@ -30,6 +30,21 @@ export class ApiResult<T = unknown> {
   @ApiProperty({ example: 'successful', description: 'Human-readable status message' })
   message: string;
 
+  /**
+   * Stable, dotted i18n key for this message (e.g. 'friend.msg.sent'). Clients that support i18n
+   * translate via this key and fall back to `message`. Set only where a response carries a user-facing
+   * status that code alone cannot disambiguate (notably success outcomes sharing code 0, e.g. the
+   * friend-request "sent / already friends / now friends" variants). Error responses are localized
+   * client-side by their numeric `code` (see BusinessCode), so they do not need a messageKey.
+   */
+  @ApiProperty({
+    required: false,
+    example: 'friend.msg.sent',
+    description:
+      'Optional i18n key. When present, i18n clients translate this and fall back to `message`.',
+  })
+  messageKey?: string;
+
   data?: T;
 
   @ApiProperty({

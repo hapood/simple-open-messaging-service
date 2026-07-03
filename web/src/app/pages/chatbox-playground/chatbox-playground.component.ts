@@ -336,9 +336,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     // Grouping + date-separator flags are derived from the OLDER neighbor `prev` (computeRowFlags — the same logic
     // CbElement.update uses, so after a reorder update recomputes grouping by the new prev; mount and in-place update
     // derive the same flags).
-    const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
+    const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
     const vs = createMsgCbElement(
-      item, isShowHead, isGroupStart, dateLabel, this.envInjector,
+      item, isShowHead, isGroupStart, showDate, this.envInjector,
       id => this.retrySend(id),
       (images, index) => this.galleryViewer.open(images, index),
     );

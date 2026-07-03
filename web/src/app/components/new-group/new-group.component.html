@@ -1,14 +1,14 @@
 <div [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="onBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
+    <button class="icon-btn" (click)="onBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    <span class="title">New group</span>
+    <span class="title">{{ 'newGroup.title' | transloco }}</span>
     @if (step() === 1) {
-      <button class="icon-btn action" (click)="goStep2()" aria-label="Next">
+      <button class="icon-btn action" (click)="goStep2()" [attr.aria-label]="'newGroup.nextAria' | transloco">
         <app-icon [type]="AppIconType.ARROW_FORWARD" [style]="{width:'24px',height:'24px'}"></app-icon>
       </button>
     } @else {
-      <button class="icon-btn action" [disabled]="!name().trim()" (click)="confirm()" aria-label="Create group">
+      <button class="icon-btn action" [disabled]="!name().trim()" (click)="confirm()" [attr.aria-label]="'newGroup.createAria' | transloco">
         <app-icon [type]="AppIconType.CHECK" [style]="{width:'24px',height:'24px'}"></app-icon>
       </button>
     }
@@ -18,7 +18,7 @@
   <div class="step step-1" [hidden]="step() !== 1">
     <div class="search">
       <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
-      <input type="text" placeholder="Search" autocomplete="off"
+      <input type="text" [placeholder]="'newGroup.searchPlaceholder' | transloco" autocomplete="off"
         [ngModel]="searchText()" (ngModelChange)="onSearchInput($event)" />
     </div>
 
@@ -31,7 +31,7 @@
                 [src]="item.peerUser.userExtra.avatar"></app-user-avatar>
             </span>
             <span class="chip-name">{{ item.peerUser.userExtra.name || item.peerUser.uniqName }}</span>
-            <button class="chip-x" type="button" (click)="removeMember(item)" aria-label="Remove">
+            <button class="chip-x" type="button" (click)="removeMember(item)" [attr.aria-label]="'common.remove' | transloco">
               <app-icon [type]="AppIconType.CLOSE" [style]="{width:'14px',height:'14px'}"></app-icon>
             </button>
           </div>
@@ -50,7 +50,7 @@
         <app-user-avatar [type]="UserAvatarType.GROUP" [name]="name() || '?'"
           [src]="pendingAvatar()"></app-user-avatar>
         <button class="avatar-edit" type="button" (click)="fileInput.click()" [disabled]="busy()"
-          aria-label="Set group photo">
+          [attr.aria-label]="'newGroup.setPhotoAria' | transloco">
           @if (busy()) {
             <span class="spin"></span>
           } @else {
@@ -63,13 +63,13 @@
         </button>
       </div>
       <div class="name-field">
-        <input class="name-input" type="text" placeholder="Group name" [maxlength]="NAME_MAX"
+        <input class="name-input" type="text" [placeholder]="'newGroup.groupNamePlaceholder' | transloco" [maxlength]="NAME_MAX"
           [ngModel]="name()" (ngModelChange)="onNameInput($event)" (keydown.enter)="confirm()" />
         <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
       </div>
     </div>
     <div class="summary">
-      {{ selectedList().length }} member{{ selectedList().length === 1 ? '' : 's' }}
+      {{ 'newGroup.memberCount' | transloco:{ count: selectedList().length } }}
     </div>
   </div>
 

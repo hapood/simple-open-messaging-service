@@ -2,6 +2,7 @@ import {
   Component,
   ElementRef,
   effect,
+  inject,
   input,
   output,
   signal,
@@ -9,6 +10,8 @@ import {
   ChangeDetectionStrategy,
   ViewEncapsulation,
 } from '@angular/core';
+import { TranslocoService } from '@jsverse/transloco';
+import { LanguageService } from '../../services/language.service';
 import { Editor, Extension } from '@tiptap/core';
 import { StarterKit } from '@tiptap/starter-kit';
 import { Mention } from '@tiptap/extension-mention';
@@ -55,7 +58,9 @@ export class ChatEditorComponent {
   readonly members = input<ChatMember[]>([]);
   /** Desktop → Enter sends; mobile → Enter inserts a newline. */
   readonly isDesktop = input(true);
-  readonly placeholder = input('Type a message…');
+  readonly placeholder = input('');
+  private readonly transloco = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
 
   /** Fires on every keystroke with the current inline-HTML content (the value to store/send). */
   readonly html = output<string>();
@@ -74,6 +79,16 @@ export class ChatEditorComponent {
     this.membersRef = this.members();
   });
 
+  /** Force the Tiptap Placeholder to re-evaluate its placeholder function on a language switch — the
+   *  placeholder reads the active language, and without a transaction the empty-state hint would stay in
+   *  the previous language until the next keystroke/focus. A no-op transaction triggers a view update that
+   *  recomputes the Placeholder decoration (it only repaints while the editor is empty, the common case). */
+  private readonly refreshPlaceholder = effect(() => {
+    this.language.lang();
+    const ed = this.editor;
+    if (ed) ed.view.dispatch(ed.state.tr.setMeta('langChanged', true));
+  });
+
   /** Create the Editor once the host element exists; destroy on cleanup. Reads members/isDesktop via
    *  refs/signals (not reactive inputs) so it never recreates on their change. */
   private readonly initEditor = effect((onCleanup) => {
@@ -84,7 +99,7 @@ export class ChatEditorComponent {
       extensions: [
         SendKeymapExtension({ onSend: () => this.onEnterSend(), isDesktop: () => this.isDesktop() }),
         StarterKit.configure({ heading: false }),
-        Placeholder.configure({ placeholder: () => this.placeholder() }),
+        Placeholder.configure({ placeholder: () => this.placeholder() || this.transloco.translate('chat.inputPlaceholder') }),
         Mention.configure({
           HTMLAttributes: { class: 'cb-mention' },
           suggestion: {

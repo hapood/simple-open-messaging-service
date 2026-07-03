@@ -4,12 +4,12 @@
     <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
   </div>
 
-  <h1 class="register-title">Create your account</h1>
-  <p class="register-sub">Join SOMS in just a few seconds</p>
+  <h1 class="register-title">{{ 'auth.registerTitle' | transloco }}</h1>
+  <p class="register-sub">{{ 'auth.registerSub' | transloco }}</p>
 
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
-      <mat-label>Username</mat-label>
+      <mat-label>{{ 'auth.username' | transloco }}</mat-label>
       <input matInput name="uniqName" autocomplete="username" autofocus
         [ngModel]="uniqName()" (ngModelChange)="onUniqNameInput($event)">
     </mat-form-field>
@@ -18,12 +18,12 @@
 
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
-      <mat-label>Password</mat-label>
+      <mat-label>{{ 'auth.password' | transloco }}</mat-label>
       <input matInput name="password" autocomplete="new-password"
         [type]="showPassword() ? 'text' : 'password'"
         [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
       <button mat-icon-button matSuffix type="button" (click)="togglePassword()"
-        [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'">
+        [attr.aria-label]="(showPassword() ? 'auth.hidePassword' : 'auth.showPassword') | transloco">
         <app-icon [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE" [style]="{ width: '20px', height: '20px' }" />
       </button>
     </mat-form-field>
@@ -31,7 +31,7 @@
 
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
-      <mat-label>Password Again</mat-label>
+      <mat-label>{{ 'auth.passwordAgain' | transloco }}</mat-label>
       <input matInput name="password2" autocomplete="new-password"
         [type]="showPassword() ? 'text' : 'password'"
         [ngModel]="password2()" (ngModelChange)="onPassword2Input($event)">
@@ -41,10 +41,10 @@
 
   <div class="error" role="alert">{{resp()}}</div>
 
-  <button mat-raised-button color="primary" type="submit" class="submit-btn" [disabled]="isRegBtnDisabled()">Sign up</button>
+  <button mat-raised-button color="primary" type="submit" class="submit-btn" [disabled]="isRegBtnDisabled()">{{ 'auth.signUp' | transloco }}</button>
 
   <div class="alt-action">
-    Already have an account?
-    <button type="button" class="link-btn" (click)="jumpToLogin()">Login</button>
+    {{ 'auth.registerAltQuestion' | transloco }}
+    <button type="button" class="link-btn" (click)="jumpToLogin()">{{ 'auth.loginBtn' | transloco }}</button>
   </div>
 </form>

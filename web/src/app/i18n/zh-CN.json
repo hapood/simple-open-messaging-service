@@ -1,0 +1,286 @@
+{
+  "common": {
+    "appName": "SOMS",
+    "logoAria": "SOMS 标志",
+    "ok": "确定",
+    "cancel": "取消",
+    "save": "保存",
+    "back": "返回",
+    "done": "完成",
+    "delete": "删除",
+    "edit": "编辑",
+    "change": "更改",
+    "confirm": "确认",
+    "next": "下一步",
+    "remove": "移除",
+    "close": "关闭",
+    "retry": "重试",
+    "search": "搜索",
+    "searching": "搜索中…",
+    "loading": "加载中…",
+    "noMessagesYet": "暂无消息",
+    "unknownUser": "未知用户",
+    "unknown": "未知",
+    "unknownDevice": "未知设备",
+    "thisDevice": "本设备",
+    "you": "（你）"
+  },
+  "nav": {
+    "editProfileAria": "编辑个人资料",
+    "friendRequests": "好友请求",
+    "newFriendRequestsAria": "新的好友请求",
+    "newGroup": "新建群组",
+    "folders": "分组",
+    "logout": "退出登录",
+    "themeAria": "主题：{{label}}",
+    "languageAria": "语言：{{label}}",
+    "theme": {
+      "system": "跟随系统",
+      "light": "浅色",
+      "dark": "深色"
+    }
+  },
+  "home": {
+    "openMenuAria": "打开菜单",
+    "searchAria": "搜索",
+    "resizerTitle": "拖动以调整大小；双击恢复默认"
+  },
+  "auth": {
+    "loginTitle": "登录 SOMS",
+    "loginSub": "欢迎回来，请登录以继续",
+    "registerTitle": "创建你的账号",
+    "registerSub": "只需几秒即可加入 SOMS",
+    "brandTagline": "开放聊天，简单即时。",
+    "username": "用户名",
+    "password": "密码",
+    "passwordAgain": "再次输入密码",
+    "keepLoggedIn": "保持登录状态",
+    "loginBtn": "登录",
+    "signUp": "注册",
+    "loginAltQuestion": "还没有账号？",
+    "registerAltQuestion": "已有账号？",
+    "register": "注册",
+    "hidePassword": "隐藏密码",
+    "showPassword": "显示密码",
+    "uniqNameHint": "1 到 20 个字母或数字",
+    "passwordHint": "6 到 20 个字母、数字或符号",
+    "passwordMismatch": "两次输入的密码不一致，请重新输入",
+    "unknownError": "发生未知错误"
+  },
+  "profile": {
+    "title": "个人资料",
+    "name": "昵称",
+    "namePlaceholder": "你的昵称",
+    "bio": "个人简介",
+    "bioPlaceholder": "介绍一下你自己",
+    "usernameHandle": "用户名 @{{name}}（不可更改）",
+    "manageSessions": "管理登录会话",
+    "changeAvatarAria": "更换头像",
+    "nameEmpty": "昵称不能为空",
+    "nameTooLong": "不能超过 30 个字符",
+    "avatarTitle": "头像",
+    "zoom": "缩放",
+    "preview": "预览",
+    "removeFriendConfirm": "确定将 {{name}} 从好友中移除？",
+    "unfriend": "删除好友",
+    "avatarErrorFormat": "请选择 PNG、JPG、GIF 或 WebP 图片",
+    "avatarErrorSize": "图片大小不能超过 10 MB",
+    "avatarErrorRead": "无法读取该图片",
+    "avatarErrorProcess": "无法处理该图片"
+  },
+  "session": {
+    "title": "登录会话",
+    "noSessions": "没有活跃的会话",
+    "ip": "IP {{ip}}",
+    "signedIn": "登录于 {{date}}",
+    "expires": "过期于 {{date}}",
+    "revoke": "撤销"
+  },
+  "folder": {
+    "title": "分组",
+    "newBtn": "新建",
+    "empty": "暂无分组。点击“新建”创建分组来整理你的聊天。",
+    "editTitle": "编辑分组",
+    "newTitle": "新建分组",
+    "namePlaceholder": "例如：工作、家人",
+    "autoIncludeTypes": "自动包含类型",
+    "specificChats": "指定聊天（可选）",
+    "noChats": "暂无聊天",
+    "deleteFolder": "删除分组",
+    "selected": "{count, plural, other {已选 # 项}}",
+    "type": {
+      "all": "全部类型",
+      "direct": "单聊",
+      "group": "群聊"
+    }
+  },
+  "friend": {
+    "title": "添加好友",
+    "searchPlaceholder": "按用户名搜索",
+    "findTitle": "查找你的好友",
+    "findSub": "按用户名搜索以发送请求。",
+    "noUserTitle": "未找到用户",
+    "noUserSub": "找不到“{{q}}”。",
+    "sendRequest": "发送请求",
+    "noPendingTitle": "暂无待处理请求",
+    "noPendingSub": "你收到的好友请求会显示在这里。",
+    "noSentTitle": "暂无已发送请求",
+    "noSentSub": "你发送的好友请求会显示在这里。",
+    "approve": "同意",
+    "decline": "拒绝",
+    "invalidUser": "无效用户",
+    "approved": "已同意",
+    "tab": {
+      "add": "添加",
+      "pending": "待处理",
+      "sent": "已发送"
+    },
+    "error": {
+      "canNotAddSelf": "不能添加自己",
+      "alreadyFriends": "已经是好友",
+      "requestAlreadySent": "好友请求已发送",
+      "sentYouRequest": "对方已向你发送请求——请查看“待处理”",
+      "unknownError": "发生未知错误"
+    },
+    "msg": {
+      "sent": "好友请求已发送",
+      "alreadyFriends": "你们已经是好友",
+      "nowFriends": "你们已成为好友",
+      "friendNotFound": "用户不存在"
+    }
+  },
+  "group": {
+    "title": "群信息",
+    "groupNamePlaceholder": "群名称",
+    "changeAvatarHint": "更改",
+    "members": "{count, plural, other {# 名成员}}",
+    "actionsAria": "操作",
+    "makeRole": "设为{{role}}",
+    "makeOwner": "设为群主",
+    "kick": "移除",
+    "addMembers": "添加成员",
+    "invite": "邀请 {{count}}",
+    "leaveOwnerHint": "退出（请先转让群主）",
+    "leave": "退出群组",
+    "leaveOwnerNote": "群主必须先转让群主身份才能退出。",
+    "confirmPrompt": "确认{{action}} {{name}}？",
+    "action": {
+      "kick": "移除",
+      "transfer": "转让"
+    },
+    "role": {
+      "owner": "群主",
+      "admin": "管理员",
+      "member": "成员"
+    }
+  },
+  "newGroup": {
+    "title": "新建群组",
+    "searchPlaceholder": "搜索",
+    "groupNamePlaceholder": "群名称",
+    "setPhotoAria": "设置群头像",
+    "createAria": "创建群组",
+    "nextAria": "下一步",
+    "memberCount": "{count, plural, other {# 名成员}}"
+  },
+  "chat": {
+    "emptyTagline": "选择一个聊天开始对话",
+    "emptyFooter": "你的消息在传输中受端到端加密保护，SOMS 无法读取。",
+    "searchPlaceholder": "搜索",
+    "all": "全部",
+    "loading": "加载中…",
+    "inputPlaceholder": "输入消息…",
+    "youPrefix": "你：{{text}}",
+    "openImageAria": "打开图片",
+    "retrySendAria": "重试发送",
+    "fileFallback": "文件",
+    "inviteTitle": "{{name}} 邀请你加入：",
+    "validUntil": "有效期至 {{date}}",
+    "joined": "已加入 ✓",
+    "openGroup": "打开群组",
+    "join": "加入",
+    "expired": "已过期",
+    "failedToJoin": "加入失败",
+    "preview": {
+      "photo": "[图片]",
+      "invite": "[群邀请]",
+      "video": "[视频]",
+      "file": "[文件]",
+      "voice": "[语音消息]"
+    }
+  },
+  "gallery": {
+    "failed": "图片加载失败",
+    "tapRetry": "点击重试",
+    "retryAria": "重试加载图片",
+    "closeAria": "关闭图片查看器",
+    "prevAria": "上一张",
+    "nextAria": "下一张"
+  },
+  "threadList": {
+    "couldNotLoad": "无法加载聊天",
+    "retry": "重试",
+    "noMatchTitle": "没有匹配的聊天",
+    "noMatchSub": "换个关键词试试，或清除搜索。",
+    "emptyTitle": "暂无聊天",
+    "emptySub": "添加好友，开始你的第一次对话。",
+    "addFriend": "添加好友"
+  },
+  "errors": {
+    "removedFromGroup": "你已被移出 {{group}}",
+    "nowRole": "你现在是 {{group}} 的{{role}}",
+    "invited": "已邀请 {{n}} 位",
+    "invitedPartial": "已邀请 {{n}} 位；{{skipped}} 位无法邀请",
+    "noInvites": "未发送邀请",
+    "networkError": "网络错误，请重试",
+    "theGroup": "该群组",
+    "role": {
+      "owner": "群主",
+      "admin": "管理员",
+      "member": "成员"
+    },
+    "biz": {
+      "validation": "输入有误",
+      "notFound": "未找到",
+      "alreadyExists": "已存在",
+      "unauthenticated": "请重新登录",
+      "forbidden": "你没有权限执行此操作",
+      "rateLimited": "请求过于频繁，请稍候",
+      "refreshReuse": "登录状态已变更，请重新登录",
+      "sessionRevoked": "登录会话已结束，请重新登录",
+      "internal": "出错了",
+      "friendNoIncoming": "没有待处理的好友请求",
+      "messageEmpty": "消息内容为空",
+      "threadNotApproved": "会话尚未建立",
+      "threadNotFound": "会话不存在",
+      "groupNotFriend": "只能邀请好友",
+      "groupInvalidToken": "邀请无效或已过期",
+      "groupForbidden": "你没有权限进行此操作",
+      "groupTargetNotMember": "该成员已不在群中"
+    }
+  },
+  "forbidden": {
+    "homeAria": "返回 SOMS 首页",
+    "code": "403",
+    "title": "访问被拒绝",
+    "desc": "你没有权限查看此页面。",
+    "back": "返回 SOMS",
+    "goBack": "返回上一页"
+  },
+  "notFound": {
+    "homeAria": "返回 SOMS 首页",
+    "code": "404",
+    "title": "页面未找到",
+    "desc": "你要找的页面不存在或已被移动。",
+    "back": "返回 SOMS",
+    "goBack": "返回上一页"
+  },
+  "date": {
+    "today": "今天",
+    "yesterday": "昨天"
+  },
+  "connection": {
+    "connecting": "连接中…",
+    "reconnecting": "连接中断——正在重新连接…"
+  }
+}

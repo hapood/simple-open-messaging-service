@@ -8,6 +8,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { FormsModule } from '@angular/forms';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService, GroupMember } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -30,7 +31,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
  */
 @Component({
   selector: 'app-group-info',
-  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent],
+  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent, TranslocoPipe],
   templateUrl: './group-info.component.html',
   styleUrl: './group-info.component.scss',
 })
@@ -46,6 +47,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly routeService = inject(RouteService)
   private readonly snackBar = inject(MatSnackBar)
   private readonly http = inject(HttpClient)
+  private readonly transloco = inject(TranslocoService)
 
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
@@ -127,6 +129,14 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   /** The non-current role an owner can switch a member to (admin↔member toggle; never OWNER). */
   toggleRoleLabel(m: GroupMember): 'ADMIN' | 'MEMBER' {
     return m.role === 'ADMIN' ? 'MEMBER' : 'ADMIN'
+  }
+  /** Localized role name for badges / the "Make …" action (reads the active language). */
+  roleName(role: string): string {
+    return this.transloco.translate('group.role.' + role.toLowerCase())
+  }
+  /** Localized destructive-action verb for the confirm prompt (kick / transfer). */
+  actionLabel(action: 'kick' | 'transfer'): string {
+    return this.transloco.translate('group.action.' + action)
   }
 
   toggleMenu(userId: number) {
@@ -302,11 +312,11 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       const skipped = res.data?.skipped?.length ?? 0
       const msg =
         skipped > 0
-          ? `Invited ${invited}; ${skipped} couldn't be invited`
+          ? this.transloco.translate('errors.invitedPartial', { n: invited, skipped })
           : invited > 0
-            ? `Invited ${invited}`
-            : 'No invites sent'
-      this.snackBar.open(msg, 'OK', { duration: 4000 })
+            ? this.transloco.translate('errors.invited', { n: invited })
+            : this.transloco.translate('errors.noInvites')
+      this.snackBar.open(msg, this.transloco.translate('common.ok'), { duration: 4000 })
       this.selectedDict.set({})
       this.selectedList.set([])
       this.showInvite.set(false)

@@ -1,6 +1,7 @@
 import { Component, signal, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -24,7 +25,7 @@ type Step = 1 | 2;
  */
 @Component({
   selector: 'app-new-group',
-  imports: [UserListComponent, IconComponent, UserAvatarComponent, MatButtonModule, FormsModule, FitDialogDirective],
+  imports: [UserListComponent, IconComponent, UserAvatarComponent, MatButtonModule, FormsModule, FitDialogDirective, TranslocoPipe],
   templateUrl: './new-group.component.html',
   styleUrl: './new-group.component.scss',
 })

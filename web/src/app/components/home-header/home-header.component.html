@@ -1,9 +1,9 @@
 <div class="home-header">
-  <button class="icon-btn" (click)="toggleDrawer.emit()" aria-label="Open menu">
+  <button class="icon-btn" (click)="toggleDrawer.emit()" [attr.aria-label]="'home.openMenuAria' | transloco">
     <app-icon [type]="AppIconType.MENU" [style]="{width:'32px',height:'32px'}"></app-icon>
   </button>
-  <div class="title">SOMS</div>
-  <button class="icon-btn" aria-label="Search">
+  <div class="title">{{ 'common.appName' | transloco }}</div>
+  <button class="icon-btn" [attr.aria-label]="'home.searchAria' | transloco">
     <app-icon [type]="AppIconType.SEARCH" [style]="{width:'32px',height:'32px'}"></app-icon>
   </button>
 </div>

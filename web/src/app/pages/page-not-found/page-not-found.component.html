@@ -1,6 +1,6 @@
 <main class="pnf">
   <!-- Tappable brand mark = an always-visible escape hatch back to the app root. -->
-  <button type="button" class="pnf-home" (click)="goHome()" aria-label="Back to SOMS home">
+  <button type="button" class="pnf-home" (click)="goHome()" [attr.aria-label]="'notFound.homeAria' | transloco">
     <app-brand-logo [size]="32" [wordmark]="false" />
   </button>
 
@@ -26,14 +26,14 @@
     </svg>
   </div>
 
-  <p class="pnf-code">404</p>
-  <h1 class="pnf-title">Page not found</h1>
-  <p class="pnf-desc">The page you're looking for doesn't exist or may have been moved.</p>
+  <p class="pnf-code">{{ 'notFound.code' | transloco }}</p>
+  <h1 class="pnf-title">{{ 'notFound.title' | transloco }}</h1>
+  <p class="pnf-desc">{{ 'notFound.desc' | transloco }}</p>
 
   <div class="pnf-actions">
-    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">Back to SOMS</button>
+    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">{{ 'notFound.back' | transloco }}</button>
     @if (canGoBack()) {
-      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">Go back</button>
+      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">{{ 'notFound.goBack' | transloco }}</button>
     }
   </div>
 </main>

@@ -352,6 +352,7 @@ export class UserController {
       return {
         code: BusinessCode.NOT_FOUND,
         message: 'friend does not exist',
+        messageKey: 'friend.msg.friendNotFound',
       };
     }
     // makeFriendRequest 状态语义见 friendship.service.ts：
@@ -376,14 +377,14 @@ export class UserController {
     switch (res.status) {
       case 0:
       case 2:
-        return { code: BusinessCode.OK, message: 'friend request sent' };
+        return { code: BusinessCode.OK, message: 'friend request sent', messageKey: 'friend.msg.sent' };
       case 1:
-        return { code: BusinessCode.OK, message: 'you are already friends' };
+        return { code: BusinessCode.OK, message: 'you are already friends', messageKey: 'friend.msg.alreadyFriends' };
       case 3:
-        return { code: BusinessCode.OK, message: 'you are now friends' };
+        return { code: BusinessCode.OK, message: 'you are now friends', messageKey: 'friend.msg.nowFriends' };
       case 5:
         // 对端已发过（幂等）或已拉黑。后者不回显"被拉黑"以免泄露屏蔽状态。
-        return { code: BusinessCode.OK, message: 'friend request sent' };
+        return { code: BusinessCode.OK, message: 'friend request sent', messageKey: 'friend.msg.sent' };
       default:
         return {
           code: BusinessCode.FRIEND_UNKNOWN_STATE,

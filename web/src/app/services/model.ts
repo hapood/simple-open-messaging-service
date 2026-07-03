@@ -38,7 +38,13 @@ export type FriendshipStatus = S['FriendshipDto']['status']
 export interface StandardResponse<T = unknown> {
   code: number
   message: string
+  /**
+   * Stable i18n key carried by the backend for user-facing statuses that `code` alone cannot disambiguate
+   * (e.g. friend-request success variants, all code 0). When present, `translateBizResult` localizes via
+   * this and falls back to `message`. Error statuses are localized by numeric `code` (see biz-code.ts).
+   */
+  messageKey?: string
   data?: T
-  /** 仅分页接口（query-messages）返回：是否还有更早一页。 */
+  /** Only paginated endpoints (query-messages) return this: whether an earlier page exists. */
   hasMore?: boolean
 }

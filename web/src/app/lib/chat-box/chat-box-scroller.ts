@@ -193,7 +193,7 @@ export interface ScrollerApi<T = unknown> {
    *  unmount is deferred to animationend. Returns the count of entries scheduled for removal (0 = none mounted). */
   removeItem(ids: string | number | (string | number)[]): number;
   /** Direct-mount path for live items (incoming messages). Caches via source.pushLive, then mounts the items at the
-   *  tail (dedup by id; follows to the bottom if pinned). Production WS and the playground's incoming-reply path use
+   *  tail (dedup by id; follows to the bottom if pinned). Production SSE and the playground's incoming-reply path use
    *  this. NOT the optimistic-confirm path — that goes through {@link onMessageSignal} (which pulls via getNewer and
    *  runs reconcileOptimistic). */
   appendLive(items: CbItem<T>[]): void;
@@ -299,7 +299,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private inflightNewer = false;
   /** Reset generation: incremented by openAround; compared after the await in loadOlder/loadNewer so stale batches are not mounted (guards against a jump overtaking an in-flight load). */
   private gen = 0;
-  /** Re-seed in progress (between resetWindowState and mount): appendLive drops WS during this (already in the source cache, retrieved by getNewer when scrolling back). */
+  /** Re-seed in progress (between resetWindowState and mount): appendLive drops SSE during this (already in the source cache, retrieved by getNewer when scrolling back). */
   private resetting = false;
   /** Debug switch: turn off the mount checkpoint (balance will not trigger loadOlder/loadNewer). Guarded by ngDevMode inside balance → removed in prod AOT. Default false (checkpoint loads normally). */
   closeCheckpoint = false;
@@ -394,7 +394,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   appendLive(rawItems: CbItem<T>[]): void {
     if (this.destroyed || rawItems.length === 0) return;
-    // Direct-mount path for live items (production WS incoming). Cache via pushLive, then mount at the tail. This path
+    // Direct-mount path for live items (production SSE incoming). Cache via pushLive, then mount at the tail. This path
     // does NOT reconcile optimistic sends — production has none, and the playground routes its live messages (incoming +
     // optimistic confirm) through onMessageSignal, which inserts reals at their true position and reconciles. Dedup by id
     // (an incoming that raced with a load is already mounted → skip).
@@ -419,6 +419,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  latest message below the fold (pinToBottom reads live scrollHeight, so it is immune to cached-height drift). If the
    *  newer end is trimmed, this is a no-op (items are cached; loaded on scroll-back). */
   async onMessageSignal(): Promise<void> {
+    if (ngDevMode) console.log('[chat] onMessageSignal destroyed=%s resetting=%s noNewer=%s mounted=%d inflightNewer=%s', this.destroyed, this.resetting, this.noNewer, this.mounted.length, this.inflightNewer);
     if (this.destroyed || this.resetting) return;
     if (!this.noNewer) return;                               // newer end trimmed → cached only; load on scroll-back
     const wasAtBottom = this.isAtBottom();
@@ -703,7 +704,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * batch → mount → [position onto id immediately] → fillAround fills both ways (re-pin per batch) → final positioning.
    * Immediate positioning + per-batch re-pin: keeps the target pinned to its anchor across the first paint and the
    * entire async fill, avoiding the "show the window top, then scroll into place" jump.
-   * Incrementing gen invalidates in-flight loadOlder/loadNewer; appendLive is dropped while resetting (WS messages are
+   * Incrementing gen invalidates in-flight loadOlder/loadNewer; appendLive is dropped while resetting (SSE messages are
    * in the source cache, retrieved by getNewer when scrolling back). A centered anchor needs enough content on both
    * sides for a "true center"; fillAround grows the window to threshold (best-effort near boundaries, clamp concedes).
    */
@@ -1301,7 +1302,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const wasAtNewest = this.noNewer;                        // pre-load edge state (transition gate for the optimistic dispatch)
     this.absorbBoundary(batch); // phase 0: absorb boundary only after passing
     // Authoritative: a newer batch reaches the global newest iff it carries the 'newest' marker. A full page WITHOUT it
-    // means more newer data remains (a large WS backlog spans multiple pages) → noNewer=false so the next signal/balance
+    // means more newer data remains (a large SSE backlog spans multiple pages) → noNewer=false so the next signal/balance
     // loads further. absorbBoundary is sticky (only ever sets true), so without this a partial backlog page left the kernel
     // falsely believing it was at the newest — stranding the remaining newer messages off-window and blocking further
     // loads (revalidateBottom is gated on !noNewer).

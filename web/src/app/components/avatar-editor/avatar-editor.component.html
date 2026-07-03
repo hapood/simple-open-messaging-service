@@ -1,10 +1,10 @@
 <div class="avatar-editor" [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="cancel()" aria-label="Back">
+    <button class="icon-btn" (click)="cancel()" [attr.aria-label]="'common.back' | transloco">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
-    <span class="title">Avatar</span>
-    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">Done</button>
+    <span class="title">{{ 'profile.avatarTitle' | transloco }}</span>
+    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.done' | transloco }}</button>
   </div>
 
   <div class="body">
@@ -13,19 +13,19 @@
       @if (error()) {
         <div class="overlay">
           <span>{{ error() }}</span>
-          <button mat-button (click)="cancel()">Back</button>
+          <button mat-button (click)="cancel()">{{ 'common.back' | transloco }}</button>
         </div>
       }
     </div>
 
     <label class="controls">
-      <span class="zoom-label">Zoom</span>
+      <span class="zoom-label">{{ 'profile.zoom' | transloco }}</span>
       <input class="zoom" type="range" min="0" max="1" step="0.01"
         [value]="zoom()" (input)="onRange($event)" [disabled]="!canSave()" />
     </label>
 
     <div class="preview-row">
-      <span class="preview-label">Preview</span>
+      <span class="preview-label">{{ 'profile.preview' | transloco }}</span>
       <canvas #preview class="preview" [width]="PREVIEW" [height]="PREVIEW"></canvas>
     </div>
   </div>

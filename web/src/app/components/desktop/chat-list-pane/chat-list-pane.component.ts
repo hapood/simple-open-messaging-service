@@ -1,5 +1,6 @@
 import { Component, EventEmitter, Output, signal, computed, inject, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { ThreadListComponent } from '../../thread-list/thread-list.component';
 import { ConversationItem } from '../../../services/model';
 import { FolderService, ChatFolder } from '../../../services/folder.service';
@@ -11,17 +12,17 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
  */
 @Component({
   selector: 'app-chat-list-pane',
-  imports: [ThreadListComponent, FormsModule],
+  imports: [ThreadListComponent, FormsModule, TranslocoPipe],
   template: `
     <div class="chat-list-pane">
       <div class="search">
-        <input type="text" placeholder="Search"
+        <input type="text" [placeholder]="'chat.searchPlaceholder' | transloco"
           [ngModel]="searchText()" (ngModelChange)="searchText.set($event)" />
       </div>
       @if (folders().length) {
         <div class="folder-tabs">
           <button class="ftab" [class.active]="!activeFolder()"
-            (click)="activeFolderId.set(undefined)">All</button>
+            (click)="activeFolderId.set(undefined)">{{ 'chat.all' | transloco }}</button>
           @for (f of folders(); track f.id) {
             <button class="ftab" [class.active]="activeFolder()?.id === f.id"
               (click)="activeFolderId.set(f.id)">{{ f.name }}</button>

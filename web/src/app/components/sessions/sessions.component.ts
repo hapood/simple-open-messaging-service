@@ -1,6 +1,9 @@
 import { Component, signal, inject, OnInit } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
+import dayjs from 'dayjs';
 import { RouteService } from '../../services/route.service';
+import { LanguageService } from '../../services/language.service';
 import { AuthService } from '../../services/auth.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
@@ -15,18 +18,20 @@ type Session = {
 };
 
 /**
- * 登录会话管理：列出活跃 refresh 会话（device/UA/IP/登录与过期时间），支持踢出单设备。
- * 数据来自 GET /auth/sessions；踢出调 /auth/revoke-session（jti）。
+ * Login-session management: lists active refresh sessions (device/UA/IP/login + expiry times) and supports
+ * revoking a single device. Data comes from GET /auth/sessions; revoking calls /auth/revoke-session (jti).
  */
 @Component({
   selector: 'app-sessions',
-  imports: [MatButtonModule, IconComponent, FitDialogDirective],
+  imports: [MatButtonModule, IconComponent, FitDialogDirective, TranslocoPipe],
   templateUrl: './sessions.component.html',
   styleUrl: './sessions.component.scss',
 })
 export class SessionsComponent implements OnInit {
   private readonly routeService = inject(RouteService);
   private readonly authService = inject(AuthService);
+  private readonly transloco = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
 
   readonly AppIconType = AppIconType;
   readonly fitOpts = { minHeight: 380 } as const;
@@ -55,8 +60,19 @@ export class SessionsComponent implements OnInit {
     });
   }
 
+  /** Session timestamp formatted via dayjs (follows the app language's locale, set globally by
+   *  LanguageService — NOT the browser locale). Reads the language signal so the row re-evaluates on a
+   *  language switch. */
   fmt(ts: number): string {
-    return new Date(ts).toLocaleString();
+    this.language.lang();
+    return dayjs(ts).format('YYYY-MM-DD HH:mm');
+  }
+
+  /** Localized device label for a session row: "This device" for the current session, the raw device
+   *  name when known, or "Unknown device" as a fallback. */
+  deviceLabel(s: Session): string {
+    if (s.device === this.myDevice) return this.transloco.translate('common.thisDevice');
+    return s.device || this.transloco.translate('common.unknownDevice');
   }
 
   goBack() {

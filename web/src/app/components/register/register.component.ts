@@ -1,5 +1,7 @@
-import { Component, signal, computed, Output, EventEmitter, effect } from '@angular/core';
+import { Component, signal, computed, Output, EventEmitter, effect, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
+import { translateBizResult } from '../../services/biz-code'
 import { UserService } from '../../services/user.service';
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -10,7 +12,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 
 @Component({
     selector: 'app-register',
-    imports: [IconComponent, FormsModule, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule],
+    imports: [IconComponent, FormsModule, TranslocoPipe, MatButtonModule, MatFormFieldModule, MatInputModule, MatProgressBarModule],
     templateUrl: './register.component.html',
     styleUrl: './register.component.scss'
 })
@@ -18,6 +20,7 @@ export class RegisterComponent {
   @Output() onSuccess = new EventEmitter<{ uniqName: string, password: string }>();
 
   readonly AppIcon = AppIconType;
+  private readonly transloco = inject(TranslocoService);
 
   uniqName = signal('');
   password = signal('');
@@ -46,7 +49,7 @@ export class RegisterComponent {
       const uniqname = this.uniqName()
       if (!this._uniqNameRegex.test(uniqname)) {
         this.isUniqNameVld.set(false)
-        this.uniqNameHint.set('1 to 20 letters/numbers')
+        this.uniqNameHint.set(this.transloco.translate('auth.uniqNameHint'))
       } else {
         this.isUniqNameVld.set(true)
         this.uniqNameHint.set('')
@@ -56,7 +59,7 @@ export class RegisterComponent {
       const password = this.password()
       if (!this._passwordRegx.test(password)) {
         this.isPwdVld.set(false)
-        this.passwordHint.set('6 to 20 letters/numbers/symbols')
+        this.passwordHint.set(this.transloco.translate('auth.passwordHint'))
       } else {
         this.isPwdVld.set(true)
         this.passwordHint.set('')
@@ -95,25 +98,25 @@ export class RegisterComponent {
     }
     const uniqName = this.uniqName(), password = this.password()
     if (this.password2() !== password) {
-      this.resp.set("Two entered passwords do not match, make sure to re-enter")
+      this.resp.set(this.transloco.translate('auth.passwordMismatch'))
       return
     }
     this.isReging.set(true)
     this.userService.register({ uniqName, password })
       .subscribe({
-        next: ({ code, message }) => {
-          if (code === 0) {
+        next: (res) => {
+          if (res.code === 0) {
             this.onSuccess.emit({ uniqName, password })
             this.isReging.set(false)
             this.isSuccess.set(true)
           } else {
-            this.resp.set(message)
+            this.resp.set(translateBizResult(res, this.transloco))
           }
           this.isReging.set(false)
         },
         error: (err) => {
           console.error(err)
-          this.resp.set('unknown error occurred')
+          this.resp.set(this.transloco.translate('auth.unknownError'))
           this.isReging.set(false)
         }
       })

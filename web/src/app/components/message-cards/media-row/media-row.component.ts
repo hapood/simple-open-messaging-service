@@ -1,4 +1,5 @@
 import { Component, computed, input, output } from '@angular/core';
+import { TranslocoPipe } from '@jsverse/transloco';
 import type { AlbumImage, ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
@@ -17,7 +18,7 @@ import { layoutAlbum } from './layout';
 @Component({
   selector: 'app-msg-media-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent],
+  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
   templateUrl: './media-row.component.html',
   styleUrl: './media-row.component.scss',
 })
@@ -26,8 +27,8 @@ export class MediaRowComponent {
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
-  /** Day-change date-separator label (non-null = this row is the first of a given day → show a date pill above it); null = hide. */
-  readonly dateLabel = input<string | null>(null);
+  /** Whether a date-separator pill should render above this row (it is the first message of its day). */
+  readonly showDate = input<boolean>(false);
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());

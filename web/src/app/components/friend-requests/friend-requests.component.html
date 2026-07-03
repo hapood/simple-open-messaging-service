@@ -1,21 +1,21 @@
 <div class="friend-requests" [appFitDialog]="fitOpts">
   <div class="popup-header">
     @if(isShowBackBtn()){
-    <button class="icon-btn" (click)="goBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
+    <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'24px',height:'24px'}"></app-icon></button>}
-    <div class="popup-title">Add Friends</div>
+    <div class="popup-title">{{ 'friend.title' | transloco }}</div>
   </div>
 
   <div class="tabs">
     <button class="tab-item" [class.active]="activeTab()===0" (click)="setTab(0)">
-      <span class="tab-text">Add</span>
+      <span class="tab-text">{{ 'friend.tab.add' | transloco }}</span>
     </button>
     <button class="tab-item" [class.active]="activeTab()===1" (click)="setTab(1)">
-      <span class="tab-text">Pending</span>
+      <span class="tab-text">{{ 'friend.tab.pending' | transloco }}</span>
       @if(pendingReqList().length > 0){<span class="tab-badge">{{pendingReqList().length}}</span>}
     </button>
     <button class="tab-item" [class.active]="activeTab()===2" (click)="setTab(2)">
-      <span class="tab-text">Sent</span>
+      <span class="tab-text">{{ 'friend.tab.sent' | transloco }}</span>
       @if(sentReqList().length > 0){<span class="tab-badge">{{sentReqList().length}}</span>}
     </button>
   </div>
@@ -25,11 +25,11 @@
     <form class="search-bar" (ngSubmit)="searchUser()" role="search">
       <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
       <input class="search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
-        placeholder="Search by username" autocomplete="off"
+        [placeholder]="'friend.searchPlaceholder' | transloco" autocomplete="off"
         [disabled]="addTabStatus()===AddTabStatus.SEARCHING">
       <button mat-raised-button class="search-btn" type="submit"
         [disabled]="addTabStatus()===AddTabStatus.SEARCHING || !searchText().trim()">
-        @if(addTabStatus()===AddTabStatus.SEARCHING){Searching}@else{Search}
+        @if(addTabStatus()===AddTabStatus.SEARCHING){{{ 'common.searching' | transloco }}}@else{ {{ 'common.search' | transloco }} }
       </button>
     </form>
 
@@ -38,17 +38,17 @@
         @case(AddTabStatus.INIT){
         <div class="state-hint">
           <app-icon [type]="AppIconType.SEARCH" [style]="{width:'40px',height:'40px'}"></app-icon>
-          <div class="state-title">Find your friends</div>
-          <div class="state-sub">Search by username to send a request.</div>
+          <div class="state-title">{{ 'friend.findTitle' | transloco }}</div>
+          <div class="state-sub">{{ 'friend.findSub' | transloco }}</div>
         </div>
         }
         @case(AddTabStatus.SEARCHING){
-        <div class="state-hint"><div class="state-title">Searching…</div></div>
+        <div class="state-hint"><div class="state-title">{{ 'common.searching' | transloco }}</div></div>
         }
         @case(AddTabStatus.EMPTY){
         <div class="state-hint">
-          <div class="state-title">No user found</div>
-          <div class="state-sub">We couldn't find "{{curSearchText().trim()}}".</div>
+          <div class="state-title">{{ 'friend.noUserTitle' | transloco }}</div>
+          <div class="state-sub">{{ 'friend.noUserSub' | transloco:{ q: curSearchText().trim() } }}</div>
         </div>
         }
         @case(AddTabStatus.ERROR){
@@ -66,7 +66,7 @@
           <div class="user-actions">
             @if(canAdd()){
             <button mat-raised-button color="primary" (click)="sendRequest()"
-              [disabled]="addTabStatus()===AddTabStatus.SEARCHING">Send Request</button>
+              [disabled]="addTabStatus()===AddTabStatus.SEARCHING">{{ 'friend.sendRequest' | transloco }}</button>
             }
           </div>
           @if(reqRspTxt().length>0){<div class="response-text" [class.is-info]="!canAdd()">{{reqRspTxt()}}</div>}
@@ -80,13 +80,13 @@
   <div class="tab-pane" [hidden]="activeTab()!==1">
     <div class="pending-area">
       @if(pendingLoading()){
-        <div class="state-hint"><div class="state-title">Loading…</div></div>
+        <div class="state-hint"><div class="state-title">{{ 'common.loading' | transloco }}</div></div>
       } @else if(toPendingErrTxt().length>0){
         <div class="state-hint"><div class="state-title state-error">{{toPendingErrTxt()}}</div></div>
       } @else if(pendingReqList().length===0){
         <div class="state-hint">
-          <div class="state-title">No pending requests</div>
-          <div class="state-sub">Friend requests you receive will appear here.</div>
+          <div class="state-title">{{ 'friend.noPendingTitle' | transloco }}</div>
+          <div class="state-sub">{{ 'friend.noPendingSub' | transloco }}</div>
         </div>
       } @else {
         @for(req of pendingReqList();track req.id){
@@ -99,10 +99,10 @@
           </div>
           <div class="pending-actions">
             @if(req.status===0){
-            <button mat-raised-button color="primary" (click)="approve($index)">Approve</button>
-            <button mat-button class="decline-btn" (click)="decline($index)">Decline</button>
+            <button mat-raised-button color="primary" (click)="approve($index)">{{ 'friend.approve' | transloco }}</button>
+            <button mat-button class="decline-btn" (click)="decline($index)">{{ 'friend.decline' | transloco }}</button>
             }@else {
-            <button mat-button [disabled]="true">@if(req.status===-1){Invalid User}@else{Approved}</button>
+            <button mat-button [disabled]="true">@if(req.status===-1){ {{ 'friend.invalidUser' | transloco }} }@else{ {{ 'friend.approved' | transloco }} }</button>
             }
           </div>
         </div>
@@ -116,13 +116,13 @@
   <div class="tab-pane" [hidden]="activeTab()!==2">
     <div class="pending-area">
       @if(sentLoading()){
-        <div class="state-hint"><div class="state-title">Loading…</div></div>
+        <div class="state-hint"><div class="state-title">{{ 'common.loading' | transloco }}</div></div>
       } @else if(sentErrTxt().length>0){
         <div class="state-hint"><div class="state-title state-error">{{sentErrTxt()}}</div></div>
       } @else if(sentReqList().length===0){
         <div class="state-hint">
-          <div class="state-title">No sent requests</div>
-          <div class="state-sub">Friend requests you've sent will appear here.</div>
+          <div class="state-title">{{ 'friend.noSentTitle' | transloco }}</div>
+          <div class="state-sub">{{ 'friend.noSentSub' | transloco }}</div>
         </div>
       } @else {
         @for(req of sentReqList();track req.id){
@@ -134,7 +134,7 @@
             <div class="pending-date">{{req.date}}</div>
           </div>
           <div class="pending-actions">
-            <button mat-button class="decline-btn" (click)="cancelSent($index)">Cancel</button>
+            <button mat-button class="decline-btn" (click)="cancelSent($index)">{{ 'common.cancel' | transloco }}</button>
           </div>
         </div>
         @if(req.errText){<div class="row-err">{{req.errText}}</div>}

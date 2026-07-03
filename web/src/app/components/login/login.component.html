@@ -4,34 +4,34 @@
     <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
   </div>
 
-  <h1 class="login-title">Login to SOMS</h1>
-  <p class="login-sub">Welcome back, please sign in to continue</p>
+  <h1 class="login-title">{{ 'auth.loginTitle' | transloco }}</h1>
+  <p class="login-sub">{{ 'auth.loginSub' | transloco }}</p>
 
   <mat-form-field class="field" appearance="fill">
-    <mat-label>Username</mat-label>
+    <mat-label>{{ 'auth.username' | transloco }}</mat-label>
     <input matInput name="uniqName" autocomplete="username" autofocus
       [ngModel]="uniqName()" (ngModelChange)="onUniqNameInput($event)">
   </mat-form-field>
 
   <mat-form-field class="field" appearance="fill">
-    <mat-label>Password</mat-label>
+    <mat-label>{{ 'auth.password' | transloco }}</mat-label>
     <input matInput name="password" autocomplete="current-password"
       [type]="showPassword() ? 'text' : 'password'"
       [ngModel]="password()" (ngModelChange)="onPasswordInput($event)">
     <button mat-icon-button matSuffix type="button" (click)="togglePassword()"
-      [attr.aria-label]="showPassword() ? 'Hide password' : 'Show password'">
+      [attr.aria-label]="(showPassword() ? 'auth.hidePassword' : 'auth.showPassword') | transloco">
       <app-icon [type]="showPassword() ? AppIcon.EYE_OFF : AppIcon.EYE" [style]="{ width: '20px', height: '20px' }" />
     </button>
   </mat-form-field>
 
-  <mat-checkbox class="keep-cb" [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">Keep me logged in</mat-checkbox>
+  <mat-checkbox class="keep-cb" [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">{{ 'auth.keepLoggedIn' | transloco }}</mat-checkbox>
 
   <div class="error" role="alert">{{resp()}}</div>
 
-  <button mat-raised-button color="primary" type="submit" class="submit-btn" [disabled]="isLoginBtnDisabled()">Login</button>
+  <button mat-raised-button color="primary" type="submit" class="submit-btn" [disabled]="isLoginBtnDisabled()">{{ 'auth.loginBtn' | transloco }}</button>
 
   <div class="alt-action">
-    Don't have an account?
-    <button type="button" class="link-btn" (click)="jumpToRegister()">Register</button>
+    {{ 'auth.loginAltQuestion' | transloco }}
+    <button type="button" class="link-btn" (click)="jumpToRegister()">{{ 'auth.register' | transloco }}</button>
   </div>
 </form>

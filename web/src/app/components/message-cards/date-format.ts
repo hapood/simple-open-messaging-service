@@ -1,64 +1,76 @@
 import dayjs from 'dayjs';
 
 /**
- * 日期分隔标签的前端计算。
+ * Frontend derivation of date-separator labels and conversation-list timestamps.
  *
- * date 不再是数据源的 CbItem（不再随 source 返回、不占抽象 id），而是 createItem 工厂挂载时
- * 按「相邻消息跨日」判定的【派生视图】——比较当前 msg 与窗口内前一条（更老邻居 prev）的
- * createdAtMs，跨日则在当前 msg 上方插一个 date pill。
+ * A date is no longer a CbItem carried by the source (it never returns one and never occupies an abstract id);
+ * instead it is a derived view computed at mount time by the createItem factory, which compares the current
+ * message against its older in-window neighbor (`prev`) and inserts a date pill above when the day changes.
  *
- * 一处判定覆盖三种来源（prev 一律是内核传入的窗口内前一条）：
- *  ① 批次内连续挂载：prev = 同批前一条；
- *  ② 批次边界挂载：prev = 上一批末条；
- *  ③ oldest：prev = null（全局最老，无更老邻居）。
+ * One decision covers all three origins (prev is always the older in-window neighbor passed in by the kernel):
+ *  ① consecutive mount within a batch: prev = the previous item in the same batch;
+ *  ② batch-boundary mount:             prev = the last item of the previous batch;
+ *  ③ oldest:                           prev = null (the global oldest, no older neighbor).
+ *
+ * Locale awareness: weekday and month/day names come from dayjs once the global locale is switched by
+ * LanguageService. "Today" / "Yesterday" have no dayjs format token (without the relativeTime plugin), so
+ * they are read from the translation dictionary via the `translate` argument. Callers re-evaluate on a
+ * language switch by reading the language signal in their `computed`/template context.
  */
 
-/** Date separator label: Today / Yesterday / weekday name / MMM D / MMM D, YYYY. */
-const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-
-export function formatDateSeparator(ms: number): string {
-  const d = dayjs(ms);
-  const now = dayjs();
-  if (d.isSame(now, 'day')) return 'Today';
-  if (d.isSame(now.subtract(1, 'day'), 'day')) return 'Yesterday';
-  if (d.isAfter(now.subtract(7, 'day'))) return WEEKDAYS[d.day()];
-  if (d.isSame(now, 'year')) return d.format('MMM D');
-  return d.format('MMM D, YYYY');
+/** Minimal slice of TranslocoService the formatters need — keeps them pure and unit-testable. */
+export interface DateTranslator {
+  translate(key: string): string;
 }
 
-/** 两时刻是否同一天（日历日，跨年同月日也算不同天）。 */
+/** Whether two instants fall on the same calendar day (cross-year same month/day is still a different day). */
 export function sameDay(a: number, b: number): boolean {
   return dayjs(a).isSame(b, 'day');
 }
 
 /**
- * Conversation-list timestamp: HH:mm for today, weekday for this week, MMM D same year, MMM D, YYYY
- * otherwise. Mirrors the date-separator vocabulary so the list and the chat use one mental model.
+ * Date-separator pill label: Today / Yesterday / weekday name / MMM D / MMM D, YYYY.
+ * Used by DateRowComponent (which owns the language-reactive computation).
  */
-export function formatListTime(ms: number | null | undefined): string {
-  if (ms === null || ms === undefined) return '';
+export function formatDateSeparator(ms: number, t: DateTranslator): string {
   const d = dayjs(ms);
   const now = dayjs();
-  if (d.isSame(now, 'day')) return d.format('HH:mm');
-  if (d.isSame(now.subtract(1, 'day'), 'day')) return 'Yesterday';
-  if (d.isAfter(now.subtract(7, 'day'))) return WEEKDAYS[d.day()];
+  if (d.isSame(now, 'day')) return t.translate('date.today');
+  if (d.isSame(now.subtract(1, 'day'), 'day')) return t.translate('date.yesterday');
+  if (d.isAfter(now.subtract(7, 'day'))) return d.format('dddd');
   if (d.isSame(now, 'year')) return d.format('MMM D');
   return d.format('MMM D, YYYY');
 }
 
 /**
- * 当前 msg 上方是否需要 date 分隔。
+ * Conversation-list timestamp: HH:mm for today, weekday for this week, MMM D same year, MMM D, YYYY otherwise.
+ * Mirrors the date-separator vocabulary so the list and the chat share one mental model.
+ */
+export function formatListTime(ms: number | null | undefined, t: DateTranslator): string {
+  if (ms === null || ms === undefined) return '';
+  const d = dayjs(ms);
+  const now = dayjs();
+  if (d.isSame(now, 'day')) return d.format('HH:mm');
+  if (d.isSame(now.subtract(1, 'day'), 'day')) return t.translate('date.yesterday');
+  if (d.isAfter(now.subtract(7, 'day'))) return d.format('dddd');
+  if (d.isSame(now, 'year')) return d.format('MMM D');
+  return d.format('MMM D, YYYY');
+}
+
+/**
+ * Whether a date separator should appear above the current message.
  *
- *  - prev 存在且同天 → 否（组内连续）。
- *  - prev 存在且跨天 → 是。
- *  - prev==null 且 isOldestBoundary → 是（对话真正第一条上方固定 date）。
- *  - prev==null 且非 oldest → **否**。关键：窗口中部 trim 后重挂时，prev 邻居已被内核回收
- *    （unmountOne 连同 items.delete）→ prev==null，但此条并非 oldest；此时不显 date，否则
- *    快速上下滑会误冒 date pill 闪烁。用 item.boundary==='oldest' 区分这两种 prev==null。
+ *  - prev exists and same day → no (consecutive within a group).
+ *  - prev exists and day changed → yes.
+ *  - prev == null and isOldestBoundary → yes (a fixed date above the conversation's true first message).
+ *  - prev == null and NOT oldest → **no**. Key point: after a mid-window trim re-mounts this row, the prev
+ *    neighbor has been reclaimed by the kernel (unmountOne also deletes it from items) → prev == null, but
+ *    this is not the oldest; showing a date here would make date pills flicker during fast up/down scrolling.
+ *    Distinguish the two prev == null cases via item.boundary === 'oldest'.
  *
- * @param prevMs           窗口内前一条（更老邻居）msg 的 createdAtMs；无则 null。
- * @param curMs            当前 msg 的 createdAtMs。
- * @param isOldestBoundary 当前 msg 是否带全局 oldest 边界标记（item.boundary==='oldest'）。
+ * @param prevMs           createdAtMs of the older in-window neighbor; null if none.
+ * @param curMs            createdAtMs of the current message.
+ * @param isOldestBoundary whether the current message carries the global-oldest boundary marker.
  */
 export function shouldShowDateSeparator(
   prevMs: number | null,

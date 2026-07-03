@@ -2,9 +2,12 @@ import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
+import { provideTransloco, TranslocoService } from '@jsverse/transloco';
+import { provideTranslocoMessageformat } from '@jsverse/transloco-messageformat';
 import { ThreadListComponent } from './thread-list.component';
 import { UserService } from '../../services/user.service';
 import { RouteService } from '../../services/route.service';
+import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 
 /**
  * thread-list 状态机防回归：重点覆盖原 `throw new Error(res.message)` 写在 RxJS
@@ -21,10 +24,20 @@ describe('ThreadListComponent 状态机', () => {
 
   beforeEach(() => {
     popupSpy = jasmine.createSpy('popupDlg');
+    localStorage.removeItem('soms.lang');
     TestBed.configureTestingModule({
       imports: [ThreadListComponent],
       providers: [
         provideZonelessChangeDetection(),
+        provideTransloco({
+          config: {
+            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
+            defaultLang: 'en',
+            reRenderOnLangChange: true,
+          },
+          loader: InlineTranslocoLoader,
+        }),
+        provideTranslocoMessageformat(),
         provideHttpClient(),
         provideHttpClientTesting(),
         UserService,
@@ -61,7 +74,9 @@ describe('ThreadListComponent 状态机', () => {
     comp.ngOnInit();
     const req = httpMock.expectOne(r => r.url.endsWith('/user/query-thread/valid'));
     req.flush('network down', { status: 500, statusText: 'Server Error' });
-    expect(comp.errorMsg()).toBe('Network error, please retry');
+    // Locale-independent: the error message is whatever the active language resolves for the network
+    // error key (the convList translates it via the same TranslocoService the test reads here).
+    expect(comp.errorMsg()).toBe(TestBed.inject(TranslocoService).translate('errors.networkError'));
   });
 
   it('有搜索词且无匹配 → isSearchEmpty 为 true（搜索无结果态）', () => {

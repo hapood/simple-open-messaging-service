@@ -1,5 +1,6 @@
 import { Component, computed, input, output } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
+import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import {
@@ -91,7 +92,7 @@ function formatBytes(n: number): string {
 @Component({
   selector: 'app-msg-file-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, NgTemplateOutlet],
+  imports: [DateRowComponent, UserAvatarComponent, NgTemplateOutlet, TranslocoPipe],
   templateUrl: './file-row.component.html',
   styleUrl: './file-row.component.scss',
 })
@@ -100,7 +101,7 @@ export class FileRowComponent {
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
-  readonly dateLabel = input<string | null>(null);
+  readonly showDate = input<boolean>(false);
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());

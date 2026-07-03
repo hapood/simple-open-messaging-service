@@ -1,25 +1,27 @@
 import { Component, signal, computed, inject, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 
 /**
- * 编辑资料弹窗（WhatsApp 极简）：头像 + 昵称 + 简介；登录 handle 只读。
- * 头像走既有 update-avatar（sharp 多档），昵称/简介走 update-profile；
- * 任一成功都回读 sessionProfile（rail/抽屉/预览都绑 signal，自动刷新）。
+ * Edit-profile dialog (WhatsApp-minimal): avatar + display name + bio; the login handle is read-only.
+ * Avatar goes through the existing update-avatar (sharp multi-size); name/bio go through update-profile;
+ * either success re-reads sessionProfile (rail/drawer/preview all bind the signal and refresh automatically).
  */
 @Component({
   selector: 'app-edit-profile',
-  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent],
+  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent, TranslocoPipe],
   templateUrl: './edit-profile.component.html',
   styleUrl: './edit-profile.component.scss',
 })
 export class EditProfileComponent {
   private readonly routeService = inject(RouteService)
   private readonly userService = inject(UserService)
+  private readonly transloco = inject(TranslocoService)
 
   readonly UserAvatarType = UserAvatarType
   readonly AppIconType = AppIconType
@@ -38,15 +40,15 @@ export class EditProfileComponent {
     this.name.set(p?.userExtra?.name ?? '')
     this.bio.set(p?.userExtra?.bio ?? '')
 
-    // 昵称校验：非空（去空格）且 ≤30。仿 register.component.ts 的 effect 校验模式。
+    // Name validation: non-empty (trimmed) and ≤30. Mirrors register.component.ts's effect-based validation.
     effect(() => {
       const n = this.name().trim()
       if (n.length === 0) {
         this.isNameValid.set(false)
-        this.nameHint.set('Name cannot be empty')
+        this.nameHint.set(this.transloco.translate('profile.nameEmpty'))
       } else if (n.length > 30) {
         this.isNameValid.set(false)
-        this.nameHint.set('Must be 30 characters or fewer')
+        this.nameHint.set(this.transloco.translate('profile.nameTooLong'))
       } else {
         this.isNameValid.set(true)
         this.nameHint.set('')

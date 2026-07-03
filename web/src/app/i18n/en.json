@@ -1,0 +1,286 @@
+{
+  "common": {
+    "appName": "SOMS",
+    "logoAria": "SOMS logo",
+    "ok": "OK",
+    "cancel": "Cancel",
+    "save": "Save",
+    "back": "Back",
+    "done": "Done",
+    "delete": "Delete",
+    "edit": "Edit",
+    "change": "Change",
+    "confirm": "Confirm",
+    "next": "Next",
+    "remove": "Remove",
+    "close": "Close",
+    "retry": "Retry",
+    "search": "Search",
+    "searching": "Searching…",
+    "loading": "Loading…",
+    "noMessagesYet": "No messages yet",
+    "unknownUser": "Unknown user",
+    "unknown": "Unknown",
+    "unknownDevice": "Unknown device",
+    "thisDevice": "This device",
+    "you": "(you)"
+  },
+  "nav": {
+    "editProfileAria": "Edit profile",
+    "friendRequests": "Friend requests",
+    "newFriendRequestsAria": "new friend requests",
+    "newGroup": "New group",
+    "folders": "Folders",
+    "logout": "Log out",
+    "themeAria": "Theme: {{label}}",
+    "languageAria": "Language: {{label}}",
+    "theme": {
+      "system": "System",
+      "light": "Light",
+      "dark": "Dark"
+    }
+  },
+  "home": {
+    "openMenuAria": "Open menu",
+    "searchAria": "Search",
+    "resizerTitle": "Drag to resize; double-click to reset"
+  },
+  "auth": {
+    "loginTitle": "Login to SOMS",
+    "loginSub": "Welcome back, please sign in to continue",
+    "registerTitle": "Create your account",
+    "registerSub": "Join SOMS in just a few seconds",
+    "brandTagline": "Open chat. Simple and instant.",
+    "username": "Username",
+    "password": "Password",
+    "passwordAgain": "Password Again",
+    "keepLoggedIn": "Keep me logged in",
+    "loginBtn": "Login",
+    "signUp": "Sign up",
+    "loginAltQuestion": "Don't have an account?",
+    "registerAltQuestion": "Already have an account?",
+    "register": "Register",
+    "hidePassword": "Hide password",
+    "showPassword": "Show password",
+    "uniqNameHint": "1 to 20 letters/numbers",
+    "passwordHint": "6 to 20 letters/numbers/symbols",
+    "passwordMismatch": "Two entered passwords do not match, make sure to re-enter",
+    "unknownError": "unknown error occurred"
+  },
+  "profile": {
+    "title": "Profile",
+    "name": "Name",
+    "namePlaceholder": "Your name",
+    "bio": "Bio",
+    "bioPlaceholder": "Say something about yourself",
+    "usernameHandle": "Username @{{name}} (cannot be changed)",
+    "manageSessions": "Manage sessions",
+    "changeAvatarAria": "Change avatar",
+    "nameEmpty": "Name cannot be empty",
+    "nameTooLong": "Must be 30 characters or fewer",
+    "avatarTitle": "Avatar",
+    "zoom": "Zoom",
+    "preview": "Preview",
+    "removeFriendConfirm": "Remove {{name}} from friends?",
+    "unfriend": "Unfriend",
+    "avatarErrorFormat": "Please choose a PNG, JPG, GIF, or WebP image",
+    "avatarErrorSize": "Image is larger than 10 MB",
+    "avatarErrorRead": "Could not read this image",
+    "avatarErrorProcess": "Could not process the image"
+  },
+  "session": {
+    "title": "Sessions",
+    "noSessions": "No active sessions",
+    "ip": "IP {{ip}}",
+    "signedIn": "Signed in {{date}}",
+    "expires": "Expires {{date}}",
+    "revoke": "Revoke"
+  },
+  "folder": {
+    "title": "Folders",
+    "newBtn": "New",
+    "empty": "No folders yet. Click \"New\" to create one and organize your chats.",
+    "editTitle": "Edit folder",
+    "newTitle": "New folder",
+    "namePlaceholder": "e.g. Work, Family",
+    "autoIncludeTypes": "Auto-include types",
+    "specificChats": "Specific chats (optional)",
+    "noChats": "No chats",
+    "deleteFolder": "Delete folder",
+    "selected": "{count, plural, other {# selected}}",
+    "type": {
+      "all": "All types",
+      "direct": "Direct",
+      "group": "Group"
+    }
+  },
+  "friend": {
+    "title": "Add Friends",
+    "searchPlaceholder": "Search by username",
+    "findTitle": "Find your friends",
+    "findSub": "Search by username to send a request.",
+    "noUserTitle": "No user found",
+    "noUserSub": "We couldn't find \"{{q}}\".",
+    "sendRequest": "Send Request",
+    "noPendingTitle": "No pending requests",
+    "noPendingSub": "Friend requests you receive will appear here.",
+    "noSentTitle": "No sent requests",
+    "noSentSub": "Friend requests you've sent will appear here.",
+    "approve": "Approve",
+    "decline": "Decline",
+    "invalidUser": "Invalid User",
+    "approved": "Approved",
+    "tab": {
+      "add": "Add",
+      "pending": "Pending",
+      "sent": "Sent"
+    },
+    "error": {
+      "canNotAddSelf": "can not add yourself",
+      "alreadyFriends": "already friends",
+      "requestAlreadySent": "friend request already sent",
+      "sentYouRequest": "sent you a request — check Pending",
+      "unknownError": "unknown error occurred"
+    },
+    "msg": {
+      "sent": "Friend request sent",
+      "alreadyFriends": "You are already friends",
+      "nowFriends": "You are now friends",
+      "friendNotFound": "User does not exist"
+    }
+  },
+  "group": {
+    "title": "Group Info",
+    "groupNamePlaceholder": "Group name",
+    "changeAvatarHint": "Change",
+    "members": "{count, plural, =1 {# member} other {# members}}",
+    "actionsAria": "actions",
+    "makeRole": "Make {{role}}",
+    "makeOwner": "Make owner",
+    "kick": "Kick",
+    "addMembers": "Add members",
+    "invite": "Invite {{count}}",
+    "leaveOwnerHint": "Leave (transfer ownership first)",
+    "leave": "Leave group",
+    "leaveOwnerNote": "The owner must transfer ownership before leaving.",
+    "confirmPrompt": "Confirm {{action}} {{name}}?",
+    "action": {
+      "kick": "kick",
+      "transfer": "transfer"
+    },
+    "role": {
+      "owner": "Owner",
+      "admin": "Admin",
+      "member": "Member"
+    }
+  },
+  "newGroup": {
+    "title": "New group",
+    "searchPlaceholder": "Search",
+    "groupNamePlaceholder": "Group name",
+    "setPhotoAria": "Set group photo",
+    "createAria": "Create group",
+    "nextAria": "Next",
+    "memberCount": "{count, plural, =1 {# member} other {# members}}"
+  },
+  "chat": {
+    "emptyTagline": "Select a chat to start your conversation",
+    "emptyFooter": "Your messages are protected end-to-end in transit. SOMS cannot read them.",
+    "searchPlaceholder": "Search",
+    "all": "All",
+    "loading": "Loading…",
+    "inputPlaceholder": "Type a message…",
+    "youPrefix": "You: {{text}}",
+    "openImageAria": "Open image",
+    "retrySendAria": "Retry send",
+    "fileFallback": "File",
+    "inviteTitle": "{{name}} invited you to join:",
+    "validUntil": "Valid until {{date}}",
+    "joined": "Joined ✓",
+    "openGroup": "Open group",
+    "join": "Join",
+    "expired": "Expired",
+    "failedToJoin": "Failed to join",
+    "preview": {
+      "photo": "[Photo]",
+      "invite": "[Group invite]",
+      "video": "[Video]",
+      "file": "[File]",
+      "voice": "[Voice message]"
+    }
+  },
+  "gallery": {
+    "failed": "Image failed to load",
+    "tapRetry": "Tap to retry",
+    "retryAria": "Retry image load",
+    "closeAria": "Close gallery",
+    "prevAria": "Previous image",
+    "nextAria": "Next image"
+  },
+  "threadList": {
+    "couldNotLoad": "Couldn't load chats",
+    "retry": "Retry",
+    "noMatchTitle": "No matching chats",
+    "noMatchSub": "Try a different keyword, or clear the search.",
+    "emptyTitle": "No chats yet",
+    "emptySub": "Add a friend to start your first conversation.",
+    "addFriend": "Add friend"
+  },
+  "errors": {
+    "removedFromGroup": "You were removed from {{group}}",
+    "nowRole": "You are now {{role}} of {{group}}",
+    "invited": "Invited {{n}}",
+    "invitedPartial": "Invited {{n}}; {{skipped}} couldn't be invited",
+    "noInvites": "No invites sent",
+    "networkError": "Network error, please retry",
+    "theGroup": "the group",
+    "role": {
+      "owner": "the owner",
+      "admin": "an admin",
+      "member": "a member"
+    },
+    "biz": {
+      "validation": "Invalid input",
+      "notFound": "Not found",
+      "alreadyExists": "Already exists",
+      "unauthenticated": "Please sign in again",
+      "forbidden": "You don't have permission to do that",
+      "rateLimited": "Too many requests, please slow down",
+      "refreshReuse": "Your session changed; please sign in again",
+      "sessionRevoked": "Your session has ended; please sign in again",
+      "internal": "Something went wrong",
+      "friendNoIncoming": "No pending friend request",
+      "messageEmpty": "Message is empty",
+      "threadNotApproved": "Conversation is not active",
+      "threadNotFound": "Conversation not found",
+      "groupNotFriend": "Only friends can be invited",
+      "groupInvalidToken": "This invite is invalid or expired",
+      "groupForbidden": "You don't have permission for this action",
+      "groupTargetNotMember": "That member is no longer in the group"
+    }
+  },
+  "forbidden": {
+    "homeAria": "Back to SOMS home",
+    "code": "403",
+    "title": "Access denied",
+    "desc": "You don't have permission to view this page.",
+    "back": "Back to SOMS",
+    "goBack": "Go back"
+  },
+  "notFound": {
+    "homeAria": "Back to SOMS home",
+    "code": "404",
+    "title": "Page not found",
+    "desc": "The page you're looking for doesn't exist or may have been moved.",
+    "back": "Back to SOMS",
+    "goBack": "Go back"
+  },
+  "date": {
+    "today": "Today",
+    "yesterday": "Yesterday"
+  },
+  "connection": {
+    "connecting": "Connecting…",
+    "reconnecting": "Connection lost — reconnecting…"
+  }
+}

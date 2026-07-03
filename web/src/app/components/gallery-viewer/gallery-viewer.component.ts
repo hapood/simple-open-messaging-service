@@ -1,4 +1,5 @@
 import { AfterViewInit, Component, computed, effect, HostListener, input, OnDestroy, output, signal } from '@angular/core';
+import { TranslocoPipe } from '@jsverse/transloco';
 import type { AlbumImage } from '../message-cards/chat-item';
 
 const DRAG_THRESHOLD = 8;   // px: a pointer sequence under this length is a tap, not a drag
@@ -29,6 +30,7 @@ function vh(): number { return typeof window !== 'undefined' ? window.innerHeigh
 @Component({
   selector: 'app-gallery-viewer',
   standalone: true,
+  imports: [TranslocoPipe],
   templateUrl: './gallery-viewer.component.html',
   styleUrl: './gallery-viewer.component.scss',
 })

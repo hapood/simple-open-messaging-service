@@ -1,4 +1,5 @@
 import { Injectable, inject, signal } from '@angular/core';
+import { TranslocoService } from '@jsverse/transloco';
 import { UserService } from './user.service';
 import { ConversationItem } from './model';
 import { toFriendlyHttpError } from './http-error';
@@ -31,6 +32,7 @@ export type ConversationLoadStatus =
 @Injectable({ providedIn: 'root' })
 export class ConversationListService {
   private readonly userService = inject(UserService);
+  private readonly transloco = inject(TranslocoService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -53,7 +55,7 @@ export class ConversationListService {
     this.userService.queryAllUserThreads().subscribe({
       next: (items) => this.applyItems(items),
       error: (err) => {
-        this._error.set(toFriendlyHttpError(err));
+        this._error.set(toFriendlyHttpError(err, this.transloco.translate('errors.networkError')));
         this._status.set('ERROR');
       },
     });
@@ -129,7 +131,7 @@ export class ConversationListService {
     creator: number;
     createdAt: number;
   }) {
-    const preview = previewFor(msg.contentType, msg.content);
+    const preview = previewFor(msg.contentType, msg.content, this.transloco);
     const open = this._openThreadId();
     const mine = msg.creator === this.userService.sessionProfile()?.id;
     let existed = false;
@@ -166,21 +168,23 @@ export class ConversationListService {
   }
 }
 
-/** Derive the short list preview by content type — mirrors backend derivePreview (keep in sync). */
-export function previewFor(contentType: string, content: string): string {
+/** Derive the short list preview by content type — mirrors backend derivePreview (keep in sync). The
+ *  tag strings are localized via `t`; the backend's own denormalized preview is English (a separate,
+ *  backend-side i18n concern), so this only localizes live/client-derived previews. */
+export function previewFor(contentType: string, content: string, t: { translate: (k: string) => string }): string {
   switch (contentType) {
     case 'PURE_TEXT':
       return content.replace(/\s+/g, ' ').trim().slice(0, 200);
     case 'IMAGE':
-      return '[Photo]';
+      return t.translate('chat.preview.photo');
     case 'INVITE':
-      return '[Group invite]';
+      return t.translate('chat.preview.invite');
     case 'VIDEO':
-      return '[Video]';
+      return t.translate('chat.preview.video');
     case 'FILE':
-      return '[File]';
+      return t.translate('chat.preview.file');
     case 'AUDIO':
-      return '[Voice message]';
+      return t.translate('chat.preview.voice');
     default:
       return content.slice(0, 200);
   }

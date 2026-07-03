@@ -21,10 +21,10 @@
 
 @if (loadState() === 'error') {
   <!-- Sibling of the stage (z-above) so a tap reaches the button, not the pan/swipe handlers. -->
-  <button type="button" class="gv-retry" (click)="retryLoad()" aria-label="Retry image load">
+  <button type="button" class="gv-retry" (click)="retryLoad()" [attr.aria-label]="'gallery.retryAria' | transloco">
     <span class="gv-retry-icon">&#8635;</span>
-    <span class="gv-retry-text">Image failed to load</span>
-    <span class="gv-retry-hint">Tap to retry</span>
+    <span class="gv-retry-text">{{ 'gallery.failed' | transloco }}</span>
+    <span class="gv-retry-hint">{{ 'gallery.tapRetry' | transloco }}</span>
   </button>
 }
 
@@ -32,10 +32,10 @@
   @if (canNav()) {
     <span class="gv-counter">{{ index() + 1 }} / {{ count() }}</span>
   }
-  <button type="button" class="gv-iconbtn gv-close" (click)="close.emit()" aria-label="Close gallery">&times;</button>
+  <button type="button" class="gv-iconbtn gv-close" (click)="close.emit()" [attr.aria-label]="'gallery.closeAria' | transloco">&times;</button>
 </div>
 
 @if (canNav()) {
-  <button type="button" class="gv-nav gv-prev" (click)="prev()" aria-label="Previous image">&#8249;</button>
-  <button type="button" class="gv-nav gv-next" (click)="next()" aria-label="Next image">&#8250;</button>
+  <button type="button" class="gv-nav gv-prev" (click)="prev()" [attr.aria-label]="'gallery.prevAria' | transloco">&#8249;</button>
+  <button type="button" class="gv-nav gv-next" (click)="next()" [attr.aria-label]="'gallery.nextAria' | transloco">&#8250;</button>
 }

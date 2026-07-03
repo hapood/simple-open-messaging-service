@@ -1,6 +1,7 @@
 import { Injectable, OnDestroy, inject } from '@angular/core';
 import { Subject, Subscription, filter } from 'rxjs';
 import { MatSnackBar } from '@angular/material/snack-bar';
+import { TranslocoService } from '@jsverse/transloco';
 import { WebsocketService } from './websocket.service';
 import { ConversationListService } from './conversation-list.service';
 import { UserService } from './user.service';
@@ -56,6 +57,7 @@ export class GroupEventService implements OnDestroy {
   private readonly convList = inject(ConversationListService);
   private readonly userService = inject(UserService);
   private readonly snackBar = inject(MatSnackBar);
+  private readonly transloco = inject(TranslocoService);
 
   /** Fired (with the groupId) whenever a roster change lands while someone else joined / left / was
    *  kicked / promoted. GroupInfoComponent filters to its own groupId and reloads its roster. */
@@ -78,7 +80,8 @@ export class GroupEventService implements OnDestroy {
     const targetsMe = p.userId != null && p.userId === me;
     // Resolve the display name BEFORE any removal, so a self-kick toast can still read it.
     const groupName =
-      this.convList.items().find((t) => t.threadId === p.threadId)?.group?.name ?? 'the group';
+      this.convList.items().find((t) => t.threadId === p.threadId)?.group?.name
+      ?? this.transloco.translate('errors.theGroup');
     if (targetsMe) {
       switch (event) {
         case 'GROUP_MEMBER_JOINED':
@@ -87,13 +90,13 @@ export class GroupEventService implements OnDestroy {
           break;
         case 'GROUP_MEMBER_KICKED':
           this.convList.removeThread(p.threadId);
-          this.toast(`You were removed from ${groupName}`);
+          this.toast(this.transloco.translate('errors.removedFromGroup', { group: groupName }));
           break;
         case 'GROUP_ROLE_CHANGED':
           if (p.role) {
             this.convList.applyRole(p.threadId, p.role);
-            const roleLabel = p.role === 'OWNER' ? 'the owner' : `an ${p.role.toLowerCase()}`;
-            this.toast(`You are now ${roleLabel} of ${groupName}`);
+            const roleLabel = this.transloco.translate('errors.role.' + p.role.toLowerCase());
+            this.toast(this.transloco.translate('errors.nowRole', { role: roleLabel, group: groupName }));
           }
           break;
         case 'GROUP_MEMBER_LEFT':
@@ -108,7 +111,7 @@ export class GroupEventService implements OnDestroy {
   }
 
   private toast(message: string): void {
-    this.snackBar.open(message, 'OK', { duration: 4000 });
+    this.snackBar.open(message, this.transloco.translate('common.ok'), { duration: 4000 });
   }
 
   ngOnDestroy(): void {

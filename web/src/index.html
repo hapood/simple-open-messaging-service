@@ -17,6 +17,20 @@
       } catch (e) { /* localStorage disabled — ThemeService applies the default */ }
     })();
   </script>
+  <!-- Set <html lang> before first paint so the very first frame has the correct
+       language attribute (screen readers / a11y). Mirrors LanguageService's
+       resolution; the service re-asserts and owns runtime changes after boot. -->
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem('soms.lang');
+        var lang = (stored === 'en' || stored === 'zh-CN')
+          ? stored
+          : (navigator.language && navigator.language.toLowerCase().indexOf('zh') === 0 ? 'zh-CN' : 'en');
+        document.documentElement.setAttribute('lang', lang);
+      } catch (e) { /* localStorage disabled — LanguageService applies the default */ }
+    })();
+  </script>
   <title>Web</title>
   <base href="/">
   <!-- interactive-widget=resizes-content: when the soft keyboard / browser bar opens, shrink the

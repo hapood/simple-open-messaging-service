@@ -1,31 +1,31 @@
 <div class="sessions" [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" aria-label="Back">
+    <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
-    <span class="title">Sessions</span>
+    <span class="title">{{ 'session.title' | transloco }}</span>
     <span></span>
   </div>
 
   <div class="body">
     @if (loading()) {
-      <div class="empty">Loading…</div>
+      <div class="empty">{{ 'common.loading' | transloco }}</div>
     } @else if (list().length === 0) {
-      <div class="empty">No active sessions</div>
+      <div class="empty">{{ 'session.noSessions' | transloco }}</div>
     } @else {
       @for (s of list(); track s.jti) {
         <div class="row" [class.current]="s.device === myDevice">
           <div class="info">
             <div class="dev">
-              {{ s.device === myDevice ? 'This device' : (s.device || 'Unknown device') }}
+              {{ deviceLabel(s) }}
             </div>
             <div class="ua">{{ s.userAgent || '-' }}</div>
-            <div class="meta">IP {{ s.ip || '-' }}</div>
-            <div class="meta">Signed in {{ fmt(s.createdAt) }}</div>
-            <div class="meta">Expires {{ fmt(s.expiresAt) }}</div>
+            <div class="meta">{{ 'session.ip' | transloco:{ ip: s.ip || '-' } }}</div>
+            <div class="meta">{{ 'session.signedIn' | transloco:{ date: fmt(s.createdAt) } }}</div>
+            <div class="meta">{{ 'session.expires' | transloco:{ date: fmt(s.expiresAt) } }}</div>
           </div>
           @if (s.device !== myDevice) {
-            <button mat-raised-button (click)="revoke(s.jti)">Revoke</button>
+            <button mat-raised-button (click)="revoke(s.jti)">{{ 'session.revoke' | transloco }}</button>
           }
         </div>
       }

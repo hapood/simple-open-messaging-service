@@ -3,7 +3,9 @@
      [class.mode-tablet]="mode() === 'tablet'"
      [class.mode-mobile]="mode() === 'mobile'"
      [class.chat-open]="chatActive()"
-     [class.aside-open]="asideActive()">
+     [class.aside-open]="asideActive()"
+     [class.conn-banner]="bannerActive()">
+  <app-connection-banner />
   @if (mode() === 'desktop') {
     <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
     <app-chat-list-pane class="list" [style.width.px]="listWidth()" (selectThread)="openChat($event)" />

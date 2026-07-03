@@ -2,7 +2,7 @@
  * HttpItemSource — production data source implementing CbSource<ChatItemData> (absorbs the old
  * ChatThreadController).
  *
- * Owns DB cursor pagination (oldestMsgId/newestMsgId) + WS. **Returns raw messages only** (no album
+ * Owns DB cursor pagination (oldestMsgId/newestMsgId) + SSE. **Returns raw messages only** (no album
  * merging, no display-time sequential abstract ids) — album merging is a presentation decision done by
  * the kernel's `mergeItems` hook (per batch, before createItem). Date separators are likewise derived by
  * the createItem render layer based on adjacent messages crossing a day boundary (see
@@ -14,8 +14,8 @@
  * [Boundary] Reaching the DB floor (hasMore=false) → out[0] (ascending head = oldest) tagged 'oldest';
  *  anchor = latest → out[last] tagged 'newest'. The kernel's absorbBoundary reads these and sets its
  *  noOlder/noNewer.
- * [Dedup] knownMsgIds prevents WS/pagination duplicates (IO layer, kept in the source).
- * [WS] onWsEvent receives NEW_MESSAGE → rawToItems → onLive callback → the component calls
+ * [Dedup] knownMsgIds prevents SSE/pagination duplicates (IO layer, kept in the source).
+ * [SSE] onSseEvent receives NEW_MESSAGE → rawToItems → onLive callback → the component calls
  *  kernel.appendLive (→ source.pushLive caches; the kernel mounts the items directly).
  */
 import { firstValueFrom, type Subscription } from 'rxjs';
@@ -42,7 +42,7 @@ const MAX_PAGE = 50;
 const REFILL_HARD_CAP = 10;
 
 export interface HttpItemSourceLiveOpts {
-  /** WS new-message callback (the component calls kernel.appendLive from it). */
+  /** SSE new-message callback (the component calls kernel.appendLive from it). */
   onLive: (items: CbItem<ChatItemData>[]) => void;
 }
 
@@ -51,7 +51,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private oldestMsgId: string | null = null;
   private newestMsgId: string | null = null;
   private noOlder = false;
-  private noNewer = true; // anchor is the latest; always true (WS pushes one way only)
+  private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
   private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
   private readonly knownMsgIds = new Set<string>();
@@ -60,10 +60,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  dropped by getNewer's live-cache drain, and the kernel's reconcileOptimistic removes the mounted optimistic
    *  bubble. Failed entries STAY here (status:'failed') so the failure survives a remount and retry works. */
   private readonly pending: CbItem<ChatItemData>[] = [];
-  /** WS-pushed / refill reals awaiting the kernel's onMessageSignal to drain them via getNewer. The kernel calls
+  /** SSE-pushed / refill reals awaiting the kernel's onMessageSignal to drain them via getNewer. The kernel calls
    *  getNewer (forced) once per signal; we drain the whole cache in one batch so a backlog mounts atomically. */
   private readonly liveCache: CbItem<ChatItemData>[] = [];
-  private wsSub?: Subscription;
+  private sseSub?: Subscription;
   private reconnectSub?: Subscription;
   private readonly onLive: (items: CbItem<ChatItemData>[]) => void;
 
@@ -76,7 +76,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     live: HttpItemSourceLiveOpts,
   ) {
     this.onLive = live.onLive;
-    this.wsSub = wsService.eventSubject.subscribe((msg) => this.onWsEvent(msg));
+    this.sseSub = wsService.eventSubject.subscribe((msg) => this.onSseEvent(msg));
     // On a successful SSE reconnect, backfill messages missed while disconnected using the newestMsgId
     // cursor (the SSE stream itself does not replay history).
     this.reconnectSub = wsService.reconnect$.subscribe(() => { void this.refillNewer(); });
@@ -85,7 +85,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   /**
    * Initialize / re-anchor:
    *  - anchorId === -1: take the latest `olderCount` messages (desc, reversed to ascending); the anchor
-   *    is the newest (noNewer=true; WS pushes one way only).
+   *    is the newest (noNewer=true; SSE pushes one way only).
    *  - otherwise (a real msgId): fetch both directions — older (desc, skip:0, includes anchorId) +
    *    newer (asc, skip:1, excludes anchorId), merged into ascending order; noOlder/noNewer are set from
    *    each direction's hasMore (a middle window leaves both false → scrolling up/down can still reach the
@@ -187,7 +187,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  when the DB ceiling is reached. In production the anchor is the latest message (noNewer=true) so
    *  the kernel never calls this; it exists for a future "load from the middle" mode. */
   async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
-    // Drain the live cache first: WS-pushed / refill reals are always newer than anything mounted (production
+    // Drain the live cache first: SSE-pushed / refill reals are always newer than anything mounted (production
     // anchors at the global newest), so they live past any cursor. The kernel calls this (forced) from
     // onMessageSignal ONCE per signal — drain ALL cached items in one batch so a backlog mounts atomically (a
     // capped drain would strand the rest, since onMessageSignal does not loop). Reconcile pending: any pending
@@ -216,22 +216,34 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return items;
   }
 
-  /** Inbound WS message: shape via rawToItems, then notify the component via onLive (the component calls
-   *  kernel.appendLive, which caches via source.pushLive and mounts the items directly). */
-  private onWsEvent(msg: StandardMessage): void {
+  /** Inbound SSE message: shape via rawToItems, then notify the component via onLive (the component calls
+   *  kernel.appendLive, which caches via source.pushLive and mounts the items directly).
+   *  The ensureProfiles→rawToItems→onLive chain MUST carry a .catch: an unhandled rejection here (e.g. a
+   *  transient queryUserInfo failure) would silently abort the chain — onLive never fires, the message is
+   *  lost from the open chatbox while the conversation-list (separate subscriber) still updates. */
+  private onSseEvent(msg: StandardMessage): void {
+    if (ngDevMode && msg.event === 'NEW_MESSAGE') console.warn('[chat] onSseEvent seen conv.threadId=%s event.thread=%s', this.conv.threadId, (msg.data as { threadId?: unknown } | null)?.threadId);
     if (msg.event !== 'NEW_MESSAGE' || msg.status !== 0 || !msg.data) return;
     const data = msg.data as Message & { threadId: number };
-    if (data.threadId !== this.conv.threadId) return;
+    if (data.threadId !== this.conv.threadId) {
+      if (ngDevMode) console.warn('[chat] live inbound FILTERED thread=%s (conv.threadId=%s) type=%s/%s', data.threadId, this.conv.threadId, typeof data.threadId, typeof this.conv.threadId);
+      return;
+    }
     const id = String(data.id);
-    if (this.knownMsgIds.has(id)) return; // dedup
+    if (this.knownMsgIds.has(id)) { // dedup
+      if (ngDevMode) console.warn('[chat] live inbound DEDUP id=%s', id);
+      return;
+    }
     data.id = id;
+    if (ngDevMode) console.warn('[chat] live inbound accepted id=%s thread=%s cid=%s', id, data.threadId, data.clientMessageId);
     this.ensureProfiles([data]).then(() => {
       const items = this.rawToItems([data]);
+      if (ngDevMode) console.warn('[chat] live inbound rawToItems -> %d item(s); onLive? %s', items.length, items.length > 0);
       if (items.length > 0) this.onLive(items);
-    });
+    }).catch((e) => console.error('[chat] live inbound dropped (ensureProfiles/rawToItems rejected)', id, e));
   }
 
-  /** Cache live (WS-pushed / refill) reals for the kernel to drain via getNewer on the next onMessageSignal.
+  /** Cache live (SSE-pushed / refill) reals for the kernel to drain via getNewer on the next onMessageSignal.
    *  Items are already CbItems (shaped by rawToItems, clientMessageId preserved) and already deduped; we append
    *  them to the live cache and track the newest id for the SSE-reconnect refill cursor. */
   pushLive(rawItems: CbItem<ChatItemData>[]): void {
@@ -285,8 +297,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
 
   destroy(): void {
-    this.wsSub?.unsubscribe();
-    this.wsSub = undefined;
+    this.sseSub?.unsubscribe();
+    this.sseSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
   }
@@ -295,7 +307,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    * Refill after an SSE reconnect: page newer (asc) from the newestMsgId cursor to backfill messages
    * missed while disconnected, until the DB latest is reached or REFILL_HARD_CAP is hit. Queries directly
    * (bypassing getNewer's noNewer guard — that reflects scroll-cursor state, unrelated to a one-shot
-   * refill) and reuses rawToItems dedup + ensureProfiles + onLive to stay on the same path as the WS
+   * refill) and reuses rawToItems dedup + ensureProfiles + onLive to stay on the same path as the SSE
    * live stream. Each page's take is capped at MAX_PAGE (backend @Max(50)); the ascending tail of a page
    * is its newest message, which becomes the next page's cursor. Skipped when no initial messages are
    * loaded yet (newestMsgId == null).
@@ -329,7 +341,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
       const id = String(m.id);
-      if (this.knownMsgIds.has(id)) continue; // IO dedup (guard against WS/pagination duplicates)
+      if (this.knownMsgIds.has(id)) continue; // IO dedup (guard against SSE/pagination duplicates)
       this.knownMsgIds.add(id);
       // Each IMAGE message → a single-element images array (carrying its own msgId); consecutive same-creator
       // images are merged into an album by the kernel's mergeItems.
@@ -354,7 +366,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return {
       type: 'msg', msgId: String(m.id), creator: m.creator,
       isSelf: p?.isSelf ?? m.creator === this.myUserId,
-      name: p?.name ?? 'Unknown', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
+      name: p?.name ?? '', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
       contentType: m.contentType, images, file, createdAtMs: m.createdAt,
     };
   }

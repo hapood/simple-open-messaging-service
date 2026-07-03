@@ -1,5 +1,5 @@
-@if (dateLabel(); as label) {
-  <app-msg-date-row [label]="label" />
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
 }
 
 <div
@@ -11,7 +11,7 @@
 
   <div class="pg-col pg-{{ side() }}">
     @if (showName()) {
-      <div class="pg-name pg-{{ side() }}">{{ data().name }}</div>
+      <div class="pg-name pg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
     <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-file" [class.pg-sending]="isSending()">
       @if (file()?.url; as url) {
@@ -34,7 +34,7 @@
           <span class="pg-file-ext">{{ ext() }}</span>
         </span>
         <span class="pg-file-meta">
-          <span class="pg-file-name" [title]="file()?.name ?? ''">{{ file()?.name ?? 'File' }}</span>
+          <span class="pg-file-name" [title]="file()?.name ?? ''">{{ file()?.name || ('chat.fileFallback' | transloco) }}</span>
           @if (sizeText()) {
             <span class="pg-file-size">{{ sizeText() }}</span>
           }
@@ -51,7 +51,7 @@
       @if (statusTick()) {
         @if (isFailed()) {
           <span class="pg-status pg-status--failed" role="button" tabindex="0"
-                aria-label="Retry send"
+                [attr.aria-label]="'chat.retrySendAria' | transloco"
                 (click)="retry.emit(data().msgId)"
                 (keydown.enter)="retry.emit(data().msgId)"
                 (keydown.space)="retry.emit(data().msgId)"></span>

@@ -17,10 +17,30 @@ $theme: mat.define-theme((
   ),
 ));
 
+/* Dark M3 theme. Angular Material does NOT auto-flip on dark mode: its components
+ * read Material's own --mat-sys-* tokens, which are independent of the app's
+ * --app-* / --im-* tokens that _tokens.scss redefines under [data-theme="dark"].
+ * Without this, Material widgets (mat-form-field fill, mat-checkbox, mat-button,
+ * etc.) stay frozen in their light color scheme and glare against a dark surface
+ * — exactly the "ugly" login/register button + checkbox + inputs in dark mode.
+ * Mirrors the same selector ThemeService sets on <html>; colors-only (typography
+ * and density are identical across modes, so no point emitting them twice). */
+$dark-theme: mat.define-theme((
+  color: (
+    theme-type: dark,
+    primary: mat.$blue-palette,
+    tertiary: mat.$blue-palette,
+  ),
+));
+
 :root {
   @include mat.all-component-themes($theme);
   /* Keep the existing error color so login/register .error / .err-hint do not drift with the M3 error palette. */
   --mat-form-field-error-text-color: #ba1a1a;
+}
+
+[data-theme="dark"] {
+  @include mat.all-component-colors($dark-theme);
 }
 
 html,

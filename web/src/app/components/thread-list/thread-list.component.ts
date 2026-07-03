@@ -1,5 +1,6 @@
 import { Component, input, signal, computed, EventEmitter, Output, inject, OnInit } from '@angular/core';
 import { NgClass } from '@angular/common';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service'
 import { ConversationListService, ConversationLoadStatus } from '../../services/conversation-list.service'
 import { UserService } from '../../services/user.service'
@@ -7,6 +8,7 @@ import { ConversationItem } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { ChatFolder, inFolder } from '../../services/folder.service'
+import { LanguageService } from '../../services/language.service'
 import { formatListTime } from '../message-cards/date-format'
 
 /**
@@ -16,7 +18,7 @@ import { formatListTime } from '../message-cards/date-format'
  */
 @Component({
     selector: 'app-thread-list',
-    imports: [UserAvatarComponent, NgClass, EmptyStateComponent],
+    imports: [UserAvatarComponent, NgClass, EmptyStateComponent, TranslocoPipe],
     templateUrl: './thread-list.component.html',
     styleUrl: './thread-list.component.scss'
 })
@@ -30,6 +32,8 @@ export class ThreadListComponent implements OnInit {
   private readonly routeService = inject(RouteService)
   private readonly convList = inject(ConversationListService)
   private readonly userService = inject(UserService)
+  private readonly transloco = inject(TranslocoService)
+  private readonly language = inject(LanguageService)
 
   readonly items = this.convList.items
   readonly status = this.convList.status
@@ -51,7 +55,8 @@ export class ThreadListComponent implements OnInit {
     })
   })
 
-  /** 有搜索词但过滤后无结果 →「搜索无结果」态（区别于真空态，不带 CTA） */
+  /** A search term is set but the filter yields nothing → "no search results" state (distinct from the true
+   *  empty state; carries no CTA). */
   readonly isSearchEmpty = computed(() =>
     this.searchText().trim().length > 0 && this.filteredThreadList().length === 0
   )
@@ -64,20 +69,43 @@ export class ThreadListComponent implements OnInit {
    * implied). Live NEW_MESSAGE frames can't resolve a group sender's name cheaply, so an incoming
    * group message shows bare until the next full reload re-hydrates lastMessageSenderName.
    */
+  /**
+   * The backend denormalizes `lastMessagePreview` as an English marker for non-text messages
+   * ("[Photo]", "[Group invite]", … — see backend derivePreview). Recognize that closed set here and
+   * translate it; real text previews pass through untouched. Reads the language signal so the row
+   * re-evaluates on a language switch (the template also re-renders via its transloco bindings).
+   */
+  private static readonly PREVIEW_MARKERS: Readonly<Record<string, string>> = {
+    '[Photo]': 'chat.preview.photo',
+    '[Group invite]': 'chat.preview.invite',
+    '[Video]': 'chat.preview.video',
+    '[File]': 'chat.preview.file',
+    '[Voice message]': 'chat.preview.voice',
+  };
+
   previewText(t: ConversationItem): string {
-    const base = t.lastMessagePreview ?? 'No messages yet'
-    if (t.type !== 'GROUP' || t.lastMessageSenderId == null) return base
-    if (t.lastMessageSenderId === this.userService.sessionProfile()?.id) return `You: ${base}`
-    return t.lastMessageSenderName ? `${t.lastMessageSenderName}: ${base}` : base
+    this.language.lang();
+    const raw = t.lastMessagePreview;
+    const markerKey = raw ? ThreadListComponent.PREVIEW_MARKERS[raw] : undefined;
+    const base = (markerKey ? this.transloco.translate(markerKey) : raw)
+      ?? this.transloco.translate('common.noMessagesYet') ?? '';
+    if (t.type !== 'GROUP' || t.lastMessageSenderId == null) return base;
+    if (t.lastMessageSenderId === this.userService.sessionProfile()?.id)
+      return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
+    return t.lastMessageSenderName ? `${t.lastMessageSenderName}: ${base}` : base;
   }
 
-  fmtTime = formatListTime
+  /** Conversation-list timestamp; reads the language signal so it re-evaluates on a language switch. */
+  fmtTime = (ms: number | null | undefined): string => {
+    this.language.lang()
+    return formatListTime(ms, this.transloco)
+  }
 
   genThreadList() {
     this.convList.load()
   }
 
-  /** 真空态 CTA：打开好友请求弹窗（与 icon-rail 同路径） */
+  /** True-empty-state CTA: open the friend-requests popup (same path as the icon rail). */
   openFriendRequests() {
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)
   }
@@ -88,6 +116,6 @@ export class ThreadListComponent implements OnInit {
 
   ngOnInit() {
     // Load only if we don't already have data (the store is shared across layout switches).
-    if (this.status() === 'LOADING' && this.items().length === 0) this.convList.load()
+    if (this.status() === ConversationLoadStatus.LOADING && this.items().length === 0) this.convList.load()
   }
 }

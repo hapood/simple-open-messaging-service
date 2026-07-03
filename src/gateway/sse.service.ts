@@ -70,8 +70,12 @@ export class SseService implements OnModuleDestroy {
     res.write(': connected\n\n');
 
     const ping = setInterval(() => {
-      // 心跳：注释帧。写入失败（连接已断）→ 主动 end，让 close 回调兜底清理。
-      if (!res.write(': ping\n\n')) {
+      // Heartbeat. Sent as a NAMED event (not a `:` comment) so the client's dispatcher observes it and
+      // can run a liveness watchdog: a comment frame is invisible to fetch-event-source's onmessage, so a
+      // silently stalled / half-open connection would otherwise go undetected and the "connection lost"
+      // banner would never appear on a real disconnect. A failed write (broken connection) → end now and
+      // let the res.on('close') handler finish the cleanup.
+      if (!res.write('event: ping\ndata: {}\n\n')) {
         try {
           res.end();
         } catch {}

@@ -1,11 +1,13 @@
 import { Component, input, signal, computed, inject, OnInit } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { FolderService, ChatFolder, FolderTypeFilter } from '../../services/folder.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserService } from '../../services/user.service';
 import { ConversationItem } from '../../services/model';
+import { LanguageService } from '../../services/language.service';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 /**
@@ -16,7 +18,7 @@ import { FitDialogDirective } from '../../directives/fit-dialog.directive';
  */
 @Component({
   selector: 'app-folder-editor',
-  imports: [FormsModule, MatButtonModule, IconComponent, FitDialogDirective],
+  imports: [FormsModule, MatButtonModule, IconComponent, FitDialogDirective, TranslocoPipe],
   templateUrl: './folder-editor.component.html',
   styleUrl: './folder-editor.component.scss'
 })
@@ -24,6 +26,8 @@ export class FolderEditorComponent implements OnInit {
   private readonly routeService = inject(RouteService)
   private readonly folderService = inject(FolderService)
   private readonly userService = inject(UserService)
+  private readonly transloco = inject(TranslocoService)
+  private readonly language = inject(LanguageService)
 
   /** when passed via popupDlg, jumps straight into editing that folder */
   readonly folderId = input<string | undefined>(undefined)
@@ -45,10 +49,12 @@ export class FolderEditorComponent implements OnInit {
 
   readonly folders = computed(() => this.folderService.folders())
 
-  readonly typeOptions: ReadonlyArray<{ value: FolderTypeFilter; label: string }> = [
-    { value: 'ALL', label: 'All types' },
-    { value: 'P2P', label: 'Direct' },
-    { value: 'GROUP', label: 'Group' },
+  /** Type-rule options. `key` is a translation key resolved in the template so the labels follow the
+   *  active language; `summary()` reuses the same keys for the list rows. */
+  readonly typeOptions: ReadonlyArray<{ value: FolderTypeFilter; key: string }> = [
+    { value: 'ALL', key: 'folder.type.all' },
+    { value: 'P2P', key: 'folder.type.direct' },
+    { value: 'GROUP', key: 'folder.type.group' },
   ]
 
   ngOnInit() {
@@ -62,9 +68,15 @@ export class FolderEditorComponent implements OnInit {
     }
   }
 
+  /** One-line summary for a folder row: localized type rule (+ selected count when chats are pinned).
+   *  Reads the language signal so it re-evaluates on a language switch. */
   summary(f: ChatFolder): string {
-    const t = f.typeFilter === 'ALL' ? 'All types' : f.typeFilter === 'P2P' ? 'Direct' : 'Group'
-    return f.includedIds.length ? `${t} · ${f.includedIds.length} selected` : t
+    this.language.lang()
+    const key = f.typeFilter === 'ALL' ? 'folder.type.all' : f.typeFilter === 'P2P' ? 'folder.type.direct' : 'folder.type.group'
+    const t = this.transloco.translate(key)
+    return f.includedIds.length
+      ? `${t} · ${this.transloco.translate('folder.selected', { count: f.includedIds.length })}`
+      : t
   }
 
   threadLabel(t: ConversationItem): string {

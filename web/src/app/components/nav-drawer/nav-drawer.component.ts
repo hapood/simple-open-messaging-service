@@ -1,5 +1,6 @@
 import { Component, input, output, inject, viewChild, computed } from '@angular/core';
 import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { RouteService, RoutePage, PopupType } from '../../services/route.service';
@@ -7,6 +8,7 @@ import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { UserService } from '../../services/user.service';
 import { ThemeService } from '../../services/theme.service';
+import { LanguageService } from '../../services/language.service';
 
 /**
  * Left navigation drawer: mat-sidenav(mode=over) + avatar/user-name + action items.
@@ -18,7 +20,7 @@ import { ThemeService } from '../../services/theme.service';
  */
 @Component({
   selector: 'app-nav-drawer',
-  imports: [MatSidenavModule, UserAvatarComponent, IconComponent],
+  imports: [MatSidenavModule, UserAvatarComponent, IconComponent, TranslocoPipe],
   templateUrl: './nav-drawer.component.html',
   styleUrl: './nav-drawer.component.scss',
 })
@@ -36,6 +38,8 @@ export class NavDrawerComponent {
   private readonly wsService = inject(WebsocketService)
   readonly userService = inject(UserService)
   private readonly themeService = inject(ThemeService)
+  private readonly languageService = inject(LanguageService)
+  private readonly transloco = inject(TranslocoService)
 
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -44,13 +48,19 @@ export class NavDrawerComponent {
     const m = this.themeService.mode();
     return m === 'system' ? AppIconType.CONTRAST : m === 'light' ? AppIconType.SUN : AppIconType.MOON;
   });
-  /** Human label for the current mode, shown as the row text. */
+  /** Human label for the current theme mode, shown as the row text. Reads the language
+   *  signal so it re-evaluates when the user switches languages. */
   readonly themeLabel = computed(() => {
-    const m = this.themeService.mode();
-    return m === 'system' ? 'System' : m === 'light' ? 'Light' : 'Dark';
+    this.languageService.lang();
+    return this.transloco.translate('nav.theme.' + this.themeService.mode());
   });
   /** Cycle theme without closing the drawer, so the change is visible and re-toggleable. */
   cycleTheme(): void { this.themeService.cycleMode(); }
+
+  /** Native-script label for the current language (always self-identifies). */
+  readonly langLabel = this.languageService.langLabel;
+  /** Cycle language without closing the drawer, so the change is visible and re-toggleable. */
+  cycleLang(): void { this.languageService.cycleLang(); }
 
   toggle() { this.sidenav()?.toggle() }
   close() { this.sidenav()?.close() }

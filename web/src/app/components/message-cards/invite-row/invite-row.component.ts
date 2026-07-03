@@ -1,6 +1,7 @@
 import { Component, computed, inject, input, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import dayjs from 'dayjs';
 import { GroupService } from '../../../services/group.service';
 import type { ChatMsgData } from '../chat-item';
@@ -23,7 +24,7 @@ import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avat
 @Component({
   selector: 'app-msg-invite-row',
   standalone: true,
-  imports: [MatButtonModule, DateRowComponent, UserAvatarComponent],
+  imports: [MatButtonModule, DateRowComponent, UserAvatarComponent, TranslocoPipe],
   templateUrl: './invite-row.component.html',
   styleUrl: './invite-row.component.scss',
 })
@@ -32,8 +33,8 @@ export class InviteRowComponent {
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
-  /** Per-day date label (non-null = this row is the first of its day → render a date pill above). */
-  readonly dateLabel = input<string | null>(null);
+  /** Whether a date-separator pill should render above this row (it is the first message of its day). */
+  readonly showDate = input<boolean>(false);
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
   readonly showAvatar = computed(() => this.isShowHead());
@@ -66,6 +67,7 @@ export class InviteRowComponent {
 
   private readonly groupService = inject(GroupService);
   private readonly router = inject(Router);
+  private readonly transloco = inject(TranslocoService);
 
   ngOnInit() {
     const parsed = this.parseInvite(this.data().text);
@@ -113,7 +115,7 @@ export class InviteRowComponent {
         // Map an expired-token reply to the expired state; anything else (invalid / not-for-you) is a
         // transient status line so the card stays actionable.
         if ((res.message ?? '').includes('expired')) this.status.set(1);
-        this.resultMsg.set(res.message || 'Failed to join');
+        this.resultMsg.set(res.message || this.transloco.translate('chat.failedToJoin'));
       }
     });
   }

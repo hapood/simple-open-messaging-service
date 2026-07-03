@@ -1,15 +1,17 @@
 import { Component } from '@angular/core';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
 
 /**
  * Decorative brand panel shared by the login & register split-screen shells.
  * Renders only branding (mark + wordmark + tagline) and hides itself below the
  * auth breakpoint, so it carries no behaviour and is safe to mark aria-hidden.
- * Logo 本体由 <app-brand-logo> 提供，此组件只负责品牌页的渐变背景与白字覆盖。
+ * The logo itself comes from <app-brand-logo>; this component only provides the brand
+ * page's gradient background and white-text overlay.
  */
 @Component({
     selector: 'app-auth-brand',
-    imports: [BrandLogoComponent],
+    imports: [BrandLogoComponent, TranslocoPipe],
     templateUrl: './auth-brand.component.html',
     styleUrl: './auth-brand.component.scss'
 })

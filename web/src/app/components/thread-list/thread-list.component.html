@@ -1,19 +1,21 @@
 <div class="thread-list">
   @switch (status()) {
     @case (LoadStatus.LOADING) {
-      <app-empty-state title="Loading…" />
+      <app-empty-state [title]="'common.loading' | transloco" />
     }
     @case (LoadStatus.ERROR) {
-      <app-empty-state tone="error" [title]="errorMsg()" subtitle="Couldn't load chats"
-        ctaLabel="Retry" (ctaClick)="genThreadList()" />
+      <app-empty-state tone="error" [title]="errorMsg()" [subtitle]="'threadList.couldNotLoad' | transloco"
+        [ctaLabel]="'threadList.retry' | transloco" (ctaClick)="genThreadList()" />
     }
     @case (LoadStatus.READY) {
       @if (filteredThreadList().length === 0) {
         @if (isSearchEmpty()) {
-          <app-empty-state title="No matching chats" subtitle="Try a different keyword, or clear the search." />
+          <app-empty-state [title]="'threadList.noMatchTitle' | transloco"
+            [subtitle]="'threadList.noMatchSub' | transloco" />
         } @else {
-          <app-empty-state title="No chats yet" subtitle="Add a friend to start your first conversation."
-            ctaLabel="Add friend" (ctaClick)="openFriendRequests()">
+          <app-empty-state [title]="'threadList.emptyTitle' | transloco"
+            [subtitle]="'threadList.emptySub' | transloco"
+            [ctaLabel]="'threadList.addFriend' | transloco" (ctaClick)="openFriendRequests()">
             <svg width="40" height="40" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <rect width="64" height="64" rx="14" fill="#2196f3" />
               <path transform="translate(6 7) scale(2.2)" fill="#ffffff"

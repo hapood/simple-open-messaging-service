@@ -1,5 +1,6 @@
 import { Component, computed, effect, inject, input, OnDestroy } from '@angular/core';
 import { Router } from '@angular/router';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { ConversationListService } from '../../../services/conversation-list.service';
 import { ConversationItem } from '../../../services/model';
@@ -14,13 +15,13 @@ import { ConversationItem } from '../../../services/model';
  */
 @Component({
   selector: 'app-chat-pane',
-  imports: [MessageThreadComponent],
+  imports: [MessageThreadComponent, TranslocoPipe],
   template: `
     <div class="chat-pane">
       @if (userMsgTrd(); as trd) {
         <app-message-thread [threadId]="trd.threadId" [userMsgTrd]="trd" />
       } @else {
-        <div class="loading">Loading…</div>
+        <div class="loading">{{ 'chat.loading' | transloco }}</div>
       }
     </div>
   `,

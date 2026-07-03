@@ -1,11 +1,22 @@
-import { Component, input } from '@angular/core';
+import { ChangeDetectorRef, Component, computed, effect, inject, input } from '@angular/core';
+import { TranslocoService } from '@jsverse/transloco';
+import { LanguageService } from '../../../services/language.service';
+import { formatDateSeparator } from '../date-format';
 
 /**
- * 日期分隔行（居中 pill）。
+ * Date separator row (centered pill).
  *
- * 纯展示组件：接收已算好的 label 文案（date 不再是数据源的 CbItem，而是 createItem 工厂
- * 按跨日判定算出 label、由 msg 行模板条件渲染本组件）。纵向留白走 padding 不走 margin
- *（offsetHeight 测高不含 margin → 下方气泡会叠上来，见 cb-element-border-box 记忆）。
+ * Receives the message timestamp (`ms`) and computes the localized label itself. Owning the formatting here —
+ * rather than receiving a precomputed string from the createItem factory — is what makes the pill reactive to a
+ * runtime language switch: the `label` computed reads the {@link LanguageService} language signal.
+ *
+ * The chatbox kernel mounts this row imperatively (createComponent + detectChanges) outside Angular's template
+ * change-detection tree, so the {@link effect} below explicitly marks this view dirty + drives a synchronous
+ * detectChanges on a language change — a guarantee that does NOT depend on whether a detached host view is in the
+ * zoneless scheduler's flush set.
+ *
+ * Vertical spacing is padding, not margin (offsetHeight excludes margin, otherwise the next bubble stacks up —
+ * see the cb-element-border-box memory).
  */
 @Component({
   selector: 'app-msg-date-row',
@@ -16,5 +27,26 @@ import { Component, input } from '@angular/core';
   styleUrl: './date-row.component.scss',
 })
 export class DateRowComponent {
-  readonly label = input.required<string>();
+  /** The message timestamp the pill labels. */
+  readonly ms = input.required<number>();
+
+  private readonly transloco = inject(TranslocoService);
+  private readonly language = inject(LanguageService);
+  private readonly cdr = inject(ChangeDetectorRef);
+
+  /** Localized label; re-evaluates on a language switch via the tracked language signal. */
+  readonly label = computed(() => {
+    this.language.lang(); // track → recompute on language change
+    return formatDateSeparator(this.ms(), this.transloco);
+  });
+
+  constructor() {
+    // Self-refresh on a language switch. Imperatively-mounted rows (chatbox kernel) live outside the
+    // template CD tree, so we can't rely on the zoneless scheduler to flush them — force it.
+    effect(() => {
+      this.language.lang();
+      this.cdr.markForCheck();
+      this.cdr.detectChanges();
+    });
+  }
 }

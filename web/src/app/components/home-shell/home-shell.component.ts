@@ -7,6 +7,8 @@ import { IconRailComponent } from '../desktop/icon-rail/icon-rail.component';
 import { NavDrawerComponent } from '../nav-drawer/nav-drawer.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
+import { ConnectionBannerComponent } from '../connection-banner/connection-banner.component';
+import { WebsocketService } from '../../services/websocket.service';
 import { ConversationItem } from '../../services/model';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
@@ -23,7 +25,7 @@ const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent],
+  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent, ConnectionBannerComponent],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
 })
@@ -31,8 +33,17 @@ export class HomeShellComponent {
   private readonly router = inject(Router)
   private readonly layout = inject(LayoutService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
+  private readonly ws = inject(WebsocketService)
 
   readonly mode = this.layout.mode
+
+  /** True while the connection banner is visible → the shell reserves `--conn-banner-h` top padding so
+   *  desktop/tablet content is pushed down rather than covered by the fixed bar. Kept in lockstep with
+   *  ConnectionBannerComponent.label (both read the same `state` signal). */
+  readonly bannerActive = computed(() => {
+    const s = this.ws.state()
+    return s === 'connecting' || s === 'reconnecting'
+  })
 
   /** chat-list width (desktop), persisted across sessions. */
   readonly listWidth = signal<number>(this.readListWidth())

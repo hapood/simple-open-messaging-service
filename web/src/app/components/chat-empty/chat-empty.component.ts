@@ -1,4 +1,5 @@
 import { Component } from '@angular/core';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
 
 /**
@@ -8,11 +9,11 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
  */
 @Component({
   selector: 'app-chat-empty',
-  imports: [BrandLogoComponent],
+  imports: [BrandLogoComponent, TranslocoPipe],
   template: `
     <div class="chat-empty">
       <div class="empty-main">
-        <app-brand-logo [size]="72" tagline="Select a chat to start your conversation" />
+        <app-brand-logo [size]="72" [tagline]="'chat.emptyTagline' | transloco" />
       </div>
       <div class="empty-foot">
         <svg class="lock" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -20,7 +21,7 @@ import { BrandLogoComponent } from '../brand-logo/brand-logo.component';
           <rect x="3" y="11" width="18" height="11" rx="2" />
           <path d="M7 11V7a5 5 0 0 1 10 0v4" />
         </svg>
-        <span>Your messages are protected end-to-end in transit. SOMS cannot read them.</span>
+        <span>{{ 'chat.emptyFooter' | transloco }}</span>
       </div>
     </div>
   `,

@@ -36,7 +36,7 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
  * Message thread container (shared by the desktop chat-pane inline view and the mobile root-popup dialog).
  *
  * Render core: virtual-scroll kernel B (ChatBoxScroller, manual compensation, array index) + HttpItemSource
- * (msgId cursor + HTTP pagination + WS). Rendering + grouping logic is identical to the playground —
+ * (msgId cursor + HTTP pagination + SSE). Rendering + grouping logic is identical to the playground —
  * createItem calls createMsgCbElement (the real message-cards components); date separators are derived at the
  * render layer; album merging is the kernel's mergeItems hook.
  *
@@ -117,12 +117,17 @@ export class MessageThreadComponent implements OnDestroy {
     this.lastJumpId = startId;
     this.source = new HttpItemSource(
       trd, this.userService.sessionProfile()?.id ?? 0, this.msgService, this.userService, this.wsService,
-      // WS live path: cache via pushLive + signal the kernel. onMessageSignal is the optimistic-confirm
+      // SSE live path: cache via pushLive + signal the kernel. onMessageSignal is the optimistic-confirm
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
       // For an incoming message with no optimistic counterpart it mounts plainly (mountNewerReals finds no
       // matching clientMessageId → plain cb-enter). If the newer end is trimmed, onMessageSignal is a no-op
       // and the item stays cached until scroll-back.
-      { onLive: (items) => { this.source?.pushLive(items); void this.scroller?.onMessageSignal(); } },
+      { onLive: (items) => {
+        this.source?.pushLive(items);
+        // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
+        // and the just-cached live item would never mount (silent drop in the open chatbox).
+        void this.scroller?.onMessageSignal().catch((e) => console.error('[chat] onMessageSignal rejected', e));
+      } },
     );
     this.scroller = new ChatBoxScroller<ChatItemData>({
       viewport,
@@ -141,9 +146,9 @@ export class MessageThreadComponent implements OnDestroy {
     // Real items only — the topmost skeleton-slot decision (prev/boundary/noOlder) lives in the kernel's createVs,
     // rendered via the createSkeleton hook supplied below. createItem never branches on ghost-vs-real: that rule
     // drifted between playground and production and is what swallowed the empty-thread first message.
-    const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
+    const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
     return createMsgCbElement(
-      item, isShowHead, isGroupStart, dateLabel, this.envInjector,
+      item, isShowHead, isGroupStart, showDate, this.envInjector,
       (msgId) => this.retrySend(msgId),
       (images, index) => this.galleryViewer.open(images, index),
     );
@@ -391,7 +396,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
-    this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes WS)
+    this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;
     this.pendingOptimistic = [];

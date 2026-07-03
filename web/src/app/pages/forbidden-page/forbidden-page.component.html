@@ -1,6 +1,6 @@
 <main class="pnf">
   <!-- Tappable brand mark = an always-visible escape hatch back to the app root. -->
-  <button type="button" class="pnf-home" (click)="goHome()" aria-label="Back to SOMS home">
+  <button type="button" class="pnf-home" (click)="goHome()" [attr.aria-label]="'forbidden.homeAria' | transloco">
     <app-brand-logo [size]="32" [wordmark]="false" />
   </button>
 
@@ -22,14 +22,14 @@
     </svg>
   </div>
 
-  <p class="pnf-code">403</p>
-  <h1 class="pnf-title">Access denied</h1>
-  <p class="pnf-desc">You don't have permission to view this page.</p>
+  <p class="pnf-code">{{ 'forbidden.code' | transloco }}</p>
+  <h1 class="pnf-title">{{ 'forbidden.title' | transloco }}</h1>
+  <p class="pnf-desc">{{ 'forbidden.desc' | transloco }}</p>
 
   <div class="pnf-actions">
-    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">Back to SOMS</button>
+    <button type="button" class="pnf-btn pnf-btn--primary" (click)="goHome()">{{ 'forbidden.back' | transloco }}</button>
     @if (canGoBack()) {
-      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">Go back</button>
+      <button type="button" class="pnf-btn pnf-btn--ghost" (click)="goBack()">{{ 'forbidden.goBack' | transloco }}</button>
     }
   </div>
 </main>

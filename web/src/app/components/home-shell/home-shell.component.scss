@@ -3,15 +3,29 @@
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
+  /* Shared with ConnectionBannerComponent's min-height so the reserved padding and the fixed bar can't
+     drift apart. Inherited by the banner (a DOM descendant of .shell). */
+  --conn-banner-h: 30px;
 }
 
 .shell {
   position: relative;
   display: flex;
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
   overflow: hidden;
   background: var(--app-bg);
+  /* Smooth the push/pull when the connection banner appears/disappears (padding is animatable, height is
+     not — so this is the correct lever for a fluid transition). */
+  transition: padding-top 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Connection banner active → reserve space at the top so desktop/tablet content is PUSHED down rather
+   than covered by the fixed bar. On mobile the chat-slot is a full-screen fixed overlay (inset:0) and
+   ignores this padding, so the bar (z-index 50) simply overlays it — the intended mobile behavior. */
+.shell.conn-banner {
+  padding-top: var(--conn-banner-h);
 }
 
 // Both persistent slots are flex columns; the routed component fills the slot (router-outlet itself

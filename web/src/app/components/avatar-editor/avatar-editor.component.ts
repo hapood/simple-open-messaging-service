@@ -1,5 +1,6 @@
 import { Component, input, signal, computed, effect, inject, OnInit, OnDestroy, ElementRef, viewChild } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
@@ -22,12 +23,13 @@ import { computeCropRect, clampOffset, minCoverScale, maxZoomScale, clamp } from
  */
 @Component({
   selector: 'app-avatar-editor',
-  imports: [MatButtonModule, IconComponent, FitDialogDirective],
+  imports: [MatButtonModule, IconComponent, FitDialogDirective, TranslocoPipe],
   templateUrl: './avatar-editor.component.html',
   styleUrl: './avatar-editor.component.scss',
 })
 export class AvatarEditorComponent implements OnInit, OnDestroy {
   private readonly routeService = inject(RouteService)
+  private readonly transloco = inject(TranslocoService)
 
   /** picked file, supplied via popupDlg(PopupType.AVATAR_EDITOR, { file }). */
   readonly file = input.required<File>()
@@ -111,11 +113,11 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
 
   private async loadImage(file: File) {
     if (!this.ACCEPTED.includes(file.type)) {
-      this.error.set('Please choose a PNG, JPG, GIF, or WebP image')
+      this.error.set(this.transloco.translate('profile.avatarErrorFormat'))
       return
     }
     if (file.size > this.MAX_FILE) {
-      this.error.set('Image is larger than 10 MB')
+      this.error.set(this.transloco.translate('profile.avatarErrorSize'))
       return
     }
     try {
@@ -140,7 +142,7 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
       this.ensureContexts()
       this.draw()
     } catch {
-      this.error.set('Could not read this image')
+      this.error.set(this.transloco.translate('profile.avatarErrorRead'))
     }
   }
 
@@ -288,7 +290,7 @@ export class AvatarEditorComponent implements OnInit, OnDestroy {
       if (!blob) throw new Error('encode failed')
       this.routeService.closeDlg({ file: new File([blob], 'avatar.png', { type: 'image/png' }) })
     } catch {
-      this.error.set('Could not process the image')
+      this.error.set(this.transloco.translate('profile.avatarErrorProcess'))
     } finally {
       this.busy.set(false)
     }

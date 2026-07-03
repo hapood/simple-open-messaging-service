@@ -1,10 +1,10 @@
 <div class="edit-profile">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" aria-label="Back">
+    <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
-    <span class="title">Profile</span>
-    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">Save</button>
+    <span class="title">{{ 'profile.title' | transloco }}</span>
+    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.save' | transloco }}</button>
   </div>
 
   <div class="body">
@@ -14,7 +14,7 @@
           [name]="name() || sessionProfile()?.uniqName || 'SOMS'"
           [src]="sessionProfile()?.userExtra?.avatar" />
         <button class="avatar-edit" type="button" (click)="fileInput.click()"
-          [disabled]="uploading()" aria-label="Change avatar">
+          [disabled]="uploading()" [attr.aria-label]="'profile.changeAvatarAria' | transloco">
           @if (uploading()) {
             <span class="spin"></span>
           } @else {
@@ -30,22 +30,22 @@
     </div>
 
     <label class="field">
-      <span class="label">Name</span>
+      <span class="label">{{ 'profile.name' | transloco }}</span>
       <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)"
-        maxlength="30" placeholder="Your name" />
+        maxlength="30" [placeholder]="'profile.namePlaceholder' | transloco" />
       @if (nameHint()) {
         <span class="hint">{{ nameHint() }}</span>
       }
     </label>
 
     <label class="field">
-      <span class="label">Bio</span>
+      <span class="label">{{ 'profile.bio' | transloco }}</span>
       <textarea class="textarea" rows="3" [ngModel]="bio()" (ngModelChange)="bio.set($event)"
-        maxlength="120" placeholder="Say something about yourself"></textarea>
+        maxlength="120" [placeholder]="'profile.bioPlaceholder' | transloco"></textarea>
       <span class="counter">{{ bio().length }}/120</span>
     </label>
 
-    <div class="handle">Username @{{ sessionProfile()?.uniqName }} (cannot be changed)</div>
-    <button mat-raised-button class="sessions-entry" (click)="openSessions()">Manage sessions</button>
+    <div class="handle">{{ 'profile.usernameHandle' | transloco:{ name: sessionProfile()?.uniqName } }}</div>
+    <button mat-raised-button class="sessions-entry" (click)="openSessions()">{{ 'profile.manageSessions' | transloco }}</button>
   </div>
 </div>

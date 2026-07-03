@@ -4,8 +4,8 @@
       <button class="icon-btn" (click)="goBack()">
         <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
       </button>
-      <span class="title">Folders</span>
-      <button mat-button (click)="beginCreate()">New</button>
+      <span class="title">{{ 'folder.title' | transloco }}</span>
+      <button mat-button (click)="beginCreate()">{{ 'folder.newBtn' | transloco }}</button>
     </div>
     <div class="folder-list">
       @for (f of folders(); track f.id) {
@@ -14,7 +14,7 @@
           <span class="folder-summary">{{ summary(f) }}</span>
         </button>
       } @empty {
-        <div class="empty">No folders yet. Click "New" to create one and organize your chats.</div>
+        <div class="empty">{{ 'folder.empty' | transloco }}</div>
       }
     </div>
   } @else {
@@ -22,27 +22,27 @@
       <button class="icon-btn" (click)="backToList()">
         <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
       </button>
-      <span class="title">{{ isEditingExisting() ? 'Edit folder' : 'New folder' }}</span>
-      <button mat-button (click)="save()">Save</button>
+      <span class="title">{{ (isEditingExisting() ? 'folder.editTitle' : 'folder.newTitle') | transloco }}</span>
+      <button mat-button (click)="save()">{{ 'common.save' | transloco }}</button>
     </div>
     <div class="form">
       <label class="field">
-        <span class="label">Name</span>
-        <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)" placeholder="e.g. Work, Family" />
+        <span class="label">{{ 'profile.name' | transloco }}</span>
+        <input class="text" [ngModel]="name()" (ngModelChange)="name.set($event)" [placeholder]="'folder.namePlaceholder' | transloco" />
       </label>
 
       <div class="field">
-        <span class="label">Auto-include types</span>
+        <span class="label">{{ 'folder.autoIncludeTypes' | transloco }}</span>
         <div class="type-options">
           @for (opt of typeOptions; track opt.value) {
             <button type="button" class="type-opt" [class.active]="typeFilter() === opt.value"
-              (click)="typeFilter.set(opt.value)">{{ opt.label }}</button>
+              (click)="typeFilter.set(opt.value)">{{ opt.key | transloco }}</button>
           }
         </div>
       </div>
 
       <div class="field">
-        <span class="label">Specific chats (optional)</span>
+        <span class="label">{{ 'folder.specificChats' | transloco }}</span>
         <div class="thread-pick">
           @for (t of threadOptions(); track t.id) {
             <label class="pick-row">
@@ -50,13 +50,13 @@
               <span class="pick-name">{{ threadLabel(t) }}</span>
             </label>
           } @empty {
-            <div class="empty">No chats</div>
+            <div class="empty">{{ 'folder.noChats' | transloco }}</div>
           }
         </div>
       </div>
 
       @if (isEditingExisting()) {
-        <button type="button" class="delete-btn" (click)="remove()">Delete folder</button>
+        <button type="button" class="delete-btn" (click)="remove()">{{ 'folder.deleteFolder' | transloco }}</button>
       }
     </div>
   }

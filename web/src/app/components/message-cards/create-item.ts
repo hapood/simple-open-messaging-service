@@ -1,7 +1,7 @@
 import { createComponent, EnvironmentInjector, InputSignal, Type } from '@angular/core';
 import type { CbElement, CbItem } from '../../lib/chat-box/chat-box-scroller';
 import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
-import { shouldShowDateSeparator, formatDateSeparator } from './date-format';
+import { shouldShowDateSeparator } from './date-format';
 import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { InviteRowComponent } from './invite-row/invite-row.component';
@@ -17,7 +17,7 @@ interface RowComponent {
   data: InputSignal<ChatMsgData>;
   isShowHead: InputSignal<boolean>;
   isGroupStart: InputSignal<boolean>;
-  dateLabel: InputSignal<string | null>;
+  showDate: InputSignal<boolean>;
 }
 
 /**
@@ -31,11 +31,11 @@ interface RowComponent {
 export function computeRowFlags(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): {
   isShowHead: boolean;
   isGroupStart: boolean;
-  dateLabel: string | null;
+  showDate: boolean;
 } {
   let isShowHead = true;
   let isGroupStart = false;
-  let dateLabel: string | null = null;
+  let showDate = false;
   if (item.data.type === 'msg') {
     const msg = item.data;
     const prevMsg = prev?.data.type === 'msg' ? prev.data : null;
@@ -45,11 +45,11 @@ export function computeRowFlags(item: CbItem<ChatItemData>, prev: CbItem<ChatIte
     isGroupStart = isShowHead && !!prevMsg; // a sender-change group start adds inter-group spacing
     // date separator: derived per-window from the prev message's createdAtMs (date lives outside the source). The
     // oldest boundary always shows date above; a non-oldest prev==null (trim re-mount) does not (anti-flicker).
-    dateLabel = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest')
-      ? formatDateSeparator(msg.createdAtMs)
-      : null;
+    // The label text itself is computed by DateRowComponent from the timestamp + active language, so the factory
+    // only needs the show/hide decision here.
+    showDate = shouldShowDateSeparator(prevMsg?.createdAtMs ?? null, msg.createdAtMs, item.boundary === 'oldest');
   }
-  return { isShowHead, isGroupStart, dateLabel };
+  return { isShowHead, isGroupStart, showDate };
 }
 
 /**
@@ -74,7 +74,7 @@ export function createMsgCbElement(
   item: CbItem<ChatItemData>,
   isShowHead: boolean,
   isGroupStart: boolean,
-  dateLabel: string | null,
+  showDate: boolean,
   envInjector: EnvironmentInjector,
   onRetry?: (msgId: string) => void,
   onOpenImage?: (images: AlbumImage[], index: number) => void,
@@ -94,7 +94,7 @@ export function createMsgCbElement(
   ref.setInput('data', data);
   ref.setInput('isShowHead', isShowHead);
   ref.setInput('isGroupStart', isGroupStart);
-  ref.setInput('dateLabel', dateLabel);
+  ref.setInput('showDate', showDate);
   ref.changeDetectorRef.detectChanges(); // zoneless: drive the first render manually (triggers ngOnInit)
 
   // In-place re-render (CbElement.update): recompute grouping + date from the (possibly new) prev and re-apply all four
@@ -106,7 +106,7 @@ export function createMsgCbElement(
     ref.setInput('data', nextItem.data as ChatMsgData);
     ref.setInput('isShowHead', flags.isShowHead);
     ref.setInput('isGroupStart', flags.isGroupStart);
-    ref.setInput('dateLabel', flags.dateLabel);
+    ref.setInput('showDate', flags.showDate);
     ref.changeDetectorRef.detectChanges();
   };
 

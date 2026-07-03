@@ -1,6 +1,7 @@
 import { Component, inject, signal } from '@angular/core';
 import { Location } from '@angular/common';
 import { Router } from '@angular/router';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 
 /**
@@ -12,7 +13,7 @@ import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.compo
  */
 @Component({
   selector: 'app-forbidden',
-  imports: [BrandLogoComponent],
+  imports: [BrandLogoComponent, TranslocoPipe],
   templateUrl: './forbidden-page.component.html',
   styleUrl: './forbidden-page.component.scss',
 })

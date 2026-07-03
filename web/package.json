@@ -21,6 +21,8 @@
     "@angular/platform-browser": "^20.3.25",
     "@angular/platform-browser-dynamic": "^20.3.25",
     "@angular/router": "^20.3.25",
+    "@jsverse/transloco": "^8.4.0",
+    "@jsverse/transloco-messageformat": "^8.4.0",
     "@microsoft/fetch-event-source": "^2.0.1",
     "@tiptap/core": "^3.27.1",
     "@tiptap/extension-mention": "^3.27.1",

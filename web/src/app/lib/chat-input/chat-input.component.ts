@@ -56,7 +56,7 @@ export class ChatInputComponent {
   readonly members = input<ChatMember[]>([]);
   /** Desktop → Enter sends; mobile → Enter inserts a newline. */
   readonly isDesktop = input(true);
-  readonly placeholder = input('Type a message…');
+  readonly placeholder = input('');
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);
 

@@ -1,6 +1,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
@@ -15,17 +16,17 @@ import { ConversationItem } from '../../services/model';
  */
 @Component({
   selector: 'app-peer-profile',
-  imports: [MatButtonModule, UserAvatarComponent],
+  imports: [MatButtonModule, UserAvatarComponent, TranslocoPipe],
   template: `
     <div class="panel">
       <div class="msg-header">
-        <button class="icon-btn" (click)="goBack()" aria-label="Back">
+        <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M15 18l-6-6 6-6" />
           </svg>
         </button>
-        <span class="title">Profile</span>
+        <span class="title">{{ 'profile.title' | transloco }}</span>
         <span></span>
       </div>
 
@@ -37,14 +38,14 @@ import { ConversationItem } from '../../services/model';
 
         @if (confirmUnfriend()) {
           <div class="confirm-row">
-            <span>Remove {{ peer()?.uniqName }} from friends?</span>
+            <span>{{ 'profile.removeFriendConfirm' | transloco:{ name: peer()?.uniqName } }}</span>
             <div class="confirm-actions">
-              <button mat-stroked-button [disabled]="busy()" (click)="cancelUnfriend()">Cancel</button>
-              <button mat-raised-button color="warn" [disabled]="busy()" (click)="doUnfriend()">Unfriend</button>
+              <button mat-stroked-button [disabled]="busy()" (click)="cancelUnfriend()">{{ 'common.cancel' | transloco }}</button>
+              <button mat-raised-button color="warn" [disabled]="busy()" (click)="doUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
             </div>
           </div>
         } @else {
-          <button class="danger" [disabled]="busy()" (click)="askUnfriend()">Unfriend</button>
+          <button class="danger" [disabled]="busy()" (click)="askUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
         }
       </div>
     </div>
