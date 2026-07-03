@@ -419,7 +419,6 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  latest message below the fold (pinToBottom reads live scrollHeight, so it is immune to cached-height drift). If the
    *  newer end is trimmed, this is a no-op (items are cached; loaded on scroll-back). */
   async onMessageSignal(): Promise<void> {
-    if (ngDevMode) console.log('[chat] onMessageSignal destroyed=%s resetting=%s noNewer=%s mounted=%d inflightNewer=%s', this.destroyed, this.resetting, this.noNewer, this.mounted.length, this.inflightNewer);
     if (this.destroyed || this.resetting) return;
     if (!this.noNewer) return;                               // newer end trimmed → cached only; load on scroll-back
     const wasAtBottom = this.isAtBottom();

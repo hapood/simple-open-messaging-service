@@ -218,27 +218,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Inbound SSE message: shape via rawToItems, then notify the component via onLive (the component calls
    *  kernel.appendLive, which caches via source.pushLive and mounts the items directly).
-   *  The ensureProfiles→rawToItems→onLive chain MUST carry a .catch: an unhandled rejection here (e.g. a
+   *  The ensureProfiles→rawToItems→onLive chain carries a .catch: an unhandled rejection here (e.g. a
    *  transient queryUserInfo failure) would silently abort the chain — onLive never fires, the message is
    *  lost from the open chatbox while the conversation-list (separate subscriber) still updates. */
   private onSseEvent(msg: StandardMessage): void {
-    if (ngDevMode && msg.event === 'NEW_MESSAGE') console.warn('[chat] onSseEvent seen conv.threadId=%s event.thread=%s', this.conv.threadId, (msg.data as { threadId?: unknown } | null)?.threadId);
     if (msg.event !== 'NEW_MESSAGE' || msg.status !== 0 || !msg.data) return;
     const data = msg.data as Message & { threadId: number };
-    if (data.threadId !== this.conv.threadId) {
-      if (ngDevMode) console.warn('[chat] live inbound FILTERED thread=%s (conv.threadId=%s) type=%s/%s', data.threadId, this.conv.threadId, typeof data.threadId, typeof this.conv.threadId);
-      return;
-    }
+    if (data.threadId !== this.conv.threadId) return;
     const id = String(data.id);
-    if (this.knownMsgIds.has(id)) { // dedup
-      if (ngDevMode) console.warn('[chat] live inbound DEDUP id=%s', id);
-      return;
-    }
+    if (this.knownMsgIds.has(id)) return; // dedup
     data.id = id;
-    if (ngDevMode) console.warn('[chat] live inbound accepted id=%s thread=%s cid=%s', id, data.threadId, data.clientMessageId);
     this.ensureProfiles([data]).then(() => {
       const items = this.rawToItems([data]);
-      if (ngDevMode) console.warn('[chat] live inbound rawToItems -> %d item(s); onLive? %s', items.length, items.length > 0);
       if (items.length > 0) this.onLive(items);
     }).catch((e) => console.error('[chat] live inbound dropped (ensureProfiles/rawToItems rejected)', id, e));
   }
