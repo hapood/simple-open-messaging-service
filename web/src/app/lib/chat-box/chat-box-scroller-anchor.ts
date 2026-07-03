@@ -719,12 +719,23 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.updateTailCap(); // re-measure the cap every batch mount: a newer batch reaching the global newest flips loading→gap
   }
 
+  /** Single source of truth for the skeleton-vs-real decision (mirrors Plan B's createVs). A slot is a skeleton iff it
+   *  is the topmost item (prev === null) AND the global oldest has NOT been reached. atOldestEdge covers boundary
+   *  'oldest', 'both', and the kernel's noOlder — the noOlder case keeps an optimistic send in an EMPTY thread real (no
+   *  boundary marker, but noOlder=true → not a skeleton). When the slot is a skeleton and createSkeleton is supplied,
+   *  use it; otherwise fall back to createItem. */
+  private createVs(item: CbItem<T>, prev: CbItem<T> | null): CbElement<T> {
+    const atOldestEdge = item.boundary === 'oldest' || item.boundary === 'both' || this.noOlder;
+    const skeleton = prev === null && !atOldestEdge;
+    return skeleton && this.hooks.createSkeleton ? this.hooks.createSkeleton(item) : this.hooks.createItem(item, prev);
+  }
+
   /** Create and mount one entry: createItem + DOM insert (before anchorEl / append) + pendingMeasure + subscribe to height.
    *  `animate` (default false) marks a mount that should play cb-enter after its height settles — only insertAfter and
    *  appendLive pass true; scroll-loaded history batches (init/older/newer) never animate. */
   private createEntry(item: CbItem<T>, prev: CbItem<T> | null, anchorEl?: HTMLElement | null, animate = false): Entry<T> {
     if (ngDevMode) this.mountTick++;
-    const vs = this.hooks.createItem(item, prev);
+    const vs = this.createVs(item, prev);
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
     if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
@@ -761,7 +772,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (idx < 0) return;
     if (ngDevMode) this.mountTick++;
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null; // older neighbor (one index lower)
-    const newVs = this.hooks.createItem(newItem, newPrev);
+    const newVs = this.createVs(newItem, newPrev);
     const newEl = newVs.el;
     newEl.dataset['cbId'] = String(newItem.id);
     this.content.insertBefore(newEl, entry.el);

@@ -16,6 +16,7 @@ import { MockItemSource, MockUserService } from './http-item-source.mock';
 import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
 import { ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { ChatInputComponent, ChatSendIntent } from '../../lib/chat-input/chat-input.component';
+import { uuid } from '../../lib/uuid';
 
 // Angular production AOT sets the global ngDevMode to falsy and uses it for dead-code elimination (same pattern as the
 // virtual-scroll kernel). It guards the "dev badge injection" — production builds create no badge DOM (zero overhead);
@@ -235,7 +236,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       this.scroller = new Ctor({
         viewport, content, source: this.source,
         config: this.config(),
-        hooks: { createItem: (item, prev) => this.createItemEl(item, prev), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
+        hooks: { createItem: (item, prev) => this.createItemEl(item, prev), createSkeleton: () => createGhostCbElement(), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
         onScroll: (info) => this.onScroll(info),
         onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
@@ -330,13 +331,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   // --- Kernel hooks ---
 
   private createItemEl(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
-    // Skeleton placeholder: the topmost item (prev=null AND not yet at the global oldest) renders as a fixed-height
-    // shimmer instead of the real component (see createGhostCbElement). prev=null ⟺ prepended as the new oldest. "At the
-    // global oldest" = boundary is 'oldest' or 'both' (a sole item at both edges), OR the kernel reports noOlder (same
-    // basis as updateGhost). The noOlder guard also covers the optimistic send in an EMPTY thread, whose bubble carries
-    // no boundary marker yet IS the global oldest → it must render as a real bubble, never a ghost ("send shows nothing").
-    const atOldestEdge = item.boundary === 'oldest' || item.boundary === 'both' || !!this.scroller?.getInfo().noOlder;
-    if (prev === null && !atOldestEdge) return createGhostCbElement();
+    // Real items only — the topmost skeleton-slot decision (prev/boundary/noOlder) lives in the kernel's createVs,
+    // rendered via the createSkeleton hook supplied in setup. createItemEl never branches on ghost-vs-real.
     // Grouping + date-separator flags are derived from the OLDER neighbor `prev` (computeRowFlags — the same logic
     // CbElement.update uses, so after a reorder update recomputes grouping by the new prev; mount and in-place update
     // derive the same flags).
@@ -826,10 +822,10 @@ const MOCK_MEMBERS: ChatMember[] = [
 ];
 
 /** Generate a client-side idempotency UUID for an optimistic send (mirrors production SendMessageDto.clientMessageId —
- *  the correlation key between the in-flight bubble and the server-confirmed real). crypto.randomUUID is available in
- *  secure contexts (localhost / https); the fallback preserves uniqueness elsewhere. */
+ *  the correlation key between the in-flight bubble and the server-confirmed real). Delegates to lib/uuid so the
+ *  playground stays on the same always-spec-compliant path as production. */
 function newClientMessageId(): string {
-  return crypto.randomUUID?.() ?? `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+  return uuid();
 }
 
 /** Truncate a clientMessageId UUID to its first 8 hex chars for the dev badge (a full 36-char uuid would dominate the

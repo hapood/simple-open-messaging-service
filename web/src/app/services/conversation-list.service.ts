@@ -1,5 +1,4 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { Subject, firstValueFrom } from 'rxjs';
 import { UserService } from './user.service';
 import { ConversationItem } from './model';
 import { toFriendlyHttpError } from './http-error';
@@ -45,15 +44,6 @@ export class ConversationListService {
   private readonly _openThreadId = signal<number | undefined>(undefined);
   readonly openThreadId = this._openThreadId.asReadonly();
 
-  private readonly _openRequest$ = new Subject<ConversationItem>();
-  /**
-   * A shell-agnostic "open this conversation" intent. Each shell subscribes and routes the item
-   * through its own selection path (inline `selectedThread` on desktop/tablet, a popup on mobile) —
-   * the same path clicking the list uses. Used by the invite card's "Open group" follow-through after
-   * joining, and reusable for future entry points (notifications, @mentions).
-   */
-  readonly openRequest$ = this._openRequest$.asObservable();
-
   /** Fetch the conversation list from the server (authoritative state). */
   load() {
     this._status.set('LOADING');
@@ -72,25 +62,6 @@ export class ConversationListService {
   private applyItems(items: ConversationItem[]): void {
     this._items.set(items);
     this._status.set('READY');
-  }
-
-  /**
-   * Emit an open-conversation intent for `threadId` (consumed by the shells via {@link openRequest$}).
-   * Resolves the ConversationItem from the loaded list; if the thread isn't loaded yet — the
-   * just-joined case, where the invite card opens the group before the list has fetched it — loads
-   * first, then emits.
-   */
-  openByThreadId(threadId: number): void {
-    const existing = this._items().find((t) => t.threadId === threadId);
-    if (existing) {
-      this._openRequest$.next(existing);
-      return;
-    }
-    void firstValueFrom(this.userService.queryAllUserThreads()).then((items) => {
-      this.applyItems(items);
-      const item = items.find((t) => t.threadId === threadId);
-      if (item) this._openRequest$.next(item);
-    });
   }
 
   /** Mark a thread as open (selected); fire mark-read + clear its badge optimistically. */

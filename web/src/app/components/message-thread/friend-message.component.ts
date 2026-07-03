@@ -24,6 +24,7 @@ import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { ChatInputComponent, type ChatSendIntent } from '../../lib/chat-input/chat-input.component';
+import { uuid } from '../../lib/uuid';
 import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -127,7 +128,7 @@ export class MessageThreadComponent implements OnDestroy {
       viewport,
       content,
       source: this.source,
-      hooks: { createItem: (item, prev) => this.createItem(item, prev), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
+      hooks: { createItem: (item, prev) => this.createItem(item, prev), createSkeleton: () => createGhostCbElement(), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
       onScroll: (info) => this.onScroll(info),
     });
     void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined);
@@ -137,9 +138,9 @@ export class MessageThreadComponent implements OnDestroy {
    *  Passes onRetry so a failed self-send row's retry glyph calls back into retrySend (msgId = clientMessageId), and
    *  onOpenImage so clicking an image cell opens the gallery viewer. */
   private createItem(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
-    // Skeleton slot: the topmost item (prev=null) that is NOT the global oldest renders a fixed-height spinner
-    // (see createGhostCbElement) until loadOlder reveals its older neighbor.
-    if (prev === null && item.boundary !== 'oldest') return createGhostCbElement();
+    // Real items only — the topmost skeleton-slot decision (prev/boundary/noOlder) lives in the kernel's createVs,
+    // rendered via the createSkeleton hook supplied below. createItem never branches on ghost-vs-real: that rule
+    // drifted between playground and production and is what swallowed the empty-thread first message.
     const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
     return createMsgCbElement(
       item, isShowHead, isGroupStart, dateLabel, this.envInjector,
@@ -325,11 +326,15 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   /** Register the optimistic item with the source pending area + mount it after the tail (insertAfter, optimistic)
-   *  + pin to reveal it. No confirm timer — confirmation is the SSE echo. Returns false if the anchor is gone. */
+   *  + pin to reveal it. No confirm timer — confirmation is the SSE echo.
+   *  NB: do NOT bail on an empty `afterId`. The FIRST send into an EMPTY thread has tailAnchorId()==='' (nothing is
+   *  mounted → newestId is null); the kernel's insertAfter treats an empty window as "insert as the sole entry", so
+   *  bailing here would silently swallow the first message of a fresh conversation — no pending bubble ever appears.
+   *  (Mirrors the playground insertMsg, whose comment calls out this exact case.) */
   private insertMsg(afterId: string, item: CbItem<ChatItemData>): boolean {
     const scroller = this.scroller;
     const source = this.source;
-    if (!scroller || !source || !afterId) return false;
+    if (!scroller || !source) return false;
     source.addPending(item);
     const ok = scroller.insertAfter(afterId, item, { optimistic: true });
     if (ok) scroller.scrollToBottom(); // insertAfter is viewport-stable; a send always means "show my message"
@@ -369,8 +374,9 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private newClientMessageId(): string {
-    // crypto.randomUUID is available in secure contexts (localhost / https); the fallback preserves uniqueness.
-    return crypto.randomUUID?.() ?? `${Date.now().toString(16)}-${Math.random().toString(16).slice(2, 10)}`;
+    // Always a spec-compliant UUID — the backend validates clientMessageId as a UUID. lib/uuid falls back to
+    // crypto.getRandomValues (not secure-context-gated, unlike randomUUID) so this works on http non-localhost origins.
+    return uuid();
   }
 
   /** Drop retained Files for pending entries that have resolved (confirmed/dropped from the source). Called from

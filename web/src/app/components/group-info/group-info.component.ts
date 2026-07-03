@@ -1,5 +1,6 @@
-import { Component, computed, inject, input, OnInit, OnDestroy, signal } from '@angular/core';
+import { Component, computed, inject, OnInit, OnDestroy, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Router } from '@angular/router';
 import { Subscription, filter } from 'rxjs';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
@@ -13,15 +14,15 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
-import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { apiPrefix } from '../../services/constants';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
 
 /**
  * Group info panel: identity (editable by admin+), roster with roles, and the role-gated membership
- * actions (set-role / transfer / kick / leave / invite). Reused in two hosts — the desktop side panel
- * (closeFn closes the panel) and the mobile popup (closeDlg pops the dialog).
+ * actions (set-role / transfer / kick / leave / invite). Rendered in the `aside` auxiliary outlet
+ * (`chat/:threadId/(aside:group-info)`); it resolves its conversation from the parent route's
+ * `:threadId` + the shared list.
  *
  * Authorization is mirrored from the server: the owner manages admins/members and may transfer; admins
  * may kick members; everyone may leave (the owner must transfer first). The server enforces every rule
@@ -29,18 +30,15 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
  */
 @Component({
   selector: 'app-group-info',
-  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, FitDialogDirective, UserAvatarComponent],
+  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent],
   templateUrl: './group-info.component.html',
   styleUrl: './group-info.component.scss',
 })
 export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly AppIconType = AppIconType
   readonly UserAvatarType = UserAvatarType
-  readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
-  readonly userMsgTrd = input<ConversationItem>()
-  /** optional close handler; when set, goBack() calls it instead of closeDlg. */
-  readonly closeFn = input<(() => void) | undefined>(undefined)
 
+  private readonly router = inject(Router)
   private readonly groupService = inject(GroupService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
@@ -48,6 +46,12 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly routeService = inject(RouteService)
   private readonly snackBar = inject(MatSnackBar)
   private readonly http = inject(HttpClient)
+
+  /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
+  readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
+    const id = this.convList.openThreadId()
+    return id !== undefined ? this.convList.items().find((t) => t.threadId === id) : undefined
+  })
 
   /** Live roster refresh: when a GROUP_* membership/role event lands for THIS group while the panel
    *  is open, reload the roster so joins/leaves/kicks/promotions show without a manual reopen. */
@@ -192,9 +196,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     this.busy.set(true)
     this.groupService.leaveGroup({ groupId: id }).subscribe(() => {
       this.busy.set(false)
-      // the conversation is gone from the caller's list; refresh the shared store, then close.
+      // the conversation is gone from the caller's list; refresh the shared store, then return to the
+      // list — navigating to '/' closes both the chat (primary outlet) and this panel (aside outlet).
       this.convList.load()
-      this.goBack()
+      this.router.navigate(['/'])
     })
   }
 
@@ -308,9 +313,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     })
   }
 
+  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. */
   goBack() {
-    const fn = this.closeFn()
-    if (fn) fn()
-    else this.routeService.closeDlg()
+    const tid = this.convList.openThreadId()
+    if (tid !== undefined) this.router.navigate(['chat', tid, { outlets: { aside: null } }])
   }
 }

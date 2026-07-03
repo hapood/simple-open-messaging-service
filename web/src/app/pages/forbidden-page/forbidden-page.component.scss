@@ -1,0 +1,156 @@
+:host {
+  display: block;
+  min-height: 100%;
+}
+
+// Mirrors the 404 page's structure; the difference is the danger palette (halo + code
+// gradient) and the padlock hero. All colors are --app-* / danger tokens, so light↔dark
+// theme switches need no overrides here.
+.pnf {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 48px 24px 64px;
+  box-sizing: border-box;
+  text-align: center;
+  overflow: hidden;
+}
+
+// Soft danger-tinted halo for depth. --app-danger-soft is a pale wash in light and a
+// red-tinted translucent wash in dark, so it reads well in both.
+.pnf::before {
+  content: "";
+  position: absolute;
+  top: 42%;
+  left: 50%;
+  width: 540px;
+  height: 540px;
+  max-width: 120vw;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--app-danger-soft) 0%, transparent 65%);
+  z-index: 0;
+  pointer-events: none;
+}
+
+.pnf > * {
+  position: relative;
+  z-index: 1;
+}
+
+// ---- Brand-mark escape hatch ----------------------------------------------
+.pnf-home {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 32px;
+  padding: 4px;
+  border: 0;
+  background: transparent;
+  border-radius: var(--app-radius-md);
+  cursor: pointer;
+  transition: transform 0.15s ease, background-color 0.15s ease;
+
+  &:hover { background: var(--app-hover); }
+  &:active { transform: scale(0.96); }
+  &:focus-visible { outline: 2px solid var(--app-brand); outline-offset: 3px; }
+}
+
+// ---- Hero illustration -----------------------------------------------------
+.pnf-art {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 120px;
+  height: 124px;
+  margin-bottom: 18px;
+}
+
+.pnf-lock {
+  filter: drop-shadow(0 16px 26px rgba(220, 38, 38, 0.30));
+}
+
+// Gentle float, opt-in only for users who haven't requested reduced motion.
+@media (prefers-reduced-motion: no-preference) {
+  .pnf-lock { animation: pnf-float 5s ease-in-out infinite; }
+
+  @keyframes pnf-float {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-7px); }
+  }
+}
+
+// ---- Copy ------------------------------------------------------------------
+.pnf-code {
+  margin: 0;
+  font-size: clamp(72px, 16vw, 132px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -2px;
+  // Two-stop danger gradient; color-mix derives a darker shade from the theme token so
+  // the depth stop tracks light (#dc2626) and dark (#ef4444) automatically.
+  background: linear-gradient(135deg, var(--app-danger) 0%, color-mix(in srgb, var(--app-danger), #000 18%) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.pnf-title {
+  margin: 16px 0 8px;
+  font-size: clamp(20px, 4vw, 26px);
+  font-weight: 600;
+  color: var(--app-text);
+}
+
+.pnf-desc {
+  max-width: 420px;
+  margin: 0 0 28px;
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--app-text-muted);
+}
+
+// ---- Actions ---------------------------------------------------------------
+// NB: the primary CTA stays brand-blue (a positive navigation action), not danger-red —
+// the red is reserved for the "denied" signal in the hero/code, not the way out.
+.pnf-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.pnf-btn {
+  font: inherit;
+  cursor: pointer;
+  border-radius: var(--app-radius-pill);
+  transition: background-color 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
+
+  &:focus-visible { outline: 2px solid var(--app-brand); outline-offset: 3px; }
+  &:active { transform: translateY(1px); }
+}
+
+.pnf-btn--primary {
+  padding: 12px 26px;
+  border: 0;
+  background: var(--app-brand);
+  color: #ffffff;
+  font-weight: 600;
+  box-shadow: 0 6px 16px rgba(33, 150, 243, 0.30);
+
+  &:hover { background: var(--app-brand-hover); }
+}
+
+.pnf-btn--ghost {
+  padding: 12px 22px;
+  border: 1px solid var(--app-border-strong);
+  background: var(--app-surface);
+  color: var(--app-text);
+
+  &:hover { background: var(--app-hover); }
+}

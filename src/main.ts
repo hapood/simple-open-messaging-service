@@ -1,5 +1,6 @@
 import 'dotenv/config'; // Load .env first so the AppModule import chain (requireEnv, Prisma) sees the vars.
 import { NestFactory } from '@nestjs/core';
+import { LogLevel } from '@nestjs/common';
 import {
   FastifyAdapter,
   NestFastifyApplication,
@@ -21,6 +22,31 @@ const tlsCert = process.env.TLS_CERT;
 const tlsKey = process.env.TLS_KEY;
 const enableH2 = Boolean(tlsCert && tlsKey);
 
+// Nest log levels, least→most verbose. The logger option takes the explicit enabled set, so we
+// expand a single requested level into that level + every more-severe one.
+const LOG_LEVELS: readonly LogLevel[] = [
+  'fatal',
+  'error',
+  'warn',
+  'log',
+  'debug',
+  'verbose',
+];
+
+/**
+ * Resolve LOG_LEVEL env to the enabled LogLevel set. Default 'log' keeps routine app output
+ * (log/warn/error/fatal) while suppressing debug/verbose — so client-disconnect lines (logged at
+ * debug by AllExceptionsFilter) stay quiet in normal operation. Set LOG_LEVEL=debug to surface
+ * them when investigating an SSE/streaming incident; warn/error to quiet production.
+ */
+function resolveLogLevel(raw: string | undefined): LogLevel[] {
+  const requested = (raw ?? 'log').toLowerCase();
+  const idx = LOG_LEVELS.indexOf(requested as LogLevel);
+  // Unknown value → fall back to 'log' (enables log/warn/error/fatal; debug/verbose off).
+  const enabled = idx === -1 ? LOG_LEVELS.indexOf('log') : idx;
+  return LOG_LEVELS.slice(0, enabled + 1);
+}
+
 async function bootstrap() {
   const adapter = new FastifyAdapter(
     enableH2
@@ -37,10 +63,9 @@ async function bootstrap() {
       : { trustProxy: 1 },
   );
 
-  const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
-    adapter,
-  );
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
+    logger: resolveLogLevel(process.env.LOG_LEVEL),
+  });
   await configureApp(app, adapter);
 
   const port = Number(process.env.PORT ?? 3000);

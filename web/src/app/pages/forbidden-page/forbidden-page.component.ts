@@ -1,11 +1,33 @@
-import { Component } from '@angular/core';
+import { Component, inject, signal } from '@angular/core';
+import { Location } from '@angular/common';
+import { Router } from '@angular/router';
+import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 
+/**
+ * HTTP 403 destination, mounted at `/forbidden` (no guard). Reached when an access
+ * check rejects the authenticated user — e.g. a thread-access guard denying a
+ * conversation they aren't a member of. Pairs visually with the 404 page: same
+ * layout, tokens, and escape hatches, but a padlock hero + danger accents so the
+ * two error pages read as a family while staying distinct.
+ */
 @Component({
-    selector: 'app-forbidden',
-    imports: [],
-    templateUrl: './forbidden-page.component.html',
-    styleUrl: './forbidden-page.component.scss'
+  selector: 'app-forbidden',
+  imports: [BrandLogoComponent],
+  templateUrl: './forbidden-page.component.html',
+  styleUrl: './forbidden-page.component.scss',
 })
 export class ForbiddenPageComponent {
+  private readonly router = inject(Router);
+  private readonly location = inject(Location);
 
+  /** See PageNotFoundComponent — best-effort guard against rendering a dead "Go back". */
+  readonly canGoBack = signal(typeof history !== 'undefined' && history.length > 1);
+
+  goHome(): void {
+    this.router.navigate(['/']);
+  }
+
+  goBack(): void {
+    this.location.back();
+  }
 }

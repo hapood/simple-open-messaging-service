@@ -1,8 +1,8 @@
 import { Component, computed, inject, input, signal } from '@angular/core';
+import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import dayjs from 'dayjs';
 import { GroupService } from '../../../services/group.service';
-import { ConversationListService } from '../../../services/conversation-list.service';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
@@ -65,7 +65,7 @@ export class InviteRowComponent {
   readonly resultMsg = signal('');
 
   private readonly groupService = inject(GroupService);
-  private readonly convList = inject(ConversationListService);
+  private readonly router = inject(Router);
 
   ngOnInit() {
     const parsed = this.parseInvite(this.data().text);
@@ -118,9 +118,9 @@ export class InviteRowComponent {
     });
   }
 
-  /** Open the just-joined group conversation (emits an open-conversation intent the shell honors). */
+  /** Open the just-joined group conversation by navigating to its chat route. */
   openGroup() {
     const tid = this.joinedThreadId();
-    if (tid !== undefined) this.convList.openByThreadId(tid);
+    if (tid !== undefined) this.router.navigate(['chat', tid]);
   }
 }

@@ -25,6 +25,7 @@ import { SseService } from '../gateway/sse.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
+import { ResourceId } from '../common/resource-id.decorator.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
 import { parseFileContent } from '../upload/file-content.js';
 
@@ -39,6 +40,7 @@ export class MessageController {
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SendMessageDto>('threadId')
   @Throttle(60, 60) // anti-spam ceiling: 60 sends/min
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -88,6 +90,7 @@ export class MessageController {
   }
 
   @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @ResourceId<QueryMessagesDto>('threadId')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('query-messages')
@@ -146,6 +149,7 @@ export class MessageController {
   }
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<MarkReadDto>('threadId')
   @Throttle(60, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)

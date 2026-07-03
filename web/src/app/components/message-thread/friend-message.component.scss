@@ -40,9 +40,22 @@
 }
 
 // Content layer: normal document flow (relative-scroll architecture). Item blocks
-// stack and grow to natural height for the viewport to scroll.
+// stack and grow to natural height for the viewport to scroll. Bottom-aligned like the
+// playground's .pg-content: when content is SHORTER than the viewport (empty / few-message
+// thread) `justify-content: flex-end` pins the bubble(s) to the bottom (WhatsApp style); when
+// content ≥ viewport there is no free space, so normal top-to-bottom flow + scrolling are
+// unchanged. This shift changes offsetTop, NOT offsetHeight, so it is invisible to the kernel's
+// height model; `flex-shrink: 0` on the direct children guarantees flex never distorts a row's
+// measured height (the kernel's height-integrity invariant).
 .msg-content {
   position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 100%;
+  & > * {
+    flex-shrink: 0;
+  }
 }
 
 // Chat input (the reusable ChatInputComponent) sits at the bottom of the column. It takes its natural

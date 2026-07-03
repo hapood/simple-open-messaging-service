@@ -1,0 +1,25 @@
+<div class="shell"
+     [class.mode-desktop]="mode() === 'desktop'"
+     [class.mode-tablet]="mode() === 'tablet'"
+     [class.mode-mobile]="mode() === 'mobile'"
+     [class.chat-open]="chatActive()"
+     [class.aside-open]="asideActive()">
+  @if (mode() === 'desktop') {
+    <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
+    <app-chat-list-pane class="list" [style.width.px]="listWidth()" (selectThread)="openChat($event)" />
+    <div class="resizer" (mousedown)="startResize($event)" (dblclick)="resetWidth()"
+         title="Drag to resize; double-click to reset"></div>
+  } @else {
+    <app-nav-drawer #d class="drawer" [onThreadListChanged]="refresh">
+      <div class="drawer-body">
+        <app-home-header class="header" (toggleDrawer)="d.toggle()" />
+        <app-chat-list-pane class="list" (selectThread)="openChat($event)" />
+      </div>
+    </app-nav-drawer>
+  }
+
+  <!-- primary outlet: the open chat (or the empty placeholder at `/`) -->
+  <div class="chat-slot"><router-outlet /></div>
+  <!-- named outlet: peer-profile / group-info, positioned per layout -->
+  <div class="aside-slot"><router-outlet name="aside" /></div>
+</div>

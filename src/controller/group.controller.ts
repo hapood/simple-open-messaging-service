@@ -18,6 +18,7 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import dayjs from 'dayjs';
 import { GroupService } from '../group/group.service.js';
 import { GroupAccessGuard } from '../group/group-access.guard.js';
+import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
 import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
@@ -131,6 +132,7 @@ export class GroupController {
   @UseGuards(JwtAuthGuard, GroupAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<InviteGroupDto>('groupId')
   @Post('group/invite')
   @ApiOperation({ summary: 'Invite friends to the group (invite token written to each P2P thread)' })
   async inviteUsers(
@@ -246,6 +248,7 @@ export class GroupController {
   @UseGuards(JwtAuthGuard, GroupAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<GroupIdDto>('groupId')
   @Post('group/info')
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
@@ -261,6 +264,7 @@ export class GroupController {
   @UseGuards(JwtAuthGuard, GroupAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<GroupIdDto>('groupId')
   @Post('group/members')
   @ApiOperation({ summary: 'Group roster with roles (members only)' })
   @ApiResultResponse(GroupMemberDto, true)
@@ -294,6 +298,7 @@ export class GroupController {
   @Throttle(20, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<GroupIdDto>('groupId')
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
   async leaveGroup(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
@@ -318,6 +323,7 @@ export class GroupController {
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<KickGroupDto>('groupId')
   @Post('group/kick')
   @ApiOperation({ summary: 'Kick a member (owner/admin, must outrank target)' })
   async kickMember(
@@ -345,6 +351,7 @@ export class GroupController {
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<TransferGroupDto>('groupId')
   @Post('group/transfer')
   @ApiOperation({ summary: 'Transfer ownership to a member (owner only)' })
   async transferOwnership(
@@ -377,6 +384,7 @@ export class GroupController {
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<SetRoleGroupDto>('groupId')
   @Post('group/set-role')
   @ApiOperation({ summary: "Set a member's role to ADMIN/MEMBER (owner only)" })
   async setRole(
@@ -403,6 +411,7 @@ export class GroupController {
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @ResourceId<UpdateGroupDto>('groupId')
   @Post('group/update')
   @ApiOperation({ summary: 'Update group name/avatar (admin+)' })
   async updateGroup(

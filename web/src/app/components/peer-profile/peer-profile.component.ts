@@ -1,27 +1,23 @@
-import { Component, computed, inject, input, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
+import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
-import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { RouteService } from '../../services/route.service';
 import { ConversationItem } from '../../services/model';
 
 /**
- * P2P (friend) profile panel — the one-to-one analog of GroupInfoComponent. Dual-host like
- * group-info: the desktop InfoPaneComponent embeds it in the side panel (closeFn closes the panel),
- * and mobile opens it as a stacked popup (PopupType.PEER_PROFILE) from the chat header.
- *
- * Surfaces the friendship-management action the backend already supported but the UI lacked —
- * Unfriend (delete-friend). The two-step inline confirm mirrors group-info's confirmAction. A future
- * custom-name/alias feature would also live here (set + display), which is why this is its own
- * component rather than inline markup in the info pane.
+ * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
+ * Resolves its conversation from the parent route's `:threadId` + the shared list (no input binding
+ * needed — the aside child route carries no params of its own). Surfaces Unfriend (delete-friend) with a
+ * two-step inline confirm; on success it drops the thread and returns to the conversation list, which
+ * closes both the chat and this panel. A future custom-name/alias feature would also live here.
  */
 @Component({
   selector: 'app-peer-profile',
-  imports: [MatButtonModule, UserAvatarComponent, FitDialogDirective],
+  imports: [MatButtonModule, UserAvatarComponent],
   template: `
-    <div [appFitDialog]="fitOpts">
+    <div class="panel">
       <div class="msg-header">
         <button class="icon-btn" (click)="goBack()" aria-label="Back">
           <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -54,7 +50,8 @@ import { ConversationItem } from '../../services/model';
     </div>
   `,
   styles: [`
-    :host { display: block; height: 100%; }
+    :host { display: block; height: 100%; background: var(--app-surface); }
+    .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; }
     .msg-header {
       height: 56px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 8px;
       border-bottom: 1px solid var(--app-border); box-sizing: border-box;
@@ -87,23 +84,22 @@ import { ConversationItem } from '../../services/model';
 })
 export class PeerProfileComponent {
   readonly UserAvatarType = UserAvatarType
-  readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
 
-  /** The P2P conversation this profile describes. */
-  readonly userMsgTrd = input<ConversationItem>()
-  /** Optional close handler; when set (desktop panel host), goBack() calls it instead of closeDlg. */
-  readonly closeFn = input<(() => void) | undefined>(undefined)
-
+  private readonly router = inject(Router)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
-  private readonly routeService = inject(RouteService)
 
   readonly busy = signal(false)
-  /** Two-step destructive confirm gate for Unfriend (mirrors group-info's confirmAction). */
+  /** Two-step destructive confirm gate for Unfriend. */
   readonly confirmUnfriend = signal(false)
 
+  /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
+  readonly threadId = this.convList.openThreadId
+  readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
+    const id = this.threadId()
+    return id !== undefined ? this.convList.items().find((t) => t.threadId === id) : undefined
+  })
   readonly peer = computed(() => this.userMsgTrd()?.peerUser)
-  readonly threadId = computed(() => this.userMsgTrd()?.threadId)
 
   askUnfriend() { this.confirmUnfriend.set(true) }
   cancelUnfriend() { this.confirmUnfriend.set(false) }
@@ -117,18 +113,18 @@ export class PeerProfileComponent {
       next: (res) => {
         this.busy.set(false)
         if (res.code !== 0) return // keep the panel + confirm visible so a server-side failure is observable
-        // Drop the now-deleted thread from the shared list (instant removal + clears openThreadId),
-        // then close the profile. The desktop chat pane empties via desktop-home's openThreadId effect.
+        // Drop the now-deleted thread, then return to the list — navigating to '/' closes both the chat
+        // (primary outlet) and this panel (aside outlet) in one step.
         this.convList.removeThread(threadId)
-        this.goBack()
+        this.router.navigate(['/'])
       },
       error: () => this.busy.set(false),
     })
   }
 
+  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. */
   goBack() {
-    const fn = this.closeFn()
-    if (fn) fn()
-    else this.routeService.closeDlg()
+    const threadId = this.threadId()
+    if (threadId !== undefined) this.router.navigate(['chat', threadId, { outlets: { aside: null } }])
   }
 }

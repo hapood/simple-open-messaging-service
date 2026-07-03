@@ -5,7 +5,6 @@ import { randomBytes } from 'crypto';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
-import type { MultipartFile } from '@fastify/multipart';
 import {
   FILE_MIME_EXT,
   MAX_FILE_BYTES,
@@ -90,47 +89,26 @@ export class UploadService {
    * 10MB 上限由 main.ts 注册插件时的 limits.fileSize 兜底——超出时 toBuffer 抛
    * RequestFileTooLargeError，此处归一为 rejected('too-large')，避免被全局过滤器当 500。
    */
+  /**
+   * Consume a single image from multipart/form-data: whitelist the image mimetype, cap at
+   * MAX_IMAGE_BYTES, and surface the frontend-supplied w/h fields. Magic-number and sharp
+   * decoding stay the caller's job (two independent authenticity checks). Delegates the
+   * multipart draining to consumeSingle so the backpressure-safe loop lives in exactly one place.
+   */
   async consumeImage(req: FastifyRequest): Promise<ConsumedImage> {
-    let filePart: MultipartFile | undefined;
-    const fields: Record<string, string> = {};
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        if (filePart) {
-          // 单文件契约：多出的文件直接排空，避免背压卡住解析流。
-          part.file.resume();
-          continue;
-        }
-        // 粗筛 mimetype（可伪造）：不匹配白名单立即拒，不进 buffer。
-        if (!(part.mimetype in IMG_EXT)) {
-          part.file.resume();
-          return { kind: 'rejected', reason: 'wrong-type' };
-        }
-        filePart = part;
-      } else {
-        fields[part.fieldname] = String(part.value);
-      }
-    }
-
-    if (!filePart) return { kind: 'rejected', reason: 'no-file' };
-
-    let buffer: Buffer;
-    try {
-      buffer = await filePart.toBuffer();
-    } catch {
-      // 体积超限（RequestFileTooLargeError）或流错误：统一归为 too-large。
-      return { kind: 'rejected', reason: 'too-large' };
-    }
-    // Explicit image cap independent of the multipart ceiling (which is raised to MAX_FILE_BYTES
-    // for generic-file uploads): a too-large image is rejected here, not buffered to the limit.
-    if (buffer.length > UploadService.MAX_IMAGE_BYTES) {
-      return { kind: 'rejected', reason: 'too-large' };
+    const r = await this.consumeSingle(req, {
+      allowed: (mimetype) => mimetype in IMG_EXT,
+      maxBytes: UploadService.MAX_IMAGE_BYTES,
+    });
+    if (r.kind === 'rejected') {
+      return { kind: 'rejected', reason: r.reason };
     }
     return {
       kind: 'file',
-      mimetype: filePart.mimetype,
-      buffer,
-      w: Number(fields.w) || 0,
-      h: Number(fields.h) || 0,
+      mimetype: r.mimetype,
+      buffer: r.buffer,
+      w: Number(r.fields.w) || 0,
+      h: Number(r.fields.h) || 0,
     };
   }
 
@@ -138,35 +116,103 @@ export class UploadService {
    * 从 multipart/form-data 请求里消费单个通用文件：单文件契约，粗筛 mimetype（白名单 FILE_MIME_EXT，
    * 不含可执行/脚本），toBuffer 后再校验 MAX_FILE_BYTES。与 consumeImage 对称，但走通用文件白名单。
    */
+  /**
+   * Consume a single generic file from multipart/form-data: whitelist the mimetype
+   * (FILE_MIME_EXT — no executables/scripts), cap at MAX_FILE_BYTES, and require a filename.
+   * url/name/size/mimeType are all server-generated downstream, so extra fields are ignored.
+   * Delegates the multipart draining to consumeSingle; the filename contract is enforced here
+   * (it is route-specific, not a property of the shared draining loop).
+   */
   async consumeFile(req: FastifyRequest): Promise<ConsumedFile> {
-    let filePart: MultipartFile | undefined;
-    for await (const part of req.parts()) {
-      if (part.type === 'file') {
-        if (filePart) {
-          part.file.resume(); // 单文件契约：多出的文件直接排空。
-          continue;
-        }
-        if (!(part.mimetype in FILE_MIME_EXT)) {
-          part.file.resume();
-          return { kind: 'rejected', reason: 'wrong-type' };
-        }
-        filePart = part;
+    const r = await this.consumeSingle(req, {
+      allowed: (mimetype) => mimetype in FILE_MIME_EXT,
+      maxBytes: MAX_FILE_BYTES,
+    });
+    if (r.kind === 'rejected') {
+      return { kind: 'rejected', reason: r.reason };
+    }
+    if (!r.filename) {
+      return { kind: 'rejected', reason: 'bad-name' };
+    }
+    return {
+      kind: 'file',
+      mimetype: r.mimetype,
+      buffer: r.buffer,
+      filename: r.filename,
+    };
+  }
+
+  /**
+   * Core single-file multipart consumer shared by every upload route (avatar, chat image, chat
+   * file). Owns the one copy of the @fastify/multipart draining logic so the backpressure bug
+   * below can never again diverge across routes:
+   *
+   * Each file part MUST be drained inside the loop. The parser can only find the next part (or
+   * EOF) by reading through the current file's stream; deferring toBuffer() to after the loop
+   * leaves the stream unconsumed, and once the body spans more than one read chunk (>~128KB)
+   * backpressure stalls the parts() iterator forever — the request hangs with no backend log.
+   * (Tiny files happen to fit one chunk, which is why this regressed silently.)
+   *
+   * Single-file contract: only the first file is kept; extras are resumed so the parser can
+   * advance. `allowed` is the coarse mimetype whitelist (forgeable — callers re-verify via magic
+   * number / sharp). `maxBytes` is the explicit per-route cap beneath the global multipart ceiling.
+   * The filename is captured when present (the generic-file route requires it; image routes ignore
+   * it). Non-file parts are collected into `fields` (bounded by multipart field-size limits).
+   */
+  private async consumeSingle(
+    req: FastifyRequest,
+    opts: { allowed: (mimetype: string) => boolean; maxBytes: number },
+  ): Promise<
+    | {
+        kind: 'file';
+        mimetype: string;
+        buffer: Buffer;
+        filename?: string;
+        fields: Record<string, string>;
       }
-      // 通用文件不接收额外字段（url/size 等由落盘后服务端生成，客户端无法伪造）。
+    | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' }
+  > {
+    let file:
+      | { mimetype: string; buffer: Buffer; filename?: string }
+      | undefined;
+    const fields: Record<string, string> = {};
+    for await (const part of req.parts()) {
+      if (part.type !== 'file') {
+        fields[part.fieldname] = String(part.value);
+        continue;
+      }
+      // Single-file contract: drain extras so the parser can advance, then ignore them.
+      if (file) {
+        part.file.resume();
+        continue;
+      }
+      // Coarse mimetype filter (forgeable): reject before buffering.
+      if (!opts.allowed(part.mimetype)) {
+        part.file.resume();
+        return { kind: 'rejected', reason: 'wrong-type' };
+      }
+      // Drain NOW, inside the loop (see method doc) — never defer toBuffer() past it.
+      let buffer: Buffer;
+      try {
+        buffer = await part.toBuffer();
+      } catch {
+        // Over the multipart fileSize limit (RequestFileTooLargeError) or a stream error.
+        return { kind: 'rejected', reason: 'too-large' };
+      }
+      // Explicit per-route cap below the global multipart ceiling: reject rather than buffering
+      // all the way to the limit.
+      if (buffer.length > opts.maxBytes) {
+        return { kind: 'rejected', reason: 'too-large' };
+      }
+      file = {
+        mimetype: part.mimetype,
+        buffer,
+        ...(part.filename ? { filename: part.filename } : {}),
+      };
     }
-    if (!filePart) return { kind: 'rejected', reason: 'no-file' };
-    const filename = filePart.filename;
-    if (!filename) return { kind: 'rejected', reason: 'bad-name' };
-    let buffer: Buffer;
-    try {
-      buffer = await filePart.toBuffer();
-    } catch {
-      return { kind: 'rejected', reason: 'too-large' };
-    }
-    if (buffer.length > MAX_FILE_BYTES) {
-      return { kind: 'rejected', reason: 'too-large' };
-    }
-    return { kind: 'file', mimetype: filePart.mimetype, buffer, filename };
+
+    if (!file) return { kind: 'rejected', reason: 'no-file' };
+    return { kind: 'file', ...file, fields };
   }
 
   /**

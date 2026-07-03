@@ -76,6 +76,12 @@ export interface CbElement<T = unknown> {
 /** createItem: wraps an item into a CbElement. prev = the older neighbor (index-1 within mounted), used to compute grouping (head/continuation); null if none. */
 export interface CbHooks<T = unknown> {
   createItem: (item: CbItem<T>, prev: CbItem<T> | null) => CbElement<T>;
+  /** Skeleton placeholder for the topmost slot (mounted[0]) when the older edge is NOT yet reached (a loading spinner
+   *  while loadOlder fetches older history). The KERNEL owns the decision of WHEN a slot is a skeleton (it knows prev,
+   *  item.boundary, and noOlder — see createVs); createItem only ever renders REAL items. Supplying this hook opts the
+   *  consumer into skeleton rendering; when absent the kernel falls back to createItem for the slot (no skeleton).
+   *  Generic (T = unknown): the kernel never imports a concrete spinner — the consumer provides the pixels. */
+  createSkeleton?: (item: CbItem<T>) => CbElement<T>;
   /** Called on each source batch before createItem: presentation aggregation (e.g. merge consecutive same-creator IMAGE msgs into an album). Default noop. scope = batch (per-batch, cut across batches). */
   mergeItems?: (items: CbItem<T>[]) => CbItem<T>[];
   /** Cross-batch album absorb: when a newer batch's item would mount right after the running newest real, the kernel asks
@@ -951,12 +957,24 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.updateTailCap(); // re-measure the cap every batch mount: a newer batch reaching the global newest flips loading→gap
   }
 
+  /** Single source of truth for the skeleton-vs-real decision. A slot is a skeleton iff it is the topmost item
+   *  (prev === null) AND the global oldest has NOT been reached. atOldestEdge covers three cases: boundary 'oldest',
+   *  'both' (a sole item spanning both edges), and the kernel's noOlder. The noOlder case is what keeps an optimistic
+   *  send in an EMPTY thread real (no boundary marker, but noOlder=true → not a skeleton) — without it the sole pending
+   *  bubble would render as a top spinner. When the slot is a skeleton and the consumer supplied createSkeleton, use it;
+   *  otherwise fall back to createItem (legacy/no-skeleton behavior, e.g. the spec harness). */
+  private createVs(item: CbItem<T>, prev: CbItem<T> | null): CbElement<T> {
+    const atOldestEdge = item.boundary === 'oldest' || item.boundary === 'both' || this.noOlder;
+    const skeleton = prev === null && !atOldestEdge;
+    return skeleton && this.hooks.createSkeleton ? this.hooks.createSkeleton(item) : this.hooks.createItem(item, prev);
+  }
+
   /** Create and mount one entry: createItem + DOM insert (before anchorEl / append) + pendingMeasure + subscribe to height.
    *  `animate` (default false) marks a mount that should play cb-enter after its height settles — only insertAfter and
    *  appendLive pass true; scroll-loaded history batches (init/older/newer) never animate. */
   private createEntry(item: CbItem<T>, prev: CbItem<T> | null, anchorEl?: HTMLElement | null, animate = false): Entry<T> {
     if (ngDevMode) this.mountTick++;
-    const vs = this.hooks.createItem(item, prev);
+    const vs = this.createVs(item, prev);
     const el = vs.el;
     el.dataset['cbId'] = String(item.id);
     if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
@@ -992,7 +1010,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (idx < 0) return;
     if (ngDevMode) this.mountTick++;
     const newPrev = idx > 0 ? this.mounted[idx - 1].item : null; // older neighbor (one index lower)
-    const newVs = this.hooks.createItem(newItem, newPrev);
+    const newVs = this.createVs(newItem, newPrev);
     const newEl = newVs.el;
     newEl.dataset['cbId'] = String(newItem.id);
     this.content.insertBefore(newEl, entry.el);

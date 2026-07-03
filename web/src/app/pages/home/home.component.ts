@@ -1,36 +1,28 @@
 import { Component, inject, OnInit, OnDestroy } from '@angular/core';
 import { Subscription, filter } from 'rxjs';
-import { LayoutService } from '../../services/layout.service';
 import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GroupEventService } from '../../services/group-event.service';
-import { DesktopHomeComponent } from '../../components/desktop/desktop-home/desktop-home.component';
-import { MobileHomeComponent } from '../../components/mobile/mobile-home/mobile-home.component';
-import { TabletHomeComponent } from '../../components/tablet/tablet-home.component';
+import { HomeShellComponent } from '../../components/home-shell/home-shell.component';
+import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
 
 /**
- * Home route entry — a thin shell that forks the desktop vs mobile view trees
- * via @defer on LayoutService.isDesktop(), so each device only downloads its
- * own shell chunk. App bootstrap (profile / token / websocket) lives here
- * because this route component is always instantiated regardless of device.
+ * Home route entry (`/`). Renders the unified responsive {@link HomeShellComponent} (which hosts the
+ * chat + aside router-outlets) plus the root popup layer for the transient editor dialogs. App
+ * bootstrap (profile / token / websocket) lives here because this route component is always
+ * instantiated once the user is authed.
  */
 @Component({
   selector: 'app-home',
-  imports: [DesktopHomeComponent, TabletHomeComponent, MobileHomeComponent],
+  imports: [HomeShellComponent, RootPopupComponent],
   template: `
-    @defer (when layout.mode()==='desktop') {
-      <app-desktop-home />
-    } @defer (when layout.mode()==='tablet') {
-      <app-tablet-home />
-    } @defer (when layout.mode()==='mobile') {
-      <app-mobile-home />
-    }
+    <app-home-shell />
+    <app-root-popup />
   `,
 })
 export class HomeComponent implements OnInit, OnDestroy {
-  protected readonly layout = inject(LayoutService);
   private readonly userService = inject(UserService);
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);

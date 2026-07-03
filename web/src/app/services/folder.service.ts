@@ -31,7 +31,7 @@ export function inFolder(thread: { id: number; type: string }, folder: ChatFolde
 /**
  * Holds the user's chat folders. Desktop-only feature; config lives in the
  * browser (localStorage), no backend involvement. Mirrors the signal+readonly
- * pattern of InfoPanelService and the `soms.*` localStorage prefix of listWidth.
+ * pattern of ConversationListService and the `soms.*` localStorage prefix of listWidth.
  */
 @Injectable({ providedIn: 'root' })
 export class FolderService {

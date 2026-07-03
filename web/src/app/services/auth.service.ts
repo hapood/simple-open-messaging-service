@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
+import { uuid } from '../lib/uuid';
 
 const REFRESH_TOKEN = 'refresh_token',
   IS_KEEP_LOGIN = 'is_keep_login'
@@ -200,7 +201,7 @@ export class AuthService {
   private getDeviceId(): string {
     let id = localStorage.getItem('device_id')
     if (!id) {
-      id = crypto.randomUUID?.() ?? (Date.now().toString(36) + Math.random().toString(36).slice(2))
+      id = uuid()
       localStorage.setItem('device_id', id)
     }
     return id

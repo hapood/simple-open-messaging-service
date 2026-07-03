@@ -3,58 +3,50 @@ import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
 import { AvatarEditorComponent } from '../components/avatar-editor/avatar-editor.component';
 import { FriendRequestsComponent } from '../components/friend-requests/friend-requests.component';
-import { MessageThreadComponent } from '../components/message-thread/friend-message.component';
 import { NewGroupComponent } from '../components/new-group/new-group.component';
-import { GroupInfoComponent } from '../components/group-info/group-info.component';
-import { PeerProfileComponent } from '../components/peer-profile/peer-profile.component';
 import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { SessionsComponent } from '../components/sessions/sessions.component';
-import { ConversationItem } from './model';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
-export enum PopupType { FRIEND_REQUESTS, MSG_THREAD, NEW_GROUP, GROUP_INFO, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR, PEER_PROFILE }
+/**
+ * Transient editor dialogs only. The navigation-bearing views (chat thread, peer profile, group info)
+ * are router routes now (see app.routes.ts) — no longer managed here. `DlgRef` + `closeDialogAndAbove`
+ * remain for these editors.
+ */
+export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
-  [PopupType.MSG_THREAD]: MessageThreadComponent,
   [PopupType.NEW_GROUP]: NewGroupComponent,
-  [PopupType.GROUP_INFO]: GroupInfoComponent,
   [PopupType.FOLDER_EDITOR]: FolderEditorComponent,
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
   [PopupType.SESSIONS]: SessionsComponent,
   [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
-  [PopupType.PEER_PROFILE]: PeerProfileComponent
 }
 
 // per-popup input contracts — what each dialog's input() fields accept
 export interface PopupInput {
   [PopupType.FRIEND_REQUESTS]: { subject?: Subject<any> }
-  [PopupType.MSG_THREAD]: { threadId: number, userMsgTrd: ConversationItem, startMsgId?: string }
   [PopupType.NEW_GROUP]: undefined
-  [PopupType.GROUP_INFO]: { userMsgTrd: ConversationItem }
   [PopupType.FOLDER_EDITOR]: { folderId?: string }
   [PopupType.EDIT_PROFILE]: undefined
   [PopupType.SESSIONS]: undefined
   [PopupType.AVATAR_EDITOR]: { file: File },
-  [PopupType.PEER_PROFILE]: { userMsgTrd: ConversationItem }
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
 export interface PopupResult {
   [PopupType.FRIEND_REQUESTS]: undefined
-  [PopupType.MSG_THREAD]: undefined
   [PopupType.NEW_GROUP]: { groupId: number }
-  [PopupType.GROUP_INFO]: undefined
   [PopupType.FOLDER_EDITOR]: boolean
   [PopupType.EDIT_PROFILE]: boolean
   [PopupType.SESSIONS]: undefined
   // cropped File on Save; undefined on Cancel/back.
   [PopupType.AVATAR_EDITOR]: { file: File } | undefined,
-  [PopupType.PEER_PROFILE]: undefined
 }
 
 export interface DlgInfo {
