@@ -10,6 +10,16 @@ const REFRESH_TOKEN = 'refresh_token',
 type AccessTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
 
 /**
+ * When the tab returns to the foreground, proactively renew the access token if it is likely stale.
+ * The access TTL is 15m; renewing when the token was set more than 13m ago leaves a 2m skew margin.
+ * The renew call also re-sets the httpOnly `media_token` cookie on the backend, so same-origin
+ * /uploads/* <img>/<a> requests on the just-foregrounded tab stay authenticated instead of 401ing
+ * until the next HttpClient call happens to refresh it. Conservative threshold + single-flight renew
+ * keep this from churning (a quick tab switch does nothing; refresh rotation races are unchanged).
+ */
+const FOCUS_REFRESH_AFTER_MS = 13 * 60 * 1000
+
+/**
  * Token 管理（简化版）：
  * - 统一只走 `/auth/renew-access`（后端 renew-access 与 renew-refresh 完全同义，会同时轮换 refresh）。
  *   access 15m 过期 → 被动刷新；每次 renew-access 也轮换 refresh，故无需 7 天主动刷新。
@@ -24,10 +34,27 @@ type AccessTokenRes = { code: number, message: string, data?: { access_token: st
 export class AuthService {
   private _isKeep = localStorage.getItem(IS_KEEP_LOGIN) === '1' || false
   private _renewAccessInFlight?: Observable<AccessTokenRes>
+  /** Wall-clock ms when the current access token was stored, or null when none is held. Drives the
+   *  focus-refresh below; not decoded from the JWT (kept simple — see FOCUS_REFRESH_AFTER_MS). */
+  private _accessSetAt: number | null = null
   /** 当前 access token；null = 无 token（启动期 / renew 进行中）。拦截器据此决定直接发还是先 renew。 */
   public acTkSub = new BehaviorSubject<string | null>(null)
 
-  constructor(private http: HttpClient, private routeService: RouteService) {}
+  constructor(private http: HttpClient, private routeService: RouteService) {
+    // Keep the access token (and thus the media cookie) fresh when the tab is foregrounded after
+    // being idle long enough that the 15m token has likely expired. Guarded by a refresh-token check
+    // so a logged-out tab focusing never triggers a redirect-to-login.
+    document.addEventListener('visibilitychange', this.onVisibilityChange)
+  }
+
+  private onVisibilityChange = () => {
+    if (document.visibilityState !== 'visible') return
+    const stale = this._accessSetAt === null || Date.now() - this._accessSetAt > FOCUS_REFRESH_AFTER_MS
+    if (stale && this.getRefreshToken() !== undefined) {
+      // Fire and forget — single-flight dedupes concurrent triggers; the tap stores the new token.
+      this.renewAccessToken().subscribe()
+    }
+  }
 
   /** 当前 access token（同步快照），供拦截器无延迟判断。 */
   get accessToken(): string | null {
@@ -75,6 +102,7 @@ export class AuthService {
       return EMPTY
     }
     this.acTkSub.next(null) // 暂停受保护请求，等新 token
+    this._accessSetAt = null
     const req$ = this.http.post<AccessTokenRes>(
       `${apiPrefix}/auth/renew-access`,
       { refreshToken: rfToken, device: this.getDeviceId() },
@@ -95,6 +123,7 @@ export class AuthService {
   }
 
   setAcToken(accessToken: string) {
+    this._accessSetAt = Date.now()
     this.acTkSub.next(accessToken)
   }
 
@@ -128,6 +157,7 @@ export class AuthService {
    */
   clearToken() {
     this.acTkSub.next(null)
+    this._accessSetAt = null
     if (this._isKeep) {
       localStorage.removeItem(REFRESH_TOKEN)
     } else {

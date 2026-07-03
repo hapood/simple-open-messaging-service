@@ -17,7 +17,7 @@ export class MsgService {
     return this.http.post(`${apiPrefix}/add-friend`, { uniqName })
   }
 
-  sendMessage(params: { threadId: number, content: string, contentType?: string }) {
+  sendMessage(params: { threadId: number, content: string, contentType?: string, clientMessageId?: string }) {
     return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
   }
 

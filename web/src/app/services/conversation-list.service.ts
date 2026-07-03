@@ -1,6 +1,7 @@
 import { Injectable, inject, signal } from '@angular/core';
 import { UserService } from './user.service';
 import { ConversationItem } from './model';
+import { toFriendlyHttpError } from './http-error';
 
 /**
  * Shared conversation-list store: the single client-side source of truth for the chat list, so that
@@ -55,7 +56,7 @@ export class ConversationListService {
         this._status.set('READY');
       },
       error: (err) => {
-        this._error.set(err?.message || 'Network error, please retry');
+        this._error.set(toFriendlyHttpError(err));
         this._status.set('ERROR');
       },
     });

@@ -1,28 +1,33 @@
 /**
- * ChatBoxScrollerAnchor —— 方案 A：借浏览器 overflow-anchor 锚定（与方案 B 硬分叉，便于 a/b 对比）。
+ * ChatBoxScrollerAnchor — Plan A: pins the viewport via the browser's overflow-anchor (a hard fork from Plan B, for
+ * A/B comparison).
  *
- * 【array index-based】内核维护 `mounted: Entry[]` 有序数组（mounted[0]=最老/DOM 顶 → 末=最新/底），
- *  下标=窗口局部 index（不累积、不依赖方向、天然支持双向）。item.id（msgId）仅作 source 游标，
- *  **不参与位置算术**。前缀和 `prefix[]`（flushPrefix 懒失效）让 topOf/totalH O(1) 摊销。
+ * [array index-based] The kernel keeps an ordered `mounted: Entry[]` array (mounted[0] = oldest / DOM top → last =
+ *  newest / bottom); the index is a window-local index (non-cumulative, direction-agnostic, naturally bidirectional).
+ *  item.id (msgId) is only a source cursor and **takes no part in position arithmetic**. The prefix-sum `prefix[]`
+ *  (flushPrefix lazy-invalidated) makes topOf/totalH O(1) amortized.
  *
- * 与方案 B（{@link ChatBoxScroller}）同构：array index + 数据源驱动、像素阈值窗口、检查点加载、trim、
- *  mergeItems hook（相册合并在内核，per-batch）。唯一区别：**不写 scrollTop 补偿**——prepend 更老 /
- *  上方高度变化 / 截上方 都不动 scrollTop，交由浏览器 `overflow-anchor: auto`（默认）钉住首个可见元素。
+ * Isomorphic to Plan B ({@link ChatBoxScroller}): array index + source-driven, pixel-threshold window, checkpoint
+ *  loading, trim, mergeItems hook (album merging in the kernel, per-batch). The ONLY difference: it **does not write
+ *  scrollTop compensation** — prepending older / above-viewport height changes / trimming the top never move scrollTop;
+ *  the browser's `overflow-anchor: auto` (default) pins the first visible element.
  *
- * 故方案 A 没有「异步 resolve 后补偿用快照会跳变」的风险面（§async 对策只需重校验、不需补偿算术）——
- * 这是方案 A 在 fling + 慢加载场景更顺的根本原因。代价：iOS 全系不支持 overflow-anchor → 方案 A 仅 Android。
+ * So Plan A has no "the snapshot used for post-async-resolve compensation goes stale" risk surface (the async strategy
+ *  only re-validates — no compensation arithmetic) — this is the root reason Plan A is smoother in fling + slow-load
+ *  scenarios. Cost: no iOS build supports overflow-anchor → Plan A is Android-only.
  *
- * 注：重校验仍需（避免向反向/边界挂载），只是去掉补偿。
- * 前提：宿主 viewport overflow-anchor: auto（默认）；方案 B 的 playground 设 none 让手动补偿独占。
+ * Note: revalidation is still required (avoid mounting on a reverse fling / at a boundary); only compensation is removed.
+ * Prerequisite: the host viewport has overflow-anchor: auto (default); Plan B's playground sets none so the manual
+ * compensation owns it exclusively.
  */
 declare const ngDevMode: boolean | null | undefined;
 
 import type { CbSource } from './cb-source';
 import type {
-  CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts,
+  CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts, Anchor,
 } from './chat-box-scroller';
 
-export type { CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts } from './chat-box-scroller';
+export type { CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts, Anchor } from './chat-box-scroller';
 
 const DEFAULTS: Required<CbConfig> = {
   edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
@@ -35,8 +40,9 @@ interface Entry<T> {
   vs: CbElement<T>;
   height: number;
   unsub: () => void;
-  /** insertAfter 插入的项为 true（未注册到 source）。其 id 非 source 游标，故游标派生（olderCursorId/newerCursorId）
-   *  跳过之——防 transient 到达首/末后让 getOlder/getNewer 返回 [] 误锁 noOlder/noNewer。 */
+  /** True for items inserted via insertAfter (not registered with the source). Their id is not a source cursor, so
+   *  cursor derivation (olderCursorId/newerCursorId) skips them — prevents a transient at the head/tail from making
+   *  getOlder/getNewer return [] and falsely locking noOlder/noNewer. */
   transient: boolean;
   /** True for an in-flight pending send (insertAfter {optimistic:true}): registered with source.pending, returned by
    *  getNewer when the real batch is short. Skipped by cursor derivation and protected from trim (atomic block). */
@@ -48,6 +54,12 @@ interface Entry<T> {
   /** True on a mount that should play the cb-enter animation (insertAfter + appendLive only; scroll-loaded history
    *  batches never animate). Consumed once by measurePending (after cb-pending is dropped): calls enterAnim and clears it. */
   animate: boolean;
+  /** Set true on a mount whose enter must come FROM ABOVE (cb-enter-above) instead of from below (cb-enter). Used by
+   *  mountNewerReals when an optimistic/transient tail block is present: a newer batch inserts reals just above the
+   *  tail, and a downward enter would visually cross (cover) the pending mid-animation, so the real descends into its
+   *  slot from the newest-real side while the tail shoves down via cb-move. Consumed once by measurePending alongside
+   *  `animate` to pick the enter class; cleared after. */
+  enterAbove: boolean;
   /** True while the cb-leave exit animation is in flight. The entry STAYS in mounted[] (height still counted) until
    *  animationend so the height model stays exact; cursor derivation skips it like transient. Set by removeItem. */
   leaving: boolean;
@@ -74,15 +86,16 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private readonly onScroll?: (info: CbScrollInfo) => void;
   private readonly onDebug?: (stats: CbDebugStats) => void;
 
-  /** 有序挂载项：index 0=最老（DOM 顶）→ 末=最新（DOM 底）。下标=窗口局部 index。 */
+  /** Ordered mounted entries: index 0 = oldest (DOM top) → last = newest (DOM bottom). Window-local index. */
   private mounted: Entry<T>[] = [];
-  /** 前缀和：prefix[i]=Σheight[0..i-1]（prefix[0]=0、prefix[n]=totalH）。dirtyPrefix 时 flushPrefix 重算。 */
+  /** Prefix sum: prefix[i] = Σheight[0..i-1] (prefix[0]=0, prefix[n]=totalH). flushPrefix recomputes when dirtyPrefix. */
   private prefix: number[] = [0];
   private dirtyPrefix = true;
 
   private noOlder = false;
   private noNewer = false;
-  /** 当前显骨架的 entry（= mounted[0] 当 !noOlder）；null=无骨架。用 entry 引用（不怕数组位移）。 */
+  /** The entry currently showing the skeleton (= mounted[0] when !noOlder); null = no skeleton. Compared by entry
+   *  reference (immune to array shifts). */
   private ghostEntry: Entry<T> | null = null;
 
   /** Tail cap: a persistent non-message element kept as the last child of content (NEVER in mounted[]), mirroring the top
@@ -97,18 +110,21 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   });
   private inflightOlder = false;
   private inflightNewer = false;
-  /** 重置代：openAround 自增；loadOlder/loadNewer 的 await 后比对，过期批不挂（防跳转超越在途加载）。 */
+  /** Reset generation: incremented by openAround; compared after the await in loadOlder/loadNewer so stale batches are
+   *  not mounted (guards against a jump overtaking an in-flight load). */
   private gen = 0;
-  /** re-seed 进行中（resetWindowState→mount 之间）：appendLive 期间丢弃 WS（已在 source 缓存，回滑 getNewer 取回）。 */
+  /** Re-seed in progress (between resetWindowState and mount): appendLive drops WS during this (already in the source
+   *  cache, retrieved by getNewer when scrolling back). */
   private resetting = false;
-  /** 调试开关：关闭挂载检查点（balance 不触发 loadOlder/loadNewer）。balance 内 ngDevMode 守卫 → 生产 AOT 移除。默认 false（检查点正常加载）。 */
+  /** Debug switch: turn off the mount checkpoint (balance will not trigger loadOlder/loadNewer). Guarded by ngDevMode
+   *  inside balance → removed in prod AOT. Default false (checkpoint loads normally). */
   closeCheckpoint = false;
 
-  /** 待实测高度的 entry 队列（改存 entry 引用，回调内 indexOf 读当前 index）。 */
+  /** Queue of entries awaiting real-height measurement (entry refs; the callback reads the current index via indexOf). */
   private pendingMeasure: Entry<T>[] = [];
 
   private vh = 0;
-  private shifting = false;   // 屏蔽程序化 scrollTop 写（scrollToBottom 等）引发的 scroll 方向误判
+  private shifting = false;   // suppresses scroll-direction misdetection caused by programmatic scrollTop writes (scrollToBottom, etc.)
   /** Set after a viewport-resize reflow re-pins to bottom; onNativeScroll consumes it once so the async scroll event
    *  the pinToBottom write fires does not re-arm balance/load/trim during a viewport shrink (soft keyboard, etc.). */
   private suppressScrollBalance = false;
@@ -157,7 +173,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   async init(opts?: CbInitOpts): Promise<void> {
-    // 跳转/重锚：开在指定消息（双向取数 + 居中定位），不走最新铺底。
+    // Jump / re-anchor: open at a specific message (bidirectional fetch + centered positioning), skip the newest-layout path.
     const startId = opts?.startMsgId ?? null;
     if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); return; }
     let batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
@@ -166,13 +182,13 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.absorbBoundary(merged);
     this.mountBatch(merged, 'init');
     while (this.totalH() < this.threshold && !this.noOlder && this.mounted.length > 0) {
-      const cursor = this.mounted[0].item.id; // 最老挂载的 msgId
+      const cursor = this.mounted[0].item.id; // oldest mounted msgId
       batch = await this.source.getOlder(cursor, this.cfg.initBatch);
       merged = this.mergeBatch(batch);
       if (merged.length === 0) { this.noOlder = true; break; }
       this.absorbBoundary(merged);
-      this.mountBatch(merged, 'older'); // 不内部 measure
-      this.measurePending();            // 补批统一测
+      this.mountBatch(merged, 'older'); // no internal measure
+      this.measurePending();            // unified measure for fill batches
     }
     this.scrollToBottom();
     this.updateGhost();
@@ -204,10 +220,30 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (this.destroyed || this.resetting) return;
     if (!this.noNewer) return;                               // newer end trimmed → cached only; load on scroll-back
     const wasAtBottom = this.isAtBottom();
+
+    // Coordinated enter/shove animation — FLIP "First": snapshot the optimistic tail's absolute tops at their LAST
+    // PAINTED position (before loadNewer inserts the new reals above them and reconcile removes any confirmed duplicate).
+    // After those mutations, flipMove replays the surviving tail from these tops to its new position (the shove) in the
+    // same synchronous task as the new reals' cb-enter-above (started in measurePending), so the pair shares one frame.
+    const tailBefore = this.mounted.filter(e => e.optimistic && !e.leaving);
+    const tailOldTop = new Map<Entry<T>, number>();
+    if (tailBefore.length > 0) {
+      this.flushPrefix();
+      for (const e of tailBefore) tailOldTop.set(e, this.topOf(this.mounted.indexOf(e)));
+    }
+
     await this.loadNewer(true);                              // forced: the signal means new data is available (bypasses the noNewer/revalidate guards)
     if (this.destroyed) return;
     await this.reconcileOptimistic();                        // remove optimistic duplicates (synchronous) so the bottom is final
     if (this.destroyed) return;
+
+    // FLIP "Play": animate the surviving optimistic tail from its pre-batch tops (the shove). No-op when nothing remains
+    // (single-send confirm: the lone pending was the removed duplicate) or when heights match (delta 0 → skipped), the
+    // common case since a real confirms an optimistic of the same content.
+    if (tailOldTop.size > 0) {
+      this.flipMove(this.mounted.filter(e => e.optimistic && !e.leaving), tailOldTop);
+    }
+
     // Trim + ghost + cap BEFORE the pin: these mutate content (remove top items → scrollHeight shrinks), so pinning to the
     // FINAL bottom must come after them (mirrors Kernel B). Pinning before trim anchored scrollTop to a pre-trim bottom and
     // the subsequent trim shifted it off → the latest message dropped below the fold on the first send.
@@ -219,19 +255,22 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
-   * 在已挂载的 afterId 项之后插入一条 item。afterId 未挂载或正在 re-seed 时为 no-op（返回 false）。
+   * Insert one item immediately after the mounted entry representing afterId. No-op (returns false) if afterId is not
+   * mounted or a re-seed is in progress.
    *
-   * **不触发 balance**：不调 loadOlder/loadNewer/trim。measurePending 在 `measuring` 守卫下结算高度、不 schedule
-   *  balance。方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉视口）——这是方案 A 与方案 B 的唯一分歧：
-   *  方案 B 手动 compensateAbove；方案 A 交由浏览器。
+   * **No balance**: does not call loadOlder/loadNewer/trim. measurePending settles the height under the `measuring`
+   *  guard and does not schedule a balance. Plan A **does not compensate scrollTop** (the browser's overflow-anchor
+   *  pins the viewport) — this is the one divergence from Plan B, which compensates manually; Plan A delegates to the
+   *  browser.
    *
-   * 后继项（原 idx+1）的 prev 变了（target → 新 item）→ 原地 rebuild 重算组首/date（同 ghost 显形 rebuild）；
-   * 再往后的项 prev 不变、无需 rebuild。新 entry 标 transient（非 source 游标）。
+   * The successor (the entry that was at idx+1) has its prev changed (target → new item) → rebuilt in place to
+   * recompute group-head/date (same lightweight rebuild as the ghost reveal); entries further down keep the same prev
+   * and need no rebuild. The new entry is marked transient (not a source cursor).
    */
   insertAfter(afterId: string | number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean {
     if (this.destroyed || this.resetting) return false;
     const idx = this.indexOfId(afterId);
-    if (idx < 0) return false;                  // 未挂载 → 忽略插入请求
+    if (idx < 0) return false;                  // not mounted → neglect the insert request
     const target = this.mounted[idx];
     const successor = this.mounted[idx + 1] ?? null;
     const anchorEl = successor ? successor.el : null;
@@ -242,11 +281,12 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (opts?.optimistic) entry.optimistic = true;   // pending send (in source.pending, returned by getNewer, atomic)
     else entry.transient = true;                      // FAKE debug insert (viewport-only)
     this.mounted.splice(idx + 1, 0, entry);
-    if (successor) this.rebuildEntry(successor); // prev 变了 → 重算组首/date（高度置 0、下面统一 measure）
+    if (successor) this.rebuildEntry(successor); // prev changed → recompute group-head/date (height reset, re-measured below)
 
     this.dirtyPrefix = true;
-    this.measurePending();                       // `measuring` 守卫屏蔽 onElHeight 补偿/balance
-    // 方案 A：浏览器 overflow-anchor 自动钉住视口（视口上方插入/高度变化不跳变），无需手动补偿 scrollTop。
+    this.measurePending();                       // `measuring` suppresses onElHeight compensation/balance
+    // Plan A: the browser's overflow-anchor automatically pins the viewport (an above-viewport insert/height change
+    // does not jump), so no manual scrollTop compensation is needed.
     this.emit();
     return true;
   }
@@ -296,17 +336,68 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   scrollToBottom(): void {
     if (this.destroyed) return;
     this.pinToBottom();
-    // 最新端可能被 trimNewer 截掉（窗口后退、noNewer=false）→ 加载回全局最新（followToNewest 链式直到 noNewer）
+    // The newest end may be trimmed away by trimNewer (window moved back, noNewer=false) → load back to the global
+    // newest (the followToNewest chain, looping until noNewer).
     if (!this.noNewer) void this.followToNewest();
   }
 
-  /** Position the viewport at the content bottom (instant, shifting suppresses direction misdetection) and emit. */
+  /** Position the viewport at the content bottom — the bottom {@link Anchor}, applied via {@link applyAnchor}. */
   private pinToBottom(): void {
+    this.applyAnchor({ mode: 'bottom' });
+  }
+
+  /**
+   * Snapshot the current viewport position as an {@link Anchor}. Plan A uses this only for resize (the at-bottom test
+   * before re-measuring vh); stabilization is browser-delegated (overflow-anchor), so unlike Plan B the load/insert/
+   * height-change sites do NOT capture+apply. Uses the kernel height model (totalH) for the at-bottom test, matching
+   * Plan B's reasoning (DOM scrollHeight may already reflect a pending change).
+   */
+  private captureAnchor(): Anchor {
+    if (!this.resetting && this.pendingMeasure.length === 0
+      && this.viewport.scrollTop + this.vh >= this.totalH() - 1) return { mode: 'bottom' };
+    const idx = this.topVisibleIdx();
+    if (idx < 0) return { mode: 'bottom' };
+    return {
+      mode: 'item',
+      id: this.mounted[idx].item.id,
+      offset: this.viewport.scrollTop - this.topOf(idx),
+      fallbackId: idx + 1 < this.mounted.length ? this.mounted[idx + 1].item.id : null,
+    };
+  }
+
+  /**
+   * The single positioning write for Plan A (mirrors Plan B). Derives scrollTop from the anchor and clamps. Does NOT
+   * set suppressScrollBalance globally — only onViewportResize (the one site that can pin at a trimmed bottom with
+   * noNewer=false) sets it manually, as before. Positioning writes here are honored directly by the browser; they do
+   * not interfere with overflow-anchor (that engages on content changes, not explicit scrollTop sets).
+   */
+  private applyAnchor(a: Anchor): void {
+    if (this.destroyed) return;
+    let target: number;
+    if (a.mode === 'bottom') {
+      target = this.content.scrollHeight - this.vh;
+    } else {
+      let idx = this.indexOfId(a.id);
+      if (idx < 0 && a.fallbackId != null) idx = this.indexOfId(a.fallbackId);
+      target = idx >= 0 ? this.topOf(idx) + a.offset : this.viewport.scrollTop;
+    }
+    const max = this.content.scrollHeight - this.vh;
     this.shifting = true;
-    this.viewport.scrollTop = this.content.scrollHeight - this.vh;
+    this.viewport.scrollTop = Math.max(0, Math.min(target, max));
     this.shifting = false;
     this.lastScrollTop = this.viewport.scrollTop;
     this.emit();
+  }
+
+  /** Index of the topmost item whose top is at or above the viewport top (last i with prefix[i] <= scrollTop). */
+  private topVisibleIdx(): number {
+    this.flushPrefix();
+    const st = this.viewport.scrollTop;
+    let idx = -1;
+    for (let i = 0; i < this.mounted.length; i++) {
+      if (this.prefix[i] <= st) idx = i; else break;
+    }
+    return idx;
   }
 
   /** Explicit go-to-bottom follow (started by scrollToBottom): keep loading one newer batch and re-pinning until the
@@ -323,6 +414,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   scrollToTop(): void {
     if (this.destroyed) return;
+    // The content origin (the oldest item's top is always prefix[0] = 0): the one intentional absolute write.
     this.shifting = true;
     this.viewport.scrollTop = 0;
     this.shifting = false;
@@ -344,10 +436,12 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
-   * 重置窗口围绕 id：卸载当前窗口 → source.init(id, older, newer) 双向取一批 → 挂载 → fillAround 双向填满 → 定位到 id。
-   * 方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉视口）；gen 自增使在途 loadOlder/loadNewer 作废；
-   * resetting 期间丢弃 appendLive（WS 消息在 source 缓存，回滑 getNewer 取回）。居中锚需两侧内容足够才「真居中」，
-   *  fillAround 保证窗口达 threshold（近边界 best-effort，clamp 自动妥协）。
+   * Reset the window around id: unmount the current window → source.init(id, older, newer) fetches one bidirectional
+   * batch → mount → fillAround fills both ways → position onto id. Plan A **does not compensate scrollTop** (the
+   * browser's overflow-anchor pins the viewport); gen is incremented so in-flight loadOlder/loadNewer are invalidated;
+   * resetting drops appendLive (WS messages are cached in the source, retrieved by getNewer on scroll-back). A centered
+   * anchor needs enough content on both sides for a "true center"; fillAround grows the window to threshold (best-effort
+   * near boundaries, where clamp concedes).
    */
   private async openAround(id: string | number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
     const g = ++this.gen;
@@ -380,10 +474,13 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
-   * 居中跳转的窗口填充：
-   *  1) 上方 while 填到 aboveTarget ≥ threshold/2（或撞 noOlder）；下方 while 填到 belowTarget ≥ threshold/2（或撞 noNewer）。
-   *  2) 补偿：若一侧到界（不足 threshold/2）→ 向【未到界】的另一侧补，直到 totalH ≥ threshold（两侧都到界则无法补，直接渲染）。
-   * 视口尚未定位（scrollTop=0），故加载不补偿/不 trim。方案 A 本就不补偿 scrollTop。gen 守卫防跳转超越在途批。
+   * Window fill for a centered jump:
+   *  1) Fill upward while aboveTarget < threshold/2 (or hit noOlder); fill downward while belowTarget < threshold/2
+   *     (or hit noNewer).
+   *  2) Compensate: if one side hit a boundary (< threshold/2) → fill the OTHER (still-open) side until totalH ≥
+   *     threshold (if both hit boundaries there is nothing to fill — just render).
+   * The viewport is not yet positioned (scrollTop=0), so loading does not compensate/trim. Plan A does not compensate
+   * scrollTop anyway. gen guard drops batches overtaken by a newer jump.
    */
   private async fillAround(targetId: string | number, g: number): Promise<void> {
     const halfTh = this.threshold / 2;
@@ -412,12 +509,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (ngDevMode) console.log('[JUMP] fill iters up/down/comp=', upIter, downIter, compIter, 'totalH=', Math.round(this.totalH()));
   }
 
-  /** targetId 上方所有挂载项总高（= topOf(targetIdx)）。target 不在窗口 → 视为全部在上方。 */
+  /** Total height of all mounted entries above targetId (= topOf(targetIdx)). If the target is not in the window,
+   *  treat everything as above. */
   private aboveTarget(targetId: string | number): number {
     const idx = this.indexOfId(targetId);
     return idx < 0 ? this.totalH() : this.topOf(idx);
   }
-  /** targetId 下方所有挂载项总高（不含 target 自身）。target 不在窗口 → 0。 */
+  /** Total height of all mounted entries below targetId (excluding the target itself). If the target is not in the
+   *  window → 0. */
   private belowTarget(targetId: string | number): number {
     const idx = this.indexOfId(targetId);
     if (idx < 0) return 0;
@@ -425,7 +524,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return this.totalH() - this.prefix[idx + 1];
   }
 
-  /** 构建中窗口向更老加载一批（不补偿/不 trim/不 revalidate——视口未定位）；含旧 ghost 显形 rebuild。空批→noOlder。返回挂载数（0=到界/超越/无数据）。 */
+  /** Load one older batch into the building window (no compensation / no trim / no revalidate — viewport not yet
+   *  positioned); includes the old ghost reveal rebuild. Empty batch → noOlder. Returns the count mounted
+   *  (0 = hit boundary / overtaken / no data). */
   private async loadOlderIntoFresh(g: number): Promise<number> {
     if (this.destroyed || g !== this.gen || this.noOlder || this.mounted.length === 0) return 0;
     const cursor = this.olderCursorId();
@@ -441,7 +542,8 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.updateGhost();
     return merged.length;
   }
-  /** 构建中窗口向更新加载一批（append）。空批→noNewer。返回挂载数（0=到界/超越/无数据）。 */
+  /** Load one newer batch into the building window (append). Empty batch → noNewer. Returns the count mounted
+   *  (0 = hit boundary / overtaken / no data). */
   private async loadNewerIntoFresh(g: number): Promise<number> {
     if (this.destroyed || g !== this.gen || this.noNewer || this.mounted.length === 0) return 0;
     const cursor = this.newerCursorId();
@@ -464,23 +566,19 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return merged.length;
   }
 
-  /** 已挂载 idx 的定位数学（scrollToIndex / openAround 共用）。shifting 屏蔽方向误判。 */
+  /** Positioning math for a mounted idx (shared by scrollToIndex / openAround) — now an explicit item {@link Anchor}
+   *  applied via {@link applyAnchor}. offset is recomputed from the alignment + current vh each call (a resize between
+   *  calls is honored). */
   private positionMounted(idx: number, anchor: 'top' | 'center' | 'bottom'): void {
-    this.flushPrefix();
-    let st = this.prefix[idx];
+    const topOfIdx = this.topOf(idx);
     const h = this.mounted[idx].height;
-    if (anchor === 'center') st += h / 2 - this.vh / 2;
-    else if (anchor === 'bottom') st += h - this.vh;
-    const max = this.content.scrollHeight - this.vh;
-    this.shifting = true;
-    this.viewport.scrollTop = Math.max(0, Math.min(st, max));
-    this.shifting = false;
-    this.lastScrollTop = this.viewport.scrollTop;
-    if (ngDevMode) console.log('[JUMP] positionMounted idx=', idx, 'id=', this.mounted[idx]?.item.id, 'topOf=', Math.round(this.prefix[idx]), 'h=', Math.round(h), 'rawSt=', Math.round(st), 'max=', Math.round(max), 'vh=', this.vh, '-> scrollTop=', Math.round(this.viewport.scrollTop));
-    this.emit();
+    const offset = anchor === 'center' ? h / 2 - this.vh / 2 : anchor === 'bottom' ? h - this.vh : 0;
+    this.applyAnchor({ mode: 'item', id: this.mounted[idx].item.id, offset, fallbackId: null });
+    if (ngDevMode) console.log('[JUMP] positionMounted idx=', idx, 'id=', this.mounted[idx]?.item.id, 'topOf=', Math.round(topOfIdx), 'h=', Math.round(h), 'offset=', Math.round(offset), 'vh=', this.vh, '-> scrollTop=', Math.round(this.viewport.scrollTop));
   }
 
-  /** 清空窗口 + 复位所有加载/边界状态（openAround 开头调）。unmountAll 已清 mounted/prefix/pending/ghost。 */
+  /** Clear the window + reset all load/boundary state (called at the start of openAround). unmountAll already cleared
+   *  mounted/prefix/pending/ghost. */
   private resetWindowState(): void {
     if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
     this.dirty = false;
@@ -492,17 +590,18 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.lastScrollTop = 0;
     this.resetting = true;
     this.shifting = true;
-    this.viewport.scrollTop = 0; // content 已空，归零
+    this.viewport.scrollTop = 0; // content is empty, reset to zero
     this.shifting = false;
     this.updateTailCap(); // window emptied → hide the cap (mounted.length === 0 → height 0) until the new batch mounts
   }
 
-  /** 给目标 entry 加一次性高亮闪烁（animationend 移除 class；reflow 保证重复跳转能重启动画）。 */
+  /** Add a one-shot highlight flash to the target entry (animationend removes the class; a forced reflow guarantees
+   *  the animation restarts on repeated jumps). */
   private flashHighlight(idx: number): void {
     const el = this.mounted[idx]?.el;
     if (!el) return;
     el.classList.remove('cb-jump-highlight');
-    void el.offsetWidth; // 强制 reflow → 重新触发动画
+    void el.offsetWidth; // force reflow → restart the animation
     el.classList.add('cb-jump-highlight');
     el.addEventListener('animationend', () => el.classList.remove('cb-jump-highlight'), { once: true });
   }
@@ -540,9 +639,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.source.destroy();
   }
 
-  // ---------- 前缀和 / 高度 ----------
+  // ---------- Prefix sum / height ----------
 
-  /** dirty 时重算 prefix（O(n)，n=mounted.length）。mount/unmount/onElHeight 置 dirty，读 prefix 前调。 */
+  /** Recompute prefix when dirty (O(n), n = mounted.length). mount/unmount/onElHeight mark it dirty; call before reading prefix. */
   private flushPrefix(): void {
     if (!this.dirtyPrefix) return;
     const p = [0];
@@ -552,24 +651,25 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = false;
   }
 
-  /** idx 顶端距 content 顶 = Σ更老邻居高度 = prefix[idx]。 */
+  /** Distance from the top of idx to the content top = Σ older-neighbor heights = prefix[idx]. */
   private topOf(idx: number): number { this.flushPrefix(); return this.prefix[idx] ?? 0; }
 
   // totalH adds tailCapH (the cap is below every real item, so it never enters prefix[]/topOf — only the total). prefix
   // stays real-items-only; this keeps belowTarget/atBottom honest (the cap really is below the last real item) and topOf exact.
   private totalH(): number { this.flushPrefix(); return (this.prefix.length > 0 ? this.prefix[this.prefix.length - 1] : 0) + this.tailCapH; }
 
-  // ---------- 挂载（array index；DOM 按 mounted 顺序，不涉 scrollTop） ----------
+  // ---------- Mounting (array index; DOM follows mounted order, no scrollTop involvement) ----------
 
-  /** mergeItems hook（默认 noop）。在 createItem 前、对每个 source batch 调一次。scope=batch。 */
+  /** mergeItems hook (default noop). Called once per source batch, before createItem. scope = batch. */
   private mergeBatch(batch: CbItem<T>[]): CbItem<T>[] {
     return this.hooks.mergeItems ? this.hooks.mergeItems(batch) : batch;
   }
 
   /**
-   * 挂一批（已 merge）：side=init/older → prepend（mounted 首，DOM 插到旧首前）；newer → append（末）。
-   * older 不内部 measure（loadOlder 统一测 + ghost rebuild）；init/newer 末尾 measure。
-   * prev = 更老邻居：batch 内前一个（升序），或 append 时旧末。
+   * Mount one batch (already merged): side = init/older → prepend (front of mounted, DOM inserted before the old head);
+   * newer → append (end). older does not measure internally (loadOlder does the unified measure + ghost rebuild);
+   * init/newer measure at the end. prev = the older neighbor: the previous one within the batch (ascending), or the
+   * old tail on append.
    */
   private mountBatch(merged: CbItem<T>[], side: 'init' | 'older' | 'newer', animate = false): void {
     // merged already passed through the mergeItems hook (per-batch) by the caller; this method only mounts.
@@ -604,7 +704,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (anchorEl !== undefined && anchorEl !== null) this.content.insertBefore(el, anchorEl);
     else if (this.tailCapEl) this.content.insertBefore(el, this.tailCapEl); // append path: keep the tail cap always last
     else this.content.appendChild(el);
-    const entry: Entry<T> = { item, el, vs, height: 0, unsub: () => {}, transient: false, optimistic: false, resortTarget: false, animate, leaving: false, leaveDone: false }; // real height set by measurePending()
+    const entry: Entry<T> = { item, el, vs, height: 0, unsub: () => {}, transient: false, optimistic: false, resortTarget: false, animate, enterAbove: false, leaving: false, leaveDone: false }; // real height set by measurePending()
     el.classList.add('cb-pending');
     this.pendingMeasure.push(entry);
     this.mounting = true; // suppress the first report (same as id-based)
@@ -614,11 +714,13 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
-   * 原地重建一个已挂 entry：用当前真实 prev（mounted[idx-1]，更老邻居）重 createItem，DOM 原地替换
-   *（insertBefore(newEl,oldEl)+removeChild(oldEl)）、迁移订阅、push pendingMeasure。
-   * **轻量**：不 measurePending——由 loadOlder 在「挂新批 + ghost 显形」后统一一次 measure。
-   * 方案 A 全程不补偿 scrollTop（浏览器 overflow-anchor 钉视口）。
-   * 用途：骨架显形（旧 mounted[0] prepend 后下移、prev 从 null 变非 null，组首/date 须重算）。
+   * Rebuild a mounted entry in place: re-runs createItem with the current real prev (mounted[idx-1], the older
+   * neighbor), replaces the DOM in place (insertBefore(newEl,oldEl) + removeChild(oldEl)), migrates the subscription,
+   * and pushes to pendingMeasure.
+   * **Lightweight**: does not measurePending — loadOlder does one unified measure after "mount new batch + ghost reveal".
+   * Plan A never compensates scrollTop (the browser's overflow-anchor pins the viewport).
+   * Use case: skeleton reveal (the old mounted[0] shifts down after a prepend, prev changes from null to non-null, so
+   * group-head / date must be recomputed).
    */
   /**
    * Rebuild a mounted entry in place: re-runs createItem with the current real prev (mounted[idx-1], the older neighbor),
@@ -651,7 +753,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = true;
   }
 
-  /** 卸最老（mounted[0]，DOM 顶）。 */
+  /** Unmount the oldest (mounted[0], DOM top). */
   private unmountTop(): boolean {
     if (this.mounted.length === 0) return false;
     const e = this.mounted[0];
@@ -664,7 +766,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return true;
   }
 
-  /** 卸最新（mounted 末，DOM 底）。 */
+  /** Unmount the newest (mounted last, DOM bottom). */
   private unmountBot(): boolean {
     if (this.mounted.length === 0) return false;
     const e = this.mounted[this.mounted.length - 1];
@@ -697,7 +799,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private cancelEntryAnim(entry: Entry<T>): void {
     if (entry.enterTimer !== undefined) {
       clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
-      entry.el.classList.remove('cb-enter');
+      entry.el.classList.remove('cb-enter', 'cb-enter-above'); // an entry plays exactly one of the two enter classes
       this.animating--;
     }
     if (entry.leaving && !entry.leaveDone) {
@@ -727,9 +829,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
-   * 同步骨架态（纯 class）：骨架 = mounted[0]（最老挂载）在「未到全局最老」时。用 entry 引用比对
-   *（不怕数组位移）；变了则旧 ghost 移 cb-ghost、新 ghost 加 cb-ghost。
-   * ghost 显形的 rebuild 由 loadOlder 在挂新批后显式做（并入统一 measure）。noOlder 时 target=null 永久消失。
+   * Sync skeleton state (pure class): skeleton = mounted[0] (the oldest mounted item) when "not yet at the global
+   * oldest". Compared by entry reference (immune to array shifts); when it changes, the old ghost loses cb-ghost and
+   * the new ghost gains it. The ghost-reveal rebuild is done explicitly by loadOlder after mounting the new batch
+   * (folded into the unified measure). When noOlder, target is null and stays gone permanently.
    */
   private updateGhost(): void {
     const target = !this.noOlder && this.mounted.length > 0 ? this.mounted[0] : null;
@@ -761,7 +864,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.tailCapH = el.offsetHeight;
   }
 
-  // ---------- balance：检查点 + 加载（无补偿） ----------
+  // ---------- balance: checkpoint + loading (no compensation) ----------
 
   /** Viewport resized (soft keyboard open/close, orientation change, window resize). Reflow, not a checkpoint:
    *  re-measure vh and keep the reading position. Was-at-bottom → re-pin and skip load/trim (a shrink-triggered
@@ -769,10 +872,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    *  run via onElHeight + onNativeScroll. */
   private onViewportResize(): void {
     if (this.destroyed) return;
-    const wasAtBottom = this.isAtBottom();   // capture BEFORE re-measure (old vh)
-    this.measureVh();                         // apply the new vh
-    if (wasAtBottom && this.mounted.length > 0) {
-      this.pinToBottom();
+    const anchor = this.captureAnchor();      // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
+    this.measureVh();                          // apply the new vh
+    if (anchor.mode === 'bottom' && this.mounted.length > 0) {
+      this.applyAnchor(anchor);                // re-pin to the new bottom (new vh)
       this.suppressScrollBalance = true;  // swallow the async scroll event the pin fires (no load/trim at bottom)
       return;
     }
@@ -807,14 +910,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** Play the cb-enter mount animation on a freshly-measured entry (cb-pending already removed -> visible).
    *  `enterTimer !== undefined` is the "still in flight" signal; finish() and teardown both guard on it so the
    *  `animating` counter is decremented exactly once (animationend, safety timeout, or forced unmount). */
-  private enterAnim(entry: Entry<T>): void {
+  private enterAnim(entry: Entry<T>, cls: 'cb-enter' | 'cb-enter-above' = 'cb-enter'): void {
     const finish = (): void => {
       if (entry.enterTimer === undefined) return;
       clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
-      entry.el.classList.remove('cb-enter');
+      entry.el.classList.remove(cls);
       this.onAnimEnd();
     };
-    entry.el.classList.add('cb-enter');
+    entry.el.classList.add(cls);
     this.animating++;
     entry.enterTimer = setTimeout(finish, 600); // safety if animationend is swallowed
     entry.el.addEventListener('animationend', finish, { once: true });
@@ -822,7 +925,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   private async balance(): Promise<void> {
     if (this.destroyed || this.mounted.length === 0) return;
-    if (ngDevMode && this.closeCheckpoint) return; // 调试：关闭挂载检查点（不触发 loadOlder/loadNewer；生产 AOT 移除）
+    if (ngDevMode && this.closeCheckpoint) return; // debug: turn off the mount checkpoint (no loadOlder/loadNewer; removed in prod AOT)
     const t0 = ngDevMode ? performance.now() : 0;
     const m0 = this.mountTick, u0 = this.unmountTick;
     const st = this.viewport.scrollTop;
@@ -847,9 +950,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
-   * 向更老加载：getOlder（游标=olderCursorId()，最老的非 transient 挂载项）+ mergeItems + 挂 prepend + 旧 ghost（原 mounted[0]）
-   *  显形 rebuild。方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉视口）；ghost 显形与新批共用一次 measure。
-   * absorbBoundary 在 revalidate 通过后才调（防 fling 回滑误锁 noOlder → 最老批永久不挂）。
+   * Load older: getOlder (cursor = olderCursorId(), the oldest non-transient mounted item) + mergeItems + prepend mount
+   *  + old-ghost (the former mounted[0]) reveal rebuild. Plan A **does not compensate scrollTop** (the browser's
+   *  overflow-anchor pins the viewport); the ghost reveal and the new batch share one measure. absorbBoundary is called
+   *  only after revalidate passes (prevents a fling-back from falsely locking noOlder → the oldest batch never mounting).
    */
   private async loadOlder(): Promise<void> {
     if (this.inflightOlder || this.noOlder || this.mounted.length === 0) return;
@@ -858,19 +962,19 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     try {
       const cursor = this.olderCursorId();
       const batch = await this.source.getOlder(cursor, this.cfg.mountItem);
-      if (this.destroyed || g !== this.gen) return; // 跳转 re-seed 超越 → 丢弃在途批
-      if (!this.revalidateTop()) return; // await 期间 fling 反向 → 不挂不 absorb（阶段0：revalidate 通过后才吸收边界）
+      if (this.destroyed || g !== this.gen) return; // jump re-seed overtook → drop the in-flight batch
+      if (!this.revalidateTop()) return; // fling reversed during the await → do not mount or absorb (phase 0: absorb boundary only after revalidate passes)
       const merged = this.mergeBatch(batch);
       if (this.destroyed || merged.length === 0) { if (merged.length === 0) this.noOlder = true; return; }
-      this.absorbBoundary(merged); // 阶段0：通过后才吸收边界
+      this.absorbBoundary(merged); // phase 0: absorb boundary only after passing
       const oldGhost = this.ghostEntry;
-      this.mountBatch(merged, 'older'); // prepend（不内部 measure）
-      // 旧 ghost 显形 rebuild（位置不变、用新 prev 重算组首/date），与新批共用一次 measure。
+      this.mountBatch(merged, 'older'); // prepend (no internal measure)
+      // Old ghost reveal rebuild (position unchanged, recomputes group-head/date with the new prev), sharing one measure with the new batch.
       if (oldGhost && this.mounted.indexOf(oldGhost) > 0) {
-        oldGhost.el.classList.remove('cb-ghost'); // 须在 rebuild 换 el 前
+        oldGhost.el.classList.remove('cb-ghost'); // must happen before rebuild swaps the el
         this.rebuildEntry(oldGhost);
       }
-      this.measurePending(); // 一次统一测：新批 + ghost 显形（方案 A 不补偿）
+      this.measurePending(); // one unified measure: new batch + ghost reveal (Plan A does not compensate)
       this.updateGhost();
     } finally {
       this.inflightOlder = false;
@@ -960,14 +1064,45 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       const e = this.mounted[i];
       if (!e.transient && !e.optimistic && !e.leaving && !e.resortTarget) { insertIdx = i + 1; break; }
     }
+    // A trailing optimistic/transient block sits after the insert point. When it does, every new real enters FROM ABOVE
+    // (cb-enter-above): it descends into its slot from the newest-real side so it never travels DOWN through the pending
+    // band (a downward cb-enter would visually cover the pending mid-animation). The tail simultaneously shoves down via
+    // cb-move (onMessageSignal). Without a tail, cb-enter (from below) is the natural "message arrives" motion.
+    const enterAbove = insertIdx < this.mounted.length;
+    const absorb = this.hooks.absorbTail; // null when no hook is wired (the app supplies album/domain knowledge here)
     for (const item of reals) {
       // Confirm by clientMessageId: the real carries a fresh server id (≠ the optimistic's clientMessageId-as-id),
       // so the pair is matched by clientMessageId, not id. No clientMessageId → a plain incoming message.
       const confirm = this.indexOfClientMsgId(item.clientMessageId) >= 0;
       if (!confirm && this.indexOfId(item.id) >= 0) continue;
+
+      // Cross-batch album absorb (mirrors Kernel B): a non-confirm item the hook folds into the running newest real
+      // (`target` = mounted[insertIdx-1]). Morphs target in place — no new bubble, insertIdx unchanged — so a run of
+      // absorbable items all fold into it; the first non-absorbable item mounts normally and ends the run. Confirms are
+      // excluded. Plan A adds no scrollTop compensation on the morph (overflow-anchor pins the viewport).
+      if (!confirm && absorb && insertIdx > 0) {
+        const target = this.mounted[insertIdx - 1];
+        if (target && !target.optimistic && !target.transient && !target.leaving && !target.resortTarget) {
+          const merged = absorb(target.item, item);
+          if (merged !== null) {
+            this.measuring = true;
+            target.item = merged;
+            const tp = insertIdx > 1 ? this.mounted[insertIdx - 2].item : null;
+            target.vs.update(merged, tp);
+            const h = target.el.offsetHeight;
+            if (h !== target.height) { target.height = h; this.dirtyPrefix = true; }
+            this.measuring = false;
+            continue;
+          }
+        }
+      }
+
       const anchorEl = insertIdx < this.mounted.length ? this.mounted[insertIdx].el : null;
       const prev = insertIdx > 0 ? this.mounted[insertIdx - 1].item : null;
-      const entry = this.createEntry(item, prev, anchorEl, !confirm);
+      // A confirm now also animates (it used to mount visibly with no enter): when a tail is present it enters from above
+      // (enterAbove), so the optimistic→real swap is a visible settle instead of an instant pre-paint pop.
+      const entry = this.createEntry(item, prev, anchorEl, true);
+      entry.enterAbove = enterAbove;
       if (confirm) { entry.resortTarget = true; }
       this.mounted.splice(insertIdx, 0, entry);
       insertIdx++;
@@ -977,8 +1112,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   /** Optimistic-confirm reconciliation (mirror of Plan B; Plan A relies on overflow-anchor — no manual scrollTop
    *  compensation on removal). Synchronous: for each real flagged resortTarget, remove the optimistic duplicate and tag
-   *  the real cb-confirmed. No slide, no hiding — the swap is never painted as two bubbles (runs within the
-   *  loadNewer→reconcile microtask). No-op when there are no resortTargets. */
+   *  the real cb-confirmed. The slide animation is owned elsewhere — the real's cb-enter-above plays at mount in
+   *  measurePending, and the surviving tail's cb-move shove plays in onMessageSignal after this returns — so this pass
+   *  only does the synchronous duplicate removal + tag, run within the loadNewer→reconcile microtask so the swap is never
+   *  painted as two bubbles. No-op when there are no resortTargets. */
   private async reconcileOptimistic(): Promise<void> {
     const targets = this.mounted.filter(e => e.resortTarget);
     if (targets.length === 0) return;
@@ -998,8 +1135,8 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       }
       this.flushPrefix();
       // Remove each optimistic source (the duplicate) — Plan A: overflow-anchor pins the viewport (no manual compensation).
-      // No slide: the real is already visible beside it and this pass is synchronous (before paint), so the swap reads as
-      // an in-place handoff, not a two-bubble flash.
+      // The real's enter (cb-enter-above, already started in measurePending) and the tail shove (cb-move, onMessageSignal)
+      // are the visible motion; this synchronous removal just clears the duplicate before paint (no two-bubble flash).
       for (const source of pairs.map(p => p.source)) {
         const i = this.mounted.indexOf(source);
         if (i < 0) continue;
@@ -1150,9 +1287,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     }
   }
 
-  /** 截更新端（底部，mounted 末）。**保留视口下方 buffer**：截后 content 底（totalH-h）须仍 > 视口底（st+vh）+ edge，
-   *  否则不截——防 compensateAbove 把 st 推大后 trim 截到视口内 → st 超出 total → atBottom 误判 → loadNewer 跳到底。
-   *  截掉最新端 → 重置 noNewer。无补偿（底部在视口下方）。 */
+  /** Trim the newer end (bottom, mounted last). **Keep a buffer below the viewport**: after trimming, the content
+   *  bottom (totalH - h) must still be > viewport bottom (st + vh) + edge, otherwise do not trim — prevents trimming
+   *  into the viewport in a way that leaves st exceeding total → a false atBottom → loadNewer jumping to the bottom.
+   *  Trimming the newest end resets noNewer. No compensation (the bottom is below the viewport). */
   private trimNewer(): void {
     if (this.resorting) return; // rule 4a: never trim during a resort
     let trimmed = false;
@@ -1170,8 +1308,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (trimmed) this.noNewer = false;
   }
 
-  /** 截更老端（顶部，mounted[0]）。**保留视口上方 buffer**：截后视口上方（st-h）须 > edge（对称 trimNewer）。
-   *  方案 A **不补偿 scrollTop**（浏览器 overflow-anchor 钉住视口）。截掉最老端 → 重置 noOlder。 */
+  /** Trim the older end (top, mounted[0]). **Keep a buffer above the viewport**: after trimming, above the viewport
+   *  (st - h) must be > edge (symmetric to trimNewer). Plan A **does not compensate scrollTop** (the browser's
+   *  overflow-anchor pins the viewport). Trimming the oldest end resets noOlder. */
   private trimOlder(): void {
     if (this.resorting) return; // rule 4a: never trim during a resort
     let trimmed = false;
@@ -1188,9 +1327,10 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     if (trimmed) this.noOlder = false;
   }
 
-  // ---------- 高度上报（无补偿） ----------
+  // ---------- Height reporting (no compensation) ----------
 
-  /** 方案 A：高度变化不补偿（浏览器锚定），只更缓存 + balance。entry 引用稳定（不怕数组位移）。 */
+  /** Plan A: a height change does not compensate (browser anchors); only updates the cache + schedules balance. The
+   *  entry reference is stable (immune to array shifts). */
   private onElHeight(entry: Entry<T>, h: number): void {
     if (this.destroyed) return;
     if (entry.height === h) return;
@@ -1220,14 +1360,16 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     return this.mounted.findIndex(e => (e.transient || e.optimistic) && e.item.clientMessageId === cid);
   }
 
-  /** 最老的【真实 source 成员】挂载项 id——跳过 transient/optimistic（insertAfter 插入项 / 在途 pending），其 id 非 source 游标。
-   *  loadOlder 用它，防 transient/optimistic 经 trim 到达 mounted[0] 后让 getOlder 返回 [] 误锁 noOlder。调用方保证 mounted 非空。 */
+  /** Oldest mounted item id that is a real source member — skips transient/optimistic (insertAfter inserts / in-flight
+   *  pending), whose ids are not source cursors. Used by loadOlder so a transient/optimistic reaching mounted[0] after
+   *  a trim does not make getOlder return [] and falsely lock noOlder. Callers guarantee mounted is non-empty. */
   private olderCursorId(): string | number {
     for (const e of this.mounted) if (!e.transient && !e.optimistic && !e.leaving) return e.item.id;
     return this.mounted[0].item.id; // unreachable in practice (the insert/remove target is always a real neighbor)
   }
 
-  /** 最新的【真实 source 成员】挂载项 id——跳过 transient/optimistic 与 leaving。与 olderCursorId 对称。 */
+  /** Newest mounted item id that is a real source member — skips transient/optimistic and leaving entries. Symmetric
+   *  to olderCursorId. */
   private newerCursorId(): string | number {
     for (let i = this.mounted.length - 1; i >= 0; i--) if (!this.mounted[i].transient && !this.mounted[i].optimistic && !this.mounted[i].leaving) return this.mounted[i].item.id;
     return this.mounted[this.mounted.length - 1].item.id;
@@ -1276,7 +1418,11 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       if (ngDevMode && h === 0) zeros++;
       this.onElHeight(entry, h);
       entry.el.classList.remove('cb-pending');
-      if (entry.animate) { entry.animate = false; this.enterAnim(entry); } // cb-enter now that the element is visible
+      if (entry.animate) { // cb-enter now that the element is visible
+        const cls: 'cb-enter' | 'cb-enter-above' = entry.enterAbove ? 'cb-enter-above' : 'cb-enter';
+        entry.animate = false; entry.enterAbove = false;
+        this.enterAnim(entry, cls);
+      }
     }
     this.measuring = false;
     if (ngDevMode && (zeros > 0 || this.resetting)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);

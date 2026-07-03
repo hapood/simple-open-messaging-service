@@ -23,6 +23,11 @@
             [style.width.%]="c.rect.wPct"
             [style.height.px]="c.rect.hPx"
             [style.background-image]="'url(&quot;' + c.src + '&quot;)'"
+            role="button"
+            tabindex="0"
+            aria-label="Open image"
+            (click)="openImage.emit({ images: data().images ?? [], index: $index })"
+            (keydown.enter)="openImage.emit({ images: data().images ?? [], index: $index })"
           >
             @if (c.isMore) {
               <span class="pg-media-more">+{{ moreCount() }}</span>

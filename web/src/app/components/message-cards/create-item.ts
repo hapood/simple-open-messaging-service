@@ -2,7 +2,7 @@ import { createComponent, EnvironmentInjector, InputSignal, Type } from '@angula
 import type { CbElement, CbItem } from '../../lib/chat-box/chat-box-scroller';
 import { classifyGroupFlags, type GroupCtx } from '../../lib/chat-box/group-logic';
 import { shouldShowDateSeparator, formatDateSeparator } from './date-format';
-import type { ChatItemData, ChatMsgData } from './chat-item';
+import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { InviteRowComponent } from './invite-row/invite-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
@@ -77,6 +77,7 @@ export function createMsgCbElement(
   dateLabel: string | null,
   envInjector: EnvironmentInjector,
   onRetry?: (msgId: string) => void,
+  onOpenImage?: (images: AlbumImage[], index: number) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -110,15 +111,19 @@ export function createMsgCbElement(
   };
 
   const el = wrapEl(ref, update);
-  // Wire the failed-send retry output (TextRowComponent only — media/invite have no retry output). The subscription is
-  // released on destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler.
+  // Wire optional row outputs (failed-send retry on TextRow; open-image on MediaRow). Each subscription is released on
+  // destroy so re-rendering the row (rebuildEntry) or unmounting it does not leak a handler. Several outputs may compose
+  // on one entry — wrapDestroy chains them LIFO into a single destroy().
+  const wrapDestroy = (extra: () => void): void => { const base = el.destroy; el.destroy = () => { extra(); base(); }; };
   if (onRetry) {
     const inst = ref.instance as { retry?: { subscribe: (fn: (id: string) => void) => { unsubscribe(): void } } };
-    const retrySub = inst.retry?.subscribe(id => onRetry(id));
-    if (retrySub) {
-      const baseDestroy = el.destroy;
-      el.destroy = () => { retrySub.unsubscribe(); baseDestroy(); };
-    }
+    const sub = inst.retry?.subscribe(id => onRetry(id));
+    if (sub) wrapDestroy(() => sub.unsubscribe());
+  }
+  if (onOpenImage) {
+    const inst = ref.instance as { openImage?: { subscribe: (fn: (p: { images: AlbumImage[]; index: number }) => void) => { unsubscribe(): void } } };
+    const sub = inst.openImage?.subscribe(p => onOpenImage(p.images, p.index));
+    if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   return el;
 }

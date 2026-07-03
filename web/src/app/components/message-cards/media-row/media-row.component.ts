@@ -1,17 +1,18 @@
 import { Component, computed, input, output } from '@angular/core';
-import type { ChatMsgData } from '../chat-item';
+import type { AlbumImage, ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
 
 /**
- * 图片相册消息行。
+ * Image album message row.
  *
- * 核心：cell 用 div 固定 px 高 + background-image（不创建 <img>），高度完全由
- * layoutAlbum 在渲染前算定 → 图加载/解码绝不改变 cell 高度 → 虚拟滚动锚点稳定。
- * cell 用 absolute + layoutAlbum 的 {xPct, yPx, wPct, hPx} inline 定位。
+ * Core: each cell is a div with a fixed px height + background-image (no <img> created); the height is fully
+ * determined by layoutAlbum before render, so image load/decode never changes a cell's height and the virtual-scroll
+ * anchor stays stable. Cells are positioned absolute using layoutAlbum's {xPct, yPx, wPct, hPx} inline values.
  *
- * dateLabel：createItem 工厂按跨日判定传入；非空时模板顶部渲染 date pill。
+ * dateLabel: passed in by the createItem factory based on the day-change check; when non-null, a date pill is
+ * rendered at the top of the template.
  */
 @Component({
   selector: 'app-msg-media-row',
@@ -25,7 +26,7 @@ export class MediaRowComponent {
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
-  /** 跨日 date 分隔文案（非空=本条是某天首条、上方显 date pill）；null=不显。 */
+  /** Day-change date-separator label (non-null = this row is the first of a given day → show a date pill above it); null = hide. */
   readonly dateLabel = input<string | null>(null);
 
   readonly side = computed(() => (this.data().isSelf ? 'self' : 'other'));
@@ -40,11 +41,15 @@ export class MediaRowComponent {
   readonly isFailed = computed(() => this.data().isSelf && this.data().status === 'failed');
   /** Emitted (with the msgId) when the user clicks the failed retry glyph; the parent re-sends. */
   readonly retry = output<string>();
+  /** Emitted when the user clicks an image cell — opens the gallery viewer at that image. Carries the album's full image
+   *  list (current at click time, reflecting any absorb) + the clicked cell's index, so the viewer opens on the exact
+   *  image the user clicked and can navigate the whole album. */
+  readonly openImage = output<{ images: AlbumImage[]; index: number }>();
 
   private readonly layout = computed(() => layoutAlbum(this.data().images ?? []));
   readonly totalH = computed(() => this.layout().totalH);
   readonly moreCount = computed(() => this.layout().moreCount);
-  /** cell 渲染数据：rect（定位）+ src（背景图）。>6 张时末格带 moreCount 角标。 */
+  /** Per-cell render data: rect (positioning) + src (background image). When there are more than 6 images, the last cell carries the moreCount badge. */
   readonly cells = computed(() => {
     const imgs = this.data().images ?? [];
     const moreIdx = this.layout().moreCount > 0 ? this.layout().rects.length - 1 : -1;

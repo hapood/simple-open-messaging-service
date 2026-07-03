@@ -1,4 +1,4 @@
-import { mergeAlbumItems } from './merge-items';
+import { mergeAlbumItems, absorbAlbumTail, ALBUM_MAX } from './merge-items';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { AlbumImage, ChatItemData } from './chat-item';
 
@@ -89,5 +89,60 @@ describe('mergeAlbumItems', () => {
     const b = { ...imageItem('m-1'), boundary: 'newest' as const };
     const out = mergeAlbumItems([a, b]);
     expect(out[0].boundary).toBe('newest'); // inherited from a later member when the head lacks it
+  });
+
+  it('splits a same-creator run exceeding ALBUM_MAX into separate albums (cap-aware)', () => {
+    const n = ALBUM_MAX + 3;
+    const batch: CbItem<ChatItemData>[] = [];
+    for (let i = 0; i < n; i++) batch.push(imageItem(`m-${i}`));
+    const out = mergeAlbumItems(batch);
+    expect(out.length).toBe(2);                        // 10 + 3
+    expect(out[0].data.images!.length).toBe(ALBUM_MAX);
+    expect(out[1].data.images!.length).toBe(3);
+  });
+});
+
+describe('absorbAlbumTail (cross-batch absorb hook)', () => {
+  const oneImg = (msgId: string): AlbumImage => ({ src: `data:,${msgId}`, w: 100, h: 100, msgId });
+  /** An IMAGE msg carrying `n` images (default 1, mirroring the source's one-image-per-msg). */
+  const imageItem = (id: string, n = 1, creator = 1): CbItem<ChatItemData> => ({
+    id,
+    data: {
+      type: 'msg', msgId: id, creator, isSelf: creator === 1, name: 'Me', text: '',
+      time: '00:00', contentType: 'IMAGE',
+      images: Array.from({ length: n }, () => oneImg(id)), file: null, createdAtMs: 0,
+    },
+  });
+  const textItem = (id: string, creator = 1): CbItem<ChatItemData> => ({
+    id,
+    data: { type: 'msg', msgId: id, creator, isSelf: creator === 1, name: 'Me', text: 'hi', time: '00:00', contentType: 'PURE_TEXT', images: null, file: null, createdAtMs: 0 },
+  });
+
+  it('merges same-creator images: concatenates images + unions member ids, keeps the head id', () => {
+    const merged = absorbAlbumTail(imageItem('a'), imageItem('b'));
+    expect(merged).not.toBeNull();
+    expect(merged!.id).toBe('a');                                            // head id preserved
+    expect(merged!.data.images!.map(i => i.msgId)).toEqual(['a', 'b']);      // concatenated
+    expect(merged!.ids).toEqual(['a', 'b']);                                 // unioned for jump resolution
+  });
+
+  it('returns null when creators differ', () => {
+    expect(absorbAlbumTail(imageItem('a', 1, 1), imageItem('b', 1, 2))).toBeNull();
+  });
+
+  it('returns null when target or incoming is not an image', () => {
+    expect(absorbAlbumTail(textItem('a'), imageItem('b'))).toBeNull();
+    expect(absorbAlbumTail(imageItem('a'), textItem('b'))).toBeNull();
+  });
+
+  it('returns null over ALBUM_MAX (all-or-nothing; the incoming item starts a new album instead)', () => {
+    expect(absorbAlbumTail(imageItem('a', ALBUM_MAX), imageItem('b'))).toBeNull();         // target already at cap
+    expect(absorbAlbumTail(imageItem('a', ALBUM_MAX - 1), imageItem('b', 2))).toBeNull();  // (cap-1) + 2 > cap
+  });
+
+  it('absorbs exactly up to the cap: (cap - 1) + 1 = cap', () => {
+    const merged = absorbAlbumTail(imageItem('a', ALBUM_MAX - 1), imageItem('b'));
+    expect(merged).not.toBeNull();
+    expect(merged!.data.images!.length).toBe(ALBUM_MAX);
   });
 });

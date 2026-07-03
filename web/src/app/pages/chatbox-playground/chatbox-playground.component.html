@@ -41,61 +41,12 @@
       <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
-    <!-- 输入栏（WhatsApp 式）：胶囊容器 [emoji + Tiptap 编辑器 + 附件] + 容器外圆形发送键 -->
-    <form class="pg-input-bar" #inputBar [style.bottom.px]="keyboardOffset()"
-          (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
-      @if (emojiOpen()) {
-        <!-- 全屏透明遮罩：点击任意空白处关闭 emoji 面板（不阻挡面板自身的点击） -->
-        <div class="pg-backdrop" (click)="closeEmoji()"></div>
-        <div class="pg-emoji-panel" (click)="$event.stopPropagation()">
-          @for (e of EMOJIS; track e) {
-            <button type="button" class="pg-emoji" (click)="insertEmoji(e)">{{ e }}</button>
-          }
-        </div>
-      }
-      <div class="pg-input-wrap">
-        <button type="button" class="pg-input-ico" (click)="toggleEmoji()" aria-label="Emoji">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10" /><path d="M8 14s1.5 2 4 2 4-2 4-2" />
-            <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
-          </svg>
-        </button>
-        <app-chat-editor class="pg-input" [members]="members()" [isDesktop]="isDesktop()"
-                         (html)="onHtml($event)" (send)="send()"></app-chat-editor>
-        <button type="button" class="pg-input-ico" (click)="onAttachClick()" aria-label="Send image">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-          </svg>
-        </button>
-        <button type="button" class="pg-input-ico" (click)="onFileClick()" aria-label="Send file">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
-            <path d="M14 3v5h5" />
-          </svg>
-        </button>
-      </div>
-      <!-- 发送键：有内容=纸飞机（发文字）；空=相机（发图片），接入媒体拼盘 -->
-      <button type="button" class="pg-send" [class.pg-send-media]="!draftHtml()" (click)="onSendClick()"
-              [attr.aria-label]="draftHtml() ? 'Send' : 'Send image'">
-        @if (draftHtml()) {
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-        } @else {
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-            <circle cx="12" cy="13" r="4" />
-          </svg>
-        }
-      </button>
-      <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
-      <input #fileInput type="file" hidden (change)="onFileChange($event)" />
-    </form>
+    <!-- Input bar: the reusable ChatInputComponent (capsule [emoji + Tiptap editor + file] + round send key).
+         Anchored to the stage bottom; keyboardOffset lifts it above the soft keyboard (mobile). The composer
+         emits structured send intents; heightChange refills inputBarHeight so .pg-viewport bottom tracks it. -->
+    <app-chat-input class="pg-input-anchor" [style.bottom.px]="keyboardOffset()"
+                    [members]="members()" [isDesktop]="isDesktop()"
+                    (send)="onSendIntent($event)" (heightChange)="inputBarHeight.set($event)" />
   </div>
 
   <!-- 移动端：抽屉遮罩，点按关闭 -->
@@ -113,9 +64,9 @@
       <section>
         <h4>Data volume <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? 'Generating…' : 'generator' }}</span></h4>
         <div class="pg-btns">
-          <button (click)="setCount(1000)" [disabled]="loading()" [class.active]="count() === 1000 && !loading()">1k</button>
+          <button (click)="setCount(0)" [disabled]="loading()" [class.active]="count() === 0 && !loading()">0</button>
+          <button (click)="setCount(500)" [disabled]="loading()" [class.active]="count() === 500 && !loading()">500</button>
           <button (click)="setCount(5000)" [disabled]="loading()" [class.active]="count() === 5000 && !loading()">5k</button>
-          <button (click)="setCount(50000)" [disabled]="loading()" [class.active]="count() === 50000 && !loading()">50k</button>
         </div>
       </section>
       <section>

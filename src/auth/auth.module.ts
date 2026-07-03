@@ -5,6 +5,7 @@ import { UserModule } from '../user/user.module.js';
 import { PassportModule } from '@nestjs/passport';
 import { LocalStrategy } from './local.strategy.js';
 import { JwtStrategy } from './jwt.strategy.js';
+import { AccessTokenValidator } from './access-token.validator.js';
 import { JwtModule } from '@nestjs/jwt';
 import { jwtConstants } from './constants.js';
 import { UserService } from '../user/user.service.js';
@@ -26,8 +27,9 @@ import { ThrottleGuard } from './throttle.guard.js';
     UserService,
     PrismaService,
     JwtStrategy,
+    AccessTokenValidator,
     ThrottleGuard,
   ],
-  exports: [AuthService, LocalStrategy],
+  exports: [AuthService, LocalStrategy, AccessTokenValidator],
 })
 export class AuthModule {}

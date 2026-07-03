@@ -1,0 +1,41 @@
+<!-- The dark fullscreen stage (CDK overlay positions the host; this fills it). All pointer interaction lives here so a
+     drag starting anywhere controls pan/swipe. The <img> owns double-click (zoom); the buttons are siblings on top. -->
+<div class="gv-stage"
+     (pointerdown)="onPointerDown($event)"
+     (pointermove)="onPointerMove($event)"
+     (pointerup)="onPointerUp($event)"
+     (pointercancel)="onPointerUp($event)"
+     (wheel)="onWheel($event)">
+  @if (current(); as img) {
+    <img class="gv-image"
+         [src]="imgSrc()"
+         [style.transform]="transform()"
+         [style.opacity]="imgOpacity()"
+         alt=""
+         draggable="false"
+         (load)="onImgLoad()"
+         (error)="onImgError()"
+         (dblclick)="onDoubleClick($event)" />
+  }
+</div>
+
+@if (loadState() === 'error') {
+  <!-- Sibling of the stage (z-above) so a tap reaches the button, not the pan/swipe handlers. -->
+  <button type="button" class="gv-retry" (click)="retryLoad()" aria-label="Retry image load">
+    <span class="gv-retry-icon">&#8635;</span>
+    <span class="gv-retry-text">Image failed to load</span>
+    <span class="gv-retry-hint">Tap to retry</span>
+  </button>
+}
+
+<div class="gv-topbar">
+  @if (canNav()) {
+    <span class="gv-counter">{{ index() + 1 }} / {{ count() }}</span>
+  }
+  <button type="button" class="gv-iconbtn gv-close" (click)="close.emit()" aria-label="Close gallery">&times;</button>
+</div>
+
+@if (canNav()) {
+  <button type="button" class="gv-nav gv-prev" (click)="prev()" aria-label="Previous image">&#8249;</button>
+  <button type="button" class="gv-nav gv-next" (click)="next()" aria-label="Next image">&#8250;</button>
+}

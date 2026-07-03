@@ -55,6 +55,14 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
   private readonly knownMsgIds = new Set<string>();
+  /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
+   *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
+   *  dropped by getNewer's live-cache drain, and the kernel's reconcileOptimistic removes the mounted optimistic
+   *  bubble. Failed entries STAY here (status:'failed') so the failure survives a remount and retry works. */
+  private readonly pending: CbItem<ChatItemData>[] = [];
+  /** WS-pushed / refill reals awaiting the kernel's onMessageSignal to drain them via getNewer. The kernel calls
+   *  getNewer (forced) once per signal; we drain the whole cache in one batch so a backlog mounts atomically. */
+  private readonly liveCache: CbItem<ChatItemData>[] = [];
   private wsSub?: Subscription;
   private reconnectSub?: Subscription;
   private readonly onLive: (items: CbItem<ChatItemData>[]) => void;
@@ -155,6 +163,23 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  when the DB ceiling is reached. In production the anchor is the latest message (noNewer=true) so
    *  the kernel never calls this; it exists for a future "load from the middle" mode. */
   async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
+    // Drain the live cache first: WS-pushed / refill reals are always newer than anything mounted (production
+    // anchors at the global newest), so they live past any cursor. The kernel calls this (forced) from
+    // onMessageSignal ONCE per signal — drain ALL cached items in one batch so a backlog mounts atomically (a
+    // capped drain would strand the rest, since onMessageSignal does not loop). Reconcile pending: any pending
+    // whose clientMessageId matches a drained real is dropped — its confirm arrived, the kernel's
+    // reconcileOptimistic will remove the matching optimistic bubble and tag this real cb-confirmed.
+    if (this.liveCache.length > 0) {
+      const cached = this.liveCache.splice(0);
+      for (const r of cached) {
+        if (r.clientMessageId === undefined) continue;
+        const pi = this.pending.findIndex((p) => p.clientMessageId === r.clientMessageId);
+        if (pi >= 0) this.pending.splice(pi, 1);
+      }
+      this.noNewer = true; // live items are the global newest
+      cached[cached.length - 1] = { ...cached[cached.length - 1], boundary: 'newest' };
+      return cached;
+    }
     if (this.noNewer) return [];
     const take = Math.min(count, MAX_PAGE);
     const res = await firstValueFrom(
@@ -186,19 +211,57 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     });
   }
 
-  /** Cache live items (called by kernel.appendLive). Cache-only — ids are already msgIds (supplied by the
-   *  caller) and already deduped via rawToItems; we only track the newest id for scroll-back / refill. Production
-   *  mounts incoming messages directly through the kernel (not via getNewer, which is gated by noNewer=true). */
+  /** Cache live (WS-pushed / refill) reals for the kernel to drain via getNewer on the next onMessageSignal.
+   *  Items are already CbItems (shaped by rawToItems, clientMessageId preserved) and already deduped; we append
+   *  them to the live cache and track the newest id for the SSE-reconnect refill cursor. */
   pushLive(rawItems: CbItem<ChatItemData>[]): void {
     if (rawItems.length === 0) return;
+    for (const it of rawItems) this.liveCache.push(it);
     const last = rawItems[rawItems.length - 1];
     this.newestMsgId = last.data.type === 'msg' ? last.data.msgId : String(last.id);
   }
 
-  /** In-flight optimistic sends. Production has no optimistic-send path yet (the C-end sends via HTTP and mounts
-   *  the server echo), so this returns an empty array — fulfilling the CbSource contract until optimistic send
-   *  is added here. */
-  getPending(): CbItem<ChatItemData>[] { return []; }
+  /** In-flight optimistic sends (defensive copy) — the kernel (re)mounts them at the global newest edge. */
+  getPending(): CbItem<ChatItemData>[] { return this.pending.slice(); }
+
+  /** Store an in-flight optimistic send (separate from the reloadable sequence). */
+  addPending(item: CbItem<ChatItemData>): void { this.pending.push(item); }
+
+  /**
+   * Mark an in-flight optimistic send FAILED and sink it to the END of the pending queue. The source owns
+   * pending order/status; the kernel's reconcilePending re-reads getPending and reflects this (in-place
+   * status morph sending→failed + FLIP reorder to the tail). The entry STAYS in `pending` — a failed send is
+   * still unconfirmed, not abandoned — so it remains mountable at the newest edge and the failure survives a
+   * remount. Stable identity: the SAME clientMessageId (and data.msgId) is kept, so the row's retry output
+   * (which emits data.msgId = the clientMessageId) stays a valid retry key. Returns false if no pending
+   * entry matches the clientMessageId (e.g. the confirm already arrived and dropped it).
+   */
+  failPending(clientMessageId: string): boolean {
+    const i = this.pending.findIndex((p) => p.clientMessageId === clientMessageId);
+    if (i < 0) return false;
+    const entry = this.pending.splice(i, 1)[0];
+    const failed: CbItem<ChatItemData> = { ...entry, data: { ...entry.data, status: 'failed', kind: undefined } };
+    this.pending.push(failed); // sink to the end of the pending queue
+    return true;
+  }
+
+  /**
+   * Flip a failed send BACK to 'sending' (a retry) at its CURRENT position (the end), keeping the SAME
+   * clientMessageId — stable identity lets the kernel morph the bubble in place (failed→sending) instead of
+   * remounting it, and the subsequent confirm reconciles by this same clientMessageId. A NEW data ref carries
+   * status:'sending'. Returns the updated item (the caller re-issues the HTTP send with it), or undefined if no
+   * pending entry matches (e.g. it was confirmed/dropped meanwhile).
+   */
+  retryPending(clientMessageId: string): CbItem<ChatItemData> | undefined {
+    const i = this.pending.findIndex((p) => p.clientMessageId === clientMessageId);
+    if (i < 0) return undefined;
+    const retrying: CbItem<ChatItemData> = {
+      ...this.pending[i],
+      data: { ...this.pending[i].data, status: 'sending', kind: 'pending' },
+    };
+    this.pending[i] = retrying; // stay at the current position (the end)
+    return retrying;
+  }
 
 
   destroy(): void {
@@ -255,7 +318,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
         : null;
       // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
       const file: FileInfo | null = m.contentType === 'FILE' ? parseFileContent(m.content) : null;
-      out.push({ id, data: this.toMsgData(m, images, file) });
+      // Surface the clientMessageId so the kernel can pair this server-confirmed real with the optimistic
+      // bubble that shares it (mountNewerReals flags resortTarget by clientMessageId; reconcileOptimistic then
+      // removes the optimistic duplicate). Without this the optimistic would never be reconciled away → two
+      // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
+      const item: CbItem<ChatItemData> = { id, data: this.toMsgData(m, images, file) };
+      if (m.clientMessageId) item.clientMessageId = m.clientMessageId;
+      out.push(item);
     }
     return out;
   }
@@ -285,9 +354,9 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
 function parseImageContent(content: string): AlbumImage {
   // w/h are read on the frontend via createImageBitmap and stored with the message in content
-  // (msg-input-bar sends JSON {url,w,h}; the backend writeMsgToThread stores it verbatim), so in production
-  // this is always valid — the `|| 0` fallback was removed to surface contract violations. layoutAlbum's
-  // ratio() still tolerates NaN/0 with a 4:3 fallback (so bad data can't poison totalH).
+  // (the composer sends IMAGE content as JSON {url,w,h}; the backend writeMsgToThread stores it verbatim), so in
+  // production this is always valid — the `|| 0` fallback was removed to surface contract violations.
+  // layoutAlbum's ratio() still tolerates NaN/0 with a 4:3 fallback (so bad data can't poison totalH).
   try {
     const o = JSON.parse(content);
     return { src: String(o.url ?? ''), w: Number(o.w), h: Number(o.h) };

@@ -12,9 +12,10 @@
       <div class="msg-sticky-date" aria-hidden="true"><span>{{ sd }}</span></div>
     }
 
-    <app-msg-input-bar
-      [threadId]="threadId()"
-      (onAfterSent)="onAfterSent()"
-    ></app-msg-input-bar>
+    <app-chat-input
+      [members]="[]"
+      [isDesktop]="isDesktop()"
+      (send)="onSendIntent($event)"
+    ></app-chat-input>
   </div>
 </div>

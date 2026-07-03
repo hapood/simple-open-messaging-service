@@ -9,10 +9,13 @@ import fastifyHelmet from '@fastify/helmet';
 import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
+import fastifyCookie from '@fastify/cookie';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
+import { AccessTokenValidator, MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
+import { BusinessCode } from './common/business-code.js';
 
 // Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to the
 // generic-file limit so POST /upload/file can accept large documents; images stay bounded at
@@ -43,6 +46,11 @@ export async function configureApp(
   await app.register(fastifyMultipart, {
     limits: { fileSize: MULTIPART_LIMIT },
   });
+  // Cookie parsing for the httpOnly media_token cookie that authenticates same-origin /uploads/*
+  // requests (native <img>/<a download> can't send the Authorization header). @fastify/cookie is
+  // fp-wrapped, so it decorates the root instance and request.cookies is reachable both here and in
+  // the /uploads/ preHandler hook (registered in registerStaticServing).
+  await app.register(fastifyCookie);
 
   // Same-origin in production (single-image, path-prefix deploy) → no CORS needed.
   // Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
@@ -98,13 +106,49 @@ async function registerStaticServing(
   // lazy mkdir UploadService.ensureDir already does for the write path).
   mkdirSync(uploadsDir, { recursive: true });
 
+  // Auth-gate /uploads/*: native <img src="/uploads/..."> and <a download> requests can't carry
+  // the Authorization header, so the access token is also placed in an httpOnly `media_token`
+  // cookie by the auth endpoints. Validate it here with the SAME AccessTokenValidator the API
+  // JwtStrategy uses — a revoked token (logout / password change / session invalidate) therefore
+  // loses media access too. Registered on the root instance as a global preHandler; Fastify
+  // propagates parent hooks into the @fastify/static child context that owns the /uploads/ route.
+  const tokenValidator = app.get(AccessTokenValidator);
+  adapter.getInstance().addHook(
+    'preHandler',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      if (!request.url.startsWith('/uploads/')) return; // only the media mount is gated
+      const raw = request.cookies?.[MEDIA_TOKEN_COOKIE];
+      const payload = raw ? tokenValidator.verifyToken(raw) : null;
+      const principal = payload ? await tokenValidator.validatePayload(payload) : null;
+      if (!principal) {
+        return reply.code(401).type('application/json').send({
+          statusCode: 401,
+          code: BusinessCode.UNAUTHENTICATED,
+          message: 'unauthenticated',
+          data: null,
+        });
+      }
+      request.user = { userId: principal.userId };
+    },
+  );
+
   // Uploaded images are served at /uploads/*. decorateReply:false because we never use
   // reply.sendFile (the SPA fallback reads index.html directly), and multiple @fastify/static
   // registrations must not re-decorate the reply.
+  // cacheControl:false makes the `send` stream omit its own Cache-Control (otherwise it emits
+  // "public, max-age=0" and @fastify/static applies it AFTER setHeaders, clobbering ours). With it
+  // off, setHeaders controls the directive: `private` (no proxy caching — the resource is
+  // auth-gated) with a short browser max-age; Vary:Cookie so a shared browser doesn't reuse one
+  // session's response for another.
   await app.register(fastifyStatic, {
     root: uploadsDir,
     prefix: '/uploads/',
     decorateReply: false,
+    cacheControl: false,
+    setHeaders: (res: { setHeader: (name: string, value: string) => void }) => {
+      res.setHeader('Cache-Control', 'private, max-age=300');
+      res.setHeader('Vary', 'Cookie');
+    },
   });
 
   const webRoot = join(process.cwd(), 'public', 'web');

@@ -102,6 +102,14 @@ export class MessageResponseDto {
 
   @ApiProperty({ example: false })
   isDeleted: boolean;
+
+  @ApiProperty({
+    required: false,
+    example: 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b',
+    description:
+      'Client-generated idempotency UUID (present when the message was sent through the optimistic-send path). The frontend correlates its optimistic bubble with this server-confirmed real by this key.',
+  })
+  clientMessageId?: string;
 }
 
 export class GroupResponseDto {

@@ -1,0 +1,123 @@
+// ViewEncapsulation.None + ci- prefix (mirrors the playground's global pg- pattern). These styles load once
+// <app-chat-input> renders in either host. The bar is NOT absolutely positioned — it is visual chrome only;
+// each host positions the <app-chat-input> element (the playground's absolute+keyboardOffset wrapper,
+// production's flex column). position:relative on the bar anchors the emoji panel's bottom:100%.
+
+app-chat-input {
+  display: block;
+}
+
+// WhatsApp-style capsule: [emoji + editor + file] inside a pill, with a round send key outside.
+.ci-input-bar {
+  position: relative; // anchor for .ci-emoji-panel (bottom:100%) and .ci-backdrop stacking
+  min-height: 63px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-end; // auto-grow multiline keeps the send key pinned to the bottom
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--app-bg-muted);
+  border-top: 1px solid var(--app-border);
+}
+
+// Full-screen transparent backdrop: closes the emoji panel on any outside click. z-index below the panel (4).
+.ci-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 3;
+  background: transparent;
+}
+
+// Emoji panel: floats above the bar (8-column grid).
+.ci-emoji-panel {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 8px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  z-index: 4;
+}
+.ci-emoji {
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 1.6;
+  padding: 2px 0;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  &:hover { background: var(--app-hover); }
+}
+
+// Capsule input container: emoji + editor + file.
+.ci-input-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 4px 4px 6px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  transition: border-color 0.12s;
+  &:focus-within { border-color: var(--app-brand); }
+}
+
+// Icon buttons inside the capsule (emoji / file).
+.ci-input-ico {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--app-text-muted);
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  &:hover { background: var(--app-hover); color: var(--app-text); }
+}
+
+// The Tiptap editor host. Same sizing contract the playground's textarea had (flex, min/max height, internal
+// scroll on overflow) so auto-grow behaves identically; the editor mounts its .tiptap.ProseMirror child inside.
+.ci-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 36px;
+  max-height: 120px; // auto-grow ceiling (~6 lines); beyond it the field scrolls internally
+  box-sizing: border-box;
+  padding: 7px 6px;
+  overflow-y: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+// Round send key outside the capsule: paper-plane when there is draft text (send text), camera when empty
+// (open the image picker). Always brand-colored; disabled (opacity) while a send/upload is in flight.
+.ci-send {
+  flex: 0 0 auto;
+  width: 46px;
+  height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--app-radius-pill);
+  background: var(--app-brand);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s, transform 0.1s;
+  &:hover { background: var(--app-brand-hover); }
+  &:active { transform: scale(0.94); }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}

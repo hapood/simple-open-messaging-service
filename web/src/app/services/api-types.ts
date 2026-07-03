@@ -378,6 +378,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/delete-friend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unfriend — end a P2P conversation (mutual) */
+        post: operations["UserController_deleteFriend"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/query": {
         parameters: {
             query?: never;
@@ -660,6 +677,23 @@ export interface paths {
         put?: never;
         /** 上传图片（返回 url + 前端传入的宽高） */
         post: operations["UploadController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upload/file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传通用文件（返回 url/name/size/mimeType） */
+        post: operations["UploadController_uploadFile"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1005,6 +1039,11 @@ export interface components {
             updatedAt: number;
             /** @example false */
             isDeleted: boolean;
+            /**
+             * @description Client-generated idempotency UUID (present when the message was sent through the optimistic-send path). The frontend correlates its optimistic bubble with this server-confirmed real by this key.
+             * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+             */
+            clientMessageId?: string;
         };
         SendMessageDto: {
             /**
@@ -1018,10 +1057,15 @@ export interface components {
              */
             content: string;
             /**
-             * @description Content type (defaults to PURE_TEXT)
+             * @description Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only; VIDEO/AUDIO have no upload pipeline yet.
              * @enum {string}
              */
             contentType?: "PURE_TEXT" | "INVITE" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO";
+            /**
+             * @description Client-generated UUID for send idempotency. Retrying a send with the same clientMessageId returns the original Message instead of creating a duplicate. Omit for legacy/non-retried sends.
+             * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
+             */
+            clientMessageId?: string;
         };
         QueryMessagesDto: {
             /**
@@ -1030,8 +1074,8 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Number of records to skip (pagination)
-             * @example 0
+             * @description Cursor-row flag, NOT offset. 0 includes the lastId row; 1 excludes it (standard Prisma keyset idiom). Capped at 1 — arbitrary offset-on-top-of-cursor is not supported.
+             * @example 1
              */
             skip: number;
             /**
@@ -2115,6 +2159,27 @@ export interface operations {
             };
         };
     };
+    UserController_deleteFriend: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     UserController_queryUserBase: {
         parameters: {
             query?: never;
@@ -2464,6 +2529,23 @@ export interface operations {
         };
     };
     UploadController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_uploadFile: {
         parameters: {
             query?: never;
             header?: never;

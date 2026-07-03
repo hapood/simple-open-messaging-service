@@ -154,128 +154,14 @@
 .pg-dev-badge--head { background: #4caf50; }
 .pg-dev-badge--body { background: #ff9800; }
 
-// ---------- 输入栏（WhatsApp 式：胶囊容器 + 容器外圆形发送键）----------
-.pg-input-bar {
+// ---------- Input bar anchor ----------
+// The input chrome lives in ChatInputComponent (ci-* styles); this only pins <app-chat-input> to the stage
+// bottom. [style.bottom.px]="keyboardOffset()" (bound in the template) lifts it above the soft keyboard.
+.pg-input-anchor {
   position: absolute;
   left: 0;
   right: 0;
   bottom: 0;
-  min-height: 63px;
-  box-sizing: border-box;
-  display: flex;
-  align-items: flex-end; // auto-grow 多行时，发送键贴底
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--app-bg-muted);
-  border-top: 1px solid var(--app-border);
-}
-
-// 全屏透明遮罩：emoji 面板打开时捕获输入栏外的任意点击 → 关闭面板；Escape 亦关闭（见 form keydown）。
-// z-index 低于 .pg-emoji-panel(4)，故面板自身点击不受阻（面板内 stopPropagation）。
-.pg-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 3;
-  background: transparent;
-}
-
-// emoji 面板：浮在输入栏上方（8 列网格）
-.pg-emoji-panel {
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 100%;
-  margin-bottom: 4px;
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 2px;
-  padding: 8px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  z-index: 4;
-}
-.pg-emoji {
-  border: none;
-  background: transparent;
-  font-size: 22px;
-  line-height: 1.6;
-  padding: 2px 0;
-  border-radius: var(--app-radius-sm);
-  cursor: pointer;
-  &:hover { background: var(--app-hover); }
-}
-
-// 胶囊输入容器：emoji + textarea + 附件
-.pg-input-wrap {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: flex-end;
-  gap: 2px;
-  padding: 4px 4px 4px 6px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-pill);
-  transition: border-color 0.12s;
-  &:focus-within { border-color: var(--app-brand); }
-}
-
-// 输入栏图标按钮（emoji / 附件）
-.pg-input-ico {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  color: var(--app-text-muted);
-  border-radius: var(--app-radius-pill);
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-  &:hover { background: var(--app-hover); color: var(--app-text); }
-}
-
-.pg-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  resize: none;
-  min-height: 36px;
-  max-height: 120px; // auto-grow 上限 ~6 行，超过内部滚动
-  box-sizing: border-box;
-  padding: 7px 6px;
-  border: none;
-  background: transparent;
-  color: var(--app-text);
-  font: inherit;
-  font-size: 14px;
-  line-height: 22px;
-  outline: none;
-  overflow-y: auto;
-  scrollbar-width: none;
-  &::-webkit-scrollbar { display: none; }
-  &::placeholder { color: var(--app-text-faint); }
-}
-
-// 容器外圆形发送键：有文字=纸飞机(发文字)、无文字=相机(发图片)；始终 brand 色、可点
-.pg-send {
-  flex: 0 0 auto;
-  width: 46px;
-  height: 46px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  border-radius: var(--app-radius-pill);
-  background: var(--app-brand);
-  color: #fff;
-  cursor: pointer;
-  transition: background 0.12s, transform 0.1s;
-  &:hover { background: var(--app-brand-hover); }
-  &:active { transform: scale(0.94); }
 }
 
 // ---------- 控制面板 ----------

@@ -9,11 +9,13 @@ import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anch
 import { ActivatedRoute } from '@angular/router';
 import { LayoutService } from '../../services/layout.service';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../../components/message-cards/create-item';
-import { mergeAlbumItems } from '../../components/message-cards/merge-items';
+import { mergeAlbumItems, absorbAlbumTail } from '../../components/message-cards/merge-items';
+import { GalleryViewerService } from '../../components/gallery-viewer/gallery-viewer.service';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../../components/message-cards/chat-item';
 import { MockItemSource, MockUserService } from './http-item-source.mock';
 import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
-import { ChatEditorComponent, ChatMember } from '../../components/chat-editor/chat-editor.component';
+import { ChatMember } from '../../components/chat-editor/chat-editor.component';
+import { ChatInputComponent, ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 
 // Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除（与虚拟滚动内核同模式）。
 // 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
@@ -38,7 +40,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent, ChatEditorComponent],
+  imports: [FormsModule, UserAvatarComponent, ChatInputComponent],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -49,6 +51,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly route = inject(ActivatedRoute);
   /** 动态创建消息组件（zoneless 下 createComponent + detectChanges 驱动渲染）。 */
   private readonly envInjector = inject(EnvironmentInjector);
+  /** Album click → fullscreen gallery viewer (CDK Overlay, service-hosted; no per-host template mounting needed). */
+  private readonly galleryViewer = inject(GalleryViewerService);
   /** 方案 A（借浏览器锚定）由路由 data.useNativeAnchor 决定：-a 路由为 true，-b（默认）走方案 B（手动补偿）。 */
   readonly useNativeAnchor = (this.route.snapshot.data as { useNativeAnchor?: boolean }).useNativeAnchor === true;
   /** 桌面级视口(宽屏+精确指针)：true=常驻侧栏；false=移动抽屉+FAB。 */
@@ -70,10 +74,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
   private readonly pgStageRef = viewChild<ElementRef<HTMLDivElement>>('pgStage');
-  private readonly chatEditor = viewChild(ChatEditorComponent);
-  private readonly inputBarRef = viewChild<ElementRef<HTMLFormElement>>('inputBar');
-  private readonly attachInput = viewChild<ElementRef<HTMLInputElement>>('attachInput');
-  private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
   private readonly jumpInput = viewChild<ElementRef<HTMLInputElement>>('jumpInput');
   private readonly insertInput = viewChild<ElementRef<HTMLInputElement>>('insertInput');
   private readonly removeInput = viewChild<ElementRef<HTMLInputElement>>('removeInput');
@@ -127,15 +127,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   // 控件
   readonly count = signal(5000);
-  /** Tiptap 编辑器当前内容的 inline HTML（发送时存为 PURE_TEXT 富文本）。空编辑器 → ''。 */
-  readonly draftHtml = signal('');
-  readonly emojiOpen = signal(false); // emoji 面板开关
-  /** @mention 候选（mock 群成员；生产替换为 GroupService.getMembers()）。 */
+  /** @mention candidates (mock group members; production swaps in GroupService.getMembers()). */
   readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
-  /** 输入栏实测高度（auto-grow 后更新），驱动 .pg-viewport bottom 紧贴输入栏上沿（多行不遮挡）。 */
+  /** Measured input-bar height (auto-grow; refilled by ChatInputComponent's heightChange). Drives .pg-viewport
+   *   `bottom` so the list sits flush above the bar and a multi-line draft never covers it. */
   readonly inputBarHeight = signal(63);
-  /** emoji 面板候选（模板访问，故为实例属性）。 */
-  readonly EMOJIS = ['😀','😂','🥰','😎','😭','😡','👍','🙏','👏','🔥','🎉','❤️','💯','🤔','😴','🤯','😅','🥳','😱','🤗','😇','🙃','😋','😘','🤩','😜','🤪','😏','😬','🤤','😪','🥱'];
 
   constructor() {
     // 跟随系统深浅色：初始化 + 监听变化（matchMedia）。手动 toggle 仍可临时覆盖。
@@ -237,7 +233,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       this.scroller = new Ctor({
         viewport, content, source: this.source,
         config: this.config(),
-        hooks: { createItem: (item, prev) => this.createItemEl(item, prev), mergeItems: mergeAlbumItems },
+        hooks: { createItem: (item, prev) => this.createItemEl(item, prev), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
         onScroll: (info) => this.onScroll(info),
         onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
@@ -338,7 +334,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     // 分组判定 + date 分隔按【更老邻居 prev】算（computeRowFlags，与 CbElement.update 共用同一逻辑——重排序后
     // update 须按新 prev 重算分组，mount 与 in-place update 派生同款 flags）。
     const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
-    const vs = createMsgCbElement(item, isShowHead, isGroupStart, dateLabel, this.envInjector, id => this.retrySend(id));
+    const vs = createMsgCbElement(
+      item, isShowHead, isGroupStart, dateLabel, this.envInjector,
+      id => this.retrySend(id),
+      (images, index) => this.galleryViewer.open(images, index),
+    );
     // 调试角标（首/续 + 消息 id）：playground 动态注入到行内，ngDevMode 守卫 → 生产 AOT 不创建。
     if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
     return vs;
@@ -530,58 +530,29 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   toTop() { this.scroller?.scrollToTop(); }
   toBottom() { this.scroller?.scrollToBottom(); }
 
-  // 编辑器输出：更新 draftHtml（发送用）+ 重测输入栏高度（编辑器 auto-grow 会改变输入栏高度）。
-  onHtml(h: string) {
-    this.draftHtml.set(h);
-    this.measureInputBar();
-  }
-
-  toggleEmoji() { this.emojiOpen.update(v => !v); }
-  closeEmoji() { this.emojiOpen.set(false); }
-
-  /** emoji 插入到 Tiptap 编辑器光标处（编辑器自管光标恢复），插入后聚焦。 */
-  insertEmoji(e: string) {
-    this.chatEditor()?.insertText(e);
-    this.chatEditor()?.focus();
-  }
-
-  /** 发送键：有内容 → 发文字；空 → 唤起附件选图（WhatsApp 相机入口同义）。 */
-  onSendClick() {
-    if (this.draftHtml()) void this.send();
-    else this.onAttachClick();
-  }
-
-  onAttachClick() { this.attachInput()?.nativeElement.click(); }
-
-  onAttachChange(e: Event) {
-    const input = e.target as HTMLInputElement;
-    void this.sendMediaFromFile(input.files);
-    input.value = '';
-  }
-
-  /** 输入栏高度随编辑器内容增长而变；每次编辑器更新后重测，驱动 .pg-viewport bottom 紧贴输入栏。 */
-  private measureInputBar() {
-    requestAnimationFrame(() => {
-      const bar = this.inputBarRef()?.nativeElement;
-      if (bar) this.inputBarHeight.set(bar.offsetHeight);
-    });
+  /**
+   * ChatInputComponent send intent → dispatch. The composer owns presentation only; this switches on the
+   * structured intent and routes to the mock optimistic-send paths. Text is plain (editor.getText()); the
+   * editor is cleared inside the composer before this fires.
+   */
+  onSendIntent(intent: ChatSendIntent): void {
+    switch (intent.kind) {
+      case 'text': void this.sendText(intent.text); return;
+      case 'image': void this.sendMediaFromFile(intent.files); return;
+      case 'file': void this.sendFileFromFile(intent.files); return;
+    }
   }
 
   /**
-   * Optimistic send: show a "sending" bubble right after the newest mounted item (insertAfter, transient), register it
-   * with the source's pending area, and schedule a mock confirm. The optimistic item shares the real (server-echoed) id,
-   * so on confirm the kernel settles the transient in place (clock -> check) instead of mounting a duplicate.
-   * Stacks naturally: each insert anchors on the current tail (a prior fake or the real newest).
+   * Optimistic text send: show a "sending" bubble right after the newest mounted item (insertAfter, transient),
+   * register it with the source's pending area, and schedule a mock confirm. The optimistic item shares the real
+   * (server-echoed) id, so on confirm the kernel settles the transient in place (clock -> check) instead of
+   * mounting a duplicate. Stacks naturally: each insert anchors on the current tail (a prior fake or the real newest).
    */
-  async send(): Promise<void> {
-    const html = this.draftHtml();
+  private async sendText(text: string): Promise<void> {
     const scroller = this.scroller;
-    if (!html || !scroller) return;
-    // rich=true → text-row renders the editor HTML (bold/italic/code/@mention chips) via sanitized [innerHTML].
-    const item = this.makeOptimisticItem(html, 'PURE_TEXT', null, null, true);
-    this.chatEditor()?.clear();
-    this.draftHtml.set('');
-    this.measureInputBar();
+    if (!text || !scroller) return;
+    const item = this.makeOptimisticItem(text, 'PURE_TEXT', null, null);
     this.dispatchPending(item);
   }
 
@@ -635,14 +606,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     }
   }
 
-  onFileClick() { this.fileInput()?.nativeElement.click(); }
-
-  onFileChange(e: Event) {
-    const input = e.target as HTMLInputElement;
-    void this.sendFileFromFile(input.files);
-    input.value = '';
-  }
-
   /** The id to anchor a newest-end insert after: the current tail (a prior fake/pending, or the real newest). '' if empty. */
   private tailAnchorId(): string {
     const id = this.scroller?.getInfo().newestId ?? null;
@@ -678,7 +641,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    */
   private insertMsg(type: 'PENDING_POST_MSG' | 'FAKE_MSG', afterId: string, item: CbItem<ChatItemData>): boolean {
     const scroller = this.scroller;
-    if (!scroller || !afterId) return false;
+    if (!scroller) return false;
+    // afterId is '' on the first send into an empty thread (tailAnchorId() = '' when nothing is mounted); the kernel's
+    // insertAfter treats an empty window as "insert as the sole entry", so do NOT bail on an empty id here. FAKE_MSG
+    // always carries a real id — insertAfterId guards empty input before calling — so this only relaxes PENDING_POST_MSG.
     if (type === 'PENDING_POST_MSG') {
       // Register with the source pending area so the confirm echo (appendLive with a matching id) reconciles it.
       this.source?.addPending(item);

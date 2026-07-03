@@ -6,14 +6,20 @@ import {
   Body,
   Headers,
   Ip,
+  Res,
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
+import type { FastifyReply } from 'fastify';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { AuthService } from '../auth/auth.service.js';
+import {
+  MEDIA_TOKEN_COOKIE,
+  MEDIA_COOKIE_OPTIONS,
+} from '../auth/access-token.validator.js';
 import { LoginAuthInfo } from '../auth/local.strategy.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -31,6 +37,21 @@ import {
 export class AuthController {
   constructor(private authService: AuthService) {}
 
+  /**
+   * Mirror the access token into an httpOnly `media_token` cookie so same-origin /uploads/*
+   * requests (native <img>/<a download>, which can't send the Authorization header) are
+   * authenticated. Set wherever an access token is minted/rotated; cleared on logout. Same
+   * validation path as the API (AccessTokenValidator) → revoked tokens lose media access too.
+   */
+  private setMediaCookie(reply: FastifyReply, accessToken: string) {
+    reply.setCookie(MEDIA_TOKEN_COOKIE, accessToken, MEDIA_COOKIE_OPTIONS);
+  }
+
+  /** Clear the media cookie — path must match the one used at set time for the browser to drop it. */
+  private clearMediaCookie(reply: FastifyReply) {
+    reply.clearCookie(MEDIA_TOKEN_COOKIE, { path: '/' });
+  }
+
   @UseGuards(LocalAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
@@ -42,17 +63,20 @@ export class AuthController {
     @Body() body: LoginDto,
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     const authInfo: LoginAuthInfo = req.user;
     if (authInfo.status === 0) {
+      const tokens = await this.authService.login(authInfo.userId, {
+        device: body.device,
+        userAgent,
+        ip,
+      });
+      this.setMediaCookie(reply, tokens.access_token);
       return {
         code: BusinessCode.OK,
         message: 'successful',
-        data: await this.authService.login(authInfo.userId, {
-          device: body.device,
-          userAgent,
-          ip,
-        }),
+        data: tokens,
       };
     } else {
       if (authInfo.bannedUntil !== undefined) {
@@ -82,12 +106,14 @@ export class AuthController {
     @Body() dto: RefreshTokenDto,
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult<{ access_token: string; refresh_token: string }>> {
     try {
       const { access, refresh } = await this.authService.rotateRefreshToken(
         dto.refreshToken,
         { device: dto.device, userAgent, ip },
       );
+      this.setMediaCookie(reply, access);
       return {
         code: BusinessCode.OK,
         message: 'success',
@@ -95,7 +121,8 @@ export class AuthController {
       };
     } catch (e) {
       // rotateRefreshToken 失败抛 reason 字符串：reuse → 家族已连根吊销，前端须强制重登；
-      // invalid/expired → 普通 401。
+      // invalid/expired → 普通 401。任一失败都清掉 media cookie（旧 token 已不可用）。
+      this.clearMediaCookie(reply);
       if (e === 'reuse') {
         return {
           code: BusinessCode.REFRESH_REUSE_DETECTED,
@@ -116,18 +143,23 @@ export class AuthController {
     @Body() dto: RefreshTokenDto,
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult<{ access_token: string; refresh_token: string }>> {
     try {
       const { access, refresh } = await this.authService.rotateRefreshToken(
         dto.refreshToken,
         { device: dto.device, userAgent, ip },
       );
+      this.setMediaCookie(reply, access);
       return {
         code: BusinessCode.OK,
         message: 'success',
         data: { access_token: access, refresh_token: refresh },
       };
     } catch (e) {
+      // Any failure (reuse / invalid / expired) means the old access token is no longer usable —
+      // clear the media cookie so stale media requests don't keep a dead session visually alive.
+      this.clearMediaCookie(reply);
       if (e === 'reuse') {
         return {
           code: BusinessCode.REFRESH_REUSE_DETECTED,
@@ -142,12 +174,16 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
   @ApiOperation({ summary: '登出（吊销 refresh；accessJti 可选，即时把当前 access 入黑名单）' })
-  async logout(@Body() dto: LogoutDto): Promise<ApiResult> {
+  async logout(
+    @Body() dto: LogoutDto,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<ApiResult> {
     // 前端发 'public' 头 + body，无需 JWT 鉴权，以 refresh token 持有证明吊销。
     await this.authService.logout(dto.refreshToken);
     if (dto.accessJti) {
       await this.authService.blacklistAccessJti(dto.accessJti);
     }
+    this.clearMediaCookie(reply);
     return { code: BusinessCode.OK, message: 'success' };
   }
 
@@ -156,8 +192,12 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout-all')
   @ApiOperation({ summary: '全设备登出（吊销所有会话 + bump tokenVersion）' })
-  async logoutAll(@Request() req): Promise<ApiResult> {
+  async logoutAll(
+    @Request() req,
+    @Res({ passthrough: true }) reply: FastifyReply,
+  ): Promise<ApiResult> {
     await this.authService.invalidateAllSessions(req.user.userId, 'all_devices');
+    this.clearMediaCookie(reply);
     return { code: BusinessCode.OK, message: 'success' };
   }
 
@@ -170,6 +210,7 @@ export class AuthController {
   async changePassword(
     @Request() req,
     @Body() dto: ChangePasswordDto,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     const r = await this.authService.changePassword(
       req.user.userId,
@@ -177,6 +218,9 @@ export class AuthController {
       dto.newPassword,
     );
     if (r.ok) {
+      // changePassword bumps tokenVersion (revoking all other sessions) and reissues a fresh
+      // token pair for this device; mirror the new access token into the media cookie.
+      this.setMediaCookie(reply, r.access_token);
       return {
         code: BusinessCode.OK,
         message: 'success',

@@ -142,6 +142,12 @@ export class ChatEditorComponent {
     this.editor?.commands.clearContent(true);
   }
 
+  /** Plain-text view of the editor content (block nodes separated by `\n`; mention atoms render as their
+   *  label). Used by plain-text send mode — the composer UX is rich, but the stored/sent payload is text. */
+  getText(): string {
+    return this.editor?.getText() ?? '';
+  }
+
   /** Insert text (or any inline content) at the caret — used by the emoji board. */
   insertText(content: string): void {
     this.editor?.chain().focus().insertContent(content).run();
