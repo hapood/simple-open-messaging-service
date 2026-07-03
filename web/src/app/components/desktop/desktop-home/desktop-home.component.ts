@@ -1,4 +1,5 @@
-import { Component, inject, signal, viewChild } from '@angular/core';
+import { Component, inject, signal, viewChild, effect } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ConversationItem } from '../../../services/model';
 import { IconRailComponent } from '../icon-rail/icon-rail.component';
 import { ChatListPaneComponent } from '../chat-list-pane/chat-list-pane.component';
@@ -32,6 +33,20 @@ export class DesktopHomeComponent {
   /** chat-list width, persisted across sessions */
   readonly listWidth = signal<number>(this.readListWidth())
   private readonly chatListPane = viewChild(ChatListPaneComponent)
+
+  constructor() {
+    // Honor open-conversation intents from elsewhere (e.g. the invite card's "Open group" after
+    // joining) by routing them through the same selection path as clicking the list.
+    this.convList.openRequest$.pipe(takeUntilDestroyed()).subscribe((item) => this.onThreadSelect(item))
+
+    // When the open thread is removed (unfriend / kicked / self-left group), clear the chat pane so it
+    // doesn't keep rendering a now-deleted conversation. On desktop, openThreadId only ever returns to
+    // undefined via ConversationListService.removeThread (mobile/tablet manage their own popup lifecycle
+    // via .close()), so this never fires spuriously during normal selection.
+    effect(() => {
+      if (this.convList.openThreadId() === undefined) this.selectedThread.set(undefined)
+    })
+  }
 
   onThreadSelect(thread: ConversationItem) {
     this.selectedThread.set(thread)

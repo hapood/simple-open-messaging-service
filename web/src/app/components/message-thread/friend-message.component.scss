@@ -1,4 +1,5 @@
-// fill-parent chain: host → wrapper → msg-container. 移动全屏弹窗 / 桌面 pane 都靠它填满。
+// fill-parent chain: host → wrapper → msg-container. Mobile full-screen popup
+// and desktop pane both rely on it to fill their container.
 :host {
   display: block;
   height: 100%;
@@ -15,23 +16,31 @@
   width: 100%;
   overflow: hidden;
   position: relative;
-  background: var(--im-chat-bg);
+  // Wallpaper: bg color + tiled doodle layered on the same element (an element's
+  // own background always paints behind its content, so no pseudo-element / z-index
+  // is needed). The parent container does not scroll with the viewport → the pattern
+  // acts as a fixed wallpaper that messages scroll over.
+  background-color: var(--im-chat-bg);
+  background-image: var(--im-chat-pattern);
+  background-repeat: repeat;
 }
 
-// 滚动视口（内核 B 手动补偿：overflow-anchor:none 独占，避免浏览器二次调 scrollTop 打架）。
+// Scroll viewport (kernel B manual compensation: overflow-anchor:none exclusively,
+// to stop the browser from fighting our scrollTop adjustments).
 .msg-viewport {
   flex: 1 1 auto;
   overflow-x: hidden;
   overflow-y: auto;
   overflow-anchor: none;
   outline: none;
-  scrollbar-width: none; // 全平台隐藏滚动条
+  scrollbar-width: none; // hide the scrollbar on every platform
   &::-webkit-scrollbar {
     display: none;
   }
 }
 
-// 内容层：普通文档流（相对滚动架构），item block 堆叠、高度自然撑开供 viewport 滚动。
+// Content layer: normal document flow (relative-scroll architecture). Item blocks
+// stack and grow to natural height for the viewport to scroll.
 .msg-content {
   position: relative;
 }
@@ -42,12 +51,15 @@ app-chat-input {
   flex: 0 0 auto;
 }
 
-// 顶部哨兵：保留给内核 A 路由/playground 复用；本组件不传 onLoadMore，sentinel 仅占位无害。
+// Top sentinel: retained for kernel-A routing / playground reuse. This component
+// does not pass onLoadMore, so the sentinel is a harmless placeholder.
 .msg-sentinel {
   height: 1px;
 }
 
-// 粘性日期浮层：在 msg-container 内、viewport 外（兄弟），absolute 钉顶部、不随文档流滚、不参与回收。
+// Sticky date overlay: inside msg-container but a sibling of the viewport.
+// Absolute-pinned to the top; out of document flow, does not scroll, and is not
+// recycled by the virtual scroller.
 .msg-sticky-date {
   position: absolute;
   top: 8px;

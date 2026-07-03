@@ -1,13 +1,16 @@
-import { Component, computed, inject, input, OnInit, signal } from '@angular/core';
+import { Component, computed, inject, input, OnInit, OnDestroy, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
+import { Subscription, filter } from 'rxjs';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { FormsModule } from '@angular/forms';
 import { GroupService, GroupMember } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
@@ -30,7 +33,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
   templateUrl: './group-info.component.html',
   styleUrl: './group-info.component.scss',
 })
-export class GroupInfoComponent implements OnInit {
+export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly AppIconType = AppIconType
   readonly UserAvatarType = UserAvatarType
   readonly fitOpts = { settleMs: 600, minHeight: 360 } as const
@@ -41,8 +44,14 @@ export class GroupInfoComponent implements OnInit {
   private readonly groupService = inject(GroupService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
+  private readonly groupEvents = inject(GroupEventService)
   private readonly routeService = inject(RouteService)
+  private readonly snackBar = inject(MatSnackBar)
   private readonly http = inject(HttpClient)
+
+  /** Live roster refresh: when a GROUP_* membership/role event lands for THIS group while the panel
+   *  is open, reload the roster so joins/leaves/kicks/promotions show without a manual reopen. */
+  private rosterSub?: Subscription
 
   readonly roster = signal<GroupMember[]>([])
   readonly loading = signal(true)
@@ -80,6 +89,15 @@ export class GroupInfoComponent implements OnInit {
 
   ngOnInit() {
     this.loadMembers()
+    // Live roster refresh: a GROUP_* membership/role event for this group reloads the roster. The
+    // component is ephemeral (a popup/panel), so the subscription is released on close (ngOnDestroy).
+    this.rosterSub = this.groupEvents.rosterChanged$
+      .pipe(filter((gid) => gid === this.groupId()))
+      .subscribe(() => this.loadMembers())
+  }
+
+  ngOnDestroy() {
+    this.rosterSub?.unsubscribe()
   }
 
   loadMembers() {
@@ -266,13 +284,28 @@ export class GroupInfoComponent implements OnInit {
   invite() {
     const list = this.selectedList()
     const id = this.groupId()
-    if (id === undefined) return
-    list.forEach((item) => {
-      this.groupService.inviteUser({ groupId: id, userId: item.peerUser.id }).subscribe()
+    if (id === undefined || list.length === 0) return
+    // One batched request (the server writes one INVITE per friend in their P2P thread). Busy gates
+    // the button; the response carries invited/skipped counts surfaced via a snackbar. The roster is
+    // NOT reloaded here — invitees are not members until they accept; they appear live via
+    // GROUP_MEMBER_JOINED once they join (GroupEventService → rosterChanged$).
+    this.busy.set(true)
+    const userIds = list.map((item) => item.peerUser.id)
+    this.groupService.inviteUsers({ groupId: id, userIds }).subscribe((res) => {
+      this.busy.set(false)
+      const invited = res.data?.invited?.length ?? 0
+      const skipped = res.data?.skipped?.length ?? 0
+      const msg =
+        skipped > 0
+          ? `Invited ${invited}; ${skipped} couldn't be invited`
+          : invited > 0
+            ? `Invited ${invited}`
+            : 'No invites sent'
+      this.snackBar.open(msg, 'OK', { duration: 4000 })
+      this.selectedDict.set({})
+      this.selectedList.set([])
+      this.showInvite.set(false)
     })
-    this.selectedDict.set({})
-    this.selectedList.set([])
-    this.showInvite.set(false)
   }
 
   goBack() {

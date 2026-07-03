@@ -1,4 +1,5 @@
 import { Injectable, inject, signal } from '@angular/core';
+import { Subject, firstValueFrom } from 'rxjs';
 import { UserService } from './user.service';
 import { ConversationItem } from './model';
 import { toFriendlyHttpError } from './http-error';
@@ -44,6 +45,15 @@ export class ConversationListService {
   private readonly _openThreadId = signal<number | undefined>(undefined);
   readonly openThreadId = this._openThreadId.asReadonly();
 
+  private readonly _openRequest$ = new Subject<ConversationItem>();
+  /**
+   * A shell-agnostic "open this conversation" intent. Each shell subscribes and routes the item
+   * through its own selection path (inline `selectedThread` on desktop/tablet, a popup on mobile) —
+   * the same path clicking the list uses. Used by the invite card's "Open group" follow-through after
+   * joining, and reusable for future entry points (notifications, @mentions).
+   */
+  readonly openRequest$ = this._openRequest$.asObservable();
+
   /** Fetch the conversation list from the server (authoritative state). */
   load() {
     this._status.set('LOADING');
@@ -51,14 +61,35 @@ export class ConversationListService {
     // Page through the full thread set (query-thread/valid is @Max(50) per request) so client-side
     // folder filtering sees every conversation, not just the first page.
     this.userService.queryAllUserThreads().subscribe({
-      next: (items) => {
-        this._items.set(items);
-        this._status.set('READY');
-      },
+      next: (items) => this.applyItems(items),
       error: (err) => {
         this._error.set(toFriendlyHttpError(err));
         this._status.set('ERROR');
       },
+    });
+  }
+
+  private applyItems(items: ConversationItem[]): void {
+    this._items.set(items);
+    this._status.set('READY');
+  }
+
+  /**
+   * Emit an open-conversation intent for `threadId` (consumed by the shells via {@link openRequest$}).
+   * Resolves the ConversationItem from the loaded list; if the thread isn't loaded yet — the
+   * just-joined case, where the invite card opens the group before the list has fetched it — loads
+   * first, then emits.
+   */
+  openByThreadId(threadId: number): void {
+    const existing = this._items().find((t) => t.threadId === threadId);
+    if (existing) {
+      this._openRequest$.next(existing);
+      return;
+    }
+    void firstValueFrom(this.userService.queryAllUserThreads()).then((items) => {
+      this.applyItems(items);
+      const item = items.find((t) => t.threadId === threadId);
+      if (item) this._openRequest$.next(item);
     });
   }
 
@@ -75,6 +106,34 @@ export class ConversationListService {
   /** Clear the open thread (chat-pane unmounted / mobile popup closed). */
   close() {
     this._openThreadId.set(undefined);
+  }
+
+  // ── live group-lifecycle updates (driven by GroupEventService from the GROUP_* SSE events) ──
+
+  /** Apply a rename / avatar change from a GROUP_UPDATED event (live list + header refresh). */
+  applyGroupUpdate(threadId: number, patch: { name?: string; avatar?: string }): void {
+    this._items.update((list) =>
+      list.map((t) => {
+        if (t.threadId !== threadId || !t.group) return t;
+        const group = { ...t.group };
+        if (patch.name !== undefined) group.name = patch.name;
+        if (patch.avatar !== undefined) group.avatar = patch.avatar;
+        return { ...t, group };
+      }),
+    );
+  }
+
+  /** Apply my own role change from a GROUP_ROLE_CHANGED event targeting me. */
+  applyRole(threadId: number, role: 'OWNER' | 'ADMIN' | 'MEMBER'): void {
+    this._items.update((list) =>
+      list.map((t) => (t.threadId === threadId ? { ...t, role } : t)),
+    );
+  }
+
+  /** Drop a thread (self-kick / self-left). */
+  removeThread(threadId: number): void {
+    this._items.update((list) => list.filter((t) => t.threadId !== threadId));
+    if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
   }
 
   private clearUnread(threadId: number) {
@@ -120,6 +179,11 @@ export class ConversationListService {
         lastMessagePreview: preview,
         lastMessageAt: msg.createdAt,
         lastMessageSenderId: msg.creator,
+        // A live NEW_MESSAGE can't resolve a group sender's display name cheaply, so drop any stale
+        // name on group threads (own messages prefix "You:" via senderId===me; incoming go bare until
+        // the next full reload re-hydrates the name). P2P names are never used by the preview.
+        lastMessageSenderName:
+          item.type === 'GROUP' ? null : item.lastMessageSenderName,
         unreadCount: unread,
       };
       const next = list.slice();

@@ -29,8 +29,11 @@ export interface CbItem<T = unknown> {
   /** Real data id (the msgId from the source). Only a source cursor + read by createItem for data; **takes no part in position arithmetic** (kernel position uses the array index). */
   id: string | number;
   data: T;
-  /** Boundary marker (assigned by the source): 'oldest' = global oldest, 'newest' = global newest. The kernel reads it to set noOlder/noNewer. */
-  boundary?: 'oldest' | 'newest';
+  /** Boundary marker (assigned by the source): 'oldest' = global oldest, 'newest' = global newest, 'both' = a sole
+   *  item that is BOTH the global oldest and newest (a single-message thread, or a length-1 init batch spanning the
+   *  whole sequence — the field is single-valued, so without 'both' the source's items[0]='oldest' / items[last]='newest'
+   *  would collide on the same item and lose the oldest marker, leaving noOlder unset → permanent top ghost). */
+  boundary?: 'oldest' | 'newest' | 'both';
   /**
    * All member msgIds an aggregated item (e.g. album) represents — populated by the mergeItems hook
    * when it merges several msgs into one item (the first member equals {@link id}). Single (non-merged)
@@ -476,6 +479,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.dirtyPrefix = true;
       this.measurePending();
       this.applyAnchor(anchor);
+      this.updateTailCap(); // mounted 0→1 (e.g. first pending in an empty thread): flip the cap hidden→gap so the bottom padding shows
       return true;
     }
     const idx = this.indexOfId(afterId);
@@ -500,6 +504,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = true;
     this.measurePending();                       // `measuring` suppresses onElHeight → unified applyAnchor below
     this.applyAnchor(anchor);                     // above-fold insert pushed the fold → anchor follows; below-fold → no-op
+    this.updateTailCap();                         // keep the newer-edge cap in sync after a mounted mutation
     return true;
   }
 
@@ -1282,7 +1287,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // loads further. absorbBoundary is sticky (only ever sets true), so without this a partial backlog page left the kernel
     // falsely believing it was at the newest — stranding the remaining newer messages off-window and blocking further
     // loads (revalidateBottom is gated on !noNewer).
-    this.noNewer = batch.some(it => it.boundary === 'newest');
+    this.noNewer = batch.some(it => it.boundary === 'newest' || it.boundary === 'both');
 
     const count0 = this.mounted.length;
 
@@ -1401,10 +1406,12 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
       const anchorEl = insertIdx < this.mounted.length ? this.mounted[insertIdx].el : null;
       const prev = insertIdx > 0 ? this.mounted[insertIdx - 1].item : null;
-      // A confirm now also animates (it used to mount visibly with no enter): when a tail is present it enters from above
-      // (enterAbove), so the optimistic→real swap is a visible settle instead of an instant pre-paint pop. Flagged
+      // A confirm (matches an in-flight optimistic by clientMessageId) takes the optimistic's slot — same id, same
+      // position — so it does NOT play a cb-enter: the bubble is already on screen as the optimistic; only the
+      // cb-confirmed spinner→check choreography should play (reconcileOptimistic tags it). A plain incoming real (no
+      // optimistic counterpart) DOES animate — enterAbove when a tail is present, else cb-enter from below. Flagged
       // resortTarget so reconcileOptimistic removes the optimistic duplicate and tags this real cb-confirmed.
-      const entry = this.createEntry(item, prev, anchorEl, true);
+      const entry = this.createEntry(item, prev, anchorEl, !confirm);
       entry.enterAbove = enterAbove;
       if (confirm) { entry.resortTarget = true; }
       this.mounted.splice(insertIdx, 0, entry);
@@ -1638,7 +1645,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const first = this.mounted[0];
       // Never trim transient/optimistic/leaving, and rule 4b: never trim the global-newest real item (defensive — the
       // newest normally sits at the tail, but the guard holds regardless of position).
-      if (first.transient || first.optimistic || first.leaving || first.item.boundary === 'newest') break;
+      if (first.transient || first.optimistic || first.leaving || first.item.boundary === 'newest' || first.item.boundary === 'both') break;
       const h = first.height;
       if (this.totalH() - h > this.threshold && (this.viewport.scrollTop - cumH) - h > this.cfg.edge) {
         this.unmountTop();
@@ -1746,8 +1753,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
 
   private absorbBoundary(items: CbItem<T>[]): void {
     for (const it of items) {
-      if (it.boundary === 'oldest') this.noOlder = true;
-      else if (it.boundary === 'newest') this.noNewer = true;
+      if (it.boundary === 'oldest' || it.boundary === 'both') this.noOlder = true;
+      if (it.boundary === 'newest' || it.boundary === 'both') this.noNewer = true;
     }
   }
 

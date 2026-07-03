@@ -104,6 +104,21 @@ describe('MockItemSource (cursor contract)', () => {
     expect(pending[0].clientMessageId).toBe('cid-2');
   });
 
+  it('init reconciles pending by clientMessageId (empty-thread confirm routes through init, not getNewer)', async () => {
+    const s = new MockItemSource(0, 0, new MockUserService(), 1);
+    s.addPending({ ...msg('pending-1'), clientMessageId: 'cid-1' });
+    s.pushLive([{ ...msg('real-0'), clientMessageId: 'cid-1' }]); // server echo confirming pending-1 (cid-1)
+    // The kernel's loadNewer falls back to init(-1) when the window is entirely optimistic (an empty-thread confirm).
+    // init MUST reconcile pending just like getNewer — otherwise the confirmed pending survives in source.pending and
+    // the kernel's elevatePending re-mounts it as a stale optimistic bubble below the next incoming message.
+    const items = await s.init(-1, 100, 0);
+    expect(items.map(i => i.id)).toEqual(['real-0']);
+    expect(items[0].clientMessageId).toBe('cid-1'); // shape preserves the reconcile key on the confirmed real
+    expect(items[0].boundary).toBe('both');          // sole item spanning both edges (empty thread)
+    expect(s.hasPending()).toBe(false);              // pending-1 dropped (confirmed) — the regression this guards
+    expect(s.getPending().map(p => p.id)).toEqual([]);
+  });
+
   it('getNewer never appends pending even when real == count (page full at the edge)', async () => {
     const s = new MockItemSource(200, 0, new MockUserService(), 1);
     await s.init(-1, 100, 0);

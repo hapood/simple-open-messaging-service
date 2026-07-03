@@ -139,6 +139,15 @@ export class UserService {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/cancel-friend-request`, params)
   }
 
+  /**
+   * Unfriend — end an approved P2P friendship (mutual: the shared thread is deleted for both sides).
+   * On success the caller should drop the thread from the conversation list (removeThread) and close
+   * the open chat/profile. Distinct from decline/cancel, which act on a still-pending request.
+   */
+  deleteFriend(params: { userId: number }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/user/delete-friend`, params)
+  }
+
   /** Clear the friend-request unread marker (the user has viewed the friend-requests panel; writing it
    *  back dismisses the badge). */
   markFriendReqRead() {

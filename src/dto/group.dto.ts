@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMinSize,
   IsArray,
   IsEnum,
   IsInt,
@@ -53,11 +54,21 @@ export class CreateGroupDto {
 }
 
 export class InviteGroupDto {
-  @ApiProperty({ example: 1, description: 'Invited user id' })
+  /**
+   * Friends to invite — each receives an INVITE message in the inviter↔invitee P2P thread. The
+   * controller batches them and returns `{ invited, skipped }`; an entry is skipped if the target is
+   * not a friend (or has no P2P thread) or the invite write fails. Each must accept via group/join.
+   */
+  @ApiProperty({
+    type: [Number],
+    example: [3, 7],
+    description: 'Friend user ids to invite (each must be a friend with an existing P2P thread)',
+  })
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsInt({ each: true })
   @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId: number;
+  userIds: number[];
 
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)

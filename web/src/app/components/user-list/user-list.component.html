@@ -1,15 +1,17 @@
 <div>@for (thread of dispThreadList(); track thread.id) {
   <div class="thread-item" (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
-      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"></app-user-avatar>
-      @if(thread.selected===true){<svg class="active-icon" width="12px" height="12px" viewBox="0 0 24 24" fill="none"
-        xmlns="http://www.w3.org/2000/svg">
-        <path d="M4 12.6111L8.92308 17.5L20 6.5" stroke="#000000" stroke-width="2" stroke-linecap="round"
-          stroke-linejoin="round" />
-      </svg>}
+      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
+        [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
+      @if (thread.selected === true) {
+        <span class="check" aria-hidden="true">
+          <app-icon [type]="AppIconType.CHECK" [style]="{ width: '13px', height: '13px' }"></app-icon>
+        </span>
+      }
     </div>
     <div class="thread-info">
-      <div class="thread-name">{{thread.peerUser.uniqName}}</div>
+      <div class="thread-name">{{ thread.peerUser.userExtra.name || thread.peerUser.uniqName }}</div>
+      <div class="thread-handle">{{ '@' + thread.peerUser.uniqName }}</div>
     </div>
   </div>
   }

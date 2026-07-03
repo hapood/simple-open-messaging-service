@@ -43,6 +43,9 @@ export class MessageHeaderComponent {
         this.infoPanel.toggle(userMsgTrd)
       } else if (userMsgTrd.type === 'GROUP') {
         this.routeService.popupDlg(PopupType.GROUP_INFO, { userMsgTrd })
+      } else {
+        // mobile P2P: open the peer profile (Unfriend lives here) — parity with the desktop panel
+        this.routeService.popupDlg(PopupType.PEER_PROFILE, { userMsgTrd })
       }
     }
   }

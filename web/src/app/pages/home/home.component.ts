@@ -5,6 +5,7 @@ import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { GroupEventService } from '../../services/group-event.service';
 import { DesktopHomeComponent } from '../../components/desktop/desktop-home/desktop-home.component';
 import { MobileHomeComponent } from '../../components/mobile/mobile-home/mobile-home.component';
 import { TabletHomeComponent } from '../../components/tablet/tablet-home.component';
@@ -34,6 +35,9 @@ export class HomeComponent implements OnInit, OnDestroy {
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
   private readonly convList = inject(ConversationListService);
+  // Injected to instantiate the root singleton that routes the GROUP_* SSE events to the
+  // conversation list / open roster / affected user (the service self-subscribes in its constructor).
+  private readonly groupEvents = inject(GroupEventService);
 
   private readonly subs: Subscription[] = [];
 

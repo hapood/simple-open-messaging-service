@@ -30,13 +30,20 @@
   }
 }
 
+// Dark theme: the bright brand gradient is too stark beside the dark form pane, so swap it
+// for a deep, brand-tinted gradient that still carries the identity (white wordmark/bubbles
+// stay legible on it). The brand tokens themselves are unchanged — buttons keep their blue.
+:host-context([data-theme="dark"]) {
+  background: linear-gradient(135deg, #0e2a3a 0%, #103d6b 100%);
+}
+
 .brand-stack {
   position: relative;
   max-width: 320px;
   text-align: center;
 
-  // 落在品牌渐变面板上：白字 + 更大字号 + logo 投影分层（与迁移前视觉一致）。
-  // CSS 变量穿透到 <app-brand-logo> 内部，无需 ::ng-deep。
+  // Sits on the brand-gradient panel: white text + larger sizes + a layered logo drop-shadow
+  // (matches the pre-migration look). CSS variables pierce into <app-brand-logo> — no ::ng-deep needed.
   app-brand-logo {
     --bl-word: 44px;
     --bl-tag: 16px;

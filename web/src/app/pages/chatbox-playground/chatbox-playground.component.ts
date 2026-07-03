@@ -17,26 +17,28 @@ import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.co
 import { ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { ChatInputComponent, ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 
-// Angular 生产 AOT 把全局 ngDevMode 置 falsy 并据此做死代码消除（与虚拟滚动内核同模式）。
-// 用它守卫「调试角标注入」——生产构建不创建角标 DOM、零开销。非 Angular 环境该全局 undefined 同样关闭。
+// Angular production AOT sets the global ngDevMode to falsy and uses it for dead-code elimination (same pattern as the
+// virtual-scroll kernel). It guards the "dev badge injection" — production builds create no badge DOM (zero overhead);
+// in non-Angular environments the global is undefined, which likewise disables it.
 declare const ngDevMode: boolean | null | undefined;
 
-// 内核调参默认值（与内核 DEFAULTS 同步：chat-box-scroller.ts / anchor.ts）。mountPx 已删（array 内核死参数）。
+// Kernel tuning defaults (kept in sync with DEFAULTS in chat-box-scroller.ts / anchor.ts). mountPx was removed (dead param of the array kernel).
 const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100 };
 
 /**
- * 虚拟滚动实验场。
+ * Virtual-scroll playground.
  *
- * 渲染与真实聊天完全一致——createItem 调 createMsgCbElement（真实 message-cards 组件），
- * 数据/行为全 mock（不发 HTTP、不依赖登录/后端）：经 {@link MockChatApi} 生成器一次性产 n 条
- * 稳定记录，发送/上传/对方回复均走 mock 接口，入参/出参打到 console。
+ * Rendering is identical to the real chat — createItem calls createMsgCbElement (the real message-cards components).
+ * Data and behavior are fully mocked (no HTTP, no login/backend dependency): the {@link MockChatApi} generator produces
+ * N stable records up front; send/upload/opponent-reply all go through mock APIs whose inputs/outputs are logged.
  *
- * 数据全量载入（generate → setItems → scrollToBottom），不传 onLoadMore——balance 自然挂载
- * 更早 item，无需历史加载。跳转到指定 id 经内核 scrollToIndex（A/B 双内核均支持）。
+ * Data is loaded in full (generate → setItems → scrollToBottom); no onLoadMore is supplied — balance naturally mounts
+ * older items, so no history paging is needed. Jumping to a given id goes through the kernel scrollToIndex (both A/B kernels support it).
  *
- * 【样式边界】本组件 ViewEncapsulation.None（全局 pg-），但**绝不写作用于聊天内容内部的 CSS**
- *（.pg-msg-row/.pg-bubble 等由 message-cards 组件的 _row-base 自治）——否则全局规则会改消息行
- * 实测高度、干扰内核 offsetHeight 判断。本文件只管外壳：stage/header/viewport 容器/面板/输入栏/FAB。
+ * [Style boundary] This component is ViewEncapsulation.None (global pg- prefix), but it MUST NEVER write CSS that
+ * targets the inside of the chat content (.pg-msg-row/.pg-bubble are owned by the message-cards components' _row-base) —
+ * otherwise global rules would alter the measured row heights and corrupt the kernel's offsetHeight logic. This file
+ * owns only the shell: stage/header/viewport containers/panel/input bar/FAB.
  */
 @Component({
   selector: 'app-chatbox-playground',
@@ -49,24 +51,24 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
 export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly layout = inject(LayoutService);
   private readonly route = inject(ActivatedRoute);
-  /** 动态创建消息组件（zoneless 下 createComponent + detectChanges 驱动渲染）。 */
+  /** EnvironmentInjector for dynamically creating message components (zoneless: createComponent + detectChanges drives rendering). */
   private readonly envInjector = inject(EnvironmentInjector);
   /** Album click → fullscreen gallery viewer (CDK Overlay, service-hosted; no per-host template mounting needed). */
   private readonly galleryViewer = inject(GalleryViewerService);
-  /** 方案 A（借浏览器锚定）由路由 data.useNativeAnchor 决定：-a 路由为 true，-b（默认）走方案 B（手动补偿）。 */
+  /** Plan A (browser overflow-anchor) is selected by route data.useNativeAnchor: the -a route sets it true; -b (default) uses Plan B (manual compensation). */
   readonly useNativeAnchor = (this.route.snapshot.data as { useNativeAnchor?: boolean }).useNativeAnchor === true;
-  /** 桌面级视口(宽屏+精确指针)：true=常驻侧栏；false=移动抽屉+FAB。 */
+  /** Desktop-class viewport (wide screen + precise pointer): true = persistent side rail; false = mobile drawer + FAB. */
   readonly isDesktop = this.layout.isDesktop;
-  /** 移动端控制面板抽屉开关。 */
+  /** Mobile control-panel drawer toggle. */
   readonly panelOpen = signal(false);
-  /** 输入栏为避让软键盘上移的像素（visualViewport 计算，iOS 兜底）。 */
+  /** Pixels the input bar is lifted to clear the soft keyboard (computed from visualViewport; iOS fallback). */
   readonly keyboardOffset = signal(0);
 
-  /** mock 数据源（实现 CbSource；buildItems 生成器分页）。setup 时按 count 创建。 */
+  /** Mock data source (implements CbSource; the buildItems generator paginates). Created with `count` at setup. */
   private source?: MockItemSource;
-  /** 生成器加载中（禁用数据量按钮，防重入）。 */
+  /** Generator loading (disables the data-volume buttons to prevent re-entry). */
   readonly loading = signal(false);
-  /** 短暂提示（跳转未命中等），自动清除。 */
+  /** Transient toast (e.g. jump miss), auto-cleared. */
   readonly toast = signal<string | null>(null);
   private toastTimer?: ReturnType<typeof setTimeout>;
 
@@ -80,17 +82,17 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   private scroller?: ScrollerApi<ChatItemData>;
 
-  /** 视口上方剩余 height（= scrollTop，向上可滚到窗口顶的余量；调试）。 */
+  /** Remaining height above the viewport (= scrollTop; headroom scrollable up to the window top; debug). */
   readonly viewportAbove = signal(0);
-  /** 视口下方剩余 height（= scrollHeight - vh - scrollTop，向下可滚到窗口底的余量；调试）。 */
+  /** Remaining height below the viewport (= scrollHeight - vh - scrollTop; headroom scrollable down to the window bottom; debug). */
   readonly viewportBelow = signal(0);
-  /** 是否贴底（收到新消息时决定是否跟随滚动）。 */
+  /** Whether pinned to the bottom (decides whether to follow on new messages). */
   readonly atBottom = signal(true);
-  /** 调试模式：开 FAB 角标 + balance 诊断 console；性能模式全关。 */
+  /** Debug mode: enables FAB badges + balance diagnostics to the console; all off in performance mode. */
   readonly debugMode = signal(true);
-  /** 调试：关闭挂载检查点（balance 不触发 loadOlder/loadNewer）。默认 false（检查点正常加载）。仅 dev 有效（内核 ngDevMode 守卫，生产 AOT 移除）。 */
+  /** Debug: disables mount checkpoints (balance won't trigger loadOlder/loadNewer). Default false (checkpoints load normally). Dev-only (kernel ngDevMode-guarded; stripped by production AOT). */
   readonly closeCheckpoint = signal(false);
-  /** source get 延迟（ms，模拟 IO 慢加载）。默认 200，可调 0/1s/5s 测加载/补偿体验。 */
+  /** Source get latency (ms, simulates slow IO). Default 200; adjustable to 0/1s/5s to test loading/compensation behavior. */
   readonly sourceLatency = signal(200);
   /** Mock server-echo delay (ms): how long an optimistic bubble stays 'sending' before confirm flips it to 'sent'. Default 800. */
   readonly confirmDelay = signal(800);
@@ -113,19 +115,19 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  as a failed bubble (retry glyph) instead of confirming. Stays on until toggled off, so the failure/retry flow can be
    *  exercised repeatedly without re-arming. To test "fail then succeed": turn on → send → turn off → click retry. */
   readonly mockSendError = signal(false);
-  /** 内核调参（CbConfig）。setup 传给内核；编辑弹窗改 → applyConfig 重建生效。 */
+  /** Kernel tuning (CbConfig). Passed to the kernel at setup; editing it via the modal → applyConfig rebuilds to take effect. */
   readonly config = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
-  /** 参数编辑弹窗开关 + 草稿（确认才 apply，避免改一个字段就重建）。 */
+  /** Config-edit modal open flag + draft (applied only on confirm, so editing one field doesn't rebuild mid-stream). */
   readonly configModalOpen = signal(false);
   readonly configDraft = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
-  /** Telegram 式粘性日期：当前视口顶所属日期标签（滚动实时更新；null=不显浮层）。 */
+  /** Telegram-style sticky date: the date label for the top of the viewport (updated live on scroll; null = no overlay shown). */
   readonly stickyDate = signal<string | null>(null);
-  /** 主题：light / dark。默认跟随系统 prefers-color-scheme，可手动 toggle 临时覆盖（系统变化时再跟随）。 */
+  /** Theme: light / dark. Defaults to the system prefers-color-scheme; a manual toggle temporarily overrides it (re-follows on system change). */
   readonly theme = signal<'light' | 'dark'>('light');
   private themeMqCleanup: (() => void) | null = null;
   toggleTheme() { this.theme.update(t => t === 'light' ? 'dark' : 'light'); }
 
-  // 控件
+  // Controls
   readonly count = signal(5000);
   /** @mention candidates (mock group members; production swaps in GroupService.getMembers()). */
   readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
@@ -134,7 +136,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly inputBarHeight = signal(63);
 
   constructor() {
-    // 跟随系统深浅色：初始化 + 监听变化（matchMedia）。手动 toggle 仍可临时覆盖。
+    // Follow the system color scheme: initialize + listen for changes (matchMedia). A manual toggle still temporarily overrides it.
     const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
     if (mq) {
       const apply = () => this.theme.set(mq.matches ? 'dark' : 'light');
@@ -147,9 +149,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   togglePanel() { this.panelOpen.update(v => !v); }
   closePanel() { this.panelOpen.set(false); }
 
-  // FAB：拖动重定位，松手吸附最近水平边缘；未越过阈值则视为点击开关面板。
+  // FAB: drag to reposition; on release it snaps to the nearest horizontal edge. Movement below the threshold counts as a click (toggles the panel).
   onFabDown(e: PointerEvent) {
-    if (e.pointerType === 'mouse' && e.button !== 0) return; // 鼠标非左键不处理
+    if (e.pointerType === 'mouse' && e.button !== 0) return; // ignore non-left mouse buttons
     const fab = this.fabRef()?.nativeElement;
     if (!fab) return;
     e.preventDefault();
@@ -159,7 +161,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.fabStartLeft = rect.left;
     this.fabStartTop = rect.top;
     this.fabMoved = false;
-    // 由 right/bottom 切到 left/top，以便自由定位
+    // Switch from right/bottom anchoring to left/top so the FAB can be freely positioned.
     fab.style.left = `${rect.left}px`;
     fab.style.top = `${rect.top}px`;
     fab.style.right = 'auto';
@@ -176,10 +178,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     if (!fab) return;
     const dx = e.clientX - this.fabStartX;
     const dy = e.clientY - this.fabStartY;
-    if (!this.fabMoved && Math.hypot(dx, dy) < 5) return; // 起判阈值，保护点击
+    if (!this.fabMoved && Math.hypot(dx, dy) < 5) return; // activation threshold — protects the click
     this.fabMoved = true;
     const w = fab.offsetWidth, h = fab.offsetHeight;
-    // 边界 clamp：整个按钮留在视口内，留 8px 边距
+    // Boundary clamp: keep the whole button inside the viewport with an 8px margin.
     const left = Math.max(8, Math.min(window.innerWidth - w - 8, this.fabStartLeft + dx));
     const top = Math.max(8, Math.min(window.innerHeight - h - 8, this.fabStartTop + dy));
     fab.style.left = `${left}px`;
@@ -194,8 +196,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const wasMoved = this.fabMoved;
     this.fabDragging = false;
     this.fabMoved = false;
-    if (!wasMoved) { this.togglePanel(); return; } // 点击 → 开关面板
-    // 拖动结束：吸附到最近水平边缘（垂直位置保持）
+    if (!wasMoved) { this.togglePanel(); return; } // click → toggle the panel
+    // Drag end: snap to the nearest horizontal edge (vertical position preserved).
     if (fab) {
       const targetLeft = e.clientX < window.innerWidth / 2 ? 16 : window.innerWidth - fab.offsetWidth - 16;
       fab.style.left = `${targetLeft}px`;
@@ -205,7 +207,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private lastEmit = 0;
   private lastDebugLog = 0;
 
-  // FAB 拖动状态
+  // FAB drag state
   private fabDragging = false;
   private fabMoved = false;
   private fabStartX = 0;
@@ -213,8 +215,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private fabStartLeft = 0;
   private fabStartTop = 0;
 
-  // zoneless + signal viewChild：ngAfterViewInit 可能不触发，改用 effect——
-  // viewChild signal 解析后 effect 必跑，初始化 scroller（只一次）。
+  // zoneless + signal viewChild: ngAfterViewInit may not fire, so use an effect instead —
+  // once the viewChild signals resolve, the effect runs and initializes the scroller (exactly once).
   private readonly initScroller = effect(() => {
     const vp = this.viewportRef();
     const ct = this.contentRef();
@@ -222,12 +224,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.setup(vp.nativeElement, ct.nativeElement);
   });
 
-  /** 建 source + 内核 + init。setCount 切数据量时 teardown 重建。 */
+  /** Build source + kernel + init. Rebuilt on setCount (teardown then reconstruct with the new count). */
   private setup(viewport: HTMLDivElement, content: HTMLDivElement): void {
     try {
       this.scroller?.destroy();
       this.source = new MockItemSource(this.count(), this.sourceLatency(), new MockUserService(), 1);
-      // 据路由 data 选内核实现：方案 A（借浏览器锚定）或方案 B（手动补偿），两者同构 ScrollerApi。
+      // Pick the kernel implementation from route data: Plan A (browser overflow-anchor) or Plan B (manual compensation); both conform to ScrollerApi.
       const Ctor: new (opts: CbOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
         this.useNativeAnchor ? ChatBoxScrollerAnchor : ChatBoxScroller;
       this.scroller = new Ctor({
@@ -244,13 +246,13 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     }
   }
 
-  /** 应用 closeCheckpoint 开关到内核（cast 设 closeCheckpoint 字段；setCount 重建后 setup 末尾重应用）。 */
+  /** Apply the closeCheckpoint toggle to the kernel (cast to set the closeCheckpoint field; re-applied at the end of setup after a setCount rebuild). */
   applyCloseCheckpoint(): void {
     const s = this.scroller as unknown as { closeCheckpoint?: boolean } | undefined;
     if (s) s.closeCheckpoint = this.closeCheckpoint();
   }
 
-  /** 设 source get 延迟（动态改 MockItemSource.latency，无需重建 source）。 */
+  /** Set the source get latency (mutates MockItemSource.latency live; no source rebuild needed). */
   setSourceLatency(ms: number): void {
     this.sourceLatency.set(ms);
     if (this.source) this.source.latency = ms;
@@ -268,17 +270,17 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** Toggle the persistent "mock send error" setting (every send fails while on). */
   toggleMockSendError(): void { this.mockSendError.update(v => !v); }
 
-  /** 打开参数编辑弹窗（草稿 = 当前 config 副本）。 */
+  /** Open the config-edit modal (draft = a copy of the current config). */
   openConfigModal(): void {
     this.configDraft.set({ ...this.config() });
     this.configModalOpen.set(true);
   }
   cancelConfigModal(): void { this.configModalOpen.set(false); }
-  /** 弹窗编辑：改 draft 某字段（确认才 apply）。模板内不直接调 signal.update —— strict 模板类型检查对模板内 signal 方法绑定推断不出签名 → TS2345 整编译失败、新代码全不进 bundle。 */
+  /** Edit the draft field (applied only on confirm). The template does NOT call signal.update directly — strict template type-checking can't infer the signature of a signal method bound in the template → TS2345 fails the whole build and no new code enters the bundle. */
   setConfigDraft(field: keyof CbConfig, value: number): void {
     this.configDraft.update(d => ({ ...d, [field]: value }));
   }
-  /** 确认编辑：config ← draft + setup 重建（新参数生效）+ 关闭。 */
+  /** Confirm the edit: config ← draft + setup rebuild (new params take effect) + close. */
   applyConfig(): void {
     this.config.set({ ...this.configDraft() });
     this.configModalOpen.set(false);
@@ -297,7 +299,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     window.removeEventListener('pointerup', this.onFabUp);
   }
 
-  // 移动端键盘贴合（业界 Telegram 式）：用 visualViewport 算键盘遮挡高度，把输入栏上移。
+  // Mobile keyboard accommodation (industry-standard Telegram style): use visualViewport to compute the keyboard's occlusion height and lift the input bar above it.
   private readonly trackKeyboard = effect((onCleanup) => {
     const stage = this.pgStageRef();
     const vv = window.visualViewport;
@@ -310,9 +312,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     onCleanup(() => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); });
   });
 
-  // --- 数据载入 ---
+  // --- Data loading ---
 
-  /** init：内核经 source 分批加载到阈值 + 贴底（数据全量在 source，内核按需 get）。 */
+  /** init: the kernel loads batches via the source up to the threshold and pins to the bottom (all data lives in the source; the kernel fetches on demand). */
   private async load(): Promise<void> {
     const scroller = this.scroller;
     if (!scroller) return;
@@ -325,29 +327,34 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     }
   }
 
-  // --- 内核 hooks ---
+  // --- Kernel hooks ---
 
   private createItemEl(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
-    // 骨架占位：最顶条（prev=null 且未到全局最老）不渲真实组件，固定高度 shimmer（见 createGhostCbElement）。
-    // prev=null ⟺ 被 prepend 成新 oldest；boundary!=='oldest' 排除全局最老（那条 noOlder、非 ghost、须真实渲）。
-    if (prev === null && item.boundary !== 'oldest') return createGhostCbElement();
-    // 分组判定 + date 分隔按【更老邻居 prev】算（computeRowFlags，与 CbElement.update 共用同一逻辑——重排序后
-    // update 须按新 prev 重算分组，mount 与 in-place update 派生同款 flags）。
+    // Skeleton placeholder: the topmost item (prev=null AND not yet at the global oldest) renders as a fixed-height
+    // shimmer instead of the real component (see createGhostCbElement). prev=null ⟺ prepended as the new oldest. "At the
+    // global oldest" = boundary is 'oldest' or 'both' (a sole item at both edges), OR the kernel reports noOlder (same
+    // basis as updateGhost). The noOlder guard also covers the optimistic send in an EMPTY thread, whose bubble carries
+    // no boundary marker yet IS the global oldest → it must render as a real bubble, never a ghost ("send shows nothing").
+    const atOldestEdge = item.boundary === 'oldest' || item.boundary === 'both' || !!this.scroller?.getInfo().noOlder;
+    if (prev === null && !atOldestEdge) return createGhostCbElement();
+    // Grouping + date-separator flags are derived from the OLDER neighbor `prev` (computeRowFlags — the same logic
+    // CbElement.update uses, so after a reorder update recomputes grouping by the new prev; mount and in-place update
+    // derive the same flags).
     const { isShowHead, isGroupStart, dateLabel } = computeRowFlags(item, prev);
     const vs = createMsgCbElement(
       item, isShowHead, isGroupStart, dateLabel, this.envInjector,
       id => this.retrySend(id),
       (images, index) => this.galleryViewer.open(images, index),
     );
-    // 调试角标（首/续 + 消息 id）：playground 动态注入到行内，ngDevMode 守卫 → 生产 AOT 不创建。
+    // Dev badge (head/body + message id): injected into the row by the playground; ngDevMode-guarded → production AOT creates none.
     if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
     return vs;
   }
 
-  /** 注入调试角标到 .pg-msg-row：首(绿)/续(橙) + 消息 id（+ PENDING/FAKE tag when kind is set）。仅 dev（ngDevMode）；destroy 随组件卸载。 */
+  /** Inject a dev badge into .pg-msg-row: head (green) / body (orange) + message id (+ PENDING/FAKE tag when kind is set). Dev-only (ngDevMode); destroyed with the component. */
   private attachDevBadge(host: HTMLElement, item: CbItem<ChatItemData>, isHead: boolean): void {
     const d = item.data;
-    if (d.type !== 'msg') return; // 仅消息行（date 行无分组概念）
+    if (d.type !== 'msg') return; // message rows only (date rows have no grouping concept)
     const row = host.querySelector('.pg-msg-row');
     if (!row) return;
     const badge = document.createElement('span');
@@ -358,8 +365,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /**
-   * 角标 id 文本：相册聚合多 msg 时显范围 `[min-max]`（各图带原 msgId），否则单 id。
-   * mock 相册单 msg → 单 id；生产相册跨多 msg（toItems 合并）→ 范围，避免聚合后只显首条丢其余。
+   * Badge id text: when an album aggregates multiple messages, show the range `[min-max]` (each image keeps its
+   * original msgId); otherwise the single id. Mock albums are single-message → single id; production albums can span
+   * multiple messages (merged by toItems) → range, so aggregation doesn't drop all but the first id.
    */
   private devIdLabel(d: ChatMsgData): string {
     if (d.contentType === 'IMAGE' && d.images) {
@@ -374,7 +382,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     return shortId(d.msgId);
   }
 
-  /** balance 诊断 → console.debug（调试模式 + 仅有挂载/卸载活动 + 节流，避免空闲刷屏）。 */
+  /** balance diagnostics → console.debug (debug mode + only when there is mount/unmount activity + throttled, to avoid flooding when idle). */
   private onBalanceDebug(s: CbDebugStats) {
     if (!this.debugMode()) return;
     if (s.mount + s.unmount === 0) return;
@@ -397,17 +405,18 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.updateStickyDate();
     if (!isDevMode()) return;
     const now = performance.now();
-    if (now - this.lastEmit < 100) return; // 节流：避免滚动高频刷 signal（100ms 一次足够）
+    if (now - this.lastEmit < 100) return; // throttle: avoid refreshing signals on every scroll event (100ms is enough)
     this.lastEmit = now;
-    // 视口在 content（= mounted 窗口）内的位置：上方/下方剩余 height（< edge=1000 触发对应方向加载）。
+    // Position of the viewport within content (= the mounted window): remaining height above/below (< edge=1000 triggers a load in that direction).
     this.viewportAbove.set(Math.round(info.scrollTop));
     this.viewportBelow.set(Math.max(0, Math.round(info.scrollHeight - info.viewportHeight - info.scrollTop)));
   }
 
   /**
-   * Telegram 式粘性日期：取视口顶之上最后一个 date 分隔行的文本。
-   * 浮层独立于 content、不受虚拟滚动回收——视口顶附近的 date 必落在挂载窗口内。
-   * date 行现由真实 DateRowComponent 渲染（.pg-date class 仍在），querySelectorAll 仍可查。
+   * Telegram-style sticky date: the text of the last date-separator row at or above the viewport top.
+   * The overlay is independent of content and unaffected by virtual-scroll recycling — a date row near the viewport
+   * top always falls within the mounted window. Date rows are now rendered by the real DateRowComponent (the .pg-date
+   * class is preserved), so querySelectorAll still finds them.
    */
   private updateStickyDate() {
     const vp = this.viewportRef()?.nativeElement;
@@ -422,8 +431,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     for (const { d, top } of rects) {
       if (top <= fadeLo) current = d.textContent?.trim() ?? null;
     }
-    // 顶部 ghost 加载 spinner（.cb-ghost-loading，居中）显形时与居中日期浮层重叠 →
-    // spinner 出现在视口顶（bottom 越过视口顶）时不显浮层让位（spinner 走后自然恢复；行内 date 仍在）。
+    // When the top ghost loading spinner (.cb-ghost-loading, centered) is visible it overlaps the centered date overlay →
+    // hide the overlay while the spinner sits at the viewport top (its bottom crosses the viewport top); it restores
+    // naturally once the spinner is gone (the inline date row is still there).
     const ghost = ct.querySelector('.cb-ghost-loading');
     if (ghost && ghost.getBoundingClientRect().bottom > vTop) current = null;
     this.stickyDate.set(current);
@@ -436,18 +446,19 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     }
   }
 
-  // --- 控件 ---
+  // --- Controls ---
 
   setCount(n: number) {
     this.count.set(n);
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
-    if (vp && ct) this.setup(vp, ct); // 切数据量：teardown + 重建 source(count) + 内核 + init
+    if (vp && ct) this.setup(vp, ct); // switch data volume: teardown + rebuild source(count) + kernel + init
   }
 
   /**
-   * 跳转到 msgId 序号（mock 'id-N'）：已挂载则直接定位；未挂载则内核重置窗口围绕该 id（re-seed）再定位。
-   * anchor='center' 居中（best-effort：近最新/最旧时 clamp 到顶/底）+ 高亮闪烁。id 不存在时 source 返回空 → 内核静默 no-op。
+   * Jump to a message id (mock 'id-N'): if mounted, position directly; if not, the kernel re-seeds the window around
+   * that id then positions. anchor='center' centers it (best-effort: clamps to top/bottom near the newest/oldest) +
+   * a highlight flash. If the id doesn't exist the source returns empty → the kernel no-ops silently.
    */
   jumpToId(v: string): void {
     const scroller = this.scroller;
@@ -462,9 +473,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /**
-   * 在已挂载的 msgId 之后插入一条新消息（mock 'id-N'）：已挂载则内核 insertAfter（不触发 balance，仅滚动高度补偿）；
-   * 未挂载则内核忽略（返回 false）→ toast 提示。插入项 creator 交替 self/other，以演练后继项分组 rebuild。
-   * 与 appendLive 不同：这是视口级插入，不入 source（transient）；滚出窗口被 trim 后即消失，by design。
+   * Insert a new message after a mounted msgId (mock 'id-N'): if mounted, the kernel insertAfter runs (no balance
+   * triggered — only scroll-height compensation); if not mounted, the kernel ignores it (returns false) → toast. The
+   * inserted item alternates creator self/other to exercise the successor's group-rebuild. Unlike appendLive, this is a
+   * viewport-level insert that never enters the source (transient); once it scrolls out and is trimmed it's gone, by design.
    */
   insertAfterId(v: string): void {
     const scroller = this.scroller;
@@ -498,7 +510,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     this.showToast(removed > 0 ? `Removed ${removed} item(s)` : 'Not mounted, ignored');
   }
 
-  /** Build a mock debug-insert message (creator alternates 1=me/isSelf / 2=阿黄; name/isSelf filled directly since
+  /** Build a mock debug-insert message (creator alternates 1=me/isSelf / 2=Alice; name/isSelf filled directly since
    *  insertAfter bypasses source.shape). kind:'fake' tags it in the dev badge; no status (debug inserts are not "sent"). */
   private makeInsertItem(): CbItem<ChatItemData> {
     const now = new Date();
@@ -637,7 +649,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    * Domain-layer insert orchestrator: the `type` discriminator lives HERE (the kernel stays generic — it only knows the
    * viewport-level `transient` flag, never 'PENDING_POST_MSG'/'FAKE_MSG'). Both shapes route through kernel.insertAfter;
    * PENDING_POST_MSG additionally registers with the source pending area, ensures the newest end is mounted, and schedules
-   * a mock confirm; FAKE_MSG is a pure viewport insert (the 插入消息 debug action).
+   * a mock confirm; FAKE_MSG is a pure viewport insert (the "insert message" debug action).
    */
   private insertMsg(type: 'PENDING_POST_MSG' | 'FAKE_MSG', afterId: string, item: CbItem<ChatItemData>): boolean {
     const scroller = this.scroller;
@@ -792,16 +804,16 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     return { id: data.msgId, data };
   }
   private sendSeq = 0;
-  /** 插入消息序号（msgId = `insert-N`，稳定唯一，不与 source 的 id-N / mock-N / recv-N 冲突）。 */
+  /** Insert-message sequence counter (msgId = `insert-N`; stable and unique, never collides with the source's id-N / mock-N / recv-N). */
   private insertSeq = 0;
   /** In-flight mock confirm timers (cleared on teardown so no settle fires after destroy). */
   private readonly confirmTimers: ReturnType<typeof setTimeout>[] = [];
 }
 
-/** 对方回复候选（mock）。 */
+/** Opponent reply phrases (mock). */
 const REPLY_PHRASES = ['You there?', 'Got it', 'Haha', 'OK', 'Is virtual scroll stable?', 'Check the mount count'];
 
-/** @mention 候选成员（mock；生产替换为 GroupService.getMembers() 返回的 GroupMember[]）。 */
+/** @mention candidate members (mock; production swaps in GroupService.getMembers() returning GroupMember[]). */
 const MOCK_MEMBERS: ChatMember[] = [
   { id: '2', label: 'Alice' },
   { id: '3', label: 'Bob' },
@@ -826,7 +838,7 @@ function shortId(id: string): string {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(id) ? id.slice(0, 8) : id;
 }
 
-/** 本地读取图片为 AlbumImage（dataURL + 真实尺寸；读失败用 400×300 兜底）。 */
+/** Read images locally into AlbumImage (dataURL + real dimensions; falls back to 400×300 on read failure). */
 function readImages(files: File[]): Promise<AlbumImage[]> {
   return Promise.all(files.map(f => new Promise<AlbumImage>(resolve => {
     const reader = new FileReader();

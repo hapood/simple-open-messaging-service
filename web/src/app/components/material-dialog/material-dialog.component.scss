@@ -7,10 +7,14 @@
   height: 100vh;
   overflow: auto;
   background-color: rgba(0, 0, 0, 0.25);
-}
-.modal-show {
-  display: block;
+  // The overlay element stays mounted (isShow only toggles a class), so the
+  // backdrop fades in/out with the dialog instead of the old display:none swap
+  // (which can't transition). pointer-events:none lets clicks pass through when
+  // no dialog is open.
+  opacity: 1;
+  transition: opacity 220ms ease;
 }
 .modal-hide {
-  display: none;
+  opacity: 0;
+  pointer-events: none;
 }

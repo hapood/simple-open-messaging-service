@@ -1,4 +1,5 @@
-import { Component, signal, viewChild, inject } from '@angular/core';
+import { Component, signal, viewChild, inject, effect } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { ConversationItem } from '../../services/model';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
@@ -23,6 +24,19 @@ export class TabletHomeComponent {
   private readonly convList = inject(ConversationListService)
   readonly selectedThread = signal<ConversationItem | undefined>(undefined)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
+
+  constructor() {
+    // Honor open-conversation intents from elsewhere (e.g. the invite card's "Open group" after
+    // joining) by routing them through the same selection path as clicking the list.
+    this.convList.openRequest$.pipe(takeUntilDestroyed()).subscribe((item) => this.onThreadSelect(item))
+
+    // When the open thread is removed (unfriend / self-leave / kicked — all via removeThread, which clears
+    // openThreadId), drop the inline selection so the chat pane doesn't keep rendering a deleted conversation.
+    // Parity with desktop-home; on tablet openThreadId is only ever cleared by removal (no chat popup).
+    effect(() => {
+      if (this.convList.openThreadId() === undefined) this.selectedThread.set(undefined)
+    })
+  }
 
   onThreadSelect(thread: ConversationItem) {
     this.selectedThread.set(thread)

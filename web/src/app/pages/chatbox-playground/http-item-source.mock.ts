@@ -1,11 +1,12 @@
 /**
- * Playground mock 数据层：MockItemSource（实现 CbSource<ChatItemData>）+ 确定性生成器 buildItems。
+ * Playground mock data layer: MockItemSource (implements CbSource<ChatItemData>) + the deterministic buildItems generator.
  *
- * **镜像生产**：MockItemSource 给【原始 msg】（不合并相册、不分配展示用 id），用 msgId 当游标
- *  （getOlder/getNewer）——与 HttpItemSource 同构。相册合并由内核 mergeItems hook 做。
- *  buildItems 也镜像生产语义：相册 = 多条连续单图 IMAGE msg（同 creator），不再"单 msg 多图"。
+ * **Mirrors production**: MockItemSource yields RAW messages (no album merging, no display ids assigned), using the msgId
+ *  as the cursor (getOlder/getNewer) — isomorphic to HttpItemSource. Album merging is done by the kernel's mergeItems hook.
+ *  buildItems also mirrors production semantics: an album = several consecutive single-image IMAGE messages (same creator),
+ *  not "one message with many images".
  *
- * date 分隔不在数据层产生（由前端 createItem 派生）。
+ * Date separators are NOT produced by the data layer (derived by the front-end createItem).
  */
 import { of, firstValueFrom, type Observable } from 'rxjs';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
@@ -13,18 +14,19 @@ import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
 import type { AlbumImage, ChatItemData, ChatMsgData } from '../../components/message-cards/chat-item';
 import type { StandardResponse, User } from '../../services/model';
 
-/** Mock 用户表（id → User）。镜像生产后端用户表；MockItemSource.ensureProfiles 按 creator 查此表。 */
+/** Mock user table (id → User). Mirrors the production backend user table; MockItemSource.ensureProfiles looks up by creator here. */
 const MOCK_USERS: ReadonlyMap<number, User> = new Map([
   [1, { id: 1, uniqName: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
   [2, { id: 2, uniqName: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
 ]);
 
 /**
- * Playground mock 用户查询 service：镜像生产 UserService.queryUserInfo（POST /user/query）。
- * mock 走内存（of 同步），生产走 HTTP；签名一致 → MockItemSource.ensureProfiles 与生产 HttpItemSource 同构。
+ * Playground mock user-query service: mirrors production UserService.queryUserInfo (POST /user/query).
+ * The mock is in-memory (synchronous `of`); production is HTTP; identical signatures → MockItemSource.ensureProfiles is
+ * isomorphic to the production HttpItemSource.
  */
 export class MockUserService {
-  /** 按 userIds 返回 User[]（of 同步模拟 HTTP）。 */
+  /** Returns User[] for the given userIds (`of` synchronous, simulating HTTP). */
   queryUserInfo(params: { userIds: number[] }): Observable<StandardResponse<User[]>> {
     const data = params.userIds.map(id => MOCK_USERS.get(id)).filter((u): u is User => !!u);
     return of({ code: 0, message: 'ok', data });
@@ -32,18 +34,19 @@ export class MockUserService {
 }
 
 /**
- * Playground mock 数据源：实现 {@link CbSource}<{@link ChatItemData}>，确定性生成器 buildItems 作后端。
+ * Playground mock data source: implements {@link CbSource}<{@link ChatItemData}>, backed by the deterministic buildItems generator.
  *
- * 【逻辑序列】`sequence() = [...full, ...live]` 升序（最老→最新）：full=buildItems 历史记录，
- *  live=appendLive 的 WS 新消息。cursorId（msgId）在此序列 findIndex 定位。
- *  - `full[k].id = 'id-k'`（buildItems 生成序号，稳定可寻址）。
- *  - live item 的 id = 调用方给的 msgId（playground 'mock-N'/'recv-N'）。
+ * [Logical sequence] `sequence() = [...full, ...live]` ascending (oldest → newest): full = buildItems history,
+ *  live = WS new messages from appendLive. cursorId (msgId) is located via findIndex in this sequence.
+ *  - `full[k].id = 'id-k'` (buildItems generation index; stable and addressable).
+ *  - A live item's id = the caller-supplied msgId (playground 'mock-N'/'recv-N').
  *
- * 【游标】getOlder(cursorId,count) 取 cursor 之前（更老）count 条；getNewer 取之后（更新）。
- *  到序列首（最老）→ out[0] 标 'oldest'；到末（最新）→ out[last] 标 'newest'。升序返回。
+ * [Cursors] getOlder(cursorId, count) takes `count` items BEFORE the cursor (older); getNewer takes AFTER (newer).
+ *  Reaching the sequence start (oldest) → out[0] is tagged 'oldest'; reaching the end (newest) → out[last] 'newest'.
+ *  Returned ascending.
  *
- * @param total 生成器种子（确定性数据量 == full.length；buildItems 恰好产 total 条）。
- * @param latency 模拟 IO 延迟（ms）；测试传 0 使 init/getOlder/getNewer 同帧 resolve。
+ * @param total generator seed (deterministic data volume == full.length; buildItems produces exactly `total` items).
+ * @param latency simulated IO latency (ms); tests pass 0 so init/getOlder/getNewer resolve in the same frame.
  */
 export class MockItemSource implements CbSource<ChatItemData> {
   private readonly full: CbItem<ChatItemData>[];
@@ -57,13 +60,13 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  send becomes `id-${total}`, continuing past buildItems history (`id-0..id-${total-1}`) without collision.
    *  {@link allocateMsgId} is the mock "server write" that mints the real id for a confirmed optimistic send. */
   private nextMsgId: number;
-  /** 模拟 IO 延迟（ms）；playground 可动态调（0/200/1s/5s）测慢加载体验。 */
+  /** Simulated IO latency (ms); the playground adjusts it live (0/200/1s/5s) to test slow-loading behavior. */
   latency: number;
-  /** mock 用户查询 service（镜像生产 UserService）；ensureProfiles 按 creator 查它填 profiles。 */
+  /** Mock user-query service (mirrors production UserService); ensureProfiles looks up creators on it to fill `profiles`. */
   private readonly userService: MockUserService;
-  /** 当前用户 id（isSelf 判定 = creator === userId）。 */
+  /** Current user id (isSelf is decided as creator === userId). */
   private readonly userId: number;
-  /** 用户信息缓存（creator → name/isSelf），由 ensureProfiles 按 creator 查 userService 填——镜像生产 HttpItemSource.profiles。 */
+  /** User-info cache (creator → name/isSelf), filled by ensureProfiles looking up creators on userService — mirrors HttpItemSource.profiles. */
   private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
 
   constructor(total: number, latency: number, userService: MockUserService, userId: number) {
@@ -75,10 +78,12 @@ export class MockItemSource implements CbSource<ChatItemData> {
   }
 
   /**
-   * 初始化 / 重锚：
-   *  - anchorId === -1：取末 olderCount 条（最新 olderCount 条，含锚点=最新），升序、标边界。
-   *  - 其他（真实 msgId）：在 sequence 定位 anchorId，取 older（含 anchorId）+ newer 切片，合并升序
-   *    （镜像生产 HttpItemSource 双向取）；older 取到序列首 → out[0] 标 'oldest'；newer 取到序列末 → out[last] 标 'newest'。
+   * Initialize / re-anchor:
+   *  - anchorId === -1: take the last `olderCount` items (the newest `olderCount`, including the anchor = newest),
+   *    ascending, tagged with edges.
+   *  - otherwise (a real msgId): locate anchorId in the sequence, take an older slice (including anchorId) + a newer
+   *    slice, merge ascending (mirrors HttpItemSource's bidirectional fetch); older reaching the sequence start →
+   *    out[0] tagged 'oldest'; newer reaching the end → out[last] tagged 'newest'.
    */
   async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
@@ -87,13 +92,22 @@ export class MockItemSource implements CbSource<ChatItemData> {
       const start = Math.max(0, seq.length - olderCount);
       const raw = seq.slice(start);
       if (raw.length === 0) return [];
-      await this.ensureProfiles(raw); // 按 creator 查 userService 填 profiles（镜像生产）
+      await this.ensureProfiles(raw); // look up creators on userService to fill profiles (mirrors production)
       const items = raw.map(it => this.shape(it));
-      if (start === 0) items[0] = { ...items[0], boundary: 'oldest' };
-      items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      // init(-1) always anchors at the newest (the last item is the global newest); start===0 means it also reached the
+      // oldest. A length-1 batch spanning both edges is a sole item → mark 'both' (the boundary field is single-valued;
+      // naive items[0]='oldest' then items[last]='newest' would collide on it and lose the oldest marker → noOlder never
+      // set → a permanent top ghost on a single-message thread).
+      const atOldest = start === 0;
+      if (atOldest && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+      else {
+        if (atOldest) items[0] = { ...items[0], boundary: 'oldest' };
+        items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      }
+      this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from source.pending
       return items;
     }
-    // 真实 msgId：双向切片（older 含 anchorId = olderCount 条；newer = newerCount 条）
+    // Real msgId: bidirectional slice (older includes anchorId = olderCount items; newer = newerCount items)
     const idx = seq.findIndex(it => String(it.id) === String(anchorId));
     if (idx < 0) return [];
     const olderStart = Math.max(0, idx - olderCount + 1);
@@ -102,12 +116,20 @@ export class MockItemSource implements CbSource<ChatItemData> {
     if (raw.length === 0) return [];
     await this.ensureProfiles(raw);
     const items = raw.map(it => this.shape(it));
-    if (olderStart === 0) items[0] = { ...items[0], boundary: 'oldest' };
-    if (newerEnd === seq.length) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+    // Bidirectional fetch: olderStart===0 → reached oldest; newerEnd===seq.length → reached newest. A length-1 batch
+    // spanning both edges → 'both' (see init(-1) above for why the sole item can't carry two single-valued markers).
+    const atOldest = olderStart === 0;
+    const atNewest = newerEnd === seq.length;
+    if (atOldest && atNewest && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+    else {
+      if (atOldest) items[0] = { ...items[0], boundary: 'oldest' };
+      if (atNewest) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+    }
+    this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from source.pending
     return items;
   }
 
-  /** 从 cursorId 向更老取 count 条（升序；不含 cursor）。到序列首 → out[0] 标 'oldest'。 */
+  /** Fetch `count` items older than cursorId (ascending; excludes the cursor). Reaching the sequence start → out[0] tagged 'oldest'. */
   async getOlder(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
@@ -137,13 +159,9 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const rawReal = seq.slice(idx + 1, end);
     const reachedEnd = end === seq.length;
 
-    // Reconcile pending: a real whose clientMessageId matches an in-flight optimistic entry confirms it -> drop the
-    // pending. (The real carries a fresh server id ≠ the optimistic's id, so the match key is clientMessageId.)
-    for (const r of rawReal) {
-      if (r.clientMessageId === undefined) continue;
-      const pi = this.pending.findIndex(p => p.clientMessageId === r.clientMessageId);
-      if (pi >= 0) this.pending.splice(pi, 1);
-    }
+    // Reconcile pending: a returned real confirms its in-flight optimistic counterpart (matched by clientMessageId,
+    // since the real carries a fresh server id ≠ the optimistic's id) → drop it from source.pending.
+    this.reconcilePending(rawReal);
 
     const items: CbItem<ChatItemData>[] = [];
     if (rawReal.length > 0) {
@@ -220,14 +238,14 @@ export class MockItemSource implements CbSource<ChatItemData> {
 
   destroy(): void {}
 
-  // ---------- 逻辑序列 ----------
+  // ---------- Logical sequence ----------
 
-  /** full（历史）+ live（WS）拼接，升序（最老→最新）。 */
+  /** full (history) + live (WS) concatenated, ascending (oldest → newest). */
   private sequence(): CbItem<ChatItemData>[] {
     return [...this.full, ...this.live];
   }
 
-  /** 按 creator 收集 missing → 查 userService 填 profiles（镜像生产 HttpItemSource.ensureProfiles）。 */
+  /** Collect missing creators → look them up on userService to fill `profiles` (mirrors HttpItemSource.ensureProfiles). */
   private async ensureProfiles(items: CbItem<ChatItemData>[]): Promise<void> {
     const missing = new Set<number>();
     for (const it of items) if (!this.profiles.has(it.data.creator)) missing.add(it.data.creator);
@@ -238,13 +256,26 @@ export class MockItemSource implements CbSource<ChatItemData> {
     }
   }
 
-  /** 整形：克隆 item 去 boundary + 按 creator 从 profiles 填 name/isSelf（镜像生产 toMsgData；fallback '未知'/creator===userId）。
-   *  Preserves clientMessageId (the optimistic↔real reconcile key) so a confirmed real returned by getNewer still
-   *  carries it — shape must not strip the correlation key the kernel pairs on. */
+  /** Shape: clone the item, drop boundary, and fill name/isSelf from `profiles` by creator (mirrors production toMsgData;
+   *  fallback 'Unknown' / creator===userId). Preserves clientMessageId (the optimistic↔real reconcile key) so a confirmed
+   *  real returned by getNewer still carries it — shape must not strip the correlation key the kernel pairs on. */
   private shape(it: CbItem<ChatItemData>): CbItem<ChatItemData> {
     const p = this.profiles.get(it.data.creator);
     const data: ChatMsgData = { ...it.data, name: p?.name ?? 'Unknown', isSelf: p?.isSelf ?? it.data.creator === this.userId };
     return it.clientMessageId !== undefined ? { id: it.id, data, clientMessageId: it.clientMessageId } : { id: it.id, data };
+  }
+
+  /** Drop any in-flight optimistic (pending) entry whose clientMessageId matches a returned real — the confirm arrived.
+   *  Mirrors the reconcile the kernel does on MOUNTED entries; keeps source.pending in sync so elevatePending doesn't
+   *  re-mount an already-confirmed send as a stale optimistic bubble. Must run in EVERY method that returns reals — init
+   *  AND getNewer: the kernel routes an empty-thread confirm through init(-1) (loadNewer's no-real-cursor fallback), and
+   *  without this the confirmed pending survives in source.pending and re-appears below the next incoming message. */
+  private reconcilePending(reals: CbItem<ChatItemData>[]): void {
+    for (const r of reals) {
+      if (r.clientMessageId === undefined) continue;
+      const pi = this.pending.findIndex(p => p.clientMessageId === r.clientMessageId);
+      if (pi >= 0) this.pending.splice(pi, 1);
+    }
   }
 
   private wait(): Promise<void> {
@@ -252,7 +283,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
   }
 }
 
-// ---------- 数据生产（确定性）----------
+// ---------- Data generation (deterministic) ----------
 
 const PHRASES = [
   'You there?', 'The virtual scroll kernel is running', 'Is the list smooth on your side?', 'I switched the container to a fixed height',
@@ -260,7 +291,7 @@ const PHRASES = [
   'Wheel inertia still needs tuning', 'This list holds tens of thousands now', 'Check the "mounted nodes" on the right', 'Switch the data volume, it stays flat',
 ];
 
-/** mulberry32：seeded PRNG，同 seed 同序列 → generate(count) 数据确定性。 */
+/** mulberry32: a seeded PRNG — the same seed yields the same sequence, so generate(count) is deterministic. */
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -277,11 +308,11 @@ function formatTime(d: Date): string {
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-/** 假数据占位图：基于 seed 生成渐变 SVG（dataURL），按真实比例 rw×rh 生成，离线稳定、不依赖图床。 */
+/** Fake placeholder image: a seed-based gradient SVG (dataURL) generated at the real aspect ratio rw×rh — offline-stable, no image host needed. */
 function placeholderImage(seed: number, rw: number, rh: number): string {
   const h1 = (seed * 53) % 360;
   const h2 = (h1 + 80) % 360;
-  // SVG 尺寸按真实比例（长边 400 为基准），让占位图本身比例与数据 w/h 一致 → 行式排版验证才真实。
+  // SVG sized to the real aspect ratio (long edge = 400), so the placeholder's own ratio matches the data w/h → justified row-layout verification stays realistic.
   const W = rw >= rh ? 400 : Math.round((400 * rw) / rh);
   const H = rh >= rw ? 400 : Math.round((400 * rh) / rw);
   const svg = `<svg xmlns='http://www.w3.org/2000/svg' width='${W}' height='${H}'>` +
@@ -291,11 +322,11 @@ function placeholderImage(seed: number, rw: number, rh: number): string {
     `<rect width='${W}' height='${H}' fill='url(#g)'/>` +
     `<text x='${W / 2}' y='${H / 2 + 12}' font-size='36' fill='rgba(255,255,255,0.85)' text-anchor='middle' font-family='sans-serif'>${(seed % 99) + 1}</text>` +
     `</svg>`;
-  // data:image/svg+xml,（标准形式，encodeURIComponent 百分号编码；不带非标的 ;utf8 以保最大兼容）。
+  // data:image/svg+xml, (standard form, percent-encoded by encodeURIComponent; no non-standard ;utf8 suffix → maximum compatibility).
   return `data:image/svg+xml,${encodeURIComponent(svg)}`;
 }
 
-/** 相册比例池（横/方/竖，贴近真实手机拍照比例）；seeded 随机选 → 驱动 layoutAlbum 行式排版验证。 */
+/** Album aspect-ratio pool (landscape / square / portrait, close to real phone-camera ratios); seeded random pick → drives layoutAlbum justified-row verification. */
 const RATIOS: ReadonlyArray<[number, number]> = [
   [16, 9],
   [4, 3],
@@ -305,28 +336,32 @@ const RATIOS: ReadonlyArray<[number, number]> = [
 ];
 
 /**
- * 生成【恰好 count 条】聊天记录（确定性 seeded）：每轮产 1 条 msg（文本 / 单图 IMAGE），凑满 count 即止。
- * **镜像生产**：相册 = 多条连续单图 IMAGE msg（同 creator，时间相邻），由内核 mergeItems 合并成一个相册 item
- *  （与生产 rawToItems「每条 IMAGE 单图」+ mergeItems 合并同构；不再「单 msg 多图」）。
- * 跨天：每 step 条换一天（只让 createdAtMs 跨天分布；date 分隔由前端 createItem 派生，不在此产生）。
- * 随机切换发送者；高度天然随机（文本长短/相册张数不同）。item.id === data.msgId（id-N），稳定可寻址。
+ * Generate EXACTLY `count` chat records (deterministic, seeded): each round yields 1 msg (text or single-image IMAGE),
+ * until `count` is reached.
+ * **Mirrors production**: an album = several consecutive single-image IMAGE messages (same creator, adjacent in time),
+ *  merged by the kernel's mergeItems into one album item (isomorphic to production's "rawToItems yields one IMAGE per msg"
+ *  + mergeItems merge; no longer "one msg with many images").
+ * Cross-day: a new day every `step` msgs (only the createdAtMs is spread across days; the date separator is derived by
+ *  the front-end createItem, not produced here).
+ * Random sender switching; naturally random heights (text length / album size differ). item.id === data.msgId (id-N), stable and addressable.
  */
 function buildItems(count: number): CbItem<ChatItemData>[] {
-  const rand = mulberry32(count * 2654435761); // seed 取 count（Knuth 乘数打散）
+  const rand = mulberry32(count * 2654435761); // seed = count (scrambled by the Knuth multiplier)
   const items: CbItem<ChatItemData>[] = [];
   let lastCreator: number | null = null;
   let minutes = 9 * 60;
   let day = 0;
   let imgSeed = 0;
-  let msgSinceDay = 0; // 当天已产 msg 数；达 step 换新一天（让 createdAtMs 跨天分布 → 前端跨日判定才有效）
+  let msgSinceDay = 0; // msgs produced so far today; at `step` a new day begins (spreads createdAtMs across days → the front-end cross-day check has something to do)
 
   const startMs = new Date(2025, 0, 1).getTime();
   const targetDays = Math.max(1, Math.round((Date.now() - startMs) / 86_400_000));
   const step = Math.max(1, Math.round(count / targetDays));
 
   while (items.length < count) {
-    // 每 step 条 msg 换新一天：date 分隔不再由 source 产生，这里只让 msg 的 createdAtMs 跨天分布，
-    // 前端 createItem 工厂按跨日判定渲染 date pill（见 message-cards/date-format.ts）。
+    // A new day every `step` msgs: the date separator is no longer produced by the source — here we only spread the
+    // msgs' createdAtMs across days; the front-end createItem factory renders the date pill from the cross-day check
+    // (see message-cards/date-format.ts).
     if (items.length > 0 && msgSinceDay >= step) {
       day++; msgSinceDay = 0; lastCreator = null;
     }
@@ -337,7 +372,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
     lastCreator = creator;
 
     if (rand() < 0.12) {
-      // 相册：n 条连续单图 IMAGE msg（同 creator），内核 mergeItems 合并成一个相册 item。
+      // Album: n consecutive single-image IMAGE messages (same creator); the kernel's mergeItems merges them into one album item.
       const n = 1 + Math.floor(rand() * 6);
       for (let k = 0; k < n && items.length < count; k++) {
         minutes += 1 + Math.floor(rand() * 4);
@@ -355,7 +390,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
       msgSinceDay++;
       const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
       let text = PHRASES[(items.length * 7) % PHRASES.length];
-      if (rand() < 0.3) text = `${PHRASES[(items.length * 7) % PHRASES.length]}，${PHRASES[(items.length * 7 + 3) % PHRASES.length]}`;
+      if (rand() < 0.3) text = `${PHRASES[(items.length * 7) % PHRASES.length]}. ${PHRASES[(items.length * 7 + 3) % PHRASES.length]}`;
       const id = `id-${items.length}`;
       items.push({ id, data: makeSeedMsg(creator, text, 'PURE_TEXT', null, date, id) });
     }
@@ -364,7 +399,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
 }
 
 function makeSeedMsg(creator: number, text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, date: Date, id: string): ChatMsgData {
-  // 原始 msg：不带 name/isSelf（占位），由 MockItemSource.shape 按 creator 从 profiles 查填——镜像生产 toMsgData。
+  // Raw msg: carries no name/isSelf (placeholder); MockItemSource.shape fills them from `profiles` by creator — mirrors production toMsgData.
   return {
     type: 'msg',
     msgId: id,

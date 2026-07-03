@@ -34,8 +34,13 @@ export class GroupService {
     return this.http.post<StandardResponse<GrpCreateInfo>>(`${apiPrefix}/group/create`, params)
   }
 
-  inviteUser(params: { userId: number, groupId: number }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/group/invite`, params)
+  /** Batch invite: each friend receives an INVITE in the inviter↔invitee P2P thread. The server
+   *  returns { invited, skipped } — skipped entries are non-friends / no-P2P-thread / write failures. */
+  inviteUsers(params: { userIds: number[], groupId: number }) {
+    return this.http.post<StandardResponse<{ invited: number[]; skipped: { userId: number; reason: string }[] }>>(
+      `${apiPrefix}/group/invite`,
+      params,
+    )
   }
 
   joinGroup(params: { token: string }) {

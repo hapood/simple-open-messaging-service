@@ -2,6 +2,7 @@ import { Component, input, signal, computed, EventEmitter, Output, inject, OnIni
 import { NgClass } from '@angular/common';
 import { RouteService, PopupType } from '../../services/route.service'
 import { ConversationListService, ConversationLoadStatus } from '../../services/conversation-list.service'
+import { UserService } from '../../services/user.service'
 import { ConversationItem } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
@@ -28,6 +29,7 @@ export class ThreadListComponent implements OnInit {
 
   private readonly routeService = inject(RouteService)
   private readonly convList = inject(ConversationListService)
+  private readonly userService = inject(UserService)
 
   readonly items = this.convList.items
   readonly status = this.convList.status
@@ -56,9 +58,17 @@ export class ThreadListComponent implements OnInit {
 
   @Output() onSelect = new EventEmitter<ConversationItem>()
 
-  /** Short label for a thread's last message (a group sender-name prefix is a Phase-4 refinement). */
+  /**
+   * Short label for a thread's last message. GROUP conversations prefix the sender ("Alice: hi" /
+   * "You: hi") when the sender name is known; P2P conversations show the bare preview (the peer is
+   * implied). Live NEW_MESSAGE frames can't resolve a group sender's name cheaply, so an incoming
+   * group message shows bare until the next full reload re-hydrates lastMessageSenderName.
+   */
   previewText(t: ConversationItem): string {
-    return t.lastMessagePreview ?? 'No messages yet'
+    const base = t.lastMessagePreview ?? 'No messages yet'
+    if (t.type !== 'GROUP' || t.lastMessageSenderId == null) return base
+    if (t.lastMessageSenderId === this.userService.sessionProfile()?.id) return `You: ${base}`
+    return t.lastMessageSenderName ? `${t.lastMessageSenderName}: ${base}` : base
   }
 
   fmtTime = formatListTime

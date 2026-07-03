@@ -1,13 +1,17 @@
-// ViewEncapsulation.None：样式全局，全部 pg- 前缀隔离。
+// ViewEncapsulation.None: styles are global, isolated entirely by the pg- prefix.
 //
-// 【样式边界】本文件**只管 playground 外壳**：stage / header / viewport 容器 / 面板 / 输入栏 / FAB。
-// 绝不写作用于聊天内容内部的 CSS（.pg-msg-row / .pg-bubble / .pg-media-* 等）——那些由
-// message-cards 组件的 _row-base.scss 自治。全局规则一旦改消息行实测高度，会干扰内核的
-// offsetHeight 判断（曾因重复定义 padding/bubble 把高度改小而不易察觉）。唯一例外是
-// .cb-pending（内核机制），已移至 lib/chat-box/_cb.scss 由 styles.scss 全局引入。
+// [Style boundary] This file only governs the playground shell: stage / header /
+// viewport containers / panel / input bar / FAB. NEVER write CSS that targets the
+// inside of chat content (.pg-msg-row / .pg-bubble / .pg-media-* etc.) — those
+// are self-contained in the message-cards _row-base.scss. A global rule that
+// changes a measured message-row height would corrupt the kernel's offsetHeight
+// logic (we previously shrank heights unnoticed by redefining padding/bubble).
+// The single exception is .cb-pending (a kernel mechanism), moved to
+// lib/chat-box/_cb.scss and imported globally via styles.scss.
 //
-// 调试角标 .pg-dev-badge 会注入到 .pg-msg-row 内，但 absolute 定位、脱离文档流，不改行高，
-// 且 ngDevMode 守卫（生产不创建）→ 不影响组件工作。
+// The debug badge .pg-dev-badge is injected into .pg-msg-row, but it is absolute
+// positioned and out of flow (no row-height change), and ngDevMode-gated (never
+// created in production) → it does not affect the components.
 
 .pg *,
 .pg *::before,
@@ -16,20 +20,27 @@
 .pg {
   display: flex;
   height: 100vh;
-  height: 100dvh; // 移动端地址栏伸缩不顶满（auth 页 utils.scss 同款）
+  height: 100dvh; // avoid mobile address-bar resize pushing past full height (same as auth utils.scss)
   font-size: 14px;
   color: var(--app-text);
   background: var(--app-bg);
 }
 
-// ---------- 滚动舞台 ----------
+// ---------- Scrolling stage ----------
 .pg-stage {
   position: relative;
   flex: 1 1 auto;
   overflow: hidden;
+  // Wallpaper lives on the non-scrolling stage (aligned with the production
+  // .msg-container) → the pattern stays fixed while messages scroll over it.
+  // .pg-viewport is transparent to let this layer show through; the header and
+  // input bar each have their own opaque background, so there is no bleed.
+  background-color: var(--im-chat-bg);
+  background-image: var(--im-chat-pattern);
+  background-repeat: repeat;
 }
 
-// ---------- 顶部 header（聊天头 + 主题切换）----------
+// ---------- Top header (chat header + theme toggle) ----------
 .pg-header {
   position: absolute;
   top: 0; left: 0; right: 0;
@@ -59,7 +70,7 @@
   font-size: 11px; color: var(--app-text-faint);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-// 通用圆形图标按钮（header 主题切换等）
+// Generic round icon button (header theme toggle, etc.)
 .pg-icon-btn {
   flex: 0 0 auto;
   width: 36px; height: 36px;
@@ -70,38 +81,55 @@
   transition: background 0.12s, color 0.12s;
   &:hover { background: var(--app-hover); color: var(--app-text); }
 }
-// 主题切换图标：light 显月亮、dark 显太阳（用 data-theme 切，无模板分支）
+// Theme-toggle icon: show the moon in light, the sun in dark (switched via
+// data-theme, with no template branching).
 .pg-theme-toggle .pg-ico-sun { display: none; }
 .pg[data-theme="dark"] .pg-theme-toggle .pg-ico-moon { display: none; }
 .pg[data-theme="dark"] .pg-theme-toggle .pg-ico-sun { display: inline-flex; }
 
-// 滚动视口：原生滚动 + 全平台隐藏滚动条。
+// Scroll viewport: native scrolling with the scrollbar hidden on every platform.
 .pg-viewport {
   position: absolute;
-  top: 48px;   // 顶部留 header 高度
+  top: 48px;   // leave room for the header height at the top
   right: 0;
   left: 0;
-  bottom: 63px; // 给底部输入栏留位
+  bottom: 63px; // leave room for the input bar at the bottom
   overflow-y: auto;
-  // 方案 B（默认 -b 路由）：内核自己管 scrollTop 锚点补偿，关掉浏览器滚动锚定避免打架。
+  // Plan B (default -b route): the kernel manages scrollTop anchor compensation
+  // itself, so browser scroll anchoring is disabled to avoid fighting it.
   overflow-anchor: none;
-  background: var(--im-chat-bg);
+  background: transparent;   // wallpaper is carried by the non-scrolling .pg-stage; the viewport shows it through
   outline: none;
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
   &:focus { box-shadow: inset 0 0 0 2px rgba(33, 150, 243, 0.25); }
 }
-// 方案 A（-a 路由 .pg--native-anchor）：借浏览器滚动锚定，放开 overflow-anchor。
+// Plan A (-a route, .pg--native-anchor): lean on browser scroll anchoring;
+// re-enable overflow-anchor.
 .pg--native-anchor .pg-viewport { overflow-anchor: auto; }
 
-// 内容层 + 顶部哨兵：内核管挂载/卸载与锚点补偿，此处不给消息行加任何样式。
-.pg-content { position: relative; }
+// Content layer + top sentinel: the kernel handles mount/unmount and anchor compensation; no message-row styling here.
+// Bottom-aligned (WhatsApp / Telegram): when content is shorter than the viewport (empty thread or few messages),
+// messages stack against the BOTTOM (just above the input bar) with the empty space ABOVE — not hanging at the top.
+// The kernel never reads per-item offsetTop (only offsetHeight + its own prefix-sum + scrollHeight), so the flex
+// justify-end shift — which changes offsetTop but NOT offsetHeight — is invisible to its position math. flex-shrink:0
+// on the direct children guarantees flex never distorts a row's measured height (the kernel's height-integrity
+// invariant). When content ≥ viewport there is no free space, so normal top-to-bottom flow and scrolling are unchanged.
+.pg-content {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 100%;
+  & > * { flex-shrink: 0; }
+}
 .pg-sentinel { height: 1px; }
 
-// —— Telegram 式粘性日期浮层（在 stage 内、viewport 外，不随滚、不参与虚拟滚动回收）——
+// —— Telegram-style sticky date overlay (inside the stage, outside the viewport;
+// does not scroll and is not recycled by the virtual scroller) ——
 .pg-sticky-date {
   position: absolute;
-  top: 48px; // 紧贴 header 底（= 视口顶），无下移余量；loading spinner 显形时由 TS 隐藏浮层让位，故可贴顶
+  top: 48px; // flush with the header bottom (= viewport top); no downward margin. When the loading spinner appears, TS hides this overlay to yield, so flush-to-top is safe.
   left: 0;
   right: 0;
   display: flex;
@@ -119,7 +147,7 @@
   }
 }
 
-// 跳转未命中短暂提示（底部居中浮层，输入栏之上）。
+// Transient "jump miss" toast (centered bottom overlay, above the input bar).
 .pg-toast {
   position: absolute;
   left: 50%;
@@ -134,8 +162,10 @@
   pointer-events: none;
 }
 
-// —— 调试角标（playground createItemEl 动态注入 .pg-msg-row，ngDevMode 守卫 → 生产不创建）——
-// 首=组首(绿) / 续=组内(橙) + 消息 id。absolute 脱离文档流、不改行 offsetHeight → 不影响内核。
+// —— Debug badge (playground createItemEl injects it into .pg-msg-row;
+// ngDevMode-gated → never created in production) ——
+// head = group head (green) / body = group body (orange) + the message id.
+// Absolute and out of flow → does not change the row offsetHeight → no kernel impact.
 .pg-dev-badge {
   position: absolute;
   top: 1px;
@@ -164,9 +194,9 @@
   bottom: 0;
 }
 
-// ---------- 控制面板 ----------
+// ---------- Control panel ----------
 .pg-panel {
-  display: none; // 默认隐藏，由 pg--desktop/pg--mobile 显式显示，避免初始桌面样式闪现(FOUC)
+  display: none; // hidden by default; pg--desktop / pg--mobile show it explicitly to avoid an initial desktop-style flash (FOUC)
   padding: 16px;
   background: var(--app-surface);
   overflow-y: auto;
@@ -178,7 +208,7 @@
     margin: 0 0 4px;
   }
   h3 { margin: 0; font-size: 15px; }
-  // 关闭按钮：仅移动抽屉显示（桌面面板常驻）
+  // Close button: shown only in the mobile drawer (the desktop panel is persistent)
   .pg-panel-close {
     display: none;
     flex: 0 0 auto;
@@ -202,7 +232,7 @@
   }
 }
 
-// 桌面：常驻侧栏（pg--desktop 显式显示，避免初始桌面样式 FOUC）
+// Desktop: persistent side panel (shown explicitly by pg--desktop to avoid an initial desktop-style FOUC)
 .pg--desktop .pg-panel {
   display: block;
   flex: 0 0 280px;
@@ -232,7 +262,7 @@
   }
 }
 
-// 段落标题右侧小标签（generator / 生成中…）
+// Small tag to the right of a section title (generator / generating…)
 .pg-sec-tag {
   margin-left: 6px;
   padding: 1px 6px;
@@ -280,7 +310,7 @@
   section { margin-bottom: 14px; &:last-child { margin-bottom: 4px; } }
 }
 
-// 跳转输入（id / 序号）+ 按钮
+// Jump input (id / index) + button
 .pg-jump {
   display: flex;
   gap: 6px;
@@ -310,32 +340,34 @@
   }
 }
 
-// ---------- 响应式：移动端（!isDesktop，由 .pg--mobile class 驱动）----------
-// FAB / 遮罩桌面默认不参与布局
+// ---------- Responsive: mobile (!isDesktop, driven by the .pg--mobile class) ----------
+// FAB / overlay do not participate in layout on desktop by default
 .pg-fab, .pg-overlay { display: none; }
 
 .pg--mobile {
-  // 浮动唤起按钮（品牌实心，可拖动重定位）
+  // Floating action button (brand solid, draggable to relocate)
   .pg-fab {
     display: flex;
     align-items: center; justify-content: center;
-    // 默认右侧垂直居中：top calc（不用 transform，避免与拖动切换的 left/top 定位叠加偏移）。拖动后切 left/top。
+    // Default right edge, vertically centered via top calc (not transform, to avoid
+    // stacking offset with the left/top positioning switched during drag). After drag it switches to left/top.
     position: fixed; right: 16px; top: calc(50% - 22px); z-index: 3;
     width: 44px; height: 44px;
     border: none; border-radius: var(--app-radius-pill);
     background: var(--app-brand); color: #fff;
     cursor: grab;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
-    touch-action: none; // 拖动接管手势，避免触发列表滚动
+    touch-action: none; // drag takes over the gesture so it never triggers list scroll
     transition: background 0.12s, left 0.2s ease, top 0.2s ease;
     &:hover { background: var(--app-brand-hover); }
   }
   .pg-fab-dragging {
-    transition: none;        // 拖动跟手，不做位移过渡
+    transition: none;        // follow the finger during drag, no movement transition
     cursor: grabbing;
     box-shadow: 0 10px 36px rgba(0, 0, 0, 0.24);
   }
-  // FAB 角标：视口上方/下方剩余 height（↑xxx ↓xxx），调试模式显示、单行不换行
+  // FAB badge: remaining height above/below the viewport (↑xxx ↓xxx); shown in
+  // debug mode, single line with no wrapping
   .pg-fab-fps {
     position: absolute;
     top: -5px; right: -5px;
@@ -347,12 +379,12 @@
     color: #4caf50;
     font: 600 11px/20px ui-monospace, monospace;
     text-align: center;
-    white-space: nowrap;  // ↑上方 ↓下方 单行显示，不在空格处换行
+    white-space: nowrap;  // ↑above ↓below on one line; never wraps at the space
     pointer-events: none;
     border: 1px solid rgba(255, 255, 255, 0.25);
   }
 
-  // 抽屉遮罩（对齐 material-dialog 的 rgba(0,0,0,.25) + z-index:1）
+  // Drawer overlay (matches material-dialog's rgba(0,0,0,.25) + z-index:1)
   .pg-overlay {
     display: block;
     position: fixed; inset: 0; z-index: 1;
@@ -362,7 +394,7 @@
     &.show { opacity: 1; pointer-events: auto; }
   }
 
-  // 面板 → 右侧抽屉
+  // Panel → right drawer
   .pg-panel {
     display: block;
     position: fixed; right: 0; top: 0; z-index: 2;
@@ -381,11 +413,12 @@
   }
 }
 
-// ---------- 深色主题 ----------
-// 配色已全部 token 化（_tokens.scss 的 --im-* / --app-* 亮 :root + 暗 [data-theme=dark]），
-// playground 不再自维护暗色覆盖——.pg 根挂 [data-theme] 即自动切换全部语义色。
+// ---------- Dark theme ----------
+// Colors are fully tokenized (the --im-* / --app-* in _tokens.scss: light on
+// :root + dark on [data-theme=dark]). The playground no longer maintains its own
+// dark overrides — hanging [data-theme] on the .pg root swaps every semantic color.
 
-// ---------- 内核参数编辑弹窗 ----------
+// ---------- Kernel config editor modal ----------
 .pg-config-overlay {
   position: fixed; inset: 0; z-index: 10;
   display: flex; align-items: center; justify-content: center;

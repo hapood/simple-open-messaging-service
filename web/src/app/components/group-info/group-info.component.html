@@ -79,7 +79,7 @@
         <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
         <div class="invite-actions">
           <button mat-button (click)="showInvite.set(false)">Cancel</button>
-          <button mat-raised-button color="primary" [disabled]="selectedList().length === 0"
+          <button mat-raised-button color="primary" [disabled]="busy() || selectedList().length === 0"
             (click)="invite()">Invite {{ selectedList().length || '' }}</button>
         </div>
       </div>

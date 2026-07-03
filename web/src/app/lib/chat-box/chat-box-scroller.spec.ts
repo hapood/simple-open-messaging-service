@@ -1095,11 +1095,11 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.querySelectorAll('[data-cb-id="real-0"]').length).toBe(1);
   });
 
-  // Coordinated enter/shove animation (cover avoidance): when an optimistic tail is present, a confirmed real must enter
-  // FROM ABOVE (cb-enter-above) so it descends into its slot from the newest-real side — a downward cb-enter would travel
-  // through the pending band and visually cover it. The optimistic duplicate is still removed synchronously (no two-bubble
-  // flash); only the real's enter direction changes.
-  it('onMessageSignal: a confirmed real enters FROM ABOVE (cb-enter-above) when an optimistic tail is present', async () => {
+  // A confirm (real matching an in-flight optimistic by clientMessageId) takes the optimistic's slot — same id, same
+  // position — so it does NOT play a cb-enter: the bubble is already on screen as the optimistic; only the cb-confirmed
+  // spinner→check choreography plays (reconcileOptimistic tags it). The optimistic duplicate is removed synchronously
+  // (no two-bubble flash). (A PLAIN incoming real — no clientMessageId — still enters from above; see the next test.)
+  it('onMessageSignal: a confirmed real does NOT enter-animate — it settles in place (cb-confirmed only)', async () => {
     const { hooks } = controllableHooks();
     const base = fakeSource(500);
     const src: CbSource<number> = { ...base, getNewer: async () => [{ id: 'real-0', data: 777, clientMessageId: 'cid-0', boundary: 'newest' as const }], pushLive: () => {} };
@@ -1112,10 +1112,11 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     await p;
     await flush();
     const real = content.querySelector<HTMLElement>('[data-cb-id="real-0"]');
-    expect(real?.classList.contains('cb-enter-above')).toBe(true);     // from-above enter in flight (cover avoidance)
-    expect(real?.classList.contains('cb-enter')).toBe(false);          // NOT the from-below class (exact-token match: 'cb-enter-above' ≠ 'cb-enter')
-    animEnd('real-0');                                                 // drain → class removed
-    expect(content.querySelector('[data-cb-id="real-0"]')?.classList.contains('cb-enter-above')).toBe(false);
+    expect(real).not.toBeNull();
+    expect(real?.classList.contains('cb-enter-above')).toBe(false);    // confirm replaces the optimistic in place → no enter
+    expect(real?.classList.contains('cb-enter')).toBe(false);          // no from-below enter either
+    expect(real?.classList.contains('cb-confirmed')).toBe(true);       // only the spinner→check choreography plays
+    expect(content.querySelector('[data-cb-id="pending-0"]')).toBeNull(); // optimistic duplicate removed (no two-bubble flash)
   });
 
   // A plain incoming real (no clientMessageId) landing ABOVE an optimistic tail does NOT confirm anything, so the tail
@@ -1668,5 +1669,34 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(info.newestId).toBe('m-0');
     expect(info.noNewer).toBe(true);
     expect(info.atBottom).toBe(true);                                // first message sits at the bottom
+  });
+
+  it('single-message thread (count=1): the sole item is marked "both" → noOlder AND noNewer set, no wasted loads, no ghost', async () => {
+    // A 1-message sequence: the source emits boundary:'both' for the sole item (it is both the global oldest and newest).
+    const sole: CbItem<number> = { id: 'm-0', data: 0, boundary: 'both' };
+    let olderCalls = 0;
+    let newerCalls = 0;
+    const src: CbSource<number> = {
+      init: async () => [{ ...sole }],
+      getOlder: async () => { olderCalls++; return []; },
+      getNewer: async () => { newerCalls++; return []; },
+      pushLive: () => {},
+      getPending: () => [],
+      destroy: () => {},
+    };
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    const info = scroller.getInfo();
+    expect(info.mounted).toBe(1);
+    expect(info.oldestId).toBe('m-0');
+    expect(info.newestId).toBe('m-0');
+    // 'both' must set BOTH edges. Pre-fix, absorbBoundary's else-if matched neither 'oldest' nor 'newest' on a 'both'
+    // item → noOlder stayed false → a single-message thread showed a permanent top ghost + triggered a wasted loadOlder.
+    expect(info.noOlder).toBe(true);
+    expect(info.noNewer).toBe(true);
+    // Both edges known at init → no fill loop (getOlder) and no followToNewest (getNewer).
+    expect(olderCalls).toBe(0);
+    expect(newerCalls).toBe(0);
   });
 });

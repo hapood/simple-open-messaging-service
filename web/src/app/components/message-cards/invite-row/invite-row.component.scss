@@ -1,4 +1,4 @@
-// 邀请消息行：复用共享规则（@use row-base）+ invite 卡片样式。
+// Invite message row: reuse the shared rules (@use row-base) + invite card styling.
 @use '../row-base' as *;
 
 .pg-bubble.pg-invite {
@@ -16,9 +16,20 @@
   color: var(--app-text-muted);
   margin-bottom: 4px;
 }
+// Group identity row: avatar + name side by side.
+.pg-invite-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
 .pg-invite-name {
   font-size: 15px;
   font-weight: 600;
+}
+.pg-invite-joined {
+  font-size: 12px;
+  color: var(--app-success, #2e7d32);
   margin-bottom: 6px;
 }
 .pg-invite-expiry {

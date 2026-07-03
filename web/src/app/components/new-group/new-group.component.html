@@ -1,19 +1,77 @@
 <div [appFitDialog]="fitOpts">
   <div class="msg-header">
-    <button class="icon-btn" (click)="goBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
+    <button class="icon-btn" (click)="onBack()" aria-label="Back"><app-icon [type]="AppIconType.BACK"
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    <span class="title">New Group</span>
-    <button mat-button [disabled]="!name().trim()" (click)="create()">Create</button>
+    <span class="title">New group</span>
+    @if (step() === 1) {
+      <button class="icon-btn action" (click)="goStep2()" aria-label="Next">
+        <app-icon [type]="AppIconType.ARROW_FORWARD" [style]="{width:'24px',height:'24px'}"></app-icon>
+      </button>
+    } @else {
+      <button class="icon-btn action" [disabled]="!name().trim()" (click)="confirm()" aria-label="Create group">
+        <app-icon [type]="AppIconType.CHECK" [style]="{width:'24px',height:'24px'}"></app-icon>
+      </button>
+    }
   </div>
-  <div class="name-field">
-    <input
-      type="text"
-      class="name-input"
-      placeholder="Group name"
-      maxlength="31"
-      [ngModel]="name()"
-      (ngModelChange)="onNameInput($event)"
-      (keydown.enter)="create()" />
+
+  <!-- STEP 1 — add members -->
+  <div class="step step-1" [hidden]="step() !== 1">
+    <div class="search">
+      <app-icon class="search-icon" [type]="AppIconType.SEARCH" [style]="{width:'18px',height:'18px'}"></app-icon>
+      <input type="text" placeholder="Search" autocomplete="off"
+        [ngModel]="searchText()" (ngModelChange)="onSearchInput($event)" />
+    </div>
+
+    @if (selectedList().length) {
+      <div class="chips">
+        @for (item of selectedList(); track item.id) {
+          <div class="chip">
+            <span class="chip-avatar">
+              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="item.peerUser.uniqName"
+                [src]="item.peerUser.userExtra.avatar"></app-user-avatar>
+            </span>
+            <span class="chip-name">{{ item.peerUser.userExtra.name || item.peerUser.uniqName }}</span>
+            <button class="chip-x" type="button" (click)="removeMember(item)" aria-label="Remove">
+              <app-icon [type]="AppIconType.CLOSE" [style]="{width:'14px',height:'14px'}"></app-icon>
+            </button>
+          </div>
+        }
+      </div>
+    }
+
+    <app-user-list [filterText]="searchText()" [selectedDict]="selectedDict()"
+      (onSelect)="onTrdSelect($event)" />
   </div>
-  <app-user-list (onSelect)="onTrdSelect($event)" [selectedDict]="selectedDict()" />
+
+  <!-- STEP 2 — name + avatar -->
+  <div class="step step-2" [hidden]="step() !== 2">
+    <div class="identity">
+      <div class="avatar">
+        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="name() || '?'"
+          [src]="pendingAvatar()"></app-user-avatar>
+        <button class="avatar-edit" type="button" (click)="fileInput.click()" [disabled]="busy()"
+          aria-label="Set group photo">
+          @if (busy()) {
+            <span class="spin"></span>
+          } @else {
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
+              <circle cx="12" cy="13" r="4" />
+            </svg>
+          }
+        </button>
+      </div>
+      <div class="name-field">
+        <input class="name-input" type="text" placeholder="Group name" [maxlength]="NAME_MAX"
+          [ngModel]="name()" (ngModelChange)="onNameInput($event)" (keydown.enter)="confirm()" />
+        <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
+      </div>
+    </div>
+    <div class="summary">
+      {{ selectedList().length }} member{{ selectedList().length === 1 ? '' : 's' }}
+    </div>
+  </div>
+
+  <input #fileInput type="file" accept="image/*" hidden (change)="pickAvatar($any($event.target))" />
 </div>

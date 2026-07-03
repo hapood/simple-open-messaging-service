@@ -1,9 +1,11 @@
-import { Component, inject, input } from '@angular/core';
+import { Component, inject, input, computed } from '@angular/core';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
+import { IconComponent, AppIconType } from '../../icon/icon.component';
 import { RouteService, RoutePage, PopupType } from '../../../services/route.service';
 import { AuthService } from '../../../services/auth.service';
 import { UserService } from '../../../services/user.service';
 import { WebsocketService } from '../../../services/websocket.service';
+import { ThemeService } from '../../../services/theme.service';
 
 /**
  * Telegram-style left rail: account avatar on top, section/action buttons at
@@ -11,7 +13,7 @@ import { WebsocketService } from '../../../services/websocket.service';
  */
 @Component({
   selector: 'app-icon-rail',
-  imports: [UserAvatarComponent],
+  imports: [UserAvatarComponent, IconComponent],
   template: `
     <div class="icon-rail">
       <div class="top">
@@ -22,23 +24,32 @@ import { WebsocketService } from '../../../services/websocket.service';
       </div>
       <div class="bottom">
         <button class="rail-btn" (click)="friendRequests()" title="Friend requests" aria-label="friend requests">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5s-3 1.34-3 3 1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <line x1="19" y1="8" x2="19" y2="14"/>
+            <line x1="22" y1="11" x2="16" y2="11"/>
           </svg>
           @if (sessionProfile()?.userNotiBox?.hasUrFriendReq) {
             <span class="friend-badge" aria-label="new friend requests"></span>
           }
         </button>
         <button class="rail-btn" (click)="newGroup()" title="New group" aria-label="new group">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
-            <circle cx="12" cy="12" r="10"/>
-            <path d="M12 8v8M8 12h8"/>
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+            <circle cx="9" cy="7" r="4"/>
+            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
           </svg>
         </button>
         <button class="rail-btn" (click)="folderEditor()" title="Folders" aria-label="folders">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
           </svg>
+        </button>
+        <button class="rail-btn" (click)="cycleTheme()"
+          [title]="'Theme: ' + themeLabel()" [attr.aria-label]="'Theme: ' + themeLabel()">
+          <app-icon [type]="themeIcon()" [style]="{ width: '24px', height: '24px' }"></app-icon>
         </button>
         <button class="rail-btn" (click)="logout()" title="Log out" aria-label="logout">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -94,6 +105,7 @@ import { WebsocketService } from '../../../services/websocket.service';
 })
 export class IconRailComponent {
   readonly UserAvatarType = UserAvatarType
+  readonly AppIconType = AppIconType
   /** fired after a group is created so the parent can refresh the thread list */
   readonly onThreadListChanged = input<(() => void) | undefined>(undefined)
 
@@ -101,8 +113,20 @@ export class IconRailComponent {
   private readonly authService = inject(AuthService);
   private readonly userService = inject(UserService);
   private readonly wsService = inject(WebsocketService);
-  /** 当前登录用户资料（供 SELF 头像取首字）。 */
+  private readonly themeService = inject(ThemeService);
+  /** Current logged-in profile (used for the SELF avatar's initial). */
   readonly sessionProfile = this.userService.sessionProfile
+
+  /** Icon reflecting the current theme mode (predictable cycling affordance). */
+  readonly themeIcon = computed<AppIconType>(() => {
+    const m = this.themeService.mode();
+    return m === 'system' ? AppIconType.CONTRAST : m === 'light' ? AppIconType.SUN : AppIconType.MOON;
+  });
+  readonly themeLabel = computed(() => {
+    const m = this.themeService.mode();
+    return m === 'system' ? 'System' : m === 'light' ? 'Light' : 'Dark';
+  });
+  cycleTheme(): void { this.themeService.cycleMode(); }
 
   friendRequests() {
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)
@@ -124,7 +148,8 @@ export class IconRailComponent {
   }
 
   logout() {
-    // 先断 WS，再清凭据 + 跳登录页（logout 内部已 clearToken，故后端吊销成败都跳登录）
+    // Disconnect the WS first, then clear credentials + go to the login page (logout already calls clearToken
+    // internally, so the login redirect happens whether or not backend revocation succeeds).
     this.wsService.disconnect();
     this.authService.logout().subscribe({
       complete: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),

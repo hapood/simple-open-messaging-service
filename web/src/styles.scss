@@ -1,8 +1,8 @@
 @use '@angular/material' as mat;
 @use './app/assets/tokens';
-@use './app/lib/chat-box/cb'; // 虚拟滚动内核样式契约（.cb-pending），与核心库同目录
+@use './app/lib/chat-box/cb'; // virtual-scroll kernel style contract (.cb-pending), co-located with the core library
 
-/* === M3 theme: 主色 #2196f3（mat.$blue-palette 500 色阶，与原手搓版一致） === */
+/* === M3 theme: primary #2196f3 (mat.$blue-palette 500 step, matching the former hand-tuned value) === */
 $theme: mat.define-theme((
   color: (
     primary: mat.$blue-palette,
@@ -19,7 +19,7 @@ $theme: mat.define-theme((
 
 :root {
   @include mat.all-component-themes($theme);
-  /* 保留现有报错色，避免 login/register 的 .error/.err-hint 随 M3 error 调色板漂移 */
+  /* Keep the existing error color so login/register .error / .err-hint do not drift with the M3 error palette. */
   --mat-form-field-error-text-color: #ba1a1a;
 }
 
@@ -30,5 +30,9 @@ body {
 
 body {
   margin: 0;
+  // Theme-aware defaults so unlabeled text and `currentColor` icons inherit a legible color
+  // on every theme, and overscroll/areas outside a component surface match the themed page bg.
+  color: var(--app-text);
+  background-color: var(--app-bg);
   font-family: var(--mat-app-text-font, -apple-system, BlinkMacSystemFont, system-ui, sans-serif);
 }

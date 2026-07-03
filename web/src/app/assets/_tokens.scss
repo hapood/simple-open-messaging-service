@@ -1,18 +1,23 @@
 // ============================================================================
-// SOMS Design Tokens — 全站视觉单一事实源
+// SOMS Design Tokens — single source of truth for the whole UI.
 // ----------------------------------------------------------------------------
-// 所有自研组件应消费这里的「语义 token」(var(--app-*))，而非硬编码色值。
+// All in-house components should consume the "semantic tokens" here
+// (var(--app-*)) rather than hardcoded color values.
 //
-// 分层：原始色阶(Sass 变量) → 语义 token(CSS 变量 --app-*) → 组件消费
-// 品牌主色锚定 Angular Material 3 主题 primary (mat.$blue-palette 500 = #2196f3)，
-// 使自研组件与 mat-button 等 Material 组件视觉同色，消除历史 7 种蓝各自为政。
+// Layering: raw scale (Sass vars) → semantic tokens (CSS vars --app-*) → component use.
+// The brand color is anchored to the Angular Material 3 theme primary
+// (mat.$blue-palette 500 = #2196f3), so in-house components share the exact
+// color of Material components like mat-button, retiring the 7 legacy blues.
 //
-// 深色模式：light 在 :root；dark 预留 [data-theme="dark"]（下一轮填充）。
-// 语义 token 解耦了明暗值，切主题只需重定义变量，组件零改动。
+// Dark mode: light values on :root; dark overrides on [data-theme="dark"].
+// Because semantic tokens decouple light/dark values, switching themes only
+// redefines the variables — components need no changes.
 // ============================================================================
 
-// ---- 原始色阶（Sass 端；供需要编译期运算的场景 @use，组件日常用 CSS 变量即可）---
-// 灰阶沿用 Tailwind gray（与现有 icon-rail / folder-editor / chat-list-pane 一致，迁移成本最低）
+// ---- Raw scale (Sass side; @use where compile-time math is needed. Day-to-day
+// component styling uses the CSS variables below.) ---------------------------
+// Gray scale follows Tailwind gray (matches existing icon-rail / folder-editor /
+// chat-list-pane, minimizing migration cost).
 $app-gray-50:  #f9fafb;
 $app-gray-100: #f3f4f6;
 $app-gray-200: #e5e7eb;
@@ -22,90 +27,113 @@ $app-gray-500: #6b7280;
 $app-gray-700: #374151;
 $app-gray-900: #111827;
 
-// ---- 语义 token（CSS 变量；组件实际消费这些）-------------------------------
+// ---- Semantic tokens (CSS variables; what components actually consume) -----
 :root {
-  // 品牌（统一历史 7 种蓝：#3370ff/#2563eb/#3390ec/#448aff/#005cbb/#2196f3/#2ca9bc → M3 primary）
+  // Brand (unifies the 7 legacy blues: #3370ff/#2563eb/#3390ec/#448aff/#005cbb/#2196f3/#2ca9bc → M3 primary)
   --app-brand:        #2196f3;
-  --app-brand-hover:  #1976d2;   // hover / 按下加深
-  --app-brand-soft:   #e3f2fd;   // 品牌浅底（选中胶囊 / 高亮）
-  --app-brand-accent: #2ca9bc;   // 渐变辅色（auth 品牌页装饰）
+  --app-brand-hover:  #1976d2;   // darkened on hover / press
+  --app-brand-soft:   #e3f2fd;   // light brand fill (selected pill / highlight)
+  --app-brand-accent: #2ca9bc;   // gradient accent (auth brand-page decoration)
 
-  // 文字（替换 #000000 / #111827 / #1f2329 / #2b2f3a / #374151 等多种「近黑」）
-  --app-text:        #{$app-gray-900};   // 主文字
-  --app-text-muted:  #{$app-gray-500};   // 次要文字（替换 #6b7280/#707579/#707991/#8a919d/#4e5969）
-  --app-text-faint:  #{$app-gray-400};   // 更弱：时间戳 / 占位（替换 #898989/#9ca3af/#a2acb4/#a8aeb8）
+  // Text (replaces the many "near-blacks": #000000 / #111827 / #1f2329 / #2b2f3a / #374151)
+  --app-text:        #{$app-gray-900};   // primary text
+  --app-text-muted:  #{$app-gray-500};   // secondary text (replaces #6b7280/#707579/#707991/#8a919d/#4e5969)
+  --app-text-faint:  #{$app-gray-400};   // weaker: timestamps / placeholders (replaces #898989/#9ca3af/#a2acb4/#a8aeb8)
 
-  // 表面与底色（替换 #fff/#ffffff/#eeeeee/#f4f6f9/#f3f4f6/#faf9fd/#eef0f3 等多种「白/浅灰」）
-  --app-surface:     #ffffff;            // 卡片 / 面板白底
-  --app-bg:          #f4f6f9;            // 页面 / 窗格分隔底
-  --app-bg-muted:    #{$app-gray-100};   // 次级底（rail / 输入栏 / hover 底）
+  // Surfaces & backgrounds (replaces the many "whites/light-grays": #fff/#ffffff/#eeeeee/#f4f6f9/#f3f4f6/#faf9fd/#eef0f3)
+  --app-surface:     #ffffff;            // card / panel white
+  --app-bg:          #f0f2f5;            // page / pane-separator background (WhatsApp-style warm-neutral chrome gray, softer than pure white)
+  --app-bg-muted:    #f0f2f5;            // secondary bg (rail / input bar / hover fill)
 
-  // 边框与交互状态底（替换 #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6）
+  // Borders & interaction-state fills (replaces #cccccc/#dddddd/#e5e7eb/#e5e6eb/#e3e5e8/#d1d5db/#c9ced6)
   --app-border:        #{$app-gray-200};
   --app-border-strong: #{$app-gray-300};
-  --app-hover:   #{$app-gray-100};   // 列表项 hover
-  --app-active:  #{$app-gray-200};   // 列表项 active / 选中（替换 #dddddd）
+  --app-hover:   #{$app-gray-100};   // list-item hover
+  --app-active:  #{$app-gray-200};   // list-item active / selected (replaces #dddddd)
 
-  // 语义色
-  --app-danger:       #dc2626;   // 错误 / 危险（替换 #d93025 / #ba1a1a）
-  --app-danger-soft:  #fef2f2;   // 错误浅底
-  --app-success-soft: #afefc8;   // 成功浅底（邀请卡）
+  // Semantic colors
+  --app-danger:       #dc2626;   // error / danger (replaces #d93025 / #ba1a1a)
+  --app-danger-soft:  #fef2f2;   // error soft fill
+  --app-success-soft: #afefc8;   // success soft fill (invite cards)
 
-  // 消息气泡（IM 核心语义）
-  --app-bubble-self:  var(--app-brand);     // 自己消息
-  --app-bubble-other: #{$app-gray-100};     // 他方消息（替换 #eeeeee）
+  // Message bubbles (core IM semantics)
+  --app-bubble-self:  var(--app-brand);     // own messages
+  --app-bubble-other: #{$app-gray-100};     // other-party messages (replaces #eeeeee)
 
-  // 圆角（收敛历史 4/6/8/9/10/12/16/20px 八档 → 四档 + pill）
+  // Radius (consolidates the legacy 4/6/8/9/10/12/16/20px eight steps → four + pill)
   --app-radius-sm:   6px;
   --app-radius-md:   10px;
   --app-radius-lg:   16px;
   --app-radius-pill: 9999px;
 
-  // 间距（收敛常见 4/8/12/16）
+  // Spacing (consolidates common 4/8/12/16)
   --app-space-1: 4px;
   --app-space-2: 8px;
   --app-space-3: 12px;
   --app-space-4: 16px;
 }
 
-// ---- 聊天 / IM 语义 token（WhatsApp 对标，--im-*）--------------------------
-// 1v1 聊天列表的视觉单一事实源：气泡 / 头像 / 时间戳 / 日期分隔 / 媒体网格等
-// 「IM 专属」语义色。与通用 --app-* 区分（--app-bubble-* 是项目通用蓝气泡，
-// 聊天列表走 WhatsApp 绿，故另立 --im-*）。phase-4 真实 MsgGroupComponent 直接复用。
-// 色值全面对标现行 WhatsApp Web（亮色出栈 #d9fdd3、入栈 #fff；暗色 #005c4b/#202c33）。
+// ---- Chat / IM semantic tokens (WhatsApp-aligned, --im-*) ------------------
+// Single source of truth for the 1:1 chat list visuals: bubbles / avatars /
+// timestamps / date separators / media grids — the "IM-specific" semantic colors.
+// Kept separate from the general --app-* (--app-bubble-* are the project's
+// generic blue bubbles; the chat list uses WhatsApp green, hence --im-*).
+// The production MsgGroupComponent reuses these directly.
+// Values track current WhatsApp Web (light: outgoing #d9fdd3, incoming #fff;
+// dark: #005c4b / #202c33).
 :root {
-  --im-chat-bg:        #efeae2;   // 聊天区底色（WhatsApp 米色带壁纸观感）
-  --im-bubble-self:    #d9fdd3;   // 出栈气泡（现行 WhatsApp 绿，旧版 #dcf8c6）
-  --im-bubble-other:   #ffffff;   // 入栈气泡
-  --im-bubble-text:    #111b21;   // 气泡正文
-  --im-time:           #667781;   // 气泡内嵌时间戳（绿/白泡通用灰绿）
-  --im-avatar-self:    #25d366;   // self 头像底（WhatsApp 品牌绿）
-  --im-avatar-other:   #c7c7cc;   // other 头像底（占位灰）
-  --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // 日期分隔 pill 底
-  --im-date-pill-text: var(--app-text-faint);  // 日期分隔文字
-  --im-media-gap:      2px;       // 相册拼盘格间隙
-  --im-media-radius:   var(--app-radius-md);   // 相册单格圆角
+  --im-chat-bg:        #efeae2;   // chat-area background (WhatsApp beige, wallpaper feel)
+  // Low-contrast wallpaper: a tiled line-art doodle (heart / star / speech
+  // bubble / smiley / sparkle) as an inline SVG. Opacity is baked into
+  // stroke-opacity, so this is layered as background-image over the bg color on
+  // the same element — no pseudo-element / stacking context needed (an element's
+  // own background always paints behind its content).
+  --im-chat-pattern:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='black' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.05'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
+  --im-bubble-self:    #d9fdd3;   // outgoing bubble (current WhatsApp green; legacy #dcf8c6)
+  --im-bubble-other:   #ffffff;   // incoming bubble
+  --im-bubble-text:    #111b21;   // bubble body text
+  --im-time:           #667781;   // in-bubble timestamp (gray-green shared by green/white bubbles)
+  --im-avatar-self:    #25d366;   // self avatar fill (WhatsApp brand green)
+  --im-avatar-other:   #c7c7cc;   // other avatar fill (placeholder gray)
+  --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // date-separator pill fill
+  --im-date-pill-text: var(--app-text-faint);  // date-separator text
+  --im-media-gap:      2px;       // album grid gap
+  --im-media-radius:   var(--app-radius-md);   // album cell radius
 }
 
 // ============================================================================
-// 深色模式（实装）——语义 token 解耦后组件零改动，只需在此重定义变量。
-// 触发：容器挂 [data-theme="dark"]（playground 主题切换即给 .pg 根挂此属性；
-// 未来全站暗色可在 <html> 上挂）。后代继承变量，无需改组件。
+// Dark mode — with semantic tokens decoupled, components need no changes; only
+// the variables are redefined here.
+// Trigger: set [data-theme="dark"] on a container (the playground theme toggle
+// hangs it on the .pg root; site-wide dark hangs it on <html>). Descendants
+// inherit the variables — no component edits required.
 // ============================================================================
 [data-theme="dark"] {
-  // 通用 token 暗色（替换原先注释预留）
+  // General tokens, dark (replaces the former placeholder comments)
   --app-bg:          #0b141a;
   --app-bg-muted:    #202c33;
   --app-surface:     #202c33;
   --app-text:        #e9edef;
   --app-text-muted:  #8696a0;
   --app-text-faint:  #667781;
-  --app-border:      #2a3942;
-  --app-hover:       #2a3942;
+  --app-border:        #2a3942;
+  --app-border-strong: #3b4a54;   // one step lighter than --app-border, for inputs/tabs that need definition (was missing → inherited the bright light #d1d5db)
+  --app-hover:         #2a3942;
   --app-active:      #37424a;
 
-  // IM token 暗色（WhatsApp dark）
+  // Brand & semantic, dark — the light "soft" fills (#e3f2fd / #fef2f2 / #afefc8) are near-white
+  // and would glare; replace with subtle washes tinted over the dark surface.
+  --app-brand-soft:   rgba(33, 150, 243, 0.18);   // selected pill / highlight — brand wash over dark
+  --app-danger:       #ef4444;                    // brighter red for legibility on dark
+  --app-danger-soft:  rgba(239, 68, 68, 0.18);    // soft error fill — red wash (was bright #fef2f2 pink)
+  --app-success-soft: rgba(52, 211, 153, 0.18);   // soft success fill — green wash (was bright #afefc8)
+  --app-bubble-other: #202c33;                    // generic other-party bubble (chat uses --im-*; overridden for completeness, was bright gray-100)
+
+  // IM tokens, dark (WhatsApp dark)
   --im-chat-bg:        #0b141a;
+  // Dark wallpaper variant: the same doodles with light strokes; opacity is
+  // nudged up so the pattern stays legible on the deep background.
+  --im-chat-pattern:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140' viewBox='0 0 140 140'%3E%3Cg fill='none' stroke='white' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round' stroke-opacity='0.06'%3E%3Cpath d='M15 24c-2.2-2.2-5.5-0.9-5.5 2.4 0 3.3 5.5 6.6 5.5 6.6s5.5-3.3 5.5-6.6c0-3.3-3.3-4.6-5.5-2.4z'/%3E%3Cpath d='M112 14l1.7 3.4 3.8.6-2.7 2.7.6 3.8-3.4-1.8-3.4 1.8.6-3.8-2.7-2.7 3.8-.6z'/%3E%3Cpath d='M52 70h13a3.5 3.5 0 0 1 3.5 3.5v5a3.5 3.5 0 0 1-3.5 3.5h-1.5l-3.5 3v-3H52a3.5 3.5 0 0 1-3.5-3.5v-5A3.5 3.5 0 0 1 52 70z'/%3E%3Cpath d='M104 100a7 7 0 1 0 0 14 7 7 0 0 0 0-14z'/%3E%3Cpath d='M101.5 104.5v1.6'/%3E%3Cpath d='M106.5 104.5v1.6'/%3E%3Cpath d='M101 109a3.5 3 0 0 0 6 0'/%3E%3Cpath d='M28 102l1.2 3.8 3.8 1.2-3.8 1.2-1.2 3.8-1.2-3.8-3.8-1.2 3.8-1.2z'/%3E%3Cpath d='M70 30a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M40 120a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3Cpath d='M125 70a1 1 0 1 0 0 2 1 1 0 0 0 0-2z'/%3E%3C/g%3E%3C/svg%3E");
   --im-bubble-self:    #005c4b;
   --im-bubble-other:   #202c33;
   --im-bubble-text:    #e9edef;

@@ -199,6 +199,31 @@ export class UserController {
           })
         : [];
     const groupByThread = new Map(groups.map((g) => [g.threadId, g]));
+    // Hydrate the last-message sender's display name for GROUP threads so the list can prefix group
+    // previews with "Name:". Only GROUP senders are resolved — P2P previews are never prefixed (the
+    // peer is implied), so the dict simply has no entry for P2P senders.
+    const groupSenderIds = Array.from(
+      new Set(
+        list
+          .filter((p) => p.thread.type === 'GROUP')
+          .map((p) => p.thread.lastMessageSenderId)
+          .filter((id): id is number => id != null),
+      ),
+    );
+    const groupSenders =
+      groupSenderIds.length > 0
+        ? await this.userService.queryUsers({
+            where: { id: { in: groupSenderIds } },
+            include: { userExtra: true },
+          })
+        : [];
+    const senderNameById = new Map<number, string>();
+    groupSenders.forEach((u) => {
+      // queryUsers is a generic passthrough (Prisma.UserFindManyArgs) so its TS return is the base
+      // User; the userExtra include is present at runtime. Cast to read the display name.
+      const extra = (u as { userExtra?: { name?: string } | null }).userExtra;
+      senderNameById.set(u.id, extra?.name || u.uniqName);
+    });
     const data = list.map((p) => {
       const item = {
         id: p.id,
@@ -210,6 +235,10 @@ export class UserController {
         lastMessagePreview: p.thread.lastMessagePreview ?? null,
         lastMessageAt: p.thread.lastMessageAt ?? null,
         lastMessageSenderId: p.thread.lastMessageSenderId ?? null,
+        lastMessageSenderName:
+          p.thread.lastMessageSenderId != null
+            ? (senderNameById.get(p.thread.lastMessageSenderId) ?? null)
+            : null,
       } as {
         id: number;
         threadId: number;
@@ -220,6 +249,7 @@ export class UserController {
         lastMessagePreview: string | null;
         lastMessageAt: Date | null;
         lastMessageSenderId: number | null;
+        lastMessageSenderName: string | null;
         peerUser?: unknown;
         group?: unknown;
       };
@@ -558,6 +588,7 @@ export class UserController {
       lastMessagePreview: string | null;
       lastMessageAt: Date | null;
       lastMessageSenderId: number | null;
+      lastMessageSenderName?: string | null;
       peerUser?: unknown;
       group?: unknown;
     };
@@ -582,6 +613,16 @@ export class UserController {
         where: { threadId: p.threadId },
       });
       item.group = group;
+      // Resolve the last-message sender's display name for the group preview prefix.
+      if (p.thread.lastMessageSenderId != null) {
+        const [sender] = await this.userService.queryUsers({
+          where: { id: p.thread.lastMessageSenderId },
+          include: { userExtra: true },
+        });
+        // Same runtime-only userExtra include as the list path (queryUsers is a generic passthrough).
+        const extra = (sender as { userExtra?: { name?: string } | null } | undefined)?.userExtra;
+        item.lastMessageSenderName = sender ? extra?.name || sender.uniqName : null;
+      }
     }
     return { code: BusinessCode.OK, message: 'successful', data: item };
   }

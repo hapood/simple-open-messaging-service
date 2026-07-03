@@ -132,49 +132,62 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/invite')
-  @ApiOperation({ summary: 'Invite a friend to the group (invite token written to the P2P thread)' })
+  @ApiOperation({ summary: 'Invite friends to the group (invite token written to each P2P thread)' })
   async inviteUsers(
     @Request() req,
     @Body() dto: InviteGroupDto,
   ): Promise<ApiResult> {
     const group = req.groupAccess!.group;
-    // Inviter membership is already enforced by GroupAccessGuard; require friendship (and an
-    // established P2P thread to carry the invite message).
-    const { friendship, isFriend } = await this.friendshipService.getFriendship(
-      req.user.userId,
-      dto.userId,
-    );
-    if (!isFriend || !friendship?.threadId) {
-      return {
-        code: BusinessCode.GROUP_NOT_FRIEND,
-        message: `[${dto.userId}] is not your friend`,
-      };
-    }
+    const inviter = req.user.userId;
+    // One token expiry window shared across the batch — every invite from this action expires
+    // together (3 days, as before).
     const expiryDate = dayjs().add(3, 'day').valueOf();
-    try {
-      await this.messageService.writeMsgToThread(
-        req.user.userId,
-        friendship.threadId,
-        JSON.stringify({
-          type: 'GROUP_INVITE',
-          fromUserId: req.user.userId,
-          groupName: group.name,
-          expiryDate,
-          token: this.groupService.generateInviteToken({
-            toUserId: dto.userId,
-            groupId: dto.groupId,
+    // Dedup defensively (the DTO layer already coerced types); order preserved.
+    const userIds = Array.from(new Set(dto.userIds));
+    const invited: number[] = [];
+    const skipped: { userId: number; reason: string }[] = [];
+    for (const userId of userIds) {
+      // Inviter membership is enforced by GroupAccessGuard; require friendship + an established P2P
+      // thread to carry the invite message. Skip (don't abort the whole batch) on any per-user failure.
+      const { friendship, isFriend } = await this.friendshipService.getFriendship(inviter, userId);
+      if (!isFriend || !friendship?.threadId) {
+        skipped.push({ userId, reason: 'not a friend or no conversation' });
+        continue;
+      }
+      try {
+        await this.messageService.writeMsgToThread(
+          inviter,
+          friendship.threadId,
+          JSON.stringify({
+            type: 'GROUP_INVITE',
+            fromUserId: inviter,
+            // groupId + groupAvatar let the invitee's card render group identity and offer an
+            // "Open group" follow-through after joining (groupName already carried the name).
+            groupId: group.id,
+            groupName: group.name,
+            groupAvatar: group.avatar,
             expiryDate,
+            token: this.groupService.generateInviteToken({
+              toUserId: userId,
+              groupId: group.id,
+              expiryDate,
+            }),
           }),
-        }),
-        ContentType.INVITE,
-      );
-    } catch (e) {
-      return {
-        code: BusinessCode.INTERNAL,
-        message: `invite write failed: ${(e as Error)?.message ?? String(e)}`,
-      };
+          ContentType.INVITE,
+        );
+        invited.push(userId);
+      } catch (e) {
+        skipped.push({
+          userId,
+          reason: `invite write failed: ${(e as Error)?.message ?? String(e)}`,
+        });
+      }
     }
-    return { code: BusinessCode.OK, message: 'successful' };
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: { invited, skipped },
+    };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -188,7 +201,7 @@ export class GroupController {
   ): Promise<ApiResult> {
     const res = this.groupService.decodeInviteToken(dto.token);
     switch (res.status) {
-      case 0:
+      case 0: {
         // Invite-token identity check: the caller must be the token's intended recipient.
         if (res.data.sub !== req.user.userId) {
           return {
@@ -200,24 +213,23 @@ export class GroupController {
           groupId: res.data.gid,
           userId: req.user.userId,
         });
-        if (r.status === 'ok') {
-          // Notify existing members of the join.
-          const group = await this.groupService.findUniqeGroup({
-            id: res.data.gid,
-          });
-          if (group) {
-            await this.fanoutGroup(
-              group.threadId,
-              group.id,
-              GROUP_SSE.GROUP_MEMBER_JOINED,
-              { userId: req.user.userId, role: GroupRole.MEMBER },
-            );
-          }
+        // Resolve the group once — its threadId is needed both to fan out the join event and to tell
+        // the just-joined client which thread to open (returned in the response data).
+        const group = await this.groupService.findUniqeGroup({ id: res.data.gid });
+        if (r.status === 'ok' && group) {
+          await this.fanoutGroup(
+            group.threadId,
+            group.id,
+            GROUP_SSE.GROUP_MEMBER_JOINED,
+            { userId: req.user.userId, role: GroupRole.MEMBER },
+          );
         }
         return {
           code: BusinessCode.OK,
           message: r.status === 'ok' ? 'successful' : 'already a member',
+          data: { threadId: group?.threadId },
         };
+      }
       case 2:
         return {
           code: BusinessCode.GROUP_INVALID_TOKEN,

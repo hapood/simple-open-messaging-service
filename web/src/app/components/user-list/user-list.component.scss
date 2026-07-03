@@ -4,12 +4,10 @@
   display: flex;
   align-items: center;
   padding: 0 10px;
-  .active-icon {
-    width: 18px;
-    height: 18px;
-    position: absolute;
-    left: 0;
-    bottom: 0;
+  cursor: pointer;
+
+  &:hover {
+    background: var(--app-hover);
   }
 
   .thread-avatar {
@@ -20,8 +18,26 @@
     flex-shrink: 0;
   }
 
+  // Brand circular check, bottom-right of the avatar (WhatsApp/Telegram selected state).
+  .check {
+    position: absolute;
+    right: -2px;
+    bottom: -2px;
+    width: 22px;
+    height: 22px;
+    box-sizing: border-box;
+    border-radius: var(--app-radius-pill);
+    background: var(--app-brand);
+    color: #fff;
+    border: 2px solid var(--app-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .thread-info {
     flex: 1;
+    min-width: 0;
     padding-left: 8px;
     border-bottom: 1px solid var(--app-border);
     height: 100%;
@@ -34,14 +50,19 @@
       font-size: 16px;
       font-weight: 600;
       color: var(--app-text);
-      line-height: 16px;
-      height: 16px;
+      line-height: 20px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .thread-msg {
-      font-size: 14px;
+    .thread-handle {
+      font-size: 13px;
       color: var(--app-text-muted);
-      margin-top: 4px;
+      margin-top: 2px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
   }
 }

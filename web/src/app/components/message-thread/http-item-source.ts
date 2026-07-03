@@ -108,11 +108,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       await this.ensureProfiles(list);
       const items = this.rawToItems(list);
       if (items.length > 0) {
-        if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
-        items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+        // anchor=-1 → the last item is always the global newest; noOlder means it also reached the oldest. A length-1
+        // batch spanning both edges is a sole item → 'both' (the boundary field is single-valued; otherwise items[0]='oldest'
+        // and items[last]='newest' collide on it and noOlder is lost → a permanent top ghost on a single-message thread).
+        if (this.noOlder && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+        else {
+          if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
+          items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+        }
         this.oldestMsgId = firstMsgId(items);
         this.newestMsgId = lastMsgId(items);
       }
+      this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from pending
       return items;
     }
     // Real msgId: fetch both directions (jump to a specific message / open conversation from a
@@ -132,12 +139,29 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     await this.ensureProfiles(list);
     const items = this.rawToItems(list);
     if (items.length > 0) {
-      if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
-      if (this.noNewer) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      // Bidirectional fetch: noOlder/noNewer reflect each direction's hasMore. A length-1 batch spanning both edges → 'both'.
+      if (this.noOlder && this.noNewer && items.length === 1) items[0] = { ...items[0], boundary: 'both' };
+      else {
+        if (this.noOlder) items[0] = { ...items[0], boundary: 'oldest' };
+        if (this.noNewer) items[items.length - 1] = { ...items[items.length - 1], boundary: 'newest' };
+      }
       this.oldestMsgId = firstMsgId(items);
       this.newestMsgId = lastMsgId(items);
     }
+    this.reconcilePending(items); // a returned real confirms its optimistic counterpart → drop it from pending
     return items;
+  }
+
+  /** Drop any in-flight optimistic (pending) entry whose clientMessageId matches a returned real — its confirm arrived.
+   *  Mirrors the kernel's mounted-entry reconcile; keeps this.pending in sync so the kernel's elevatePending doesn't
+   *  re-mount an already-confirmed send as a stale optimistic bubble. Must run in EVERY method that returns reals —
+   *  init AND getNewer: the kernel routes an empty-thread confirm through init(-1) (loadNewer's no-real-cursor fallback). */
+  private reconcilePending(reals: CbItem<ChatItemData>[]): void {
+    for (const r of reals) {
+      if (r.clientMessageId === undefined) continue;
+      const pi = this.pending.findIndex((p) => p.clientMessageId === r.clientMessageId);
+      if (pi >= 0) this.pending.splice(pi, 1);
+    }
   }
 
   /** Fetch `count` messages older than cursorId (desc, then reversed to ascending). out[0] is tagged
@@ -171,11 +195,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     // reconcileOptimistic will remove the matching optimistic bubble and tag this real cb-confirmed.
     if (this.liveCache.length > 0) {
       const cached = this.liveCache.splice(0);
-      for (const r of cached) {
-        if (r.clientMessageId === undefined) continue;
-        const pi = this.pending.findIndex((p) => p.clientMessageId === r.clientMessageId);
-        if (pi >= 0) this.pending.splice(pi, 1);
-      }
+      this.reconcilePending(cached); // a drained real confirms its optimistic counterpart → drop it from pending
       this.noNewer = true; // live items are the global newest
       cached[cached.length - 1] = { ...cached[cached.length - 1], boundary: 'newest' };
       return cached;

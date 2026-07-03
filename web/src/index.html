@@ -2,11 +2,27 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!-- Apply the persisted/system theme before first paint to avoid a flash of the
+       wrong theme (FOUC). Mirrors ThemeService's resolution exactly; the service
+       re-asserts and owns runtime changes after Angular boots. -->
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem('soms.theme');
+        var mode = (stored === 'light' || stored === 'dark') ? stored : 'system';
+        var dark = mode === 'dark' ||
+          (mode === 'system' && window.matchMedia &&
+            window.matchMedia('(prefers-color-scheme: dark)').matches);
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+      } catch (e) { /* localStorage disabled — ThemeService applies the default */ }
+    })();
+  </script>
   <title>Web</title>
   <base href="/">
-  <!-- interactive-widget=resizes-content: 软键盘/浏览器栏弹出时缩小「布局视口」，
-       配合 100dvh 让输入框被顶到键盘上方而非被盖住（对齐 Gemini web；Chromium/Android 生效，
-       桌面无虚拟键盘不受影响；iOS Safari 忽略该关键字，需另做 focus 定位兜底）。 -->
+  <!-- interactive-widget=resizes-content: when the soft keyboard / browser bar opens, shrink the
+       "layout viewport"; paired with 100dvh this lifts the input above the keyboard instead of being
+       covered (matches Gemini web; effective on Chromium/Android; desktop has no virtual keyboard so
+       it is unaffected; iOS Safari ignores this keyword and needs a separate focus-positioning fallback). -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <meta name="theme-color" content="#2196f3">

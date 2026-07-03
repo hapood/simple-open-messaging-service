@@ -15,15 +15,21 @@
     }
     <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-invite">
       <div class="pg-invite-card">
-        <div class="pg-invite-title">{{ data().name }} invite you to join:</div>
-        <div class="pg-invite-name">{{ invite().groupName }}</div>
+        <div class="pg-invite-title">{{ data().name }} invited you to join:</div>
+        <div class="pg-invite-group">
+          @if (invite().groupAvatar) {
+            <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [src]="invite().groupAvatar"></app-user-avatar>
+          }
+          <div class="pg-invite-name">{{ invite().groupName }}</div>
+        </div>
         @if (expiryLabel()) {
-          <div class="pg-invite-expiry">valid until {{ expiryLabel() }}</div>
+          <div class="pg-invite-expiry">Valid until {{ expiryLabel() }}</div>
         }
         @switch (status()) {
           @case (0) {
             @if (joined()) {
-              <button mat-raised-button disabled>Joined</button>
+              <div class="pg-invite-joined">Joined ✓</div>
+              <button mat-raised-button color="primary" (click)="openGroup()">Open group</button>
             } @else {
               <button mat-raised-button color="primary" (click)="joinGroup()">Join</button>
             }
@@ -32,7 +38,7 @@
             }
           }
           @case (1) {
-            <button mat-raised-button disabled>EXPIRED</button>
+            <button mat-raised-button disabled>Expired</button>
           }
         }
       </div>

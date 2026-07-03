@@ -55,8 +55,12 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
       padding: 0 10px;
       border-radius: var(--app-radius-md);
       border: 1px solid var(--app-border-strong);
+      background: var(--app-bg-muted);
+      color: var(--app-text);
       font-size: 14px;
       outline: none;
+      &::placeholder { color: var(--app-text-faint); }
+      &:focus { border-color: var(--app-brand); }
     }
     .folder-tabs {
       display: flex;
@@ -84,14 +88,14 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
 export class ChatListPaneComponent {
   private readonly folderService = inject(FolderService)
 
-  /** undefined = "全部" (no folder filter) */
+  /** undefined = "All" (no folder filter) */
   readonly activeFolderId = signal<string | undefined>(undefined)
   readonly searchText = signal('')
   readonly threadListCmp = viewChild(ThreadListComponent)
 
   readonly folders = computed(() => this.folderService.folders())
 
-  /** resolves the active folder (undefined for "全部" or when its id was deleted) */
+  /** resolves the active folder (undefined for "All", or when its id was deleted) */
   readonly activeFolder = computed<ChatFolder | undefined>(() => {
     const id = this.activeFolderId()
     return id ? this.folderService.getById(id) : undefined

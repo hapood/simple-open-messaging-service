@@ -489,7 +489,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Invite a friend to the group (invite token written to the P2P thread) */
+        /** Invite friends to the group (invite token written to each P2P thread) */
         post: operations["GroupController_inviteUsers"];
         delete?: never;
         options?: never;
@@ -1357,6 +1357,11 @@ export interface components {
              * @example 7
              */
             lastMessageSenderId: number | null;
+            /**
+             * @description Display name of the last-message sender (GROUP conversations only — used to prefix group previews like "Alice: hi"). Null/absent on P2P and empty threads.
+             * @example Alice
+             */
+            lastMessageSenderName: string | null;
             /** @description Peer user (P2P conversations only) */
             peerUser: components["schemas"]["UserResponseDto"];
             /** @description Group (GROUP conversations only) */
@@ -1472,10 +1477,13 @@ export interface components {
         };
         InviteGroupDto: {
             /**
-             * @description Invited user id
-             * @example 1
+             * @description Friend user ids to invite (each must be a friend with an existing P2P thread)
+             * @example [
+             *       3,
+             *       7
+             *     ]
              */
-            userId: number;
+            userIds: number[];
             /**
              * @description Group id
              * @example 12

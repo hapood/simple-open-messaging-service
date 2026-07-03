@@ -203,6 +203,14 @@ export class ConversationItemDto {
   lastMessageSenderId?: number | null;
 
   @ApiProperty({
+    example: 'Alice',
+    nullable: true,
+    description:
+      'Display name of the last-message sender (GROUP conversations only — used to prefix group previews like "Alice: hi"). Null/absent on P2P and empty threads.',
+  })
+  lastMessageSenderName?: string | null;
+
+  @ApiProperty({
     type: UserResponseDto,
     description: 'Peer user (P2P conversations only)',
   })
