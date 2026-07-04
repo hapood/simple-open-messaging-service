@@ -32,6 +32,7 @@ import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
+import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import type { ConversationItem, StandardResponse } from '../../services/model';
 
 /**
@@ -77,8 +78,9 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly userService = inject(UserService);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
-  protected readonly isDesktop = this.layout.isDesktop;
+  protected readonly hasFinePointer = this.layout.hasFinePointer;
   private readonly galleryViewer = inject(GalleryViewerService);
+  private readonly fileDetail = inject(FileDetailService);
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -167,6 +169,7 @@ export class MessageThreadComponent implements OnDestroy {
       item, isShowHead, isGroupStart, showDate, this.envInjector,
       (msgId) => this.retrySend(msgId),
       (images, index) => this.galleryViewer.open(images, index),
+      (data) => this.fileDetail.open(data),
     );
   }
 

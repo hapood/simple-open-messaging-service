@@ -26,6 +26,9 @@
     <!-- Telegram 式粘性日期浮层：在 .pg-stage 内、.pg-viewport 外（兄弟）——
          不在滚动容器内故不随文档流滚、也不参与虚拟滚动回收；组件据滚动位置实时更新文本。 -->
     <app-sticky-date-overlay [label]="stickyDate()" />
+    <!-- Demo: the restyled Material connection chip. `demoState` overrides the live service so the panel's
+         "Connection chip" group can drive every state (fixed top-right; --conn-chip-top is set on .pg). -->
+    <app-connection-banner [demoState]="connStatus()" />
     @if (toast()) {
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }
@@ -42,7 +45,7 @@
     <!-- Input bar: flex child of the stage column. margin-bottom lifts it above the soft keyboard (mobile);
          keyboardHeight feeds the emoji swap panel's frozen-height capture. -->
     <app-chat-input class="pg-input-anchor"
-                    [members]="members()" [isDesktop]="isDesktop()"
+                    [members]="members()" [hasFinePointer]="hasFinePointer()"
                     [keyboardHeight]="kbdOffset()?.occlusion() ?? 0"
                     [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
                     (send)="onSendIntent($event)" />
@@ -196,6 +199,24 @@
         <p class="pg-hint">batch {{ config().mountItem }} · init {{ config().initBatch }} · threshold {{ config().thresholdFloor }} · vh+{{ config().vhExtra }} · edge {{ config().edge }}</p>
         <div class="pg-btns">
           <button (click)="openConfigModal()">Edit params</button>
+        </div>
+      </section>
+    </details>
+
+    <details>
+      <summary>Connection chip</summary>
+      <section>
+        <h4>Status <span class="pg-sec-tag" [class.pg-sec-tag--on]="connStatus() === 'reconnecting'">{{ connStatus() ?? 'live' }}</span></h4>
+        <p class="pg-hint">Drives the restyled Material chip at the top-right (below the header). `Open`/`Closed`/`Live` hide it — that is the real steady-state behavior; `Recover` replays the reconnecting→open flourish.</p>
+        <div class="pg-btns">
+          <button (click)="setConnStatus('connecting')" [class.active]="connStatus() === 'connecting'">Connecting</button>
+          <button (click)="setConnStatus('reconnecting')" [class.active]="connStatus() === 'reconnecting'">Reconnecting</button>
+          <button (click)="playConnRecover()">Recover</button>
+        </div>
+        <div class="pg-btns">
+          <button (click)="setConnStatus('open')" [class.active]="connStatus() === 'open'">Open</button>
+          <button (click)="setConnStatus('closed')" [class.active]="connStatus() === 'closed'">Closed</button>
+          <button (click)="setConnStatus(null)" [class.active]="connStatus() === null">Live</button>
         </div>
       </section>
     </details>

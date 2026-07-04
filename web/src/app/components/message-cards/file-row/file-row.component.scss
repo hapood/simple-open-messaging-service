@@ -9,13 +9,20 @@
   padding: 8px 10px;
 }
 
-// Click target: icon + meta + download glyph in a row. The whole row is an <a download> (degrades to a div when no url).
+// Click target: icon + meta + download glyph in a row. Clicking opens the file-detail overlay (the row emits openFile);
+// the actual <a download> lives inside that overlay. role=button + tabindex make it keyboard-accessible.
+// min-width:0 breaks the default min-width:auto chain: a nowrap filename's min-content is the WHOLE unbreakable name,
+// so without this the row would refuse to shrink below it and overflow the fixed 280px bubble. Paired with .pg-file-meta's
+// own min-width:0 + .pg-file-name's overflow:hidden/ellipsis, the filename now truncates inside the bubble.
 .pg-file-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  text-decoration: none;
-  color: inherit;
+  min-width: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  outline: none;
+  &:focus-visible { outline: 2px solid var(--app-primary, #2b6cb0); outline-offset: 2px; }
 }
 
 // Type icon: a rounded square + category-color tint + a centered file svg + a bottom extension strip.
@@ -67,7 +74,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  word-break: break-all;
 }
 .pg-file-size {
   font-size: 12px;

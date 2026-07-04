@@ -199,6 +199,7 @@
     "inputPlaceholder": "输入消息…",
     "youPrefix": "你：{{text}}",
     "openImageAria": "打开图片",
+    "openFileAria": "打开文件",
     "retrySendAria": "重试发送",
     "fileFallback": "文件",
     "inviteTitle": "{{name}} 邀请你加入：",
@@ -223,6 +224,16 @@
     "closeAria": "关闭图片查看器",
     "prevAria": "上一张",
     "nextAria": "下一张"
+  },
+  "fileDetail": {
+    "title": "文件",
+    "closeAria": "关闭",
+    "download": "下载",
+    "size": "大小",
+    "type": "类型",
+    "sender": "发送者",
+    "time": "时间",
+    "notAvailable": "暂不可用"
   },
   "threadList": {
     "couldNotLoad": "无法加载聊天",
@@ -289,7 +300,8 @@
   "connection": {
     "connecting": "连接中…",
     "reconnecting": "连接中断——正在重新连接…",
-    "recovered": "已恢复连接"
+    "recovered": "已恢复连接",
+    "offline": "离线——已退出登录"
   },
   "update": {
     "banner": "发现新版本。",

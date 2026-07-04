@@ -1,0 +1,66 @@
+<!-- Dimmed backdrop (click to close). The card stops propagation so taps on the card itself don't close. -->
+<div class="fd-backdrop" (click)="onBackdropClick($event)">
+  <div class="fd-card" role="dialog" aria-modal="true" [attr.aria-label]="'fileDetail.title' | transloco">
+    <button type="button" class="fd-close" (click)="close.emit()" [attr.aria-label]="'fileDetail.closeAria' | transloco">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+      </svg>
+    </button>
+
+    <!-- Header: the type-tinted icon + ext badge (same artwork as the row, larger). -->
+    <div class="fd-icon fd-icon--{{ category() }}">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+        <path d="M14 3v5h5" />
+      </svg>
+      <span class="fd-icon-ext">{{ ext() }}</span>
+    </div>
+
+    <!-- The full filename: wraps across multiple lines, NEVER truncated (the whole point of this view). -->
+    <div class="fd-name">{{ file()?.name || ('chat.fileFallback' | transloco) }}</div>
+
+    <!-- Meta rows: size / type / sender / time. Hidden individually when absent. -->
+    <dl class="fd-meta">
+      @if (sizeText()) {
+        <div class="fd-meta-row">
+          <dt>{{ 'fileDetail.size' | transloco }}</dt>
+          <dd>{{ sizeText() }}</dd>
+        </div>
+      }
+      <div class="fd-meta-row">
+        <dt>{{ 'fileDetail.type' | transloco }}</dt>
+        <dd>{{ file()?.mimeType || '—' }}</dd>
+      </div>
+      <div class="fd-meta-row">
+        <dt>{{ 'fileDetail.sender' | transloco }}</dt>
+        <dd>{{ data().isSelf ? ('common.you' | transloco) : (data().name || ('common.unknown' | transloco)) }}</dd>
+      </div>
+      <div class="fd-meta-row">
+        <dt>{{ 'fileDetail.time' | transloco }}</dt>
+        <dd>{{ data().time }}</dd>
+      </div>
+    </dl>
+
+    <!-- Download: the row no longer downloads directly; this is the primary action. Disabled while there is no URL
+         (an optimistic send before its upload resolves). -->
+    @if (hasUrl()) {
+      <a class="fd-download"
+         [href]="downloadHref()"
+         [download]="file()?.name ?? null"
+         target="_blank" rel="noopener">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        <span>{{ 'fileDetail.download' | transloco }}</span>
+      </a>
+    } @else {
+      <div class="fd-download fd-download--disabled" aria-disabled="true">
+        {{ 'fileDetail.notAvailable' | transloco }}
+      </div>
+    }
+  </div>
+</div>

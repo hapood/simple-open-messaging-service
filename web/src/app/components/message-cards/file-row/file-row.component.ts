@@ -1,5 +1,4 @@
 import { Component, computed, input, output } from '@angular/core';
-import { NgTemplateOutlet } from '@angular/common';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -7,93 +6,23 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
-import { assetUrl } from '../../../services/runtime';
-
-/** Display category derived from mimeType (drives the icon tint). Purely presentational — mirrors the
- *  backend FILE_MIME_EXT set without depending on it. */
-type FileCategory =
-  | 'pdf'
-  | 'doc'
-  | 'sheet'
-  | 'slides'
-  | 'archive'
-  | 'text'
-  | 'file';
-
-function categorize(mimeType: string): FileCategory {
-  if (mimeType === 'application/pdf') return 'pdf';
-  if (
-    mimeType === 'application/msword' ||
-    mimeType === 'application/rtf' ||
-    mimeType.startsWith(
-      'application/vnd.openxmlformats-officedocument.wordprocessingml',
-    )
-  ) {
-    return 'doc';
-  }
-  if (
-    mimeType === 'application/vnd.ms-excel' ||
-    mimeType.startsWith(
-      'application/vnd.openxmlformats-officedocument.spreadsheetml',
-    )
-  ) {
-    return 'sheet';
-  }
-  if (
-    mimeType === 'application/vnd.ms-powerpoint' ||
-    mimeType.startsWith(
-      'application/vnd.openxmlformats-officedocument.presentationml',
-    )
-  ) {
-    return 'slides';
-  }
-  if (
-    mimeType === 'application/zip' ||
-    mimeType === 'application/x-zip-compressed' ||
-    mimeType === 'application/x-tar' ||
-    mimeType === 'application/gzip' ||
-    mimeType === 'application/x-gzip' ||
-    mimeType === 'application/x-7z-compressed' ||
-    mimeType === 'application/x-rar-compressed'
-  ) {
-    return 'archive';
-  }
-  if (
-    mimeType.startsWith('text/') ||
-    mimeType === 'application/json' ||
-    mimeType === 'application/xml'
-  ) {
-    return 'text';
-  }
-  return 'file';
-}
-
-/** Human-readable byte size (B / KB / MB / GB). Empty for 0/unknown. */
-function formatBytes(n: number): string {
-  if (!n || n <= 0) return '';
-  const units = ['B', 'KB', 'MB', 'GB'];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
-  }
-  return `${i === 0 || v >= 10 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
-}
+import { categorize, fileExt, formatBytes, type FileCategory } from '../file-meta.util';
 
 /**
- * FILE message row: a compact, fixed-width bubble with a type-tinted icon, the filename, the size, and a
- * download glyph. The icon+meta area is an <a download> so the whole card downloads the file; the status
- * tick + time sit outside the anchor. Follows the 5 _row-base contracts (border-box height, self-contained
- * width via a fixed px width + max-width:100%, host autonomy).
+ * FILE message row: a compact, fixed-width bubble with a type-tinted icon, the filename, the size, and a download
+ * glyph. The whole card is click-to-open-detail: it emits `openFile`, and the thread/playground routes that into the
+ * FileDetailService fullscreen overlay (where the full filename + a Download button live). The status tick + time sit
+ * outside the click target. Follows the 5 _row-base contracts (border-box height, self-contained width via a fixed
+ * px width + max-width:100%, host autonomy).
  *
- * When file.url is empty (an optimistic send before any URL exists, e.g. the playground mock), the content
- * renders as a non-link row so a click does not navigate.
+ * Filename overflow: the nowrap name ellipses inside the fixed 280px bubble — `.pg-file-row` carries `min-width:0`
+ * to break the flex min-content chain (a nowrap string's min-content is the whole unbreakable name), and the detail
+ * overlay exists precisely so a long name can be read in full without widening the bubble.
  */
 @Component({
   selector: 'app-msg-file-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, NgTemplateOutlet, TranslocoPipe],
+  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
   templateUrl: './file-row.component.html',
   styleUrl: './file-row.component.scss',
 })
@@ -116,20 +45,14 @@ export class FileRowComponent {
     () => this.data().isSelf && this.data().status === 'failed',
   );
   readonly retry = output<string>();
+  /** Click the card → open the file-detail overlay (full name + Download). */
+  readonly openFile = output<void>();
 
   readonly file = computed(() => this.data().file);
   readonly category = computed<FileCategory>(() =>
     categorize(this.file()?.mimeType ?? ''),
   );
   /** Extension badge (uppercased), derived from the trusted filename the server sanitized. */
-  readonly ext = computed(() => {
-    const name = this.file()?.name ?? '';
-    const i = name.lastIndexOf('.');
-    return i >= 0 ? name.slice(i + 1).toUpperCase() : 'FILE';
-  });
+  readonly ext = computed(() => fileExt(this.file()?.name ?? ''));
   readonly sizeText = computed(() => formatBytes(this.file()?.size ?? 0));
-  /** The download anchor href. Under Tauri the raw /uploads/* path is rewritten to the media proxy
-   *  scheme (a bare <a href> can't carry the Authorization header the cross-origin path needs; the
-   *  browser path keeps the same-origin relative URL authenticated by the media_token cookie). */
-  readonly downloadHref = computed(() => assetUrl(this.file()?.url ?? ''));
 }

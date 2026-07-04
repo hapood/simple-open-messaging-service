@@ -78,6 +78,7 @@ export function createMsgCbElement(
   envInjector: EnvironmentInjector,
   onRetry?: (msgId: string) => void,
   onOpenImage?: (images: AlbumImage[], index: number) => void,
+  onOpenFile?: (data: ChatMsgData) => void,
 ): CbElement<ChatItemData> {
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
@@ -123,6 +124,11 @@ export function createMsgCbElement(
   if (onOpenImage) {
     const inst = ref.instance as { openImage?: { subscribe: (fn: (p: { images: AlbumImage[]; index: number }) => void) => { unsubscribe(): void } } };
     const sub = inst.openImage?.subscribe(p => onOpenImage(p.images, p.index));
+    if (sub) wrapDestroy(() => sub.unsubscribe());
+  }
+  if (onOpenFile) {
+    const inst = ref.instance as { openFile?: { subscribe: (fn: () => void) => { unsubscribe(): void } } };
+    const sub = inst.openFile?.subscribe(() => onOpenFile(data));
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   return el;

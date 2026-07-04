@@ -11,6 +11,13 @@ const DESKTOP_QUERY = '(min-width: 1280px) and (pointer: fine) and (hover: hover
 // Tablet / landscape-large-phone width: enough for a side-by-side 2-pane.
 // 768 = iPad mini portrait / Bootstrap md; landscape phones (~844px) qualify too.
 const WIDE_QUERY = '(min-width: 768px)';
+// Fine pointer + hover, with NO width clause: a desktop-class INPUT device
+// (mouse/trackpad ⇒ a physical keyboard is present; no soft keyboard). This is
+// width-independent on purpose — a small laptop window or a narrow Tauri desktop
+// shell still has a physical keyboard, so Enter-to-send and the absence of the
+// VKB swap must NOT flip just because the viewport shrank below the 3-pane width.
+// Use this for keyboard-convention decisions; use {@link isDesktop} for layout.
+const FINE_POINTER_QUERY = '(pointer: fine) and (hover: hover)';
 
 export type LayoutMode = 'mobile' | 'tablet' | 'desktop';
 
@@ -31,6 +38,15 @@ export class LayoutService {
   readonly isDesktop = toSignal(
     this.bpObserver.observe(DESKTOP_QUERY).pipe(map(result => result.matches)),
     { initialValue: this.bpObserver.isMatched(DESKTOP_QUERY) },
+  );
+
+  /** Fine-pointer input modality (physical keyboard present), independent of viewport
+   *  width. Drives the chat composer's Enter convention (Enter sends on a physical
+   *  keyboard; Enter inserts a newline on a touch/soft-keyboard device) and the
+   *  emoji-keyboard VKB-swap eligibility. NOT a layout signal. */
+  readonly hasFinePointer = toSignal(
+    this.bpObserver.observe(FINE_POINTER_QUERY).pipe(map(result => result.matches)),
+    { initialValue: this.bpObserver.isMatched(FINE_POINTER_QUERY) },
   );
 
   /** viewport ≥768px (tablet / landscape phone width). */

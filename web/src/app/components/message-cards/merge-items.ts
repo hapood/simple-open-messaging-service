@@ -35,6 +35,20 @@ function albumMemberIds(images: { msgId?: string }[]): string[] | undefined {
   return ids.length > 1 ? ids : undefined;
 }
 
+/** Union the clientMessageIds of the given items into a deduplicated list — the set of in-flight optimistic sends an
+ *  album fulfills (every member's cid, head included). Undefined when no member carries a cid (a pure incoming/history
+ *  album — nothing to reconcile). Shared by both merge paths so the cid contract is identical: a merged album confirms
+ *  EVERY member's optimistic bubble, not just the head's, so a same-batch self-sent burst (merge) or a cross-signal absorb
+ *  both leave the kernel with the full cid list to pair against the optimistic tail. */
+function albumCids(items: ReadonlyArray<Pick<CbItem<ChatItemData>, 'clientMessageId' | 'clientMessageIds'>>): string[] | undefined {
+  const set = new Set<string>();
+  for (const it of items) {
+    if (it.clientMessageId) set.add(it.clientMessageId);
+    if (it.clientMessageIds) for (const c of it.clientMessageIds) set.add(c);
+  }
+  return set.size > 0 ? [...set] : undefined;
+}
+
 export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemData>[] {
   const out: CbItem<ChatItemData>[] = [];
   let i = 0;
@@ -61,7 +75,11 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
       // IMAGE send's real was treated as a fresh incoming message and mounted beside the un-reconciled optimistic
       // bubble -> duplicate picture after the push signal (PURE_TEXT was unaffected: it takes the else branch, pushed
       // as-is). it.id === msg.msgId holds throughout the source, so the explicit id is dropped as redundant.
-      out.push({ ...it, ids: albumMemberIds(imgs), data: { ...msg, images: imgs }, boundary });
+      //
+      // clientMessageIds unions every member's cid so a same-batch self-sent burst (two+ IMAGE reals in one getNewer)
+      // reconciles ALL their optimistic bubbles — without this, only the head's cid survives the merge and the tail
+      // members' optimistics orphan (the merged album fulfills them but the kernel cannot see their cids).
+      out.push({ ...it, ids: albumMemberIds(imgs), data: { ...msg, images: imgs }, boundary, clientMessageIds: albumCids(items.slice(i, j)) });
       i = j;
     } else {
       out.push(it);
@@ -87,6 +105,15 @@ export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<C
   if (t.creator !== ic.creator) return null;                               // same sender only
   const tImgs = t.images ?? [], icImgs = ic.images ?? [];
   if (tImgs.length + icImgs.length > ALBUM_MAX) return null;                // cap (all-or-nothing -> new album)
-  // Spread target so id / clientMessageId / boundary survive (same rationale as mergeAlbumItems).
-  return { ...target, data: { ...t, images: [...tImgs, ...icImgs] }, ids: albumMemberIds([...tImgs, ...icImgs]) };
+  // Spread target so id / clientMessageId / boundary survive (same rationale as mergeAlbumItems). Union clientMessageIds
+  // so the absorbed item's cid is carried onto the album — critical when the incoming item is a self-sent confirm: the
+  // image joins the album (no new bubble), and its cid on the merged item lets reconcileOptimistic remove the matching
+  // optimistic bubble. Without this, an absorbed self-sent image's optimistic would orphan (the album fulfills it but
+  // the kernel cannot see its cid). albumCids is undefined for a pure incoming absorb (no cids on either side).
+  return {
+    ...target,
+    data: { ...t, images: [...tImgs, ...icImgs] },
+    ids: albumMemberIds([...tImgs, ...icImgs]),
+    clientMessageIds: albumCids([target, incoming]),
+  };
 }

@@ -58,8 +58,9 @@ export class ChatInputComponent {
   /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
    *  the editor; updates do NOT recreate the editor. */
   readonly members = input<ChatMember[]>([]);
-  /** Desktop → Enter sends; mobile → Enter inserts a newline. */
-  readonly isDesktop = input(true);
+  /** Fine-pointer input modality (physical keyboard present), width-independent. true → Enter sends;
+   *  false (touch/soft keyboard) → Enter inserts a newline. Bind to {@link LayoutService.hasFinePointer}. */
+  readonly hasFinePointer = input(true);
   readonly placeholder = input('');
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);

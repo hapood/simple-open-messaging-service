@@ -30,6 +30,7 @@
     "@tiptap/pm": "^3.27.1",
     "@tiptap/starter-kit": "^3.27.1",
     "dayjs": "^1.11.13",
+    "motion": "^12.42.2",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0"
   },

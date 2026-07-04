@@ -17,7 +17,7 @@
         <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
       </svg>
     </button>
-    <app-chat-editor class="ci-input" [members]="members()" [isDesktop]="isDesktop()" [placeholder]="placeholder()"
+    <app-chat-editor class="ci-input" [members]="members()" [hasFinePointer]="hasFinePointer()" [placeholder]="placeholder()"
                      (html)="onHtml($event)" (send)="onEditorSend()"></app-chat-editor>
     <button type="button" class="ci-input-ico" appPreventFocusSteal (click)="onFileClick()" aria-label="Send file">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"

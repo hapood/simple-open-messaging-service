@@ -12,7 +12,7 @@
 
     <app-chat-input
       [members]="[]"
-      [isDesktop]="isDesktop()"
+      [hasFinePointer]="hasFinePointer()"
       [keyboardHeight]="kbdOffset()?.occlusion() ?? 0"
       [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
       (send)="onSendIntent($event)"

@@ -52,6 +52,15 @@ export interface CbItem<T = unknown> {
    * originate as an optimistic send. Mirrors `Message.clientMessageId` (the persisted idempotency column).
    */
   clientMessageId?: string;
+  /**
+   * ALL clientMessageIds this real item fulfills — i.e. every in-flight optimistic send whose content is now part of
+   * this item (the head's cid is also in {@link clientMessageId}). Populated by the merge/absorb hooks when they combine
+   * same-creator IMAGE reals into one album, so a confirmed album can reconcile EVERY member's optimistic bubble, not
+   * just the head's. Absent when the item fulfills at most one optimistic (the singular {@link clientMessageId} already
+   * covers it) and on incoming/history messages that did not originate as an optimistic send. The kernel reads this for
+   * confirm-detection (mountNewerReals) and duplicate-removal (reconcileOptimistic); the source never sets it.
+   */
+  clientMessageIds?: string[];
 }
 
 /**
@@ -86,11 +95,13 @@ export interface CbHooks<T = unknown> {
   mergeItems?: (items: CbItem<T>[]) => CbItem<T>[];
   /** Cross-batch album absorb: when a newer batch's item would mount right after the running newest real, the kernel asks
    *  this hook whether `incoming` should ABSORB INTO `target` (the current newest mounted item) instead of mounting as a
-   *  new bubble. Return the merged item (target's data with incoming folded in, member ids unioned) to morph `target` in
-   *  place, or null to mount `incoming` normally. The hook owns all domain knowledge (same-creator IMAGE, album cap,
-   *  etc.); the kernel stays domain-agnostic. Evaluated per item against the live newest (no sticky mode — a
-   *  non-absorbable item naturally ends the run by becoming the new newest). Only non-confirm items are offered (a
-   *  confirm must reconcile its optimistic duplicate). Default noop (treated as null). */
+   *  new bubble. Return the merged item (target's data with incoming folded in, member ids unioned, AND clientMessageIds
+   *  unioned — see {@link CbItem.clientMessageIds}) to morph `target` in place, or null to mount `incoming` normally. The
+   *  hook owns all domain knowledge (same-creator IMAGE, album cap, etc.); the kernel stays domain-agnostic. Evaluated per
+   *  item against the live newest (no sticky mode — a non-absorbable item naturally ends the run by becoming the new
+   *  newest). Both confirms and plain incoming are offered: when the absorbed item is a confirm (an in-flight optimistic
+   *  send), its cid on the merged item lets reconcileOptimistic remove the matching optimistic bubble — the image joins
+   *  the album instead of mounting a separate bubble beside it. Default noop (treated as null). */
   absorbTail?: (target: CbItem<T>, incoming: CbItem<T>) => CbItem<T> | null;
 }
 
@@ -230,6 +241,13 @@ const DEFAULTS: Required<CbConfig> = {
  *  longest CSS duration (~0.22s for cb-move); 0.45s leaves a ~230ms margin for a swallowed animationend to self-clear
  *  without the lag the old 0.6s backstop added now that the animations themselves are snappier. */
 const ANIM_SAFETY_MS = 450;
+
+/** Maximum tolerated drift (px) between the kernel height model (totalH = Σ integer offsetHeight + tailCap) and the
+ *  live content.scrollHeight, asserted only in the dev-mode integer-height check. Under the integer line-height contract
+ *  (CLAUDE.md: every height-contributing value is integer px) the two agree up to a single rounding seam, so 1 px is the
+ *  expected envelope. A larger |d| means a row is rendering at a fractional height — the warning re-points at _row-base.
+ *  This is a dev-only regression guard; runtime comparisons carry their own tolerances (≥1 px; balance uses cfg.edge). */
+const VS_DRIFT_TOLERANCE_PX = 1;
 
 /** Mounted entry: item (with msgId) + element handle + cached height + height unsubscribe. Fields are mutable (rebuild replaces el/vs/height/unsub). */
 interface Entry<T> {
@@ -418,8 +436,8 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // Jump / re-anchor: open at a specific message (bidirectional fetch + centered positioning), skip the newest-layout path.
     const startId = opts?.startMsgId ?? null;
     if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); return; }
-    let batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
-    let merged = this.mergeBatch(batch);
+    const batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
+    const merged = this.mergeBatch(batch);
     if (merged.length === 0) {
       // Empty thread: the empty sequence is trivially at BOTH edges. Marking noOlder/noNewer here is what makes an
       // empty chat report "pinned to bottom" (noNewer) — without it, an optimistic send is mis-routed through the
@@ -434,17 +452,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     this.absorbBoundary(merged);
     this.mountBatch(merged, 'init');
+    // Prime ghostEntry BEFORE the fill loop: loadOlderIntoFresh captures this.ghostEntry (NOT mounted[0]) as the slot to
+    // rebuild on each prepend, and ghostEntry is null until the first updateGhost. Without this prime the init batch's top
+    // skeleton (created by mountBatch above) would never be rebuilt on the first prepend → a stuck spinner mid-list.
+    // Also covers the no-fill case (the init batch already exceeds the threshold → the loop never runs).
+    this.updateGhost();
+    // Fill to threshold via the SAME primitive openAround's building fill uses (loadOlderIntoFresh: prepend + ghost-reveal
+    // rebuild + measure in one pass, no compensation — init pins to bottom at the end). Sharing the load path — instead
+    // of open-coding a second prepend here — is what keeps init fill and scroll-up loadOlder from drifting apart; the
+    // prior divergence left a spinner stuck at the batch boundary on multi-batch init fills. The gen guard inside makes
+    // a concurrent jump (openAround bumps gen) overtake the in-flight fill cleanly.
     while (this.totalH() < this.threshold && !this.noOlder && this.mounted.length > 0) {
-      const cursor = this.mounted[0].item.id; // oldest mounted msgId
-      batch = await this.source.getOlder(cursor, this.cfg.initBatch);
-      merged = this.mergeBatch(batch);
-      if (merged.length === 0) { this.noOlder = true; break; }
-      this.absorbBoundary(merged);
-      this.mountBatch(merged, 'older'); // no internal measure
-      this.measurePending();            // unified measure for fill batches (init pins to bottom, compensation is irrelevant)
+      if (await this.loadOlderIntoFresh(this.gen) === 0) break; // 0 = boundary reached / no data / overtaken by a jump
     }
     this.scrollToBottom();
-    this.updateGhost();
   }
 
   appendLive(rawItems: CbItem<T>[]): void {
@@ -508,9 +529,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       for (const e of tailBefore) tailOldTop.set(e, this.topOf(this.mounted.indexOf(e)));
     }
 
-    const n = await this.loadNewer(true);                   // forced: the signal means new data is available; returns the count of newly mounted items (0 = nothing new this pass — mirrors the `n` used in followToNewest)
+    const n = await this.loadNewer(true);                   // forced: the signal means new data is available; returns mounted + absorbed count (0 = nothing new this pass — mirrors the `n` used in followToNewest; an absorbed-only batch counts > 0 so its optimistic still gets reconciled)
     if (this.destroyed) return;
-    if (n === 0) return;                                    // nothing new mounted → no shove to play, no new bottom to follow. Common for the tail-coalesced follow-up pass: by the time it runs, the in-flight pass already drained the live cache, so this one has nothing to do (also covers a genuine source-empty result). Safe to skip reconcileOptimistic/flip/trim/pin: mountNewerReals — the only setter of resortTarget — did not run, so there is nothing to reconcile.
+    if (n === 0) return;                                    // nothing new mounted or absorbed → no shove to play, no new bottom to follow. Common for the tail-coalesced follow-up pass: by the time it runs, the in-flight pass already drained the live cache, so this one has nothing to do (also covers a genuine source-empty result). Safe to skip reconcileOptimistic/flip/trim/pin: mountNewerReals did not run (nothing was mounted AND nothing absorbed), so there is nothing to reconcile.
     await this.reconcileOptimistic();                       // remove optimistic duplicates (synchronous) so the bottom is final
     if (this.destroyed) return;
 
@@ -819,7 +840,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (idx >= 0) {
         this.positionMounted(idx, anchor);
         if (highlight) this.flashHighlight(idx);
-      } else if (ngDevMode) console.log('[JUMP] target not found after fill (idx=-1)!');
+      } else console.error('[JUMP] openAround: target id=', id, 'not mounted after fill (idx=-1) — jump produced no view');
       this.updateGhost();
       this.emit();
     } finally {
@@ -1402,8 +1423,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  mergeItems, then a mount-dispatch. **Pure load — no trim** (split: the caller — balance / onMessageSignal — trims
    *  the opposite end after this resolves, and onMessageSignal runs reconcileOptimistic too). Never follows — explicit
    *  go-to-bottom intent is owned by {@link followToNewest} (started from scrollToBottom); a balance-triggered call
-   *  (user scrolling to the bottom edge) loads one batch and leaves the viewport put. Returns the count mounted
-   *  (0 = boundary / overtaken / no data / revalidate failed). */
+   *  (user scrolling to the bottom edge) loads one batch and leaves the viewport put. Returns the count of items MOUNTED
+   *  or ABSORBED (0 = boundary / overtaken / no data / revalidate failed) — absorbed items count so a pure-absorb signal
+   *  still reports progress (its optimistic still needs reconcile). */
   private async loadNewer(force = false): Promise<number> {
     if (this.inflightNewer || this.mounted.length === 0) return 0;
     if (!force && this.noNewer) return 0;
@@ -1442,7 +1464,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // enter: from above (cb-enter-above) when a tail is present (cover-avoidance), else from below (cb-enter). Confirm
     // (matches an optimistic/transient) → flagged resortTarget (reconcileOptimistic removes the optimistic duplicate and
     // tags this real cb-confirmed); incoming (no match) → plain new message; already-mounted real (dup) → skip.
-    this.mountNewerReals(this.mergeBatch(batch));
+    const absorbed = this.mountNewerReals(this.mergeBatch(batch)); // items folded into existing albums (no new mount)
 
     // Symmetric optimistic lifecycle — the optimistic tail lives at the global newest edge. (Re)mount in-flight sends
     // when a page reached the newest; UNMOUNT them when a push just extended the newest (wasAtNewest && !noNewer — a
@@ -1456,7 +1478,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.updateGhost();
     this.updateTailCap();
     this.emit();
-    return this.mounted.length - count0;
+    // mounted delta + absorbed: an absorbed item changes the view (album grew) and may need reconcile (its optimistic is
+    // still mounted), so it counts as progress — without it, a pure-absorb signal would report 0 and onMessageSignal would
+    // skip reconcileOptimistic, orphaning the absorbed item's optimistic bubble.
+    return (this.mounted.length - count0) + absorbed;
   }
 
   /**
@@ -1501,9 +1526,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * it confirms an existing optimistic/transient entry. Insertion point = right after the last real entry (= the cursor);
    * the optimistic block shifts down (it is at/below the viewport, so no scrollTop compensation is needed — pinToBottom
    * in onMessageSignal follows to reveal it). Albums already merged by the caller.
+   *
+   * Returns the number of items ABSORBED into existing entries (no new mount). Mounted items are observable via the
+   * mounted.length delta at the caller; absorbed items are not (they fold in without a new entry), so they are reported
+   * explicitly to keep loadNewer's progress count honest (a pure-absorb batch still did work).
    */
-  private mountNewerReals(reals: CbItem<T>[]): void {
-    if (reals.length === 0) return;
+  private mountNewerReals(reals: CbItem<T>[]): number {
+    if (reals.length === 0) return 0;
     // Insertion point = right after the last real entry (the cursor). When NO real is mounted — the window is entirely
     // optimistic/transient, i.e. the first confirm in an empty thread — default to 0 so the new real becomes the
     // first/oldest entry with prev=null (correct group-head flags + cb-enter-above), rather than appending it after the
@@ -1520,20 +1549,27 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // bottom), cb-enter (from below) is the natural "message arrives" motion.
     const enterAbove = insertIdx < this.mounted.length;
     const absorb = this.hooks.absorbTail; // null when no hook is wired (the app supplies album/domain knowledge here)
+    let absorbed = 0; // items folded into an existing entry (no new mount) — reported up so callers count them as progress
     for (const item of reals) {
       // Confirm: an in-flight optimistic/transient send whose clientMessageId matches this real. The real carries a
       // fresh server id (≠ the optimistic's clientMessageId-as-id), so the pair is matched by clientMessageId, not id.
       // No clientMessageId → a plain incoming message (no optimistic bubble to settle). An already-mounted real (dup,
       // by id — an incoming that raced with a load) is skipped.
-      const confirm = this.indexOfClientMsgId(item.clientMessageId) >= 0;
+      const confirm = this.itemFulfilledCids(item).some(c => this.indexOfClientMsgId(c) >= 0);
       if (!confirm && this.indexOfId(item.id) >= 0) continue; // already-mounted real (dup) → skip
 
-      // Cross-batch album absorb: a non-confirm item the hook folds into the running newest real — `target` =
-      // mounted[insertIdx-1] (the entry this item would follow). Absorbing morphs target in place (no new bubble,
-      // insertIdx unchanged) so a run of absorbable items all fold into it; the first non-absorbable item mounts
-      // normally and becomes the new newest, ending the run. Self-correcting — no sticky mode. Confirms are excluded
-      // (they must reconcile their optimistic duplicate). Only offered when target is a stable real.
-      if (!confirm && absorb && insertIdx > 0) {
+      // Cross-batch album absorb: an item the hook folds into the running newest real — `target` = mounted[insertIdx-1]
+      // (the entry this item would follow). Absorbing morphs target in place (no new bubble, insertIdx unchanged) so a
+      // run of absorbable items all fold into it; the first non-absorbable item mounts normally and becomes the new
+      // newest, ending the run. Self-correcting — no sticky mode. Only offered when target is a stable real.
+      //
+      // BOTH plain incoming AND confirms are offered. A confirm that absorbs (a self-sent image joining the running
+      // album) folds its image in and — because absorbAlbumTail unions clientMessageIds onto the merged item — carries
+      // its cid onto the album, so reconcileOptimistic removes the matching optimistic bubble. No new entry, no
+      // resortTarget: the album is the already-sent real; the absorbed image "joining" it IS the send confirmation, so
+      // the spinner→check choreography is NOT replayed (it played, or will play, on the album head). This is what lets a
+      // self-sent image burst collapse into one album the same way an incoming burst does.
+      if (absorb && insertIdx > 0) {
         const target = this.mounted[insertIdx - 1];
         if (target && !target.optimistic && !target.transient && !target.leaving && !target.resortTarget) {
           const merged = absorb(target.item, item);
@@ -1542,9 +1578,10 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
             target.item = merged;
             const tp = insertIdx > 1 ? this.mounted[insertIdx - 2].item : null;
             target.vs.update(merged, tp);
-            const h = target.el.offsetHeight; // real height after the album grew
+            const h = target.el.offsetHeight; // real height after the album grew (integer — layout.ts Math.rounds every row)
             if (h !== target.height) { target.height = h; this.dirtyPrefix = true; }
             this.measuring = false;
+            absorbed++; // an absorbed item changes the view (album grew) without growing mounted[] — counted so a pure-absorb signal still reports progress (n > 0) and reconcile runs
             continue; // absorbed — no new entry; target is still the newest real (insertIdx unchanged)
           }
         }
@@ -1564,12 +1601,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       insertIdx++;
     }
     this.dirtyPrefix = true;
+    return absorbed;
   }
 
   /**
-   * Optimistic-confirm reconciliation: for each just-arrived real flagged resortTarget (it confirms an in-flight
-   * optimistic/transient send), immediately remove the optimistic duplicate and tag the real cb-confirmed so the
-   * sent-check choreography (spinner→check→fade, scoped to these "special" items via :host(.cb-confirmed)) plays on it.
+   * Optimistic-confirm reconciliation: remove every in-flight optimistic whose cid is fulfilled by a mounted real, and
+   * tag this batch's newly-mounted reals (resortTarget) cb-confirmed so the sent-check choreography (spinner→check→fade,
+   * scoped to these "special" items via :host(.cb-confirmed)) plays on them. Album-aware: a merged/absorbed album real
+   * fulfills EVERY member's cid (itemFulfilledCids), so a same-batch self-sent burst or a cross-signal absorb reconciles
+   * all its members' optimistic bubbles — not just the head's.
    *
    * The slide animation is owned elsewhere, not here: the real's enter (cb-enter-above, descending from above to avoid
    * covering the tail) plays at mount in measurePending, and the remaining optimistic tail's shove (cb-move FLIP) plays
@@ -1580,37 +1620,44 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * trim's rule-4a guard never observes `resorting` true.
    */
   private async reconcileOptimistic(): Promise<void> {
-    const targets = this.mounted.filter(e => e.resortTarget);
-    if (targets.length === 0) return;
+    // Build the set of cids fulfilled by mounted reals (a real album fulfills EVERY member's optimistic cid — see
+    // itemFulfilledCids — so an absorbed/merged album reconciles all its members, not just the head). resortTarget
+    // entries are reals mounted THIS batch (the album head) that should play the spinner→check choreography; an absorbed
+    // member is NOT a resortTarget (the album is the already-sent real; the image joining it is its own confirmation, so
+    // the check is not replayed on the album).
+    const fulfilled = new Set<string>();
+    const targets: Entry<T>[] = [];
+    for (const e of this.mounted) {
+      if (e.transient || e.optimistic || e.leaving) continue;        // only reals fulfill an optimistic
+      for (const c of this.itemFulfilledCids(e.item)) fulfilled.add(c);
+      if (e.resortTarget) targets.push(e);
+    }
+    // An optimistic tail entry whose cid is fulfilled is a duplicate → remove it (synchronous, no cb-leave). The scan is
+    // the inverse of the old target→source pairing, so it naturally covers multi-cid albums (one album fulfills many
+    // optimistics) AND the single-confirm case (one cid → one optimistic).
+    const toRemove: Entry<T>[] = [];
+    for (const e of this.mounted) {
+      if (!e.optimistic || e.leaving) continue;
+      if (e.item.clientMessageId !== undefined && fulfilled.has(e.item.clientMessageId)) toRemove.push(e);
+    }
+    if (toRemove.length === 0 && targets.length === 0) return;
     this.resorting = true;
     try {
-      // Pair each target (real) with its matching optimistic/transient source by clientMessageId (the real carries a
-      // fresh server id ≠ the optimistic's id, so they cannot be paired by id). indexOfId would also return the target
-      // itself (the real is mounted BEFORE the optimistic source), so the dedicated clientMessageId scan is required.
-      const pairs: { source: Entry<T>; target: Entry<T> }[] = [];
-      for (const target of targets) {
-        const si = this.indexOfClientMsgId(target.item.clientMessageId);
-        if (si >= 0) pairs.push({ source: this.mounted[si], target });
-      }
-      if (pairs.length === 0) {
-        // No source mounted (e.g. a jump during pending unmounted it): the real is already visible at its true position —
-        // just tag it cb-confirmed so the sent-check choreography plays.
-        for (const t of targets) { t.resortTarget = false; t.el.classList.add('cb-confirmed'); }
-        return;
-      }
       // Capture once before removing the optimistic duplicates (a single synchronous batch before paint): an above-fold
       // removal shifts content up (the anchor follows, fold stays put); a tail removal while pinned re-pins to the new
       // bottom. Per-source compensateAbove + the above-fold check collapse to one anchor re-apply.
       const anchor = this.captureAnchor();
-      for (const source of pairs.map(p => p.source)) {
+      for (const source of toRemove) {
         const i = this.mounted.indexOf(source);
         if (i < 0) continue;
         this.unmountAt(i);
       }
-      // The real is already visible — the cb-confirmed tag alone gates the spinner→check→fade choreography on these reals.
-      for (const target of pairs.map(p => p.target)) {
-        target.resortTarget = false;
-        target.el.classList.add('cb-confirmed');
+      // A resortTarget real is already visible at its true position — the cb-confirmed tag alone gates the
+      // spinner→check→fade choreography on it. (When its source optimistic was already gone — e.g. a jump during pending
+      // unmounted it — toRemove did not include it, but the tag still plays so the user sees the send confirmed.)
+      for (const t of targets) {
+        t.resortTarget = false;
+        t.el.classList.add('cb-confirmed');
       }
       this.dirtyPrefix = true;
       this.measurePending();
@@ -1878,6 +1925,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     return this.mounted.findIndex(e => (e.transient || e.optimistic) && e.item.clientMessageId === cid);
   }
 
+  /** All clientMessageIds this real item fulfills — the head's singular clientMessageId, PLUS every album member's cid
+   *  (clientMessageIds, set by the merge/absorb hooks when they combine same-creator IMAGE reals). Used to pair
+   *  confirmed reals with their in-flight optimistic bubbles: an album confirms EVERY member's optimistic, not just the
+   *  head's. Empty for a plain incoming/history message (no optimistic to reconcile). */
+  private itemFulfilledCids(item: CbItem<T>): string[] {
+    if (item.clientMessageIds) return item.clientMessageIds;
+    return item.clientMessageId !== undefined ? [item.clientMessageId] : [];
+  }
+
   /** Oldest mounted item id that is a real source member — skips transient inserts (insertAfter), optimistic sends
    *  (in-flight pending, not in the reloadable sequence), and leaving entries (removeItem mid-exit), whose ids are not
    *  stable source cursors. Used by loadOlder so such an entry at mounted[0] doesn't make getOlder return [] and falsely
@@ -1955,10 +2011,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // line-height contract in _row-base.scss these must agree up to a CONSTANT sentinel offset — d must NOT grow with
     // the mounted count. Before that contract d drifted ~+11px over 63 items (summing rounded per-item heights vs one
     // rounded total). If d grows here, a row is rendering at a fractional height — re-audit its line-height.
+    //
+    // Tolerated as a regression guard, not a runtime input: the kernel deliberately keeps totalH() and scrollHeight
+    // independent (see isAtBottom/captureAnchor), and every control-flow comparison already carries a tolerance that
+    // dwarfs the residual seam (≥1 px; balance uses cfg.edge=1000). VS_DRIFT_TOLERANCE_PX is the maximum constant
+    // offset expected under the integer contract; a larger |d| means a row broke that contract.
     if (ngDevMode) {
       const sh = this.content.scrollHeight;
       const t = this.totalH();
-      console.log(`[vs.measure] n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} d=${Math.round(t - sh)}`);
+      const d = Math.round(t - sh);
+      if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
+        console.warn(`[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`);
+      }
     }
   }
 

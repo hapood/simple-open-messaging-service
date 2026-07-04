@@ -43,6 +43,24 @@ $dark-theme: mat.define-theme((
   @include mat.all-component-colors($dark-theme);
 }
 
+/* === Connection chip: registered <color> custom properties for Motion-driven morph. ===
+ * Registering <color> makes the browser (and Motion) interpolate these as colors instead of opaque
+ * strings — so the gradient stops (--g-from/--g-to) and icon color (--ic) animate smoothly, and the
+ * palette sources (--c-*) compute to concrete rgb() that Motion reads as interpolation targets.
+ * @property is a top-level at-rule and inherently global, so it lives here rather than in component CSS. */
+@property --g-from   { syntax: '<color>'; inherits: false; initial-value: #f5e9c8; }
+@property --g-to     { syntax: '<color>'; inherits: false; initial-value: #efd9a0; }
+@property --ic       { syntax: '<color>'; inherits: true;  initial-value: #b45309; }
+@property --c-amber-1 { syntax: '<color>'; inherits: true; initial-value: #f5e9c8; }
+@property --c-amber-2 { syntax: '<color>'; inherits: true; initial-value: #efd79a; }
+@property --c-green-1 { syntax: '<color>'; inherits: true; initial-value: #d6f5e0; }
+@property --c-green-2 { syntax: '<color>'; inherits: true; initial-value: #b3ecc8; }
+@property --c-red-1   { syntax: '<color>'; inherits: true; initial-value: #f7d7d7; }
+@property --c-red-2   { syntax: '<color>'; inherits: true; initial-value: #f0b6b6; }
+@property --c-amber   { syntax: '<color>'; inherits: true; initial-value: #b45309; }
+@property --c-green   { syntax: '<color>'; inherits: true; initial-value: #16a34a; }
+@property --c-red     { syntax: '<color>'; inherits: true; initial-value: #dc2626; }
+
 html,
 body {
   height: 100%;

@@ -24,6 +24,10 @@
   font-size: 14px;
   color: var(--app-text);
   background: var(--app-bg);
+  // Float the demoed connection chip just below the 48px header (mirrors the home shell's
+  // --app-header-h + 6px offset), so it clears the in-header theme toggle. Inherited by the
+  // fixed-position <app-connection-banner> :host. Shell-only var; touches no measured row height.
+  --conn-chip-top: 54px;
 }
 
 // ---------- Scrolling stage ----------
@@ -43,6 +47,16 @@
   background-color: var(--im-chat-bg);
   background-image: var(--im-chat-pattern);
   background-repeat: repeat;
+}
+
+// The demoed connection chip anchors to the stage's relative context (absolute), not the viewport
+// (fixed) — so it tracks the chat column, mirroring how the chip relates to the message thread rather
+// than browser chrome. Production keeps the chip's own :host{position:fixed} (it must float over the
+// mobile full-screen chat overlay); this override is playground-only. Specificity .pg .pg-stage
+// app-connection-banner (0,2,1) beats the chip's emulated :host rule, so ONLY position is overridden —
+// top (via --conn-chip-top), right and z-index still come from :host and now resolve against .pg-stage.
+.pg .pg-stage app-connection-banner {
+  position: absolute;
 }
 
 // ---------- Top header (chat header + theme toggle) ----------

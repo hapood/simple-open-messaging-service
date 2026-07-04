@@ -14,17 +14,13 @@
       <div class="pg-name pg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
     <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-file" [class.pg-sending]="isSending()">
-      @if (file()?.url; as url) {
-        <a class="pg-file-row" [href]="downloadHref()" [download]="file()?.name ?? null" target="_blank" rel="noopener">
-          <ng-container *ngTemplateOutlet="fileBody" />
-        </a>
-      } @else {
-        <div class="pg-file-row">
-          <ng-container *ngTemplateOutlet="fileBody" />
-        </div>
-      }
-
-      <ng-template #fileBody>
+      <div class="pg-file-row"
+           role="button"
+           tabindex="0"
+           [attr.aria-label]="'chat.openFileAria' | transloco"
+           (click)="openFile.emit()"
+           (keydown.enter)="openFile.emit()"
+           (keydown.space)="$event.preventDefault(); openFile.emit()">
         <span class="pg-file-ico pg-file-ico--{{ category() }}">
           <svg class="pg-file-svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -46,7 +42,7 @@
             <polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
           </svg>
         </span>
-      </ng-template>
+      </div>
 
       @if (statusTick()) {
         @if (isFailed()) {

@@ -62,6 +62,32 @@ describe('mergeAlbumItems', () => {
     expect(out[0].data.images?.map(i => i.msgId)).toEqual(['m-0', 'm-1', 'm-2']); // concatenated
   });
 
+  it('merges a same-batch self-sent burst (each IMAGE real carries a cid): unions ALL clientMessageIds', () => {
+    // Two SSE echoes of self-sent images land in ONE getNewer batch. mergeAlbumItems merges them, and must union every
+    // member's cid onto the album so reconcileOptimistic removes BOTH optimistic bubbles — without this, only the head's
+    // cid survives and the tail member's optimistic orphans (the merged album fulfills it but the kernel can't see it).
+    const a = imageItem('real-a', 'cid-a');
+    const b = imageItem('real-b', 'cid-b');
+    const out = mergeAlbumItems([a, b]);
+    expect(out.length).toBe(1);
+    expect(out[0].clientMessageId).toBe('cid-a');               // head's cid preserved (spread)
+    expect(out[0].clientMessageIds).toEqual(['cid-a', 'cid-b']); // every member cid (reconcile key for all)
+  });
+
+  it('a pure incoming album (no cids) leaves clientMessageIds undefined (nothing to reconcile)', () => {
+    const out = mergeAlbumItems([imageItem('m-0'), imageItem('m-1')]);
+    expect(out.length).toBe(1);
+    expect(out[0].clientMessageIds).toBeUndefined(); // no optimistic sends → no cid list
+  });
+
+  it('a mixed run (some cids, some not) unions only the cids that are present', () => {
+    const a = imageItem('real-a', 'cid-a'); // self-sent (has cid)
+    const b = imageItem('m-b');             // incoming (no cid)
+    const out = mergeAlbumItems([a, b]);
+    expect(out.length).toBe(1);
+    expect(out[0].clientMessageIds).toEqual(['cid-a']); // only the self-sent member's cid
+  });
+
   it('does NOT merge across a creator change (album breaks on sender switch)', () => {
     const mine = imageItem('m-0', undefined, 1);
     const theirs = imageItem('m-1', undefined, 2);
@@ -124,6 +150,35 @@ describe('absorbAlbumTail (cross-batch absorb hook)', () => {
     expect(merged!.id).toBe('a');                                            // head id preserved
     expect(merged!.data.images!.map(i => i.msgId)).toEqual(['a', 'b']);      // concatenated
     expect(merged!.ids).toEqual(['a', 'b']);                                 // unioned for jump resolution
+  });
+
+  it('absorbs a self-sent real (confirm): unions clientMessageIds onto the album (head + incoming)', () => {
+    // The cross-signal case: each self-sent image's real arrives in its own SSE frame and absorbs into the running
+    // album. The absorbed real's cid must land on the merged album so reconcileOptimistic removes its optimistic bubble.
+    const target: CbItem<ChatItemData> = { ...imageItem('real-a'), clientMessageId: 'cid-a' };
+    const incoming: CbItem<ChatItemData> = { ...imageItem('real-b'), clientMessageId: 'cid-b' };
+    const merged = absorbAlbumTail(target, incoming);
+    expect(merged).not.toBeNull();
+    expect(merged!.clientMessageId).toBe('cid-a');               // head cid preserved (spread target)
+    expect(merged!.clientMessageIds).toEqual(['cid-a', 'cid-b']); // incoming cid carried onto the album
+  });
+
+  it('absorbs a self-sent real into an album that already holds member cids: unions the full set', () => {
+    // An album that has already absorbed one self-sent image (clientMessageIds=['cid-a','cid-b']) absorbs a third:
+    // the result carries the union of every member's cid, not just the new one.
+    const target: CbItem<ChatItemData> = {
+      ...imageItem('real-a'), clientMessageId: 'cid-a', clientMessageIds: ['cid-a', 'cid-b'],
+    };
+    const incoming: CbItem<ChatItemData> = { ...imageItem('real-c'), clientMessageId: 'cid-c' };
+    const merged = absorbAlbumTail(target, incoming);
+    expect(merged).not.toBeNull();
+    expect(merged!.clientMessageIds).toEqual(['cid-a', 'cid-b', 'cid-c']); // full union
+  });
+
+  it('a pure incoming absorb (no cids on either side) leaves clientMessageIds undefined', () => {
+    const merged = absorbAlbumTail(imageItem('a'), imageItem('b'));
+    expect(merged).not.toBeNull();
+    expect(merged!.clientMessageIds).toBeUndefined(); // no optimistic → no cid list
   });
 
   it('returns null when creators differ', () => {

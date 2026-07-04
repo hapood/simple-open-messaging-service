@@ -34,9 +34,9 @@ export interface ChatMember {
  * (update) are bridged to Angular outputs imperatively — no NgZone, no two-way binding; the parent reads
  * the emitted html and calls clear()/insertText() via a viewChild ref.
  *
- * Enter convention (input-driven):
- *  - desktop: Enter sends (emits `send`); Shift+Enter and Ctrl/Cmd+Enter insert a newline.
- *  - mobile: Enter inserts a newline; send happens via the parent's send button.
+ * Enter convention (input-driven, keyed on input modality — NOT viewport width):
+ *  - fine pointer (physical keyboard): Enter sends (emits `send`); Shift+Enter and Ctrl/Cmd+Enter insert a newline.
+ *  - touch (soft keyboard): Enter inserts a newline; send happens via the parent's send button.
  * The Enter keymap lives in a high-priority extension so it wins over StarterKit's paragraph Enter.
  *
  * Atomic mentions: the Mention extension renders each mention as an atom node (contenteditable=false) →
@@ -57,8 +57,10 @@ export class ChatEditorComponent {
   /** Mention candidates (playground: mock members; production: GroupService.getMembers()). Read into a
    *  ref so member updates do NOT recreate the editor (the init effect depends only on the host element). */
   readonly members = input<ChatMember[]>([]);
-  /** Desktop → Enter sends; mobile → Enter inserts a newline. */
-  readonly isDesktop = input(true);
+  /** Fine-pointer input modality (physical keyboard present), width-independent. true → Enter sends;
+   *  false (touch/soft keyboard) → Enter inserts a newline. Bind to {@link LayoutService.hasFinePointer},
+   *  NOT the width-coupled `isDesktop` — a narrow desktop window still has a physical keyboard. */
+  readonly hasFinePointer = input(true);
   readonly placeholder = input('');
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
@@ -90,7 +92,7 @@ export class ChatEditorComponent {
     if (ed) ed.view.dispatch(ed.state.tr.setMeta('langChanged', true));
   });
 
-  /** Create the Editor once the host element exists; destroy on cleanup. Reads members/isDesktop via
+  /** Create the Editor once the host element exists; destroy on cleanup. Reads members/hasFinePointer via
    *  refs/signals (not reactive inputs) so it never recreates on their change. */
   private readonly initEditor = effect((onCleanup) => {
     const el = this.editorEl()?.nativeElement;
@@ -98,11 +100,11 @@ export class ChatEditorComponent {
     // Emoji-keyboard swap (Android Chromium only): under manual policy focusing the editable no longer
     // auto-shows the soft keyboard, so the focus handler below calls show() explicitly. Without that, the
     // user could not type after tapping the editor. iOS/desktop keep the default `auto` policy.
-    const swap = vkbSwapSupported(this.isDesktop());
+    const swap = vkbSwapSupported(this.hasFinePointer());
     const editor = new Editor({
       element: el,
       extensions: [
-        SendKeymapExtension({ onSend: () => this.onEnterSend(), isDesktop: () => this.isDesktop() }),
+        SendKeymapExtension({ onSend: () => this.onEnterSend(), hasFinePointer: () => this.hasFinePointer() }),
         StarterKit.configure({ heading: false }),
         Placeholder.configure({ placeholder: () => this.placeholder() || this.transloco.translate('chat.inputPlaceholder') }),
         Mention.configure({
@@ -185,12 +187,13 @@ export class ChatEditorComponent {
 }
 
 /**
- * High-priority Enter keymap. Desktop Enter → onSend (return true to swallow the default new-paragraph);
- * mobile Enter → hardBreak (newline). Shift+Enter is left to StarterKit's hardBreak; Ctrl/Cmd-Enter → hardBreak.
+ * High-priority Enter keymap. Fine-pointer (physical keyboard) Enter → onSend (return true to swallow the
+ * default new-paragraph); touch (soft keyboard) Enter → hardBreak (newline). Shift+Enter is left to
+ * StarterKit's hardBreak; Ctrl/Cmd-Enter → hardBreak.
  */
 function SendKeymapExtension(opts: {
   onSend: () => void;
-  isDesktop: () => boolean;
+  hasFinePointer: () => boolean;
 }) {
   return Extension.create({
     name: 'sendKeymap',
@@ -211,7 +214,7 @@ function SendKeymapExtension(opts: {
               return true;
             }
           }
-          if (opts.isDesktop()) {
+          if (opts.hasFinePointer()) {
             opts.onSend();
             return true;
           }

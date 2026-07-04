@@ -49,6 +49,30 @@ function controllableHooks(itemHeight = 100): {
   };
 }
 
+/** Hooks that supply a createSkeleton (a distinct .cb-ghost-loading spinner element), so skeleton-slot DOM is observable
+ *  separate from real items. Needed to surface a stuck-spinner bug: a skeleton slot whose DOM is never rebuilt stays a
+ *  spinner mid-list. Real items render via createItem (class 'real'); skeleton slots via createSkeleton (class
+ *  'cb-ghost-loading'). Both carry a fixed measured height. */
+function skeletonHooks(itemHeight = 40, ghostHeight = 48): {
+  hooks: {
+    createItem: (item: CbItem<number>, prev: CbItem<number> | null) => CbElement<number>;
+    createSkeleton: (item: CbItem<number>) => CbElement<number>;
+  };
+} {
+  const makeEl = (cls: string, h: number) => {
+    const el = document.createElement('div');
+    el.className = cls;
+    Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => h });
+    return el;
+  };
+  return {
+    hooks: {
+      createItem: () => ({ el: makeEl('real', itemHeight), onHeightChange: () => () => {}, update: () => {}, destroy: () => {} }),
+      createSkeleton: () => ({ el: makeEl('cb-ghost-loading', ghostHeight), onHeightChange: () => () => {}, update: () => {}, destroy: () => {} }),
+    },
+  };
+}
+
 /** Hooks that record each createItem's (id, prev.id) — verifies ghost rebuild re-invokes createItem with the new prev. */
 function recordingHooks(itemHeight = 100): {
   hooks: { createItem: (item: CbItem<number>, prev: CbItem<number> | null) => CbElement<number> };
@@ -499,6 +523,22 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     const forGhost = calls.filter(c => c.id === ghostId);
     expect(forGhost.length).toBe(2);          // mount + rebuild
     expect(forGhost[1].prev).not.toBeNull();   // new prev = the older neighbor
+  });
+
+  it('phase 1: init fill-loop rebuilds each prior top ghost (no stuck spinner between batches)', async () => {
+    // itemHeight 40 → 100-item init batch = 4000px < threshold 6000 → the init while-loop must run extra getOlder
+    // fills. Each prepend must rebuild the previous top skeleton (spinner) into a real item, exactly as loadOlder does;
+    // otherwise the spinner DOM stays mounted mid-list at the batch boundary (the "spinner between two batches" glitch).
+    const { hooks } = skeletonHooks(40);
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
+    await scroller.init();
+    // init filled past one batch (mounted > initBatch 100) → the loop ran at least once.
+    expect(scroller.getInfo().mounted).toBeGreaterThan(100);
+    expect(scroller.getInfo().noOlder).toBe(false); // the global oldest has NOT been reached → the top ghost is expected
+    // Exactly ONE spinner element (the current top ghost). A second would mean a prior top was never rebuilt.
+    expect(content.querySelectorAll('.cb-ghost-loading').length).toBe(1);
+    // And that single spinner sits at the actual top of content (the first child = mounted[0]); none lurk mid-list.
+    expect(content.firstElementChild?.classList.contains('cb-ghost-loading')).toBe(true);
   });
 
   it('loadOlder trims the newest end → noNewer resets to false (loadNewer can load it back; fixes downward-scroll / pin-to-bottom stall)', async () => {
@@ -1254,6 +1294,79 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(t.dataOf('img1')).toBe(1001 + 1002);                                  // img1 grew by img2
     expect(content.querySelectorAll('[data-cb-id="img2"]').length).toBe(0);      // img2 has no own entry
     expect(content.querySelectorAll('[data-cb-id="img3"]').length).toBe(1);      // img3 is its OWN entry (no leapfrog)
+  });
+
+  // numAbsorb that also propagates clientMessageIds — mirrors absorbAlbumTail's cid-union contract: when an absorbed
+  // item is a self-sent confirm, its cid is carried onto the merged album so reconcileOptimistic removes the matching
+  // optimistic bubble. (The plain numAbsorb above models pure-incoming absorb, which has no cids.)
+  function numAbsorbWithCids(target: CbItem<number>, incoming: CbItem<number>): CbItem<number> | null {
+    if (target.data < 1000 || incoming.data < 1000) return null;
+    const cids = new Set<string>();
+    if (target.clientMessageId) cids.add(target.clientMessageId);
+    if (target.clientMessageIds) for (const c of target.clientMessageIds) cids.add(c);
+    if (incoming.clientMessageId) cids.add(incoming.clientMessageId);
+    return { ...target, data: target.data + incoming.data, clientMessageIds: cids.size > 0 ? [...cids] : undefined };
+  }
+
+  // Regression (the user report): a SELF-SENT image burst absorbed fine for incoming images but NOT for self-sent ones,
+  // because every self-sent real is a confirm (its cid matches an in-flight optimistic) and absorb was gated on
+  // !confirm. Now a confirm absorbs into the running album, its cid rides onto the album (clientMessageIds), and
+  // reconcileOptimistic removes its optimistic — so a self-sent burst collapses into one album, no separate bubbles.
+  it('self-sent image burst across SEPARATE signals absorbs into one album; each optimistic reconciled (no duplicate)', async () => {
+    const t = trackingHooks();
+    const hooks = { ...t.hooks, absorbTail: numAbsorbWithCids };
+    const batches: CbItem<number>[][] = [
+      [{ id: 'real-a', data: 1001, clientMessageId: 'cid-a', boundary: 'newest' as const }],
+      [{ id: 'real-b', data: 1002, clientMessageId: 'cid-b', boundary: 'newest' as const }],
+    ];
+    const base = fakeSource(500);
+    const src: CbSource<number> = { ...base, getNewer: async () => batches.shift() ?? [], pushLive: () => {} };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+
+    // Send image A: optimistic bubble at the tail tracked by cid-a. The pre-existing newest (m-499, data 499 < 1000) is
+    // NOT an image, so real-a cannot absorb → it mounts as a confirm (resortTarget) and reconciles opt-a.
+    scroller.insertAfter('m-499', { id: 'pending-a', data: -1, clientMessageId: 'cid-a' }, { optimistic: true });
+    let p = scroller.onMessageSignal(); await flush(); await p; await flush();                 // real-a confirms cid-a
+    expect(content.querySelectorAll('[data-cb-id="pending-a"]').length).toBe(0);               // opt-a reconciled (removed)
+    expect(content.querySelectorAll('[data-cb-id="real-a"]').length).toBe(1);                  // real-a mounted once
+    expect(content.querySelector('[data-cb-id="real-a"]')?.classList.contains('cb-confirmed')).toBe(true);
+
+    // Send image B: another optimistic (cid-b). real-b's target IS real-a (an image) → it ABSORBS instead of mounting.
+    const createsBeforeB = t.createCount();
+    scroller.insertAfter('real-a', { id: 'pending-b', data: -1, clientMessageId: 'cid-b' }, { optimistic: true });
+    p = scroller.onMessageSignal(); await flush(); await p; await flush();                     // real-b absorbed into real-a
+    expect(t.createCount()).toBe(createsBeforeB + 1);                                          // only opt-b created (real-b ABSORBED, not mounted)
+    expect(t.updateCount()).toBe(1);                                                           // real-a morphed in place
+    expect(t.dataOf('real-a')).toBe(1001 + 1002);                                              // merged data
+    expect(content.querySelectorAll('[data-cb-id="real-b"]').length).toBe(0);                  // no separate real-b bubble
+    expect(content.querySelectorAll('[data-cb-id="pending-b"]').length).toBe(0);               // opt-b reconciled (cid-b rode onto the album)
+    expect(content.querySelectorAll('[data-cb-id="real-a"]').length).toBe(1);                  // the album endures
+  });
+
+  // The absorbed-only signal must still report progress (n > 0) so onMessageSignal runs reconcileOptimistic — otherwise
+  // opt-b would orphan. This is the same flow as the test above, isolated to the B signal with an explicit mount-count
+  // check that mounted.length did NOT grow (the only progress was the absorb).
+  it('a pure-absorb signal reports progress (n>0) even though mounted[] did not grow → reconcile still runs', async () => {
+    const t = trackingHooks();
+    const hooks = { ...t.hooks, absorbTail: numAbsorbWithCids };
+    const batches: CbItem<number>[][] = [
+      [{ id: 'real-a', data: 1001, clientMessageId: 'cid-a', boundary: 'newest' as const }],
+      [{ id: 'real-b', data: 1002, clientMessageId: 'cid-b', boundary: 'newest' as const }],
+    ];
+    const base = fakeSource(500);
+    const src: CbSource<number> = { ...base, getNewer: async () => batches.shift() ?? [], pushLive: () => {} };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    scroller.insertAfter('m-499', { id: 'pending-a', data: -1, clientMessageId: 'cid-a' }, { optimistic: true });
+    let p = scroller.onMessageSignal(); await flush(); await p; await flush();
+    const mountedAfterA = scroller.getInfo().mounted;
+    // Add opt-b BEFORE its real arrives, then deliver real-b in a pure-absorb signal.
+    scroller.insertAfter('real-a', { id: 'pending-b', data: -1, clientMessageId: 'cid-b' }, { optimistic: true });
+    p = scroller.onMessageSignal(); await flush(); await p; await flush();
+    // mounted[] count is UNCHANGED (real-b absorbed, no new entry), yet opt-b was still reconciled → reconcile ran.
+    expect(scroller.getInfo().mounted).toBe(mountedAfterA);
+    expect(content.querySelectorAll('[data-cb-id="pending-b"]').length).toBe(0);               // opt-b removed (not orphaned)
   });
 
   it('onMessageSignal with a trimmed newer end (noNewer=false) caches only — no load, no mount', async () => {

@@ -1,4 +1,5 @@
 import { Routes } from '@angular/router';
+import { isDevMode } from '@angular/core';
 import { HomeComponent } from './pages/home/home.component';
 import { ChatEmptyComponent } from './components/chat-empty/chat-empty.component';
 import { LoginPageComponent } from './pages/login-page/login-page.component';
@@ -6,7 +7,6 @@ import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.com
 import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.component';
 import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.component';
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
-import { ChatboxPlaygroundComponent } from './pages/chatbox-playground/chatbox-playground.component';
 import { authGuard, guestGuard } from './auth.guard';
 
 export const routes: Routes = [
@@ -47,7 +47,20 @@ export const routes: Routes = [
   { path: 'auth/login', component: LoginPageComponent, canActivate: [guestGuard] },
   { path: 'auth/register', component: RegisterPageComponent, canActivate: [guestGuard] },
   { path: 'forbidden', component: ForbiddenPageComponent },
-  { path: 'playground/chatbox-a', component: ChatboxPlaygroundComponent, data: { useNativeAnchor: true } },
-  { path: 'playground/chatbox-b', component: ChatboxPlaygroundComponent },
+  // Dev-only kernel test rig (count/latency/edge/threshold knobs driving the real chat kernel against MockItemSource).
+  // Lazy `loadComponent` keeps the playground + MockItemSource out of the main bundle; `canMatch` isDevMode makes a
+  // production build never match the route — a prod request for /playground/* falls through to '**' (404). Same
+  // dynamic-import + isDevMode pattern used for eruda in main.ts.
+  {
+    path: 'playground/chatbox-a',
+    loadComponent: () => import('./pages/chatbox-playground/chatbox-playground.component').then((m) => m.ChatboxPlaygroundComponent),
+    canMatch: [() => isDevMode()],
+    data: { useNativeAnchor: true },
+  },
+  {
+    path: 'playground/chatbox-b',
+    loadComponent: () => import('./pages/chatbox-playground/chatbox-playground.component').then((m) => m.ChatboxPlaygroundComponent),
+    canMatch: [() => isDevMode()],
+  },
   { path: '**', component: PageNotFoundComponent },
 ];

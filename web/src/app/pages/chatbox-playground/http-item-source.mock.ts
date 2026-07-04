@@ -34,6 +34,16 @@ export class MockUserService {
 }
 
 /**
+ * Per-request page ceiling — mirrors production `HttpItemSource.MAX_PAGE` (the backend `QueryMessagesDto` enforces
+ * `@Max(50)`). The mock MUST honor the same cap so the playground reproduces production's pagination behavior: when the
+ * kernel asks for more than MAX_PAGE (e.g. initBatch=100), the mock returns one page (50) and the kernel's normal
+ * top-up (the init fill loop / balance getOlder) fetches the rest on demand. Without this cap the mock returned the
+ * full olderCount in init, whose larger first batch usually cleared the 6000px threshold in one shot → the multi-batch
+ * init fill never ran in the playground, masking init-fill bugs production hits (e.g. the stuck mid-list spinner).
+ */
+const MAX_PAGE = 50;
+
+/**
  * Playground mock data source: implements {@link CbSource}<{@link ChatItemData}>, backed by the deterministic buildItems generator.
  *
  * [Logical sequence] `sequence() = [...full, ...live]` ascending (oldest → newest): full = buildItems history,
@@ -89,7 +99,8 @@ export class MockItemSource implements CbSource<ChatItemData> {
     await this.wait();
     const seq = this.sequence();
     if (anchorId === -1) {
-      const start = Math.max(0, seq.length - olderCount);
+      const take = Math.min(olderCount, MAX_PAGE);
+      const start = Math.max(0, seq.length - take);
       const raw = seq.slice(start);
       if (raw.length === 0) return [];
       await this.ensureProfiles(raw); // look up creators on userService to fill profiles (mirrors production)
@@ -110,8 +121,10 @@ export class MockItemSource implements CbSource<ChatItemData> {
     // Real msgId: bidirectional slice (older includes anchorId = olderCount items; newer = newerCount items)
     const idx = seq.findIndex(it => String(it.id) === String(anchorId));
     if (idx < 0) return [];
-    const olderStart = Math.max(0, idx - olderCount + 1);
-    const newerEnd = Math.min(seq.length, idx + 1 + newerCount);
+    const olderTake = Math.min(olderCount, MAX_PAGE);
+    const newerTake = Math.min(newerCount, MAX_PAGE);
+    const olderStart = Math.max(0, idx - olderTake + 1);
+    const newerEnd = Math.min(seq.length, idx + 1 + newerTake);
     const raw = [...seq.slice(olderStart, idx + 1), ...seq.slice(idx + 1, newerEnd)]; // [older..anchorId] ++ (anchorId..newer]
     if (raw.length === 0) return [];
     await this.ensureProfiles(raw);
@@ -135,7 +148,8 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const seq = this.sequence();
     const idx = seq.findIndex(it => String(it.id) === String(cursorId));
     if (idx < 0) return [];
-    const start = Math.max(0, idx - count);
+    const take = Math.min(count, MAX_PAGE);
+    const start = Math.max(0, idx - take);
     const raw = seq.slice(start, idx);
     if (raw.length === 0) return [];
     await this.ensureProfiles(raw);
@@ -155,7 +169,8 @@ export class MockItemSource implements CbSource<ChatItemData> {
     const seq = this.sequence();
     const idx = seq.findIndex(it => String(it.id) === String(cursorId));
     if (idx < 0) return [];
-    const end = Math.min(seq.length, idx + 1 + count);
+    const take = Math.min(count, MAX_PAGE);
+    const end = Math.min(seq.length, idx + 1 + take);
     const rawReal = seq.slice(idx + 1, end);
     const reachedEnd = end === seq.length;
 

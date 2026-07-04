@@ -18,9 +18,11 @@ import { getVirtualKeyboard, vkbSwapSupported } from './vkb-support';
 export class EmojiKeyboardService {
   private readonly layout = inject(LayoutService);
 
-  /** Swap available: mobile layout AND the VirtualKeyboard API present (Android Chromium). iOS Safari,
-   *  Firefox Android, and desktop fall back to the legacy popup and this service stays inert. */
-  readonly supported = computed(() => vkbSwapSupported(this.layout.isDesktop()));
+  /** Swap available: a touch (soft-keyboard) device AND the VirtualKeyboard API present (Android Chromium).
+   *  iOS Safari, Firefox Android, and any fine-pointer (physical-keyboard) device fall back to the legacy
+   *  popup and this service stays inert. Keyed on input modality, NOT viewport width — a narrow desktop
+   *  window has no soft keyboard to swap away. */
+  readonly supported = computed(() => vkbSwapSupported(this.layout.hasFinePointer()));
 
   /** Whether the swap panel is currently open. */
   readonly open = signal(false);

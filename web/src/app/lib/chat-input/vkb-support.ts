@@ -28,12 +28,12 @@ export function getVirtualKeyboard(): VirtualKeyboardLike | null {
 }
 
 /**
- * Whether the emoji-keyboard swap is available: mobile layout AND the VirtualKeyboard API present.
- * Pure (reads only its arg + navigator) so it is trivially unit-testable without a component harness.
+ * Whether the emoji-keyboard swap is available: a touch (soft-keyboard) device AND the VirtualKeyboard API
+ * present. Pure (reads only its arg + navigator) so it is trivially unit-testable without a component harness.
  *
- * @param isDesktop true on the desktop layout — the swap is mobile-only (no soft keyboard desktop-side).
+ * @param hasFinePointer true on a fine-pointer (physical-keyboard) device — the swap is touch-only.
  */
-export function vkbSwapSupported(isDesktop: boolean): boolean {
-  if (isDesktop) return false;
+export function vkbSwapSupported(hasFinePointer: boolean): boolean {
+  if (hasFinePointer) return false;
   return getVirtualKeyboard() !== null;
 }

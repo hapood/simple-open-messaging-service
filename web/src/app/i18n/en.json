@@ -199,6 +199,7 @@
     "inputPlaceholder": "Type a message…",
     "youPrefix": "You: {{text}}",
     "openImageAria": "Open image",
+    "openFileAria": "Open file",
     "retrySendAria": "Retry send",
     "fileFallback": "File",
     "inviteTitle": "{{name}} invited you to join:",
@@ -223,6 +224,16 @@
     "closeAria": "Close gallery",
     "prevAria": "Previous image",
     "nextAria": "Next image"
+  },
+  "fileDetail": {
+    "title": "File",
+    "closeAria": "Close",
+    "download": "Download",
+    "size": "Size",
+    "type": "Type",
+    "sender": "Sender",
+    "time": "Time",
+    "notAvailable": "Not available yet"
   },
   "threadList": {
     "couldNotLoad": "Couldn't load chats",
@@ -289,7 +300,8 @@
   "connection": {
     "connecting": "Connecting…",
     "reconnecting": "Connection lost — reconnecting…",
-    "recovered": "Back online"
+    "recovered": "Back online",
+    "offline": "Offline — signed out"
   },
   "update": {
     "banner": "A new version is available.",

@@ -11,6 +11,9 @@ import { LayoutService } from '../../services/layout.service';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../../components/message-cards/create-item';
 import { mergeAlbumItems, absorbAlbumTail } from '../../components/message-cards/merge-items';
 import { GalleryViewerService } from '../../components/gallery-viewer/gallery-viewer.service';
+import { FileDetailService } from '../../components/file-detail-viewer/file-detail-viewer.service';
+import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
+import type { ConnectionState } from '../../services/websocket.service';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../../components/message-cards/chat-item';
 import { MockItemSource, MockUserService } from './http-item-source.mock';
 import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
@@ -45,7 +48,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent],
+  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, ConnectionBannerComponent],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -58,10 +61,15 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly envInjector = inject(EnvironmentInjector);
   /** Album click → fullscreen gallery viewer (CDK Overlay, service-hosted; no per-host template mounting needed). */
   private readonly galleryViewer = inject(GalleryViewerService);
+  /** File-card click → fullscreen file-detail overlay (same transient-overlay pattern as the gallery). */
+  private readonly fileDetail = inject(FileDetailService);
   /** Plan A (browser overflow-anchor) is selected by route data.useNativeAnchor: the -a route sets it true; -b (default) uses Plan B (manual compensation). */
   readonly useNativeAnchor = (this.route.snapshot.data as { useNativeAnchor?: boolean }).useNativeAnchor === true;
   /** Desktop-class viewport (wide screen + precise pointer): true = persistent side rail; false = mobile drawer + FAB. */
   readonly isDesktop = this.layout.isDesktop;
+  /** Fine-pointer input modality (physical keyboard), width-independent. Drives the composer's Enter
+   *  convention — Enter sends on a physical keyboard even when the window is narrower than the 3-pane width. */
+  readonly hasFinePointer = this.layout.hasFinePointer;
   /** Mobile control-panel drawer toggle. */
   readonly panelOpen = signal(false);
 
@@ -118,6 +126,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  as a failed bubble (retry glyph) instead of confirming. Stays on until toggled off, so the failure/retry flow can be
    *  exercised repeatedly without re-arming. To test "fail then succeed": turn on → send → turn off → click retry. */
   readonly mockSendError = signal(false);
+  /** Drives `<app-connection-banner [demoState]>` via the chip's `demoState` override (null = live service,
+   *  which in the playground is stuck at `closed` since no SSE worker is spawned). Defaulted to `connecting`
+   *  so the restyled Material chip is visible on first paint; the panel's "Connection status" group toggles it
+   *  through every state, and a `reconnecting → open` hop replays the recover flourish. */
+  readonly connStatus = signal<ConnectionState | null>('connecting');
   /** Kernel tuning (CbConfig). Passed to the kernel at setup; editing it via the modal → applyConfig rebuilds to take effect. */
   readonly config = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
   /** Config-edit modal open flag + draft (applied only on confirm, so editing one field doesn't rebuild mid-stream). */
@@ -269,6 +282,14 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   setOpponentPushCount(n: number): void { this.opponentPushCount.set(n); }
   /** Toggle the persistent "mock send error" setting (every send fails while on). */
   toggleMockSendError(): void { this.mockSendError.update(v => !v); }
+  /** Set the connection chip's demo state (bound to `<app-connection-banner [demoState]>`). */
+  setConnStatus(s: ConnectionState | null): void { this.connStatus.set(s); }
+  /** Replay the recover flourish: a `reconnecting → open` transition through `demoState`, which the chip's
+   *  effect reads exactly like a real recovery (auto-expanded pill, then the green-check flourish + fade-out). */
+  playConnRecover(): void {
+    this.connStatus.set('reconnecting');
+    setTimeout(() => this.connStatus.set('open'), 60);
+  }
 
   /** Open the config-edit modal (draft = a copy of the current config). */
   openConfigModal(): void {
@@ -327,6 +348,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       item, isShowHead, isGroupStart, showDate, this.envInjector,
       id => this.retrySend(id),
       (images, index) => this.galleryViewer.open(images, index),
+      (data) => this.fileDetail.open(data),
     );
     // Dev badge (head/body + message id): injected into the row by the playground; ngDevMode-guarded → production AOT creates none.
     if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);
