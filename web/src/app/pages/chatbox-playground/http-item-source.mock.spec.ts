@@ -20,14 +20,14 @@ function msg(msgId: string, isSelf = true): CbItem<ChatItemData> {
 }
 
 describe('MockItemSource (cursor contract)', () => {
-  it('init(-1,100,0) takes the newest 100 ascending; last=newest; not yet at oldest → first has no oldest', async () => {
+  it('init(-1,100,0) caps at MAX_PAGE (50): newest 50 ascending; last=newest; not yet at oldest', async () => {
     const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    const items = await s.init(-1, 100, 0);
-    expect(items.length).toBe(100);
-    expect(items[0].id).toBe('id-400');   // oldest of this batch
-    expect(items[99].id).toBe('id-499');  // anchor = newest
-    expect(items[99].boundary).toBe('newest');
-    expect(items[0].boundary).toBeUndefined(); // not yet at the global oldest
+    const items = await s.init(-1, 100, 0);        // olderCount(100) > MAX_PAGE → one page returned (mirrors HttpItemSource)
+    expect(items.length).toBe(50);                 // capped at MAX_PAGE
+    expect(items[0].id).toBe('id-450');            // oldest of this capped batch
+    expect(items[49].id).toBe('id-499');           // anchor = newest
+    expect(items[49].boundary).toBe('newest');
+    expect(items[0].boundary).toBeUndefined();      // not yet at the global oldest (more pages remain)
   });
 
   it('init with a small total (olderCount overshoots) → takes all; first=oldest, last=newest', async () => {
@@ -40,13 +40,13 @@ describe('MockItemSource (cursor contract)', () => {
     expect(items[49].boundary).toBe('newest');
   });
 
-  it("getOlder('id-400',100) takes 100 older ascending; no boundary", async () => {
+  it("getOlder('id-400',100) caps at MAX_PAGE (50): 50 older ascending; no boundary", async () => {
     const s = new MockItemSource(500, 0, new MockUserService(), 1);
     await s.init(-1, 100, 0);
-    const items = await s.getOlder('id-400', 100);
-    expect(items.length).toBe(100);
-    expect(items[0].id).toBe('id-300');
-    expect(items[99].id).toBe('id-399');
+    const items = await s.getOlder('id-400', 100); // count(100) > MAX_PAGE → one page returned
+    expect(items.length).toBe(50);                 // capped at MAX_PAGE
+    expect(items[0].id).toBe('id-350');
+    expect(items[49].id).toBe('id-399');
     expect(items.every(i => !i.boundary)).toBe(true);
   });
 
@@ -65,13 +65,13 @@ describe('MockItemSource (cursor contract)', () => {
     expect(items.length).toBe(0);
   });
 
-  it("getNewer('id-400',100) takes newer through the end; last=newest", async () => {
+  it("getNewer('id-400',100) caps at MAX_PAGE (50): 50 newer ascending; doesn't reach the end → no newest", async () => {
     const s = new MockItemSource(500, 0, new MockUserService(), 1);
-    const items = await s.getNewer('id-400', 100); // full[401..499] = 99 items
-    expect(items.length).toBe(99);
+    const items = await s.getNewer('id-400', 100); // 99 newer remain (> MAX_PAGE) → one page, end NOT reached
+    expect(items.length).toBe(50);                 // capped at MAX_PAGE
     expect(items[0].id).toBe('id-401');
-    expect(items[98].id).toBe('id-499');
-    expect(items[98].boundary).toBe('newest');
+    expect(items[49].id).toBe('id-450');
+    expect(items.every(i => !i.boundary)).toBe(true); // didn't reach the end → no 'newest' tag
   });
 
   it('pushLive caches; getNewer then returns the live items (last tagged newest)', async () => {
@@ -119,16 +119,16 @@ describe('MockItemSource (cursor contract)', () => {
     expect(s.getPending().map(p => p.id)).toEqual([]);
   });
 
-  it('getNewer never appends pending even when real == count (page full at the edge)', async () => {
-    const s = new MockItemSource(200, 0, new MockUserService(), 1);
+  it('getNewer never appends pending even when real fills the page at the edge (MAX_PAGE reals reach the end)', async () => {
+    const s = new MockItemSource(150, 0, new MockUserService(), 1); // total=150 → id-100..id-149 = exactly MAX_PAGE newer
     await s.init(-1, 100, 0);
     s.addPending(msg('pending-x'));
-    // cursor=id-99, count=100: 100 real items (id-100..id-199) reach the end exactly → page full, no pending mixing.
+    // cursor=id-99, count=100: exactly MAX_PAGE (50) real items (id-100..id-149) fill the page AND reach the end → no pending mixing.
     const newer = await s.getNewer('id-99', 100);
-    expect(newer.length).toBe(100);
-    expect(newer[99].id).toBe('id-199');
-    expect(newer[99].boundary).toBe('newest');
-    expect(s.hasPending()).toBe(true);              // pending untouched, recoverable via getPending
+    expect(newer.length).toBe(50);                   // page full (capped) at the edge
+    expect(newer[49].id).toBe('id-149');
+    expect(newer[49].boundary).toBe('newest');       // reached the end
+    expect(s.hasPending()).toBe(true);               // pending untouched, recoverable via getPending
     expect(s.getPending().map(p => p.id)).toEqual(['pending-x']);
   });
 
