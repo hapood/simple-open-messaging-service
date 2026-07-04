@@ -30,10 +30,12 @@ export function getVirtualKeyboard(): VirtualKeyboardLike | null {
 /**
  * Whether the emoji-keyboard swap is available: a touch (soft-keyboard) device AND the VirtualKeyboard API
  * present. Pure (reads only its arg + navigator) so it is trivially unit-testable without a component harness.
+ * The single arbiter of the swap rule — called only by {@link InputDeviceService} (which exposes it as the
+ * `emojiSwapSupported` / `inputClass` signals); consumers read those signals rather than calling this.
  *
- * @param hasFinePointer true on a fine-pointer (physical-keyboard) device — the swap is touch-only.
+ * @param hasPhysicalKeyboard true on a physical-keyboard (fine-pointer) device — the swap is touch-only.
  */
-export function vkbSwapSupported(hasFinePointer: boolean): boolean {
-  if (hasFinePointer) return false;
+export function vkbSwapSupported(hasPhysicalKeyboard: boolean): boolean {
+  if (hasPhysicalKeyboard) return false;
   return getVirtualKeyboard() !== null;
 }

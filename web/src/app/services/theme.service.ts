@@ -64,10 +64,14 @@ export class ThemeService implements OnDestroy {
     this.mq?.removeEventListener('change', this.onSystemChange);
   }
 
-  /** Cycle system → light → dark → system (single-button toggle UX). */
+  /** Single-button toggle: flip the painted theme each click (dark ⇄ light).
+   *  Always commits to an explicit mode, so every click produces a visible change. The previous
+   *  `system → light → dark` cycle had a dead step whenever the OS preference matched an explicit
+   *  mode (e.g. OS light: `system` and `light` paint identically), which surfaced as a no-op click
+   *  and made returning to the prior theme take an extra click. `system` remains the default initial
+   *  mode and still auto-follows the OS via `prefers-color-scheme`. */
   cycleMode(): void {
-    const order: ThemeMode[] = ['system', 'light', 'dark'];
-    this.setMode(order[(order.indexOf(this.mode()) + 1) % order.length]);
+    this.setMode(this.effective() === 'dark' ? 'light' : 'dark');
   }
 
   setMode(m: ThemeMode): void {

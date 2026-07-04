@@ -7,7 +7,7 @@ import { FitDialogDirective } from './fit-dialog.directive';
 // zoneless 项目无 zone.js → fakeAsync/tick 不可用，改用真实定时器 + async/await 等待。
 // 绑定一律走 signal：zoneless dev mode 下普通属性 + 手动 detectChanges 会触发 NG0100。
 
-const DESKTOP_Q = '(min-width: 1280px) and (pointer: fine) and (hover: hover)';
+const DESKTOP_Q = '(min-width: 1280px)';
 const WIDE_Q = '(min-width: 768px)';
 
 /** 构造最小可用 MediaQueryList（CDK MediaMatcher 只读 .matches），与 layout.service.spec 一致。 */

@@ -1,12 +1,25 @@
 <form class="ci-input-bar" #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
-  @if (!emojiKbd.supported() && emojiOpen()) {
-    <!-- Popup fallback (iOS Safari / Firefox / desktop): floats ABOVE the bar; the native keyboard stays up.
-         The Android Chromium swap renders a separate in-flow panel below the form instead. -->
-    <div class="ci-backdrop" (click)="closeEmoji()"></div>
-    <div class="ci-emoji-panel" (click)="$event.stopPropagation()">
-      @for (e of emojisFlat; track e) {
-        <button type="button" class="ci-emoji" appPreventFocusSteal (click)="insertEmoji(e)">{{ e }}</button>
-      }
+  @if (emojiOpen()) {
+    <!-- Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid. Floats above the bar; the
+         native keyboard stays up on mobile (no VirtualKeyboard swap — hide() is broken on Chrome Android,
+         crbug.com/40912131). Backdrop / Esc closes. The Recents tab is first when non-empty. -->
+    <!-- Transparent mask: a click on the empty area closes the popup but does NOT steal focus
+         (appPreventFocusSteal cancels mousedown's focus move), so the editor stays focused and the soft
+         keyboard stays up — the user can keep typing. The `click` still fires → closeEmoji. -->
+    <div class="ci-backdrop" appPreventFocusSteal (click)="closeEmoji()"></div>
+    <div class="ci-emoji-panel" (click)="$event.stopPropagation()" role="dialog" aria-label="Emoji">
+      <div class="ci-emoji-tabs" role="tablist">
+        @for (cat of emojiTabs(); track cat.id) {
+          <button type="button" class="ci-emoji-tab" appPreventFocusSteal
+                  [class.ci-emoji-tab--active]="activeCategory() === cat.id"
+                  (click)="activeCategory.set(cat.id)" [attr.aria-label]="cat.label">{{ cat.icon }}</button>
+        }
+      </div>
+      <div class="ci-emoji-grid">
+        @for (e of activeEmojis(); track e) {
+          <button type="button" class="ci-emoji" appPreventFocusSteal (click)="insertEmoji(e)">{{ e }}</button>
+        }
+      </div>
     </div>
   }
   <div class="ci-input-wrap">
@@ -17,7 +30,7 @@
         <line x1="9" y1="9" x2="9.01" y2="9" /><line x1="15" y1="9" x2="15.01" y2="9" />
       </svg>
     </button>
-    <app-chat-editor class="ci-input" [members]="members()" [hasFinePointer]="hasFinePointer()" [placeholder]="placeholder()"
+    <app-chat-editor class="ci-input" [members]="members()" [placeholder]="placeholder()"
                      (html)="onHtml($event)" (send)="onEditorSend()"></app-chat-editor>
     <button type="button" class="ci-input-ico" appPreventFocusSteal (click)="onFileClick()" aria-label="Send file">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -46,27 +59,3 @@
   <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
   <input #fileInput type="file" hidden (change)="onFileChange($event)" />
 </form>
-@if (emojiKbd.supported() && emojiKbd.open()) {
-  <!-- Swap panel (Android Chromium): replaces the keyboard region. Height = the occlusion captured at toggle,
-       so the message-list viewport keeps its exact size across the swap (kernel invariant — the panel fills
-       precisely the space the keyboard vacated). ABC chip closes the panel and re-focuses the editor, whose
-       manual-policy focus→show handler brings the native keyboard back. -->
-  <div class="ci-vkb-panel" [style.height.px]="emojiKbd.frozenHeight()" role="dialog" aria-label="Emoji"
-       (click)="$event.stopPropagation()">
-    <div class="ci-vkb-tabs" role="tablist">
-      @for (cat of categories; track cat.id) {
-        <button type="button" class="ci-vkb-tab" appPreventFocusSteal
-                [class.ci-vkb-tab--active]="activeCategory() === cat.id"
-                (click)="activeCategory.set(cat.id)" [attr.aria-label]="cat.label">{{ cat.icons[0] }}</button>
-      }
-      <span class="ci-vkb-tabs-spacer"></span>
-      <button type="button" class="ci-vkb-abc" appPreventFocusSteal (click)="closeEmojiAndFocus()"
-              aria-label="Switch to keyboard">ABC</button>
-    </div>
-    <div class="ci-vkb-grid">
-      @for (e of activeEmojis(); track e) {
-        <button type="button" class="ci-vkb-emoji" appPreventFocusSteal (click)="insertEmoji(e)">{{ e }}</button>
-      }
-    </div>
-  </div>
-}

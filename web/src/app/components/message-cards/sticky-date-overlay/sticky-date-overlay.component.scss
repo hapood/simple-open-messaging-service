@@ -3,8 +3,9 @@
   left: 0;
   right: 0;
   // Vertical offset inherits from the host container: the playground stage defaults to 48px (the header
-  // height); production's .msg-container sets --sd-top: var(--msg-header-h, 56px).
-  top: var(--sd-top, 48px);
+  // height); production's .msg-container sets --sd-top: var(--msg-header-h, 56px). A small +6px gap mirrors
+  // the connection chip's `var(--app-header-h) + 6px` breathing room so the pill isn't flush against the header.
+  top: calc(var(--sd-top, 48px) + 6px);
   display: flex;
   justify-content: center;
   z-index: 5;
@@ -15,8 +16,11 @@
   font-size: 11px;
   font-weight: 500;
   color: var(--im-date-pill-text);
-  background: var(--im-chat-bg);
+  // The floating pill carries an opaque tonal-elevation fill in BOTH themes (--im-sticky-date-bg): light
+  // mode floats on the M3 surface via the shared shadow; dark mode adds a primary-tinted lift, since the
+  // shadow stays subtle on the near-black wallpaper (and vanishes on OLED / poor near-black rendering).
+  background: var(--im-sticky-date-bg);
   padding: 3px 12px;
   border-radius: var(--app-radius-pill);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--im-date-pill-shadow);
 }

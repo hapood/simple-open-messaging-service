@@ -60,6 +60,30 @@ $dark-theme: mat.define-theme((
 @property --c-amber   { syntax: '<color>'; inherits: true; initial-value: #b45309; }
 @property --c-green   { syntax: '<color>'; inherits: true; initial-value: #16a34a; }
 @property --c-red     { syntax: '<color>'; inherits: true; initial-value: #dc2626; }
+@property --c-brand-1 { syntax: '<color>'; inherits: true; initial-value: #e3f2fd; }
+@property --c-brand-2 { syntax: '<color>'; inherits: true; initial-value: #bbdefb; }
+@property --c-brand   { syntax: '<color>'; inherits: true; initial-value: #2196f3; }
+
+/* === Shared `.tonal-chip` shell — the M3 treatment both top-right indicators wear. ===
+ * A two-stop <color>-var gradient (--g-from/--g-to) over the themed surface, M3 level-1 elevation, a
+ * pill shape, and currentColor text/icon. The connection chip (amber/green/red per state) and the update
+ * banner (brand blue) each set their own --g-from/--g-to/--ic + --c-* palette on `:host`; this class
+ * supplies only the visual identity. Layout (height, padding, gap), interactivity (state layer, focus),
+ * and animation stay per-component — the chip is a <button> (interactive), the banner is a <div> with
+ * inner action buttons, so their affordances differ. */
+.tonal-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border: none;
+  border-radius: 9999px;
+  background-color: var(--g-from);
+  background-image: linear-gradient(135deg, var(--g-from), var(--g-to));
+  color: var(--ic);
+  box-shadow:
+    0 1px 2px 0 rgba(0, 0, 0, 0.30),
+    0 1px 3px 1px rgba(0, 0, 0, 0.15);
+}
 
 html,
 body {

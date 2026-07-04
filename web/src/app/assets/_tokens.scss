@@ -97,8 +97,16 @@ $app-gray-900: #111827;
   --im-time:           #667781;   // in-bubble timestamp (gray-green shared by green/white bubbles)
   --im-avatar-self:    #25d366;   // self avatar fill (WhatsApp brand green)
   --im-avatar-other:   #c7c7cc;   // other avatar fill (placeholder gray)
-  --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // date-separator pill fill
+  --im-date-pill-bg:   rgba(0, 0, 0, 0.06);   // date-separator pill fill (inline timeline rows)
   --im-date-pill-text: var(--app-text-faint);  // date-separator text
+  // Sticky-date overlay tokens (the floating pill only; the inline date-row consumes just -bg/-text above).
+  // The floating pill MUST be opaque so it reads as elevated over the wallpaper — the inline date-row's
+  // translucent rgba fill would show the doodle pattern through. Light mode floats on the M3 surface
+  // (depth comes from the shared shadow); the dark override adds a primary-tinted tonal lift instead.
+  --im-sticky-date-bg: var(--app-surface);
+  // M3 elevation shadow (≈ Level 2), IDENTICAL in light and dark — M3 uses one shadow value across themes;
+  // dark mode's primary cue is the tonal-elevation fill, not a different shadow.
+  --im-date-pill-shadow: 0 1px 2px rgba(0, 0, 0, 0.30), 0 2px 6px rgba(0, 0, 0, 0.15);
   --im-media-gap:      2px;       // album grid gap
   --im-media-radius:   var(--app-radius-md);   // album cell radius
 }
@@ -146,4 +154,10 @@ $app-gray-900: #111827;
   --im-avatar-other:   #37424a;
   --im-date-pill-bg:   #182229;
   --im-date-pill-text: #8696a0;
+  // M3 dark TONAL ELEVATION: lift the inline surface (--im-date-pill-bg) with a ~12% PRIMARY tint toward
+  // --app-brand — M3 expresses dark elevation as a primary-color overlay, not a neutral gray. This
+  // brand-tinted lift is the robust floating cue (the shared elevation shadow stays subtle on the near-black
+  // wallpaper, especially on OLED), and it ties the pill to the theme. The shadow token is intentionally
+  // INHERITED from :root unchanged (one value/theme).
+  --im-sticky-date-bg: color-mix(in srgb, var(--im-date-pill-bg) 88%, var(--app-brand) 12%);
 }

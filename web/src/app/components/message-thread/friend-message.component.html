@@ -12,8 +12,6 @@
 
     <app-chat-input
       [members]="[]"
-      [hasFinePointer]="hasFinePointer()"
-      [keyboardHeight]="kbdOffset()?.occlusion() ?? 0"
       [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
       (send)="onSendIntent($event)"
     ></app-chat-input>

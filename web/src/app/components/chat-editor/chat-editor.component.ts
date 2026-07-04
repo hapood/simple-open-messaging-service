@@ -16,7 +16,7 @@ import { Editor, Extension } from '@tiptap/core';
 import { StarterKit } from '@tiptap/starter-kit';
 import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
-import { getVirtualKeyboard, vkbSwapSupported } from '../../lib/chat-input/vkb-support';
+import { InputDeviceService } from '../../services/input-device.service';
 
 /** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
  *  so the production port swaps in GroupService.getMembers() unchanged. */
@@ -34,8 +34,8 @@ export interface ChatMember {
  * (update) are bridged to Angular outputs imperatively — no NgZone, no two-way binding; the parent reads
  * the emitted html and calls clear()/insertText() via a viewChild ref.
  *
- * Enter convention (input-driven, keyed on input modality — NOT viewport width):
- *  - fine pointer (physical keyboard): Enter sends (emits `send`); Shift+Enter and Ctrl/Cmd+Enter insert a newline.
+ * Enter convention (device-dependent, keyed on {@link InputDeviceService.enterToSend} — NOT viewport width):
+ *  - physical keyboard: Enter sends (emits `send`); Shift+Enter and Ctrl/Cmd+Enter insert a newline.
  *  - touch (soft keyboard): Enter inserts a newline; send happens via the parent's send button.
  * The Enter keymap lives in a high-priority extension so it wins over StarterKit's paragraph Enter.
  *
@@ -57,13 +57,13 @@ export class ChatEditorComponent {
   /** Mention candidates (playground: mock members; production: GroupService.getMembers()). Read into a
    *  ref so member updates do NOT recreate the editor (the init effect depends only on the host element). */
   readonly members = input<ChatMember[]>([]);
-  /** Fine-pointer input modality (physical keyboard present), width-independent. true → Enter sends;
-   *  false (touch/soft keyboard) → Enter inserts a newline. Bind to {@link LayoutService.hasFinePointer},
-   *  NOT the width-coupled `isDesktop` — a narrow desktop window still has a physical keyboard. */
-  readonly hasFinePointer = input(true);
   readonly placeholder = input('');
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
+  /** INPUT axis (physical vs soft keyboard) — drives the Enter convention ({@link InputDeviceService.enterToSend})
+   *  and the emoji-swap `virtualkeyboardpolicy`. Injected, not threaded as an `input()`, so hosts need not
+   *  pass a modality signal into the composer. */
+  private readonly inputDevice = inject(InputDeviceService);
 
   /** Fires on every keystroke with the current inline-HTML content (the value to store/send). */
   readonly html = output<string>();
@@ -97,14 +97,13 @@ export class ChatEditorComponent {
   private readonly initEditor = effect((onCleanup) => {
     const el = this.editorEl()?.nativeElement;
     if (!el || this.editor) return;
-    // Emoji-keyboard swap (Android Chromium only): under manual policy focusing the editable no longer
-    // auto-shows the soft keyboard, so the focus handler below calls show() explicitly. Without that, the
-    // user could not type after tapping the editor. iOS/desktop keep the default `auto` policy.
-    const swap = vkbSwapSupported(this.hasFinePointer());
+    // Default `virtualkeyboardpolicy: auto` — focus auto-shows the soft keyboard, blur auto-dismisses it.
+    // The emoji swap rides this standard OS behavior (no VirtualKeyboard API): blur dismisses the keyboard
+    // when the panel opens; the ABC chip's focus brings it back. See [[emoji-keyboard-vkb-swap]].
     const editor = new Editor({
       element: el,
       extensions: [
-        SendKeymapExtension({ onSend: () => this.onEnterSend(), hasFinePointer: () => this.hasFinePointer() }),
+        SendKeymapExtension({ onSend: () => this.onEnterSend(), enterToSend: () => this.inputDevice.enterToSend() }),
         StarterKit.configure({ heading: false }),
         Placeholder.configure({ placeholder: () => this.placeholder() || this.transloco.translate('chat.inputPlaceholder') }),
         Mention.configure({
@@ -122,7 +121,6 @@ export class ChatEditorComponent {
           class: 'cb-editor-prose',
           role: 'textbox',
           'aria-multiline': 'true',
-          ...(swap ? { virtualkeyboardpolicy: 'manual' } : {}),
         },
       },
     });
@@ -130,11 +128,6 @@ export class ChatEditorComponent {
       this.isEmpty.set(editor.isEmpty);
       this.html.emit(this.toInlineHtml(editor.getHTML()));
     });
-    if (swap) {
-      // Manual policy: focus does not auto-show the keyboard, so the emoji swap's ABC chip (which re-focuses
-      // to dismiss the panel) and a plain tap on the editor both rely on this to bring the keyboard back.
-      editor.on('focus', () => getVirtualKeyboard()?.show());
-    }
     this.editor = editor;
     onCleanup(() => {
       editor.destroy();
@@ -187,13 +180,14 @@ export class ChatEditorComponent {
 }
 
 /**
- * High-priority Enter keymap. Fine-pointer (physical keyboard) Enter → onSend (return true to swallow the
- * default new-paragraph); touch (soft keyboard) Enter → hardBreak (newline). Shift+Enter is left to
- * StarterKit's hardBreak; Ctrl/Cmd-Enter → hardBreak.
+ * High-priority Enter keymap. Physical-keyboard Enter → onSend (return true to swallow the default
+ * new-paragraph); soft-keyboard Enter → hardBreak (newline). The `enterToSend` opt is the Enter rule's
+ * single switch point ({@link InputDeviceService.enterToSend}). Shift+Enter is left to StarterKit's
+ * hardBreak; Ctrl/Cmd-Enter → hardBreak.
  */
 function SendKeymapExtension(opts: {
   onSend: () => void;
-  hasFinePointer: () => boolean;
+  enterToSend: () => boolean;
 }) {
   return Extension.create({
     name: 'sendKeymap',
@@ -214,7 +208,7 @@ function SendKeymapExtension(opts: {
               return true;
             }
           }
-          if (opts.hasFinePointer()) {
+          if (opts.enterToSend()) {
             opts.onSend();
             return true;
           }

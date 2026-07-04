@@ -335,6 +335,15 @@ sw.addEventListener('message', (e: MessageEvent) => {
       }
       post({ type: 'state', state: 'closed' });
       break;
+    case 'retry-now':
+      // User-initiated retry: reset the backoff attempt counter (so a fresh failure starts from 1s, not
+      // wherever the loop had climbed to) and resolve the current backoff sleep so the loop reconnects
+      // at once. Mirrors the browser `online` fast-path. No-op when not in backoff (sleepResolver
+      // undefined) — e.g. mid-handshake or already open — which is the correct harmless behavior.
+      if (manualClose) return;
+      attempt = 0;
+      sleepResolver?.();
+      break;
     case 'token':
       // Only honor the reply whose reqId matches the outstanding request; a stale reply from a prior
       // request is dropped (it would otherwise satisfy a newer wait with an older token).

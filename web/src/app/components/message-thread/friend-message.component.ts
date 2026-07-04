@@ -78,7 +78,6 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly userService = inject(UserService);
   private readonly wsService = inject(WebsocketService);
   private readonly layout = inject(LayoutService);
-  protected readonly hasFinePointer = this.layout.hasFinePointer;
   private readonly galleryViewer = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
 

@@ -99,11 +99,18 @@
   transition: background 0.12s, color 0.12s;
   &:hover { background: var(--app-hover); color: var(--app-text); }
 }
-// Theme-toggle icon: show the moon in light, the sun in dark (switched via
-// data-theme, with no template branching).
-.pg-theme-toggle .pg-ico-sun { display: none; }
-.pg[data-theme="dark"] .pg-theme-toggle .pg-ico-moon { display: none; }
-.pg[data-theme="dark"] .pg-theme-toggle .pg-ico-sun { display: inline-flex; }
+// Theme-toggle icon (moon in light, sun in dark) is branched in the template via the global ThemeService's
+// effective() — the playground no longer carries its own [data-theme] attribute or theme signal, so there is
+// nothing for a CSS attribute selector to key off here.
+// Optical balance: both SVGs render at 20px in the same flex-centered button, but the rayed sun is symmetric
+// about the viewBox center and fills the box, whereas the Feather crescent's visual mass sits low-left and
+// spans only ~75% of the box — so uncorrected the icon shifts and shrinks when toggling. Recenter the moon
+// onto the sun's optical center and match its weight so the two states land on the same point.
+.pg-theme-moon {
+  transform: translate(1px, -1px) scale(1.08);
+  transform-box: fill-box;
+  transform-origin: center;
+}
 
 // Scroll viewport: native scrolling with the scrollbar hidden on every platform. Flex child (flex:1) of the
 // stage column — fills the space between the header and the input bar, no manual top/bottom offsets needed.
@@ -117,7 +124,6 @@
   outline: none;
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
-  &:focus { box-shadow: inset 0 0 0 2px rgba(33, 150, 243, 0.25); }
 }
 // Plan A (-a route, .pg--native-anchor): lean on browser scroll anchoring;
 // re-enable overflow-anchor.

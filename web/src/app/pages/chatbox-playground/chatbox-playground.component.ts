@@ -8,6 +8,7 @@ import { ChatBoxScroller, ScrollerApi, CbElement, CbItem, CbConfig, CbOptions, C
 import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
 import { ActivatedRoute } from '@angular/router';
 import { LayoutService } from '../../services/layout.service';
+import { ThemeService } from '../../services/theme.service';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../../components/message-cards/create-item';
 import { mergeAlbumItems, absorbAlbumTail } from '../../components/message-cards/merge-items';
 import { GalleryViewerService } from '../../components/gallery-viewer/gallery-viewer.service';
@@ -65,11 +66,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly fileDetail = inject(FileDetailService);
   /** Plan A (browser overflow-anchor) is selected by route data.useNativeAnchor: the -a route sets it true; -b (default) uses Plan B (manual compensation). */
   readonly useNativeAnchor = (this.route.snapshot.data as { useNativeAnchor?: boolean }).useNativeAnchor === true;
-  /** Desktop-class viewport (wide screen + precise pointer): true = persistent side rail; false = mobile drawer + FAB. */
+  /** Desktop-class viewport (wide screen ≥1280px, width-only): true = persistent side rail; false = mobile drawer + FAB. */
   readonly isDesktop = this.layout.isDesktop;
-  /** Fine-pointer input modality (physical keyboard), width-independent. Drives the composer's Enter
-   *  convention — Enter sends on a physical keyboard even when the window is narrower than the 3-pane width. */
-  readonly hasFinePointer = this.layout.hasFinePointer;
   /** Mobile control-panel drawer toggle. */
   readonly panelOpen = signal(false);
 
@@ -138,26 +136,15 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly configDraft = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
   /** Telegram-style sticky date: the date label for the top of the viewport (updated live on scroll; null = no overlay shown). */
   readonly stickyDate = signal<string | null>(null);
-  /** Theme: light / dark. Defaults to the system prefers-color-scheme; a manual toggle temporarily overrides it (re-follows on system change). */
-  readonly theme = signal<'light' | 'dark'>('light');
-  private themeMqCleanup: (() => void) | null = null;
-  toggleTheme() { this.theme.update(t => t === 'light' ? 'dark' : 'light'); }
+  /** App-wide light/dark controller — the SAME ThemeService production uses (it writes <html data-theme>).
+   *  No local theme signal or matchMedia: the playground's theme behavior is identical to the rest of the app. */
+  readonly theme = inject(ThemeService);
+  cycleTheme(): void { this.theme.cycleMode(); }
 
   // Controls
   readonly count = signal(5000);
   /** @mention candidates (mock group members; production swaps in GroupService.getMembers()). */
   readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
-
-  constructor() {
-    // Follow the system color scheme: initialize + listen for changes (matchMedia). A manual toggle still temporarily overrides it.
-    const mq = window.matchMedia?.('(prefers-color-scheme: dark)');
-    if (mq) {
-      const apply = () => this.theme.set(mq.matches ? 'dark' : 'light');
-      apply();
-      mq.addEventListener('change', apply);
-      this.themeMqCleanup = () => mq.removeEventListener('change', apply);
-    }
-  }
 
   togglePanel() { this.panelOpen.update(v => !v); }
   closePanel() { this.panelOpen.set(false); }
@@ -312,7 +299,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   ngOnDestroy() {
     this.scroller?.destroy();
-    this.themeMqCleanup?.();
     clearTimeout(this.toastTimer);
     for (const t of this.confirmTimers) clearTimeout(t);
     this.confirmTimers.length = 0;
@@ -427,8 +413,13 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const ct = this.contentRef()?.nativeElement;
     if (!vp || !ct) { this.stickyDate.set(null); return; }
     const vTop = vp.getBoundingClientRect().top;
-    const fadeHi = vTop + 60;
-    const fadeLo = vTop + 14;
+    // Fade band (px, from the viewport top) tracks the floating sticky pill — its SCSS `top` is
+    // calc(var(--sd-top) + 6px), so it sits ~6px below this viewport top. The inline date pill fades out
+    // exactly as it passes behind the float: lo = fully transparent, hi = fade start. The overlay's +6px gap
+    // is baked into both offsets; move them together or a gap opens between the two pills.
+    const STICKY_DATE_FADE_PX = { lo: 20, hi: 66 };
+    const fadeLo = vTop + STICKY_DATE_FADE_PX.lo;
+    const fadeHi = vTop + STICKY_DATE_FADE_PX.hi;
     const rects = Array.from(ct.querySelectorAll<HTMLElement>('.pg-date'))
       .map(d => ({ d, top: d.getBoundingClientRect().top }));
     let current: string | null = null;

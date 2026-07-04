@@ -57,6 +57,8 @@ export class WebsocketService {
 
   /** The spawned SSE worker. Undefined while disconnected (or between an error and the respawn). */
   private worker?: Worker;
+  /** The pending 1s respawn from {@link onWorkerError}, cancelled if {@link retryNow} fires first. */
+  private respawnTimer?: ReturnType<typeof setTimeout>;
   /** Single-flight in-progress token renew, so concurrent `renew-token` requests share one call.
    *  `AuthService.renewAccessToken()` nulls `acTkSub` mid-flight, so un-collapsed concurrent callers
    *  would both see null and loop — this collapses them onto the same Promise. */
@@ -70,6 +72,7 @@ export class WebsocketService {
     if (this.worker) {
       return // idempotent — the worker owns the single connection
     }
+    this.respawnTimer = undefined // respawn fired (or retryNow spawned directly) — no longer pending
     this.state.set('connecting')
     // `new URL('./sse.worker', import.meta.url)` is what tells the `application` builder to emit the
     // worker as its own hashed chunk (auto-bundled; no separate tsConfig needed). `type: 'module'`
@@ -86,6 +89,8 @@ export class WebsocketService {
     this.worker?.postMessage({ type: 'stop' } satisfies ToWorker)
     this.worker?.terminate()
     this.worker = undefined
+    clearTimeout(this.respawnTimer)
+    this.respawnTimer = undefined
     this.renewInFlight = undefined
     this.state.set('closed')
   }
@@ -168,6 +173,22 @@ export class WebsocketService {
     this.worker = undefined
     this.renewInFlight = undefined
     this.state.set('reconnecting')
-    setTimeout(() => this.connect(), 1000)
+    this.respawnTimer = setTimeout(() => this.connect(), 1000)
+  }
+
+  /** User-initiated retry (the disconnected chip is clicked while `reconnecting`). Two cases:
+   *  - worker alive but in its backoff loop: tell it to skip the current backoff sleep and retry now
+   *    (resets the attempt counter too, so a fresh failure restarts backoff from 1s);
+   *  - worker died (between {@link onWorkerError}'s terminate and its 1s respawn): cancel the pending
+   *    respawn and reconnect at once.
+   *  No-op when neither condition holds (e.g. already `open`, or `closed` = logged out). */
+  public retryNow(): void {
+    if (this.worker) {
+      this.worker.postMessage({ type: 'retry-now' } satisfies ToWorker)
+    } else if (this.respawnTimer) {
+      clearTimeout(this.respawnTimer)
+      this.respawnTimer = undefined
+      this.connect()
+    }
   }
 }

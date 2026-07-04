@@ -28,37 +28,76 @@ app-chat-input {
   background: transparent;
 }
 
-// Emoji panel: floats above the bar (8-column grid). Popup fallback only — the Android swap renders the
-// .ci-vkb-panel below the form instead. Capped + scrollable now that the dataset is the full categorized set.
+// ── Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid ───────────────────────────
+// Floats ABOVE the bar (position:absolute bottom:100%). The native keyboard stays up on mobile (no swap —
+// the VirtualKeyboard API hide() is broken on Chrome Android, crbug.com/40912131; this popup path is the
+// aligned-with-industry approach). Every height-contributing value is integer px per the CSS integer-pixel
+// rule; line-height is a length.
 .ci-emoji-panel {
   position: absolute;
   left: 8px;
   right: 8px;
   bottom: 100%;
   margin-bottom: 4px;
-  max-height: 240px;
+  height: 320px; // fixed panel height (tabs + scrollable grid)
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  overflow: hidden;
+  z-index: 4;
+}
+.ci-emoji-tabs {
+  flex: 0 0 40px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--app-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+.ci-emoji-tab {
+  flex: 0 0 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 36px;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.12s, background 0.12s;
+  &--active { opacity: 1; background: var(--app-hover); }
+}
+.ci-emoji-grid {
+  flex: 1 1 auto;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 2px;
   padding: 8px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  z-index: 4;
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
 }
 .ci-emoji {
+  height: 36px;
   border: none;
   background: transparent;
   font-size: 22px;
-  line-height: 36px; // integer px per the CSS integer-pixel rule (was unitless 1.6)
-  padding: 2px 0;
+  line-height: 36px;
+  padding: 0;
   border-radius: var(--app-radius-sm);
   cursor: pointer;
-  &:hover { background: var(--app-hover); }
+  transition: background 0.1s, transform 0.1s;
+  &:active { background: var(--app-hover); transform: scale(0.92); }
 }
 
 // Capsule input container: emoji + editor + file.
@@ -125,90 +164,4 @@ app-chat-input {
   &:hover { background: var(--app-brand-hover); }
   &:active { transform: scale(0.94); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
-}
-
-// ── Emoji swap panel (Android Chromium) ─────────────────────────────────────
-// Renders IN-FLOW below the input bar (sibling of <form>, inside <app-chat-input>), occupying the keyboard
-// region. Height is bound inline to frozenHeight (the occlusion captured at toggle), so the panel fills the
-// exact space the keyboard vacated and the message-list viewport keeps its size (kernel invariant).
-// Every height-contributing value is integer px per the CSS integer-pixel rule; line-height is a length.
-.ci-vkb-panel {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  background: var(--app-bg-muted);
-  border-top: 1px solid var(--app-border);
-  overflow: hidden;
-}
-.ci-vkb-tabs {
-  flex: 0 0 auto;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 8px;
-  border-bottom: 1px solid var(--app-border);
-  overflow-x: auto;
-  scrollbar-width: none;
-  &::-webkit-scrollbar { display: none; }
-}
-.ci-vkb-tabs-spacer {
-  flex: 1 1 auto;
-}
-.ci-vkb-tab {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: transparent;
-  font-size: 20px;
-  line-height: 36px;
-  border-radius: var(--app-radius-sm);
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 0.12s, background 0.12s;
-  &--active { opacity: 1; background: var(--app-hover); }
-}
-.ci-vkb-abc {
-  flex: 0 0 auto;
-  height: 36px;
-  padding: 0 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: none;
-  background: var(--app-surface);
-  color: var(--app-text);
-  font-size: 13px;
-  line-height: 36px;
-  font-weight: 600;
-  border-radius: var(--app-radius-pill);
-  cursor: pointer;
-  transition: transform 0.1s;
-  &:active { transform: scale(0.96); }
-}
-.ci-vkb-grid {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 2px;
-  padding: 8px;
-  scrollbar-width: none;
-  &::-webkit-scrollbar { display: none; }
-}
-.ci-vkb-emoji {
-  height: 36px;
-  border: none;
-  background: transparent;
-  font-size: 22px;
-  line-height: 36px;
-  padding: 0;
-  border-radius: var(--app-radius-sm);
-  cursor: pointer;
-  transition: background 0.1s, transform 0.1s;
-  &:active { background: var(--app-hover); transform: scale(0.92); }
 }

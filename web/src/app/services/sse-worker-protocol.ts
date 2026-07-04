@@ -28,6 +28,7 @@ export interface SseEventPayload {
 export type ToWorker =
   | { type: 'start'; url: string }
   | { type: 'stop' }
+  | { type: 'retry-now' } // user tapped the disconnected chip: skip the current backoff sleep and retry at once
   | { type: 'token'; reqId: string; token: string }
   | { type: 'token-failed'; reqId: string };
 

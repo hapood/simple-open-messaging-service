@@ -301,7 +301,8 @@
     "connecting": "Connecting…",
     "reconnecting": "Connection lost — reconnecting…",
     "recovered": "Back online",
-    "offline": "Offline — signed out"
+    "offline": "Offline — signed out",
+    "retry": "Click to retry now"
   },
   "update": {
     "banner": "A new version is available.",

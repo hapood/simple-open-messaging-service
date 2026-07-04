@@ -12,8 +12,7 @@ import {
 } from '@angular/core';
 import { ChatEditorComponent, type ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
-import { EmojiKeyboardService } from './emoji-keyboard.service';
-import { EMOJI_CATEGORIES, EMOJIS_FLAT } from './emoji-data';
+import { EMOJI_CATEGORIES } from './emoji-data';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -26,10 +25,42 @@ export type ChatSendIntent =
   | { kind: 'image'; files: FileList }
   | { kind: 'file'; files: FileList };
 
+/** A category/tab shown in the emoji panel (Recents is a synthetic tab when non-empty). */
+interface EmojiTab {
+  readonly id: string;
+  readonly label: string;
+  readonly icon: string;
+  readonly icons: readonly string[];
+}
+
+const RECENTS_KEY = 'soms.chat.emojiRecents';
+const RECENTS_MAX = 32;
+
+/** Load the persisted recents list (SSR/private-mode safe). */
+function loadRecents(): string[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(RECENTS_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : null;
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist the recents list (best-effort; swallow quota / private-mode errors). */
+function saveRecents(list: string[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(RECENTS_KEY, JSON.stringify(list));
+  } catch {
+    /* quota exceeded or private mode — ignore */
+  }
+}
+
 /**
  * Reusable chat composer (WhatsApp-style capsule + round send key), shared by the chatbox playground and the
- * production message thread. Extracted verbatim from the playground's input chrome (see the
- * `chatbox-playground-improvements` memory) and decoupled from dispatch:
+ * production message thread.
  *
  *  - Owns presentation ONLY: the Tiptap editor, the emoji panel + click-to-close backdrop, the image/file
  *    pickers, the send button (paper-plane when there is draft text, camera when empty), auto-grow height
@@ -38,6 +69,12 @@ export type ChatSendIntent =
  *  - Emits {@link ChatSendIntent} on send; the host does the rest. Emits {@link heightChange} so a host that
  *    pins its viewport above the bar (the playground) can track the auto-grown height; a flex-layout host
  *    (production) may ignore it.
+ *
+ * Emoji panel: a WhatsApp/Telegram-style floating panel (category tabs + scrollable grid + a persisted
+ * Recents tab). The native soft keyboard stays up on mobile — there is NO VirtualKeyboard swap. That API's
+ * `hide()` is broken on Chrome Android (crbug.com/40912131, open since 2023); the swap path was abandoned in
+ * favor of the popup-everywhere approach the major web chat clients use. See the `emoji-keyboard-vkb-swap`
+ * memory.
  *
  * Plain-text payload: the editor is rich for composition UX, but the text send serializes to plain text
  * (`editor.getText()`) — no HTML is stored. `members` drives the @mention suggestion popup (pass `[]` for
@@ -58,23 +95,14 @@ export class ChatInputComponent {
   /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
    *  the editor; updates do NOT recreate the editor. */
   readonly members = input<ChatMember[]>([]);
-  /** Fine-pointer input modality (physical keyboard present), width-independent. true → Enter sends;
-   *  false (touch/soft keyboard) → Enter inserts a newline. Bind to {@link LayoutService.hasFinePointer}. */
-  readonly hasFinePointer = input(true);
   readonly placeholder = input('');
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);
-  /** Live soft-keyboard occlusion height (from the host's KbdOffsetDirective.occlusion). The swap freezes
-   *  this at toggle time to size the panel that replaces the keyboard region. */
-  readonly keyboardHeight = input(0);
 
   /** Structured send intent — the host switches on `kind`. */
   readonly send = output<ChatSendIntent>();
   /** The input bar's measured height (auto-grows with the editor); the host may bind its viewport bottom to it. */
   readonly heightChange = output<number>();
-
-  /** Swap state machine (Android Chromium only; inert on iOS/desktop, which use the popup fallback below). */
-  readonly emojiKbd = inject(EmojiKeyboardService);
 
   private readonly editor = viewChild(ChatEditorComponent);
   private readonly inputBar = viewChild<ElementRef<HTMLFormElement>>('inputBar');
@@ -84,18 +112,34 @@ export class ChatInputComponent {
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
   readonly draftHtml = signal('');
-  /** Popup-only open flag (the legacy fallback path — iOS Safari, Firefox, desktop). The Android swap uses
-   *  {@link emojiKbd} instead, so this stays false wherever the swap is supported. */
+  /** Emoji panel open flag. */
   readonly emojiOpen = signal(false);
 
-  /** Categorized dataset (swap panel renders tabs; popup fallback renders {@link emojisFlat}). */
-  readonly categories = EMOJI_CATEGORIES;
-  readonly emojisFlat = EMOJIS_FLAT;
-  /** Active swap-panel category id (defaults to the first). */
-  readonly activeCategory = signal(EMOJI_CATEGORIES[0]?.id ?? '');
-  /** Glyphs of the active category (swap panel grid). */
+  /** Recently-used emojis (persisted across sessions via localStorage). */
+  readonly recents = signal<string[]>(loadRecents());
+  /** Active tab id ('recent' for the Recents tab, else a category id). */
+  readonly activeCategory = signal<string>(
+    this.recents().length ? 'recent' : (EMOJI_CATEGORIES[0]?.id ?? ''),
+  );
+
+  /** Tabs to render: a Recents tab (when non-empty) prepended to the categorized tabs. Each carries an icon
+   *  (the category's first glyph — Telegram-style) and its glyph list. */
+  readonly emojiTabs = computed<EmojiTab[]>(() => {
+    const rec = this.recents();
+    const recentsTab: EmojiTab[] = rec.length
+      ? [{ id: 'recent', label: 'Recent', icon: '🕐', icons: rec }]
+      : [];
+    const categoryTabs = EMOJI_CATEGORIES.map((c) => ({
+      id: c.id,
+      label: c.label,
+      icon: c.icons[0] ?? '',
+      icons: c.icons,
+    }));
+    return [...recentsTab, ...categoryTabs];
+  });
+  /** Glyphs of the active tab. */
   readonly activeEmojis = computed(
-    () => EMOJI_CATEGORIES.find((c) => c.id === this.activeCategory())?.icons ?? [],
+    () => this.emojiTabs().find((t) => t.id === this.activeCategory())?.icons ?? [],
   );
 
   // Editor content changed: track draft (send-button state) + re-measure the bar (auto-grow ⇒ heightChange).
@@ -104,23 +148,20 @@ export class ChatInputComponent {
     this.measureBar();
   }
 
+  /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
   toggleEmoji(): void {
-    if (this.emojiKbd.supported()) this.emojiKbd.toggle(this.keyboardHeight());
-    else this.emojiOpen.update((v) => !v);
+    if (this.emojiOpen()) { this.emojiOpen.set(false); return; }
+    if (this.recents().length) this.activeCategory.set('recent');
+    this.emojiOpen.set(true);
   }
   closeEmoji(): void {
-    this.emojiKbd.close();
     this.emojiOpen.set(false);
   }
-  /** ABC chip: close the swap panel and re-focus the editor — the editor's manual-policy focus→show handler
-   *  brings the native keyboard back. Caret is intact (the editor never blurred). */
-  closeEmojiAndFocus(): void {
-    this.emojiKbd.close();
-    this.editor()?.focus();
-  }
-  /** Insert the emoji at the editor caret (the editor manages caret restoration), then refocus. */
+  /** Insert the emoji at the editor caret, record it to Recents (move-to-front, dedup, capped), then refocus
+   *  so typing continues. The editor manages caret restoration. */
   insertEmoji(e: string): void {
     this.editor()?.insertText(e);
+    this.pushRecent(e);
     this.editor()?.focus();
   }
 
@@ -164,6 +205,13 @@ export class ChatInputComponent {
     const input = e.target as HTMLInputElement;
     if (input.files && input.files.length > 0) this.send.emit({ kind: 'file', files: input.files });
     input.value = '';
+  }
+
+  /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */
+  private pushRecent(e: string): void {
+    const next = [e, ...this.recents().filter((x) => x !== e)].slice(0, RECENTS_MAX);
+    this.recents.set(next);
+    saveRecents(next);
   }
 
   /** Measure the bar's border-box height on the next frame and emit (the editor's auto-grow changes it). The

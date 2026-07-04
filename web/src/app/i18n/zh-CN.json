@@ -301,7 +301,8 @@
     "connecting": "连接中…",
     "reconnecting": "连接中断——正在重新连接…",
     "recovered": "已恢复连接",
-    "offline": "离线——已退出登录"
+    "offline": "离线——已退出登录",
+    "retry": "点击立即重试"
   },
   "update": {
     "banner": "发现新版本。",

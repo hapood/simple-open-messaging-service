@@ -3,33 +3,27 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { BreakpointObserver } from '@angular/cdk/layout';
 import { map } from 'rxjs';
 
-// Desktop-class viewport: wide enough for the Telegram-style 3-pane AND a fine
-// pointer with hover. `pointer: fine` + `hover: hover` excludes every touch
-// device (phones, all iPads) regardless of UA, so iPadOS-13+'s desktop UA
-// string cannot fool this. Below 1280px a 3-pane gets cramped.
-const DESKTOP_QUERY = '(min-width: 1280px) and (pointer: fine) and (hover: hover)';
+// Desktop-class viewport: wide enough for the Telegram-style 3-pane. PURE WIDTH — the input-modality
+// axis (physical vs soft keyboard) is owned by InputDeviceService, so a wide touch tablet (iPad Pro
+// landscape, Samsung DeX) correctly lands in desktop mode while its input bar still behaves as
+// soft-keyboard. Below 1280px a 3-pane gets cramped.
+const DESKTOP_QUERY = '(min-width: 1280px)';
 // Tablet / landscape-large-phone width: enough for a side-by-side 2-pane.
 // 768 = iPad mini portrait / Bootstrap md; landscape phones (~844px) qualify too.
 const WIDE_QUERY = '(min-width: 768px)';
-// Fine pointer + hover, with NO width clause: a desktop-class INPUT device
-// (mouse/trackpad ⇒ a physical keyboard is present; no soft keyboard). This is
-// width-independent on purpose — a small laptop window or a narrow Tauri desktop
-// shell still has a physical keyboard, so Enter-to-send and the absence of the
-// VKB swap must NOT flip just because the viewport shrank below the 3-pane width.
-// Use this for keyboard-convention decisions; use {@link isDesktop} for layout.
-const FINE_POINTER_QUERY = '(pointer: fine) and (hover: hover)';
 
 export type LayoutMode = 'mobile' | 'tablet' | 'desktop';
 
 /**
- * Single source of truth for the viewport class. Consumed by the home
- * LayoutShell to fork desktop / tablet / mobile view trees.
+ * Single source of truth for the LAYOUT axis — the viewport class (how many panes fit), pure width.
+ * Consumed by the home LayoutShell to fork desktop / tablet / mobile view trees.
  *
- * `mode` is a 3-way computed: desktop wins (fine pointer + hover), else
- * ≥768px → tablet 2-pane, else mobile 1-pane. BreakpointObserver watches
- * matchMedia, so device rotation (which changes viewport width) live-updates
- * the mode and the shell swaps in place — no separate orientation listener
- * needed. Initial values are synchronous so first paint is correct without a tick.
+ * `mode` is a 3-way computed: ≥1280px → desktop 3-pane, ≥768px → tablet 2-pane, else mobile 1-pane —
+ * width only, with NO pointer/hover clause. The INPUT axis (physical vs soft keyboard) used to live here
+ * as `hasFinePointer`; it has moved to {@link InputDeviceService} so the two concerns cannot recouple.
+ * BreakpointObserver watches matchMedia, so device rotation (which changes viewport width) live-updates
+ * the mode and the shell swaps in place — no separate orientation listener needed. Initial values are
+ * synchronous so first paint is correct without a tick.
  */
 @Injectable({ providedIn: 'root' })
 export class LayoutService {
@@ -38,15 +32,6 @@ export class LayoutService {
   readonly isDesktop = toSignal(
     this.bpObserver.observe(DESKTOP_QUERY).pipe(map(result => result.matches)),
     { initialValue: this.bpObserver.isMatched(DESKTOP_QUERY) },
-  );
-
-  /** Fine-pointer input modality (physical keyboard present), independent of viewport
-   *  width. Drives the chat composer's Enter convention (Enter sends on a physical
-   *  keyboard; Enter inserts a newline on a touch/soft-keyboard device) and the
-   *  emoji-keyboard VKB-swap eligibility. NOT a layout signal. */
-  readonly hasFinePointer = toSignal(
-    this.bpObserver.observe(FINE_POINTER_QUERY).pipe(map(result => result.matches)),
-    { initialValue: this.bpObserver.isMatched(FINE_POINTER_QUERY) },
   );
 
   /** viewport ≥768px (tablet / landscape phone width). */

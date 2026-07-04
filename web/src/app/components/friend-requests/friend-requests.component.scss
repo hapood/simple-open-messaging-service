@@ -139,8 +139,17 @@ $danger: var(--app-danger);
     border: 1px solid $border;
     border-radius: var(--app-radius-pill);
     background: var(--app-surface);
+    color: var(--app-text);
     font-size: 14px;
     box-sizing: border-box;
+
+    // Native <input> does not reliably inherit `color` from body once an
+    // explicit background is set — Chromium falls back to its form-control
+    // default (dark text), which is invisible on the #202c33 dark surface.
+    // Pin both text and placeholder to app tokens explicitly.
+    &::placeholder {
+      color: var(--app-text-faint);
+    }
 
     &:focus {
       outline: none;

@@ -1,4 +1,5 @@
 import { Directive, effect, ElementRef, inject, signal } from '@angular/core';
+import { InputDeviceService } from '../services/input-device.service';
 import { LayoutService } from '../services/layout.service';
 
 /**
@@ -27,6 +28,7 @@ import { LayoutService } from '../services/layout.service';
 export class KbdOffsetDirective {
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly layout = inject(LayoutService);
+  private readonly inputDevice = inject(InputDeviceService);
 
   /** iOS manual-lift value (~0 on Chromium Android, where the layout viewport shrinks instead). Bind as
    *  the input bar's bottom inset. */
@@ -39,7 +41,11 @@ export class KbdOffsetDirective {
   private readonly track = effect((onCleanup) => {
     const frozen = this.layout.reflowFrozen(); // track → re-run on freeze/thaw edges
     const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-    if (this.layout.isDesktop() || !vv) { this.offset.set(0); this.occlusion.set(0); return; }
+    // Short-circuit on a PHYSICAL KEYBOARD (input modality), NOT on layout width. Keys on
+    // InputDeviceService.hasPhysicalKeyboard because `layout.isDesktop` is width-only now — a wide touch
+    // tablet (≥1280px desktop mode WITH a soft keyboard) must still track the keyboard, so the gate cannot
+    // be the layout signal.
+    if (this.inputDevice.hasPhysicalKeyboard() || !vv) { this.offset.set(0); this.occlusion.set(0); return; }
     const el = this.host.nativeElement;
     const update = (): void => {
       if (this.layout.reflowFrozen()) return; // immunity frame: hold the current offset/occlusion
