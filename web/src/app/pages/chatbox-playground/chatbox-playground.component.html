@@ -1,6 +1,6 @@
 <div class="pg" [class.pg--mobile]="!isDesktop()" [class.pg--desktop]="isDesktop()"
      [attr.data-theme]="theme()" [class.pg--native-anchor]="useNativeAnchor">
-  <div class="pg-stage" #pgStage>
+  <div class="pg-stage" appKbdOffset>
     <!-- 顶部 header：聊天头 + 右上主题切换 -->
     <header class="pg-header">
       <div class="pg-header-chat">
@@ -17,7 +17,7 @@
              stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
       </button>
     </header>
-    <div class="pg-viewport" #viewport tabindex="0" [style.bottom.px]="keyboardOffset() + inputBarHeight()">
+    <div class="pg-viewport" #viewport tabindex="0">
       <div class="pg-content" #content>
         <!-- 顶部哨兵：IO 观察它进入视口 → 触发向上加载历史（相对滚动架构）。 -->
         <div class="pg-sentinel" #topSentinel></div>
@@ -25,9 +25,7 @@
     </div>
     <!-- Telegram 式粘性日期浮层：在 .pg-stage 内、.pg-viewport 外（兄弟）——
          不在滚动容器内故不随文档流滚、也不参与虚拟滚动回收；组件据滚动位置实时更新文本。 -->
-    @if (stickyDate()) {
-      <div class="pg-sticky-date" aria-hidden="true"><span>{{ stickyDate() }}</span></div>
-    }
+    <app-sticky-date-overlay [label]="stickyDate()" />
     @if (toast()) {
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }
@@ -41,12 +39,13 @@
       <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
-    <!-- Input bar: the reusable ChatInputComponent (capsule [emoji + Tiptap editor + file] + round send key).
-         Anchored to the stage bottom; keyboardOffset lifts it above the soft keyboard (mobile). The composer
-         emits structured send intents; heightChange refills inputBarHeight so .pg-viewport bottom tracks it. -->
-    <app-chat-input class="pg-input-anchor" [style.bottom.px]="keyboardOffset()"
+    <!-- Input bar: flex child of the stage column. margin-bottom lifts it above the soft keyboard (mobile);
+         keyboardHeight feeds the emoji swap panel's frozen-height capture. -->
+    <app-chat-input class="pg-input-anchor"
                     [members]="members()" [isDesktop]="isDesktop()"
-                    (send)="onSendIntent($event)" (heightChange)="inputBarHeight.set($event)" />
+                    [keyboardHeight]="kbdOffset()?.occlusion() ?? 0"
+                    [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
+                    (send)="onSendIntent($event)" />
   </div>
 
   <!-- 移动端：抽屉遮罩，点按关闭 -->

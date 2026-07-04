@@ -16,6 +16,8 @@
   min-height: 100dvh;
 
   .form-pane {
+    // Anchor for <app-auth-toolbar>'s absolute top-right placement.
+    position: relative;
     display: flex;
     align-items: center;
     justify-content: center;

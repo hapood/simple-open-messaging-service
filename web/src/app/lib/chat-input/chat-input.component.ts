@@ -3,6 +3,8 @@ import {
   ChangeDetectionStrategy,
   ViewEncapsulation,
   ElementRef,
+  computed,
+  inject,
   input,
   output,
   signal,
@@ -10,6 +12,8 @@ import {
 } from '@angular/core';
 import { ChatEditorComponent, type ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
+import { EmojiKeyboardService } from './emoji-keyboard.service';
+import { EMOJI_CATEGORIES, EMOJIS_FLAT } from './emoji-data';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -59,11 +63,17 @@ export class ChatInputComponent {
   readonly placeholder = input('');
   /** Disable the send key + ignore Enter while a send/upload is in flight (parent-driven). */
   readonly sending = input(false);
+  /** Live soft-keyboard occlusion height (from the host's KbdOffsetDirective.occlusion). The swap freezes
+   *  this at toggle time to size the panel that replaces the keyboard region. */
+  readonly keyboardHeight = input(0);
 
   /** Structured send intent — the host switches on `kind`. */
   readonly send = output<ChatSendIntent>();
   /** The input bar's measured height (auto-grows with the editor); the host may bind its viewport bottom to it. */
   readonly heightChange = output<number>();
+
+  /** Swap state machine (Android Chromium only; inert on iOS/desktop, which use the popup fallback below). */
+  readonly emojiKbd = inject(EmojiKeyboardService);
 
   private readonly editor = viewChild(ChatEditorComponent);
   private readonly inputBar = viewChild<ElementRef<HTMLFormElement>>('inputBar');
@@ -73,12 +83,19 @@ export class ChatInputComponent {
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
   readonly draftHtml = signal('');
+  /** Popup-only open flag (the legacy fallback path — iOS Safari, Firefox, desktop). The Android swap uses
+   *  {@link emojiKbd} instead, so this stays false wherever the swap is supported. */
   readonly emojiOpen = signal(false);
 
-  readonly EMOJIS = [
-    '😀', '😂', '🥰', '😎', '😭', '😡', '👍', '🙏', '👏', '🔥', '🎉', '❤️', '💯', '🤔', '😴', '🤯',
-    '😅', '🥳', '😱', '🤗', '😇', '🙃', '😋', '😘', '🤩', '😜', '🤪', '😏', '😬', '🤤', '😪', '🥱',
-  ];
+  /** Categorized dataset (swap panel renders tabs; popup fallback renders {@link emojisFlat}). */
+  readonly categories = EMOJI_CATEGORIES;
+  readonly emojisFlat = EMOJIS_FLAT;
+  /** Active swap-panel category id (defaults to the first). */
+  readonly activeCategory = signal(EMOJI_CATEGORIES[0]?.id ?? '');
+  /** Glyphs of the active category (swap panel grid). */
+  readonly activeEmojis = computed(
+    () => EMOJI_CATEGORIES.find((c) => c.id === this.activeCategory())?.icons ?? [],
+  );
 
   // Editor content changed: track draft (send-button state) + re-measure the bar (auto-grow ⇒ heightChange).
   onHtml(h: string): void {
@@ -87,10 +104,18 @@ export class ChatInputComponent {
   }
 
   toggleEmoji(): void {
-    this.emojiOpen.update((v) => !v);
+    if (this.emojiKbd.supported()) this.emojiKbd.toggle(this.keyboardHeight());
+    else this.emojiOpen.update((v) => !v);
   }
   closeEmoji(): void {
+    this.emojiKbd.close();
     this.emojiOpen.set(false);
+  }
+  /** ABC chip: close the swap panel and re-focus the editor — the editor's manual-policy focus→show handler
+   *  brings the native keyboard back. Caret is intact (the editor never blurred). */
+  closeEmojiAndFocus(): void {
+    this.emojiKbd.close();
+    this.editor()?.focus();
   }
   /** Insert the emoji at the editor caret (the editor manages caret restoration), then refocus. */
   insertEmoji(e: string): void {

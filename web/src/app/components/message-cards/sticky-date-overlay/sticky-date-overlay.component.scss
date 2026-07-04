@@ -1,0 +1,22 @@
+:host {
+  position: absolute;
+  left: 0;
+  right: 0;
+  // Vertical offset inherits from the host container: the playground stage defaults to 48px (the header
+  // height); production's .msg-container sets --sd-top: var(--msg-header-h, 56px).
+  top: var(--sd-top, 48px);
+  display: flex;
+  justify-content: center;
+  z-index: 5;
+  pointer-events: none;
+}
+
+.sd-pill > span {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--im-date-pill-text);
+  background: var(--im-chat-bg);
+  padding: 3px 12px;
+  border-radius: var(--app-radius-pill);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}

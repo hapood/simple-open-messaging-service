@@ -16,6 +16,7 @@ import { Editor, Extension } from '@tiptap/core';
 import { StarterKit } from '@tiptap/starter-kit';
 import { Mention } from '@tiptap/extension-mention';
 import { Placeholder } from '@tiptap/extension-placeholder';
+import { getVirtualKeyboard, vkbSwapSupported } from '../../lib/chat-input/vkb-support';
 
 /** A mention candidate — id is stored on the chip (data-id), label is shown. Shape mirrors GroupMember
  *  so the production port swaps in GroupService.getMembers() unchanged. */
@@ -94,6 +95,10 @@ export class ChatEditorComponent {
   private readonly initEditor = effect((onCleanup) => {
     const el = this.editorEl()?.nativeElement;
     if (!el || this.editor) return;
+    // Emoji-keyboard swap (Android Chromium only): under manual policy focusing the editable no longer
+    // auto-shows the soft keyboard, so the focus handler below calls show() explicitly. Without that, the
+    // user could not type after tapping the editor. iOS/desktop keep the default `auto` policy.
+    const swap = vkbSwapSupported(this.isDesktop());
     const editor = new Editor({
       element: el,
       extensions: [
@@ -111,13 +116,23 @@ export class ChatEditorComponent {
         }),
       ],
       editorProps: {
-        attributes: { class: 'cb-editor-prose', role: 'textbox', 'aria-multiline': 'true' },
+        attributes: {
+          class: 'cb-editor-prose',
+          role: 'textbox',
+          'aria-multiline': 'true',
+          ...(swap ? { virtualkeyboardpolicy: 'manual' } : {}),
+        },
       },
     });
     editor.on('update', () => {
       this.isEmpty.set(editor.isEmpty);
       this.html.emit(this.toInlineHtml(editor.getHTML()));
     });
+    if (swap) {
+      // Manual policy: focus does not auto-show the keyboard, so the emoji swap's ABC chip (which re-focuses
+      // to dismiss the panel) and a plain tap on the editor both rely on this to bring the keyboard back.
+      editor.on('focus', () => getVirtualKeyboard()?.show());
+    }
     this.editor = editor;
     onCleanup(() => {
       editor.destroy();

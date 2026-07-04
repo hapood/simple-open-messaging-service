@@ -22,6 +22,9 @@
   // read ONE value (no drift if the header height is later tuned). Inherited through
   // the component boundary (CSS custom properties cross shadow/emulated borders).
   --msg-header-h: 56px;
+  // Sticky-date overlay top offset for <app-sticky-date-overlay> (inherits down to it): the header is a
+  // normal-flow flex child occupying the top --msg-header-h pixels, so the pill must clear exactly that.
+  --sd-top: var(--msg-header-h, 56px);
   // Wallpaper: bg color + tiled doodle layered on the same element (an element's
   // own background always paints behind its content, so no pseudo-element / z-index
   // is needed). The parent container does not scroll with the viewport → the pattern
@@ -76,29 +79,5 @@ app-chat-input {
   height: 1px;
 }
 
-// Sticky date overlay: inside msg-container but a sibling of the viewport.
-// Absolute-pinned to the top; out of document flow, does not scroll, and is not
-// recycled by the virtual scroller. Pinned flush to the BOTTOM of the header
-// (= the viewport's top edge), mirroring the playground's .pg-sticky-date top:48px
-// which equals its header height. The header is a NORMAL-FLOW flex child (not
-// absolute, unlike the playground), so it occupies the top --msg-header-h pixels of
-// msg-container — a top value smaller than that lands the pill ON the header.
-.msg-sticky-date {
-  position: absolute;
-  top: var(--msg-header-h, 56px);
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  z-index: 5;
-  pointer-events: none;
-  > span {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--im-date-pill-text);
-    background: var(--im-chat-bg);
-    padding: 3px 12px;
-    border-radius: var(--app-radius-pill);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
-  }
-}
+// The sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the playground). Its top
+// offset reads --sd-top (set on .msg-container above = the header height).

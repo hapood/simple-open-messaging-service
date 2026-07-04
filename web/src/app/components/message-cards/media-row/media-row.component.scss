@@ -1,17 +1,17 @@
-// 图片消息行：复用共享规则（@use row-base）+ media 特有（grid/cell/媒体时间戳角标）。
+// IMAGE message row: reuse the shared rules (@use row-base) + media-specific (grid/cell/media timestamp badge).
 @use '../row-base' as *;
 
-// media 气泡：图片贴边（padding:0）、外层 overflow:hidden 切圆角。
-// width:320px（= layoutAlbum 的 baseW，必须一致）：绝对宽度——不能用 min(100%,320px)。media 内容是
-// absolute cells（无固有宽度，不像文字气泡能被文本撑开），percentage width 在 flex col 内与 col 尺寸
-// 循环依赖 → resolve 为 0（相册整块空白）。max-width:100% 让窄屏（col<320）收缩，且不参与 content-size
-// 计算、不会循环。
+// Media bubble: images flush to the edge (padding:0), outer overflow:hidden cuts the rounded corners.
+// width:320px (= layoutAlbum's baseW, MUST match): absolute width — cannot use min(100%,320px). Media content is
+// absolute cells (no intrinsic width, unlike text bubbles which text stretches), so a percentage width inside a flex
+// column cyclically depends on the col size → resolves to 0 (blank album). max-width:100% lets narrow screens
+// (col<320) shrink it, and does not participate in content-size computation → no cycle.
 .pg-bubble.pg-media {
   padding: 0;
   min-height: 0;
   width: 320px;
   max-width: 100%;
-  display: block; // 覆盖文字气泡的 flex 垂直居中
+  display: block; // override the text bubble's flex vertical-centering
   overflow: hidden;
 }
 
@@ -20,11 +20,11 @@
   width: 100%;
 }
 
-// cell 绝对定位 + background-image（高度由 layoutAlbum 的 px 锁定，不依赖 grid/aspect-ratio）。
+// Cell: absolute positioning + background-image (height locked to px by layoutAlbum, not via grid/aspect-ratio).
 .pg-media-cell {
   position: absolute;
   overflow: hidden;
-  background: rgba(127, 127, 127, 0.18); // 图加载前占位灰
+  background: rgba(127, 127, 127, 0.18); // placeholder gray before the image loads
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -56,7 +56,7 @@
 }
 
 
-// 「+N」更多角标（相册 >6 张：末格蒙半透明黑底 + 居中数字）。
+// "+N" more badge (album >6 images: last cell covered with a translucent black overlay + a centered number).
 .pg-cell-more::after {
   content: '';
   position: absolute;

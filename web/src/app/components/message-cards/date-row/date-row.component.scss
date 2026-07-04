@@ -1,6 +1,6 @@
 :host {
   display: block;
-  // 纵向留白走 padding 不走 margin（offsetHeight 不含 margin → 下方气泡会叠上来）。
+  // Vertical whitespace uses padding, not margin (offsetHeight excludes margin → otherwise the next bubble stacks on top).
   padding: 14px var(--app-space-4);
   box-sizing: border-box;
 }
@@ -10,6 +10,7 @@
   justify-content: center;
   > span {
     font-size: 11px;
+    line-height: 13px; // integer px (was default ~13.2px) — see the integer-height contract in _row-base.scss
     font-weight: 500;
     color: var(--im-date-pill-text);
     background: var(--im-date-pill-bg);

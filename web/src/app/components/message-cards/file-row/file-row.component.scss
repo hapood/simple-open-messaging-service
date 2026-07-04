@@ -1,14 +1,15 @@
-// FILE 消息行：复用共享规则（@use row-base）+ file 特有（固定宽气泡 + 类型图标 + 下载锚点）。
+// FILE message row: reuse the shared rules (@use row-base) + file-specific (fixed-width bubble + type icon + download anchor).
 @use '../row-base' as *;
 
-// file 气泡：固定 280px 宽（绝对宽度 + max-width:100% 收缩窄屏，遵循 _row-base 宽度自洽契约）。
+// File bubble: fixed 280px width (absolute width + max-width:100% shrinks on narrow screens — honors the _row-base
+// width-self-contained contract).
 .pg-bubble.pg-file {
   width: 280px;
   max-width: 100%;
   padding: 8px 10px;
 }
 
-// 点击区：图标 + 元信息 + 下载glyph 横排。整行是 <a download>（无 url 时退化为 div）。
+// Click target: icon + meta + download glyph in a row. The whole row is an <a download> (degrades to a div when no url).
 .pg-file-row {
   display: flex;
   align-items: center;
@@ -17,7 +18,7 @@
   color: inherit;
 }
 
-// 类型图标：圆角方块 + 类别色 tint + 居中文件 svg + 底部扩展名小条。
+// Type icon: a rounded square + category-color tint + a centered file svg + a bottom extension strip.
 .pg-file-ico {
   position: relative;
   flex: 0 0 auto;
@@ -43,7 +44,7 @@
   font-weight: 700;
   letter-spacing: 0.3px;
 }
-// 类别 tint（pdf 红 / doc 蓝 / sheet 绿 / slides 橙 / archive 紫 / text 灰 / file 蓝灰）。
+// Category tint (pdf red / doc blue / sheet green / slides orange / archive purple / text gray / file blue-gray).
 .pg-file-ico--pdf { --pg-file-c: #e53935; }
 .pg-file-ico--doc { --pg-file-c: #2b6cb0; }
 .pg-file-ico--sheet { --pg-file-c: #2e7d32; }
@@ -52,17 +53,17 @@
 .pg-file-ico--text { --pg-file-c: #546e7a; }
 .pg-file-ico--file { --pg-file-c: #6b7280; }
 
-// 元信息列：文件名（单行省略）+ 大小（弱化）。
+// Meta column: filename (single-line ellipsis) + size (de-emphasized).
 .pg-file-meta {
   flex: 1 1 auto;
-  min-width: 0; // 允许 ellipsis 子项收缩
+  min-width: 0; // allow the ellipsis child to shrink
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
 .pg-file-name {
   font-size: 14px;
-  line-height: 1.3;
+  line-height: 18px; // integer px (was 1.3 = 18.2px) — see the integer-height contract in _row-base.scss
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -70,10 +71,11 @@
 }
 .pg-file-size {
   font-size: 12px;
+  line-height: 14px; // integer px (was default ~14.4px) — see the integer-height contract in _row-base.scss
   opacity: 0.6;
 }
 
-// 下载 glyph（弱化，悬停加深；整行可点下载，这是辅助视觉提示）。
+// Download glyph (de-emphasized; darkens on hover — the whole row is click-to-download, this is auxiliary cue).
 .pg-file-dl {
   flex: 0 0 auto;
   opacity: 0.4;

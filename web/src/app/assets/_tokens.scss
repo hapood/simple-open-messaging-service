@@ -54,8 +54,9 @@ $app-gray-900: #111827;
   // Semantic colors
   --app-danger:       #dc2626;   // error / danger (replaces #d93025 / #ba1a1a)
   --app-danger-soft:  #fef2f2;   // error soft fill
+  --app-success:      #16a34a;   // success / recovered (green-600) — the connection chip's "back online" check
   --app-success-soft: #afefc8;   // success soft fill (invite cards)
-  --app-warning:      #b45309;   // warning / in-progress (connecting, waiting) — amber-700; the connection banner derives its tint from this
+  --app-warning:      #b45309;   // warning / in-progress (connecting, waiting) — amber-700; the connection chip derives its tint from this
 
   // Message bubbles (core IM semantics)
   --app-bubble-self:  var(--app-brand);     // own messages
@@ -127,6 +128,7 @@ $app-gray-900: #111827;
   --app-brand-soft:   rgba(33, 150, 243, 0.18);   // selected pill / highlight — brand wash over dark
   --app-danger:       #ef4444;                    // brighter red for legibility on dark
   --app-danger-soft:  rgba(239, 68, 68, 0.18);    // soft error fill — red wash (was bright #fef2f2 pink)
+  --app-success:      #22c55e;                    // brighter green for legibility on dark (connection-recovered check)
   --app-success-soft: rgba(52, 211, 153, 0.18);   // soft success fill — green wash (was bright #afefc8)
   --app-warning:      #f59e0b;                    // brighter amber for legibility on dark (connecting / waiting)
   --app-bubble-other: #202c33;                    // generic other-party bubble (chat uses --im-*; overridden for completeness, was bright gray-100)

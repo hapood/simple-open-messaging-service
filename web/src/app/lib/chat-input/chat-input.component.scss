@@ -28,13 +28,16 @@ app-chat-input {
   background: transparent;
 }
 
-// Emoji panel: floats above the bar (8-column grid).
+// Emoji panel: floats above the bar (8-column grid). Popup fallback only — the Android swap renders the
+// .ci-vkb-panel below the form instead. Capped + scrollable now that the dataset is the full categorized set.
 .ci-emoji-panel {
   position: absolute;
   left: 8px;
   right: 8px;
   bottom: 100%;
   margin-bottom: 4px;
+  max-height: 240px;
+  overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   gap: 2px;
@@ -44,12 +47,14 @@ app-chat-input {
   border-radius: var(--app-radius-md);
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   z-index: 4;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
 }
 .ci-emoji {
   border: none;
   background: transparent;
   font-size: 22px;
-  line-height: 1.6;
+  line-height: 36px; // integer px per the CSS integer-pixel rule (was unitless 1.6)
   padding: 2px 0;
   border-radius: var(--app-radius-sm);
   cursor: pointer;
@@ -88,13 +93,13 @@ app-chat-input {
   &:hover { background: var(--app-hover); color: var(--app-text); }
 }
 
-// The Tiptap editor host. Same sizing contract the playground's textarea had (flex, min/max height, internal
-// scroll on overflow) so auto-grow behaves identically; the editor mounts its .tiptap.ProseMirror child inside.
+// The Tiptap editor host. The editable child (.cb-editor .ProseMirror in chat-editor.component.scss) caps at
+// 2 lines (42px) + this host's 7px×2 padding ⇒ a 56px ceiling; beyond it the child scrolls internally.
 .ci-input {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 36px;
-  max-height: 120px; // auto-grow ceiling (~6 lines); beyond it the field scrolls internally
+  max-height: 56px; // 2 lines (42px ProseMirror) + 14px vertical padding
   box-sizing: border-box;
   padding: 7px 6px;
   overflow-y: auto;
@@ -120,4 +125,90 @@ app-chat-input {
   &:hover { background: var(--app-brand-hover); }
   &:active { transform: scale(0.94); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+// ── Emoji swap panel (Android Chromium) ─────────────────────────────────────
+// Renders IN-FLOW below the input bar (sibling of <form>, inside <app-chat-input>), occupying the keyboard
+// region. Height is bound inline to frozenHeight (the occlusion captured at toggle), so the panel fills the
+// exact space the keyboard vacated and the message-list viewport keeps its size (kernel invariant).
+// Every height-contributing value is integer px per the CSS integer-pixel rule; line-height is a length.
+.ci-vkb-panel {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  background: var(--app-bg-muted);
+  border-top: 1px solid var(--app-border);
+  overflow: hidden;
+}
+.ci-vkb-tabs {
+  flex: 0 0 auto;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--app-border);
+  overflow-x: auto;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+.ci-vkb-tabs-spacer {
+  flex: 1 1 auto;
+}
+.ci-vkb-tab {
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  line-height: 36px;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.12s, background 0.12s;
+  &--active { opacity: 1; background: var(--app-hover); }
+}
+.ci-vkb-abc {
+  flex: 0 0 auto;
+  height: 36px;
+  padding: 0 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-size: 13px;
+  line-height: 36px;
+  font-weight: 600;
+  border-radius: var(--app-radius-pill);
+  cursor: pointer;
+  transition: transform 0.1s;
+  &:active { transform: scale(0.96); }
+}
+.ci-vkb-grid {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 2px;
+  padding: 8px;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+.ci-vkb-emoji {
+  height: 36px;
+  border: none;
+  background: transparent;
+  font-size: 22px;
+  line-height: 36px;
+  padding: 0;
+  border-radius: var(--app-radius-sm);
+  cursor: pointer;
+  transition: background 0.1s, transform 0.1s;
+  &:active { background: var(--app-hover); transform: scale(0.92); }
 }

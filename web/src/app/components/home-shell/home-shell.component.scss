@@ -3,9 +3,6 @@
   height: 100vh;
   height: 100dvh;
   overflow: hidden;
-  /* Shared with ConnectionBannerComponent's min-height so the reserved padding and the fixed bar can't
-     drift apart. Inherited by the banner (a DOM descendant of .shell). */
-  --conn-banner-h: 30px;
 }
 
 .shell {
@@ -16,16 +13,22 @@
   height: 100%;
   overflow: hidden;
   background: var(--app-bg);
-  /* Smooth the push/pull when the connection banner appears/disappears (padding is animatable, height is
-     not — so this is the correct lever for a fluid transition). */
-  transition: padding-top 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* Single source for the app-header height — read by HomeHeaderComponent (its own height) and by the
+     connection chip's top offset. Both are DOM descendants of .shell, so the var reaches them. */
+  --app-header-h: 56px;
+  /* Connection chip's distance from the viewport top. Default is a small gap: the "no visible header"
+     case — desktop has no home header, and on mobile/tablet with a chat open the home header is covered
+     by the full-screen chat overlay. Inherited by ConnectionBannerComponent (a fixed-position descendant
+     — CSS custom properties still inherit through the DOM tree regardless of layout positioning). */
+  --conn-chip-top: 10px;
 }
 
-/* Connection banner active → reserve space at the top so desktop/tablet content is PUSHED down rather
-   than covered by the fixed bar. On mobile the chat-slot is a full-screen fixed overlay (inset:0) and
-   ignores this padding, so the bar (z-index 50) simply overlays it — the intended mobile behavior. */
-.shell.conn-banner {
-  padding-top: var(--conn-banner-h);
+/* Home header is visible only in tablet/mobile LIST view (nav-drawer open, no chat). There the chip
+   must clear the header line, so drop it just below — no overlap with the search button. Desktop and
+   chat-open keep the default top gap (no header visible to clear). */
+.shell.mode-mobile:not(.chat-open),
+.shell.mode-tablet:not(.chat-open) {
+  --conn-chip-top: calc(var(--app-header-h) + 6px);
 }
 
 // Both persistent slots are flex columns; the routed component fills the slot (router-outlet itself
@@ -89,18 +92,20 @@
     inset: 0;
     z-index: 30;
     background: var(--app-surface);
-    display: none;       /* hidden at `/` so the list shows; revealed when a chat route is active */
+    /* Hidden/shown by the [@chatSlide] animation, NOT display:none↔flex (display is not animatable):
+       mobile-closed = translate3d(100%,0,0) + visibility:hidden (off-screen right, the list shows through),
+       mobile-open = in place. display stays flex (from the shared rule above) so the routed component lays
+       out while still off-screen and is ready to glide in. */
   }
   .aside-slot {
     position: fixed;
     inset: 0;
     z-index: 40;
     background: var(--app-surface);
-    display: none;
+    /* Same transform-driven show/hide as .chat-slot above: [@overlaySlide] slides this overlay in/out on
+       mobile (over the chat at z-index 40); display stays flex so the routed panel lays out off-screen. */
   }
 }
-.mode-mobile.chat-open .chat-slot { display: flex; }
-.mode-mobile.aside-open .aside-slot { display: flex; }
 
 // nav-drawer projected body (tablet/mobile): header + list stack and fill.
 .drawer-body {

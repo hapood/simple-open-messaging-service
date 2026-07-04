@@ -19,7 +19,9 @@
  *   branch is used.)
  *
  * Bad w/h (NaN/0/negative) → fall back to 4:3 (DEFAULT_R), so corrupt data can't poison totalH and ripple into
- * the virtual scroll. totalH is the grid height the kernel measures (same basis as onHeightChange).
+ * the virtual scroll. totalH is the grid height the kernel measures (same basis as onHeightChange), and it is
+ * Math.rounded so an album row's offsetHeight is always a whole number (see the integer-height contract in
+ * _row-base.scss → the kernel's Σ offsetHeight equals content.scrollHeight exactly).
  */
 
 export interface AlbumImageLike {
@@ -28,10 +30,10 @@ export interface AlbumImageLike {
 }
 
 export interface AlbumRect {
-  /** 左/宽：相对 grid 容器宽的百分比（窄屏自适应）。 */
+  /** left/width: percentage relative to the grid container width (adapts on narrow screens). */
   xPct: number;
   wPct: number;
-  /** 顶/高：绝对像素（按 baseW 算，固定不随屏变）。 */
+  /** top/height: absolute pixels (computed from baseW, fixed regardless of screen). */
   yPx: number;
   hPx: number;
 }
@@ -40,24 +42,24 @@ export interface AlbumLayout {
   rects: AlbumRect[];
   /** Grid total height (px) — the rendered row height the kernel measures. */
   totalH: number;
-  /** >6 张时末格叠 "+moreCount" 角标；0 表示无。 */
+  /** When >6 images, the last cell shows a "+moreCount" badge; 0 means none. */
   moreCount: number;
 }
 
 export const ALBUM_W = 320;
 const ALBUM_GAP = 2;
-/** w/h 异常时的兜底纵横比（h/w），4:3（与历史数据一致）。 */
+/** Fallback aspect ratio (h/w) for bad w/h, 4:3 (matches historical data). */
 const DEFAULT_R = 3 / 4;
-/** 行高 clamp 区间（相对 baseW）：minH 防极端扁条、maxH 防竖图撑爆消息。 */
+/** Row-height clamp range (relative to baseW): minH prevents extreme flat strips, maxH prevents tall portraits from blowing up the message. */
 export const ALBUM_MIN_ROW_H_RATIO = 0.35;
 export const ALBUM_MAX_ROW_H_RATIO = 1;
 
-/** 把基于 baseW 的 px 宽换算成相对容器宽的百分比。 */
+/** Convert a baseW-relative px width to a percentage of the container width. */
 function pct(px: number, baseW: number): number {
   return (px / baseW) * 100;
 }
 
-/** 取图纵横比 r=h/w；异常（非有限/≤0/NaN）→ fallback 4:3，防毒化 totalH。 */
+/** Take the aspect ratio r=h/w; on bad data (non-finite/≤0/NaN) → fallback 4:3 to avoid poisoning totalH. */
 function ratio(img: AlbumImageLike): number {
   const r = img.h / img.w;
   return Number.isFinite(r) && r > 0 ? r : DEFAULT_R;
@@ -70,8 +72,8 @@ interface RowCell {
 }
 
 /**
- * 按真实比例排一行 cells（等高）。
- * rawH ∈ [minH,maxH] → justified（保比例、填满、不裁）；否则 clamp 行高 + 等宽（cover 裁）。
+ * Lay out one row of cells (equal height).
+ * rawH ∈ [minH,maxH] → justified (ratio preserved, fills, no crop); otherwise clamp the row height + equal widths (cover crop).
  */
 function layoutRow(items: AlbumImageLike[], W: number, gap: number, baseW: number): { cells: RowCell[]; rowH: number } {
   const minH = baseW * ALBUM_MIN_ROW_H_RATIO;
@@ -83,11 +85,11 @@ function layoutRow(items: AlbumImageLike[], W: number, gap: number, baseW: numbe
   let rowH: number;
   let widths: number[];
   if (rawH >= minH && rawH <= maxH) {
-    // justified：行内保真实比例，宽 = 行高/r
+    // justified: preserve true ratio within the row, width = rowH/r
     rowH = rawH;
     widths = rs.map((r) => rowH / r);
   } else {
-    // 超界：clamp 行高，cell 改等宽，真实比例差由 cover 裁
+    // out of range: clamp the row height, cells become equal-width, the ratio gap is cover-cropped
     rowH = Math.max(minH, Math.min(maxH, rawH));
     const eqW = (W - (count - 1) * gap) / count;
     widths = rs.map(() => eqW);
@@ -102,7 +104,7 @@ function layoutRow(items: AlbumImageLike[], W: number, gap: number, baseW: numbe
   return { cells, rowH };
 }
 
-/** 按张数选固定分行方案（shown=min(n,6)）。返回每行图片数。 */
+/** Pick a fixed row split by image count (shown=min(n,6)). Returns the image count per row. */
 function rowPlan(shown: number): number[] {
   switch (shown) {
     case 1:
@@ -116,7 +118,7 @@ function rowPlan(shown: number): number[] {
     case 5:
       return [2, 3];
     default:
-      return [3, 3]; // 6（及 >6 截断到 6）
+      return [3, 3]; // 6 (and >6 truncated to 6)
   }
 }
 
@@ -145,10 +147,10 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
     topPx += rowH + gap;
   }
 
-  // totalH = round(ΣrowH + (rows-1)*gap)（topPx 末尾多加了一个 gap，扣回）。
+  // totalH = round(ΣrowH + (rows-1)*gap) (topPx added one extra gap at the end, subtract it back).
   const totalH = Math.round(topPx - gap);
 
-  // 末行 hPx 补差：使最后一格 yPx+hPx === totalH（消除 round 累积的 1px 缝）。
+  // Last-row hPx fixup: make the last cell's yPx+hPx === totalH (eliminates the 1px gap from round accumulation).
   if (rects.length > 0) {
     const last = rects[rects.length - 1];
     last.hPx = totalH - last.yPx;

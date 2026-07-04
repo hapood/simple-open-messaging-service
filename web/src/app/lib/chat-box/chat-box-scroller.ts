@@ -118,6 +118,12 @@ export interface CbOptions<T> {
   initOpts?: { chatId?: number };
   onScroll?: (info: CbScrollInfo) => void;
   onDebug?: (stats: CbDebugStats) => void;
+  /** Immunity-frame predicate: while it returns true, {@link onViewportResize} defers
+   *  (sets a pending flag and returns) instead of reflowing. Used by the route-transition
+   *  freeze so the message list does not re-pin/balance mid-slide. The caller MUST call
+   *  {@link flushViewportResize} once after the predicate flips back to false so the
+   *  deferred resize is applied. Defaults to "never frozen". */
+  isFrozen?: () => boolean;
 }
 
 export interface CbScrollInfo {
@@ -210,6 +216,9 @@ export interface ScrollerApi<T = unknown> {
   reconcilePending(): Promise<void>;
   getInfo(): CbScrollInfo;
   refresh(): void;
+  /** Apply a viewport resize that was deferred during an immunity frame (see
+   *  {@link CbOptions.isFrozen}). No-op if nothing was deferred. */
+  flushViewportResize(): void;
   destroy(): void;
 }
 
@@ -289,6 +298,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private readonly initOpts: { chatId?: number };
   private readonly onScroll?: (info: CbScrollInfo) => void;
   private readonly onDebug?: (stats: CbDebugStats) => void;
+  private readonly isFrozen: () => boolean;
 
   /** Ordered mounted entries: index 0 = oldest (DOM top) → last = newest (DOM bottom). The index is a window-local index. */
   private mounted: Entry<T>[] = [];
@@ -331,6 +341,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  opening/closing). ResizeObserver only fires on a real size change, so the pin's scrollTop write always changes
    *  value → always fires exactly one scroll event → the flag is always consumed. */
   private suppressScrollBalance = false;
+  /** Set when onViewportResize was called while {@link isFrozen} (immunity frame) and thus skipped.
+   *  flushViewportResize applies it once on thaw so a real viewport change during the freeze is not lost. */
+  private resizeDeferred = false;
   private mounting = false;
   private measuring = false;
   private destroyed = false;
@@ -377,6 +390,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.source = opts.source;
     this.onScroll = opts.onScroll;
     this.onDebug = opts.onDebug;
+    this.isFrozen = opts.isFrozen ?? (() => false);
     this.initOpts = opts.initOpts ?? {};
     this.cfg = { ...DEFAULTS, ...opts.config };
     this.viewportObs = new ResizeObserver(() => this.onViewportResize());
@@ -961,6 +975,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.balance();
   }
 
+  flushViewportResize(): void {
+    // Apply a resize that was deferred during an immunity frame. Re-check isFrozen so a thaw that
+    // races with a re-freeze (back-to-back transitions) does not prematurely flush.
+    if (this.resizeDeferred && !this.destroyed && !this.isFrozen()) {
+      this.resizeDeferred = false;
+      this.onViewportResize();
+    }
+  }
+
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
@@ -1237,6 +1260,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  Content-driven rebalances (item height changes, native scroll) still run via onElHeight + onNativeScroll. */
   private onViewportResize(): void {
     if (this.destroyed) return;
+    // Immunity frame: a route-transition animation is in flight. Hold the current pin so the
+    // message list does not jump under the sliding overlay; flushViewportResize runs this once on thaw.
+    if (this.isFrozen()) { this.resizeDeferred = true; return; }
     const anchor = this.captureAnchor();      // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
     this.measureVh();                          // apply the new vh
     if (anchor.mode === 'bottom' && this.mounted.length > 0) {
@@ -1925,6 +1951,15 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
     this.measuring = false;
     if (ngDevMode && (zeros > 0 || this.resetting)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
+    // Integer-height verification: totalH (Σ item offsetHeight + tailCap) vs content.scrollHeight. With the integer
+    // line-height contract in _row-base.scss these must agree up to a CONSTANT sentinel offset — d must NOT grow with
+    // the mounted count. Before that contract d drifted ~+11px over 63 items (summing rounded per-item heights vs one
+    // rounded total). If d grows here, a row is rendering at a fractional height — re-audit its line-height.
+    if (ngDevMode) {
+      const sh = this.content.scrollHeight;
+      const t = this.totalH();
+      console.log(`[vs.measure] n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} d=${Math.round(t - sh)}`);
+    }
   }
 
   private emit(): void { this.onScroll?.(this.getInfo()); }

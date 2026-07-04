@@ -1,7 +1,7 @@
 @use "../../assets/utils.scss" as *;
 
 .home-header {
-  height: 56px;
+  height: var(--app-header-h, 56px);
   width: 100%;
   background: var(--app-surface);
   box-sizing: border-box;

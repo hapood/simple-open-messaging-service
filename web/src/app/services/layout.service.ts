@@ -1,4 +1,4 @@
-import { computed, inject, Injectable } from '@angular/core';
+import { computed, inject, Injectable, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { BreakpointObserver } from '@angular/cdk/layout';
 import { map } from 'rxjs';
@@ -42,4 +42,21 @@ export class LayoutService {
   readonly mode = computed<LayoutMode>(() =>
     this.isDesktop() ? 'desktop' : this.isWide() ? 'tablet' : 'mobile'
   );
+
+  // ── Immunity frame ──────────────────────────────────────────────────────────
+  // During a route-transition animation (the mobile chat-slot slide-in/out) the OS
+  // frequently fires visualViewport resize/scroll (address-bar collapse, layout
+  // viewport settling) and the chat-slot's own ResizeObserver. Letting those reach
+  // the virtual-scroll kernel mid-slide causes a re-pin/balance that visibly jumps
+  // the message list UNDER the sliding overlay. freezeReflow() / thawReflow() bracket
+  // the animation; while frozen, reactors (kernel.onViewportResize, the input-bar
+  // keyboardOffset effect) hold their state and flush exactly once on thaw.
+  // Counter-based so overlapping start/done callbacks (interrupted transitions) stay
+  // balanced — every freeze has a matching thaw, and thaw floors at 0.
+  private readonly freezeCount = signal(0);
+  /** True while a route-transition immunity frame is active. Read by reactors that
+   *  must not respond to viewport changes mid-animation. */
+  readonly reflowFrozen = computed(() => this.freezeCount() > 0);
+  freezeReflow(): void { this.freezeCount.update((c) => c + 1); }
+  thawReflow(): void { this.freezeCount.update((c) => Math.max(0, c - 1)); }
 }

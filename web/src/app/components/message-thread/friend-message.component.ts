@@ -24,6 +24,8 @@ import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { ChatInputComponent, type ChatSendIntent } from '../../lib/chat-input/chat-input.component';
+import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
+import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
 import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
@@ -54,7 +56,7 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
 @Component({
   selector: 'app-message-thread',
   standalone: true,
-  imports: [MessageHeaderComponent, ChatInputComponent],
+  imports: [MessageHeaderComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss',
 })
@@ -65,12 +67,17 @@ export class MessageThreadComponent implements OnDestroy {
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
-  private readonly containerRef = viewChild<ElementRef<HTMLDivElement>>('container');
+  /** Soft-keyboard occlusion height (from the KbdOffsetDirective on `.msg-container`). Bound as the
+   *  input bar's margin-bottom so the flex column turns it into a bottom inset and the viewport
+   *  (flex:1) shrinks to match — the kernel re-pins to a correct bottom. Public so the template can
+   *  read `kbdOffset()?.offset()` (private members are not template-accessible under strict templates). */
+  readonly kbdOffset = viewChild(KbdOffsetDirective);
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);
   private readonly userService = inject(UserService);
   private readonly wsService = inject(WebsocketService);
-  protected readonly isDesktop = inject(LayoutService).isDesktop;
+  private readonly layout = inject(LayoutService);
+  protected readonly isDesktop = this.layout.isDesktop;
   private readonly galleryViewer = inject(GalleryViewerService);
 
   private scroller?: ScrollerApi<ChatItemData>;
@@ -81,10 +88,6 @@ export class MessageThreadComponent implements OnDestroy {
 
   readonly atBottom = signal(true);
   readonly stickyDate = signal<string | null>(null);
-  /** Soft-keyboard lift for the input bar (mobile). Bound as margin-bottom on <app-chat-input>, which the flex column
-   *  turns into a bottom inset — the viewport (flex:1) shrinks by exactly this much, so the kernel re-pins to a
-   *  correct bottom and the latest message stays visible above the keyboard. Desktop stays 0 (no keyboard). */
-  readonly keyboardOffset = signal(0);
 
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
@@ -115,22 +118,11 @@ export class MessageThreadComponent implements OnDestroy {
       this.lastJumpId = startId;
       this.scroller?.scrollToIndex(startId, 'center', true);
     });
-    // Mobile keyboard accommodation (mirrors the playground): the soft keyboard occludes the bottom of the chat area,
-    // so compute the occlusion height from visualViewport and lift the input bar by it (bound as margin-bottom above).
-    // The layout viewport does NOT resize on iOS, so without this lift the input sits behind the keyboard AND the
-    // viewport never shrinks → the kernel (even with its visualViewport re-pin) would re-pin against a stale full
-    // clientHeight. Uses container.clientHeight − visualViewport.height − offsetTop (the DIFFERENCE, safe from the
-    // Samsung visualViewport.height address-bar inflation per the keyboard-strategy memory).
-    effect((onCleanup) => {
-      const container = this.containerRef();
-      const vv = typeof window !== 'undefined' ? window.visualViewport : null;
-      if (!container || this.isDesktop() || !vv) { this.keyboardOffset.set(0); return; }
-      const el = container.nativeElement;
-      const update = (): void => this.keyboardOffset.set(Math.max(0, el.clientHeight - vv.height - vv.offsetTop));
-      update();
-      vv.addEventListener('resize', update);
-      vv.addEventListener('scroll', update);
-      onCleanup(() => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); });
+    // Immunity frame drain: when a route-transition freeze ends, apply any viewport resize the kernel
+    // deferred so the message list re-pins to the post-animation viewport exactly once.
+    effect(() => {
+      if (this.layout.reflowFrozen()) return; // act only on the unfrozen edge
+      this.scroller?.flushViewportResize();
     });
   }
 
@@ -157,6 +149,8 @@ export class MessageThreadComponent implements OnDestroy {
       source: this.source,
       hooks: { createItem: (item, prev) => this.createItem(item, prev), createSkeleton: () => createGhostCbElement(), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
       onScroll: (info) => this.onScroll(info),
+      // Immunity frame: hold the kernel's viewport reflow while a route-transition slide is in flight.
+      isFrozen: () => this.layout.reflowFrozen(),
     });
     void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined);
   }

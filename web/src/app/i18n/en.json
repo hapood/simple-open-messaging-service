@@ -65,7 +65,14 @@
     "uniqNameHint": "1 to 20 letters/numbers",
     "passwordHint": "6 to 20 letters/numbers/symbols",
     "passwordMismatch": "Two entered passwords do not match, make sure to re-enter",
-    "unknownError": "unknown error occurred"
+    "unknownError": "unknown error occurred",
+    "themeAria": "Theme: {{label}}",
+    "languageAria": "Language: {{label}}",
+    "theme": {
+      "system": "System",
+      "light": "Light",
+      "dark": "Dark"
+    }
   },
   "profile": {
     "title": "Profile",
@@ -281,7 +288,8 @@
   },
   "connection": {
     "connecting": "Connecting…",
-    "reconnecting": "Connection lost — reconnecting…"
+    "reconnecting": "Connection lost — reconnecting…",
+    "recovered": "Back online"
   },
   "update": {
     "banner": "A new version is available.",

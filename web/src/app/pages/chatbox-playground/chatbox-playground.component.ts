@@ -16,6 +16,8 @@ import { MockItemSource, MockUserService } from './http-item-source.mock';
 import { UserAvatarComponent } from '../../components/user-avatar/user-avatar.component';
 import { ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { ChatInputComponent, ChatSendIntent } from '../../lib/chat-input/chat-input.component';
+import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
+import { StickyDateOverlayComponent } from '../../components/message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
 
 // Angular production AOT sets the global ngDevMode to falsy and uses it for dead-code elimination (same pattern as the
@@ -43,7 +45,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent, ChatInputComponent],
+  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -62,8 +64,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly isDesktop = this.layout.isDesktop;
   /** Mobile control-panel drawer toggle. */
   readonly panelOpen = signal(false);
-  /** Pixels the input bar is lifted to clear the soft keyboard (computed from visualViewport; iOS fallback). */
-  readonly keyboardOffset = signal(0);
 
   /** Mock data source (implements CbSource; the buildItems generator paginates). Created with `count` at setup. */
   private source?: MockItemSource;
@@ -76,7 +76,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
-  private readonly pgStageRef = viewChild<ElementRef<HTMLDivElement>>('pgStage');
+  /** Soft-keyboard occlusion height from the KbdOffsetDirective on `.pg-stage` (mobile). Lifts the input bar.
+   *  Public so the template can read `kbdOffset()?.offset()` (private members are not template-accessible). */
+  readonly kbdOffset = viewChild(KbdOffsetDirective);
   private readonly jumpInput = viewChild<ElementRef<HTMLInputElement>>('jumpInput');
   private readonly insertInput = viewChild<ElementRef<HTMLInputElement>>('insertInput');
   private readonly removeInput = viewChild<ElementRef<HTMLInputElement>>('removeInput');
@@ -132,9 +134,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   readonly count = signal(5000);
   /** @mention candidates (mock group members; production swaps in GroupService.getMembers()). */
   readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
-  /** Measured input-bar height (auto-grow; refilled by ChatInputComponent's heightChange). Drives .pg-viewport
-   *   `bottom` so the list sits flush above the bar and a multi-line draft never covers it. */
-  readonly inputBarHeight = signal(63);
 
   constructor() {
     // Follow the system color scheme: initialize + listen for changes (matchMedia). A manual toggle still temporarily overrides it.
@@ -299,19 +298,6 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     window.removeEventListener('pointermove', this.onFabMove);
     window.removeEventListener('pointerup', this.onFabUp);
   }
-
-  // Mobile keyboard accommodation (industry-standard Telegram style): use visualViewport to compute the keyboard's occlusion height and lift the input bar above it.
-  private readonly trackKeyboard = effect((onCleanup) => {
-    const stage = this.pgStageRef();
-    const vv = window.visualViewport;
-    if (!stage || this.isDesktop() || !vv) { this.keyboardOffset.set(0); return; }
-    const el = stage.nativeElement;
-    const update = () => this.keyboardOffset.set(Math.max(0, el.clientHeight - vv.height - vv.offsetTop));
-    update();
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    onCleanup(() => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); });
-  });
 
   // --- Data loading ---
 

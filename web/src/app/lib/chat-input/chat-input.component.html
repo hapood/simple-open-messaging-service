@@ -1,10 +1,10 @@
 <form class="ci-input-bar" #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
-  @if (emojiOpen()) {
-    <!-- Full-screen transparent backdrop: click anywhere outside the panel closes it; the panel's own clicks
-         are stopped. z-index below the panel (.ci-emoji-panel: 4) so the panel stays interactive. -->
+  @if (!emojiKbd.supported() && emojiOpen()) {
+    <!-- Popup fallback (iOS Safari / Firefox / desktop): floats ABOVE the bar; the native keyboard stays up.
+         The Android Chromium swap renders a separate in-flow panel below the form instead. -->
     <div class="ci-backdrop" (click)="closeEmoji()"></div>
     <div class="ci-emoji-panel" (click)="$event.stopPropagation()">
-      @for (e of EMOJIS; track e) {
+      @for (e of emojisFlat; track e) {
         <button type="button" class="ci-emoji" appPreventFocusSteal (click)="insertEmoji(e)">{{ e }}</button>
       }
     </div>
@@ -46,3 +46,27 @@
   <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
   <input #fileInput type="file" hidden (change)="onFileChange($event)" />
 </form>
+@if (emojiKbd.supported() && emojiKbd.open()) {
+  <!-- Swap panel (Android Chromium): replaces the keyboard region. Height = the occlusion captured at toggle,
+       so the message-list viewport keeps its exact size across the swap (kernel invariant — the panel fills
+       precisely the space the keyboard vacated). ABC chip closes the panel and re-focuses the editor, whose
+       manual-policy focus→show handler brings the native keyboard back. -->
+  <div class="ci-vkb-panel" [style.height.px]="emojiKbd.frozenHeight()" role="dialog" aria-label="Emoji"
+       (click)="$event.stopPropagation()">
+    <div class="ci-vkb-tabs" role="tablist">
+      @for (cat of categories; track cat.id) {
+        <button type="button" class="ci-vkb-tab" appPreventFocusSteal
+                [class.ci-vkb-tab--active]="activeCategory() === cat.id"
+                (click)="activeCategory.set(cat.id)" [attr.aria-label]="cat.label">{{ cat.icons[0] }}</button>
+      }
+      <span class="ci-vkb-tabs-spacer"></span>
+      <button type="button" class="ci-vkb-abc" appPreventFocusSteal (click)="closeEmojiAndFocus()"
+              aria-label="Switch to keyboard">ABC</button>
+    </div>
+    <div class="ci-vkb-grid">
+      @for (e of activeEmojis(); track e) {
+        <button type="button" class="ci-vkb-emoji" appPreventFocusSteal (click)="insertEmoji(e)">{{ e }}</button>
+      }
+    </div>
+  </div>
+}

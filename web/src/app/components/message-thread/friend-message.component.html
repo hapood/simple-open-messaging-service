@@ -1,5 +1,5 @@
 <div>
-  <div class="msg-container" #container>
+  <div class="msg-container" appKbdOffset>
     <app-message-header [userMsgTrd]="userMsgTrd()"></app-message-header>
 
     <div class="msg-viewport" #viewport tabindex="0">
@@ -8,14 +8,13 @@
       </div>
     </div>
 
-    @if (stickyDate(); as sd) {
-      <div class="msg-sticky-date" aria-hidden="true"><span>{{ sd }}</span></div>
-    }
+    <app-sticky-date-overlay [label]="stickyDate()" />
 
     <app-chat-input
       [members]="[]"
       [isDesktop]="isDesktop()"
-      [style.margin-bottom.px]="keyboardOffset()"
+      [keyboardHeight]="kbdOffset()?.occlusion() ?? 0"
+      [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
       (send)="onSendIntent($event)"
     ></app-chat-input>
   </div>

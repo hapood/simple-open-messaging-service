@@ -27,9 +27,14 @@
 }
 
 // ---------- Scrolling stage ----------
+// Flex column (mirrors the production .msg-container): header (flex:0) + viewport (flex:1) + input bar
+// (flex:0) stack in flow, so the viewport auto-shrinks to fit the input bar — no manual bottom binding or
+// inputBarHeight plumbing. sticky-date/toast/FAB stay position:absolute/fixed on this relative context.
 .pg-stage {
   position: relative;
   flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   // Wallpaper lives on the non-scrolling stage (aligned with the production
   // .msg-container) → the pattern stays fixed while messages scroll over it.
@@ -42,8 +47,7 @@
 
 // ---------- Top header (chat header + theme toggle) ----------
 .pg-header {
-  position: absolute;
-  top: 0; left: 0; right: 0;
+  flex: 0 0 auto;
   height: 48px;
   z-index: 2;
   display: flex;
@@ -87,13 +91,10 @@
 .pg[data-theme="dark"] .pg-theme-toggle .pg-ico-moon { display: none; }
 .pg[data-theme="dark"] .pg-theme-toggle .pg-ico-sun { display: inline-flex; }
 
-// Scroll viewport: native scrolling with the scrollbar hidden on every platform.
+// Scroll viewport: native scrolling with the scrollbar hidden on every platform. Flex child (flex:1) of the
+// stage column — fills the space between the header and the input bar, no manual top/bottom offsets needed.
 .pg-viewport {
-  position: absolute;
-  top: 48px;   // leave room for the header height at the top
-  right: 0;
-  left: 0;
-  bottom: 63px; // leave room for the input bar at the bottom
+  flex: 1 1 auto;
   overflow-y: auto;
   // Plan B (default -b route): the kernel manages scrollTop anchor compensation
   // itself, so browser scroll anchoring is disabled to avoid fighting it.
@@ -125,27 +126,9 @@
 }
 .pg-sentinel { height: 1px; }
 
-// —— Telegram-style sticky date overlay (inside the stage, outside the viewport;
-// does not scroll and is not recycled by the virtual scroller) ——
-.pg-sticky-date {
-  position: absolute;
-  top: 48px; // flush with the header bottom (= viewport top); no downward margin. When the loading spinner appears, TS hides this overlay to yield, so flush-to-top is safe.
-  left: 0;
-  right: 0;
-  display: flex;
-  justify-content: center;
-  z-index: 5;
-  pointer-events: none;
-  > span {
-    font-size: 11px;
-    font-weight: 500;
-    color: var(--im-date-pill-text);
-    background: var(--im-chat-bg);
-    padding: 3px 12px;
-    border-radius: var(--app-radius-pill);
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
-  }
-}
+// The Telegram-style sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the
+// production message thread). Its top offset defaults to 48px via the component's --sd-top fallback,
+// which matches this header height — no override needed here.
 
 // Transient "jump miss" toast (centered bottom overlay, above the input bar).
 .pg-toast {
@@ -185,13 +168,11 @@
 .pg-dev-badge--body { background: #ff9800; }
 
 // ---------- Input bar anchor ----------
-// The input chrome lives in ChatInputComponent (ci-* styles); this only pins <app-chat-input> to the stage
-// bottom. [style.bottom.px]="keyboardOffset()" (bound in the template) lifts it above the soft keyboard.
+// The input chrome lives in ChatInputComponent (ci-* styles); this only makes <app-chat-input> a flex child
+// of the stage column. [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0" (bound in the template) lifts it
+// above the soft keyboard (the swap panel, when open, is an in-flow sibling inside <app-chat-input>).
 .pg-input-anchor {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
+  flex: 0 0 auto;
 }
 
 // ---------- Control panel ----------

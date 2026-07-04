@@ -101,6 +101,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private readonly initOpts: { chatId?: number };
   private readonly onScroll?: (info: CbScrollInfo) => void;
   private readonly onDebug?: (stats: CbDebugStats) => void;
+  private readonly isFrozen: () => boolean;
 
   /** Ordered mounted entries: index 0 = oldest (DOM top) → last = newest (DOM bottom). Window-local index. */
   private mounted: Entry<T>[] = [];
@@ -144,6 +145,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** Set after a viewport-resize reflow re-pins to bottom; onNativeScroll consumes it once so the async scroll event
    *  the pinToBottom write fires does not re-arm balance/load/trim during a viewport shrink (soft keyboard, etc.). */
   private suppressScrollBalance = false;
+  /** Set when onViewportResize was called while {@link isFrozen} (immunity frame) and thus skipped.
+   *  flushViewportResize applies it once on thaw so a real viewport change during the freeze is not lost. */
+  private resizeDeferred = false;
   private mounting = false;
   private measuring = false;
   private destroyed = false;
@@ -191,6 +195,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.source = opts.source;
     this.onScroll = opts.onScroll;
     this.onDebug = opts.onDebug;
+    this.isFrozen = opts.isFrozen ?? (() => false);
     this.initOpts = opts.initOpts ?? {};
     this.cfg = { ...DEFAULTS, ...opts.config };
     this.viewportObs = new ResizeObserver(() => this.onViewportResize());
@@ -721,6 +726,15 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.balance();
   }
 
+  flushViewportResize(): void {
+    // Apply a resize that was deferred during an immunity frame. Re-check isFrozen so a thaw that
+    // races with a re-freeze (back-to-back transitions) does not prematurely flush.
+    if (this.resizeDeferred && !this.destroyed && !this.isFrozen()) {
+      this.resizeDeferred = false;
+      this.onViewportResize();
+    }
+  }
+
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
@@ -1000,6 +1014,9 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    *  run via onElHeight + onNativeScroll. */
   private onViewportResize(): void {
     if (this.destroyed) return;
+    // Immunity frame: a route-transition animation is in flight. Hold the current pin so the
+    // message list does not jump under the sliding overlay; flushViewportResize runs this once on thaw.
+    if (this.isFrozen()) { this.resizeDeferred = true; return; }
     const anchor = this.captureAnchor();      // BEFORE measureVh (at-bottom test uses the OLD vh + kernel totalH)
     this.measureVh();                          // apply the new vh
     if (anchor.mode === 'bottom' && this.mounted.length > 0) {

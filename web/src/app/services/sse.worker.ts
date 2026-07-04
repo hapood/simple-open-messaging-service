@@ -1,6 +1,6 @@
 /// <reference lib="webworker" />
 /**
- * SSE downlink worker. Owns the `@microsoft/fetch-event-source` connection, the reconnect/backoff
+ * SSE downlink worker. Owns a native `fetch` + `ReadableStream` SSE connection, the reconnect/backoff
  * loop, the liveness watchdog, and the browser online/offline fast-path — everything that used to
  * live on the main thread inside `WebsocketService`. Moving it off the main thread means SSE parsing,
  * backoff timers, and the watchdog no longer contend with the virtual-scroll kernel or the Tiptap
@@ -16,14 +16,21 @@
  * reuses it across reconnects; it only asks again after a 401 clears the cache. A stale `{token, reqId}`
  * reply (from a prior request) is dropped because its `reqId` won't match `tokenReqId`.
  *
- * The library's built-in auto-reconnect stays disabled (onerror re-throws); the outer `run` loop
- * owns every reconnect so backoff + auth stay coherent, exactly as on the main thread before.
+ * The stream is read with a bare `fetch` + `getReader()` loop, NOT `@microsoft/fetch-event-source`.
+ * That library is main-thread-only — it resolves `window.fetch` / `window.setTimeout` and calls
+ * `document.removeEventListener('visibilitychange', …)` inside its `dispose()`, all undefined on a
+ * `DedicatedWorkerGlobalScope`, so it throws `ReferenceError: window is not defined` the instant it
+ * runs here (every `openOnce` blew up → the `run` loop flipped to `reconnecting` forever → a permanent
+ * "Connection lost" banner even though the server was healthy). A worker already has `fetch`,
+ * `TextDecoder`, and `ReadableStream`, so we parse the SSE byte stream ourselves (see `readFrames` /
+ * `parseFrame`). There is no auto-reconnect inside the reader — a read error or clean close simply
+ * returns and the outer `run` loop owns every reconnect so backoff + auth stay coherent, exactly as on
+ * the main thread before.
  *
  * `sw` is the typed worker global — cast through `unknown` because the app's tsconfig includes both
  * the `dom` and (via the reference above) `webworker` libs, which would otherwise make the bare
  * global `self` / `addEventListener` ambiguous.
  */
-import { fetchEventSource } from '@microsoft/fetch-event-source';
 import {
   SSE_EVENT_FORCE_LOGOUT,
   SSE_EVENT_PING,
@@ -34,7 +41,7 @@ import {
 const sw = self as unknown as DedicatedWorkerGlobalScope;
 
 /** No frame within STALE_MS while `open` → the stream has silently stalled (half-open TCP / a network
- *  drop with no RST). `fetch-event-source` neither errors nor closes on a stall, so without this the
+ *  drop with no RST). A native fetch stream neither errors nor closes on a stall, so without this the
  *  worker would believe it is connected forever. ~2× the 25s server heartbeat + jitter margin. */
 const STALE_MS = 60_000;
 const WATCHDOG_CHECK_MS = 5_000;
@@ -64,7 +71,7 @@ let aborter: AbortController | undefined;
 /** Timestamp (ms) of the last received SSE frame (event or ping). Refreshed on every dispatch. */
 let lastFrameAt = 0;
 /** True once a server `ping` event has been observed — the watchdog only arms after this, so an old
- *  backend still emitting comment pings (invisible to onmessage) never false-triggers in a quiet chat. */
+ *  backend still emitting comment pings (invisible to the reader) never false-triggers in a quiet chat. */
 let pingObserved = false;
 /** The most recently obtained access token; reused across reconnects, cleared on a 401. */
 let currentToken: string | undefined;
@@ -139,33 +146,85 @@ async function openOnce(): Promise<void> {
   }
 
   aborter = new AbortController();
-  await fetchEventSource(url, {
+  const res = await fetch(url, {
     signal: aborter.signal,
-    headers: { Authorization: `Bearer ${token}` },
-    // Keep receiving while the tab is backgrounded — chat pushes must not pause on tab switch.
-    openWhenHidden: true,
-    onopen: async (res) => {
-      if (res.status === 401) {
-        currentToken = undefined; // force a renew on the next loop iteration
-        throw new AuthNeededError();
-      }
-      if (!res.ok) {
-        throw new Error(`SSE open failed: ${res.status}`);
-      }
-      attempt = 0;
-      if (openedOnce) post({ type: 'reconnect' });
-      openedOnce = true;
-      lastFrameAt = Date.now();
-      post({ type: 'state', state: 'open' });
-    },
-    onmessage: (ev) => {
-      dispatch(ev.event, ev.data);
-    },
-    onerror: (err) => {
-      // Re-throw → disable the library's built-in auto-reconnect; the outer `run` loop owns everything.
-      throw err;
-    },
+    headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+    // Defeat any intermediate caching of the event stream (correctness, not performance).
+    cache: 'no-store',
   });
+  if (res.status === 401) {
+    currentToken = undefined; // force a renew on the next loop iteration
+    throw new AuthNeededError();
+  }
+  if (!res.ok || !res.body) {
+    throw new Error(`SSE open failed: ${res.status}`);
+  }
+
+  // Headers received → the stream is open. Mirror the old onopen side-effects: reset backoff, emit the
+  // reconnect backfill pulse on every open after the first, arm liveness, tell main we're up. No
+  // `openWhenHidden` is needed — a worker has no visibility concept and is not throttled on tab hide,
+  // so the native reader is inherently always-open-when-hidden.
+  attempt = 0;
+  if (openedOnce) post({ type: 'reconnect' });
+  openedOnce = true;
+  lastFrameAt = Date.now();
+  post({ type: 'state', state: 'open' });
+
+  // Blocks until the server ends the stream or `aborter` fires (watchdog / offline / stop). A read or
+  // abort error propagates to `run`, which backs off and reconnects.
+  await readFrames(res.body);
+}
+
+/** Consume the SSE byte stream, dispatching one frame per blank-line-terminated chunk. A network chunk
+ *  can split a frame (or carry several), so we buffer and cut on the `\n\n` separator; `\r\n` is
+ *  normalized to `\n` for spec robustness (the server emits bare `\n`). Resolves on a clean stream end
+ *  and rejects on a read/abort error. */
+async function readFrames(body: ReadableStream<Uint8Array>): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    let idx: number;
+    while ((idx = buffer.indexOf('\n\n')) !== -1) {
+      const frame = parseFrame(buffer.slice(0, idx));
+      buffer = buffer.slice(idx + 2);
+      if (frame) dispatch(frame.event, frame.data);
+    }
+  }
+  // Flush the decoder's trailing surrogate; any un-terminated frame left in the buffer is incomplete
+  // (the server closed mid-frame) and is dropped.
+  decoder.decode();
+}
+
+/** Parse one SSE frame (the text between blank lines) into `{ event, data }`. Implements the relevant
+ *  slice of the SSE wire spec: a line starting with `:` is a comment (ignored), a single leading space
+ *  after the field colon is stripped, and multiple `data:` lines join with `\n`. `id` / `retry` are
+ *  unused (the app drives its own backoff and resumption cursor) so they're dropped. The server names
+ *  every real frame (`event: …`); a frame with no event field (the leading `: connected` comment)
+ *  yields `event: ''` and is skipped, so it never reaches `dispatch`. */
+function parseFrame(raw: string): { event: string; data?: string } | undefined {
+  let event = '';
+  let data = '';
+  let hasData = false;
+  for (const line of raw.split('\n')) {
+    if (!line || line.startsWith(':')) continue;
+    const colon = line.indexOf(':');
+    const field = colon === -1 ? line : line.slice(0, colon);
+    let value = colon === -1 ? '' : line.slice(colon + 1);
+    if (value.startsWith(' ')) value = value.slice(1);
+    if (field === 'event') {
+      event = value;
+    } else if (field === 'data') {
+      data = hasData ? `${data}\n${value}` : value;
+      hasData = true;
+    }
+  }
+  if (!event) return undefined;
+  return { event, data: hasData ? data : undefined };
 }
 
 /** Dispatch by the event field. Refreshes liveness, then either absorbs the heartbeat, kicks the user

@@ -65,7 +65,14 @@
     "uniqNameHint": "1 到 20 个字母或数字",
     "passwordHint": "6 到 20 个字母、数字或符号",
     "passwordMismatch": "两次输入的密码不一致，请重新输入",
-    "unknownError": "发生未知错误"
+    "unknownError": "发生未知错误",
+    "themeAria": "主题：{{label}}",
+    "languageAria": "语言：{{label}}",
+    "theme": {
+      "system": "跟随系统",
+      "light": "浅色",
+      "dark": "深色"
+    }
   },
   "profile": {
     "title": "个人资料",
@@ -281,7 +288,8 @@
   },
   "connection": {
     "connecting": "连接中…",
-    "reconnecting": "连接中断——正在重新连接…"
+    "reconnecting": "连接中断——正在重新连接…",
+    "recovered": "已恢复连接"
   },
   "update": {
     "banner": "发现新版本。",

@@ -1,29 +1,26 @@
 import { Component, computed, inject } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
 import { UpdateService } from '../../services/update.service';
-import { WebsocketService } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 
 /**
  * Non-intrusive "new version available" strip, fixed at the top of the viewport. Mirrors
- * {@link ConnectionBannerComponent}'s shell integration (same fixed top edge, same enter animation,
- * same `prefers-reduced-motion` guard) but with a brand-blue accent (`--app-brand`) instead of the
- * connection banner's amber (`--app-warning`), so the two states never read as the same thing.
+ * {@link ConnectionBannerComponent}'s enter animation and `prefers-reduced-motion` guard, with a
+ * brand-blue accent (`--app-brand`) instead of the connection chip's amber (`--app-warning`), so the
+ * two states never read as the same thing.
  *
- * Stacking: the connection banner also anchors to `top: 0`. To keep both visible when they coincide
- * (a reconnect during a pending update), this component offsets its own `top` by `--conn-banner-h`
- * while the SSE stream is `connecting`/`reconnecting` — read from the same {@link WebsocketService}
- * state signal the shell uses, so the two can't drift apart.
+ * Stacking: the connection indicator is now a small corner chip (top-right, z-index 52), not a
+ * full-width strip — so this banner no longer self-offsets to clear it. When the two coincide (a
+ * reconnect during a pending update) the chip simply floats above this strip's top-right corner; the
+ * strip's centered text/buttons stay clear of that corner.
  *
- * Unlike the connection banner, this one does NOT push content (the shell reserves no padding for it):
+ * Like the connection chip, this banner does NOT push content (the shell reserves no padding for it):
  * a version update is a rare, dismissible, user-elected action, so briefly overlaying the header is
  * preferable to shifting the whole layout every time a deploy ships.
  */
 @Component({
   selector: 'app-update-banner',
   standalone: true,
-  // Self-offset below the connection banner when it is showing (both are top-anchored fixed bars).
-  host: { '[style.top.px]': 'topOffset()' },
   template: `
     @if (update.bannerVisible()) {
       <div class="banner" role="status" aria-live="polite">
@@ -43,8 +40,8 @@ import { LanguageService } from '../../services/language.service';
       position: fixed;
       left: 0;
       right: 0;
-      top: 0; /* overridden by the host binding (topOffset) to clear the connection banner */
-      z-index: 51; /* just above the connection banner (50) so Reload is always reachable */
+      top: 0;
+      z-index: 51; /* below the connection chip (52) so the chip stays visible; above the shell's slot layers so Reload is reachable */
       display: block;
     }
     .banner {
@@ -103,16 +100,8 @@ import { LanguageService } from '../../services/language.service';
 })
 export class UpdateBannerComponent {
   readonly update = inject(UpdateService);
-  private readonly ws = inject(WebsocketService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
-
-  /** Sit just below the connection banner (its height = `--conn-banner-h`) while it is showing, so the
-   *  two never overlap. Reads the same signal HomeShell's `bannerActive` uses. */
-  readonly topOffset = computed(() => {
-    const s = this.ws.state();
-    return s === 'connecting' || s === 'reconnecting' ? 30 : 0;
-  });
 
   // Reading lang() in each computed makes the labels re-translate on language switch under zoneless.
   readonly bannerText = computed(() => { this.language.lang(); return this.transloco.translate('update.banner'); });

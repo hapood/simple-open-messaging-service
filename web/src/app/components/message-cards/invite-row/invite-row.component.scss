@@ -13,6 +13,7 @@
 }
 .pg-invite-title {
   font-size: 12px;
+  line-height: 14px; // integer px (was default) — see the integer-height contract in _row-base.scss
   color: var(--app-text-muted);
   margin-bottom: 4px;
 }
@@ -25,20 +26,24 @@
 }
 .pg-invite-name {
   font-size: 15px;
+  line-height: 18px; // integer px (was default) — see the integer-height contract in _row-base.scss
   font-weight: 600;
 }
 .pg-invite-joined {
   font-size: 12px;
+  line-height: 14px; // integer px (was default) — see the integer-height contract in _row-base.scss
   color: var(--app-success, #2e7d32);
   margin-bottom: 6px;
 }
 .pg-invite-expiry {
   font-size: 11px;
+  line-height: 13px; // integer px (was default) — see the integer-height contract in _row-base.scss
   color: var(--app-text-faint);
   margin-bottom: 8px;
 }
 .pg-invite-result {
   margin-top: 6px;
   font-size: 12px;
+  line-height: 14px; // integer px (was default) — see the integer-height contract in _row-base.scss
   color: #e53935;
 }

@@ -119,7 +119,12 @@ $danger: var(--app-danger);
   align-items: center;
   gap: 8px;
   padding: 12px;
-  background: $bg-subtle;
+  // --app-bg-muted, not $bg-subtle (--app-bg): this is an input-bar/toolbar
+  // inside a --app-surface panel. In dark mode --app-bg is the deepest page
+  // background (#0b141a) and would punch a near-black band into the #202c33
+  // panel; --app-bg-muted tracks the surface in both themes (light: #f0f2f5
+  // either way, so no visual change there).
+  background: var(--app-bg-muted);
 
   .search-icon {
     color: $muted;

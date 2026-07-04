@@ -1,31 +1,48 @@
-// 消息行共享视觉规则（pg- 设计 token 命名空间）。
-// 各消息行组件 @use 本文件 → Emulated 封装下规则带各自 scope，只作用于本组件模板。
+// Shared visual rules for message rows (pg- design-token namespace).
+// Each message-row component @uses this file → under Emulated encapsulation the rules carry each component's own
+// scope and only affect that component's template.
 //
-// 提取自 playground 全局 pg- 规则，去掉依赖 .pg-content 父选择器的部分：
-// 组件根 host（app-msg-*-row）是内核挂载的滚动 item，padding 直接设在 .pg-msg-row 上。
+// Extracted from the playground's global pg- rules, dropping the parts that depended on the .pg-content parent
+// selector: the component root host (app-msg-*-row) is the scroll item the kernel mounts; padding is set directly
+// on .pg-msg-row.
 //
-// ── 虚拟滚动挂载组件契约（所有 app-msg-*-row 必须遵守）──────────────────────────
-// 内核（chat-box-scroller）只管「按抽象 id 邻居插入 host + offsetHeight 测高 + 窗口/trim」，
-// 不干预组件内部 CSS。故组件须自满足下列约束（每条都是踩过的坑）：
-//  1. 高度 border-box：纵向留白走 padding 不走 margin。内核用 offsetHeight 测高（不含 margin），
-//     margin 会把盒子下推、下方叠上来。date-row / .pg-msg-row 的间距都走 padding（见 :host 注释）。
-//  2. 宽度自洽（重点）：host 内部布局宽度不能 cyclic 依赖父容器。反例——media 曾用
-//     width:min(100%,320px)，在 flex col 内、内容又是无固有宽的 absolute cells → percentage resolve
-//     为 0（相册整块空白，cell0=0x320）。文字 bubble 没事是因为文字内容撑开了宽度。
-//     正解：绝对宽度（width:320px）+ max-width:100%（max-width 不参与 content-size 计算、不循环）。
-//     备选业界方案：<img> + 固定宽 + aspect-ratio（img 有固有宽，天然无 cyclic）。
-//  3. estimateHeight 别太离谱：内核首帧按估算挂载，measurePending 会用实测修正，但偏差大 balance 会抖。
-//  4. host 内部自治：内核只挂 host（按抽象 id 定位），host 内部结构组件自理；外层（playground）禁止
-//     写作用到 host 内部的全局 CSS——会污染实测高度（见 playground-no-css-inside 记忆）。
-//  5. 别依赖内核运行时 class（cb-pending）：mount 时加、测完移除，组件不能假设它常驻。
-// ──────────────────────────────────────────────────────────────────────────────
+// ── Virtual-scroll mounted-component contract (every app-msg-*-row MUST satisfy) ──────────────────────────────
+// The kernel (chat-box-scroller) only does "insert the host by abstract-id neighbor + measure height via
+// offsetHeight + window/trim"; it does NOT touch the component's internal CSS. So each component must satisfy the
+// following constraints (every one is a pitfall we hit):
+//  1. Height is border-box AND integer-pixel. Vertical whitespace uses padding, not margin: the kernel measures
+//     height via offsetHeight (margin excluded); a margin would push the box down and stack the next bubble on top.
+//     date-row / .pg-msg-row spacing is all padding (see the :host comment).
+//     ALSO every text element MUST use an INTEGER px line-height (never unitless/em/normal): CSS guarantees that a
+//     length line-height makes every line box EXACTLY that value (independent of font-size and wrap point), so
+//     N lines (N is always an integer) × integer line-height + integer padding = integer offsetHeight → the kernel's
+//     Σ offsetHeight === content.scrollHeight (eliminates sub-pixel drift accumulation; see the
+//     kernel-totalH-drifts-from-scrollHeight memory). Wrapping only changes N (an integer) — it can NEVER introduce
+//     a fraction. The sole exception is an inline element TALLER than line-height (an oversized emoji / inline <img>)
+//     growing that one line's box; font-size-sized emoji fit inside a 20px line, and chat images live in album rows
+//     (layout.ts already Math.rounds). Every app-msg-*-row MUST honor this integer-height contract.
+//  2. Width is self-contained (important): the host's internal layout width must NOT cyclically depend on the
+//     parent. Counter-example — media once used width:min(100%,320px); inside a flex column whose content is
+//     intrinsic-width-less absolute cells → the percentage resolves to 0 (blank album, cell0=0×320). Text bubbles
+//     are unaffected because text content stretches the width. Correct fix: an absolute width (width:320px) +
+//     max-width:100% (max-width does not participate in content-size computation, so no cycle). Alternative industry
+//     approach: <img> + fixed width + aspect-ratio (img has intrinsic width, naturally cycle-free).
+//  3. estimateHeight must be reasonable: the kernel mounts the first frame on the estimate and measurePending
+//     corrects it with the real value, but a large discrepancy makes balance jitter.
+//  4. Host-internal autonomy: the kernel only mounts the host (positioned by abstract id); the host's internal
+//     structure is the component's own concern. The outer layer (playground) MUST NOT write global CSS that reaches
+//     inside the host — it would pollute the measured height (see the playground-no-css-inside memory).
+//  5. Do not depend on the kernel's runtime class (cb-pending): it is added on mount and removed once measured;
+//     the component must not assume it is always present.
+// ──────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 :host {
   display: block;
 }
 
-// item 根。纵向间距走 padding 不走 margin：内核用 offsetHeight 测高（不含 margin），
-// margin 会把盒子下推、下方气泡叠上来（见 cb-element-border-box 记忆）。
+// Item root. Vertical spacing uses padding, not margin: the kernel measures height via offsetHeight (margin
+// excluded); a margin would push the box down and stack the next bubble on top (see the cb-element-border-box memory
+// + the integer-height contract above).
 .pg-msg-row {
   display: flex;
   position: relative;
@@ -38,8 +55,9 @@
   &.pg-other {
     justify-content: flex-start;
   }
-  // 组间留白由「换发送者的新组首」承担（padding-top 加大）；组内续条保留小间距（WhatsApp 紧凑但不贴死）。
-  // 每条纵向占位只取决于自己是否组首 → 追加新条时原末条高度不变（0 reflow）。
+  // Inter-group whitespace is borne by the new group-start row on a sender change (larger padding-top); in-group
+  // follow-ups keep a small gap (WhatsApp-style compact but not touching). Each row's vertical footprint depends
+  // only on whether IT is a group-start → appending a new row never changes the previous tail's height (0 reflow).
   &.pg-group-start {
     padding-top: 14px;
   }
@@ -53,14 +71,15 @@
 // the real offsetHeight is measured, then is removed instantly (no fade) so scroll-mounted rows never flash.
 // The previous .pg-msg-new fade-in rule (opacity:0 + double-RAF removal) was dead code and is removed.
 
-// 头像槽（40px 业界规范；组首出现，self 右 other 左）。
-// 仅管布局——尺寸/对齐/col-margin 契约不变（虚拟滚动测高稳定）；视觉（方圆角 + 配色 + 首字）
-// 全部交给内部 <app-user-avatar>，与列表/抽屉/面板复用同一组件。
+// Avatar slot (40px industry standard; appears on group-start, self right / other left).
+// It owns layout only — the size/alignment/col-margin contract is fixed (so virtual-scroll height measurement stays
+// stable); visuals (squircle + colors + initial letter) are delegated to the inner <app-user-avatar>, reusing the
+// same component as the list/drawer/panel.
 .pg-avatar {
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
-  align-self: flex-start; // 贴该行顶部，与组首消息上沿对齐
+  align-self: flex-start; // pinned to the row's top, flush with the group-start message's top edge
 }
 
 .pg-col {
@@ -74,7 +93,8 @@
     align-items: flex-start;
   }
 }
-// 组首显头像（has-avatar）；组内 col 让出头像列（40 头像 + 8 间距 = 48）与组首气泡边沿对齐。
+// Group-start shows the avatar (has-avatar); in-group cols yield the avatar column (40 avatar + 8 gap = 48) to align
+// with the group-start bubble edge.
 .pg-msg-row.pg-other .pg-col {
   margin-left: 8px;
 }
@@ -90,12 +110,13 @@
 
 .pg-name {
   font-size: 11px;
+  line-height: 13px; // integer px (see the integer-height contract)
   font-weight: 600;
   color: var(--app-text-muted);
   margin: 0 0 2px;
 }
 
-// 气泡（WhatsApp：浅绿/白 + 圆角 + 每条右下时间戳）。
+// Bubble (WhatsApp: light-green/white + rounded corners + bottom-right timestamp per row).
 .pg-bubble {
   position: relative;
   min-height: 40px;
@@ -122,8 +143,9 @@
     border-top-right-radius: 10px;
     border-bottom-left-radius: 3px;
     border-bottom-right-radius: 3px;
-    // 尾尖：旋转 45° 小方块跨气泡边沿（半内半外、同色）——内半被气泡遮、外半成三角尾尖，
-    // 与气泡融为一体无缝（border-三角法在圆角处易留缝）。
+    // Tail tip: a 45°-rotated small square straddling the bubble edge (half-in/half-out, same color) — the inner
+    // half is covered by the bubble, the outer half becomes the triangular tail, blending seamlessly (the
+    // border-triangle technique tends to leave gaps at the corners).
     &::before {
       content: '';
       position: absolute;
@@ -132,13 +154,14 @@
       transform: rotate(45deg);
     }
     &.pg-other::before {
-      // ◀ 头像在左：尾尖探左（他方组首有名字，尾尖略下移避名字）
+      // ◀ avatar on the left: the tail probes left (the other party's group-start has a name; the tail shifts down
+      // slightly to avoid it)
       top: 8px;
       left: -4px;
       background: var(--im-bubble-other);
     }
     &.pg-self::before {
-      // ▶ 头像在右：尾尖探右（self 无名字，下移到头像垂直中线 40/2−5）
+      // ▶ avatar on the right: the tail probes right (self has no name; shift down to the avatar's vertical center 40/2−5)
       top: 15px;
       right: -4px;
       background: var(--im-bubble-self);
@@ -149,7 +172,10 @@
 .pg-bubble-text {
   margin: 0;
   font-size: 14.2px;
-  line-height: 1.4;
+  line-height: 20px; // INTEGER px (was unitless 1.4 = 19.88px/line). A length line-height makes every line box EXACTLY
+                     // 20px regardless of font-size/wrap-point, so a wrapped bubble's height = padding + N×20 = a whole
+                     // number for any line count N → the kernel's Σ offsetHeight equals content.scrollHeight exactly
+                     // (no sub-pixel drift). See the integer-height contract in the header comment above.
   white-space: pre-wrap;
   word-break: break-word;
 }

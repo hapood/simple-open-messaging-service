@@ -3,8 +3,7 @@
      [class.mode-tablet]="mode() === 'tablet'"
      [class.mode-mobile]="mode() === 'mobile'"
      [class.chat-open]="chatActive()"
-     [class.aside-open]="asideActive()"
-     [class.conn-banner]="bannerActive()">
+     [class.aside-open]="asideActive()">
   <app-connection-banner />
   <app-update-banner />
   @if (mode() === 'desktop') {
@@ -21,8 +20,16 @@
     </app-nav-drawer>
   }
 
-  <!-- primary outlet: the open chat (or the empty placeholder at `/`) -->
-  <div class="chat-slot"><router-outlet /></div>
-  <!-- named outlet: peer-profile / group-info, positioned per layout -->
-  <div class="aside-slot"><router-outlet name="aside" /></div>
+  <!-- primary outlet: the open chat (or the empty placeholder at `/`). On mobile [@overlaySlide] glides this
+       overlay in/out from the right; on desktop/tablet it stays `static` (inline flex column). -->
+  <div class="chat-slot"
+       [@overlaySlide]="chatSlotState()"
+       (@overlaySlide.start)="onSlideStart($event)"
+       (@overlaySlide.done)="onSlideDone($event)"><router-outlet /></div>
+  <!-- named outlet: peer-profile / group-info. Slides in from the right on mobile (over the chat); the
+       desktop side panel and tablet absolute overlay stay `static`. -->
+  <div class="aside-slot"
+       [@overlaySlide]="asideSlotState()"
+       (@overlaySlide.start)="onSlideStart($event)"
+       (@overlaySlide.done)="onSlideDone($event)"><router-outlet name="aside" /></div>
 </div>
