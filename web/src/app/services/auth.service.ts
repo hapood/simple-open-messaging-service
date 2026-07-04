@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
+import { isTauri, tauriInvoke } from './runtime';
 import { uuid } from '../lib/uuid';
 
 const REFRESH_TOKEN = 'refresh_token',
@@ -126,6 +127,10 @@ export class AuthService {
   setAcToken(accessToken: string) {
     this._accessSetAt = Date.now()
     this.acTkSub.next(accessToken)
+    // Hand the token to the Tauri media proxy so /uploads/* <img>/<a> requests it injects the
+    // Bearer header. Fire-and-forget — if the proxy is briefly stale the worst case is a 401 image
+    // that reloads on the next renew; never block login on it. No-op in the browser (isTauri()).
+    if (isTauri()) tauriInvoke('set_access_token', { token: accessToken }).catch(() => {})
   }
 
   setReToken(refreshToken: string, isKeep?: boolean) {
@@ -164,6 +169,8 @@ export class AuthService {
     } else {
       sessionStorage.removeItem(REFRESH_TOKEN)
     }
+    // Clear the proxy's stashed token so a logged-out shell can't fetch media. No-op in the browser.
+    if (isTauri()) tauriInvoke('clear_access_token').catch(() => {})
   }
 
   logout() {

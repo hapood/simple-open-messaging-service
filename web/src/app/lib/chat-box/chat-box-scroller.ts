@@ -217,6 +217,11 @@ const DEFAULTS: Required<CbConfig> = {
   edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
 };
 
+/** Safety timeout backing the enter/leave/move CSS animations (cb-enter/cb-leave/cb-move in _cb.scss). Must exceed the
+ *  longest CSS duration (~0.22s for cb-move); 0.45s leaves a ~230ms margin for a swallowed animationend to self-clear
+ *  without the lag the old 0.6s backstop added now that the animations themselves are snappier. */
+const ANIM_SAFETY_MS = 450;
+
 /** Mounted entry: item (with msgId) + element handle + cached height + height unsubscribe. Fields are mutable (rebuild replaces el/vs/height/unsub). */
 interface Entry<T> {
   item: CbItem<T>;
@@ -262,6 +267,17 @@ interface Entry<T> {
    *  flight" signal used by teardown (cancelEntryAnim) to decrement `animating` exactly once. Set by flipMove when a
    *  reconcilePending reorder (or status-morph height delta) shifts the entry's absolute top. */
   moveTimer?: ReturnType<typeof setTimeout>;
+  /** rAF id scheduling the cb-enter kickoff (see enterAnim). The animation class is added on the NEXT frame so the
+   *  browser commits the pre-state first; cb-pending is held until the rAF fires, then atomically dropped with the
+   *  class so the first painted frame is the @keyframes `from` (no one-frame flash at opacity:1). Present between
+   *  enterAnim and the rAF callback; cancelEntryAnim cancels it (and balances `animating`) on teardown/re-seed. */
+  enterRaf?: number;
+  /** rAF id scheduling the cb-leave kickoff (see leaveEntry). Mutually exclusive with leaveTimer/leaveDone. */
+  leaveRaf?: number;
+  /** rAF id scheduling the cb-move kickoff (see flipMove). The invert var is set synchronously; the class is added on
+   *  the next frame (rAF runs before paint, so the @keyframes `from` applies for the first painted frame — no flash at
+   *  the new layout position, and no forced reflow). Mutually exclusive with moveTimer. */
+  moveRaf?: number;
 }
 
 export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
@@ -329,10 +345,30 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private animating = 0;
   /** Set when a balance was requested while animating>0; fired once when animating drains to 0. */
   private deferBalance = false;
+  /** Single-flight guard for {@link onMessageSignal}: a signal arriving while one is in-flight is collapsed into ONE
+   *  tail pass that runs after the in-flight pass resolves (and loops to drain further arrivals). Without this, two SSE
+   *  frames landing in the same microtask window race on shared viewport/tail state: the second call's loadNewer bails
+   *  on `inflightNewer`, so its pushLive'd items never drain (orphaned in the live cache until the NEXT signal), and both
+   *  calls' flipMove overlap on the surviving optimistic tail (moveTimer overwritten → animating leaks; the shove
+   *  double-plays). Tail-coalescing makes the pair run strictly in order, which is the only correct interleaving for an
+   *  async handler that mutates mount order, the height model, and scrollTop. */
+  private signalInFlight = false;
+  private signalQueued = false;
   /** Set during reconcileOptimistic. Reconcile is synchronous (no slide animation) and never spans an await, so this is
    *  never observed true by a deferred trim — kept so trimOlder/trimNewer (rule 4a) stay self-documenting. */
   private resorting = false;
   private readonly viewportObs: ResizeObserver;
+  /** visualViewport→onViewportResize throttle id (coalesces a keyboard-open burst of resize/scroll events into one
+   *  re-pin per frame). 0 = no pending re-pin. */
+  private vvRafId = 0;
+  /** Definitive keyboard re-pin signal: the viewport element's ResizeObserver alone is unreliable on mobile (the
+   *  layout viewport does not resize on iOS, and a lift-driven resize can race browser scroll-restore), so this also
+   *  fires onViewportResize from visualViewport resize/scroll. Reads viewport.clientHeight (NOT visualViewport.height)
+   *  for the actual height, so the Samsung address-bar inflation of visualViewport.height never reaches the model. */
+  private readonly onVisualViewportChange = (): void => {
+    if (this.vvRafId || this.destroyed) return;
+    this.vvRafId = requestAnimationFrame(() => { this.vvRafId = 0; this.onViewportResize(); });
+  };
 
   constructor(opts: CbOptions<T>) {
     this.viewport = opts.viewport;
@@ -347,6 +383,11 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.measureVh();
     this.viewportObs.observe(this.viewport);
     this.viewport.addEventListener('scroll', this.onNativeScroll, { passive: true });
+    // visualViewport: the definitive keyboard-show/hide signal (see onVisualViewportChange). The viewport element's
+    // own ResizeObserver fires only when its border-box changes, which on mobile keyboards it often does not (or does
+    // so unreliably); this listener guarantees the re-pin runs on every visual-viewport change regardless.
+    window.visualViewport?.addEventListener('resize', this.onVisualViewportChange);
+    window.visualViewport?.addEventListener('scroll', this.onVisualViewportChange);
     // Tail cap: created once, appended as the only/last child. Every later createEntry inserts before it (see createEntry),
     // so it stays the permanent last child of content across all mounts/re-seeds; removed only in destroy.
     this.tailCapEl = document.createElement('div');
@@ -420,6 +461,24 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  newer end is trimmed, this is a no-op (items are cached; loaded on scroll-back). */
   async onMessageSignal(): Promise<void> {
     if (this.destroyed || this.resetting) return;
+    // Single-flight + tail-coalesce: two SSE frames can land in the same microtask window (two ensureProfiles().then(onLive)
+    // callbacks back-to-back). Running them concurrently races on shared state — the second's loadNewer bails on
+    // inflightNewer (orphaning its items in the live cache) and both flipMove the optimistic tail (leaking `animating`
+    // and double-playing the shove). Collapse any overlap into ONE tail pass after the in-flight pass resolves, looping
+    // until no further signal arrived during a pass (drains a whole burst, in arrival order, strictly non-overlapping).
+    if (this.signalInFlight) { this.signalQueued = true; return; }
+    this.signalInFlight = true;
+    try {
+      do {
+        this.signalQueued = false;
+        await this.runMessageSignal();
+      } while (this.signalQueued && !this.destroyed && !this.resetting);
+    } finally {
+      this.signalInFlight = false;
+    }
+  }
+
+  private async runMessageSignal(): Promise<void> {
     if (!this.noNewer) return;                               // newer end trimmed → cached only; load on scroll-back
     const wasAtBottom = this.isAtBottom();
 
@@ -435,8 +494,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       for (const e of tailBefore) tailOldTop.set(e, this.topOf(this.mounted.indexOf(e)));
     }
 
-    await this.loadNewer(true);                              // forced: the signal means new data is available (bypasses the noNewer/revalidate guards)
+    const n = await this.loadNewer(true);                   // forced: the signal means new data is available; returns the count of newly mounted items (0 = nothing new this pass — mirrors the `n` used in followToNewest)
     if (this.destroyed) return;
+    if (n === 0) return;                                    // nothing new mounted → no shove to play, no new bottom to follow. Common for the tail-coalesced follow-up pass: by the time it runs, the in-flight pass already drained the live cache, so this one has nothing to do (also covers a genuine source-empty result). Safe to skip reconcileOptimistic/flip/trim/pin: mountNewerReals — the only setter of resortTarget — did not run, so there is nothing to reconcile.
     await this.reconcileOptimistic();                       // remove optimistic duplicates (synchronous) so the bottom is final
     if (this.destroyed) return;
 
@@ -535,32 +595,39 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     return targets.length;
   }
 
-  /** Start one entry's cb-leave exit: mark leaving, animating++, add the class; complete the unmount on animationend
-   *  (or the safety timeout). On completion Plan B compensates scrollTop if the row was above the viewport. */
+  /** Start one entry's cb-leave exit: mark leaving, animating++, and kick the class off on the next rAF (consistent
+   *  with enter/move — every animation begins on a frame boundary). cb-leave's `from` (opacity:1) matches the entry's
+   *  current visible state, so the one-frame deferral is invisible. Completion (unmount + Plan B scrollTop compensate)
+   *  runs on animationend or the safety timeout. leaveRaf (rAF pending) and leaveTimer/leaveDone (running) are handled
+   *  by cancelEntryAnim. */
   private leaveEntry(entry: Entry<T>): void {
     entry.leaving = true;
     entry.leaveDone = false;
     this.animating++;
-    entry.el.classList.add('cb-leave');
-    const onEnd = (): void => {
-      if (entry.leaveDone) return;
-      entry.leaveDone = true;
-      if (entry.leaveTimer !== undefined) { clearTimeout(entry.leaveTimer); entry.leaveTimer = undefined; }
-      entry.el.classList.remove('cb-leave');
-      const i = this.mounted.indexOf(entry);          // re-find (concurrent removes shift indices)
-      if (i >= 0) {
-        // Capture BEFORE unmount: an above-fold removal shifts content up and the anchor follows (the fold stays put);
-        // a below-fold removal leaves the anchor's topOf unchanged (no shift); if the leaving row WAS the anchor, its
-        // fallbackId successor takes the slot. Replaces the compensateAbove(-h) + above-fold check.
-        const anchor = this.captureAnchor();
-        this.unmountAt(i);
-        this.applyAnchor(anchor);
-      }
-      entry.leaving = false;
-      this.onAnimEnd();                               // drains animating; fires the deferred balance
-    };
-    entry.el.addEventListener('animationend', onEnd, { once: true });
-    entry.leaveTimer = setTimeout(onEnd, 600);        // safety if animationend is swallowed
+    entry.leaveRaf = requestAnimationFrame(() => {
+      entry.leaveRaf = undefined;
+      if (this.destroyed || entry.leaveDone) { this.onAnimEnd(); return; } // torn down / cancelled mid-frame
+      entry.el.classList.add('cb-leave');
+      const onEnd = (): void => {
+        if (entry.leaveDone) return;
+        entry.leaveDone = true;
+        if (entry.leaveTimer !== undefined) { clearTimeout(entry.leaveTimer); entry.leaveTimer = undefined; }
+        entry.el.classList.remove('cb-leave');
+        const i = this.mounted.indexOf(entry);          // re-find (concurrent removes shift indices)
+        if (i >= 0) {
+          // Capture BEFORE unmount: an above-fold removal shifts content up and the anchor follows (the fold stays put);
+          // a below-fold removal leaves the anchor's topOf unchanged (no shift); if the leaving row WAS the anchor, its
+          // fallbackId successor takes the slot. Replaces the compensateAbove(-h) + above-fold check.
+          const anchor = this.captureAnchor();
+          this.unmountAt(i);
+          this.applyAnchor(anchor);
+        }
+        entry.leaving = false;
+        this.onAnimEnd();                               // drains animating; fires the deferred balance
+      };
+      entry.el.addEventListener('animationend', onEnd, { once: true });
+      entry.leaveTimer = setTimeout(onEnd, ANIM_SAFETY_MS); // safety if animationend is swallowed
+    });
   }
 
   scrollToBottom(): void {
@@ -897,6 +964,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   destroy(): void {
     this.destroyed = true;
     cancelAnimationFrame(this.rafId);
+    cancelAnimationFrame(this.vvRafId); this.vvRafId = 0;
+    window.visualViewport?.removeEventListener('resize', this.onVisualViewportChange);
+    window.visualViewport?.removeEventListener('scroll', this.onVisualViewportChange);
     this.viewportObs.disconnect();
     this.tailCapObs.disconnect();
     this.viewport.removeEventListener('scroll', this.onNativeScroll);
@@ -1069,21 +1139,42 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   }
 
   /** Cancel any in-flight enter/leave/move animation on an entry being force-unmounted (jump re-seed / destroy).
-   *  Decrements `animating` exactly once per in-flight animation (guarded by enterTimer / leaveDone / moveTimer) so the
-   *  counter does not leak across a window reset, and the deferred animationend/timeout handlers become no-ops. */
+   *  Each animation has TWO in-flight states — rAF-pending (the kickoff frame hasn't fired; class not added) and
+   *  timer-running (rAF fired; the CSS animation is playing). The TIMER is the authoritative "running" signal, so it is
+   *  checked FIRST: in the unit-test rAF spy the kickoff fires synchronously and returns 0, which leaves enterRaf/leaveRaf/
+   *  moveRaf holding a stale 0 ALONGSIDE a set timer — checking the rAF first would take the wrong branch and leave the
+   *  timer to double-decrement `animating` via its safety timeout. Timer-first resolves correctly in both envs (a truly
+   *  pending rAF has its timer still undefined). `animating` is decremented exactly once per animation. */
   private cancelEntryAnim(entry: Entry<T>): void {
     if (entry.enterTimer !== undefined) {
       clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
       entry.el.classList.remove('cb-enter', 'cb-enter-above'); // an entry plays exactly one of the two enter classes
       this.animating--;
+    } else if (entry.enterRaf !== undefined) {
+      cancelAnimationFrame(entry.enterRaf); entry.enterRaf = undefined;
+      entry.el.classList.remove('cb-pending', 'cb-enter', 'cb-enter-above'); // cb-pending was held for the enter rAF
+      this.animating--;
     }
-    if (entry.leaving && !entry.leaveDone) {
-      if (entry.leaveTimer !== undefined) clearTimeout(entry.leaveTimer);
+    if (entry.leaveTimer !== undefined) {
+      clearTimeout(entry.leaveTimer); entry.leaveTimer = undefined;
+      entry.leaveDone = true; entry.el.classList.remove('cb-leave');
+      this.animating--;
+    } else if (entry.leaveRaf !== undefined) {
+      cancelAnimationFrame(entry.leaveRaf); entry.leaveRaf = undefined;
+      entry.leaveDone = true; entry.el.classList.remove('cb-leave'); // mark consumed so a stale rAF can't double-decrement
+      this.animating--;
+    } else if (entry.leaving && !entry.leaveDone) {
+      // Defensive: leaving flagged but neither branch above matched (e.g. leave completed between scheduling and here).
       entry.leaveDone = true; entry.el.classList.remove('cb-leave');
       this.animating--;
     }
     if (entry.moveTimer !== undefined) {
       clearTimeout(entry.moveTimer); entry.moveTimer = undefined;
+      entry.el.classList.remove('cb-move');
+      entry.el.style.removeProperty('--cb-move-dy');
+      this.animating--;
+    } else if (entry.moveRaf !== undefined) {
+      cancelAnimationFrame(entry.moveRaf); entry.moveRaf = undefined;
       entry.el.classList.remove('cb-move');
       entry.el.style.removeProperty('--cb-move-dy');
       this.animating--;
@@ -1185,20 +1276,31 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     }
   }
 
-  /** Play the cb-enter mount animation on a freshly-measured entry (cb-pending already removed → visible).
-   *  `enterTimer !== undefined` is the "still in flight" signal; finish() and teardown both guard on it so the
-   *  `animating` counter is decremented exactly once (animationend, safety timeout, or forced unmount). */
+  /** Play the cb-enter mount animation on a freshly-measured entry. cb-pending is STILL on (measurePending left it for
+   *  animated entries); the kickoff is pushed to the next requestAnimationFrame so the browser commits the pre-state
+   *  first, then the rAF atomically drops cb-pending and adds the enter class — the first painted frame is the
+   *  @keyframes `from` (opacity:0), with no one-frame flash at the un-hidden natural state.
+   *
+   *  `animating` is bumped when the rAF is scheduled (the move is "in flight" from this commit) and decremented exactly
+   *  once by: animationend, the safety timeout, OR cancelEntryAnim cancelling the rAF / clearing enterTimer. enterRaf
+   *  (rAF pending, class not added) and enterTimer (rAF fired, animation running) are mutually exclusive. */
   private enterAnim(entry: Entry<T>, cls: 'cb-enter' | 'cb-enter-above' = 'cb-enter'): void {
-    const finish = () => {
-      if (entry.enterTimer === undefined) return;
-      clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
-      entry.el.classList.remove(cls);
-      this.onAnimEnd();
-    };
-    entry.el.classList.add(cls);
+    if (entry.enterRaf !== undefined && entry.enterTimer === undefined) { cancelAnimationFrame(entry.enterRaf); entry.enterRaf = undefined; this.animating--; }
     this.animating++;
-    entry.enterTimer = setTimeout(finish, 600); // safety if animationend is swallowed
-    entry.el.addEventListener('animationend', finish, { once: true });
+    entry.enterRaf = requestAnimationFrame(() => {
+      entry.enterRaf = undefined;
+      if (this.destroyed) { this.onAnimEnd(); return; } // torn down mid-frame → balance animating, no DOM write
+      entry.el.classList.remove('cb-pending');
+      entry.el.classList.add(cls);
+      const finish = () => {
+        if (entry.enterTimer === undefined) return;
+        clearTimeout(entry.enterTimer); entry.enterTimer = undefined;
+        entry.el.classList.remove(cls);
+        this.onAnimEnd();
+      };
+      entry.enterTimer = setTimeout(finish, ANIM_SAFETY_MS); // safety if animationend is swallowed
+      entry.el.addEventListener('animationend', finish, { once: true });
+    });
   }
 
   /** balance: the scroll-driven checkpoint. Loads one batch at the edge that triggered (older at top / newer at bottom),
@@ -1606,22 +1708,44 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       if (delta !== 0) movers.push({ entry: e, el: e.el, delta });
     }
     if (movers.length === 0) return;
-    // Invert: each mover visually sits at its old top (new layout position + translateY(delta)).
+    // Invert data: each mover's old→new delta as a CSS var consumed by the cb-move @keyframes `from`. Set synchronously;
+    // the class is added on the NEXT frame below.
     for (const m of movers) m.el.style.setProperty('--cb-move-dy', `${m.delta}px`);
-    void this.content.offsetWidth; // force reflow so the invert start registers before the animation class is added
-    // Play: add cb-move (the @keyframes animates translateY(var) → none = old top → new top). animating bumped → balance deferred.
+    // Play on the next requestAnimationFrame. rAF callbacks run BEFORE the next paint, so adding cb-move in the rAF
+    // makes the @keyframes `from` (translateY(var) = old top) apply for the FIRST painted frame after the reorder —
+    // no one-frame flash at the new layout position, and no forced synchronous reflow (the frame boundary commits the
+    // invert). animating is bumped when each rAF is scheduled so balance defers during the gap frame too.
     for (const m of movers) {
+      // Retire a prior in-flight cb-move on this same entry first (balance its animating bump) so the counter stays
+      // exact across back-to-back flips on one element. Handles BOTH states: running (moveTimer) and rAF-pending
+      // (moveRaf). Timer checked first for the same reason as cancelEntryAnim (the test rAF spy leaves a stale moveRaf
+      // alongside a set moveTimer). The identity-token guard in finish() makes the prior closure no-op regardless.
+      if (m.entry.moveTimer !== undefined) {
+        clearTimeout(m.entry.moveTimer); m.entry.moveTimer = undefined; this.animating--;
+      } else if (m.entry.moveRaf !== undefined) {
+        cancelAnimationFrame(m.entry.moveRaf); m.entry.moveRaf = undefined; this.animating--;
+      }
+      this.animating++;
+      // Identity-token guard: a finish closure acts only while it still owns the CURRENT moveTimer. A superseding
+      // flipMove or cancelEntryAnim that overwrites/clears moveTimer makes this closure no-op, so `animating`
+      // decrements exactly once per started animation even when two flips target the same entry.
+      let myTimer: ReturnType<typeof setTimeout> | undefined;
       const finish = (): void => {
-        if (m.entry.moveTimer === undefined) return; // already finished (animationend + safety timeout guard)
-        clearTimeout(m.entry.moveTimer); m.entry.moveTimer = undefined;
+        if (m.entry.moveTimer !== myTimer) return; // superseded or already cleared → stale, do not double-decrement
+        m.entry.moveTimer = undefined;
+        clearTimeout(myTimer!);
         m.el.classList.remove('cb-move');
         m.el.style.removeProperty('--cb-move-dy');
         this.onAnimEnd();
       };
-      m.el.classList.add('cb-move');
-      this.animating++;
-      m.entry.moveTimer = setTimeout(finish, 600); // safety if animationend is swallowed
-      m.el.addEventListener('animationend', finish, { once: true });
+      m.entry.moveRaf = requestAnimationFrame(() => {
+        m.entry.moveRaf = undefined;
+        if (this.destroyed) { this.onAnimEnd(); return; } // torn down mid-frame → balance animating, no DOM write
+        m.el.classList.add('cb-move');
+        myTimer = setTimeout(finish, ANIM_SAFETY_MS); // safety if animationend is swallowed
+        m.entry.moveTimer = myTimer;
+        m.el.addEventListener('animationend', finish, { once: true });
+      });
     }
   }
 
@@ -1789,11 +1913,14 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       const h = entry.el.offsetHeight;
       if (ngDevMode && h === 0) zeros++;
       this.onElHeight(entry, h); // `measuring` suppresses compensation + balance (loadOlder does the unified compensation)
-      entry.el.classList.remove('cb-pending');
-      if (entry.animate) { // cb-enter now that the element is visible
+      if (entry.animate) { // cb-enter kicks off on the next frame; keep cb-pending (hidden) until then so enterAnim
+        // can drop it atomically with the enter class — the first painted frame is the @keyframes `from` (opacity:0),
+        // never a one-frame flash at the un-hidden natural state. Non-animated mounts drop cb-pending right here.
         const cls: 'cb-enter' | 'cb-enter-above' = entry.enterAbove ? 'cb-enter-above' : 'cb-enter';
         entry.animate = false; entry.enterAbove = false;
         this.enterAnim(entry, cls);
+      } else {
+        entry.el.classList.remove('cb-pending');
       }
     }
     this.measuring = false;

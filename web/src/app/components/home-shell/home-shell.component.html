@@ -6,6 +6,7 @@
      [class.aside-open]="asideActive()"
      [class.conn-banner]="bannerActive()">
   <app-connection-banner />
+  <app-update-banner />
   @if (mode() === 'desktop') {
     <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
     <app-chat-list-pane class="list" [style.width.px]="listWidth()" (selectThread)="openChat($event)" />

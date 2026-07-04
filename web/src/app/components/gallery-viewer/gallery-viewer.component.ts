@@ -1,6 +1,7 @@
 import { AfterViewInit, Component, computed, effect, HostListener, input, OnDestroy, output, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { AlbumImage } from '../message-cards/chat-item';
+import { assetUrl } from '../../services/runtime';
 
 const DRAG_THRESHOLD = 8;   // px: a pointer sequence under this length is a tap, not a drag
 const SWIPE_X = 50;         // px: horizontal drag at 1x → prev/next
@@ -62,9 +63,12 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
     const img = this.current();
     if (!img) return '';
     const k = this.retryKey();
-    if (k === 0 || /^(blob:|data:)/.test(img.src)) return img.src;
-    const sep = img.src.includes('?') ? '&' : '?';
-    return `${img.src}${sep}_r=${k}`;
+    // assetUrl rewrites /uploads/* to the Tauri media proxy under the desktop shell (the
+    // SameSite=Strict media cookie can't cross origins); blob:/data: pass through unchanged.
+    const base = assetUrl(img.src);
+    if (k === 0 || /^(blob:|data:)/.test(base)) return base;
+    const sep = base.includes('?') ? '&' : '?';
+    return `${base}${sep}_r=${k}`;
   });
   /** The <img> opacity: hidden while errored (so no broken-image icon bleeds through the retry card), else the swipe dim. */
   readonly imgOpacity = computed(() => (this.loadState() === 'error' ? 0 : this.dim()));

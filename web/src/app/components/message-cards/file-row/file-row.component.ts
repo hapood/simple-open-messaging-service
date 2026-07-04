@@ -7,6 +7,7 @@ import {
   UserAvatarComponent,
   UserAvatarType,
 } from '../../user-avatar/user-avatar.component';
+import { assetUrl } from '../../../services/runtime';
 
 /** Display category derived from mimeType (drives the icon tint). Purely presentational — mirrors the
  *  backend FILE_MIME_EXT set without depending on it. */
@@ -127,4 +128,8 @@ export class FileRowComponent {
     return i >= 0 ? name.slice(i + 1).toUpperCase() : 'FILE';
   });
   readonly sizeText = computed(() => formatBytes(this.file()?.size ?? 0));
+  /** The download anchor href. Under Tauri the raw /uploads/* path is rewritten to the media proxy
+   *  scheme (a bare <a href> can't carry the Authorization header the cross-origin path needs; the
+   *  browser path keeps the same-origin relative URL authenticated by the media_token cookie). */
+  readonly downloadHref = computed(() => assetUrl(this.file()?.url ?? ''));
 }

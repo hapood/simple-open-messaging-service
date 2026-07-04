@@ -282,5 +282,10 @@
   "connection": {
     "connecting": "连接中…",
     "reconnecting": "连接中断——正在重新连接…"
+  },
+  "update": {
+    "banner": "发现新版本。",
+    "reload": "重新加载",
+    "dismiss": "稍后"
   }
 }

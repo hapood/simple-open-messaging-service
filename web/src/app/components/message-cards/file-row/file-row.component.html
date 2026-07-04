@@ -15,7 +15,7 @@
     }
     <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-file" [class.pg-sending]="isSending()">
       @if (file()?.url; as url) {
-        <a class="pg-file-row" [href]="url" [download]="file()?.name ?? null" target="_blank" rel="noopener">
+        <a class="pg-file-row" [href]="downloadHref()" [download]="file()?.name ?? null" target="_blank" rel="noopener">
           <ng-container *ngTemplateOutlet="fileBody" />
         </a>
       } @else {

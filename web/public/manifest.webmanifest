@@ -1,0 +1,22 @@
+{
+  "name": "SOMS — Simple Open Chat",
+  "short_name": "SOMS",
+  "description": "Simple open chat service.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone"],
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#2196f3",
+  "lang": "en",
+  "dir": "auto",
+  "categories": ["social", "communication"],
+  "icons": [
+    { "src": "/icons/icon-192.png",          "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png",          "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-192-maskable.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

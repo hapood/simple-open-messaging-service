@@ -8,6 +8,7 @@ import { NavDrawerComponent } from '../nav-drawer/nav-drawer.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConnectionBannerComponent } from '../connection-banner/connection-banner.component';
+import { UpdateBannerComponent } from '../update-banner/update-banner.component';
 import { WebsocketService } from '../../services/websocket.service';
 import { ConversationItem } from '../../services/model';
 
@@ -25,7 +26,7 @@ const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent, ConnectionBannerComponent],
+  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent, ConnectionBannerComponent, UpdateBannerComponent],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
 })

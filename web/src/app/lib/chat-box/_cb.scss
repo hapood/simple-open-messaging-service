@@ -143,8 +143,12 @@
 // Exit uses forwards (holds the `to` state at end); the kernel only unmounts the DOM on animationend, and the entry
 // keeps counting its height until then, so the height model stays exact.
 // No "height collapse" exit — it would fight the kernel's offsetHeight model (left as a future enhancement).
-.cb-enter { animation: cb-enter 0.28s ease-out; }
-.cb-leave { animation: cb-leave 0.26s ease-in forwards; }
+// Pending-message enter/exit animations. Tuned snappy (0.18s enter / 0.2s leave) so an
+// optimistic send pops in without lag (WhatsApp/Telegram-class timing); the kernel's
+// animationend-driven lifecycle is duration-agnostic, and the safety timeout sits well
+// above the CSS duration.
+.cb-enter { animation: cb-enter 0.18s ease-out; }
+.cb-leave { animation: cb-leave 0.2s ease-in forwards; }
 
 @keyframes cb-enter {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
@@ -156,7 +160,7 @@
 // must slide in FROM ABOVE (translateY(-N) → 0) so it descends into its slot from the newest-real side and never travels
 // DOWN through the pending tail's band (a downward enter would visually cover the pending mid-animation). The pending tail
 // simultaneously shoves via .cb-move; the pair moves apart in the same frame. Same height-model constraint as cb-enter.
-.cb-enter-above { animation: cb-enter-above 0.28s ease-out; }
+.cb-enter-above { animation: cb-enter-above 0.18s ease-out; }
 
 @keyframes cb-enter-above {
   from { opacity: 0; transform: translateY(-8px) scale(0.98); }
@@ -173,7 +177,7 @@
 // its new layout position — starts visually at its OLD position (translateY(var)) and slides to identity (new position).
 // `both` fill applies the `from` immediately so there is no one-frame flash at the un-inverted new position.
 // Height-model safe: transform never affects offsetHeight, so the kernel's measured height is unchanged during the move.
-.cb-move { animation: cb-move 0.3s ease-out both; }
+.cb-move { animation: cb-move 0.22s ease-out both; }
 
 @keyframes cb-move {
   from { transform: translateY(var(--cb-move-dy, 0px)); }

@@ -65,6 +65,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly containerRef = viewChild<ElementRef<HTMLDivElement>>('container');
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);
   private readonly userService = inject(UserService);
@@ -80,6 +81,10 @@ export class MessageThreadComponent implements OnDestroy {
 
   readonly atBottom = signal(true);
   readonly stickyDate = signal<string | null>(null);
+  /** Soft-keyboard lift for the input bar (mobile). Bound as margin-bottom on <app-chat-input>, which the flex column
+   *  turns into a bottom inset — the viewport (flex:1) shrinks by exactly this much, so the kernel re-pins to a
+   *  correct bottom and the latest message stays visible above the keyboard. Desktop stays 0 (no keyboard). */
+  readonly keyboardOffset = signal(0);
 
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
@@ -109,6 +114,23 @@ export class MessageThreadComponent implements OnDestroy {
       if (startId === this.lastJumpId) return; // already the init anchor / already jumped
       this.lastJumpId = startId;
       this.scroller?.scrollToIndex(startId, 'center', true);
+    });
+    // Mobile keyboard accommodation (mirrors the playground): the soft keyboard occludes the bottom of the chat area,
+    // so compute the occlusion height from visualViewport and lift the input bar by it (bound as margin-bottom above).
+    // The layout viewport does NOT resize on iOS, so without this lift the input sits behind the keyboard AND the
+    // viewport never shrinks → the kernel (even with its visualViewport re-pin) would re-pin against a stale full
+    // clientHeight. Uses container.clientHeight − visualViewport.height − offsetTop (the DIFFERENCE, safe from the
+    // Samsung visualViewport.height address-bar inflation per the keyboard-strategy memory).
+    effect((onCleanup) => {
+      const container = this.containerRef();
+      const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+      if (!container || this.isDesktop() || !vv) { this.keyboardOffset.set(0); return; }
+      const el = container.nativeElement;
+      const update = (): void => this.keyboardOffset.set(Math.max(0, el.clientHeight - vv.height - vv.offsetTop));
+      update();
+      vv.addEventListener('resize', update);
+      vv.addEventListener('scroll', update);
+      onCleanup(() => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); });
     });
   }
 

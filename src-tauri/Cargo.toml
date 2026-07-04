@@ -1,0 +1,27 @@
+[package]
+name = "soms-desktop"
+version = "0.1.0"
+description = "SOMS desktop client (Tauri v2 shell around the Angular consumer client)"
+authors = ["hapood"]
+edition = "2021"
+rust-version = "1.77"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# `_lib` suffix makes the crate name `soms_desktop_lib`; the main binary calls `soms_desktop_lib::run()`.
+name = "soms_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+# rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+
+[features]
+# This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
+custom-protocol = ["tauri/custom-protocol"]

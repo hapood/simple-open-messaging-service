@@ -24,6 +24,33 @@ import { BusinessCode } from './common/business-code.js';
 // rejection (not a 500).
 const MULTIPART_LIMIT = 50 * 1024 * 1024;
 
+/** Parse a comma-separated ALLOWED_ORIGINS env into a trimmed, de-duplicated list. Empty when
+ *  unset → CORS falls back to the dev/permissive posture (see configureApp). Used to admit
+ *  cross-origin native clients such as the Tauri desktop webview (tauri://localhost,
+ *  https://tauri.localhost, http://tauri.localhost). */
+function parseAllowedOrigins(raw: string | undefined): string[] {
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(',')) {
+    const origin = part.trim();
+    if (origin && !seen.has(origin)) {
+      seen.add(origin);
+      out.push(origin);
+    }
+  }
+  return out;
+}
+
+/** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
+ *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
+ *  media_token cookie; the Tauri media proxy + other native clients send Bearer instead). */
+function extractBearer(header: string | undefined): string | undefined {
+  if (!header) return undefined;
+  const match = /^\s*Bearer\s+(.+?)\s*$/i.exec(header);
+  return match ? match[1] : undefined;
+}
+
 /**
  * Shared Fastify/Nest wiring — the single place plugins, global pipes/filters/interceptors,
  * the API prefix, Swagger UI, and static serving are configured. Called by both main.ts
@@ -52,10 +79,19 @@ export async function configureApp(
   // the /uploads/ preHandler hook (registered in registerStaticServing).
   await app.register(fastifyCookie);
 
-  // Same-origin in production (single-image, path-prefix deploy) → no CORS needed.
-  // Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
+  // CORS posture:
+  //  - Same-origin production deploy (single-image, path-prefix) needs none.
+  //  - Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
+  //  - Cross-origin native clients (Tauri desktop webview at tauri://localhost etc.) set
+  //    ALLOWED_ORIGINS to an explicit allowlist; the request Origin is mirrored only if listed,
+  //    and credentials are allowed so the media_token cookie + Authorization can ride along.
   const isDev = process.env.NODE_ENV !== 'production';
-  app.enableCors({ origin: isDev });
+  const allowedOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
+  app.enableCors(
+    allowedOrigins.length > 0
+      ? { origin: allowedOrigins, credentials: true }
+      : { origin: isDev },
+  );
 
   app.useGlobalPipes(
     new ValidationPipe({
@@ -117,7 +153,11 @@ async function registerStaticServing(
     'preHandler',
     async (request: FastifyRequest, reply: FastifyReply) => {
       if (!request.url.startsWith('/uploads/')) return; // only the media mount is gated
-      const raw = request.cookies?.[MEDIA_TOKEN_COOKIE];
+      // Native <img>/<a download> can't send Authorization → they ride the httpOnly media_token
+      // cookie (same-origin browser path). Cross-origin clients (the Tauri media proxy, any
+      // native client) can't use that cookie — SameSite=Strict suppresses it cross-origin — so
+      // also accept a Bearer header. Same validator, same revocation; the cookie stays primary.
+      const raw = request.cookies?.[MEDIA_TOKEN_COOKIE] ?? extractBearer(request.headers.authorization);
       const payload = raw ? tokenValidator.verifyToken(raw) : null;
       const principal = payload ? await tokenValidator.validatePayload(payload) : null;
       if (!principal) {

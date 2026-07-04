@@ -4,6 +4,7 @@ import type { AlbumImage, ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
+import { assetUrl } from '../../../services/runtime';
 
 /**
  * Image album message row.
@@ -56,7 +57,7 @@ export class MediaRowComponent {
     const moreIdx = this.layout().moreCount > 0 ? this.layout().rects.length - 1 : -1;
     return this.layout().rects.map((rect, i) => ({
       rect,
-      src: imgs[i]?.src ?? '',
+      src: assetUrl(imgs[i]?.src ?? ''),
       isMore: i === moreIdx,
     }));
   });

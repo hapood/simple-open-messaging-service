@@ -16,6 +16,12 @@
   width: 100%;
   overflow: hidden;
   position: relative;
+  // Shared header-height token: consumed here by the sticky-date overlay (must clear
+  // the header by exactly its height) AND by MessageHeaderComponent (.msg-header height).
+  // Defined on the positioning context so both the overlay and the header descendant
+  // read ONE value (no drift if the header height is later tuned). Inherited through
+  // the component boundary (CSS custom properties cross shadow/emulated borders).
+  --msg-header-h: 56px;
   // Wallpaper: bg color + tiled doodle layered on the same element (an element's
   // own background always paints behind its content, so no pseudo-element / z-index
   // is needed). The parent container does not scroll with the viewport → the pattern
@@ -72,10 +78,14 @@ app-chat-input {
 
 // Sticky date overlay: inside msg-container but a sibling of the viewport.
 // Absolute-pinned to the top; out of document flow, does not scroll, and is not
-// recycled by the virtual scroller.
+// recycled by the virtual scroller. Pinned flush to the BOTTOM of the header
+// (= the viewport's top edge), mirroring the playground's .pg-sticky-date top:48px
+// which equals its header height. The header is a NORMAL-FLOW flex child (not
+// absolute, unlike the playground), so it occupies the top --msg-header-h pixels of
+// msg-container — a top value smaller than that lands the pill ON the header.
 .msg-sticky-date {
   position: absolute;
-  top: 8px;
+  top: var(--msg-header-h, 56px);
   left: 0;
   right: 0;
   display: flex;

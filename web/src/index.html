@@ -2,9 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
+  <!-- Static theme-color fallback. The FOUC script just below (and ThemeService at runtime)
+       updates this to match the resolved theme, so the browser chrome blends from the very first
+       frame — placed before the script so the script can find it via querySelector. -->
+  <meta name="theme-color" content="#2196f3">
   <!-- Apply the persisted/system theme before first paint to avoid a flash of the
        wrong theme (FOUC). Mirrors ThemeService's resolution exactly; the service
-       re-asserts and owns runtime changes after Angular boots. -->
+       re-asserts and owns runtime changes after Angular boots. Also writes the matching
+       theme-color so mobile browser chrome (and the PWA splash) never flashes the wrong hue. -->
   <script>
     (function () {
       try {
@@ -14,6 +19,8 @@
           (mode === 'system' && window.matchMedia &&
             window.matchMedia('(prefers-color-scheme: dark)').matches);
         document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute('content', dark ? '#0b141a' : '#2196f3');
       } catch (e) { /* localStorage disabled — ThemeService applies the default */ }
     })();
   </script>
@@ -31,15 +38,18 @@
       } catch (e) { /* localStorage disabled — LanguageService applies the default */ }
     })();
   </script>
-  <title>Web</title>
+  <title>SOMS</title>
   <base href="/">
   <!-- interactive-widget=resizes-content: when the soft keyboard / browser bar opens, shrink the
        "layout viewport"; paired with 100dvh this lifts the input above the keyboard instead of being
        covered (matches Gemini web; effective on Chromium/Android; desktop has no virtual keyboard so
        it is unaffected; iOS Safari ignores this keyword and needs a separate focus-positioning fallback). -->
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
-  <meta name="theme-color" content="#2196f3">
+  <!-- iOS home-screen icon (180×180, solid brand bg — iOS flattens transparency to black otherwise). -->
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="SOMS">
 </head>
 <body>
   <app-root></app-root>

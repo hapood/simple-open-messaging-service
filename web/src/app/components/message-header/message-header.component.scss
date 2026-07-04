@@ -1,7 +1,10 @@
 @use "../../assets/utils.scss" as *;
 
 .msg-header {
-  height: 56px;
+  // Single source of truth: the height is the --msg-header-h token defined on the
+  // host .msg-container (the sticky-date overlay consumes the same value to clear
+  // the header). Falls back to 56px if the token is absent (e.g. header used elsewhere).
+  height: var(--msg-header-h, 56px);
   width: 100%;
   background: var(--app-surface);
   box-sizing: border-box;

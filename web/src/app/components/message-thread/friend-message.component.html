@@ -1,5 +1,5 @@
 <div>
-  <div class="msg-container">
+  <div class="msg-container" #container>
     <app-message-header [userMsgTrd]="userMsgTrd()"></app-message-header>
 
     <div class="msg-viewport" #viewport tabindex="0">
@@ -15,6 +15,7 @@
     <app-chat-input
       [members]="[]"
       [isDesktop]="isDesktop()"
+      [style.margin-bottom.px]="keyboardOffset()"
       (send)="onSendIntent($event)"
     ></app-chat-input>
   </div>

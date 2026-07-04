@@ -1,5 +1,6 @@
 import { Component, computed, input, signal, effect } from '@angular/core';
 import { UserAvatarType } from './model'
+import { assetUrl } from '../../services/runtime'
 
 /**
  * 首字母头像（业界最佳实践配色）。
@@ -36,6 +37,11 @@ export class UserAvatarComponent {
 
   /** 图片加载失败（损坏/404）→ 回退首字母。src 变化时重置，以重试新图。 */
   readonly imgFailed = signal(false)
+
+  /** The <img> src, rewritten to the Tauri media proxy under the desktop shell (the SameSite=Strict
+   *  media cookie can't cross origins; the browser path keeps the same-origin relative URL). This is
+   *  the single chokepoint — every [src] caller (thread list, nav drawer, group info, etc.) routes here. */
+  readonly imgSrc = computed(() => assetUrl(this.src()))
 
   constructor() {
     effect(() => {

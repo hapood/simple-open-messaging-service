@@ -1034,6 +1034,58 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(i2.scrollTop).toBe(i2.scrollHeight - i2.viewportHeight);
   });
 
+  // Regression (overlap race, the user-reported "opponent msg inserts between pending / a msg sinks under viewport"):
+  // two SSE frames landing in the same microtask window (two ensureProfiles().then(onLive) callbacks back-to-back).
+  // The bug: onMessageSignal had no single-flight guard, so the second call's loadNewer bailed on inflightNewer (the
+  // in-flight first call owned it) → the second live item never mounted until the NEXT signal (orphaned), AND both calls'
+  // flipMove overlapped on the surviving optimistic tail (moveTimer overwritten → animating leaked; the shove double-played
+  // and a deferred balance never drained). Faithful HttpItemSource clone: getNewer SPLICES the live cache synchronously.
+  it('overlapping onMessageSignal calls drain both items (no orphan), stay pinned, and balance animating', async () => {
+    const { hooks } = controllableHooks(40);
+    const full = fakeSource(500);
+    const live: CbItem<number>[] = [];
+    const src: CbSource<number> = {
+      ...full,
+      getNewer: async () => {
+        if (live.length === 0) return [];
+        const out = live.splice(0);                             // drain (mirrors HttpItemSource.getNewer liveCache path)
+        out[out.length - 1] = { ...out[out.length - 1], boundary: 'newest' as const };
+        return out;
+      },
+      pushLive: (items) => { for (const it of items) live.push(it); },
+    };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();                                      // m-400..m-499, noNewer=true
+    scroller.scrollToBottom();
+    // user's in-flight optimistic send at the tail → incoming opponent msgs shove a SURVIVING tail (the flipMove path)
+    scroller.insertAfter('m-499', { id: 'pending-0', data: -1, clientMessageId: 'cid-0' }, { optimistic: true });
+    animEnd('pending-0');
+    scroller.scrollToBottom();
+
+    // Two SSE frames land in the same microtask window: op-1 is cached AFTER the first onMessageSignal's getNewer
+    // sync-drained [op-0] but BEFORE its loadNewer resolves — exactly the one-microtask race window.
+    src.pushLive([{ id: 'op-0', data: 100 }]);                 // frame 1
+    const p1 = scroller.onMessageSignal();                      // sync part: getNewer drains [op-0], then awaits
+    src.pushLive([{ id: 'op-1', data: 101 }]);                 // frame 2 — cached during p1's await (the race)
+    const p2 = scroller.onMessageSignal();                      // overlaps p1 (collapses into a tail pass)
+    await flush(); await p1; await p2; await flush();
+
+    // Both opponent messages must be mounted (without the fix, op-1 is orphaned in the live cache until the next signal).
+    expect(content.querySelectorAll('[data-cb-id="op-0"]').length).toBe(1);
+    expect(content.querySelectorAll('[data-cb-id="op-1"]').length).toBe(1);
+    // The viewport stayed pinned to the FINAL bottom across the burst (no message sinks below the fold).
+    const info = scroller.getInfo();
+    expect(info.atBottom).toBe(true);
+    expect(info.scrollTop).toBe(info.scrollHeight - info.viewportHeight);
+    // The overlap must not leak the animating counter (the double flipMove on the surviving tail): drain EVERY in-flight
+    // animation (cb-enter-above on op-0/op-1, cb-move shove on pending-0) and confirm the counter returns to 0. A leak
+    // sticks it > 0 forever, deferring every later scheduleBalance → edge-loading silently stops working.
+    for (const sel of ['.cb-enter', '.cb-enter-above', '.cb-move', '.cb-leave']) {
+      for (const el of Array.from(content.querySelectorAll<HTMLElement>(sel))) el.dispatchEvent(new Event('animationend'));
+    }
+    expect((scroller as unknown as { animating: number }).animating).toBe(0);
+  });
+
   // Symmetric optimistic lifecycle: a push that extends the newest (a non-newest page lands while pinned at the newest)
   // UNMOUNTS the in-flight optimistic tail (they're recoverable via getPending); reaching the newest again RE-MOUNTS them.
   it('onMessageSignal unmounts optimistic on a non-newest push, re-mounts on reaching newest (getPending)', async () => {

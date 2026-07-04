@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the SOMS main window. The app-defined commands (get_api_origin, set_access_token, clear_access_token) are registered in invoke_handler and reachable from the webview; core IPC is enabled via core:default.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
