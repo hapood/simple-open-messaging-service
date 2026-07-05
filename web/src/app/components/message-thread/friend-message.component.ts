@@ -89,9 +89,17 @@ export class MessageThreadComponent implements OnDestroy {
 
   readonly atBottom = signal(true);
   readonly stickyDate = signal<string | null>(null);
-  /** True while the kernel fetches the initial batch on a thread open (or re-init on switch) — drives the
-   *  shimmer skeleton that fills the empty message area until real messages mount. */
+  /** True while the kernel fetches the initial batch on a thread open (or re-init on switch). Internal load
+   *  flag — NOT bound in the template; it arms/cancels the skeleton-reveal timer below. */
   readonly initialLoading = signal(true);
+  /** The skeleton shows only when the initial load has outlasted SKELETON_DELAY — fast fetches (sub-~300ms,
+   *  the common case on a fast network) produce no skeleton at all, just a clean content reveal. This avoids
+   *  the flash an always-on skeleton causes, which is the dated IM pattern in a local-first / fast-network
+   *  world. Bound in the template; cleared the moment the first batch lands. */
+  readonly skeletonVisible = signal(false);
+  /** Reveal the skeleton only after this delay (ms) — the "don't flash on fast loads" gate. */
+  private static readonly SKELETON_DELAY = 300;
+  private skeletonTimer?: ReturnType<typeof setTimeout>;
 
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
@@ -135,15 +143,15 @@ export class MessageThreadComponent implements OnDestroy {
     this.lastJumpId = startId;
     this.source = new HttpItemSource(
       trd, this.userService.sessionProfile()?.id ?? 0, this.msgService, this.userService, this.wsService,
-      // SSE live path: cache via pushLive + signal the kernel. onMessageSignal is the optimistic-confirm
+      // SSE live path is SIGNAL-ONLY: onSseEvent filters by threadId and fires onSignal — the body is not
+      // shaped/cached here (the conversation-list preview reads it in its own subscriber; the chatbox treats
+      // the frame as "newer data exists, go pull it"). onMessageSignal pulls from the DB via getNewer /
+      // init(-1), which is also where rawToItems runs once (so ids register once — no double-registration to
+      // dedup away a self-send echo / reply on an empty thread). onMessageSignal is the optimistic-confirm
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
-      // For an incoming message with no optimistic counterpart it mounts plainly (mountNewerReals finds no
-      // matching clientMessageId → plain cb-enter). If the newer end is trimmed, onMessageSignal is a no-op
-      // and the item stays cached until scroll-back.
-      { onLive: (items) => {
-        this.source?.pushLive(items);
+      { onSignal: () => {
         // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
-        // and the just-cached live item would never mount (silent drop in the open chatbox).
+        // and the just-signaled live item would never mount (silent drop in the open chatbox).
         void this.scroller?.onMessageSignal().catch((e) => console.error('[chat] onMessageSignal rejected', e));
       } },
     );
@@ -157,8 +165,19 @@ export class MessageThreadComponent implements OnDestroy {
       isFrozen: () => this.layout.reflowFrozen(),
     });
     this.initialLoading.set(true);
+    this.skeletonVisible.set(false);
+    clearTimeout(this.skeletonTimer);
+    // Delay-gate: reveal the skeleton only if the first batch is still in flight past SKELETON_DELAY. A fast
+    // fetch resolves first → skeletonVisible stays false → no flash, content just appears.
+    this.skeletonTimer = setTimeout(() => {
+      if (this.initialLoading()) this.skeletonVisible.set(true);
+    }, MessageThreadComponent.SKELETON_DELAY);
     void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined)
-      .finally(() => this.initialLoading.set(false));
+      .finally(() => {
+        clearTimeout(this.skeletonTimer);
+        this.initialLoading.set(false);
+        this.skeletonVisible.set(false);
+      });
   }
 
   /** Kernel createItem hook: compute grouping flags from the older neighbor prev, wrap the real component.
@@ -419,6 +438,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private teardown(): void {
+    clearTimeout(this.skeletonTimer);
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;

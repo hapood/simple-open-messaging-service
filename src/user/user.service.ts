@@ -11,11 +11,16 @@ export class UserService implements OnModuleInit {
   findUniqueUser(
     userWhereUniqueInput: Prisma.UserWhereUniqueInput,
     hasExtra = true,
+    hasNotiBox = false,
   ) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
       include: {
         userExtra: hasExtra,
+        // Private per-user flag (unread friend-request badge). Opt-in: callers that
+        // return the user to OTHER clients (e.g. by-uniq-name search) must NOT include
+        // it — only the self-profile read enables it, so hasUrFriendReq never leaks.
+        userNotiBox: hasNotiBox,
       },
     });
   }

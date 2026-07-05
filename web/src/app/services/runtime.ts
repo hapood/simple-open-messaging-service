@@ -23,14 +23,32 @@ declare global {
     /** Exposed by Tauri v2 when `app.withGlobalTauri` is true (see src-tauri/tauri.conf.json). Used
      *  instead of the `@tauri-apps/api` npm package so the browser build has zero extra deps and the
      *  Tauri surface is unreachable outside the shell. */
-    __TAURI__?: { core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
+    __TAURI__?: {
+      core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+      /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs). Used by
+       *  UnreadAttentionService to post desktop system notifications when a message arrives while the
+       *  window is unfocused. Present on desktop; on Android the path is dormant (SSE is disconnected
+       *  when backgrounded, so no NEW_MESSAGE fires while unfocused). */
+      notification?: { sendNotification: (n: { title: string; body?: string }) => Promise<void> | void };
+    };
     /** FCM bridge injected by the Android shell (SomsMessagingService / MainActivity). `SomsFcm` is a
      *  Kotlin `@JavascriptInterface` exposing the current FCM token + permission request. The two hooks
      *  are how Kotlin pushes the token (rotation) and a notification-tap deep link (warm start) into JS.
      *  `__SOMS_PENDING_THREAD_ID__` is the cold-start fallback: Kotlin sets it before Angular boots, so
      *  PushService.init() can recover a deep link that arrived before the live handler was registered.
      *  All absent in the browser build — guarded by isTauri() at every use. */
-    SomsFcm?: { getToken: () => string | null; requestToken: () => void; requestNotificationPermission: () => void };
+    SomsFcm?: {
+      getToken: () => string | null;
+      requestToken: () => void;
+      requestNotificationPermission: () => void;
+      /** Push the scoped notification token (POST /auth/notification-token) into Android encrypted
+       *  storage so the WorkManager poller can authenticate /notifications/missed while the WebView is
+       *  suspended. Pass null/empty on logout to clear. Android-only. */
+      setNotificationToken: (token: string | null) => void;
+      /** Push the resolved backend origin into Android storage — the poller can't read window globals
+       *  (no WebView alive when it fires). Android-only. */
+      setApiOrigin: (origin: string | null) => void;
+    };
     __SOMS_FCM_TOKEN__?: (token: string) => void;
     __SOMS_DEEP_LINK__?: (threadId: string) => void;
     __SOMS_PENDING_THREAD_ID__?: string;
@@ -41,6 +59,13 @@ declare global {
  *  before page scripts run — no SDK import needed. */
 export function isTauri(): boolean {
   return typeof window !== 'undefined' && window.__TAURI_INTERNALS__ !== undefined;
+}
+
+/** True when the current Tauri shell is the Android APK (vs the desktop build). Used to gate the
+ *  "disconnect SSE on background" rule — mobile Android should close the stream gracefully (the OS will
+ *  kill it anyway), while PC/desktop keeps it alive. UA-based: the Android WebView UA carries "Android". */
+export function isAndroid(): boolean {
+  return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
 }
 
 /** Invoke a Tauri command (only meaningful when `isTauri()`). Resolves the command's return value;

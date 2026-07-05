@@ -5,6 +5,7 @@ import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
 import { isTauri, tauriInvoke } from './runtime';
 import { PushService } from './push.service';
+import { WebPushService } from './web-push.service';
 import { uuid } from '../lib/uuid';
 
 const REFRESH_TOKEN = 'refresh_token',
@@ -47,7 +48,12 @@ export class AuthService {
    *  reads this to decide whether to send immediately or renew first. */
   public acTkSub = new BehaviorSubject<string | null>(null)
 
-  constructor(private http: HttpClient, private routeService: RouteService, private push: PushService) {
+  constructor(
+    private http: HttpClient,
+    private routeService: RouteService,
+    private push: PushService,
+    private webPush: WebPushService,
+  ) {
     // Keep the access token (and thus the media cookie) fresh when the tab is foregrounded after
     // being idle long enough that the 15m token has likely expired. Guarded by a refresh-token check
     // so a logged-out tab focusing never triggers a redirect-to-login.
@@ -88,6 +94,8 @@ export class AuthService {
           // Now that the access token is in the interceptor, register (or re-register) this device's
           // FCM token so the server can push to it. No-op outside the Tauri shell.
           this.push.onLogin()
+          // Web Push (browser/PWA) — also re-attempts subscription post-login. No-op in Tauri shell.
+          void this.webPush.onLogin()
         }
       }))
   }
@@ -191,6 +199,8 @@ export class AuthService {
       // still carries the Authorization header. Best-effort — a stale token is pruned server-side on
       // the next send anyway. No-op outside the Tauri shell.
       this.push.unregister()
+      // Web Push (browser/PWA) — unsubscribe + unregister the endpoint. No-op in the Tauri shell.
+      void this.webPush.unregister()
       this.clearToken()
       return this.http.post<{ code: number; message: string }>(`${apiPrefix}/auth/logout`, {
         refreshToken

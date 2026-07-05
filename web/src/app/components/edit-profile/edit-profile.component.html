@@ -46,6 +46,21 @@
     </label>
 
     <div class="handle">{{ 'profile.usernameHandle' | transloco:{ name: sessionProfile()?.uniqName } }}</div>
-    <button mat-raised-button class="sessions-entry" (click)="openSessions()">{{ 'profile.manageSessions' | transloco }}</button>
+    <div class="account-actions">
+      <button type="button" class="account-btn" (click)="openSessions()"
+        [attr.aria-label]="'profile.manageSessions' | transloco">
+        {{ 'profile.manageSessions' | transloco }}
+      </button>
+      <button type="button" class="account-btn danger" (click)="logout()"
+        [attr.aria-label]="'nav.logout' | transloco">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+          <path d="M16 17l5-5-5-5" />
+          <path d="M21 12H9" />
+        </svg>
+        <span>{{ 'nav.logout' | transloco }}</span>
+      </button>
+    </div>
   </div>
 </div>

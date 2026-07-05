@@ -137,10 +137,14 @@ export class ChatInputComponent {
     }));
     return [...recentsTab, ...categoryTabs];
   });
-  /** Glyphs of the active tab. */
-  readonly activeEmojis = computed(
-    () => this.emojiTabs().find((t) => t.id === this.activeCategory())?.icons ?? [],
-  );
+  /** Delegated click on the prerendered grids wrapper: read the glyph from the clicked button's `data-emoji`
+   *  and insert it. One handler for every category's buttons — far cheaper than a `(click)` binding + directive
+   *  instance per emoji button across ~440 glyphs, and it stays valid as the active grid toggles (the buttons
+   *  are never re-created on tab switch, only shown/hidden). */
+  onGridClick(event: MouseEvent): void {
+    const btn = (event.target as HTMLElement).closest<HTMLElement>('[data-emoji]');
+    if (btn) this.insertEmoji(btn.dataset['emoji']!);
+  }
 
   // Editor content changed: track draft (send-button state) + re-measure the bar (auto-grow ⇒ heightChange).
   onHtml(h: string): void {

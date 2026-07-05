@@ -541,6 +541,31 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(content.firstElementChild?.classList.contains('cb-ghost-loading')).toBe(true);
   });
 
+  // Reproduces the production "shows some messages, then flashes to another batch on first init" glitch. Root cause: when
+  // the init batch is sub-threshold (production's MAX_PAGE=50 caps a 100-item initBatch), the fill loop awaits getOlder —
+  // a macrotask boundary, so the browser paints between the init mount and that resolve. The kernel MUST pin to the bottom
+  // before yielding (and re-pin after each prepend), otherwise that inter-batch paint shows the init batch at scrollTop=0
+  // (the OLDEST end of the newest batch, not the global newest) and only the final scrollToBottom lands correctly. Verified
+  // by inspecting the in-flight state: with getOlder pending, the viewport is already at the bottom.
+  it('init fill: pins to bottom BEFORE/DURING the multi-batch fill (no flash to the window top)', async () => {
+    const { hooks } = controllableHooks();           // 100px items
+    const src = controllableSource(500);             // getOlder resolved manually
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src, config: { initBatch: 20 } });
+    // initBatch 20 × 100px = 2000px < threshold 6000 → the fill loop MUST fire getOlder to top up.
+    const p = scroller.init();                        // do NOT await yet — inspect the in-flight state
+    await flush(5);                                   // run init up to the first loadOlderIntoFresh → await source.getOlder
+    expect(src.isPending()).toBe(true);               // a fill batch is in flight (confirms the fill loop fired)
+    // While the fill batch is pending across a macrotask boundary, the viewport is already pinned at the bottom (shows the
+    // global newest). Without the fix, scrollTop stayed 0 here → the first paint showed the window top → the flash.
+    expect(scroller!.getInfo().atBottom).toBe(true);
+    expect(scroller!.getInfo().newestId).toBe('m-499');
+    src.resolveOlder();                               // resolve the pending getOlder (prepend m-430..m-479)
+    await p;                                          // init re-pins after the prepend + final scrollToBottom
+    expect(scroller!.getInfo().atBottom).toBe(true);  // still viewing the global newest after the fill completes
+    expect(scroller!.getInfo().newestId).toBe('m-499');
+    expect(scroller!.getInfo().mounted).toBe(70);     // 20 init + 50 fill
+  });
+
   it('loadOlder trims the newest end → noNewer resets to false (loadNewer can load it back; fixes downward-scroll / pin-to-bottom stall)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(500) });
@@ -1075,11 +1100,12 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
   });
 
   // Regression (overlap race, the user-reported "opponent msg inserts between pending / a msg sinks under viewport"):
-  // two SSE frames landing in the same microtask window (two ensureProfiles().then(onLive) callbacks back-to-back).
+  // two signals landing in the same microtask window (two onSignal callbacks back-to-back).
   // The bug: onMessageSignal had no single-flight guard, so the second call's loadNewer bailed on inflightNewer (the
   // in-flight first call owned it) → the second live item never mounted until the NEXT signal (orphaned), AND both calls'
   // flipMove overlapped on the surviving optimistic tail (moveTimer overwritten → animating leaked; the shove double-played
-  // and a deferred balance never drained). Faithful HttpItemSource clone: getNewer SPLICES the live cache synchronously.
+  // and a deferred balance never drained). Source flavor under test: a caching source whose getNewer SPLICES the live
+  // cache synchronously (the playground mock's model) — the kernel must coalesce regardless of how the source holds data.
   it('overlapping onMessageSignal calls drain both items (no orphan), stay pinned, and balance animating', async () => {
     const { hooks } = controllableHooks(40);
     const full = fakeSource(500);
@@ -1088,7 +1114,7 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
       ...full,
       getNewer: async () => {
         if (live.length === 0) return [];
-        const out = live.splice(0);                             // drain (mirrors HttpItemSource.getNewer liveCache path)
+        const out = live.splice(0);                             // drain a caching source's live buffer
         out[out.length - 1] = { ...out[out.length - 1], boundary: 'newest' as const };
         return out;
       },

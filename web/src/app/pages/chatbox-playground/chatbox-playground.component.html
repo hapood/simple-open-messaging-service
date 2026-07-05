@@ -21,6 +21,78 @@
       </button>
     </header>
     <div class="pg-viewport" #viewport tabindex="0">
+      <!-- Initial-load shimmer skeleton: a sibling of .pg-content (NOT a child of it) so it never enters the
+           kernel's measured height model. Shows during the `loading()` window (data generation), or is forced
+           on by the panel's skeleton-demo toggle for preview. Styles/shared markup live in the global
+           _cb-skeleton partial — identical to production MessageThread. -->
+      @if (loading() || skeletonDemo()) {
+        <div class="cb-skeleton" aria-hidden="true">
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 62%; --cb-sk-h: 56px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 45%; --cb-sk-h: 32px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 55%; --cb-sk-h: 80px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 50%; --cb-sk-h: 56px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 60%; --cb-sk-h: 32px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 42%; --cb-sk-h: 104px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 55%; --cb-sk-h: 56px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 48%; --cb-sk-h: 32px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 62%; --cb-sk-h: 80px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 45%; --cb-sk-h: 56px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 50%; --cb-sk-h: 32px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 55%; --cb-sk-h: 80px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 58%; --cb-sk-h: 56px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 44%; --cb-sk-h: 104px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-in">
+            <span class="cb-sk-avatar"></span>
+            <span class="cb-sk-bubble" style="--cb-sk-w: 52%; --cb-sk-h: 32px"></span>
+          </div>
+          <div class="cb-sk-row cb-sk-out">
+            <span class="cb-sk-bubble" style="--cb-sk-w: 50%; --cb-sk-h: 56px"></span>
+            <span class="cb-sk-avatar"></span>
+          </div>
+        </div>
+      }
       <div class="pg-content" #content>
         <!-- 顶部哨兵：IO 观察它进入视口 → 触发向上加载历史（相对滚动架构）。 -->
         <div class="pg-sentinel" #topSentinel></div>
@@ -84,6 +156,14 @@
           <button (click)="setSourceLatency(200)" [class.active]="sourceLatency() === 200">200ms</button>
           <button (click)="setSourceLatency(1000)" [class.active]="sourceLatency() === 1000">1s</button>
           <button (click)="setSourceLatency(5000)" [class.active]="sourceLatency() === 5000">5s</button>
+        </div>
+      </section>
+      <section>
+        <h4>Loading skeleton <span class="pg-sec-tag" [class.pg-sec-tag--on]="skeletonDemo()">{{ skeletonDemo() ? 'pinned' : 'auto' }}</span></h4>
+        <p class="pg-hint">Pin the shimmer overlay to preview it without waiting on a load. Auto = it shows only while data is generating (the normal loading state).</p>
+        <div class="pg-btns">
+          <button (click)="setSkeletonDemo(false)" [class.active]="!skeletonDemo()">Auto</button>
+          <button (click)="setSkeletonDemo(true)" [class.active]="skeletonDemo()">On</button>
         </div>
       </section>
     </details>
@@ -211,10 +291,10 @@
 
     <details>
       <summary>Top-right indicator slot</summary>
-      <p class="pg-hint">The fixed top-right corner shows ONE indicator at a time. The connection chip is priority — while it's visible (Connecting/Reconnecting/Closed) the update banner defers; set the chip to Open/Live to make a pending update surface.</p>
+      <p class="pg-hint">The fixed top-right corner shows ONE indicator at a time. The connection chip is priority — while it's visible (Connecting/Reconnecting/Closed) the update banner defers; set the chip to Open to make a pending update surface.</p>
       <section>
-        <h4>Connection chip <span class="pg-sec-tag" [class.pg-sec-tag--on]="connStatus() === 'reconnecting'">{{ connStatus() ?? 'live' }}</span></h4>
-        <p class="pg-hint">Drives the restyled Material chip at the top-right (below the header). `Open`/`Closed`/`Live` hide it — that is the real steady-state behavior; `Recover` replays the reconnecting→open flourish.</p>
+        <h4>Connection chip <span class="pg-sec-tag" [class.pg-sec-tag--on]="connStatus() === 'reconnecting'">{{ connStatus() }}</span></h4>
+        <p class="pg-hint">Drives the restyled Material chip at the top-right (below the header). `Open` hides it (steady state); `Closed` shows the offline glyph (playground-only — production navigates away instead); `Recover` replays the reconnecting→open flourish.</p>
         <div class="pg-btns">
           <button (click)="setConnStatus('connecting')" [class.active]="connStatus() === 'connecting'">Connecting</button>
           <button (click)="setConnStatus('reconnecting')" [class.active]="connStatus() === 'reconnecting'">Reconnecting</button>
@@ -223,12 +303,11 @@
         <div class="pg-btns">
           <button (click)="setConnStatus('open')" [class.active]="connStatus() === 'open'">Open</button>
           <button (click)="setConnStatus('closed')" [class.active]="connStatus() === 'closed'">Closed</button>
-          <button (click)="setConnStatus(null)" [class.active]="connStatus() === null">Live</button>
         </div>
       </section>
       <section>
         <h4>Update banner <span class="pg-sec-tag" [class.pg-sec-tag--on]="updateDemo()">{{ updateDemo() ? 'pending' : 'idle' }}</span></h4>
-        <p class="pg-hint">Simulates "a new version is ready" (production fires when the service worker downloads a new bundle). It yields the corner to the chip above; switch the chip to Open/Live to see it surface. Reload activates the new bundle (a no-op here); Dismiss hides it for the session.</p>
+        <p class="pg-hint">Simulates "a new version is ready" (production fires when the service worker downloads a new bundle). It yields the corner to the chip above; switch the chip to Open to see it surface. Reload activates the new bundle (a no-op here); Dismiss hides it for the session.</p>
         <div class="pg-btns">
           <button (click)="setUpdateDemo(true)" [class.active]="updateDemo() === true">Pending</button>
           <button (click)="setUpdateDemo(false)" [class.active]="updateDemo() === false">Idle</button>

@@ -1,0 +1,75 @@
+// Chat shimmer skeleton — the single source of truth shared by production MessageThread and the playground
+// (both render this exact markup). Imported globally via styles.scss alongside _cb.scss.
+//
+// An absolute overlay that is a SIBLING of the kernel's .msg-content / .pg-content, so it stays out of the
+// kernel's measured-height model (the integer-px invariant). BOTTOM-anchored (justify-content:flex-end) to MIRROR
+// a real conversation: the newest row pins just above the input bar and older rows stack upward — the skeleton
+// paints BOTTOM-TO-TOP, the way real .msg-content (also flex-end) lays out. Enough rows are provided to fill
+// upward past a tall viewport; overflow:hidden clips the OLDEST (top) rows so the viewport stays full yet never
+// scrolls. The 14px bottom padding matches .cb-tail-cap--gap (the real spacer between the last message and the
+// input bar), so the skeleton's last row lands exactly where the last real message will — a seamless handoff when
+// the data resolves. Each row mirrors a real message group-start: a circular avatar + a rounded-rect bubble, avatar
+// and bubble top-aligned (align-items:flex-start, matching real .pg-avatar align-self:flex-start). Incoming rows put
+// the avatar on the LEFT, outgoing rows on the RIGHT (DOM order [bubble][avatar] + the row's justify-content:flex-end)
+// — the symmetric WhatsApp layout this chat mirrors. Varied widths and 1-/2-/3-line heights break the monotony of
+// the old even pill row. Integer-px heights throughout (32px avatar/bubble unit, integer gap & padding); the shimmer
+// is a non-box background-position sweep (exempt from the integer rule).
+.cb-skeleton {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end; // BOTTOM-anchored — newest row hugs the input bar, older rows stack upward (paints bottom-to-top, mirroring real .msg-content flex-end). NOT top-down.
+  gap: 10px;
+  padding: 14px 12px 14px; // 14px bottom = .cb-tail-cap--gap, the SAME gap real threads keep above the input bar → skeleton's last row lands where the last real message will (seamless handoff)
+  box-sizing: border-box;
+  overflow: hidden; // surplus OLDEST rows (top, when there are more than the viewport shows) clip; the overlay never scrolls
+}
+.cb-sk-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start; // avatar + bubble pin to the row's TOP (matches real .pg-avatar align-self:flex-start — a group-start's avatar sits at the message-group top, not the bottom)
+  &.cb-sk-in  { justify-content: flex-start; }
+  &.cb-sk-out { justify-content: flex-end; }
+}
+.cb-sk-avatar {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+}
+.cb-sk-bubble {
+  width: var(--cb-sk-w, 60%);
+  height: var(--cb-sk-h, 32px);
+  max-width: 70%;
+  border-radius: 12px;
+}
+// Shared muted surface + shimmer sweep (the avatar circle and the rounded-rect bubble both wear it). The
+// highlight travels from off-screen right to off-screen left (200% → -200%) across a 200%-wide band → a
+// seamless loop with no pop at the restart; linear easing keeps the sweep at constant speed (ease-in-out
+// would visibly stall at the edges). 0.35 reads on both the light and dark --app-bg-muted surface.
+.cb-sk-avatar,
+.cb-sk-bubble {
+  position: relative;
+  overflow: hidden;
+  background-color: var(--app-bg-muted);
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background-image: linear-gradient(100deg, transparent 35%, rgba(255, 255, 255, 0.35) 50%, transparent 65%);
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    animation: cb-sk-shimmer 1.6s linear infinite;
+  }
+}
+@keyframes cb-sk-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cb-sk-avatar::after,
+  .cb-sk-bubble::after { animation: none; }
+}

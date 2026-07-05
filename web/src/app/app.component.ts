@@ -4,6 +4,9 @@ import { ThemeService } from './services/theme.service';
 import { LanguageService } from './services/language.service';
 import { UpdateService } from './services/update.service';
 import { PushService } from './services/push.service';
+import { WebPushService } from './services/web-push.service';
+import { SseLifecycleService } from './services/sse-lifecycle.service';
+import { UnreadAttentionService } from './services/unread-attention.service';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet],
@@ -20,7 +23,19 @@ export class AppComponent {
     // PushService.init() registers the FCM token-handoff hooks + recovers any cold-start deep link. Runs
     // once at boot; a no-op outside the Tauri shell (the hooks are never triggered by the browser).
     private readonly push = inject(PushService);
+    // WebPushService.init() subscribes the browser/PWA to Web Push (VAPID). Self-guards to a no-op in
+    // the Tauri shell and on unsupported browsers; surfaces a toast on permission/subscribe failures.
+    private readonly webPush = inject(WebPushService);
+    // SseLifecycleService listens to visibilitychange — disconnects SSE on Android background (graceful
+    // close), reconnects on resume. PC/browser keep SSE alive. Eagerly constructed so the listener is
+    // live for the whole session.
+    private readonly sseLifecycle = inject(SseLifecycleService);
+    // UnreadAttentionService flashes the window/tab title "(N) SOMS" + posts a system notification when
+    // a NEW_MESSAGE arrives while the window is unfocused. Covers PC desktop + browser. Eagerly
+    // constructed so the focus listener + SSE subscription are live for the whole session.
+    private readonly attention = inject(UnreadAttentionService);
     constructor() {
         this.push.init();
+        void this.webPush.init();
     }
 }

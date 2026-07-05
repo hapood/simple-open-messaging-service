@@ -3,9 +3,7 @@ import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { RouteService, RoutePage, PopupType } from '../../services/route.service';
-import { AuthService } from '../../services/auth.service';
-import { WebsocketService } from '../../services/websocket.service';
+import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
@@ -34,8 +32,6 @@ export class NavDrawerComponent {
 
   private readonly sidenav = viewChild(MatSidenav)
   private readonly routeService = inject(RouteService)
-  private readonly authService = inject(AuthService)
-  private readonly wsService = inject(WebsocketService)
   readonly userService = inject(UserService)
   private readonly themeService = inject(ThemeService)
   private readonly languageService = inject(LanguageService)
@@ -87,16 +83,5 @@ export class NavDrawerComponent {
   folderEditor() {
     this.close()
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
-  }
-
-  logout() {
-    // Disconnect the WS first, then clear credentials + go to the login page (logout already calls clearToken
-    // internally, so the login redirect happens whether or not backend revocation succeeds).
-    this.close()
-    this.wsService.disconnect()
-    this.authService.logout().subscribe({
-      complete: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
-      error: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
-    })
   }
 }

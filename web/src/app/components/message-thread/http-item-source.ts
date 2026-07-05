@@ -14,9 +14,13 @@
  * [Boundary] Reaching the DB floor (hasMore=false) → out[0] (ascending head = oldest) tagged 'oldest';
  *  anchor = latest → out[last] tagged 'newest'. The kernel's absorbBoundary reads these and sets its
  *  noOlder/noNewer.
- * [Dedup] knownMsgIds prevents SSE/pagination duplicates (IO layer, kept in the source).
- * [SSE] onSseEvent receives NEW_MESSAGE → rawToItems → onLive callback → the component calls
- *  kernel.appendLive (→ source.pushLive caches; the kernel mounts the items directly).
+ * [Dedup] knownMsgIds prevents pagination duplicates (IO layer, kept in the source). Registered ONCE, at
+ *  pull time inside rawToItems (init / getNewer) — never at SSE receive time.
+ * [SSE] onSseEvent receives NEW_MESSAGE and fires onSignal — SIGNAL-ONLY (the body is not shaped/cached
+ *  here; the conversation-list preview reads the body in its own subscriber). The component's onSignal calls
+ *  kernel.onMessageSignal, which pulls from the DB via getNewer / init(-1). rawToItems runs at pull time, so
+ *  an id is registered exactly once — a self-send echo / incoming reply on an empty (just-added-friend) thread
+ *  reconciles correctly instead of being deduped away.
  */
 import { firstValueFrom, type Subscription } from 'rxjs';
 import dayjs from 'dayjs';
@@ -36,14 +40,16 @@ import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message
  * and the kernel's normal top-up (balance/getOlder) fetches the rest on demand.
  */
 const MAX_PAGE = 50;
-/** Max pages fetched per SSE-reconnect refill (each MAX_PAGE). Missed messages are paged in until the DB
- *  latest is reached or this cap is hit; beyond the cap the user scrolls to load more (rare: requires
- *  missing more than REFILL_HARD_CAP * MAX_PAGE messages while disconnected). */
-const REFILL_HARD_CAP = 10;
 
 export interface HttpItemSourceLiveOpts {
-  /** SSE new-message callback (the component calls kernel.appendLive from it). */
-  onLive: (items: CbItem<ChatItemData>[]) => void;
+  /** Live-arrival signal: a NEW_MESSAGE SSE frame landed for this thread (or a reconnect backfill is due).
+   *  Signal-only — the SSE body is NOT shaped/cached here. The conversation-list preview lives in a separate
+   *  subscriber (ConversationListService.onNewMessage reads the body); the chatbox treats the frame purely as
+   *  "newer data exists, go pull it" and lets the kernel fetch from the DB via getNewer / init(-1) on the next
+   *  onMessageSignal. The body's ids are registered in knownMsgIds ONCE, at pull time inside rawToItems — so a
+   *  self-send echo / incoming reply on an empty (just-added-friend) thread reconciles correctly instead of
+   *  being deduped away. */
+  onSignal: () => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -57,15 +63,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly knownMsgIds = new Set<string>();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
    *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
-   *  dropped by getNewer's live-cache drain, and the kernel's reconcileOptimistic removes the mounted optimistic
-   *  bubble. Failed entries STAY here (status:'failed') so the failure survives a remount and retry works. */
+   *  dropped by reconcilePending inside init/getNewer, and the kernel's reconcileOptimistic removes the mounted
+   *  optimistic bubble. Failed entries STAY here (status:'failed') so the failure survives a remount and retry works. */
   private readonly pending: CbItem<ChatItemData>[] = [];
-  /** SSE-pushed / refill reals awaiting the kernel's onMessageSignal to drain them via getNewer. The kernel calls
-   *  getNewer (forced) once per signal; we drain the whole cache in one batch so a backlog mounts atomically. */
-  private readonly liveCache: CbItem<ChatItemData>[] = [];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
-  private readonly onLive: (items: CbItem<ChatItemData>[]) => void;
+  private readonly onSignal: () => void;
 
   constructor(
     private readonly conv: ConversationItem,
@@ -75,11 +78,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     wsService: WebsocketService,
     live: HttpItemSourceLiveOpts,
   ) {
-    this.onLive = live.onLive;
+    this.onSignal = live.onSignal;
     this.sseSub = wsService.eventSubject.subscribe((msg) => this.onSseEvent(msg));
-    // On a successful SSE reconnect, backfill messages missed while disconnected using the newestMsgId
-    // cursor (the SSE stream itself does not replay history).
-    this.reconnectSub = wsService.reconnect$.subscribe(() => { void this.refillNewer(); });
+    // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
+    // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
+    this.reconnectSub = wsService.reconnect$.subscribe(() => this.onSignal());
   }
 
   /**
@@ -184,23 +187,12 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   }
 
   /** Fetch `count` messages newer than cursorId (already ascending). out[last] is tagged 'newest'
-   *  when the DB ceiling is reached. In production the anchor is the latest message (noNewer=true) so
-   *  the kernel never calls this; it exists for a future "load from the middle" mode. */
+   *  when the DB ceiling is reached. Called by the kernel's loadNewer — for scroll-driven loads (balance /
+   *  followToNewest) AND for the forced pull triggered by an SSE live-arrival signal (onMessageSignal). The
+   *  kernel's loadNewer already guards `if (!force && this.noNewer) return 0` before calling, so no noNewer
+   *  guard is needed here — and none COULD be, since a signal must be able to pull past "at newest" (that is
+   *  the whole point: a NEW_MESSAGE arrived, so there IS newer data even though noNewer was true). */
   async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
-    // Drain the live cache first: SSE-pushed / refill reals are always newer than anything mounted (production
-    // anchors at the global newest), so they live past any cursor. The kernel calls this (forced) from
-    // onMessageSignal ONCE per signal — drain ALL cached items in one batch so a backlog mounts atomically (a
-    // capped drain would strand the rest, since onMessageSignal does not loop). Reconcile pending: any pending
-    // whose clientMessageId matches a drained real is dropped — its confirm arrived, the kernel's
-    // reconcileOptimistic will remove the matching optimistic bubble and tag this real cb-confirmed.
-    if (this.liveCache.length > 0) {
-      const cached = this.liveCache.splice(0);
-      this.reconcilePending(cached); // a drained real confirms its optimistic counterpart → drop it from pending
-      this.noNewer = true; // live items are the global newest
-      cached[cached.length - 1] = { ...cached[cached.length - 1], boundary: 'newest' };
-      return cached;
-    }
-    if (this.noNewer) return [];
     const take = Math.min(count, MAX_PAGE);
     const res = await firstValueFrom(
       this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastId: String(cursorId), orderBy: 'asc' }),
@@ -216,33 +208,25 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return items;
   }
 
-  /** Inbound SSE message: shape via rawToItems, then notify the component via onLive (the component calls
-   *  kernel.appendLive, which caches via source.pushLive and mounts the items directly).
-   *  The ensureProfiles→rawToItems→onLive chain carries a .catch: an unhandled rejection here (e.g. a
-   *  transient queryUserInfo failure) would silently abort the chain — onLive never fires, the message is
-   *  lost from the open chatbox while the conversation-list (separate subscriber) still updates. */
+  /** Inbound SSE NEW_MESSAGE. Signal-only: the body is NOT shaped or cached here. The conversation-list preview
+   *  reads the body in its OWN subscriber (ConversationListService.onNewMessage); the chatbox treats the frame
+   *  purely as "newer data exists for this thread" and fires onSignal — the kernel then pulls from the DB
+   *  (source of truth) via getNewer / init(-1) on the next onMessageSignal. rawToItems runs ONCE, at pull time,
+   *  so the id is registered in knownMsgIds only there — this is what keeps a self-send echo / incoming reply on
+   *  an empty (just-added-friend) thread from being deduped away (the old shape-at-SSE-time pre-registered the
+   *  id, then init(-1)'s rawToItems dropped it → bubble stuck "sending", replies never mounted). */
   private onSseEvent(msg: StandardMessage): void {
     if (msg.event !== 'NEW_MESSAGE' || msg.status !== 0 || !msg.data) return;
     const data = msg.data as Message & { threadId: number };
     if (data.threadId !== this.conv.threadId) return;
-    const id = String(data.id);
-    if (this.knownMsgIds.has(id)) return; // dedup
-    data.id = id;
-    this.ensureProfiles([data]).then(() => {
-      const items = this.rawToItems([data]);
-      if (items.length > 0) this.onLive(items);
-    }).catch((e) => console.error('[chat] live inbound dropped (ensureProfiles/rawToItems rejected)', id, e));
+    this.onSignal();
   }
 
-  /** Cache live (SSE-pushed / refill) reals for the kernel to drain via getNewer on the next onMessageSignal.
-   *  Items are already CbItems (shaped by rawToItems, clientMessageId preserved) and already deduped; we append
-   *  them to the live cache and track the newest id for the SSE-reconnect refill cursor. */
-  pushLive(rawItems: CbItem<ChatItemData>[]): void {
-    if (rawItems.length === 0) return;
-    for (const it of rawItems) this.liveCache.push(it);
-    const last = rawItems[rawItems.length - 1];
-    this.newestMsgId = last.data.type === 'msg' ? last.data.msgId : String(last.id);
-  }
+  /** No-op. The signal-only SSE path caches nothing; live data is pulled from the DB on demand. Kept to satisfy
+   *  the CbSource interface (the kernel's appendLive calls it; production never routes live arrivals through
+   *  appendLive — only through the signal → onMessageSignal → getNewer path — so this is never reached in
+   *  production). The playground's MockItemSource implements a real pushLive for its cursor model. */
+  pushLive(_rawItems: CbItem<ChatItemData>[]): void { /* signal-only: no cache */ }
 
   /** In-flight optimistic sends (defensive copy) — the kernel (re)mounts them at the global newest edge. */
   getPending(): CbItem<ChatItemData>[] { return this.pending.slice(); }
@@ -292,38 +276,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.sseSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
-  }
-
-  /**
-   * Refill after an SSE reconnect: page newer (asc) from the newestMsgId cursor to backfill messages
-   * missed while disconnected, until the DB latest is reached or REFILL_HARD_CAP is hit. Queries directly
-   * (bypassing getNewer's noNewer guard — that reflects scroll-cursor state, unrelated to a one-shot
-   * refill) and reuses rawToItems dedup + ensureProfiles + onLive to stay on the same path as the SSE
-   * live stream. Each page's take is capped at MAX_PAGE (backend @Max(50)); the ascending tail of a page
-   * is its newest message, which becomes the next page's cursor. Skipped when no initial messages are
-   * loaded yet (newestMsgId == null).
-   */
-  private async refillNewer(): Promise<void> {
-    if (this.newestMsgId == null) return;
-    const collected: Message[] = [];
-    let cursorId = this.newestMsgId;
-    for (let page = 0; page < REFILL_HARD_CAP; page++) {
-      const res = await firstValueFrom(
-        this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: MAX_PAGE, lastId: cursorId, orderBy: 'asc' }),
-      );
-      if (res.code !== 0 || !res.data) break; // network/server error → abort and let the next reconnect retry (leave noNewer unchanged)
-      if (res.data.length === 0) { this.noNewer = true; break; } // nothing newer → already at latest
-      collected.push(...res.data);
-      if (!res.hasMore) { this.noNewer = true; break; } // this page reached the DB latest
-      cursorId = String(res.data[res.data.length - 1].id); // ascending tail = newest → page further newer
-    }
-    if (collected.length === 0) return;
-    await this.ensureProfiles(collected);
-    const items = this.rawToItems(collected);
-    if (items.length > 0) {
-      this.newestMsgId = lastMsgId(items) ?? this.newestMsgId;
-      this.onLive(items);
-    }
   }
 
   // ---------- rawToItems (shape raw messages: dedup + per-msg parsing; no album merging — that is the kernel's mergeItems job) ----------

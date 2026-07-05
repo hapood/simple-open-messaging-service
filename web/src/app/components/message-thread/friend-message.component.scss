@@ -83,50 +83,6 @@ app-chat-input {
 // The sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the playground). Its top
 // offset reads --sd-top (set on .msg-container above = the header height).
 
-// ── Initial-load shimmer skeleton ───────────────────────────────────────────
-// Absolute overlay inside .msg-viewport (sibling of .msg-content) — out of normal flow, so it never enters
-// the kernel's measured height model (the integer-px invariant). `space-between` spreads the rows top→bottom
-// so the column fills the viewport regardless of its height; pointer-events:none so it never blocks scroll.
-// Integer-px heights throughout (28px rows/bubbles, integer padding) per the layout-measurement rule; the
-// shimmer is a non-box background-position sweep (exempt).
-.msg-skeleton {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  display: flex;
-  flex-direction: column;
-  justify-content: space-between;
-  padding: 14px 12px;
-  box-sizing: border-box;
-}
-.sk-row {
-  display: flex;
-  height: 28px;
-  &.sk-in  { justify-content: flex-start; }
-  &.sk-out { justify-content: flex-end; }
-}
-.sk-bubble {
-  display: block;
-  height: 28px;
-  width: var(--sk-w, 50%);
-  border-radius: 14px;
-  background-color: var(--app-bg-muted);
-  position: relative;
-  overflow: hidden;
-  &::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.45) 50%, transparent 70%);
-    background-size: 200% 100%;
-    background-repeat: no-repeat;
-    animation: msg-sk-shimmer 1.4s ease-in-out infinite;
-  }
-}
-@keyframes msg-sk-shimmer {
-  to { background-position: 200% 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .sk-bubble::after { animation: none; }
-}
+// Initial-load shimmer skeleton: now in the shared global partial _cb-skeleton.scss (imported via
+// styles.scss), identical for production and the playground. .msg-viewport is the positioning context
+// (position:relative above); the component's skeletonVisible signal delay-gates the reveal.

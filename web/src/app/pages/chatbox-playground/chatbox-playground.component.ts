@@ -125,16 +125,21 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  as a failed bubble (retry glyph) instead of confirming. Stays on until toggled off, so the failure/retry flow can be
    *  exercised repeatedly without re-arming. To test "fail then succeed": turn on → send → turn off → click retry. */
   readonly mockSendError = signal(false);
-  /** Drives `<app-connection-banner [demoState]>` via the chip's `demoState` override (null = live service,
-   *  which in the playground is stuck at `closed` since no SSE worker is spawned). Defaulted to `connecting`
-   *  so the restyled Material chip is visible on first paint; the panel's "Connection status" group toggles it
-   *  through every state, and a `reconnecting → open` hop replays the recover flourish. */
-  readonly connStatus = signal<ConnectionState | null>('connecting');
+  /** Drives `<app-connection-banner [demoState]>` via the chip's `demoState` override, pinning it to each
+   *  ConnectionState in turn. Defaulted to `connecting` so the restyled Material chip is visible on first
+   *  paint; the panel's "Connection chip" group toggles it through every state, and a `reconnecting → open`
+   *  hop replays the recover flourish. */
+  readonly connStatus = signal<ConnectionState>('connecting');
   /** Drives `<app-update-banner [demoAvailable]>` via the banner's demo override. In production this is the
    *  service worker's VERSION_READY latch (disabled in dev, so the playground simulates it). Default false
    *  (idle); set true to preview the "new version available" pill and watch it defer to the connection chip
    *  via the shared indicator slot. The banner's own Dismiss emits demoDismiss → clears this. */
   readonly updateDemo = signal(false);
+  /** Skeleton preview override for the chat viewport. `false` (Auto) = the shimmer shows only during the
+   *  `loading()` window (data generation); `true` (On) pins it so the skeleton can be inspected without waiting
+   *  for a load or raising source latency. Same demo-override shape as connStatus/updateDemo, but consumed
+   *  locally — it drives the skeleton `@if` in the template, not a child component input. */
+  readonly skeletonDemo = signal(false);
   /** Kernel tuning (CbConfig). Passed to the kernel at setup; editing it via the modal → applyConfig rebuilds to take effect. */
   readonly config = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
   /** Config-edit modal open flag + draft (applied only on confirm, so editing one field doesn't rebuild mid-stream). */
@@ -271,9 +276,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /** Toggle the persistent "mock send error" setting (every send fails while on). */
   toggleMockSendError(): void { this.mockSendError.update(v => !v); }
   /** Set the connection chip's demo state (bound to `<app-connection-banner [demoState]>`). */
-  setConnStatus(s: ConnectionState | null): void { this.connStatus.set(s); }
+  setConnStatus(s: ConnectionState): void { this.connStatus.set(s); }
   /** Set the update banner's demo availability (bound to `<app-update-banner [demoAvailable]>`). */
   setUpdateDemo(v: boolean): void { this.updateDemo.set(v); }
+  /** Set the skeleton preview mode (bound to the panel's Auto/On buttons). */
+  setSkeletonDemo(v: boolean): void { this.skeletonDemo.set(v); }
   /** Replay the recover flourish: a `reconnecting → open` transition through `demoState`, which the chip's
    *  effect reads exactly like a real recovery (auto-expanded pill, then the green-check flourish + fade-out). */
   playConnRecover(): void {

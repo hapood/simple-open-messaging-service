@@ -308,5 +308,13 @@
     "banner": "A new version is available.",
     "reload": "Reload",
     "dismiss": "Later"
+  },
+  "push": {
+    "permissionDenied": "Notifications are blocked — you'll only receive messages while the app is open.",
+    "subscribeFailed": "Couldn't enable push notifications."
+  },
+  "notif": {
+    "missedOne": "{{name}} sent you new messages while you were away",
+    "missedMany": "You have new messages in {{count}} conversations"
   }
 }

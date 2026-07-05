@@ -39,6 +39,7 @@ app-chat-input {
   right: 8px;
   bottom: 100%;
   margin-bottom: 4px;
+  max-width: 360px; // cap on wide/desktop viewports — full-width is mobile-only; anchored left near the emoji button (WhatsApp/Telegram style). left+right+max-width: right is ignored past the cap, so the panel hugs the left.
   height: 320px; // fixed panel height (tabs + scrollable grid)
   box-sizing: border-box;
   display: flex;
@@ -49,6 +50,18 @@ app-chat-input {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
   overflow: hidden;
   z-index: 4;
+  // ALWAYS MOUNTED: every category grid renders once at component init, so opening + tab-switching are zero-DOM
+  // toggles. Hide via opacity + pointer-events — NOT display:none — so the grids stay painted and their emoji
+  // glyphs stay rasterized (first visit to any tab is as instant as any later one). visibility:hidden would NOT
+  // prerasterize (it skips paint) and a descendant visibility:visible would re-show through a closed panel, so
+  // it is ruled out here. pointer-events:none on the closed panel disables interaction for the whole subtree
+  // (no grid re-enables it), making a closed panel fully click-through.
+  opacity: 0;
+  pointer-events: none;
+  &--open {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 .ci-emoji-tabs {
   flex: 0 0 40px;
@@ -77,8 +90,18 @@ app-chat-input {
   transition: opacity 0.12s, background 0.12s;
   &--active { opacity: 1; background: var(--app-hover); }
 }
-.ci-emoji-grid {
+// All category grids stack absolutely inside this relative anchor. It is the flex child that fills the panel
+// column below the tabs; each grid is position:absolute inset:0 filling it, so they overlap and only the active
+// one is shown — but every grid stays laid out + painted (its glyphs pre-rasterized). Each grid also keeps its
+// own scrollTop across switches.
+.ci-emoji-grids {
+  position: relative;
   flex: 1 1 auto;
+  min-height: 0; // permit the inner grid to scroll instead of growing the panel
+}
+.ci-emoji-grid {
+  position: absolute;
+  inset: 0;
   overflow-y: auto;
   display: grid;
   grid-template-columns: repeat(8, 1fr);
@@ -86,6 +109,15 @@ app-chat-input {
   padding: 8px;
   scrollbar-width: none;
   &::-webkit-scrollbar { display: none; }
+  // Inactive ⇒ transparent but still painted (opacity, not display/visibility, so glyphs stay rasterized). The
+  // active grid gets opacity:1 AND z-index:1 so it is the one that both shows and captures pointer events
+  // across the whole panel area — the inactive grids beneath never receive the click (the active grid on top
+  // grabs it first), which is why they need no pointer-events rule of their own.
+  opacity: 0;
+  &--active {
+    opacity: 1;
+    z-index: 1;
+  }
 }
 .ci-emoji {
   height: 36px;

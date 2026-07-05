@@ -2,7 +2,9 @@ import { Component, signal, computed, inject, effect } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
-import { RouteService, PopupType } from '../../services/route.service';
+import { RouteService, RoutePage, PopupType } from '../../services/route.service';
+import { AuthService } from '../../services/auth.service';
+import { WebsocketService } from '../../services/websocket.service';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -21,6 +23,8 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 export class EditProfileComponent {
   private readonly routeService = inject(RouteService)
   private readonly userService = inject(UserService)
+  private readonly authService = inject(AuthService)
+  private readonly wsService = inject(WebsocketService)
   private readonly transloco = inject(TranslocoService)
 
   readonly UserAvatarType = UserAvatarType
@@ -114,5 +118,21 @@ export class EditProfileComponent {
 
   openSessions() {
     this.routeService.popupDlg(PopupType.SESSIONS)
+  }
+
+  /**
+   * Logout from inside the dialog. Logout invalidates the whole session, so first pop this dialog
+   * (reconciling its sentinel history entry — redirect() alone wouldn't touch the dialog stack and the
+   * root-level dlgList would otherwise leak this entry past re-login), then mirror the nav-drawer flow:
+   * disconnect WS, clear credentials, go to login. logout() calls clearToken() internally, so the redirect
+   * happens whether or not backend revocation succeeds.
+   */
+  logout() {
+    this.routeService.closeDlg()
+    this.wsService.disconnect()
+    this.authService.logout().subscribe({
+      complete: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
+      error: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
+    })
   }
 }

@@ -118,6 +118,7 @@
 // Scroll viewport: native scrolling with the scrollbar hidden on every platform. Flex child (flex:1) of the
 // stage column — fills the space between the header and the input bar, no manual top/bottom offsets needed.
 .pg-viewport {
+  position: relative; // positioning context for the initial-load skeleton overlay (sibling of .pg-content)
   flex: 1 1 auto;
   overflow-y: auto;
   // Plan B (default -b route): the kernel manages scrollTop anchor compensation
@@ -148,6 +149,11 @@
   & > * { flex-shrink: 0; }
 }
 .pg-sentinel { height: 1px; }
+
+// Initial-load shimmer skeleton: now in the shared global partial _cb-skeleton.scss (imported via
+// styles.scss), identical for production and the playground. The panel's skeleton-demo toggle gates it via
+// loading() || skeletonDemo() in the template; .pg-viewport stays position:relative (above) to anchor the
+// absolute overlay.
 
 // The Telegram-style sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the
 // production message thread). Its top offset defaults to 48px via the component's --sd-top fallback,

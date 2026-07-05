@@ -1,27 +1,41 @@
 <form class="ci-input-bar" #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
-  @if (emojiOpen()) {
-    <!-- Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid. Floats above the bar; the
-         native keyboard stays up on mobile (no VirtualKeyboard swap — hide() is broken on Chrome Android,
-         crbug.com/40912131). Backdrop / Esc closes. The Recents tab is first when non-empty. -->
-    <!-- Transparent mask: a click on the empty area closes the popup but does NOT steal focus
-         (appPreventFocusSteal cancels mousedown's focus move), so the editor stays focused and the soft
-         keyboard stays up — the user can keep typing. The `click` still fires → closeEmoji. -->
-    <div class="ci-backdrop" appPreventFocusSteal (click)="closeEmoji()"></div>
-    <div class="ci-emoji-panel" (click)="$event.stopPropagation()" role="dialog" aria-label="Emoji">
-      <div class="ci-emoji-tabs" role="tablist">
-        @for (cat of emojiTabs(); track cat.id) {
-          <button type="button" class="ci-emoji-tab" appPreventFocusSteal
-                  [class.ci-emoji-tab--active]="activeCategory() === cat.id"
-                  (click)="activeCategory.set(cat.id)" [attr.aria-label]="cat.label">{{ cat.icon }}</button>
-        }
-      </div>
-      <div class="ci-emoji-grid">
-        @for (e of activeEmojis(); track e) {
-          <button type="button" class="ci-emoji" appPreventFocusSteal (click)="insertEmoji(e)">{{ e }}</button>
-        }
-      </div>
+  <!-- Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid. Floats above the bar; the
+       native keyboard stays up on mobile (no VirtualKeyboard swap — hide() is broken on Chrome Android,
+       crbug.com/40912131). Backdrop / Esc closes. The Recents tab is first when non-empty. -->
+  <!-- ALWAYS MOUNTED (not behind @if): the panel and every category grid render ONCE at component init, so
+       opening the panel and switching tabs are both pure CSS toggles with zero DOM creation/destruction. The
+       panel hides via opacity+pointer-events (NOT display:none) so the grids stay painted and their glyphs stay
+       rasterized — see chat-input.component.scss. [aria-hidden] keeps the closed panel out of the a11y tree
+       (opacity alone would leave it reachable to AT). appPreventFocusSteal on the panel covers every button via
+       mousedown bubbling (one directive, not ~440). -->
+  <!-- Transparent mask: a click on the empty area closes the popup but does NOT steal focus (same directive on
+       the backdrop). [hidden] removes it from layout + pointer events when the panel is closed. -->
+  <div class="ci-backdrop" appPreventFocusSteal [hidden]="!emojiOpen()" (click)="closeEmoji()"></div>
+  <div class="ci-emoji-panel" appPreventFocusSteal
+       [class.ci-emoji-panel--open]="emojiOpen()"
+       [attr.aria-hidden]="!emojiOpen()"
+       (click)="$event.stopPropagation()" role="dialog" aria-label="Emoji">
+    <div class="ci-emoji-tabs" role="tablist">
+      @for (cat of emojiTabs(); track cat.id) {
+        <button type="button" class="ci-emoji-tab"
+                [class.ci-emoji-tab--active]="activeCategory() === cat.id"
+                (click)="activeCategory.set(cat.id)" [attr.aria-label]="cat.label">{{ cat.icon }}</button>
+      }
     </div>
-  }
+    <!-- All category grids are always present; only the active one is opacity:1 + on top. Switching tabs toggles
+         one class — no nodes re-created, no relayout, no glyph re-raster. One delegated (click) inserts via
+         data-emoji. -->
+    <div class="ci-emoji-grids" (click)="onGridClick($event)">
+      @for (tab of emojiTabs(); track tab.id) {
+        <div class="ci-emoji-grid"
+             [class.ci-emoji-grid--active]="activeCategory() === tab.id">
+          @for (e of tab.icons; track e) {
+            <button type="button" class="ci-emoji" [attr.data-emoji]="e">{{ e }}</button>
+          }
+        </div>
+      }
+    </div>
+  </div>
   <div class="ci-input-wrap">
     <button type="button" class="ci-input-ico" appPreventFocusSteal (click)="toggleEmoji()" aria-label="Emoji">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"

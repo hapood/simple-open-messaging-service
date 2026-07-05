@@ -2,7 +2,7 @@ import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Router } from '@angular/router';
 import { apiPrefix } from './constants';
-import { isTauri } from './runtime';
+import { isTauri, apiOrigin } from './runtime';
 
 /**
  * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
@@ -30,6 +30,9 @@ export class PushService {
   private registeredToken: string | null = null;
   /** The most recently seen FCM token (from Kotlin), regardless of registration state. */
   private currentToken: string | null = null;
+  /** The scoped notification token for the WorkManager poller (POST /auth/notification-token). Null
+   *  until login mints one; cleared on logout. Pushed to Kotlin via SomsFcm.setNotificationToken. */
+  private notificationToken: string | null = null;
   /** One-shot guard so the POST_NOTIFICATIONS prompt is asked at most once. */
   private permissionPrompted = false;
 
@@ -40,6 +43,9 @@ export class PushService {
     window.__SOMS_FCM_TOKEN__ = (t) => this.onToken(t);
     // Kotlin → JS: warm-start deep link (notification tap while the app is already running).
     window.__SOMS_DEEP_LINK__ = (tid) => this.openThread(tid);
+    // Hand the resolved backend origin to Kotlin so the WorkManager poller (which fires with no WebView
+    // alive) knows where to POST /notifications/missed.
+    window.SomsFcm?.setApiOrigin(apiOrigin || null);
     // Recover anything emitted before Angular booted. getToken() is a synchronous @JavascriptInterface
     // read; if Kotlin already has a token, use it (the live hook may have been missed).
     const token = window.SomsFcm?.getToken() ?? null;
@@ -54,23 +60,62 @@ export class PushService {
   }
 
   /** Called by AuthService after a successful login — the access token is now in the interceptor, so
-   *  the register POST will carry the Authorization header. */
+   *  the register POST will carry the Authorization header. Also mints a scoped notification token for
+   *  the WorkManager poller and pushes it (plus the origin) to Kotlin encrypted storage. */
   onLogin() {
     if (!isTauri()) return;
     this.maybePromptPermission();
     this.register();
+    this.issueNotificationToken();
   }
 
   /** Called by AuthService.logout BEFORE it clears the access token, so the DELETE still carries the
-   *  Authorization header. */
+   *  Authorization header. Also clears the notification token from Kotlin storage so the poller stops. */
   unregister() {
     if (!isTauri()) return;
     const token = this.registeredToken ?? this.currentToken ?? window.SomsFcm?.getToken() ?? null;
-    if (!token) return;
-    this.http
-      .delete(`${apiPrefix}/devices/register/${encodeURIComponent(token)}`)
-      .subscribe({ error: () => { /* best-effort: a stale token is pruned server-side on next send */ } });
+    if (token) {
+      this.http
+        .delete(`${apiPrefix}/devices/register/${encodeURIComponent(token)}`)
+        .subscribe({ error: () => { /* best-effort: a stale token is pruned server-side on next send */ } });
+    }
     this.registeredToken = null;
+    // Revoke + clear the notification token. The self-revoke DELETE must carry the NOTIFICATION token
+    // (NotificationTokenGuard), not the access token — so bypass HttpClient (whose AuthInterceptor
+    // would overwrite Authorization with the access token on /auth/* paths) and use a raw fetch.
+    // Clearing local storage also stops the poller firing on the next period regardless.
+    if (this.notificationToken) {
+      const t = this.notificationToken;
+      this.notificationToken = null;
+      fetch(`${apiPrefix}/auth/notification-token`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${t}` },
+        keepalive: true, // best-effort even if the page is unloading
+      }).catch(() => { /* idempotent; a stale token expires within 30d anyway */ });
+    }
+    window.SomsFcm?.setNotificationToken(null);
+  }
+
+  /** Mint a scoped 30-day notification token (POST /auth/notification-token) and push it to Kotlin
+   *  encrypted storage, so the WorkManager poller can authenticate /notifications/missed while the
+   *  WebView is suspended. Idempotent-ish: each login issues a fresh token; old ones expire/are-pruned
+   *  server-side. Best-effort — a failure just means the poller stays dormant this session. */
+  private issueNotificationToken() {
+    this.http
+      .post<{ code: number; data?: { notificationToken: string } }>(
+        `${apiPrefix}/auth/notification-token`,
+        {},
+      )
+      .subscribe({
+        next: (r) => {
+          const t = r.code === 0 ? r.data?.notificationToken : undefined;
+          if (t) {
+            this.notificationToken = t;
+            window.SomsFcm?.setNotificationToken(t);
+          }
+        },
+        error: () => { /* best-effort: poller stays dormant, foreground SSE still works */ },
+      });
   }
 
   /** New token from Kotlin (first fetch or rotation). Stash it and try to register. */

@@ -69,7 +69,14 @@ export class UserController {
   @ApiOperation({ summary: '获取当前用户资料' })
   @ApiResultResponse(UserResponseDto)
   async getMyProfile(@Request() req): Promise<ApiResult> {
-    const data = await this.userService.findUniqueUser({ id: req.user.userId });
+    // hasNotiBox=true so the response carries userNotiBox.hasUrFriendReq — the source
+    // of truth for the friend-request badge. Without it the badge can never light up,
+    // even though the NOTIFY SSE + atomic flag write are wired end-to-end.
+    const data = await this.userService.findUniqueUser(
+      { id: req.user.userId },
+      true,
+      true,
+    );
     delete data.hashPwd;
     return { code: BusinessCode.OK, message: 'successful', data };
   }
@@ -406,14 +413,24 @@ export class UserController {
       dto.userId,
       req.user.userId,
     );
-    if (res.status === 0) {
-      return { code: BusinessCode.OK, message: 'friend request approved' };
-    } else {
+    if (res.status !== 0) {
       return {
         code: BusinessCode.FRIEND_NO_INCOMING,
         message: `user [${dto.userId}] did not send you a friend request.`,
       };
     }
+    // The tx just created a new P2P MessageThread + both ThreadParticipant rows. Notify BOTH
+    // participants so each side's conversation list picks up the new thread live: the original
+    // requester otherwise has no signal their request was accepted, and the approver's other
+    // online tabs/devices wouldn't see it from this HTTP response alone.
+    const payload = serializeBody({
+      event: 'NOTIFY',
+      type: 'FRIEND_APPROVED',
+      byUserId: req.user.userId,
+    });
+    this.sseService.onNotify(dto.userId, payload);
+    this.sseService.onNotify(req.user.userId, payload);
+    return { code: BusinessCode.OK, message: 'friend request approved' };
   }
 
   @UseGuards(JwtAuthGuard)

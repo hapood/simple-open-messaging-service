@@ -308,5 +308,13 @@
     "banner": "发现新版本。",
     "reload": "重新加载",
     "dismiss": "稍后"
+  },
+  "push": {
+    "permissionDenied": "通知权限被拒绝——仅 app 打开时能收到消息。",
+    "subscribeFailed": "推送通知启用失败。"
+  },
+  "notif": {
+    "missedOne": "你离开时 {{name}} 给你发了新消息",
+    "missedMany": "你有 {{count}} 个会话的新消息"
   }
 }

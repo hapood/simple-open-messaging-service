@@ -76,14 +76,39 @@ See the current on-disk `MainActivity.kt` for the canonical text.
   `MainActivity.onWebViewCreate`), a UI-thread `eval()` helper, a `jsonStr()` escaper, and two nested
   holders: `SomsBridge.FcmToken.current` and `SomsBridge.DeepLink.pendingThreadId`.
 - `SomsMessagingService.kt` — `FirebaseMessagingService` subclass. `onMessageReceived` posts a per-thread
-  `NotificationCompat` (channel `messages`, grouped by thread) unless `appInForeground`; `onNewToken`
+  `NotificationCompat` (channel `messages`, grouped by thread) unless `appInForeground`, then advances
+  the shared dedup cursor (`SomsSecureStore.advanceCursor`) so the worker doesn't re-notify; `onNewToken`
   stashes the token in `SomsBridge.FcmToken` and emits `window.__SOMS_FCM_TOKEN__(token)` to the webview.
+  Also exposes `notifyMissed` / `notifyMissedSummary` for the WorkManager poller path (localized strings).
+- `SomsSecureStore.kt` — EncryptedSharedPreferences wrapper holding the notification token, api origin,
+  and the per-thread dedup cursor (JSON map threadId → latestMessageId). Read by the worker; written by
+  the JS bridge (token + origin) and both push paths (cursor).
+- `NotificationSyncWorker.kt` — `CoroutineWorker`, ~6h periodic. Skips when foreground/logged-out/no
+  origin; OkHttp-POSTs `/notifications/missed` with the notification token; posts a localized local
+  notification per fresh thread (or an aggregated summary when many), advancing the shared cursor.
 
 The webview reference is obtained from `WryActivity.onWebViewCreate` (the idiomatic Tauri v2 hook), not
 a view-tree walk. `MainActivity` adds a `@JavascriptInterface` named `SomsFcm` (`getToken()`,
-`requestToken()`, `requestNotificationPermission()`) in `onWebViewCreate`, flips
-`SomsMessagingService.appInForeground` in `onResume`/`onStop`, captures cold-start deep links in
-`onCreate`, and routes warm-start links in `onNewIntent`.
+`requestToken()`, `requestNotificationPermission()`, `setNotificationToken(token)`,
+`setApiOrigin(origin)`) in `onWebViewCreate`, flips `SomsMessagingService.appInForeground` in
+`onResume`/`onStop`, captures cold-start deep links in `onCreate`, routes warm-start links in
+`onNewIntent`, and enqueues the periodic `NotificationSyncWorker` (unique work `soms-notif-sync`, KEEP)
+in `onCreate`.
+
+### 6. New gradle deps (app/build.gradle.kts)
+
+```kotlin
+implementation("androidx.work:work-runtime-ktx:2.10.0")        // NotificationSyncWorker
+implementation("androidx.security:security-crypto:1.1.0-alpha06") // EncryptedSharedPreferences
+implementation("com.squareup.okhttp3:okhttp:4.12.0")            // worker HTTP POST
+```
+
+### 7. New i18n resources
+
+- `res/values/strings.xml` — `notif_missed_one` / `notif_missed_many` (English).
+- `res/values-zh-rCN/strings.xml` — 简体中文 variants. Android picks per device locale automatically;
+  `ctx.getString(R.string.notif_*)` resolves to the right one with no explicit branching. Wording
+  mirrors `web/src/app/i18n/{en,zh-CN}.json notif.*` for cross-surface consistency.
 
 ## IPC contract (webview ↔ Kotlin)
 

@@ -18,6 +18,10 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# Desktop system notifications (the UnreadAttentionService foreground "new message while unfocused"
+# popup on Tauri desktop — the webview's Notification API is unreliable in desktop shells, so the
+# plugin is the documented path). Not used on Android (FCM/WorkManager cover it there).
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }

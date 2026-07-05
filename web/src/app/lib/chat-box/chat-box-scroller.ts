@@ -457,13 +457,23 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // skeleton (created by mountBatch above) would never be rebuilt on the first prepend → a stuck spinner mid-list.
     // Also covers the no-fill case (the init batch already exceeds the threshold → the loop never runs).
     this.updateGhost();
+    // Pin to the bottom BEFORE the multi-batch fill, and re-pin after each prepend. Each batch load awaits the source
+    // (a network call in production, a setTimeout in the mock) — a macrotask boundary, so the browser paints between
+    // batches. Without these pins the first paint shows the window top (the oldest end of the init batch, not the global
+    // newest), each uncompensated prepend then drifts the viewport further up, and only the final scrollToBottom lands
+    // at the bottom — the visible "show some messages, then flash to another batch" glitch. Mirrors openAround's
+    // positionMounted-before-fill + fillAround's per-batch pin(): a prepend grows content above the bottom anchor, and
+    // applyAnchor({mode:'bottom'}) reads the LIVE content.scrollHeight so it follows that growth and keeps the newest
+    // in view across every inter-batch paint.
+    this.pinToBottom();
     // Fill to threshold via the SAME primitive openAround's building fill uses (loadOlderIntoFresh: prepend + ghost-reveal
-    // rebuild + measure in one pass, no compensation — init pins to bottom at the end). Sharing the load path — instead
-    // of open-coding a second prepend here — is what keeps init fill and scroll-up loadOlder from drifting apart; the
-    // prior divergence left a spinner stuck at the batch boundary on multi-batch init fills. The gen guard inside makes
-    // a concurrent jump (openAround bumps gen) overtake the in-flight fill cleanly.
+    // rebuild + measure in one pass, no compensation — the per-batch pinToBottom above owns viewport stabilization).
+    // Sharing the load path — instead of open-coding a second prepend here — is what keeps init fill and scroll-up
+    // loadOlder from drifting apart; the prior divergence left a spinner stuck at the batch boundary on multi-batch init
+    // fills. The gen guard inside makes a concurrent jump (openAround bumps gen) overtake the in-flight fill cleanly.
     while (this.totalH() < this.threshold && !this.noOlder && this.mounted.length > 0) {
       if (await this.loadOlderIntoFresh(this.gen) === 0) break; // 0 = boundary reached / no data / overtaken by a jump
+      this.pinToBottom(); // a prepend grew content above → re-pin to the new bottom before the next async fetch yields to the painter
     }
     this.scrollToBottom();
   }
@@ -496,9 +506,9 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  newer end is trimmed, this is a no-op (items are cached; loaded on scroll-back). */
   async onMessageSignal(): Promise<void> {
     if (this.destroyed || this.resetting) return;
-    // Single-flight + tail-coalesce: two SSE frames can land in the same microtask window (two ensureProfiles().then(onLive)
+    // Single-flight + tail-coalesce: two SSE frames can land in the same microtask window (two onSignal
     // callbacks back-to-back). Running them concurrently races on shared state — the second's loadNewer bails on
-    // inflightNewer (orphaning its items in the live cache) and both flipMove the optimistic tail (leaking `animating`
+    // inflightNewer (orphaning its items off-window) and both flipMove the optimistic tail (leaking `animating`
     // and double-playing the shove). Collapse any overlap into ONE tail pass after the in-flight pass resolves, looping
     // until no further signal arrived during a pass (drains a whole burst, in arrival order, strictly non-overlapping).
     if (this.signalInFlight) { this.signalQueued = true; return; }

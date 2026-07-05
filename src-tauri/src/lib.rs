@@ -77,6 +77,7 @@ pub fn run() {
     let proxy_for_protocol = proxy_state.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
             // Clone the state into the spawned task (cheap: Arc + refcounted Client).
             let st = proxy_for_protocol.clone();

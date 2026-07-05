@@ -1,6 +1,7 @@
 import {
   Controller,
   Post,
+  Delete,
   Request,
   UseGuards,
   Body,
@@ -20,6 +21,7 @@ import {
   MEDIA_TOKEN_COOKIE,
   MEDIA_COOKIE_OPTIONS,
 } from '../auth/access-token.validator.js';
+import { NotificationTokenService } from '../auth/notification-token.service.js';
 import { LoginAuthInfo } from '../auth/local.strategy.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -35,7 +37,10 @@ import {
 @Controller()
 @UseGuards(ThrottleGuard)
 export class AuthController {
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private readonly notificationTokens: NotificationTokenService,
+  ) {}
 
   /**
    * Mirror the access token into an httpOnly `media_token` cookie so same-origin /uploads/*
@@ -253,6 +258,36 @@ export class AuthController {
     @Body() dto: RevokeSessionDto,
   ): Promise<ApiResult> {
     await this.authService.revokeSession(req.user.userId, dto.jti, dto.accessJti);
+    return { code: BusinessCode.OK, message: 'success' };
+  }
+
+  // ─── Notification token (scoped background-poll credential) ─────────────────────────────────
+  // See NotificationTokenService. The Android WorkManager poller presents this Bearer token on
+  // /notifications/missed; it is separate from the JWT/refresh-token family so it can't race the
+  // web client's renewal and can't be used for anything beyond the missed-thread summary.
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Throttle(10, 60)
+  @HttpCode(HttpStatus.OK)
+  @Post('auth/notification-token')
+  @ApiOperation({ summary: 'Issue a long-lived notification token for the background poller' })
+  async issueNotificationToken(@Request() req): Promise<ApiResult> {
+    const notificationToken = await this.notificationTokens.issue(req.user.userId);
+    return { code: BusinessCode.OK, message: 'success', data: { notificationToken } };
+  }
+
+  /** Self-revoke: a device presents its own Bearer notification token and the server invalidates
+   *  that one token (per-device, not all the user's tokens). No guard needed — possession of the
+   *  token IS the proof; a not-found/already-revoked token is an idempotent no-op. Called on logout. */
+  @HttpCode(HttpStatus.OK)
+  @Delete('auth/notification-token')
+  @ApiOperation({ summary: 'Revoke the presented notification token (self-revoke on logout)' })
+  async revokeNotificationToken(@Headers('authorization') auth: string): Promise<ApiResult> {
+    const match = /^Bearer\s+(.+)$/i.exec(auth ?? '');
+    if (match) {
+      await this.notificationTokens.revoke(match[1]);
+    }
     return { code: BusinessCode.OK, message: 'success' };
   }
 }

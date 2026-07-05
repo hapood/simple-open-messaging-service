@@ -12,7 +12,7 @@ export class RegisterDeviceDto {
   @ApiProperty({
     example: 'dGhpcyBpcyBhIGZjbSB0b2tlbi4u',
     description:
-      'FCM registration token issued by the platform Firebase SDK. Unique per device+install; the server upserts on this field so an account switch re-owns the row.',
+      'ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per device+install; the server upserts on this field so an account switch re-owns the row.',
   })
   @IsString()
   @IsNotEmpty()
@@ -25,6 +25,26 @@ export class RegisterDeviceDto {
   })
   @IsEnum(PushPlatform)
   platform: PushPlatform;
+
+  @ApiProperty({
+    required: false,
+    description:
+      "WEB only: the Web Push subscription's p256dh key (base64url). Required for WEB so the server can encrypt the payload.",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  p256dh?: string;
+
+  @ApiProperty({
+    required: false,
+    description:
+      "WEB only: the Web Push subscription's auth key (base64url). Required for WEB.",
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  auth?: string;
 
   @ApiProperty({
     required: false,

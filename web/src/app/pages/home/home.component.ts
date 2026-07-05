@@ -42,12 +42,22 @@ export class HomeComponent implements OnInit, OnDestroy {
     // 单例 constructor 不会在登出后重登时再跑，需在此重连 WS
     this.wsService.connect();
 
-    // 实时好友请求角标：收到 NOTIFY（新好友请求）或 SSE 重连（断线期间可能错过 NOTIFY）
-    // 都刷新 profile，让 hasUrFriendReq 角标与服务端（唯一事实源）保持一致。
+    // Friend-lifecycle notifications ride the generic NOTIFY event, discriminated by `data.type`:
+    //  - FRIEND_REQUEST: an incoming request armed the unread badge → refetch the profile.
+    //  - FRIEND_APPROVED (either side of a just-accepted request) / FRIEND_DELETED (peer unfriended):
+    //    the conversation set changed → reload the list from the server (source of truth), so a
+    //    newly created / removed P2P thread appears live without a manual refresh.
     this.subs.push(
       this.wsService.eventSubject
         .pipe(filter((m) => m.event === 'NOTIFY'))
-        .subscribe(() => this.userService.updateSessionProfile()),
+        .subscribe((m) => {
+          const t = m.data?.type;
+          if (t === 'FRIEND_APPROVED' || t === 'FRIEND_DELETED') {
+            this.convList.load();
+          } else {
+            this.userService.updateSessionProfile();
+          }
+        }),
     );
     // Live conversation list: an incoming message refreshes that thread's preview + bumps unread
     // (unless it's the thread the user is currently viewing). On reconnect, the server (source of

@@ -2,10 +2,8 @@ import { Component, inject, input, computed } from '@angular/core';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../../icon/icon.component';
-import { RouteService, RoutePage, PopupType } from '../../../services/route.service';
-import { AuthService } from '../../../services/auth.service';
+import { RouteService, PopupType } from '../../../services/route.service';
 import { UserService } from '../../../services/user.service';
-import { WebsocketService } from '../../../services/websocket.service';
 import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
 
@@ -13,7 +11,8 @@ import { LanguageService } from '../../../services/language.service';
  * Telegram-style left rail: account avatar on top, section/action buttons at
  * the bottom. Replaces the mobile home-header hamburger menu on desktop. Mirrors
  * <app-nav-drawer>: same actions (friend requests / new group / folders / theme /
- * language / log out), exposed as icon-only buttons with translated tooltips.
+ * language), exposed as icon-only buttons with translated tooltips. Log out lives
+ * in the profile dialog (PopupType.EDIT_PROFILE), not the rail.
  */
 @Component({
   selector: 'app-icon-rail',
@@ -64,14 +63,6 @@ import { LanguageService } from '../../../services/language.service';
           [title]="'nav.languageAria' | transloco:{ label: langLabel() }"
           [attr.aria-label]="'nav.languageAria' | transloco:{ label: langLabel() }">
           <app-icon [type]="AppIconType.GLOBE" [style]="{ width: '24px', height: '24px' }"></app-icon>
-        </button>
-        <button class="rail-btn" (click)="logout()"
-          [title]="'nav.logout' | transloco" [attr.aria-label]="'nav.logout' | transloco">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
-            <path d="M16 17l5-5-5-5"/>
-            <path d="M21 12H9"/>
-          </svg>
         </button>
       </div>
     </div>
@@ -125,9 +116,7 @@ export class IconRailComponent {
   readonly onThreadListChanged = input<(() => void) | undefined>(undefined)
 
   private readonly routeService = inject(RouteService);
-  private readonly authService = inject(AuthService);
   private readonly userService = inject(UserService);
-  private readonly wsService = inject(WebsocketService);
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
@@ -168,15 +157,5 @@ export class IconRailComponent {
 
   folderEditor() {
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
-  }
-
-  logout() {
-    // Disconnect the WS first, then clear credentials + go to the login page (logout already calls clearToken
-    // internally, so the login redirect happens whether or not backend revocation succeeds).
-    this.wsService.disconnect();
-    this.authService.logout().subscribe({
-      complete: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
-      error: () => this.routeService.redirect(RoutePage.AUTH_LOGIN),
-    })
   }
 }

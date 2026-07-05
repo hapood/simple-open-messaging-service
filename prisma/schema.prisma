@@ -34,6 +34,7 @@ model User {
   messages           Message[]           @relation("AuthoredMessages")
   refreshTokens      RefreshToken[]
   pushTokens         PushToken[]
+  notificationTokens NotificationToken[]
 
   @@unique([uniqName, domain])
 }
@@ -65,24 +66,46 @@ enum PushPlatform {
 }
 
 /// One row per (device, user) push registration token. The client obtains an FCM registration token
-/// from the platform Firebase SDK and POSTs it to /devices/register; the server fans out data-only
-/// FCM messages to these tokens on NEW_MESSAGE for any recipient with no live SSE connection
-/// (see PushService.dispatchForMessage). `token` is globally unique — a device's token is re-owned
-/// to the current user on re-register (upsert on token), so an account switch on the same device
-/// re-points delivery without leaving a stale row. `lastSeenAt` lets a future stale-token sweep
-/// prune devices that haven't re-registered in N days.
+/// (ANDROID) or a Web Push subscription endpoint (WEB) and POSTs it to /devices/register; the server
+/// fans out to these tokens on NEW_MESSAGE for any recipient with no live SSE connection
+/// (see PushService.dispatchForMessage). `token` is globally unique — ANDROID = FCM registration
+/// token, WEB = the push endpoint URL ( widened to 500 for Mozilla/FCM endpoints); a device's token is
+/// re-owned to the current user on re-register (upsert on token), so an account switch on the same
+/// device re-points delivery without leaving a stale row. WEB rows also carry the subscription's
+/// p256dh + auth keys (nullable; ANDROID leaves them null). `lastSeenAt` lets a future stale-token
+/// sweep prune devices that haven't re-registered in N days.
 model PushToken {
   id         Int          @id @default(autoincrement())
   userId     Int
   user       User         @relation(fields: [userId], references: [id])
-  token      String       @unique @db.VarChar(255)
+  token      String       @unique @db.VarChar(500)
   deviceId   String?      @db.VarChar(127) // links to the web client's localStorage device_id (auth.service)
   platform   PushPlatform
+  webP256dh  String?      @db.VarChar(255) // Web Push subscription p256dh key (WEB only)
+  webAuth    String?      @db.VarChar(255) // Web Push subscription auth key (WEB only)
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
   lastSeenAt DateTime     @default(now())
 
   @@index([userId]) // dispatch lookup: tokens to fan out for a recipient set
+}
+
+/// Long-lived, revocable, single-purpose credential for background pollers (the Android WorkManager
+/// NotificationSyncWorker) that can't hold a 15-minute access token and must not share the refresh
+/// token family (which would race the web client's own renewal). Mirrors RefreshToken's hash+lookup:
+/// we store only the sha256 hash; the plaintext is returned once at issue and sent as a Bearer header
+/// on /notifications/*. Scoped by NotificationTokenGuard to ONLY the missed-thread endpoint, so a
+/// leak grants no other app access. Revoked on logout.
+model NotificationToken {
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  user       User      @relation(fields: [userId], references: [id])
+  tokenHash  String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime // 30-day TTL — the poller re-issues on next foreground login
+  revokedAt  DateTime? // soft revoke on logout
+
+  @@index([userId])
 }
 
 model Group {

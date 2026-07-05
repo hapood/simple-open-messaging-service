@@ -11,6 +11,8 @@ import { jwtConstants } from './constants.js';
 import { UserService } from '../user/user.service.js';
 import { PrismaService } from '../prisma.service.js';
 import { ThrottleGuard } from './throttle.guard.js';
+import { NotificationTokenService } from './notification-token.service.js';
+import { NotificationTokenGuard } from './notification-token.guard.js';
 
 @Module({
   imports: [
@@ -29,7 +31,9 @@ import { ThrottleGuard } from './throttle.guard.js';
     JwtStrategy,
     AccessTokenValidator,
     ThrottleGuard,
+    NotificationTokenService,
+    NotificationTokenGuard,
   ],
-  exports: [AuthService, LocalStrategy, AccessTokenValidator],
+  exports: [AuthService, LocalStrategy, AccessTokenValidator, NotificationTokenService, NotificationTokenGuard],
 })
 export class AuthModule {}
