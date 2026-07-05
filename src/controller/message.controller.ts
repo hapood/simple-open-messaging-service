@@ -22,6 +22,7 @@ import {
 } from '../dto/message.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
+import { PushService } from '../push/push.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
@@ -37,6 +38,7 @@ export class MessageController {
     private readonly sseService: SseService,
     private readonly participantService: ThreadParticipantService,
     private readonly friendshipService: FriendshipService,
+    private readonly pushService: PushService,
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -45,7 +47,7 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('send-message')
-  @ApiOperation({ summary: '发送消息（P2P/群统一）' })
+  @ApiOperation({ summary: 'Send a message (unified for P2P and group)' })
   @ApiResultResponse(MessageResponseDto)
   async sendMessage(
     @Request() req,
@@ -76,8 +78,8 @@ export class MessageController {
       contentType,
       dto.clientMessageId,
     );
-    // WS 推完整消息体（serializeBody 把 BigInt→string / Date→ms，与 HTTP 响应同口径；
-    // 前端收到即可直接渲染，无需二次 query-messages）。
+    // Push the full message body over SSE (serializeBody converts BigInt→string / Date→ms, the same
+    // shape as the HTTP response; the client can render it directly without a second query-messages).
     const msgData = serializeBody({ threadId: dto.threadId, ...data });
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const userIds = await this.participantService.getActiveParticipantUserIds(
@@ -86,6 +88,15 @@ export class MessageController {
     userIds.forEach((item) => {
       this.sseService.onNewMessage(item.userId, msgData);
     });
+    // FCM wake-up for OFFLINE recipients (PushService filters out the sender and anyone with a live SSE
+    // connection). Fire-and-forget — push latency must not delay this HTTP response, and dispatchForMessage
+    // swallows all errors so a push failure can never break message delivery.
+    void this.pushService.dispatchForMessage(
+      userIds,
+      req.user.userId,
+      dto.threadId,
+      msgData,
+    );
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -94,7 +105,7 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('query-messages')
-  @ApiOperation({ summary: '查询会话历史消息（游标分页）' })
+  @ApiOperation({ summary: 'Query conversation history messages (cursor pagination)' })
   @ApiResultResponse(MessageResponseDto, true)
   async queryMessages(
     @Request() req,
@@ -102,8 +113,9 @@ export class MessageController {
   ): Promise<ApiResult> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
     // IDOR fix as send, now declarative. The participant row is on req.threadAccess.participant.
-    // take+1 法：多取 1 条判断 hasMore，data 截断回 take 条。
-    // 消除「总数恰为 take 整数倍时前端靠 <take 启发式多打一次空请求」的边界问题。
+    // take+1 trick: fetch one extra row to decide hasMore, then truncate `data` back to `take` rows.
+    // This removes the edge case where a total count that is an exact multiple of `take` would make the
+    // client fire one speculative empty request (its `< take` heuristic would otherwise be ambiguous).
     const newParams: Prisma.MessageFindManyArgs = {
       skip: dto.skip,
       take: dto.take + 1,
@@ -125,7 +137,7 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/by-user-id')
-  @ApiOperation({ summary: '按对端 userId 查 P2P 关系（好友状态/会话）' })
+  @ApiOperation({ summary: 'Look up the P2P relationship by peer userId (friend status / thread)' })
   @ApiResultResponse(FriendshipDto)
   async getThreadByUserId(
     @Request() req,

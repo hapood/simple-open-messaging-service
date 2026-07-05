@@ -1,69 +1,80 @@
 // SOMS desktop shell (Tauri v2).
 //
 // Responsibilities:
-//  1. Inject `window.__SOMS_API_ORIGIN__` before the Angular app boots (initialization script), so
-//     the bundled webview reaches the (cross-origin) backend at the configured origin. The origin
-//     comes from the SOMS_API_ORIGIN env var (default http://localhost:3000 for dev).
+//  1. Resolve the backend origin and inject `window.__SOMS_API_ORIGIN__` before the Angular app boots
+//     (initialization script). Resolution order: a persisted user choice in the app-data config file
+//     (set via the in-app Server page — the only way to point a bundled phone APK at a real backend),
+//     then the SOMS_API_ORIGIN env var (dev), then the localhost default.
 //  2. Register a `media://localhost` custom URI scheme that proxies `/uploads/*` to the backend with
 //     the current access token in an `Authorization: Bearer` header. A bare `<img src>` / CSS url()
 //     can't set headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict (so it
 //     can't cross origins) — the proxy is the only correct way to authenticate media in the shell.
-//  3. Hold the access token for the proxy in `ProxyState`, updated by `set_access_token` /
-//     `clear_access_token` commands the frontend calls on login / logout (see AuthService).
+//  3. Hold the access token + live origin for the proxy in `ProxyState`, updated by `set_access_token`
+//     / `clear_access_token` (login/logout) and `set_api_origin` (Server page) commands.
 
 use std::borrow::Cow;
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tauri::http::{Response, StatusCode};
-use tauri::{UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
 
 /// The custom URI scheme the frontend rewrites `/uploads/*` media URLs to (see web/.../runtime.ts).
 /// The handler below services `media://localhost/<path>` by proxying to `${api_origin}/<path>`.
 const MEDIA_SCHEME: &str = "media";
 
-/// The backend origin the shell talks to. Read once at startup from SOMS_API_ORIGIN (default
-/// http://localhost:3000). Injected into the webview as `window.__SOMS_API_ORIGIN__` before boot.
+/// The backend origin the shell talks to when nothing else is configured. Unreachable from a phone,
+/// which is exactly why the bundled APK forces the Server page on first run (see web auth.guard.ts).
 const DEFAULT_API_ORIGIN: &str = "http://localhost:3000";
 
-/// Shared state for the media proxy + token handoff commands. Cloned cheaply (the reqwest Client and
-/// the token Arc are both refcounted), so the protocol handler and the command handlers see the same
-/// token and HTTP pool.
+/// Persisted-origin file in the app-data dir. Holds a single validated http(s) URL (no JSON needed for
+/// one string). Read at boot to override the env/default; written by `set_api_origin`.
+const CONFIG_FILENAME: &str = "api_origin";
+
+/// Shared state for the media proxy + token/origin handoff commands. Cloned cheaply (the reqwest
+/// Client, the token Arc, the origin Arc, and the config-path Arc are all refcounted), so the protocol
+/// handler and the command handlers see the same live values.
 #[derive(Clone)]
 struct ProxyState {
-    api_origin: String,
+    /// Live backend origin. Mutable so `set_api_origin` can repoint the media proxy without a restart;
+    /// the frontend reloads to re-resolve its module-load `apiPrefix`/`sseUrl`/media URLs.
+    api_origin: Arc<Mutex<String>>,
     token: Arc<Mutex<Option<String>>>,
     http: reqwest::Client,
+    /// Path to the persisted-origin file; populated in `setup` once the app handle exists.
+    config_path: Arc<Mutex<PathBuf>>,
+}
+
+/// Validate a backend origin: must parse as a clean http(s) URL. Returns the canonical string form so
+/// the caller never stores or injects malformed input (the origin feeds both a fetch URL and a JS
+/// string literal in the init script). `None` on anything else — callers fall back, never panic.
+fn validate_origin(raw: &str) -> Option<String> {
+    reqwest::Url::parse(raw.trim())
+        .ok()
+        .filter(|u| u.scheme() == "http" || u.scheme() == "https")
+        .map(|u| u.to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let api_origin = std::env::var("SOMS_API_ORIGIN").unwrap_or_else(|_| DEFAULT_API_ORIGIN.to_string());
-    // Sanity: the origin feeds both a fetch URL and a JS string literal; reject anything that isn't
-    // a clean http(s) URL so we never inject malformed JS or fetch off-path. Fall back to the default
-    // rather than panic — a misconfigured env shouldn't brick the app.
-    let api_origin = reqwest::Url::parse(&api_origin)
+    // Pre-setup best guess (no app handle yet, so no app-data dir): env, else default. setup() overrides
+    // this from the persisted config file once the handle is available, and re-injects the resolved value.
+    let initial_origin = std::env::var("SOMS_API_ORIGIN")
         .ok()
-        .filter(|u| u.scheme() == "http" || u.scheme() == "https")
-        .map(|u| u.to_string())
+        .and_then(|s| validate_origin(&s))
         .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
 
     let proxy_state = ProxyState {
-        api_origin: api_origin.clone(),
+        api_origin: Arc::new(Mutex::new(initial_origin)),
         token: Arc::new(Mutex::new(None)),
         http: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none()) // /uploads is auth-gated; never follow
             .build()
             .expect("reqwest client"),
+        config_path: Arc::new(Mutex::new(PathBuf::new())),
     };
     let proxy_for_protocol = proxy_state.clone();
-
-    // Inject the API origin as a read-only global BEFORE any page script runs. Read at module load
-    // by web/.../constants.ts → every apiPrefix/sseUrl call resolves to the absolute origin.
-    // Rust's {:?} on a &str produces a valid JS string literal for these http(s):// URLs.
-    let init_script = format!(
-        "Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:{:?},writable:false}});",
-        api_origin
-    );
 
     tauri::Builder::default()
         .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
@@ -73,15 +84,46 @@ pub fn run() {
                 proxy_media(st, request, responder).await;
             });
         })
-        .manage(proxy_state)
+        .manage(proxy_state.clone())
         .invoke_handler(tauri::generate_handler![
             get_api_origin,
+            set_api_origin,
             set_access_token,
             clear_access_token,
         ])
         .setup(move |app| {
-            // The main window is created in code (not config) so we can attach the init script that
-            // injects the env-driven API origin. devUrl (dev) vs bundled index.html (release).
+            // Resolve the app-data config path and load the persisted origin, overriding the env/default
+            // when the user has configured one. The window reads origin via the live Arc at request time,
+            // and the init script below injects the resolved value before any page script runs.
+            let data_dir = app.path().app_data_dir()?;
+            fs::create_dir_all(&data_dir)?;
+            let config_path = data_dir.join(CONFIG_FILENAME);
+            if let Some(persisted) = fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|s| validate_origin(&s))
+            {
+                *proxy_state.api_origin.lock().expect("origin lock") = persisted;
+            }
+            *proxy_state
+                .config_path
+                .lock()
+                .expect("config_path lock") = config_path;
+            let resolved_origin = proxy_state
+                .api_origin
+                .lock()
+                .expect("origin lock")
+                .clone();
+
+            // Inject the API origin as a read-only global BEFORE any page script runs. Read at module
+            // load by web/.../constants.ts → every apiPrefix/sseUrl call resolves to the absolute origin.
+            // Rust's {:?} on a &str produces a valid JS string literal for these http(s):// URLs.
+            let init_script = format!(
+                "Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:{:?},writable:false}});",
+                resolved_origin
+            );
+
+            // The main window is created in code (not config) so we can attach the init script. devUrl
+            // (dev) vs bundled index.html (release).
             let url = if cfg!(debug_assertions) {
                 app.config()
                     .build
@@ -96,7 +138,7 @@ pub fn run() {
                 .title("SOMS")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(900.0, 600.0)
-                .initialization_script(init_script.clone())
+                .initialization_script(init_script)
                 .build()?;
             Ok(())
         })
@@ -123,7 +165,9 @@ async fn proxy_media(
         return;
     }
 
-    let target = format!("{}{}", st.api_origin, path_and_query);
+    // Read the live origin (set_api_origin may have repointed it since boot).
+    let api_origin = st.api_origin.lock().expect("origin lock").clone();
+    let target = format!("{}{}", api_origin, path_and_query);
     let token = st.token.lock().ok().and_then(|g| g.clone());
     let mut req = st.http.get(&target);
     if let Some(t) = token {
@@ -165,11 +209,31 @@ fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
 
 // --- frontend-facing commands ---------------------------------------------------------------
 
-/// Read the backend origin (the frontend reads this from window.__SOMS_API_ORIGIN__ directly; this
-/// command is a fallback / diagnostic).
+/// Read the live backend origin. The frontend reads the boot value from window.__SOMS_API_ORIGIN__
+/// directly; this command reports the current (possibly repointed) value for diagnostics / the Server
+/// page.
 #[tauri::command]
 fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
-    state.api_origin.clone()
+    state.api_origin.lock().expect("origin lock").clone()
+}
+
+/// Persist a new backend origin chosen in the Server page. Validates http(s), writes the app-data
+/// config file (so it survives restarts and is injected before Angular boots on the next launch),
+/// and updates the proxy's live origin (so `/uploads/*` media immediately uses the new host). Returns
+/// the normalized origin Rust stored; the caller then `location.reload()`s to make the frontend's
+/// module-load `apiOrigin`/`apiPrefix`/`sseUrl` re-resolve.
+#[tauri::command]
+fn set_api_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<String, String> {
+    let normalized = validate_origin(&url)
+        .ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
+    let path = state
+        .config_path
+        .lock()
+        .expect("config_path lock")
+        .clone();
+    fs::write(&path, &normalized).map_err(|e| format!("failed to write config: {e}"))?;
+    *state.api_origin.lock().expect("origin lock") = normalized.clone();
+    Ok(normalized)
 }
 
 /// Stash the access token for the media proxy. Called by AuthService on login / renew.

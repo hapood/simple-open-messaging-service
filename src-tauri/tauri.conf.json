@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../web/dist/web/browser",
     "devUrl": "http://localhost:4200",
-    "beforeDevCommand": "npm --prefix ../web run start",
-    "beforeBuildCommand": "npm --prefix ../web run build"
+    "beforeDevCommand": "npm --prefix web run start",
+    "beforeBuildCommand": "npm --prefix web run build"
   },
   "app": {
     "windows": [],

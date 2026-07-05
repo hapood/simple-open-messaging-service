@@ -22,7 +22,7 @@ model User {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   isDeleted          Boolean             @default(false)
-  tokenVersion       Int                 @default(0) // bump 即令该用户所有 access token 失效（全设备登出/改密/强制下线）
+  tokenVersion       Int                 @default(0) // bumping this invalidates ALL of the user's access tokens (all-device logout / password change / force-kick)
   userExtraId        Int                 @unique
   userExtra          UserExtra           @relation(fields: [userExtraId], references: [id])
   userNotiBoxId      Int                 @unique
@@ -33,6 +33,7 @@ model User {
   friendshipsAsB     Friendship[]        @relation("FriendB")
   messages           Message[]           @relation("AuthoredMessages")
   refreshTokens      RefreshToken[]
+  pushTokens         PushToken[]
 
   @@unique([uniqName, domain])
 }
@@ -53,6 +54,35 @@ model userNotiBox {
   User           User?
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+}
+
+/// Delivery platform for a push registration token. Determines the server-side transport
+/// (firebase-admin covers ANDROID/IOS today; WEB will use the standard Web Push / VAPID path).
+enum PushPlatform {
+  ANDROID
+  WEB
+  IOS
+}
+
+/// One row per (device, user) push registration token. The client obtains an FCM registration token
+/// from the platform Firebase SDK and POSTs it to /devices/register; the server fans out data-only
+/// FCM messages to these tokens on NEW_MESSAGE for any recipient with no live SSE connection
+/// (see PushService.dispatchForMessage). `token` is globally unique — a device's token is re-owned
+/// to the current user on re-register (upsert on token), so an account switch on the same device
+/// re-points delivery without leaving a stale row. `lastSeenAt` lets a future stale-token sweep
+/// prune devices that haven't re-registered in N days.
+model PushToken {
+  id         Int          @id @default(autoincrement())
+  userId     Int
+  user       User         @relation(fields: [userId], references: [id])
+  token      String       @unique @db.VarChar(255)
+  deviceId   String?      @db.VarChar(127) // links to the web client's localStorage device_id (auth.service)
+  platform   PushPlatform
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+  lastSeenAt DateTime     @default(now())
+
+  @@index([userId]) // dispatch lookup: tokens to fan out for a recipient set
 }
 
 model Group {
@@ -195,27 +225,27 @@ model Notify {
   updatedAt DateTime   @updatedAt
 }
 
-/// refresh_token 落库（替换原内存字典）：支持重启存活、多端、可吊销
+/// Refresh token persisted to DB (replaces an earlier in-memory map): survives restart, multi-device, revocable.
 model RefreshToken {
   id           BigInt    @id @default(autoincrement())
   userId       Int
   user         User      @relation(fields: [userId], references: [id])
-  tokenHash    String    @unique // 存 sha256 哈希，不存明文
-  jti          String    @unique // 该 token 的 JWT id；精确吊销键，与 claim 对齐
-  familyId     String // 登录时铸造、轮换时继承；重用检测锚点（重放已吊销 token→全家族失效）
-  device       String? // 多端标识（前端 localStorage uuid）
-  userAgent    String?   @db.VarChar(255) // 签发/轮换时的 UA，会话列表展示用
-  ip           String?   @db.VarChar(64) // 签发/轮换时的 IP，会话列表展示用
+  tokenHash    String    @unique // stores sha256 hash, never the plaintext token
+  jti          String    @unique // JWT id of this token; the precise revocation key, aligned with the claim
+  familyId     String // minted at login, inherited across rotation; reuse-detection anchor (a replayed revoked token → whole family revoked)
+  device       String? // multi-device label (the client's localStorage uuid)
+  userAgent    String?   @db.VarChar(255) // UA captured at issue/rotation, shown in the session list
+  ip           String?   @db.VarChar(64) // IP captured at issue/rotation, shown in the session list
   createdAt    DateTime  @default(now())
   expiresAt    DateTime
-  revokedAt    DateTime? // 软吊销
-  revokeReason String?   @db.VarChar(32) // 吊销原因：logout|rotated|reuse|all_devices|password_change（仅观测/取证）
+  revokedAt    DateTime? // soft revoke
+  revokeReason String?   @db.VarChar(32) // revoke reason: logout|rotated|reuse|all_devices|password_change (observability/forensics only)
 
   @@index([userId])
   @@index([familyId])
 }
 
-/// 管理员账户（独立于聊天 User：拖库隔离 + 消除提权路径 + 可施加更严安全策略）
+/// Admin account (independent of the chat User: breach isolation + no privilege-escalation path + stricter security policy).
 model Admin {
   id            Int                 @id @default(autoincrement())
   username      String              @unique @db.VarChar(31)
@@ -230,7 +260,7 @@ model Admin {
   @@index([username])
 }
 
-/// admin refresh token（家族化 + 重用检测，镜像 RefreshToken，独立实例避免与用户会话混用）
+/// Admin refresh token (family-based + reuse detection, mirrors RefreshToken; a separate instance avoids mixing with user sessions).
 model AdminRefreshToken {
   id           BigInt    @id @default(autoincrement())
   adminId      Int

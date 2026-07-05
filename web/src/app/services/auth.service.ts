@@ -4,6 +4,7 @@ import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from '
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
 import { isTauri, tauriInvoke } from './runtime';
+import { PushService } from './push.service';
 import { uuid } from '../lib/uuid';
 
 const REFRESH_TOKEN = 'refresh_token',
@@ -22,13 +23,16 @@ type AccessTokenRes = { code: number, message: string, data?: { access_token: st
 const FOCUS_REFRESH_AFTER_MS = 13 * 60 * 1000
 
 /**
- * Token 管理（简化版）：
- * - 统一只走 `/auth/renew-access`（后端 renew-access 与 renew-refresh 完全同义，会同时轮换 refresh）。
- *   access 15m 过期 → 被动刷新；每次 renew-access 也轮换 refresh，故无需 7 天主动刷新。
- * - 删掉旧的 7 天定时器 / renewRefreshToken / tokenCreateTime 机制（曾滋生 _connecting 锁死、401 死循环、
- *   非记住登录定时器失效等多条 bug）。
- * - acTkSub = 当前 access token（或 null）。拦截器有 token 直接用；无 token 主动驱动 renewAccessToken（有确定
- *   终点，失败→redoLoginAuth→放弃请求），不再靠「等 acTkSub 推非空」从而杜绝永挂。
+ * Token management (simplified):
+ * - Everything goes through `/auth/renew-access` (the backend's renew-access and renew-refresh are fully
+ *   synonymous; both rotate the refresh token). Access tokens expire after 15m → passive refresh; every
+ *   renew-access also rotates the refresh token, so there is no need for a 7-day proactive refresh.
+ * - Removed the old 7-day timer / renewRefreshToken / tokenCreateTime machinery (it spawned multiple
+ *   bugs: _connecting lock-up, 401 loops, keep-login timer stalling).
+ * - acTkSub = the current access token (or null). The interceptor uses it directly when present; when
+ *   absent it proactively drives renewAccessToken (which has a deterministic endpoint — on failure →
+ *   redoLoginAuth → drop the request), instead of "waiting for acTkSub to emit non-null" which could
+ *   hang forever.
  */
 @Injectable({
   providedIn: 'root',
@@ -39,10 +43,11 @@ export class AuthService {
   /** Wall-clock ms when the current access token was stored, or null when none is held. Drives the
    *  focus-refresh below; not decoded from the JWT (kept simple — see FOCUS_REFRESH_AFTER_MS). */
   private _accessSetAt: number | null = null
-  /** 当前 access token；null = 无 token（启动期 / renew 进行中）。拦截器据此决定直接发还是先 renew。 */
+  /** Current access token (null = none held yet, e.g. during startup or an in-flight renew). The interceptor
+   *  reads this to decide whether to send immediately or renew first. */
   public acTkSub = new BehaviorSubject<string | null>(null)
 
-  constructor(private http: HttpClient, private routeService: RouteService) {
+  constructor(private http: HttpClient, private routeService: RouteService, private push: PushService) {
     // Keep the access token (and thus the media cookie) fresh when the tab is foregrounded after
     // being idle long enough that the 15m token has likely expired. Guarded by a refresh-token check
     // so a logged-out tab focusing never triggers a redirect-to-login.
@@ -58,26 +63,31 @@ export class AuthService {
     }
   }
 
-  /** 当前 access token（同步快照），供拦截器无延迟判断。 */
+  /** Current access token (synchronous snapshot), for the interceptor to check with no latency. */
   get accessToken(): string | null {
     return this.acTkSub.value
   }
 
   login(params: { uniqName: string, password: string, isKeep: boolean }) {
-    // isKeep 是前端"记住登录"的本地存储策略（refresh token 存 localStorage 还是 sessionStorage），
-    // 后端不消费，故从请求体剥离；仍用于成功后决定 token 落盘位置。
+    // isKeep is the frontend's "keep me logged in" storage policy (whether the refresh token lives in
+    // localStorage or sessionStorage). The backend does not consume it, so it is stripped from the
+    // request body; it is still used after success to decide where to persist the token.
     const { isKeep, ...credentials } = params;
     return this.http.post<AccessTokenRes>
       (`${apiPrefix}/auth/login`, { ...credentials, device: this.getDeviceId() }).pipe(tap((res) => {
         if (res.code === 0) {
           const data = res.data!
           this._isKeep = isKeep
-          // 全新登录：清两处存储，避免 isKeep 切换留下旧 token 孤儿。
-          // （与登出 clearToken「仅清本 tab」区分——登出要尊重同账号其它 tab 的独立 session。）
+          // Fresh login: clear both stores so an isKeep switch leaves no orphaned old token.
+          // (Contrast with logout's clearToken, which clears only THIS tab — logout must respect the
+          // independent sessions of other tabs on the same account.)
           sessionStorage.removeItem(REFRESH_TOKEN)
           localStorage.removeItem(REFRESH_TOKEN)
           this.setReToken(data.refresh_token, isKeep)
           this.setAcToken(data.access_token)
+          // Now that the access token is in the interceptor, register (or re-register) this device's
+          // FCM token so the server can push to it. No-op outside the Tauri shell.
+          this.push.onLogin()
         }
       }))
   }
@@ -88,11 +98,12 @@ export class AuthService {
   }
 
   /**
-   * 刷新 access token：走 renew-access（后端会轮换 refresh）。
-   * 单飞：并发调用共享同一在飞请求（shareReplay bufferSize:1）；
-   * refCount:true → 最后一个订阅取消时拆内层订阅，避免长驻 service 下的内存泄漏；
-   * finalize → 完成后清 _renewAccessInFlight，使下一次过期触发全新 renew。
-   * 成功→存新 access + 轮换后的 refresh；code≠0（重用 10006 / 失效 10003 等）→ redoLoginAuth 强制重登。
+   * Refresh the access token via renew-access (the backend rotates the refresh token too).
+   * Single-flight: concurrent callers share the same in-flight request (shareReplay bufferSize:1);
+   * refCount:true tears down the inner subscription once the last subscriber leaves, avoiding a leak
+   * under a long-lived service; finalize clears _renewAccessInFlight so the next expiry triggers a
+   * fresh renew. Success → store the new access + rotated refresh; code≠0 (reuse 10006 / invalidated
+   * 10003, etc.) → redoLoginAuth forces a re-login.
    */
   renewAccessToken(): Observable<AccessTokenRes> {
     if (this._renewAccessInFlight) {
@@ -103,7 +114,7 @@ export class AuthService {
       this.redoLoginAuth()
       return EMPTY
     }
-    this.acTkSub.next(null) // 暂停受保护请求，等新 token
+    this.acTkSub.next(null) // pause protected requests until the new token arrives
     this._accessSetAt = null
     const req$ = this.http.post<AccessTokenRes>(
       `${apiPrefix}/auth/renew-access`,
@@ -157,9 +168,9 @@ export class AuthService {
   }
 
   /**
-   * 只清当前 tab 的 token 存储（按 isKeep 选 sessionStorage/localStorage）：
-   * 一个非记住 tab 登出不再误清另一记住 tab 共享的 localStorage token。
-   * sessionStorage 本就 per-tab，故仅 localStorage 场景需注意——这里按当前 isKeep 精准清理。
+   * Clears only THIS tab's token storage (sessionStorage or localStorage, per isKeep): a non-keep tab
+   * logging out no longer wipes the localStorage token shared with another keep tab. sessionStorage is
+   * already per-tab, so only the localStorage case needs care — here it is cleared precisely by isKeep.
    */
   clearToken() {
     this.acTkSub.next(null)
@@ -176,6 +187,10 @@ export class AuthService {
   logout() {
     const refreshToken = this.getRefreshToken()
     if (refreshToken) {
+      // Unregister the FCM token BEFORE clearing the access token, so the DELETE /devices/register
+      // still carries the Authorization header. Best-effort — a stale token is pruned server-side on
+      // the next send anyway. No-op outside the Tauri shell.
+      this.push.unregister()
       this.clearToken()
       return this.http.post<{ code: number; message: string }>(`${apiPrefix}/auth/logout`, {
         refreshToken
@@ -184,7 +199,8 @@ export class AuthService {
     return EMPTY
   }
 
-  /** 改密：成功后服务端吊销其他会话并返回新登录对，本地替换为新 token。 */
+  /** Change password: on success the server revokes other sessions and returns a fresh login pair; the
+   *  local tokens are replaced with the new ones. */
   changePassword(params: { oldPassword: string, newPassword: string }) {
     return this.http.post<{ code: number, message: string, data?: { access_token: string, refresh_token: string } }>(
       `${apiPrefix}/auth/change-password`, params
@@ -196,7 +212,7 @@ export class AuthService {
     }))
   }
 
-  /** 会话管理：列活跃会话 / 踢单个设备。 */
+  /** Session management: list active sessions / kick a single device. */
   getSessions() {
     return this.http.post<{ code: number, message: string, data?: any[] }>(`${apiPrefix}/auth/sessions`, {})
   }
@@ -204,7 +220,7 @@ export class AuthService {
     return this.http.post<{ code: number, message: string }>(`${apiPrefix}/auth/revoke-session`, { jti })
   }
 
-  /** 设备标识：localStorage 持久 uuid（区分多端会话）。 */
+  /** Device identifier: a persistent localStorage uuid (distinguishes multi-device sessions). */
   private getDeviceId(): string {
     let id = localStorage.getItem('device_id')
     if (!id) {

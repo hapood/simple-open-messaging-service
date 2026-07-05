@@ -2,6 +2,7 @@ import { inject } from '@angular/core';
 import { CanActivateFn, RedirectCommand } from '@angular/router';
 import { Router } from '@angular/router';
 import { AuthService } from './services/auth.service';
+import { apiOriginIsLocalhost, isTauri } from './services/runtime';
 
 // Auth-flow history contract: a logged-in user must NEVER be able to press Back from the app and land
 // on /auth/login or /auth/register. That is enforced structurally, not by reacting after the fact:
@@ -28,7 +29,16 @@ export const authGuard: CanActivateFn = () => {
 export const guestGuard: CanActivateFn = () => {
   const authService = inject(AuthService);
   const router = inject(Router);
-  return authService.isLoggedIn()
-    ? new RedirectCommand(router.parseUrl(''), { replaceUrl: true })
-    : true;
+  if (authService.isLoggedIn()) {
+    return new RedirectCommand(router.parseUrl(''), { replaceUrl: true });
+  }
+  // Bundled-APK first run: if the backend origin is still the localhost build default it's unreachable
+  // from a phone, so force the server-config page before showing a login form that can only fail. The
+  // reload that follows a save makes the persisted origin land here as non-localhost, so this gate
+  // drops away on every later run. No-op in the browser build (same-origin host, never localhost-gated
+  // because isTauri() is false).
+  if (isTauri() && apiOriginIsLocalhost()) {
+    return new RedirectCommand(router.parseUrl('/config'), { replaceUrl: true });
+  }
+  return true;
 };

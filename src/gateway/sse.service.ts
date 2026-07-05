@@ -24,17 +24,18 @@ export const GROUP_SSE: Record<GroupSseEvent, GroupSseEvent> = {
 };
 
 /**
- * SSE（Server-Sent Events）下行推送服务：只推送，不收业务上行。
+ * SSE (Server-Sent Events) downstream push service: push-only, no business uplink.
  *
- * 与 WS 相比，SSE 是「单向推送」专用通道，浏览器原生断线续传（Last-Event-ID）+
- * fetch-event-source 的可控重连，从根上消除「连接/重连/鉴权」一整类复杂度。
+ * Compared to WebSocket, SSE is a dedicated one-way push channel with native browser resumption
+ * (Last-Event-ID) and controllable reconnection via fetch-event-source, which removes a whole class
+ * of connection/reconnect/auth complexity at the root.
  *
- * 一个用户可有多个在线 SSE 连接（多标签/多端），用数组收纳。
- * res.on('close') 清理，避免引用残留（内存泄漏）。
+ * A user may have multiple live SSE connections (multiple tabs / multiple devices); each is held in
+ * an array. res.on('close') cleans up to avoid lingering references (memory leaks).
  */
 @Injectable()
 export class SseService implements OnModuleDestroy {
-  /** 心跳间隔（须 < Nginx proxy_read_timeout 默认 60s）。注释行 `: ping` 不被前端当事件。 */
+  /** Heartbeat interval (must be < Nginx's default proxy_read_timeout of 60s). The `: ping` comment line is not treated as an event by the frontend. */
   private static readonly HEARTBEAT_MS = 25000;
   private readonly clients: Record<
     number,
@@ -42,21 +43,23 @@ export class SseService implements OnModuleDestroy {
   > = {};
 
   /**
-   * 注册一条 SSE 长连接：
-   * 1. 写出流式响应头（X-Accel-Buffering:no 告诉 Nginx 不要缓冲，否则消息会被攒批延迟推送）
-   * 2. 写一帧 `: connected` 注释，把响应头/初始字节立即冲出去（触发前端 onopen）
-   * 3. 计入 userId 的连接列表 + 启动心跳
-   * 4. res.on('close') 时清理连接与心跳定时器
+   * Register one SSE long-lived connection:
+   * 1. write the streaming response headers (X-Accel-Buffering:no tells Nginx not to buffer, otherwise
+   *    frames would be batched and delivered late)
+   * 2. write a `: connected` comment frame to flush the headers/initial bytes immediately (triggers the
+   *    client's onopen)
+   * 3. add to the userId's connection list + start the heartbeat
+   * 4. clean up the connection and heartbeat timer on res.on('close')
    *
-   * 鉴权已由 JwtAuthGuard 在进入本服务前完成（verify 签名/过期 + 撤销感知 jti 黑名单/tokenVersion），
-   * 故此处只做推送，不再校验。
+   * Auth is already done by JwtAuthGuard before entering this service (verify signature/expiry +
+   * revocation-aware jti blacklist / tokenVersion), so this method only pushes; it does not re-check.
    */
   /**
-   * res 是 Fastify 经 reply.hijack() 后交出的 reply.raw：h1.1 下为 ServerResponse，
-   * HTTP/2 下为 Http2ServerResponse（两者 writeHead/write/end/on('close') 接口一致）。
-   * HTTP/2 禁止 Connection 头（Node http2 会抛 "HTTP/1 Connection specific headers are
-   * forbidden"），而 h2 连接本身即为持久，故仅在 h1.1 写入 Connection: keep-alive。
-   * 通过 res.stream 是否存在判定协议（仅 Http2ServerResponse 有 stream 属性）。
+   * `res` is the reply.raw handed over by Fastify after reply.hijack(): ServerResponse under h1.1,
+   * Http2ServerResponse under HTTP/2 (both share the writeHead/write/end/on('close') interface).
+   * HTTP/2 forbids the Connection header (Node http2 throws "HTTP/1 Connection specific headers are
+   * forbidden"), and an h2 connection is already persistent, so Connection: keep-alive is only written
+   * under h1.1. The protocol is detected by the presence of res.stream (only Http2ServerResponse has it).
    */
   register(userId: number, res: ServerResponse) {
     const isH2 = (res as unknown as { stream?: unknown }).stream !== undefined;
@@ -96,9 +99,23 @@ export class SseService implements OnModuleDestroy {
   }
 
   /**
-   * 当前在线 SSE 连接快照（供 admin 控制台观测，只读）。
-   * 按用户聚合：一个用户多标签 → 多条连接合并为一条，since 取其最早建立时间。
-   * 不含任何敏感信息（无 token/无 IP），仅 userId + 连接数 + 建连时刻。
+   * True iff the user currently has ≥1 live SSE connection. Used by PushService to skip FCM dispatch
+   * for already-online recipients (no double-delivery, no wasted battery) — the inverse of the fan-out
+   * loop in onNewMessage. Constant-time Map lookup; safe to call per-recipient in the send-message hot
+   * path. The 25s heartbeat bounds the only inaccuracy: a half-open connection reads "online" until the
+   * next failed ping, so FCM is skipped for at most one heartbeat interval after a real drop —
+   * acceptable and self-correcting on SSE reconnect.
+   */
+  isUserOnline(userId: number): boolean {
+    const list = this.clients[userId];
+    return !!list && list.length > 0;
+  }
+
+  /**
+   * Read-only snapshot of live SSE connections (for the admin console to observe).
+   * Aggregated per user: one user with multiple tabs → multiple connections merged into one entry,
+   * `since` being the earliest establishment time. Contains no sensitive data (no token, no IP) — only
+   * userId + connection count + establishment time.
    */
   snapshot(): {
     total: number;
@@ -123,9 +140,11 @@ export class SseService implements OnModuleDestroy {
   }
 
   /**
-   * 向某用户的所有在线 SSE 连接写一帧。
-   * 倒序遍历 + 写失败/已断的连接边写边清，避免坏连接中断群发；背压（write 返回 false）
-   * 暂不处理，留给下一帧/心跳感知断开，保持连接不主动 end。该用户连接清空时删除其槽位。
+   * Write one frame to all of a user's live SSE connections. Reverse iteration + cleaning up
+   * failed/broken connections inline so a dead connection cannot abort the fan-out; backpressure
+   * (write returns false) is not handled here — it's left for the next frame / heartbeat to detect the
+   * drop, and the connection is not actively ended. When the user's connection list empties, its slot
+   * is deleted.
    */
   private pushToUser(
     userId: number,
@@ -143,10 +162,11 @@ export class SseService implements OnModuleDestroy {
       const { res } = list[i];
       try {
         if (!res.write(frame)) {
-          // 背压：写缓冲满，先不处理（下一帧/心跳会感知断开）。保持连接，不主动 end。
+          // Backpressure: write buffer full; not handled here (the next frame / heartbeat will detect
+          // the drop). Keep the connection; do not actively end.
         }
       } catch {
-        // 连接已坏：清理本条，避免后续 forEach 抛错中断群发。
+        // Connection is broken: clean up this entry so a later forEach doesn't throw and abort the fan-out.
         clearInterval(list[i].ping);
         list.splice(i, 1);
       }
@@ -154,13 +174,13 @@ export class SseService implements OnModuleDestroy {
     if (list.length === 0) delete this.clients[userId];
   }
 
-  /** 新消息：推完整消息体。id=消息 id（前端 Last-Event-ID 断线续传游标）。 */
+  /** New message: push the full message body. id = the message id (the client's Last-Event-ID resume cursor). */
   onNewMessage(userId: number, data: unknown) {
     const id = (data as { id?: string | number } | null)?.id;
     this.pushToUser(userId, 'NEW_MESSAGE', data, id);
   }
 
-  /** 通知：推给该用户所有在线连接（如新好友请求）。无 id（非消息游标语义）。 */
+  /** Notification: push to all of the user's live connections (e.g. a new friend request). No id (not a message-cursor semantic). */
   onNotify(userId: number, data: unknown) {
     this.pushToUser(userId, 'NOTIFY', data);
   }
@@ -185,7 +205,7 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'READ_CURSOR', data);
   }
 
-  /** 全设备登出/改密/强制下线：推 FORCE_LOGOUT 后立即断开该用户所有 SSE 连接。 */
+  /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop all of the user's SSE connections. */
   @OnEvent('auth.sessions-invalidated')
   onSessionsInvalidated(payload: { userId: number; reason: string }) {
     const list = this.clients[payload.userId];
@@ -203,7 +223,7 @@ export class SseService implements OnModuleDestroy {
     delete this.clients[payload.userId];
   }
 
-  /** 进程退出/热更：清所有心跳定时器，避免句柄泄漏告警。 */
+  /** Process exit / hot reload: clear all heartbeat timers to avoid handle-leak warnings. */
   onModuleDestroy() {
     for (const uid of Object.keys(this.clients)) {
       const id = Number(uid);

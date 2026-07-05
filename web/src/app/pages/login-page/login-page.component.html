@@ -3,5 +3,8 @@
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
     <app-login (onSuccess)="onSuccess()"></app-login>
+    @if (isTauri()) {
+      <a class="server-link" routerLink="/config">Server settings</a>
+    }
   </main>
 </div>

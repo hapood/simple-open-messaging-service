@@ -3,3 +3,19 @@
 .auth-shell {
   @include auth-shell;
 }
+
+// Tauri-only entry to the backend-URL config page (browser build never renders it). Sits below the
+// login form; heights in integer px per the CSS integer-pixel rule.
+.server-link {
+  display: inline-block;
+  margin-top: 12px;
+  align-self: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-muted, #5f5d66);
+  text-decoration: none;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}

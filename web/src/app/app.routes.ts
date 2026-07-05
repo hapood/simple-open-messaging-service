@@ -7,6 +7,7 @@ import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.compo
 import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.component';
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
 import { authGuard, guestGuard } from './auth.guard';
+import { isTauri } from './services/runtime';
 
 export const routes: Routes = [
   {
@@ -49,6 +50,15 @@ export const routes: Routes = [
   { path: 'nav', component: PageNavgatorComponent, canActivate: [authGuard] },
   { path: 'auth/login', component: LoginPageComponent, canActivate: [guestGuard] },
   { path: 'auth/register', component: RegisterPageComponent, canActivate: [guestGuard] },
+  // Bundled-APK backend-URL configuration (Tauri/Android only). `canMatch` short-circuits to 404 in the
+  // browser build, where the same-origin NestJS host makes a configurable origin meaningless. Reached
+  // automatically on first run via guestGuard (when the origin is still the localhost default), and any
+  // time later from the login page's "Server settings" link to re-point the app at a different backend.
+  {
+    path: 'config',
+    loadComponent: () => import('./pages/server-config/server-config.component').then((m) => m.ServerConfigComponent),
+    canMatch: [() => isTauri()],
+  },
   { path: 'forbidden', component: ForbiddenPageComponent },
   // Dev-only kernel test rig (count/latency/edge/threshold knobs driving the real chat kernel against MockItemSource).
   // Lazy `loadComponent` keeps the playground + MockItemSource out of the main bundle; `canMatch` isDevMode makes a

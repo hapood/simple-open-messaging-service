@@ -1,2 +1,6 @@
 /target
 /gen
+# Firebase config — per-environment, downloaded from the Firebase console. Never committed.
+# (gen/ is already ignored; this is defense in depth if gen/ is ever un-ignored for tracking.)
+google-services.json
+

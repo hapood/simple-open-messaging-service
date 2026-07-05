@@ -46,6 +46,7 @@
     "dayjs": "^1.11.13",
     "dotenv": "^17.4.2",
     "fastify": "^5.8.5",
+    "firebase-admin": "^14.1.0",
     "jsonwebtoken": "^9.0.2",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",

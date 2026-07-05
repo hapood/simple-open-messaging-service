@@ -24,6 +24,16 @@ declare global {
      *  instead of the `@tauri-apps/api` npm package so the browser build has zero extra deps and the
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: { core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> } };
+    /** FCM bridge injected by the Android shell (SomsMessagingService / MainActivity). `SomsFcm` is a
+     *  Kotlin `@JavascriptInterface` exposing the current FCM token + permission request. The two hooks
+     *  are how Kotlin pushes the token (rotation) and a notification-tap deep link (warm start) into JS.
+     *  `__SOMS_PENDING_THREAD_ID__` is the cold-start fallback: Kotlin sets it before Angular boots, so
+     *  PushService.init() can recover a deep link that arrived before the live handler was registered.
+     *  All absent in the browser build — guarded by isTauri() at every use. */
+    SomsFcm?: { getToken: () => string | null; requestToken: () => void; requestNotificationPermission: () => void };
+    __SOMS_FCM_TOKEN__?: (token: string) => void;
+    __SOMS_DEEP_LINK__?: (threadId: string) => void;
+    __SOMS_PENDING_THREAD_ID__?: string;
   }
 }
 
@@ -70,4 +80,28 @@ export function assetUrl(path: string | null | undefined): string {
   if (!path.startsWith('/')) return path; // absolute (data:/blob:/http(s):) — leave as-is
   if (!isTauri()) return path;
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
+}
+
+/** True when the resolved backend origin is a loopback localhost URL. Under Tauri this means "no real
+ *  server configured yet": the bundled APK ships with the `http://localhost:3000` default, which is
+ *  unreachable from a phone, so the app gates first-run on this to force the server-config page before
+ *  login. `tauri dev` (SOMS_API_ORIGIN set to a real host) and a persisted real origin both read as
+ *  non-localhost → skip the gate. */
+export function apiOriginIsLocalhost(): boolean {
+  return /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(API_ORIGIN);
+}
+
+/**
+ * Persist a new backend origin (Tauri only). Rust validates it is a clean http(s) URL, writes it to a
+ * config file in the app-data dir (so it survives restarts and is injected before Angular boots on the
+ * next launch), and updates the media proxy's live origin. Returns the normalized origin Rust stored.
+ *
+ * Because `apiOrigin` is captured once at module load (`constants.ts` → `apiPrefix`/`sseUrl`), the
+ * caller MUST `location.reload()` after this resolves so every HTTP/SSE/media URL re-resolves against
+ * the new origin — hot-swapping in-flight would leave the SSE worker and the HTTP interceptors pinned
+ * to the old origin.
+ */
+export async function setApiOrigin(url: string): Promise<string> {
+  if (!isTauri()) throw new Error('setApiOrigin is only available under the Tauri shell');
+  return tauriInvoke<string>('set_api_origin', { url });
 }

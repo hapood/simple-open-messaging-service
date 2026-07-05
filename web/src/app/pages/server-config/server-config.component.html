@@ -1,0 +1,29 @@
+<div class="sc-card">
+  <h1>Server</h1>
+  <p class="sc-hint">Point the app at the SOMS backend. Saved once, used on every launch.</p>
+
+  <label class="sc-field">
+    <span>Backend URL</span>
+    <input
+      type="url"
+      inputmode="url"
+      autocomplete="off"
+      spellcheck="false"
+      [value]="url()"
+      (input)="url.set($any($event.target).value)"
+      placeholder="http://192.168.1.10:3000"
+      [disabled]="saving()"
+    />
+  </label>
+
+  @if (errorMsg()) {
+    <p class="sc-error" role="alert">{{ errorMsg() }}</p>
+  }
+
+  <div class="sc-actions">
+    <button type="button" class="sc-secondary" (click)="cancel()" [disabled]="saving()">Cancel</button>
+    <button type="button" class="sc-primary" (click)="save()" [disabled]="saving()">
+      {{ saving() ? 'Saving…' : 'Save' }}
+    </button>
+  </div>
+</div>
