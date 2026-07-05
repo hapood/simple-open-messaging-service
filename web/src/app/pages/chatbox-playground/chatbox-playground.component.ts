@@ -1,6 +1,6 @@
 import {
   Component, ElementRef, OnDestroy, inject, isDevMode,
-  signal, viewChild, effect, ChangeDetectionStrategy, ViewEncapsulation,
+  signal, viewChild, ChangeDetectionStrategy, ViewEncapsulation,
   EnvironmentInjector,
 } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -14,6 +14,7 @@ import { mergeAlbumItems, absorbAlbumTail } from '../../components/message-cards
 import { GalleryViewerService } from '../../components/gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../../components/file-detail-viewer/file-detail-viewer.service';
 import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
+import { UpdateBannerComponent } from '../../components/update-banner/update-banner.component';
 import type { ConnectionState } from '../../services/websocket.service';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../../components/message-cards/chat-item';
 import { MockItemSource, MockUserService } from './http-item-source.mock';
@@ -49,7 +50,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, ConnectionBannerComponent],
+  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, ConnectionBannerComponent, UpdateBannerComponent],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -129,6 +130,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    *  so the restyled Material chip is visible on first paint; the panel's "Connection status" group toggles it
    *  through every state, and a `reconnecting → open` hop replays the recover flourish. */
   readonly connStatus = signal<ConnectionState | null>('connecting');
+  /** Drives `<app-update-banner [demoAvailable]>` via the banner's demo override. In production this is the
+   *  service worker's VERSION_READY latch (disabled in dev, so the playground simulates it). Default false
+   *  (idle); set true to preview the "new version available" pill and watch it defer to the connection chip
+   *  via the shared indicator slot. The banner's own Dismiss emits demoDismiss → clears this. */
+  readonly updateDemo = signal(false);
   /** Kernel tuning (CbConfig). Passed to the kernel at setup; editing it via the modal → applyConfig rebuilds to take effect. */
   readonly config = signal<Required<CbConfig>>({ ...CB_DEFAULTS });
   /** Config-edit modal open flag + draft (applied only on confirm, so editing one field doesn't rebuild mid-stream). */
@@ -142,7 +148,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   cycleTheme(): void { this.theme.cycleMode(); }
 
   // Controls
-  readonly count = signal(5000);
+  /** Data-volume input (the Set button builds the source with this count and inits the kernel). Default 100. */
+  readonly countInput = signal(100);
+  /** Whether the kernel currently holds data — false on mount and after Reset, true after a successful Set. */
+  readonly hasData = signal(false);
   /** @mention candidates (mock group members; production swaps in GroupService.getMembers()). */
   readonly members = signal<ChatMember[]>(MOCK_MEMBERS);
 
@@ -215,20 +224,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private fabStartLeft = 0;
   private fabStartTop = 0;
 
-  // zoneless + signal viewChild: ngAfterViewInit may not fire, so use an effect instead —
-  // once the viewChild signals resolve, the effect runs and initializes the scroller (exactly once).
-  private readonly initScroller = effect(() => {
-    const vp = this.viewportRef();
-    const ct = this.contentRef();
-    if (!vp || !ct || this.scroller) return;
-    this.setup(vp.nativeElement, ct.nativeElement);
-  });
-
-  /** Build source + kernel + init. Rebuilt on setCount (teardown then reconstruct with the new count). */
+  /** Build source + kernel + init. Rebuilt on Set / config-apply (teardown then reconstruct with the new count). */
   private setup(viewport: HTMLDivElement, content: HTMLDivElement): void {
     try {
       this.scroller?.destroy();
-      this.source = new MockItemSource(this.count(), this.sourceLatency(), new MockUserService(), 1);
+      this.source = new MockItemSource(this.countInput(), this.sourceLatency(), new MockUserService(), 1);
       // Pick the kernel implementation from route data: Plan A (browser overflow-anchor) or Plan B (manual compensation); both conform to ScrollerApi.
       const Ctor: new (opts: CbOptions<ChatItemData>) => ScrollerApi<ChatItemData> =
         this.useNativeAnchor ? ChatBoxScrollerAnchor : ChatBoxScroller;
@@ -240,13 +240,14 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
         onDebug: isDevMode() ? (s) => this.onBalanceDebug(s) : undefined,
       });
       this.applyCloseCheckpoint();
+      this.hasData.set(true);
       void this.load();
     } catch (e) {
       console.error('[playground] scroller init failed:', e);
     }
   }
 
-  /** Apply the closeCheckpoint toggle to the kernel (cast to set the closeCheckpoint field; re-applied at the end of setup after a setCount rebuild). */
+  /** Apply the closeCheckpoint toggle to the kernel (cast to set the closeCheckpoint field; re-applied at the end of setup after a Set rebuild). */
   applyCloseCheckpoint(): void {
     const s = this.scroller as unknown as { closeCheckpoint?: boolean } | undefined;
     if (s) s.closeCheckpoint = this.closeCheckpoint();
@@ -271,6 +272,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   toggleMockSendError(): void { this.mockSendError.update(v => !v); }
   /** Set the connection chip's demo state (bound to `<app-connection-banner [demoState]>`). */
   setConnStatus(s: ConnectionState | null): void { this.connStatus.set(s); }
+  /** Set the update banner's demo availability (bound to `<app-update-banner [demoAvailable]>`). */
+  setUpdateDemo(v: boolean): void { this.updateDemo.set(v); }
   /** Replay the recover flourish: a `reconnecting → open` transition through `demoState`, which the chip's
    *  effect reads exactly like a real recovery (auto-expanded pill, then the green-check flourish + fade-out). */
   playConnRecover(): void {
@@ -292,9 +295,10 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   applyConfig(): void {
     this.config.set({ ...this.configDraft() });
     this.configModalOpen.set(false);
+    // Rebuild only when the kernel already holds data — while empty, just store the config; the next Set picks it up.
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
-    if (vp && ct) this.setup(vp, ct);
+    if (this.hasData() && vp && ct) this.setup(vp, ct);
   }
 
   ngOnDestroy() {
@@ -443,11 +447,23 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
 
   // --- Controls ---
 
-  setCount(n: number) {
-    this.count.set(n);
+  /** Set: build the source with the current count input and init the kernel (tears down any existing scroller first). */
+  applyCount(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
-    if (vp && ct) this.setup(vp, ct); // switch data volume: teardown + rebuild source(count) + kernel + init
+    if (vp && ct) this.setup(vp, ct); // (re)build source(countInput) + kernel + init
+  }
+
+  /** Reset: tear down the kernel + source and clear derived state so the chat area is empty until the next Set. */
+  reset(): void {
+    this.scroller?.destroy();
+    this.scroller = undefined;
+    this.source = undefined;
+    this.hasData.set(false);
+    this.viewportAbove.set(0);
+    this.viewportBelow.set(0);
+    this.atBottom.set(true);
+    this.stickyDate.set(null);
   }
 
   /**

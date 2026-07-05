@@ -1,7 +1,6 @@
 import { Routes } from '@angular/router';
 import { isDevMode } from '@angular/core';
 import { HomeComponent } from './pages/home/home.component';
-import { ChatEmptyComponent } from './components/chat-empty/chat-empty.component';
 import { LoginPageComponent } from './pages/login-page/login-page.component';
 import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.component';
 import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.component';
@@ -17,14 +16,18 @@ export const routes: Routes = [
     // Guards don't inherit to children — re-protect the chat / aside child routes.
     canActivateChild: [authGuard],
     children: [
-      // No chat selected: branded placeholder (desktop/tablet inline slot; mobile hides the overlay).
-      { path: '', component: ChatEmptyComponent },
+      // Both children render ChatPane. ChatReuseStrategy (see app.config) reuses the SAME instance across
+      // `''` ↔ `chat/:threadId`, so the chat surface is effectively always-mounted: navigating list ↔ chat
+      // never remounts the kernel. ChatPane reads ConversationListService.openThreadId (synced from the URL
+      // by the home shell, lagged on mobile close so the real chat slides out before its data resets) and
+      // renders the thread, the deep-link loading state, or ChatEmpty when idle.
       {
-        // The open chat (primary outlet). :threadId binds to ChatPane's input via withComponentInputBinding.
-        // loadComponent keeps the chat kernel + its components out of the initial bundle.
+        path: '',
+        loadComponent: () => import('./components/desktop/chat-pane/chat-pane.component').then((m) => m.ChatPaneComponent),
+      },
+      {
         path: 'chat/:threadId',
-        loadComponent: () =>
-          import('./components/desktop/chat-pane/chat-pane.component').then((m) => m.ChatPaneComponent),
+        loadComponent: () => import('./components/desktop/chat-pane/chat-pane.component').then((m) => m.ChatPaneComponent),
       },
       // The profile / group-info panels target the `aside` auxiliary outlet (siblings of the chat route,
       // so the outlet lives in the home shell alongside the primary one). The active conversation is read

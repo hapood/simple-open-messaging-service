@@ -411,7 +411,6 @@ export class ConnectionBannerComponent implements OnDestroy {
     effect(() => {
       this.slot.priorityOccupied.set(!!this.show());
     });
-    });
 
     /* Measure the detail label's natural width whenever it changes (state or language) and publish it as
        --text-w on the chip. The .text column transitions its `width` to var(--text-w), so the pill sizes to
@@ -508,5 +507,6 @@ export class ConnectionBannerComponent implements OnDestroy {
     this.controls.forEach((c) => c.stop());
     clearTimeout(this.autoExpandTimer);
     clearTimeout(this.recoverTimer);
+    this.slot.priorityOccupied.set(false); // release the indicator slot so a deferred update can show
   }
 }

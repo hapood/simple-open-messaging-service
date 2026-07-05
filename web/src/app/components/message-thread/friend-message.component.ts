@@ -89,6 +89,9 @@ export class MessageThreadComponent implements OnDestroy {
 
   readonly atBottom = signal(true);
   readonly stickyDate = signal<string | null>(null);
+  /** True while the kernel fetches the initial batch on a thread open (or re-init on switch) — drives the
+   *  shimmer skeleton that fills the empty message area until real messages mount. */
+  readonly initialLoading = signal(true);
 
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
@@ -153,7 +156,9 @@ export class MessageThreadComponent implements OnDestroy {
       // Immunity frame: hold the kernel's viewport reflow while a route-transition slide is in flight.
       isFrozen: () => this.layout.reflowFrozen(),
     });
-    void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined);
+    this.initialLoading.set(true);
+    void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined)
+      .finally(() => this.initialLoading.set(false));
   }
 
   /** Kernel createItem hook: compute grouping flags from the older neighbor prev, wrap the real component.

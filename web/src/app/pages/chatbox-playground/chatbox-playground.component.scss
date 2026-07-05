@@ -49,13 +49,16 @@
   background-repeat: repeat;
 }
 
-// The demoed connection chip anchors to the stage's relative context (absolute), not the viewport
-// (fixed) — so it tracks the chat column, mirroring how the chip relates to the message thread rather
-// than browser chrome. Production keeps the chip's own :host{position:fixed} (it must float over the
-// mobile full-screen chat overlay); this override is playground-only. Specificity .pg .pg-stage
-// app-connection-banner (0,2,1) beats the chip's emulated :host rule, so ONLY position is overridden —
-// top (via --conn-chip-top), right and z-index still come from :host and now resolve against .pg-stage.
-.pg .pg-stage app-connection-banner {
+// The demoed indicator-slot occupants (connection chip + update banner) anchor to the stage's relative
+// context (absolute), not the viewport (fixed) — so they track the chat column, mirroring how the indicators
+// relate to the message thread rather than browser chrome. Production keeps each component's own
+// :host{position:fixed} (they must float over the mobile full-screen chat overlay); this override is
+// playground-only. Specificity .pg .pg-stage app-* (0,2,1) beats each emulated :host rule, so ONLY position
+// is overridden — top (via --conn-chip-top), right and z-index still come from :host and now resolve against
+// .pg-stage. The two never share the corner at once (IndicatorSlotService priority), so the identical
+// top/right is by design.
+.pg .pg-stage app-connection-banner,
+.pg .pg-stage app-update-banner {
   position: absolute;
 }
 
@@ -260,6 +263,41 @@
     &:hover { border-color: var(--app-brand); color: var(--app-brand); }
     &.active { background: var(--app-brand); border-color: var(--app-brand); color: #fff; }
     &:disabled { opacity: 0.5; cursor: not-allowed; }
+  }
+}
+
+// Reset + count input + Set: the data-volume control. The input grows to fill; the buttons hug the edges.
+.pg-data-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+
+  button {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-sm);
+    background: var(--app-surface);
+    color: var(--app-text-muted);
+    cursor: pointer;
+    font-size: 13px;
+    line-height: 20px;
+    transition: all 0.12s;
+    &:hover { border-color: var(--app-brand); color: var(--app-brand); }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
+  }
+  input[type="number"] {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: 6px 8px;
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-sm);
+    background: var(--app-bg);
+    color: var(--app-text);
+    font: inherit;
+    font-size: 13px;
+    line-height: 20px;
+    text-align: left;
   }
 }
 

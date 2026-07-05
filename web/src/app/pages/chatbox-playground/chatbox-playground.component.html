@@ -32,6 +32,10 @@
     <!-- Demo: the restyled Material connection chip. `demoState` overrides the live service so the panel's
          "Connection chip" group can drive every state (fixed top-right; --conn-chip-top is set on .pg). -->
     <app-connection-banner [demoState]="connStatus()" />
+    <!-- Demo: the "new version available" pill. Shares the top-right indicator slot with the connection chip
+         (it defers while the chip is showing, then surfaces). `demoAvailable` overrides the live UpdateService
+         (the SW is disabled in dev); Dismiss emits demoDismiss → clears the playground signal. -->
+    <app-update-banner [demoAvailable]="updateDemo()" (demoDismiss)="setUpdateDemo(false)" />
     @if (toast()) {
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }
@@ -66,11 +70,11 @@
     <details class="pg-group" open>
       <summary>Data</summary>
       <section>
-        <h4>Data volume <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? 'Generating…' : 'generator' }}</span></h4>
-        <div class="pg-btns">
-          <button (click)="setCount(0)" [disabled]="loading()" [class.active]="count() === 0 && !loading()">0</button>
-          <button (click)="setCount(500)" [disabled]="loading()" [class.active]="count() === 500 && !loading()">500</button>
-          <button (click)="setCount(5000)" [disabled]="loading()" [class.active]="count() === 5000 && !loading()">5k</button>
+        <h4>Data volume <span class="pg-sec-tag" [class.pg-sec-tag--on]="loading()">{{ loading() ? 'Generating…' : (hasData() ? 'ready' : 'empty') }}</span></h4>
+        <div class="pg-data-row">
+          <button (click)="reset()" [disabled]="loading() || !hasData()">Reset</button>
+          <input type="number" min="0" [ngModel]="countInput()" (ngModelChange)="countInput.set(+$event)" aria-label="Data count" />
+          <button (click)="applyCount()" [disabled]="loading()">Set</button>
         </div>
       </section>
       <section>
@@ -206,9 +210,10 @@
     </details>
 
     <details>
-      <summary>Connection chip</summary>
+      <summary>Top-right indicator slot</summary>
+      <p class="pg-hint">The fixed top-right corner shows ONE indicator at a time. The connection chip is priority — while it's visible (Connecting/Reconnecting/Closed) the update banner defers; set the chip to Open/Live to make a pending update surface.</p>
       <section>
-        <h4>Status <span class="pg-sec-tag" [class.pg-sec-tag--on]="connStatus() === 'reconnecting'">{{ connStatus() ?? 'live' }}</span></h4>
+        <h4>Connection chip <span class="pg-sec-tag" [class.pg-sec-tag--on]="connStatus() === 'reconnecting'">{{ connStatus() ?? 'live' }}</span></h4>
         <p class="pg-hint">Drives the restyled Material chip at the top-right (below the header). `Open`/`Closed`/`Live` hide it — that is the real steady-state behavior; `Recover` replays the reconnecting→open flourish.</p>
         <div class="pg-btns">
           <button (click)="setConnStatus('connecting')" [class.active]="connStatus() === 'connecting'">Connecting</button>
@@ -219,6 +224,14 @@
           <button (click)="setConnStatus('open')" [class.active]="connStatus() === 'open'">Open</button>
           <button (click)="setConnStatus('closed')" [class.active]="connStatus() === 'closed'">Closed</button>
           <button (click)="setConnStatus(null)" [class.active]="connStatus() === null">Live</button>
+        </div>
+      </section>
+      <section>
+        <h4>Update banner <span class="pg-sec-tag" [class.pg-sec-tag--on]="updateDemo()">{{ updateDemo() ? 'pending' : 'idle' }}</span></h4>
+        <p class="pg-hint">Simulates "a new version is ready" (production fires when the service worker downloads a new bundle). It yields the corner to the chip above; switch the chip to Open/Live to see it surface. Reload activates the new bundle (a no-op here); Dismiss hides it for the session.</p>
+        <div class="pg-btns">
+          <button (click)="setUpdateDemo(true)" [class.active]="updateDemo() === true">Pending</button>
+          <button (click)="setUpdateDemo(false)" [class.active]="updateDemo() === false">Idle</button>
         </div>
       </section>
     </details>

@@ -6,6 +6,20 @@
       <div class="msg-content" #content>
         <div class="msg-sentinel" #topSentinel></div>
       </div>
+      @if (initialLoading()) {
+        <!-- Initial-load shimmer skeleton: fills the empty message area while the kernel fetches the first
+             batch (WhatsApp/Telegram-style). A sibling of .msg-content (not inside it) so it never enters the
+             kernel's measured height model; removed the instant the first real messages mount. -->
+        <div class="msg-skeleton" aria-hidden="true">
+          <div class="sk-row sk-in"><span class="sk-bubble" style="--sk-w: 55%"></span></div>
+          <div class="sk-row sk-out"><span class="sk-bubble" style="--sk-w: 42%"></span></div>
+          <div class="sk-row sk-in"><span class="sk-bubble" style="--sk-w: 68%"></span></div>
+          <div class="sk-row sk-out"><span class="sk-bubble" style="--sk-w: 36%"></span></div>
+          <div class="sk-row sk-in"><span class="sk-bubble" style="--sk-w: 50%"></span></div>
+          <div class="sk-row sk-out"><span class="sk-bubble" style="--sk-w: 60%"></span></div>
+          <div class="sk-row sk-in"><span class="sk-bubble" style="--sk-w: 33%"></span></div>
+        </div>
+      }
     </div>
 
     <app-sticky-date-overlay [label]="stickyDate()" />

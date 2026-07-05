@@ -20,16 +20,18 @@
     </app-nav-drawer>
   }
 
-  <!-- primary outlet: the open chat (or the empty placeholder at `/`). On mobile [@overlaySlide] glides this
-       overlay in/out from the right; on desktop/tablet it stays `static` (inline flex column). -->
+  <!-- primary chat surface: ChatPane (routed). ChatReuseStrategy reuses the instance across `''` ↔
+       `chat/:threadId`, so it's effectively always-mounted (the kernel never remounts on open/close). On
+       mobile [@overlaySlide] glides this overlay in/out from the right; on desktop/tablet it stays `static`
+       (inline flex column). -->
   <div class="chat-slot"
        [@overlaySlide]="chatSlotState()"
        (@overlaySlide.start)="onSlideStart($event)"
-       (@overlaySlide.done)="onSlideDone($event)"><router-outlet /></div>
+       (@overlaySlide.done)="onSlideDone($event, 'chat')"><router-outlet /></div>
   <!-- named outlet: peer-profile / group-info. Slides in from the right on mobile (over the chat); the
        desktop side panel and tablet absolute overlay stay `static`. -->
   <div class="aside-slot"
        [@overlaySlide]="asideSlotState()"
        (@overlaySlide.start)="onSlideStart($event)"
-       (@overlaySlide.done)="onSlideDone($event)"><router-outlet name="aside" /></div>
+       (@overlaySlide.done)="onSlideDone($event, 'aside')"><router-outlet name="aside" /></div>
 </div>

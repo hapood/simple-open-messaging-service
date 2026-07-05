@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal, viewChild } from '@angular/core';
+import { Component, computed, effect, inject, signal, viewChild } from '@angular/core';
 import { Router, RouterOutlet, NavigationEnd } from '@angular/router';
 import { trigger, transition, state, style, animate, type AnimationEvent } from '@angular/animations';
 import { toSignal } from '@angular/core/rxjs-interop';
@@ -11,6 +11,7 @@ import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConnectionBannerComponent } from '../connection-banner/connection-banner.component';
 import { UpdateBannerComponent } from '../update-banner/update-banner.component';
 import { ConversationItem } from '../../services/model';
+import { ConversationListService } from '../../services/conversation-list.service';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
@@ -57,6 +58,7 @@ const overlaySlide = trigger('overlaySlide', [
 export class HomeShellComponent {
   private readonly router = inject(Router)
   private readonly layout = inject(LayoutService)
+  private readonly convList = inject(ConversationListService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode
@@ -76,6 +78,14 @@ export class HomeShellComponent {
   readonly chatActive = computed(() => /\/chat\//.test(this.navUrl()))
   readonly asideActive = computed(() => /\(aside:/.test(this.navUrl()))
 
+  /** The numeric thread id parsed from the URL (`/chat/:id`); undefined at `/`. The URL is the source of truth
+   *  for which chat is open; this drives the open/close coordination below and (via ConversationListService)
+   *  the routed ChatPane. */
+  readonly routeThreadId = computed<number | undefined>(() => {
+    const m = this.navUrl().match(/\/chat\/(\d+)/)
+    return m ? Number(m[1]) : undefined
+  })
+
   /** Drives [@overlaySlide] on the chat-slot: only mobile animates (closed↔open); desktop/tablet stay
    *  `static` so the inline flex column is never transformed. */
   readonly chatSlotState = computed<OverlaySlideState>(() =>
@@ -89,6 +99,23 @@ export class HomeShellComponent {
     this.mode() === 'mobile' ? (this.asideActive() ? 'mobile-open' : 'mobile-closed') : 'static',
   )
 
+  constructor() {
+    // Route → openThreadId coordination. The URL selects which chat is open; this effect is the single writer
+    // of openThreadId's OPEN edge (mark-read + active-row highlight + the chrome ChatPane resolving the
+    // thread). The CLOSE edge is timing-aware: on mobile it LAGS so the chat-pane keeps its data through the
+    // leave slide (the real chat slides out, then onSlideDone resets it); on desktop/tablet (no slide) it
+    // closes immediately.
+    effect(() => {
+      const tid = this.routeThreadId()
+      if (tid !== undefined) {
+        this.convList.open(tid)
+      } else if (this.mode() !== 'mobile') {
+        this.convList.close()
+      }
+      // mobile close: deferred to onSlideDone('chat', → mobile-closed) below.
+    })
+  }
+
   /** (@overlaySlide.start) — open the immunity frame for the real mobile slide. The 0ms static snaps
    *  triggered by a breakpoint change are excluded (their toState is `static`), so freezing can't leak on
    *  resize. Fires for the chat and the aside slide alike; the counter absorbs concurrent/overlapping
@@ -96,10 +123,15 @@ export class HomeShellComponent {
   onSlideStart(event: AnimationEvent): void {
     if (event.toState === 'mobile-open' || event.toState === 'mobile-closed') this.layout.freezeReflow()
   }
-  /** (@overlaySlide.done) — close the immunity frame. Counter-based, so interrupted transitions (a new slide
-   *  beginning before the previous finishes) stay balanced: every start has a matching done. */
-  onSlideDone(event: AnimationEvent): void {
+  /** (@overlaySlide.done) — close the immunity frame, AND on a mobile chat-close finish the lagged reset:
+   *  clear openThreadId so the chrome ChatPane tears down its kernel now that the real chat has slid out of
+   *  view (desktop closed immediately in the route effect — no slide, so it never reaches here). Counter-based,
+   *  so interrupted transitions stay balanced: every start has a matching done. */
+  onSlideDone(event: AnimationEvent, slot: 'chat' | 'aside'): void {
     if (event.toState === 'mobile-open' || event.toState === 'mobile-closed') this.layout.thawReflow()
+    if (slot === 'chat' && event.toState === 'mobile-closed' && this.routeThreadId() === undefined) {
+      this.convList.close()
+    }
   }
 
   /** Open a conversation by route, closing any open info panel (it is scoped to the previous chat). */
