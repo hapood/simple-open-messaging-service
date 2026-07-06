@@ -7,20 +7,18 @@ import { LayoutService } from '../services/layout.service';
  *
  * Placed on the full-height chat container (the playground `.pg-stage` and the production
  * `.msg-container`). Owns the ONE visualViewport listener — previously duplicated, with subtly
- * different shapes, in the playground and the message thread — and exposes TWO signals:
+ * different shapes, in the playground and the message thread — and exposes:
  *
- * - {@link offset}: `host.clientHeight − visualViewport.height − visualViewport.offsetTop`. The iOS
- *   manual-lift value (the layout viewport does not resize on iOS, so this is the real occlusion and
- *   is bound as the input bar's bottom inset). On Chromium Android (`interactive-widget=resizes-content`)
- *   the layout viewport itself shrinks, so the input rises for free and this evaluates to ~0 — correct
- *   there; the lift IS the layout shrink. This is the finished lift calc — do not change it.
- * - {@link occlusion}: the REAL keyboard height on Android, derived independently so the emoji swap can
- *   size its panel even where `offset` is 0. Computed as `baseHeight − host.clientHeight` where
- *   `baseHeight` is the largest clientHeight ever observed (the no-keyboard baseline; reset on
- *   orientation change so a portrait⇄landscape switch re-learns). Read at toggle time, BEFORE hide().
+ * - {@link offset}: `host.clientHeight − visualViewport.height − visualViewport.offsetTop`, bound as
+ *   the input bar's bottom inset (margin-bottom). The layout viewport does not resize on touch browsers
+ *   (the default `resizes-visual` keeps it at the full screen size — the `interactive-widget=resizes-content`
+ *   keyword that once shrank it on Chromium Android was removed when the viewport-keyboard strategy was
+ *   abandoned), so this carries the FULL keyboard height on both iOS and Android; the flex column above
+ *   shrinks by the same amount, so the message list reflows clear of the keyboard too. This is the
+ *   finished lift calc — do not change it.
  *
- * Immunity frame: while `LayoutService.reflowFrozen()` (a route-transition animation is in flight) both
- * signals hold their current value — no mid-slide lift jitter — and recompute once on thaw. Reading
+ * Immunity frame: while `LayoutService.reflowFrozen()` (a route-transition animation is in flight) the
+ * offset holds its current value — no mid-slide lift jitter — and recomputes once on thaw. Reading
  * `reflowFrozen()` inside the effect makes it re-run on freeze/thaw edges. A no-op on the playground,
  * which never route-transitions.
  */
@@ -30,13 +28,9 @@ export class KbdOffsetDirective {
   private readonly layout = inject(LayoutService);
   private readonly inputDevice = inject(InputDeviceService);
 
-  /** iOS manual-lift value (~0 on Chromium Android, where the layout viewport shrinks instead). Bind as
-   *  the input bar's bottom inset. */
+  /** Soft-keyboard occlusion height (px) — bound as the input bar's bottom inset so it lifts above the
+   *  keyboard. ~0 when no keyboard is open. */
   readonly offset = signal(0);
-  /** Real keyboard occlusion height (px), for sizing the emoji swap panel. ~0 when no keyboard. */
-  readonly occlusion = signal(0);
-  /** No-keyboard baseline: the largest host.clientHeight observed. Reset on orientation change. */
-  private baseHeight = 0;
 
   private readonly track = effect((onCleanup) => {
     const frozen = this.layout.reflowFrozen(); // track → re-run on freeze/thaw edges
@@ -45,29 +39,18 @@ export class KbdOffsetDirective {
     // InputDeviceService.hasPhysicalKeyboard because `layout.isDesktop` is width-only now — a wide touch
     // tablet (≥1280px desktop mode WITH a soft keyboard) must still track the keyboard, so the gate cannot
     // be the layout signal.
-    if (this.inputDevice.hasPhysicalKeyboard() || !vv) { this.offset.set(0); this.occlusion.set(0); return; }
+    if (this.inputDevice.hasPhysicalKeyboard() || !vv) { this.offset.set(0); return; }
     const el = this.host.nativeElement;
     const update = (): void => {
-      if (this.layout.reflowFrozen()) return; // immunity frame: hold the current offset/occlusion
-      const cur = el.clientHeight;
-      // Learn the no-keyboard baseline: the viewport only ever reaches its full height when nothing
-      // occludes it, so the running max IS the baseline. (Address-bar collapse grows the viewport; the
-      // max tracks that too — fine, since the swap reads occlusion with the keyboard up, where the
-      // current state and the baseline share the same address-bar state.)
-      if (cur > this.baseHeight) this.baseHeight = cur;
-      this.occlusion.set(Math.max(0, this.baseHeight - cur));
-      this.offset.set(Math.max(0, cur - vv.height - vv.offsetTop));
+      if (this.layout.reflowFrozen()) return; // immunity frame: hold the current offset
+      this.offset.set(Math.max(0, el.clientHeight - vv.height - vv.offsetTop));
     };
     if (!frozen) update();
     vv.addEventListener('resize', update);
     vv.addEventListener('scroll', update);
-    // Portrait ⇄ landscape changes the baseline (different full height); re-learn from the next sample.
-    const onOrient = (): void => { this.baseHeight = 0; };
-    window.addEventListener('orientationchange', onOrient);
     onCleanup(() => {
       vv.removeEventListener('resize', update);
       vv.removeEventListener('scroll', update);
-      window.removeEventListener('orientationchange', onOrient);
     });
   });
 }

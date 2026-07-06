@@ -121,8 +121,7 @@
       <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
-    <!-- Input bar: flex child of the stage column. margin-bottom lifts it above the soft keyboard (mobile);
-         keyboardHeight feeds the emoji swap panel's frozen-height capture. -->
+    <!-- Input bar: flex child of the stage column. margin-bottom lifts it above the soft keyboard (mobile). -->
     <app-chat-input class="pg-input-anchor"
                     [members]="members()"
                     [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
