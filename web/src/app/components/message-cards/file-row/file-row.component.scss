@@ -3,7 +3,7 @@
 
 // File bubble: fixed 280px width (absolute width + max-width:100% shrinks on narrow screens — honors the _row-base
 // width-self-contained contract).
-.pg-bubble.pg-file {
+.msg-bubble.msg-file {
   width: 280px;
   max-width: 100%;
   padding: 8px 10px;
@@ -12,9 +12,9 @@
 // Click target: icon + meta + download glyph in a row. Clicking opens the file-detail overlay (the row emits openFile);
 // the actual <a download> lives inside that overlay. role=button + tabindex make it keyboard-accessible.
 // min-width:0 breaks the default min-width:auto chain: a nowrap filename's min-content is the WHOLE unbreakable name,
-// so without this the row would refuse to shrink below it and overflow the fixed 280px bubble. Paired with .pg-file-meta's
-// own min-width:0 + .pg-file-name's overflow:hidden/ellipsis, the filename now truncates inside the bubble.
-.pg-file-row {
+// so without this the row would refuse to shrink below it and overflow the fixed 280px bubble. Paired with .msg-file-meta's
+// own min-width:0 + .msg-file-name's overflow:hidden/ellipsis, the filename now truncates inside the bubble.
+.msg-file-row {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -26,7 +26,7 @@
 }
 
 // Type icon: a rounded square + category-color tint + a centered file svg + a bottom extension strip.
-.pg-file-ico {
+.msg-file-ico {
   position: relative;
   flex: 0 0 auto;
   width: 40px;
@@ -36,13 +36,13 @@
   justify-content: center;
   border-radius: 6px;
   color: #fff;
-  background: var(--pg-file-c, #6b7280);
+  background: var(--msg-file-c, #6b7280);
 }
-.pg-file-svg {
+.msg-file-svg {
   width: 26px;
   height: 26px;
 }
-.pg-file-ext {
+.msg-file-ext {
   position: absolute;
   bottom: 5px;
   left: 50%;
@@ -52,40 +52,40 @@
   letter-spacing: 0.3px;
 }
 // Category tint (pdf red / doc blue / sheet green / slides orange / archive purple / text gray / file blue-gray).
-.pg-file-ico--pdf { --pg-file-c: #e53935; }
-.pg-file-ico--doc { --pg-file-c: #2b6cb0; }
-.pg-file-ico--sheet { --pg-file-c: #2e7d32; }
-.pg-file-ico--slides { --pg-file-c: #ef6c00; }
-.pg-file-ico--archive { --pg-file-c: #7b1fa2; }
-.pg-file-ico--text { --pg-file-c: #546e7a; }
-.pg-file-ico--file { --pg-file-c: #6b7280; }
+.msg-file-ico--pdf { --msg-file-c: #e53935; }
+.msg-file-ico--doc { --msg-file-c: #2b6cb0; }
+.msg-file-ico--sheet { --msg-file-c: #2e7d32; }
+.msg-file-ico--slides { --msg-file-c: #ef6c00; }
+.msg-file-ico--archive { --msg-file-c: #7b1fa2; }
+.msg-file-ico--text { --msg-file-c: #546e7a; }
+.msg-file-ico--file { --msg-file-c: #6b7280; }
 
 // Meta column: filename (single-line ellipsis) + size (de-emphasized).
-.pg-file-meta {
+.msg-file-meta {
   flex: 1 1 auto;
   min-width: 0; // allow the ellipsis child to shrink
   display: flex;
   flex-direction: column;
   gap: 2px;
 }
-.pg-file-name {
+.msg-file-name {
   font-size: 14px;
   line-height: 18px; // integer px (was 1.3 = 18.2px) — see the integer-height contract in _row-base.scss
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pg-file-size {
+.msg-file-size {
   font-size: 12px;
   line-height: 14px; // integer px (was default ~14.4px) — see the integer-height contract in _row-base.scss
   opacity: 0.6;
 }
 
 // Download glyph (de-emphasized; darkens on hover — the whole row is click-to-download, this is auxiliary cue).
-.pg-file-dl {
+.msg-file-dl {
   flex: 0 0 auto;
   opacity: 0.4;
 }
-.pg-file-row:hover .pg-file-dl {
+.msg-file-row:hover .msg-file-dl {
   opacity: 0.8;
 }

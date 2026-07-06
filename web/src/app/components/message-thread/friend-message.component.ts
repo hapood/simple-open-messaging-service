@@ -6,6 +6,7 @@ import {
   inject,
   input,
   OnDestroy,
+  output,
   signal,
   viewChild,
 } from '@angular/core';
@@ -65,6 +66,12 @@ export class MessageThreadComponent implements OnDestroy {
   readonly threadId = input<number>();
   readonly startMsgId = input<string>();
   readonly userMsgTrd = input<ConversationItem>();
+
+  /** Emits the threadId once the kernel finishes `init()` on a thread open / re-init — the A/B buffer host
+   *  awaits this before cross-fading a pane in, so the reveal never races a half-initialized kernel. Carries
+   *  `threadId` (NOT `trd.id` — that's the ThreadParticipant row id, a different value) so the host can
+   *  discard stale emits from a superseded reset. Not emitted on teardown. */
+  readonly ready = output<number>();
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
@@ -177,6 +184,7 @@ export class MessageThreadComponent implements OnDestroy {
         clearTimeout(this.skeletonTimer);
         this.initialLoading.set(false);
         this.skeletonVisible.set(false);
+        this.ready.emit(trd.threadId);
       });
   }
 
@@ -216,7 +224,7 @@ export class MessageThreadComponent implements OnDestroy {
     if (!vp || !ct) { this.stickyDate.set(null); return; }
     const vTop = vp.getBoundingClientRect().top;
     let current: string | null = null;
-    for (const d of Array.from(ct.querySelectorAll<HTMLElement>('.pg-date'))) {
+    for (const d of Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))) {
       if (d.getBoundingClientRect().top <= vTop + 14) current = d.textContent?.trim() ?? null;
     }
     this.stickyDate.set(current);
@@ -446,6 +454,14 @@ export class MessageThreadComponent implements OnDestroy {
     this.pendingFiles.clear();
     for (const u of this.blobUrls) URL.revokeObjectURL(u);
     this.blobUrls.clear();
+  }
+
+  /** Tear down the kernel + source but keep the COMPONENT instance alive. The A/B buffer host demotes a pane
+   *  to background and idles its kernel here (bounding memory + SSE to one warm pane). Resets `currentTrdId`
+   *  so a subsequent input — even the same thread — re-initializes via the constructor effect; idempotent. */
+  teardownKernel(): void {
+    this.teardown();
+    this.currentTrdId = null;
   }
 
   ngOnDestroy(): void {

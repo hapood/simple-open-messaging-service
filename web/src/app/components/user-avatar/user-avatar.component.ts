@@ -10,7 +10,7 @@ import { assetUrl } from '../../services/runtime'
  *  · OTHER / GROUP：基于名字哈希的确定性调色板（同一对象颜色稳定、不同对象易区分，
  *    对标 Telegram / Google Messages / Slack）。调色板取 Material 深色阶，与白字对比达 WCAG AA。
  *
- * 方圆角（微信式，rx=20% → 40px 容器下 8px，与聊天内 .pg-avatar 一致）+ SVG viewBox：
+ * 方圆角（微信式，rx=20% → 40px 容器下 8px，与聊天内 .msg-avatar 一致）+ SVG viewBox：
  * 字号在 viewBox 内固定、随容器自动缩放（44~56px 列表/抽屉通吃），不依赖父容器尺寸或
  * 裁剪——各调用点零布局改动（nav-drawer/icon-rail 容器须去掉强制圆形的 overflow/border-radius）。
  */
@@ -59,13 +59,34 @@ export class UserAvatarComponent {
     return n.length > 0 ? n.charAt(0).toUpperCase() : '?'
   })
 
-  /** 底色：SELF 品牌绿；其余按名字哈希落到调色板（确定性，同名同色）。 */
-  readonly bg = computed(() => {
-    if (this.type() === UserAvatarType.SELF) return SELF_COLOR
+  /** Deterministic 31× name hash (abs) — shared by bg + groupFill so a given name always maps to the
+   *  same color(s). Reads the name signal, so callers inside computed() stay reactive. */
+  private hashName(): number {
     const n = (this.name() ?? '').trim() || '?'
     let h = 0
     for (let i = 0; i < n.length; i++) h = (Math.imul(h, 31) + n.charCodeAt(i)) | 0
-    return PALETTE[Math.abs(h) % PALETTE.length]
+    return Math.abs(h)
+  }
+
+  /** Background fill: SELF = brand green; everyone else = a name-hashed palette slot (deterministic,
+   *  stable per name). */
+  readonly bg = computed(() => {
+    if (this.type() === UserAvatarType.SELF) return SELF_COLOR
+    return PALETTE[this.hashName() % PALETTE.length]
+  })
+
+  /** GROUP fallback mock — a DISTINCT design from the user mock: a 2-tone diagonal gradient (two
+   *  name-hashed colors, visually signaling multiple members) + a white "users" glyph (rendered in
+   *  the template). The user mock stays a solid bg + single initial, so a group reads as a group at
+   *  a glance. Same name → same color pair (deterministic). */
+  readonly isGroup = computed(() => this.type() === UserAvatarType.GROUP)
+  readonly groupFill = computed(() => {
+    const a = this.hashName()
+    return {
+      id: `grp-${a}`,
+      from: PALETTE[a % PALETTE.length],
+      to: PALETTE[(a + 5) % PALETTE.length],
+    }
   })
 }
 

@@ -21,7 +21,7 @@
     content: '';
     position: absolute;
     inset: 0;
-    z-index: 1;            // 盖在 .pg-msg-row / .pg-date 之上（它们无 stacking context）
+    z-index: 1;            // 盖在 .msg-row / .msg-date 之上（它们无 stacking context）
     pointer-events: none;  // 不挡滚动 / 点击
     background-color: var(--app-active);
     background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.5) 50%, transparent 70%);

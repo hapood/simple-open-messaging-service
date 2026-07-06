@@ -134,9 +134,12 @@ export class HomeShellComponent {
     }
   }
 
-  /** Open a conversation by route, closing any open info panel (it is scoped to the previous chat). */
+  /** Open a conversation by route, closing any open info panel (it is scoped to the previous chat).
+   *  replaceUrl: switching threads from the always-mounted list must NOT stack a new history entry per
+   *  chat — back returns to the conversation list (the entry before the chat), not through every thread
+   *  the user clicked. */
   openChat(item: ConversationItem) {
-    this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }])
+    this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }], { replaceUrl: true })
   }
 
   /** After a group is created, refresh the shared thread list (forwarded to icon-rail / nav-drawer). */

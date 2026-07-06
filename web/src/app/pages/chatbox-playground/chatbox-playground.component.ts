@@ -44,7 +44,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  * older items, so no history paging is needed. Jumping to a given id goes through the kernel scrollToIndex (both A/B kernels support it).
  *
  * [Style boundary] This component is ViewEncapsulation.None (global pg- prefix), but it MUST NEVER write CSS that
- * targets the inside of the chat content (.pg-msg-row/.pg-bubble are owned by the message-cards components' _row-base) —
+ * targets the inside of the chat content (.msg-row/.msg-bubble are owned by the message-cards components' _row-base) —
  * otherwise global rules would alter the measured row heights and corrupt the kernel's offsetHeight logic. This file
  * owns only the shell: stage/header/viewport containers/panel/input bar/FAB.
  */
@@ -352,11 +352,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     return vs;
   }
 
-  /** Inject a dev badge into .pg-msg-row: head (green) / body (orange) + message id (+ PENDING/FAKE tag when kind is set). Dev-only (ngDevMode); destroyed with the component. */
+  /** Inject a dev badge into .msg-row: head (green) / body (orange) + message id (+ PENDING/FAKE tag when kind is set). Dev-only (ngDevMode); destroyed with the component. */
   private attachDevBadge(host: HTMLElement, item: CbItem<ChatItemData>, isHead: boolean): void {
     const d = item.data;
     if (d.type !== 'msg') return; // message rows only (date rows have no grouping concept)
-    const row = host.querySelector('.pg-msg-row');
+    const row = host.querySelector('.msg-row');
     if (!row) return;
     const badge = document.createElement('span');
     badge.className = 'pg-dev-badge' + (isHead ? ' pg-dev-badge--head' : ' pg-dev-badge--body');
@@ -416,7 +416,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   /**
    * Telegram-style sticky date: the text of the last date-separator row at or above the viewport top.
    * The overlay is independent of content and unaffected by virtual-scroll recycling — a date row near the viewport
-   * top always falls within the mounted window. Date rows are now rendered by the real DateRowComponent (the .pg-date
+   * top always falls within the mounted window. Date rows are now rendered by the real DateRowComponent (the .msg-date
    * class is preserved), so querySelectorAll still finds them.
    */
   private updateStickyDate() {
@@ -431,7 +431,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const STICKY_DATE_FADE_PX = { lo: 20, hi: 66 };
     const fadeLo = vTop + STICKY_DATE_FADE_PX.lo;
     const fadeHi = vTop + STICKY_DATE_FADE_PX.hi;
-    const rects = Array.from(ct.querySelectorAll<HTMLElement>('.pg-date'))
+    const rects = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))
       .map(d => ({ d, top: d.getBoundingClientRect().top }));
     let current: string | null = null;
     for (const { d, top } of rects) {

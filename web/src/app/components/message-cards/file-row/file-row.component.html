@@ -3,39 +3,39 @@
 }
 
 <div
-  class="pg-msg-row pg-{{ side() }}{{ showAvatar() ? ' pg-has-avatar' : '' }}{{ isGroupStart() ? ' pg-group-start' : '' }} pg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
-    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
   }
 
-  <div class="pg-col pg-{{ side() }}">
+  <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
-      <div class="pg-name pg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
+      <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
-    <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-file" [class.pg-sending]="isSending()">
-      <div class="pg-file-row"
+    <div class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-file" [class.msg-sending]="isSending()">
+      <div class="msg-file-row"
            role="button"
            tabindex="0"
            [attr.aria-label]="'chat.openFileAria' | transloco"
            (click)="openFile.emit()"
            (keydown.enter)="openFile.emit()"
            (keydown.space)="$event.preventDefault(); openFile.emit()">
-        <span class="pg-file-ico pg-file-ico--{{ category() }}">
-          <svg class="pg-file-svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        <span class="msg-file-ico msg-file-ico--{{ category() }}">
+          <svg class="msg-file-svg" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
             <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
             <path d="M14 3v5h5" />
           </svg>
-          <span class="pg-file-ext">{{ ext() }}</span>
+          <span class="msg-file-ext">{{ ext() }}</span>
         </span>
-        <span class="pg-file-meta">
-          <span class="pg-file-name" [title]="file()?.name ?? ''">{{ file()?.name || ('chat.fileFallback' | transloco) }}</span>
+        <span class="msg-file-meta">
+          <span class="msg-file-name" [title]="file()?.name ?? ''">{{ file()?.name || ('chat.fileFallback' | transloco) }}</span>
           @if (sizeText()) {
-            <span class="pg-file-size">{{ sizeText() }}</span>
+            <span class="msg-file-size">{{ sizeText() }}</span>
           }
         </span>
-        <span class="pg-file-dl" aria-hidden="true">
+        <span class="msg-file-dl" aria-hidden="true">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
@@ -46,20 +46,20 @@
 
       @if (statusTick()) {
         @if (isFailed()) {
-          <span class="pg-status pg-status--failed" role="button" tabindex="0"
+          <span class="msg-status msg-status--failed" role="button" tabindex="0"
                 [attr.aria-label]="'chat.retrySendAria' | transloco"
                 (click)="retry.emit(data().msgId)"
                 (keydown.enter)="retry.emit(data().msgId)"
                 (keydown.space)="retry.emit(data().msgId)"></span>
         } @else {
-          <span class="pg-status pg-status--{{ data().status }}" aria-hidden="true"></span>
+          <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }
       }
-      <span class="pg-time">{{ data().time }}</span>
+      <span class="msg-time">{{ data().time }}</span>
     </div>
   </div>
 
   @if (showAvatar() && side() === 'self') {
-    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
   }
 </div>

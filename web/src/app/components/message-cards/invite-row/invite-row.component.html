@@ -3,39 +3,37 @@
 }
 
 <div
-  class="pg-msg-row pg-{{ side() }}{{ showAvatar() ? ' pg-has-avatar' : '' }}{{ isGroupStart() ? ' pg-group-start' : '' }} pg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
-    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
   }
 
-  <div class="pg-col pg-{{ side() }}">
+  <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
-      <div class="pg-name pg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
+      <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
     <button
       type="button"
-      class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-invite pg-invite-tappable"
-      [class.pg-invite-expired]="status() === 1"
+      class="msg-bubble msg-{{ side() }} msg-{{ pos() }} invite invite-tappable"
+      [class.invite-expired]="status() === 1"
       (click)="openDetail()"
     >
-      <div class="pg-invite-card">
-        <div class="pg-invite-title">{{ 'chat.inviteTitle' | transloco:{ name: data().name } }}</div>
-        <div class="pg-invite-group">
-          @if (invite().groupAvatar) {
-            <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [src]="invite().groupAvatar"></app-user-avatar>
-          }
-          <div class="pg-invite-name">{{ invite().groupName }}</div>
-          <span class="pg-invite-chev" aria-hidden="true">›</span>
+      <div class="invite-card">
+        <div class="invite-title">{{ 'chat.inviteTitle' | transloco:{ name: data().name } }}</div>
+        <div class="invite-group">
+          <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName" [src]="invite().groupAvatar"></app-user-avatar>
+          <div class="invite-name">{{ invite().groupName }}</div>
+          <span class="invite-chev" aria-hidden="true">›</span>
         </div>
         @if (expiryLabel()) {
-          <div class="pg-invite-expiry">{{ 'chat.validUntil' | transloco:{ date: expiryLabel() } }}</div>
+          <div class="invite-expiry">{{ 'chat.validUntil' | transloco:{ date: expiryLabel() } }}</div>
         }
       </div>
     </button>
   </div>
 
   @if (showAvatar() && side() === 'self') {
-    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
   }
 </div>

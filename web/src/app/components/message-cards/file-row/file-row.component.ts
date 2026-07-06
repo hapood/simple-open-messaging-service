@@ -15,7 +15,7 @@ import { categorize, fileExt, formatBytes, type FileCategory } from '../file-met
  * outside the click target. Follows the 5 _row-base contracts (border-box height, self-contained width via a fixed
  * px width + max-width:100%, host autonomy).
  *
- * Filename overflow: the nowrap name ellipses inside the fixed 280px bubble — `.pg-file-row` carries `min-width:0`
+ * Filename overflow: the nowrap name ellipses inside the fixed 280px bubble — `.msg-file-row` carries `min-width:0`
  * to break the flex min-content chain (a nowrap string's min-content is the whole unbreakable name), and the detail
  * overlay exists precisely so a long name can be read in full without widening the bubble.
  */

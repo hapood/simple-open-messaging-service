@@ -3,21 +3,21 @@
 }
 
 <div
-  class="pg-msg-row pg-{{ side() }}{{ showAvatar() ? ' pg-has-avatar' : '' }}{{ isGroupStart() ? ' pg-group-start' : '' }} pg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
 >
   @if (showAvatar() && side() === 'other') {
-    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
   }
 
-  <div class="pg-col pg-{{ side() }}">
+  <div class="msg-col msg-{{ side() }}">
     @if (showName()) {
-      <div class="pg-name pg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
+      <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
-    <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-media" [class.pg-sending]="isSending()">
-      <div class="pg-media-grid" [style.height.px]="totalH()">
+    <div class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media" [class.msg-sending]="isSending()">
+      <div class="msg-media-grid" [style.height.px]="totalH()">
         @for (c of cells(); track $index) {
           <div
-            class="pg-media-cell{{ c.isMore ? ' pg-cell-more' : '' }}"
+            class="msg-media-cell{{ c.isMore ? ' msg-cell-more' : '' }}"
             [style.left.%]="c.rect.xPct"
             [style.top.px]="c.rect.yPx"
             [style.width.%]="c.rect.wPct"
@@ -30,27 +30,27 @@
             (keydown.enter)="openImage.emit({ images: data().images ?? [], index: $index })"
           >
             @if (c.isMore) {
-              <span class="pg-media-more">+{{ moreCount() }}</span>
+              <span class="msg-media-more">+{{ moreCount() }}</span>
             }
           </div>
         }
       </div>
       @if (statusTick()) {
         @if (isFailed()) {
-          <span class="pg-status pg-status--failed" role="button" tabindex="0"
+          <span class="msg-status msg-status--failed" role="button" tabindex="0"
                 [attr.aria-label]="'chat.retrySendAria' | transloco"
                 (click)="retry.emit(data().msgId)"
                 (keydown.enter)="retry.emit(data().msgId)"
                 (keydown.space)="retry.emit(data().msgId)"></span>
         } @else {
-          <span class="pg-status pg-status--{{ data().status }}" aria-hidden="true"></span>
+          <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }
       }
-      <span class="pg-time">{{ data().time }}</span>
+      <span class="msg-time">{{ data().time }}</span>
     </div>
   </div>
 
   @if (showAvatar() && side() === 'self') {
-    <div class="pg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
   }
 </div>

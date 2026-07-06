@@ -2,14 +2,14 @@
 //
 // [Style boundary] This file only governs the playground shell: stage / header /
 // viewport containers / panel / input bar / FAB. NEVER write CSS that targets the
-// inside of chat content (.pg-msg-row / .pg-bubble / .pg-media-* etc.) — those
+// inside of chat content (.msg-row / .msg-bubble / .msg-media-* etc.) — those
 // are self-contained in the message-cards _row-base.scss. A global rule that
 // changes a measured message-row height would corrupt the kernel's offsetHeight
 // logic (we previously shrank heights unnoticed by redefining padding/bubble).
 // The single exception is .cb-pending (a kernel mechanism), moved to
 // lib/chat-box/_cb.scss and imported globally via styles.scss.
 //
-// The debug badge .pg-dev-badge is injected into .pg-msg-row, but it is absolute
+// The debug badge .pg-dev-badge is injected into .msg-row, but it is absolute
 // positioned and out of flow (no row-height change), and ngDevMode-gated (never
 // created in production) → it does not affect the components.
 
@@ -174,7 +174,7 @@
   pointer-events: none;
 }
 
-// —— Debug badge (playground createItemEl injects it into .pg-msg-row;
+// —— Debug badge (playground createItemEl injects it into .msg-row;
 // ngDevMode-gated → never created in production) ——
 // head = group head (green) / body = group body (orange) + the message id.
 // Absolute and out of flow → does not change the row offsetHeight → no kernel impact.
@@ -191,8 +191,8 @@
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   font-variant-numeric: tabular-nums;
 }
-.pg-msg-row.pg-other .pg-dev-badge { left: 2px; }
-.pg-msg-row.pg-self .pg-dev-badge { right: 2px; }
+.msg-row.msg-other .pg-dev-badge { left: 2px; }
+.msg-row.msg-self .pg-dev-badge { right: 2px; }
 .pg-dev-badge--head { background: #4caf50; }
 .pg-dev-badge--body { background: #ff9800; }
 

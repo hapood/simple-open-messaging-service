@@ -22,7 +22,7 @@ import { formatDateSeparator } from '../date-format';
   selector: 'app-msg-date-row',
   standalone: true,
   template: `
-    <div class="pg-date"><span>{{ label() }}</span></div>
+    <div class="msg-date"><span>{{ label() }}</span></div>
   `,
   styleUrl: './date-row.component.scss',
 })

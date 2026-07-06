@@ -1,10 +1,10 @@
-// Shared visual rules for message rows (pg- design-token namespace).
+// Shared visual rules for message rows (msg- design-token namespace).
 // Each message-row component @uses this file → under Emulated encapsulation the rules carry each component's own
 // scope and only affect that component's template.
 //
 // Extracted from the playground's global pg- rules, dropping the parts that depended on the .pg-content parent
 // selector: the component root host (app-msg-*-row) is the scroll item the kernel mounts; padding is set directly
-// on .pg-msg-row.
+// on .msg-row.
 //
 // ── Virtual-scroll mounted-component contract (every app-msg-*-row MUST satisfy) ──────────────────────────────
 // The kernel (chat-box-scroller) only does "insert the host by abstract-id neighbor + measure height via
@@ -12,7 +12,7 @@
 // following constraints (every one is a pitfall we hit):
 //  1. Height is border-box AND integer-pixel. Vertical whitespace uses padding, not margin: the kernel measures
 //     height via offsetHeight (margin excluded); a margin would push the box down and stack the next bubble on top.
-//     date-row / .pg-msg-row spacing is all padding (see the :host comment).
+//     date-row / .msg-row spacing is all padding (see the :host comment).
 //     ALSO every text element MUST use an INTEGER px line-height (never unitless/em/normal): CSS guarantees that a
 //     length line-height makes every line box EXACTLY that value (independent of font-size and wrap point), so
 //     N lines (N is always an integer) × integer line-height + integer padding = integer offsetHeight → the kernel's
@@ -43,25 +43,25 @@
 // Item root. Vertical spacing uses padding, not margin: the kernel measures height via offsetHeight (margin
 // excluded); a margin would push the box down and stack the next bubble on top (see the cb-element-border-box memory
 // + the integer-height contract above).
-.pg-msg-row {
+.msg-row {
   display: flex;
   position: relative;
   padding: 6px var(--app-space-4) 0;
   box-sizing: border-box;
   transition: opacity 0.3s ease, transform 0.3s ease;
-  &.pg-self {
+  &.msg-self {
     justify-content: flex-end;
   }
-  &.pg-other {
+  &.msg-other {
     justify-content: flex-start;
   }
   // Inter-group whitespace is borne by the new group-start row on a sender change (larger padding-top); in-group
   // follow-ups keep a small gap (WhatsApp-style compact but not touching). Each row's vertical footprint depends
   // only on whether IT is a group-start → appending a new row never changes the previous tail's height (0 reflow).
-  &.pg-group-start {
+  &.msg-group-start {
     padding-top: 14px;
   }
-  &.pg-grp-body {
+  &.msg-grp-body {
     padding-top: 3px;
   }
 }
@@ -75,40 +75,40 @@
 // It owns layout only — the size/alignment/col-margin contract is fixed (so virtual-scroll height measurement stays
 // stable); visuals (squircle + colors + initial letter) are delegated to the inner <app-user-avatar>, reusing the
 // same component as the list/drawer/panel.
-.pg-avatar {
+.msg-avatar {
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
   align-self: flex-start; // pinned to the row's top, flush with the group-start message's top edge
 }
 
-.pg-col {
+.msg-col {
   max-width: min(72%, 520px);
   display: flex;
   flex-direction: column;
-  &.pg-self {
+  &.msg-self {
     align-items: flex-end;
   }
-  &.pg-other {
+  &.msg-other {
     align-items: flex-start;
   }
 }
 // Group-start shows the avatar (has-avatar); in-group cols yield the avatar column (40 avatar + 8 gap = 48) to align
 // with the group-start bubble edge.
-.pg-msg-row.pg-other .pg-col {
+.msg-row.msg-other .msg-col {
   margin-left: 8px;
 }
-.pg-msg-row.pg-other:not(.pg-has-avatar) .pg-col {
+.msg-row.msg-other:not(.msg-has-avatar) .msg-col {
   margin-left: 48px;
 }
-.pg-msg-row.pg-self .pg-col {
+.msg-row.msg-self .msg-col {
   margin-right: 8px;
 }
-.pg-msg-row.pg-self:not(.pg-has-avatar) .pg-col {
+.msg-row.msg-self:not(.msg-has-avatar) .msg-col {
   margin-right: 48px;
 }
 
-.pg-name {
+.msg-name {
   font-size: 11px;
   line-height: 13px; // integer px (see the integer-height contract)
   font-weight: 600;
@@ -117,7 +117,7 @@
 }
 
 // Bubble (WhatsApp: light-green/white + rounded corners + bottom-right timestamp per row).
-.pg-bubble {
+.msg-bubble {
   position: relative;
   min-height: 40px;
   box-sizing: border-box;
@@ -127,18 +127,18 @@
   display: flex;
   align-items: center;
   box-shadow: 0 1px 0.5px rgba(0, 0, 0, 0.13);
-  &.pg-self {
+  &.msg-self {
     background: var(--im-bubble-self);
     color: var(--im-bubble-text);
   }
-  &.pg-other {
+  &.msg-other {
     background: var(--im-bubble-other);
     color: var(--im-bubble-text);
   }
-  &.pg-body {
+  &.msg-body {
     border-radius: 3px;
   }
-  &.pg-head {
+  &.msg-head {
     border-top-left-radius: 10px;
     border-top-right-radius: 10px;
     border-bottom-left-radius: 3px;
@@ -153,14 +153,14 @@
       height: 8px;
       transform: rotate(45deg);
     }
-    &.pg-other::before {
+    &.msg-other::before {
       // ◀ avatar on the left: the tail probes left (the other party's group-start has a name; the tail shifts down
       // slightly to avoid it)
       top: 8px;
       left: -4px;
       background: var(--im-bubble-other);
     }
-    &.pg-self::before {
+    &.msg-self::before {
       // ▶ avatar on the right: the tail probes right (self has no name; shift down to the avatar's vertical center 40/2−5)
       top: 15px;
       right: -4px;
@@ -169,7 +169,7 @@
   }
 }
 
-.pg-bubble-text {
+.msg-bubble-text {
   margin: 0;
   font-size: 14.2px;
   line-height: 20px; // INTEGER px (was unitless 1.4 = 19.88px/line). A length line-height makes every line box EXACTLY
@@ -182,7 +182,7 @@
 
 // Timestamp (WhatsApp: bottom-right of every bubble). The status tick lives at the TOP-RIGHT corner (its original
 // placement) — only the icon artwork was upgraded to SVG; the position was never meant to change.
-.pg-time {
+.msg-time {
   position: absolute;
   right: 10px;
   bottom: 4px;
@@ -198,10 +198,10 @@
 // Hidden timestamp shadow: same text, same width, invisible but occupies space → forces the last line to leave the
 // bottom-right corner clear so the body text never overlaps the timestamp. (Only the time is reserved — the status
 // tick is at the top-right corner, separate from the time, so it does not enter the shadow's width.)
-.pg-time-shadow {
+.msg-time-shadow {
   display: inline-block;
   margin-left: 8px;
-  font-size: 11px;   // must match .pg-time's font-size → identical width
+  font-size: 11px;   // must match .msg-time's font-size → identical width
   white-space: nowrap;
   visibility: hidden;
 }
@@ -213,14 +213,14 @@
 //  - check: STRAIGHT, angular strokes (miter join + butt cap) — no curves at the vertex or the ends.
 //  - arc: a 3/4 circle with round caps (dasharray on a full circle) — the classic progress spinner.
 //  - retry: a clockwise circular arrow with an arrowhead.
-$pg-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='butt' stroke-linejoin='miter' stroke-miterlimit='3'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
-$pg-arc:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-dasharray='42 56'/%3E%3C/svg%3E");
-$pg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpath d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10'/%3E%3C/svg%3E");
+$msg-check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='butt' stroke-linejoin='miter' stroke-miterlimit='3'%3E%3Cpolyline points='20 6 9 17 4 12'/%3E%3C/svg%3E");
+$msg-arc:   url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none'%3E%3Ccircle cx='12' cy='12' r='9' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-dasharray='42 56'/%3E%3C/svg%3E");
+$msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='23 4 23 10 17 10'/%3E%3Cpath d='M20.49 15a9 9 0 1 1-2.12-9.36L23 10'/%3E%3C/svg%3E");
 
 // Delivery receipt tick — at the bubble's TOP-RIGHT corner (its original placement; only the icon artwork was upgraded
 // to SVG — the position was never meant to change). The icon is a centered ::before painted via mask + currentColor;
 // the confirmed-spinner overlay and the failed hit-area extender use ::after.
-.pg-status {
+.msg-status {
   position: absolute;  // top-right corner of the bubble (also the positioning anchor for the ::after overlays)
   right: 6px;
   top: 4px;
@@ -243,29 +243,29 @@ $pg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vie
     -webkit-mask-size: contain;
     -webkit-mask-repeat: no-repeat;
   }
-  &.pg-status--sending::before {
-    mask-image: $pg-arc;
-    -webkit-mask-image: $pg-arc;
-    animation: pg-status-spin 0.8s linear infinite;
+  &.msg-status--sending::before {
+    mask-image: $msg-arc;
+    -webkit-mask-image: $msg-arc;
+    animation: msg-status-spin 0.8s linear infinite;
   }
   // Static sent check (default): a plain, persistent angular check for any status:'sent' row that is NOT an
   // optimistic-send confirm — e.g. a sent real that mounts without a resort, or future delivery receipts. No animation.
   // Only the optimistic-confirm reals (kernel-tagged cb-confirmed at the resort reveal) get the spinner→check→fade
   // choreography under :host(.cb-confirmed) below — so the fade is scoped to those "special" items, not every sent row.
-  &.pg-status--sent::before {
-    mask-image: $pg-check;
-    -webkit-mask-image: $pg-check;
+  &.msg-status--sent::before {
+    mask-image: $msg-check;
+    -webkit-mask-image: $msg-check;
   }
   // Failed send: a retry arrow in the same bottom-right slot as sending/sent — persistent until the user retries (no
   // auto-fade) and interactive. Colored danger-red so it reads as an error affordance, not a status tick. The ::after
   // extender enlarges the tap target around the compact glyph without disturbing the cluster layout (absolute, out of
   // flow) — clicks on the pseudo hit the span, so a ~13px icon stays comfortably tappable.
-  &.pg-status--failed {
+  &.msg-status--failed {
     color: var(--im-danger, #e53935);
     cursor: pointer;
     &::before {
-      mask-image: $pg-retry;
-      -webkit-mask-image: $pg-retry;
+      mask-image: $msg-retry;
+      -webkit-mask-image: $msg-retry;
     }
     &::after {
       content: '';
@@ -286,10 +286,10 @@ $pg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vie
 // margin:auto) so the two overlap and the crossfade reads as a morph. Bare status:'sent' (no cb-confirmed) keeps the
 // static check above and never animates. opacity-only never affects offsetHeight.
 :host(.cb-confirmed) {
-  .pg-status--sent::before {
-    animation: pg-sent-check 1.2s ease-out forwards;        // 0→1 over D1 (check appears), 1→0 over D2 (check→transparent)
+  .msg-status--sent::before {
+    animation: msg-sent-check 1.2s ease-out forwards;        // 0→1 over D1 (check appears), 1→0 over D2 (check→transparent)
   }
-  .pg-status--sent::after {
+  .msg-status--sent::after {
     content: '';
     position: absolute;
     inset: 0;
@@ -297,40 +297,40 @@ $pg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vie
     width: 13px;                                            // matches --sending arc box → seamless spinner handoff at reveal
     height: 13px;
     background-color: currentColor;
-    mask-image: $pg-arc;                                    // same arc as --sending → seamless spinner handoff at reveal
+    mask-image: $msg-arc;                                    // same arc as --sending → seamless spinner handoff at reveal
     mask-position: center;
     mask-size: contain;
     mask-repeat: no-repeat;
-    -webkit-mask-image: $pg-arc;
+    -webkit-mask-image: $msg-arc;
     -webkit-mask-position: center;
     -webkit-mask-size: contain;
     -webkit-mask-repeat: no-repeat;
-    animation: pg-sent-spinner 0.4s ease-out forwards,      // arc fades out over D1 (spinner → check)
-               pg-status-spin 0.8s linear infinite;         // keeps spinning through the crossfade
+    animation: msg-sent-spinner 0.4s ease-out forwards,      // arc fades out over D1 (spinner → check)
+               msg-status-spin 0.8s linear infinite;         // keeps spinning through the crossfade
   }
 }
 
-@keyframes pg-status-spin {
+@keyframes msg-status-spin {
   to { transform: rotate(360deg); }
 }
 
 // Check lifecycle: fade in over D1 (0.4s ≈ 33% of 1.2s), then fade out to transparent over D2. The fade-out begins at
 // D1 — i.e. only after the spinner→check crossfade — per the "delayed after spinner-to-check duration" requirement.
-@keyframes pg-sent-check {
+@keyframes msg-sent-check {
   from { opacity: 0; }
   33%  { opacity: 1; }
   to   { opacity: 0; }
 }
 
 // Spinner ring fade-out: 1 → 0 over D1 (the spinner → check crossfade window).
-@keyframes pg-sent-spinner {
+@keyframes msg-sent-spinner {
   from { opacity: 1; }
   to   { opacity: 0; }
 }
 
 // Subtle dim while a self message is still in flight (status === 'sending'); clears on confirm. The whole bubble dims
 // uniformly (text + meta); the animated spinner remains visible enough as the progress affordance.
-.pg-bubble.pg-sending {
+.msg-bubble.msg-sending {
   opacity: 0.72;
   transition: opacity 0.2s ease-out;
 }

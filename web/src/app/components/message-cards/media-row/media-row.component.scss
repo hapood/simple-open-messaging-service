@@ -6,7 +6,7 @@
 // absolute cells (no intrinsic width, unlike text bubbles which text stretches), so a percentage width inside a flex
 // column cyclically depends on the col size → resolves to 0 (blank album). max-width:100% lets narrow screens
 // (col<320) shrink it, and does not participate in content-size computation → no cycle.
-.pg-bubble.pg-media {
+.msg-bubble.msg-media {
   padding: 0;
   min-height: 0;
   width: 320px;
@@ -15,13 +15,13 @@
   overflow: hidden;
 }
 
-.pg-media-grid {
+.msg-media-grid {
   position: relative;
   width: 100%;
 }
 
 // Cell: absolute positioning + background-image (height locked to px by layoutAlbum, not via grid/aspect-ratio).
-.pg-media-cell {
+.msg-media-cell {
   position: absolute;
   overflow: hidden;
   background: rgba(127, 127, 127, 0.18); // placeholder gray before the image loads
@@ -31,7 +31,7 @@
 }
 
 // Media timestamp: dark pill at the bottom-right, overlaid on the image (readable on any photo).
-.pg-media .pg-time {
+.msg-media .msg-time {
   right: 6px;
   bottom: 6px;
   padding: 1px 6px;
@@ -43,27 +43,27 @@
 // Media status tick: TOP-RIGHT corner over the image (same placement as text bubbles). A bare icon on an arbitrary
 // photo is low-contrast, so it sits in a small dark circle badge (mirrors the timestamp pill's chrome). White tick;
 // the failed retry stays danger-red for emphasis.
-.pg-media .pg-status {
+.msg-media .msg-status {
   right: 6px;
   top: 6px;
   padding: 1px;
   background: rgba(0, 0, 0, 0.45);
   border-radius: 50%;
   color: #fff;
-  &.pg-status--failed {
+  &.msg-status--failed {
     color: var(--im-danger, #ff5252);
   }
 }
 
 
 // "+N" more badge (album >6 images: last cell covered with a translucent black overlay + a centered number).
-.pg-cell-more::after {
+.msg-cell-more::after {
   content: '';
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
 }
-.pg-media-more {
+.msg-media-more {
   position: absolute;
   inset: 0;
   z-index: 1;

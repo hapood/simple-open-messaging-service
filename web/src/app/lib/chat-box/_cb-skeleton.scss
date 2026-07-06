@@ -9,7 +9,7 @@
 // scrolls. The 14px bottom padding matches .cb-tail-cap--gap (the real spacer between the last message and the
 // input bar), so the skeleton's last row lands exactly where the last real message will — a seamless handoff when
 // the data resolves. Each row mirrors a real message group-start: a circular avatar + a rounded-rect bubble, avatar
-// and bubble top-aligned (align-items:flex-start, matching real .pg-avatar align-self:flex-start). Incoming rows put
+// and bubble top-aligned (align-items:flex-start, matching real .msg-avatar align-self:flex-start). Incoming rows put
 // the avatar on the LEFT, outgoing rows on the RIGHT (DOM order [bubble][avatar] + the row's justify-content:flex-end)
 // — the symmetric WhatsApp layout this chat mirrors. Varied widths and 1-/2-/3-line heights break the monotony of
 // the old even pill row. Integer-px heights throughout (32px avatar/bubble unit, integer gap & padding); the shimmer
@@ -30,7 +30,7 @@
 .cb-sk-row {
   display: flex;
   gap: 8px;
-  align-items: flex-start; // avatar + bubble pin to the row's TOP (matches real .pg-avatar align-self:flex-start — a group-start's avatar sits at the message-group top, not the bottom)
+  align-items: flex-start; // avatar + bubble pin to the row's TOP (matches real .msg-avatar align-self:flex-start — a group-start's avatar sits at the message-group top, not the bottom)
   &.cb-sk-in  { justify-content: flex-start; }
   &.cb-sk-out { justify-content: flex-end; }
 }

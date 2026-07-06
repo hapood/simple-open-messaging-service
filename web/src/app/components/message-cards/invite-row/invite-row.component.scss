@@ -1,67 +1,118 @@
-// Invite message row: reuse the shared rules (@use row-base) + invite card styling. The card is a
-// real <button> (keyboard/a11y) so it needs a reset; the bubble styling dominates the look.
+// Invite message row: EMBEDDED + SOLID + side-agnostic. The invite rides the normal chat-bubble shape
+// (tail, sender-grouping, shared avatar — no special gap/avatar logic) but uses ONE solid brand-tinted
+// color for BOTH sides — not the green/white side colors, not a gradient, not translucent — so every
+// invite looks identical regardless of who sent it. The bubble IS the surface (no inner card layer);
+// the invite's richness is its content (a 40px group avatar + bold name + a clock-tagged expiry). The
+// card is a real <button> (keyboard/a11y) so it needs a chrome reset.
 @use '../row-base' as *;
 
-.pg-bubble.pg-invite {
-  padding: 0;
+// Clock glyph for the expiry meta — an SVG mask; currentColor (the faint expiry text color) fills it.
+$msg-clock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E");
+
+// One solid color for both sides (overrides the green/white side bg from row-base). Brand-tinted so
+// it reads as an invite; fully opaque; identical for self and other. Exposed as --invite-bg so the
+// tail reuses the exact same color.
+.msg-bubble.invite {
+  --invite-bg: color-mix(in srgb, var(--app-surface) 70%, var(--app-brand) 30%);
+  background: var(--invite-bg);
+  padding: 8px 10px;
   display: block;
-  background: var(--app-surface);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08); // a touch more elevation than a plain text bubble
+}
+// Tail matches the invite solid (overrides the green/white tail from row-base) — same color both sides.
+.msg-bubble.invite.msg-head::before {
+  background: var(--invite-bg);
 }
 
-// Tappable preview card: <button> reset so the bubble/card styling wins.
-.pg-invite-tappable {
+// The <button> is the bubble itself; reset native button chrome so the bubble styling wins.
+.invite-tappable {
   border: none;
   font: inherit;
   color: inherit;
   cursor: pointer;
-  width: 100%;
+  width: 100%;            // the invite spans the full column (a wide card-like bubble, by design)
   border-radius: inherit; // match the bubble's rounded corners
   outline: none;
-  transition: background-color 120ms ease;
 }
-.pg-invite-tappable:focus-visible {
+.invite-tappable:focus-visible {
   outline: 2px solid var(--app-brand, #2196f3);
   outline-offset: 2px;
 }
 
-.pg-invite-card {
-  padding: 12px 14px;
-  min-width: 220px;
-  text-align: left; // card text left-aligned regardless of the button reset
-}
-.pg-invite-title {
+// Kicker — the inviter line. Subordinate (muted) so the group identity below is the hero.
+.invite-title {
   font-size: 12px;
   line-height: 14px; // integer px — see the integer-height contract in _row-base.scss
   color: var(--app-text-muted);
-  margin-bottom: 4px;
+  margin: 0 0 6px;
 }
-// Group identity row: avatar + name + a chevron hinting the card opens a detail view.
-.pg-invite-group {
+
+// Group identity (the hero): a sized 40px group avatar + bold name + a chevron hinting the bubble
+// opens a detail view.
+.invite-group {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
+  gap: 10px;
+  margin: 0;
 }
-.pg-invite-name {
+// Size the <app-user-avatar> host — it fills its parent at 100%×100%, so without an explicit slot it
+// collapses in the flex row. 40px squircle = the invite's visual anchor.
+.invite-group app-user-avatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 20%;  // match the inner squircle; clip the image to the same shape
+  overflow: hidden;
+}
+.invite-name {
   font-size: 15px;
   line-height: 18px; // integer px
   font-weight: 600;
+  color: var(--app-text);
   flex: 1 1 auto;
+  min-width: 0;       // allow shrink so the chevron never overflows on a narrow bubble
 }
-.pg-invite-chev {
+.invite-chev {
   font-size: 18px;
-  line-height: 18px;
+  line-height: 18px; // integer px
   color: var(--app-text-faint);
   flex: 0 0 auto;
+  margin-left: 2px;
+  transition: color 120ms ease;
 }
-.pg-invite-expiry {
+// On hover, brand the chevron — a micro-cue that the whole bubble is tappable.
+.invite-tappable:hover .invite-chev {
+  color: var(--app-brand);
+}
+
+// Expiry — tertiary meta, sat below the hero by spacing. The clock glyph pairs with the time text.
+.invite-expiry {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   line-height: 13px; // integer px
   color: var(--app-text-faint);
+  margin: 6px 0 0;
+}
+.invite-expiry::before {
+  content: '';
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  background-color: currentColor;
+  mask-image: $msg-clock;
+  mask-position: center;
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-image: $msg-clock;
+  -webkit-mask-position: center;
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
 }
 
 // Expired token → dim the whole preview (the dialog re-checks and disables Join).
-.pg-invite-expired {
+.invite-expired {
   opacity: 0.55;
   cursor: default;
 }
