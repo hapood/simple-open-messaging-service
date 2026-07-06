@@ -1,7 +1,7 @@
 <div class="panel">
   <div class="msg-header">
     <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
-      <app-icon [type]="AppIconType.BACK" [style]="{ width: '28px', height: '28px' }"></app-icon>
+      <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
     <span class="title">{{ 'settings.title' | transloco }}</span>
     <span></span>
@@ -15,7 +15,13 @@
         <mat-list>
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.theme' | transloco }}</span>
+            <!-- Trailing controls belong in the [matListItemMeta] slot (→ .mdc-list-item__end), not in
+                 unscoped content: unscoped nodes land inside .mdc-list-item__content, which is a
+                 white-space:nowrap; overflow:hidden; flex:1 text box. The 3-way toggle group is wide
+                 enough to be clipped/skewed there and overlap the title; the meta slot parks it cleanly
+                 at the row's trailing edge. -->
             <mat-button-toggle-group
+              matListItemMeta
               class="theme-toggle"
               [value]="theme.mode()"
               hideSingleSelectionIndicator

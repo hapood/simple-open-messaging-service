@@ -3,12 +3,21 @@ import { Injectable, signal } from '@angular/core';
 /** Folder type rule — reuses the thread type dimension. */
 export type FolderTypeFilter = 'ALL' | 'P2P' | 'GROUP'
 
+/**
+ * Folder status rule — scopes a folder to a per-user status dimension. 'NONE' = no
+ * status restriction. Extensible: add 'MUTED' once the mute feature is wired through
+ * (the ThreadParticipant.muted column exists but is not yet exposed or toggleable).
+ */
+export type FolderStatusFilter = 'NONE' | 'UNREAD'
+
 /** A user-defined chat folder. Persisted to localStorage (soms.chatFolders). */
 export interface ChatFolder {
   id: string
   name: string
   /** type rule; 'ALL' = no type restriction */
   typeFilter: FolderTypeFilter
+  /** status rule, AND'd on top of the type rule for auto-included threads; 'NONE' = no status restriction */
+  statusFilter: FolderStatusFilter
   /** manually included ConversationItem.id */
   includedIds: number[]
   /** manually excluded ConversationItem.id */
@@ -19,13 +28,21 @@ export interface ChatFolder {
 const STORAGE_KEY = 'soms.chatFolders'
 
 /**
- * A thread belongs to a folder ⇔ NOT excluded AND (matches the type rule OR is
- * manually included) — same semantics as Telegram folders.
+ * A thread belongs to a folder ⇔ NOT excluded AND (manually included OR matches
+ * the type rule) AND — for threads auto-included by the type rule only — matches
+ * the status rule. Manually-pinned threads bypass the status gate, mirroring how
+ * they already bypass the type rule. Same override shape as Telegram folders.
  */
-export function inFolder(thread: { id: number; type: string }, folder: ChatFolder): boolean {
+export function inFolder(
+  thread: { id: number; type: string; unreadCount?: number },
+  folder: ChatFolder,
+): boolean {
   if (folder.excludedIds.includes(thread.id)) return false
+  if (folder.includedIds.includes(thread.id)) return true
   const typeMatch = folder.typeFilter === 'ALL' || thread.type === folder.typeFilter
-  return typeMatch || folder.includedIds.includes(thread.id)
+  if (!typeMatch) return false
+  if (folder.statusFilter === 'UNREAD') return (thread.unreadCount ?? 0) > 0
+  return true
 }
 
 /**
@@ -44,12 +61,13 @@ export class FolderService {
     return this._folders().find(f => f.id === id)
   }
 
-  create(data: { name: string; typeFilter: FolderTypeFilter; includedIds?: number[]; excludedIds?: number[] }): ChatFolder {
+  create(data: { name: string; typeFilter: FolderTypeFilter; statusFilter?: FolderStatusFilter; includedIds?: number[]; excludedIds?: number[] }): ChatFolder {
     const list = this._folders()
     const folder: ChatFolder = {
       id: this.genId(),
       name: data.name,
       typeFilter: data.typeFilter,
+      statusFilter: data.statusFilter ?? 'NONE',
       includedIds: data.includedIds ?? [],
       excludedIds: data.excludedIds ?? [],
       order: list.length ? Math.max(...list.map(f => f.order)) + 1 : 0,
@@ -77,7 +95,19 @@ export class FolderService {
     if (typeof localStorage === 'undefined') return []
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
-      return raw ? (JSON.parse(raw) as ChatFolder[]) : []
+      if (!raw) return []
+      // Back-fill every field so folders persisted before a field was added
+      // (e.g. statusFilter) coerce to a valid ChatFolder instead of shipping undefined.
+      const parsed = JSON.parse(raw) as Partial<ChatFolder>[]
+      return parsed.map((f): ChatFolder => ({
+        id: f.id ?? '',
+        name: f.name ?? '',
+        typeFilter: f.typeFilter ?? 'ALL',
+        statusFilter: f.statusFilter ?? 'NONE',
+        includedIds: f.includedIds ?? [],
+        excludedIds: f.excludedIds ?? [],
+        order: f.order ?? 0,
+      }))
     } catch {
       return []
     }

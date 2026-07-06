@@ -13,7 +13,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 发送消息（P2P/群统一） */
+        /** Send a message (unified for P2P and group) */
         post: operations["MessageController_sendMessage"];
         delete?: never;
         options?: never;
@@ -30,7 +30,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询会话历史消息（游标分页） */
+        /** Query conversation history messages (cursor pagination) */
         post: operations["MessageController_queryMessages"];
         delete?: never;
         options?: never;
@@ -47,7 +47,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 按对端 userId 查 P2P 关系（好友状态/会话） */
+        /** Look up the P2P relationship by peer userId (friend status / thread) */
         post: operations["MessageController_getThreadByUserId"];
         delete?: never;
         options?: never;
@@ -66,6 +66,91 @@ export interface paths {
         put?: never;
         /** Mark a conversation read (advances the per-user read cursor) */
         post: operations["MessageController_markRead"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-muted": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Mute / unmute a conversation (suppresses notifications, not delivery) */
+        post: operations["MessageController_setMuted"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-pinned": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Pin / unpin a conversation (pinned-first ordering) */
+        post: operations["MessageController_setPinned"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/clear-history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear chat history for me (hides all messages up to now; peer copy untouched) */
+        post: operations["MessageController_clearHistory"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/thread/set-alias": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a per-user alias/remark (备注) for a conversation (overrides the displayed name for the caller) */
+        post: operations["MessageController_setAlias"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/search-messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Search a conversation by substring (returns lightweight match ids for kernel jump) */
+        post: operations["MessageController_searchMessages"];
         delete?: never;
         options?: never;
         head?: never;
@@ -203,6 +288,24 @@ export interface paths {
         /** 吊销单个会话（按 jti + 属当前用户） */
         post: operations["AuthController_revokeSession"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/auth/notification-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue a long-lived notification token for the background poller */
+        post: operations["AuthController_issueNotificationToken"];
+        /** Revoke the presented notification token (self-revoke on logout) */
+        delete: operations["AuthController_revokeNotificationToken"];
         options?: never;
         head?: never;
         patch?: never;
@@ -395,6 +498,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Block / unblock a user (P2P). Independent of friendship; the message path drops delivery + hides their messages. */
+        post: operations["UserController_setBlock"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/report": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** File an abuse/complaint report against a user (admin-console ingestion; no chat effect). */
+        post: operations["UserController_reportUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/query": {
         parameters: {
             query?: never;
@@ -472,7 +609,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create a group (optionally add friends as members) */
+        /** Create a group and invite the given friends (invite token per friend) */
         post: operations["GroupController_createNewGroup"];
         delete?: never;
         options?: never;
@@ -650,6 +787,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/devices/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Register/refresh an FCM push token for the logged-in user */
+        post: operations["DeviceController_register"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/devices/register/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Unregister an FCM push token (called on logout) */
+        delete: operations["DeviceController_unregister"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/vapid-key": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** VAPID public key for Web Push subscription (browser) */
+        get: operations["NotificationController_vapidKey"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/missed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Threads with unread messages + display names (background poller) */
+        post: operations["NotificationController_missed"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/notifications/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live unread-threads SSE stream (Android foreground service) */
+        get: operations["NotificationController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -762,6 +984,57 @@ export interface paths {
         put?: never;
         /** 用户列表（分页 + 搜索） */
         post: operations["AdminController_listUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/push/tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 推送设备 token 列表（分页 + 搜索）+ FCM/Web Push 配置状态 */
+        post: operations["AdminController_listPushTokens"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/push/tokens/{id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 删除（注销）一个推送设备 token */
+        post: operations["AdminController_deletePushToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/push/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 向指定设备 token 发送测试推送（FCM / Web Push） */
+        post: operations["AdminController_sendPushTest"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1004,6 +1277,11 @@ export interface components {
              * @example successful
              */
             message: string;
+            /**
+             * @description Optional i18n key. When present, i18n clients translate this and fall back to `message`.
+             * @example friend.msg.sent
+             */
+            messageKey?: string;
             /** @description Populated only by paginated endpoints (e.g. query-messages): whether an earlier page exists. Undefined for non-paginated endpoints. */
             hasMore: boolean | null;
         };
@@ -1146,6 +1424,71 @@ export interface components {
              * @example 9007199254740993
              */
             lastReadMessageId?: string;
+        };
+        SetMutedDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description true = mute (suppress notifications), false = unmute
+             * @example true
+             */
+            muted: boolean;
+        };
+        SetPinnedDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description true = pin to top, false = unpin
+             * @example true
+             */
+            pinned: boolean;
+        };
+        ClearHistoryDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+        };
+        SetAliasDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Alias/remark (≤64 chars). Empty/omitted clears it.
+             * @example Alice (work)
+             */
+            alias?: string;
+        };
+        SearchMessagesDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Search keyword (substring, case-insensitive)
+             * @example hello
+             */
+            keyword: string;
+            /**
+             * @description Number of match ids to take (1-50)
+             * @example 20
+             */
+            take: number;
+            /**
+             * @description Cursor (BigInt→string): return matches with id < lastId (descending). Omit for the first page.
+             * @example 9007199254740993
+             */
+            lastId?: string;
         };
         LoginDto: {
             /**
@@ -1362,6 +1705,36 @@ export interface components {
              * @example Alice
              */
             lastMessageSenderName: string | null;
+            /**
+             * @description Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).
+             * @example false
+             */
+            muted: boolean;
+            /**
+             * @description Whether the caller has pinned this conversation to the top of their list.
+             * @example false
+             */
+            pinned: boolean;
+            /**
+             * @description Most-recently-pinned timestamp (ms). Drives pinned-tier ordering (desc). Null when not pinned.
+             * @example 1700000000000
+             */
+            pinnedAt: number | null;
+            /**
+             * @description Per-user "clear chat history" watermark (ms). query-messages hides rows older than this for THIS user only; the peer copy is untouched. Null when history has not been cleared.
+             * @example 1700000000000
+             */
+            clearedAt: number | null;
+            /**
+             * @description Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.
+             * @example false
+             */
+            blocked?: boolean;
+            /**
+             * @description Per-user alias/remark (备注). Overrides peer.uniqName (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).
+             * @example Alice (work)
+             */
+            alias?: string | null;
             /** @description Peer user (P2P conversations only) */
             peerUser: components["schemas"]["UserResponseDto"];
             /** @description Group (GROUP conversations only) */
@@ -1406,6 +1779,30 @@ export interface components {
              */
             skip?: number;
         };
+        BlockDto: {
+            /**
+             * @description User id to block / unblock
+             * @example 1
+             */
+            userId: number;
+            /**
+             * @description true = block, false = unblock
+             * @example true
+             */
+            block: boolean;
+        };
+        ReportDto: {
+            /**
+             * @description Reported user id
+             * @example 1
+             */
+            userId: number;
+            /**
+             * @description Report reason (≤255 chars)
+             * @example spam
+             */
+            reason: string;
+        };
         QueryUsersDto: {
             /**
              * @description List of user ids (≤100 per query)
@@ -1443,6 +1840,12 @@ export interface components {
              */
             password: string;
         };
+        SkippedInviteDto: {
+            /** @example 7 */
+            userId: number;
+            /** @example not a friend or no conversation */
+            reason: string;
+        };
         CreateGroupResponseDto: {
             /**
              * @description Group message thread id
@@ -1454,6 +1857,14 @@ export interface components {
              * @example 12
              */
             groupId: number;
+            /**
+             * @example [
+             *       3,
+             *       7
+             *     ]
+             */
+            invited: number[];
+            skipped: components["schemas"]["SkippedInviteDto"][];
         };
         CreateGroupDto: {
             /**
@@ -1467,13 +1878,13 @@ export interface components {
              */
             avatar?: string;
             /**
-             * @description Friend user ids to add as members at creation (must be friends)
+             * @description Friend user ids to invite at creation (each must be a friend with a P2P thread)
              * @example [
              *       3,
              *       7
              *     ]
              */
-            memberIds?: number[];
+            inviteUserIds?: number[];
         };
         InviteGroupDto: {
             /**
@@ -1597,6 +2008,24 @@ export interface components {
              */
             avatar?: string;
         };
+        RegisterDeviceDto: {
+            /**
+             * @description ANDROID/IOS: the FCM registration token. WEB: the Web Push subscription endpoint URL. Unique per device+install; the server upserts on this field so an account switch re-owns the row.
+             * @example dGhpcyBpcyBhIGZjbSB0b2tlbi4u
+             */
+            token: string;
+            /**
+             * @description Delivery platform (determines the server-side transport).
+             * @enum {string}
+             */
+            platform: "ANDROID" | "WEB" | "IOS";
+            /** @description WEB only: the Web Push subscription's p256dh key (base64url). Required for WEB so the server can encrypt the payload. */
+            p256dh?: string;
+            /** @description WEB only: the Web Push subscription's auth key (base64url). Required for WEB. */
+            auth?: string;
+            /** @description Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps. */
+            deviceId?: string;
+        };
         AdminLoginDto: {
             /**
              * @description Admin username
@@ -1632,6 +2061,40 @@ export interface components {
              * @example alice
              */
             search?: string;
+        };
+        AdminListPushTokensDto: {
+            /**
+             * @description Records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search uniqName/token/deviceId (optional)
+             * @example alice
+             */
+            search?: string;
+        };
+        AdminPushTestDto: {
+            /**
+             * @description PushToken id
+             * @example 42
+             */
+            id: number;
+            /**
+             * @description Notification title
+             * @example Test
+             */
+            title: string;
+            /**
+             * @description Notification body (optional)
+             * @example sent from admin console
+             */
+            body?: string;
         };
         AdminResetPasswordDto: {
             /**
@@ -1768,6 +2231,111 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["MarkReadDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setMuted: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetMutedDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setPinned: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetPinnedDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_clearHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClearHistoryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_setAlias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetAliasDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_searchMessages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SearchMessagesDto"];
             };
         };
         responses: {
@@ -1936,6 +2504,42 @@ export interface operations {
                 "application/json": components["schemas"]["RevokeSessionDto"];
             };
         };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_issueNotificationToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuthController_revokeNotificationToken: {
+        parameters: {
+            query?: never;
+            header: {
+                authorization: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -2177,6 +2781,48 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["UserIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_setBlock: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BlockDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_reportUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ReportDto"];
             };
         };
         responses: {
@@ -2519,6 +3165,97 @@ export interface operations {
             };
         };
     };
+    DeviceController_register: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterDeviceDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DeviceController_unregister: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    NotificationController_vapidKey: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    NotificationController_missed: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    NotificationController_stream: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     EventsController_stream: {
         parameters: {
             query?: never;
@@ -2647,6 +3384,67 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AdminListUsersDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_listPushTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListPushTokensDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_deletePushToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_sendPushTest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminPushTestDto"];
             };
         };
         responses: {

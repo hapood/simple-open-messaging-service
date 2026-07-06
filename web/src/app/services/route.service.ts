@@ -7,17 +7,20 @@ import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { SessionsComponent } from '../components/sessions/sessions.component';
+import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
+import { AppIconType } from '../components/icon/model';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
 /**
- * Transient editor dialogs only. The navigation-bearing views (chat thread, peer profile, group info)
- * are router routes now (see app.routes.ts) — no longer managed here. `DlgRef` + `closeDialogAndAbove`
- * remain for these editors.
+ * Transient dialogs only. The navigation-bearing views (chat thread, peer profile, group info) are
+ * router routes now (see app.routes.ts) — no longer managed here. `DlgRef` + `closeDialogAndAbove`
+ * remain for these dialogs. CONFIRM is the generic destructive/confirming-action modal (not an editor),
+ * reused by any caller that needs an app-level "are you sure?".
  */
-export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR }
+export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR, CONFIRM }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
@@ -26,6 +29,7 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
   [PopupType.SESSIONS]: SessionsComponent,
   [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
+  [PopupType.CONFIRM]: ConfirmDialogComponent,
 }
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -36,6 +40,16 @@ export interface PopupInput {
   [PopupType.EDIT_PROFILE]: undefined
   [PopupType.SESSIONS]: undefined
   [PopupType.AVATAR_EDITOR]: { file: File },
+  /** Generic confirm dialog. `messageKey` is required; the rest are optional presentation knobs. */
+  [PopupType.CONFIRM]: {
+    titleKey?: string
+    messageKey: string
+    messageParams?: Record<string, unknown>
+    confirmKey?: string
+    cancelKey?: string
+    danger?: boolean
+    icon?: AppIconType
+  },
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -47,6 +61,8 @@ export interface PopupResult {
   [PopupType.SESSIONS]: undefined
   // cropped File on Save; undefined on Cancel/back.
   [PopupType.AVATAR_EDITOR]: { file: File } | undefined,
+  // true on confirm; undefined on cancel / system-back (treated identically by the caller).
+  [PopupType.CONFIRM]: boolean | undefined,
 }
 
 export interface DlgInfo {

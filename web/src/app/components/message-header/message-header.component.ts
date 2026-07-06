@@ -1,49 +1,342 @@
-import { Component, computed, inject, input } from '@angular/core';
+import { Component, computed, inject, input, output, signal } from '@angular/core';
 import { Router } from '@angular/router';
-import { IconComponent, AppIconType } from "../icon/icon.component";
+import { OverlayModule } from '@angular/cdk/overlay';
+import { TranslocoModule } from '@jsverse/transloco';
+import { IconComponent, AppIconType } from '../icon/icon.component';
+import { ChatActionMenuComponent, ChatMenuEntry } from '../chat-action-menu/chat-action-menu.component';
 import { ConversationItem } from '../../services/model';
 import { LayoutService } from '../../services/layout.service';
+import { MsgService } from '../../services/message.service';
+import { UserService } from '../../services/user.service';
+import { GroupService } from '../../services/group.service';
+import { ConversationListService } from '../../services/conversation-list.service';
+import { RouteService, PopupType } from '../../services/route.service';
 
+/**
+ * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
+ * the top-right MORE button, which opens a {@link ChatActionMenuComponent} anchored CDK overlay with
+ * the full per-thread action set (view info, search, mute, pin, mark-read, clear; P2P: block,
+ * report, delete; GROUP: leave). System settings is NOT here — it lives in the global nav
+ * (icon-rail / nav-drawer), not a per-thread context menu.
+ *
+ * Destructive actions use a two-tap inline confirm driven by swapping the menu's entry list (no separate
+ * confirm dialog) — EXCEPT clear history, whose irreversibility warrants an unmissable app-level modal
+ * ({@link PopupType.CONFIRM}) with a danger-styled warning. Mute / pin apply optimistically to the
+ * conversation list (via applyThreadMeta) and the server's THREAD_META frame re-confirms idempotently.
+ * Actions that affect the kernel (clear history → reset, block → banner) or the shell (delete / leave
+ * → navigate away) are delegated to the parent via outputs.
+ */
 @Component({
-    selector: 'app-message-header',
-    imports: [IconComponent],
-    templateUrl: './message-header.component.html',
-    styleUrl: './message-header.component.scss'
+  selector: 'app-message-header',
+  imports: [IconComponent, ChatActionMenuComponent, OverlayModule, TranslocoModule],
+  templateUrl: './message-header.component.html',
+  styleUrl: './message-header.component.scss',
 })
 export class MessageHeaderComponent {
-  readonly AppIconType = AppIconType
-  readonly userMsgTrd = input<ConversationItem>()
-  readonly title = computed(() => {
-    const userMsgTrd = this.userMsgTrd()
-    if (userMsgTrd !== undefined) {
-      if (userMsgTrd.type === 'P2P') {
-        return userMsgTrd.peerUser.uniqName
-      } else if (userMsgTrd.type === 'GROUP') {
-        return userMsgTrd.group.name
-      }
-    }
-    return ''
-  })
-  // desktop renders the chat inline (no overlay to leave), so the back arrow is mobile-only.
-  protected readonly isDesktop = inject(LayoutService).isDesktop
-  private readonly router = inject(Router)
+  readonly AppIconType = AppIconType;
+  readonly userMsgTrd = input<ConversationItem>();
 
-  /** Mobile: the chat is a routed overlay — back returns to the conversation list. */
-  goBack() {
-    this.router.navigate(['/'])
+  /** Emitted when the user opens in-chat search (parent slides the search bar in). */
+  readonly openSearch = output<void>();
+  /** Emitted after clear-history succeeds (parent resets the kernel against the now-empty view). */
+  readonly historyCleared = output<void>();
+
+  private readonly router = inject(Router);
+  private readonly layout = inject(LayoutService);
+  private readonly msgService = inject(MsgService);
+  private readonly userService = inject(UserService);
+  private readonly groupService = inject(GroupService);
+  private readonly convList = inject(ConversationListService);
+  private readonly routeService = inject(RouteService);
+
+  /** desktop renders the chat inline (no overlay to leave), so the back arrow is mobile-only. */
+  protected readonly isDesktop = this.layout.isDesktop;
+
+  readonly title = computed(() => {
+    const trd = this.userMsgTrd();
+    if (!trd) return '';
+    // A per-user alias (备注) overrides the real name in the caller's header.
+    if (trd.alias) return trd.alias;
+    return trd.type === 'P2P' ? trd.peerUser.uniqName : trd.group.name;
+  });
+
+  /** Whether the action menu overlay is open. */
+  readonly menuOpen = signal(false);
+  /** The action awaiting a two-tap confirm (null = normal menu list). */
+  readonly confirmKey = signal<string | null>(null);
+
+  /** The menu entry list — the normal per-thread set, or the inline confirm pair when a destructive
+   *  action is staged. Computed so swapping confirmKey re-renders the overlay contents in place. */
+  readonly entries = computed<ChatMenuEntry[]>(() => {
+    const pending = this.confirmKey();
+    if (pending) return this.confirmEntries(pending);
+    return this.normalEntries();
+  });
+
+  private normalEntries(): ChatMenuEntry[] {
+    const trd = this.userMsgTrd();
+    if (!trd) return [];
+    const isP2P = trd.type === 'P2P';
+    const list: ChatMenuEntry[] = [
+      { kind: 'action', key: 'viewInfo', labelKey: 'chat.menuViewInfo', icon: AppIconType.EYE },
+      { kind: 'action', key: 'search', labelKey: 'chat.menuSearch', icon: AppIconType.SEARCH },
+      { kind: 'divider' },
+      { kind: 'action', key: 'markRead', labelKey: 'chat.menuMarkRead' },
+      {
+        kind: 'action',
+        key: 'mute',
+        labelKey: trd.muted ? 'chat.menuUnmute' : 'chat.menuMute',
+        icon: AppIconType.MUTE,
+      },
+      {
+        kind: 'action',
+        key: 'pin',
+        labelKey: trd.pinned ? 'chat.menuUnpin' : 'chat.menuPin',
+        icon: AppIconType.PIN,
+      },
+      { kind: 'divider' },
+      {
+        kind: 'action',
+        key: 'clearHistory',
+        labelKey: 'chat.menuClearHistory',
+        icon: AppIconType.TRASH,
+        danger: true,
+      },
+      { kind: 'divider' },
+    ];
+    if (isP2P) {
+      list.push(
+        {
+          kind: 'action',
+          key: 'block',
+          labelKey: trd.blocked ? 'chat.menuUnblock' : 'chat.menuBlock',
+          icon: AppIconType.BLOCK,
+          danger: !trd.blocked,
+        },
+        { kind: 'action', key: 'report', labelKey: 'chat.menuReport', icon: AppIconType.REPORT, danger: true },
+        {
+          kind: 'action',
+          key: 'deleteChat',
+          labelKey: 'chat.menuDeleteChat',
+          icon: AppIconType.TRASH,
+          danger: true,
+        },
+      );
+    } else {
+      list.push({
+        kind: 'action',
+        key: 'leaveGroup',
+        labelKey: 'chat.menuLeaveGroup',
+        icon: AppIconType.CLOSE,
+        danger: true,
+      });
+    }
+    return list;
+  }
+
+  /** The inline confirm pair for a staged destructive action. */
+  private confirmEntries(pending: string): ChatMenuEntry[] {
+    const confirmLabel: Record<string, string> = {
+      block: 'chat.menuBlockConfirm',
+      deleteChat: 'chat.menuDeleteChatConfirm',
+      leaveGroup: 'chat.menuLeaveGroupConfirm',
+      report: 'chat.menuReport',
+    };
+    return [
+      { kind: 'action', key: '__confirm__', labelKey: confirmLabel[pending] ?? '', danger: true },
+      { kind: 'divider' },
+      { kind: 'action', key: '__back__', labelKey: 'chat.menuCancel' },
+    ];
+  }
+
+  toggleMenu(): void {
+    this.confirmKey.set(null);
+    this.menuOpen.set(!this.menuOpen());
+  }
+
+  closeMenu(): void {
+    this.menuOpen.set(false);
+    this.confirmKey.set(null);
+  }
+
+  /** Route a menu selection: confirm-actions stage the two-tap, otherwise dispatch + close. */
+  onSelect(key: string): void {
+    if (key === '__back__') {
+      this.confirmKey.set(null);
+      return;
+    }
+    if (key === '__confirm__') {
+      const action = this.confirmKey();
+      this.confirmKey.set(null);
+      this.menuOpen.set(false);
+      if (action) void this.runAction(action);
+      return;
+    }
+    // Destructive actions stage the inline two-tap confirm first. (clearHistory is excluded — it pops
+    // the app-level modal instead, via runAction.)
+    if (key === 'block' || key === 'deleteChat' || key === 'leaveGroup' || key === 'report') {
+      this.confirmKey.set(key);
+      return;
+    }
+    // Single-tap actions execute immediately and close.
+    this.menuOpen.set(false);
+    void this.runAction(key);
+  }
+
+  private async runAction(key: string): Promise<void> {
+    const trd = this.userMsgTrd();
+    if (!trd || trd.threadId === undefined) return;
+    const threadId = trd.threadId;
+    switch (key) {
+      case 'viewInfo':
+        this.showThreadInfo();
+        return;
+      case 'search':
+        this.openSearch.emit();
+        return;
+      case 'markRead':
+        // Force mark-read + clear the local unread badge even on the currently-open thread (convList.open
+        // no-ops when already open, so call the service directly). The READ_CURSOR echo syncs other tabs.
+        // Fire-and-forget: swallow a 429/network failure so it never surfaces as an uncaught
+        // HttpErrorResponse — the cursor converges via the READ_CURSOR echo on the next successful call.
+        this.userService
+          .markRead({ threadId })
+          .subscribe({ error: () => {} });
+        return;
+      case 'mute':
+        this.toggleMute(threadId, trd.muted);
+        return;
+      case 'pin':
+        this.togglePin(threadId, trd.pinned);
+        return;
+      case 'clearHistory':
+        this.confirmClearHistory(threadId);
+        return;
+      case 'block':
+        this.toggleBlock(trd, !trd.blocked);
+        return;
+      case 'report':
+        this.report(trd);
+        return;
+      case 'deleteChat':
+        this.deleteChat(trd);
+        return;
+      case 'leaveGroup':
+        this.leaveGroup(trd);
+        return;
+    }
+  }
+
+  /** Mute toggle: optimistic patch (icon flips now), server confirms via THREAD_META idempotently. */
+  private toggleMute(threadId: number, muted: boolean): void {
+    const next = !muted;
+    this.convList.applyThreadMeta(threadId, { muted: next });
+    this.msgService.setMuted({ threadId, muted: next }).subscribe({
+      error: () => this.convList.applyThreadMeta(threadId, { muted }), // revert on failure
+    });
+  }
+
+  private togglePin(threadId: number, pinned: boolean): void {
+    const next = !pinned;
+    // pinnedAt is resolved server-side; optimistically set a provisional now so the row re-sorts into
+    // the pinned tier immediately. The THREAD_META frame overwrites it with the authoritative value.
+    this.convList.applyThreadMeta(threadId, { pinned: next, pinnedAt: next ? Date.now() : null });
+    this.msgService.setPinned({ threadId, pinned: next }).subscribe({
+      error: () => this.convList.applyThreadMeta(threadId, { pinned, pinnedAt: pinned ? Date.now() : null }),
+    });
   }
 
   /**
-   * Open (or toggle) the peer-profile / group-info panel in the `aside` auxiliary outlet. The segment
-   * picked from the thread type replaces the old desktop InfoPanelService toggle and the mobile popups —
-   * one mechanism for every layout. Toggling the SAME panel closed reuses the URL state.
+   *  Clear history is irreversible (a per-user watermark: every message vanishes from this view, while the
+   *  peer retains them) — so it pops the app-level confirm dialog with a danger-styled, unmissable warning
+   *  rather than the inline two-tap the other destructive actions use. The actual clear runs only on a
+   *  `true` result; a cancel / system-back delivers undefined and the history is left untouched.
    */
-  showThreadInfo() {
-    const trd = this.userMsgTrd()
-    if (!trd || trd.threadId === undefined) return
-    const seg = trd.type === 'GROUP' ? 'group-info' : 'profile'
-    const openSeg = this.router.url.match(/\(aside:([a-z-]+)\)/)?.[1]
-    const outlets = openSeg === seg ? { aside: null } : { aside: seg }
-    this.router.navigate(['chat', trd.threadId, { outlets }])
+  private confirmClearHistory(threadId: number): void {
+    this.routeService.popupDlg(
+      PopupType.CONFIRM,
+      {
+        titleKey: 'chat.clearConfirmTitle',
+        messageKey: 'chat.clearConfirmBody',
+        confirmKey: 'chat.clearConfirmAction',
+        cancelKey: 'common.cancel',
+        danger: true,
+        icon: AppIconType.REPORT,
+      },
+      (ok) => {
+        if (ok) this.clearHistory(threadId);
+      },
+    );
+  }
+
+  private clearHistory(threadId: number): void {
+    this.msgService.clearHistory({ threadId }).subscribe((res) => {
+      if (res.code !== 0) return;
+      this.historyCleared.emit();
+    });
+  }
+
+  /** Block / unblock (P2P). The backend drops delivery + query-messages hides the blocked creator. The
+   *  banner + input swap are derived from the conv item's `blocked` field, so patching it here flips them. */
+  private toggleBlock(trd: ConversationItem, block: boolean): void {
+    const peerId = trd.peerUser?.id;
+    if (peerId === undefined) return;
+    this.userService.setBlock({ userId: peerId, block }).subscribe((res) => {
+      if (res.code !== 0) return;
+      this.convList.applyThreadMeta(trd.threadId, { blocked: block });
+    });
+  }
+
+  /** File a generic abuse report (admin-console ingestion). */
+  private report(trd: ConversationItem): void {
+    const peerId = trd.peerUser?.id;
+    if (peerId === undefined) return;
+    this.userService.reportUser({ userId: peerId, reason: 'Reported via chat menu' }).subscribe();
+  }
+
+  /** Delete-friend (P2P): the server soft-leaves both participants; drop the thread and go home. */
+  private deleteChat(trd: ConversationItem): void {
+    const peerId = trd.peerUser?.id;
+    if (peerId === undefined) return;
+    this.userService.deleteFriend({ userId: peerId }).subscribe((res) => {
+      if (res.code !== 0) return;
+      this.convList.removeThread(trd.threadId);
+      void this.router.navigate(['/']);
+    });
+  }
+
+  /** Leave group: reload the list (the row drops) and go home. */
+  private leaveGroup(trd: ConversationItem): void {
+    const groupId = trd.group?.id;
+    if (groupId === undefined) return;
+    this.groupService.leaveGroup({ groupId }).subscribe(() => {
+      this.convList.load();
+      void this.router.navigate(['/']);
+    });
+  }
+
+  /** Mobile: the chat is a routed overlay — back returns to the conversation list. */
+  goBack(): void {
+    this.router.navigate(['/']);
+  }
+
+  /**
+   * Open (or toggle) the peer-profile / group-info panel in the `aside` auxiliary outlet. Toggling the
+   * SAME panel closed reuses the URL state.
+   *
+   * Navigation uses the OUTLET-COMMAND form `[{ outlets: { aside: [seg] } }]` (no primary path) so the
+   * router only re-targets the named outlet — the primary stays on the current `chat/:threadId`. Bundling
+   * the outlet spec inside a primary command array (`['chat', tid, { outlets: { aside: seg } }]`) makes the
+   * router look `seg` up as a child of `chat/:threadId` (which has none) → falls through to `**` → 404.
+   * The panels resolve their thread from `ConversationListService.openThreadId`, so the primary path is
+   * not needed here. Mirrors the working settings-open nav in icon-rail / nav-drawer.
+   */
+  showThreadInfo(): void {
+    const trd = this.userMsgTrd();
+    if (!trd) return;
+    const seg = trd.type === 'GROUP' ? 'group-info' : 'profile';
+    const openSeg = this.router.url.match(/\(aside:([a-z-]+)\)/)?.[1];
+    const outlets = openSeg === seg ? { aside: null } : { aside: [seg] };
+    void this.router.navigate([{ outlets }]);
   }
 }

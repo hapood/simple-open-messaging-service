@@ -35,6 +35,10 @@ model User {
   refreshTokens      RefreshToken[]
   pushTokens         PushToken[]
   notificationTokens NotificationToken[]
+  userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
+  userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
+  userReportsFiled   UserReport[]        @relation("UserReportsFiled") // reports THIS user has filed
+  userReportsAgainst UserReport[]        @relation("UserReportsAgainst") // reports filed against THIS user
 
   @@unique([uniqName, domain])
 }
@@ -97,13 +101,13 @@ model PushToken {
 /// on /notifications/*. Scoped by NotificationTokenGuard to ONLY the missed-thread endpoint, so a
 /// leak grants no other app access. Revoked on logout.
 model NotificationToken {
-  id         Int       @id @default(autoincrement())
-  userId     Int
-  user       User      @relation(fields: [userId], references: [id])
-  tokenHash  String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
-  createdAt  DateTime  @default(now())
-  expiresAt  DateTime // 30-day TTL — the poller re-issues on next foreground login
-  revokedAt  DateTime? // soft revoke on logout
+  id        Int       @id @default(autoincrement())
+  userId    Int
+  user      User      @relation(fields: [userId], references: [id])
+  tokenHash String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
+  createdAt DateTime  @default(now())
+  expiresAt DateTime // 30-day TTL — the poller re-issues on next foreground login
+  revokedAt DateTime? // soft revoke on logout
 
   @@index([userId])
 }
@@ -150,9 +154,13 @@ model ThreadParticipant {
   threadId      Int
   thread        MessageThread @relation(fields: [threadId], references: [id])
   lastReadMsgId BigInt? // read watermark; unread = count(Message where threadId=T and id > lastReadMsgId)
-  role GroupRole? // OWNER/ADMIN/MEMBER for GROUP; null for P2P (no default — set explicitly on group create/join)
+  role          GroupRole? // OWNER/ADMIN/MEMBER for GROUP; null for P2P (no default — set explicitly on group create/join)
   joinedAt      DateTime      @default(now())
   muted         Boolean       @default(false)
+  pinned        Boolean       @default(false)
+  pinnedAt      DateTime? // most-recently-pinned-first ordering; null when not pinned
+  clearedAt     DateTime? // per-user "clear history" watermark; query-messages hides rows older than this
+  alias         String?       @db.VarChar(64) // per-user remark/nickname for this thread (P2P: peer; GROUP: group); null = use real name
   leftAt        DateTime? // soft-leave / hidden; null = active member
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
@@ -160,6 +168,7 @@ model ThreadParticipant {
   @@unique([userId, threadId])
   @@index([threadId]) // roster of a conversation
   @@index([userId]) // "my conversations"
+  @@index([userId, pinned]) // pinned-first conversation list per user
 }
 
 /// P2P relationship / friend-request state machine — exactly ONE row per unordered user pair (userAId < userBId).
@@ -182,12 +191,42 @@ model Friendship {
   @@index([userBId]) // with userAId covers "friendships involving a user"
 }
 
+/// One-way block independent of the Friendship state machine. Blocking survives an unfriend (and applies
+/// to strangers), so it is NOT modeled as a FriendshipStatus — that would conflate with the friend
+/// lifecycle and reveal/lose state on befriend again. Exactly one row per (blocker, blocked) direction;
+/// mutual block = two rows. The message path consults this to drop fan-out and filter query-messages.
+model UserBlock {
+  id        Int      @id @default(autoincrement())
+  blockerId Int
+  blockedId Int
+  blocker   User     @relation("UserBlocks", fields: [blockerId], references: [id])
+  blocked   User     @relation("UserBlockedBy", fields: [blockedId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockedId]) // "who has blocked me" lookup (message send/query filter)
+}
+
+/// Abuse/complaint report filed against a user. Passive ingestion for the admin console — no behavioral
+/// effect on chat. One row per report; the admin surface reads by reportedUserId.
+model UserReport {
+  id             Int      @id @default(autoincrement())
+  reporterId     Int
+  reportedUserId Int
+  reason         String   @db.VarChar(255)
+  reporter       User     @relation("UserReportsFiled", fields: [reporterId], references: [id])
+  reported       User     @relation("UserReportsAgainst", fields: [reportedUserId], references: [id])
+  createdAt      DateTime @default(now())
+
+  @@index([reportedUserId]) // admin queue: reports against a user
+}
+
 model MessageThread {
-  id                Int                 @id @default(autoincrement())
-  type              MessageThreadType
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
-  isDeleted         Boolean             @default(false)
+  id        Int               @id @default(autoincrement())
+  type      MessageThreadType
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+  isDeleted Boolean           @default(false)
 
   // Denormalized "last message" read-cache for the conversation list (the hottest read path).
   // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
@@ -195,7 +234,7 @@ model MessageThread {
   // its FKs. Nullable: empty threads (no messages yet) stay NULL. lastMessageId is the BigInt cursor
   // (not the unread watermark, which is per-participant on ThreadParticipant.lastReadMsgId).
   lastMessageId       BigInt?
-  lastMessagePreview  String? @db.VarChar(255)
+  lastMessagePreview  String?   @db.VarChar(255)
   lastMessageSenderId Int?
   lastMessageAt       DateTime?
 
@@ -215,20 +254,20 @@ enum ContentType {
 }
 
 model Message {
-  id          BigInt        @id @default(autoincrement())
-  contentType ContentType
-  content     String
-  threadId    Int
-  creator     Int
-  threadItem  MessageThread @relation(fields: [threadId], references: [id])
-  creatorItem User          @relation("AuthoredMessages", fields: [creator], references: [id])
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
-  isDeleted   Boolean       @default(false)
+  id              BigInt        @id @default(autoincrement())
+  contentType     ContentType
+  content         String
+  threadId        Int
+  creator         Int
+  threadItem      MessageThread @relation(fields: [threadId], references: [id])
+  creatorItem     User          @relation("AuthoredMessages", fields: [creator], references: [id])
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  isDeleted       Boolean       @default(false)
   // Client-generated UUID for send idempotency: a retried send with the same value returns the original
   // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
-  clientMessageId String?   @unique @db.VarChar(36)
+  clientMessageId String?       @unique @db.VarChar(36)
 
   @@index([threadId, id]) // history pagination — the hot path
   @@index([threadId, createdAt])

@@ -15,6 +15,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { apiPrefix } from '../../services/constants';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
@@ -31,7 +32,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
  */
 @Component({
   selector: 'app-group-info',
-  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent, TranslocoPipe],
+  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent, TranslocoPipe, ThreadAliasEditorComponent],
   templateUrl: './group-info.component.html',
   styleUrl: './group-info.component.scss',
 })
@@ -49,6 +50,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   private readonly http = inject(HttpClient)
   private readonly transloco = inject(TranslocoService)
 
+  /** The open thread id (template-bound for the alias editor). */
+  readonly threadId = this.convList.openThreadId
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly userMsgTrd = computed<ConversationItem | undefined>(() => {
     const id = this.convList.openThreadId()
@@ -323,9 +326,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     })
   }
 
-  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. */
+  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. Uses the outlet-only
+   *  command form — the primary-in-array form is misparsed (object becomes matrix params, aside never
+   *  clears). Same fix as settings.component's goBack. */
   goBack() {
-    const tid = this.convList.openThreadId()
-    if (tid !== undefined) this.router.navigate(['chat', tid, { outlets: { aside: null } }])
+    void this.router.navigate([{ outlets: { aside: null } }])
   }
 }

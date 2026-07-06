@@ -1,11 +1,25 @@
 <div class="msg-header">
-    @if (!isDesktop()) {
-    <button class="icon-btn" (click)="goBack()"><app-icon [type]="AppIconType.BACK"
-            [style]="{width:'32px',height:'32px'}"></app-icon></button>
-    }
-    <ng-content>
-        <div (click)="showThreadInfo()">{{title()}}</div>
-    </ng-content>
-    <button class="icon-btn"><app-icon [type]="AppIconType.MORE"
-            [style]="{width:'32px',height:'32px'}"></app-icon></button>
+  @if (!isDesktop()) {
+    <button class="icon-btn" (click)="goBack()" aria-label="Back">
+      <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+    </button>
+  }
+  <div class="msg-title" (click)="showThreadInfo()" [title]="title()">{{ title() }}</div>
+  <button
+    class="icon-btn"
+    cdkOverlayOrigin
+    #moreTrigger="cdkOverlayOrigin"
+    (click)="toggleMenu()"
+    [class.active]="menuOpen()"
+    aria-label="More options"
+  >
+    <app-icon [type]="AppIconType.MORE" [style]="{ width: '32px', height: '32px' }"></app-icon>
+  </button>
+  <app-chat-action-menu
+    [entries]="entries()"
+    [origin]="moreTrigger"
+    [open]="menuOpen()"
+    (select)="onSelect($event)"
+    (closed)="closeMenu()"
+  />
 </div>

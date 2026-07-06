@@ -11,11 +11,31 @@
   border-bottom: 1px solid var(--app-border);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 4px;
   padding: 0 10px;
 }
 
-.icon-btn{
-  @include styless-button;
+// Title takes the middle space and truncates so a long peer/group name never pushes the MORE
+// button off-screen. min-width:0 is the flexbox truncation enabler.
+.msg-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  line-height: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+  &:hover { opacity: 0.8; }
+}
 
+.icon-btn {
+  @include styless-button;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--app-radius-sm, 8px);
+  &:hover, &.active { background: var(--app-hover); }
 }

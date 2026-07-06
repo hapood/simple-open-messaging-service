@@ -166,6 +166,19 @@ export class UserService {
     return this.http.post<StandardResponse>(`${apiPrefix}/thread/mark-read`, params)
   }
 
+  /**
+   * Block / unblock a user (P2P). Independent of friendship — the message path drops delivery and the
+   * blocker's query-messages hides the blocked creator's messages. `block: true` blocks, `false` unblocks.
+   */
+  setBlock(params: { userId: number, block: boolean }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/user/block`, params)
+  }
+
+  /** File an abuse/complaint report against a user (admin-console ingestion; no chat effect). */
+  reportUser(params: { userId: number, reason: string }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/user/report`, params)
+  }
+
 }
 
 /** Avatar edge sizes (aligned with the backend UploadService.AVATAR_SIZES). */

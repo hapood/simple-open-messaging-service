@@ -53,24 +53,101 @@
   .resizer {
     flex: 0 0 4px;
     cursor: col-resize;
-    background: transparent;
-    &:hover { background: var(--app-border); }
+    position: relative;
+    /* Persistent divider fill: without it the transparent strip renders as --app-bg — which in light
+       theme EQUALS --app-bg-muted (the input-bar fill #f0f2f5) and in dark theme equals the page bg, so
+       the bar was indistinguishable from both. --app-border is the semantic divider token, a shade off
+       the bg in either theme; hover steps to --app-border-strong. */
+    background: var(--app-border);
+    transition: background-color .15s ease;
+    &:hover { background: var(--app-border-strong); }
+
+    /* Drag-handle grip: three centered dots over the divider. Decorative only — the resizer element
+       itself is the mousedown hit target (see startResize in the .ts). The ::after is position:absolute,
+       so its height never enters the shell's measured layout height (integer-pixel rule safe). Dot color
+       flows through `color` + currentColor so the hover swap is one token. */
+    &::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      width: 4px;
+      height: 32px;
+      transform: translate(-50%, -50%);
+      color: var(--app-text-muted);
+      /* 4px dots (radius 2) fill the 4px ::after exactly — no overhang into the list/chat panes. Dot
+         centers are 10px apart so the three read as a distinct grip. Light uses --app-text-muted (one
+         step darker than faint) so the dots read against the --app-border bar; the dark override at the
+         foot of this file keeps dark at --app-text-faint. `currentColor 90%` keeps each disc solid to
+         90% of its radius and AA-fades only the last 10%. */
+      background-image:
+        radial-gradient(circle 2px at 50% 6px, currentColor 90%, transparent),
+        radial-gradient(circle 2px at 50% 16px, currentColor 90%, transparent),
+        radial-gradient(circle 2px at 50% 26px, currentColor 90%, transparent);
+      background-repeat: no-repeat;
+      opacity: .6;
+      transition: opacity .15s ease, color .15s ease;
+    }
+    &:hover::after {
+      color: var(--app-brand);
+      opacity: 1;
+    }
   }
   .chat-slot { flex: 1 1 auto; }
+  /* Desktop aside = an OVERLAY drawer floating over the chat from the right (NOT an inline flex column —
+     it no longer squeezes the chat). Pairs with the global .drawer-mask behind it: click the mask to
+     close. The Angular [@overlaySlide] is `static` on desktop (transform:none, visibility:visible inline),
+     which does NOT touch `display`, so display:none here fully hides the slot when no aside route is open. */
   .aside-slot {
-    flex: 0 0 0;        /* collapsed when no aside route */
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    max-width: 60%;
+    z-index: 25;
+    display: none;
     overflow: hidden;
     background: var(--app-surface);
+    box-shadow: -8px 0 28px rgba(0, 0, 0, 0.18);
+    border-left: 1px solid var(--app-border);
   }
 }
 .mode-desktop.aside-open .aside-slot {
-  flex: 0 0 340px;
-  border-left: 1px solid var(--app-border);
+  display: flex;
 }
 
-// ── tablet: nav-drawer(list column) | chat | aside(overlay) ──
+/* Global scrim behind the aside drawer (click → close). Per-mode z-index keeps it ABOVE the inline shell
+   content (rail/list/chat) but BELOW the aside-slot, which differs by layout:
+     desktop aside-slot z25 → mask z24
+     tablet  aside-slot z20 → mask z19
+   Mobile's aside is a full-screen slide-over, so no mask is rendered there (template gate). */
+.drawer-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  animation: drawer-mask-fade 180ms ease;
+}
+.mode-desktop .drawer-mask { z-index: 24; }
+.mode-tablet .drawer-mask { z-index: 19; }
+@keyframes drawer-mask-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+// ── tablet: list column | chat | aside(overlay) ──
 .mode-tablet {
-  .drawer { flex: 0 0 38%; min-width: 300px; max-width: 420px; }
+  .drawer-body {
+    flex: 0 0 38%;
+    min-width: 300px;
+    max-width: 420px;
+    /* Tablet has no .resizer, so the shell paints the 1px divider on the list column's right edge.
+       The list pane used to carry this border itself, but that doubled the desktop resizer strip
+       (1px + 4px) and pushed the grip dots 0.5px off the composite center; dividers are now
+       shell-owned. (Was on .drawer when the list lived inside app-nav-drawer; the sizing moved here
+       once the nav-drawer became a shell-level overlay sibling.) */
+    border-right: 1px solid var(--app-border);
+  }
   .chat-slot { flex: 1 1 auto; }
   .aside-slot {
     position: absolute;
@@ -84,9 +161,9 @@
 }
 .mode-tablet.aside-open .aside-slot { display: flex; }
 
-// ── mobile: nav-drawer(list, full screen) | chat(full-screen overlay) | aside(overlay) ──
+// ── mobile: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
 .mode-mobile {
-  .drawer { flex: 1 1 auto; min-width: 0; }
+  .drawer-body { flex: 1 1 auto; min-width: 0; }
   .chat-slot {
     position: fixed;
     inset: 0;
@@ -107,7 +184,8 @@
   }
 }
 
-// nav-drawer projected body (tablet/mobile): header + list stack and fill.
+// thread-list column (tablet/mobile): header + list stack and fill. Direct child of .shell now that
+// the nav-drawer is a shell-level overlay rather than the column wrapper.
 .drawer-body {
   display: flex;
   flex-direction: column;
@@ -117,3 +195,39 @@
 }
 .drawer-body .header { flex: 0 0 auto; }
 .drawer-body .list { flex: 1 1 auto; min-height: 0; }
+
+// Dark theme: keep the grip dots at --app-text-faint. Light uses the darker --app-text-muted (set in the
+// .resizer ::after above) so the dots read against the --app-border bar; in dark, faint is already
+// legible on the bar, so no need to darken (matches the auth-brand dark-override pattern).
+:host-context([data-theme="dark"]) {
+  .mode-desktop .resizer::after { color: var(--app-text-faint); }
+}
+
+// ── global-search overlay ──
+// Desktop covers the conversation-list column (a dual-pane search alongside the open chat); tablet/mobile
+// is a full-screen takeover above the chat/aside. z-index: desktop stays below the aside drawer (25) and
+// its mask (24) — it never overlaps them, only the list column; tablet/mobile rise above the chat (30)
+// and aside (40) to own the screen. The width binding on the element targets desktop only (null elsewhere).
+.search-overlay {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 50;
+  background: var(--app-surface);
+  box-shadow: 0 0 24px rgba(0, 0, 0, 0.14);
+  overflow: hidden;
+  animation: search-overlay-in 180ms ease;
+}
+.mode-desktop .search-overlay {
+  left: 68px;        // icon-rail width
+  z-index: 10;       // covers the list column only; never overlaps chat/aside/mask
+}
+.mode-tablet .search-overlay,
+.mode-mobile .search-overlay {
+  left: 0;
+  right: 0;          // full-screen takeover on touch layouts
+}
+@keyframes search-overlay-in {
+  from { opacity: 0; transform: translateX(8px); }
+  to { opacity: 1; transform: translateX(0); }
+}

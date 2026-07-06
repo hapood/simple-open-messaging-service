@@ -88,6 +88,14 @@ export class UnreadAttentionService {
    *  (same shape as FCM/Web Push: { threadId, messageId, contentType, ts, preview }). */
   private notify(data: unknown): void {
     const d = (data ?? {}) as { preview?: string; contentType?: string; threadId?: string };
+    // Mute: a muted conversation must not trigger a heads-up notification. The server already
+    // suppresses push + the away-notification snapshot; this guards the browser/Tauri system
+    // notification for the in-tab case. The bubble still renders via SSE (mute is notification-only).
+    if (d.threadId !== undefined) {
+      const tid = Number(d.threadId);
+      const item = this.convList.items().find((t) => t.threadId === tid);
+      if (item?.muted) return;
+    }
     const body = d.preview ?? this.labelFor(d.contentType);
     // Tauri DESKTOP shell first (the user's directive: PC must show native system popups) — gated to
     // !isAndroid so mobile never takes this branch.

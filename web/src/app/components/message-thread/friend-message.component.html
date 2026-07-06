@@ -1,6 +1,18 @@
 <div>
   <div class="msg-container" appKbdOffset>
-    <app-message-header [userMsgTrd]="userMsgTrd()"></app-message-header>
+    <app-message-header
+      [userMsgTrd]="userMsgTrd()"
+      (openSearch)="searchOpen.set(true)"
+      (historyCleared)="onHistoryCleared()"
+    ></app-message-header>
+
+    @if (searchOpen()) {
+      <app-message-search
+        [threadId]="threadId()!"
+        (jumpTo)="onSearchJump($event)"
+        (close)="searchOpen.set(false)"
+      />
+    }
 
     <div class="msg-viewport" #viewport tabindex="0">
       <div class="msg-content" #content>
@@ -82,10 +94,16 @@
 
     <app-sticky-date-overlay [label]="stickyDate()" />
 
-    <app-chat-input
-      [members]="[]"
-      [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
-      (send)="onSendIntent($event)"
-    ></app-chat-input>
+    @if (blockedPeer()) {
+      <div class="msg-blocked-banner" (click)="unblockPeer()">
+        {{ 'chat.blockedBanner' | transloco }}
+      </div>
+    } @else {
+      <app-chat-input
+        [members]="[]"
+        [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
+        (send)="onSendIntent($event)"
+      ></app-chat-input>
+    }
   </div>
 </div>

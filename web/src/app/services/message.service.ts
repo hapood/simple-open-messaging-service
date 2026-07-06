@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Message, QueryMessageLogParams, StandardResponse, Friendship } from './model'
+import { Message, QueryMessageLogParams, StandardResponse, Friendship, GlobalSearchResult } from './model'
 import { apiPrefix } from './constants';
 
 @Injectable({
@@ -52,5 +52,52 @@ export class MsgService {
   /** Resolve the P2P relationship (status + threadId) with a peer user. */
   getThreadByUserId(params: { userId: number }) {
     return this.http.post<StandardResponse<Friendship>>(`${apiPrefix}/thread/by-user-id`, params)
+  }
+
+  /** Mute / unmute a conversation (suppresses notifications, not delivery). */
+  setMuted(params: { threadId: number, muted: boolean }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-muted`, params)
+  }
+
+  /** Pin / unpin a conversation (pinned-first ordering). */
+  setPinned(params: { threadId: number, pinned: boolean }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-pinned`, params)
+  }
+
+  /** Per-user "clear chat history" — hides all messages up to now for the caller; peer copy untouched. */
+  clearHistory(params: { threadId: number }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/thread/clear-history`, params)
+  }
+
+  /** Set a per-user alias/remark (备注) for a conversation — overrides the displayed name for the caller.
+   *  An empty string clears it. */
+  setAlias(params: { threadId: number, alias?: string }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-alias`, params)
+  }
+
+  /**
+   * Substring search over a conversation's text history. Returns lightweight {id, createdAt} matches
+   * (no bodies) keyset-paginated by id desc — the client jumps the kernel to each id and renders the
+   * bubble via the normal query path on demand. `lastId` is the BigInt→string cursor for the next page.
+   */
+  searchMessages(params: { threadId: number, keyword: string, take: number, lastId?: string }) {
+    return this.http.post<StandardResponse<{ id: string, createdAt: number }[]>>(
+      `${apiPrefix}/search-messages`,
+      params,
+    )
+  }
+
+  /**
+   * Global cross-conversation search. Returns two wings — conversations/contacts matched by display
+   * name, and messages matched by PURE_TEXT body or FILE attachment name (with a server-built
+   * snippet + the hydrated thread/sender display info). `lastMsgId` is the BigInt→string cursor for
+   * the next page of message hits (id descending). The caller closes search + opens the thread on a
+   * hit (a message hit also jumps the kernel to the matched id — see SearchService).
+   */
+  globalSearch(params: { keyword: string, messageTake?: number, threadTake?: number, lastMsgId?: string }) {
+    return this.http.post<StandardResponse<GlobalSearchResult>>(
+      `${apiPrefix}/search/global`,
+      params,
+    )
   }
 }

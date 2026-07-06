@@ -34,6 +34,12 @@
       </div>
     }
 
+    <!-- Per-user alias (备注): the caller's private label for this group, separate from the real group
+         name above (which only admins can change). -->
+    @if (!editing() && threadId() !== undefined) {
+      <app-thread-alias-editor [threadId]="threadId()!" />
+    }
+
     <!-- Roster -->
     <div class="section-label">{{ 'group.members' | transloco:{ count: roster().length } }}</div>
     @if (loading()) {

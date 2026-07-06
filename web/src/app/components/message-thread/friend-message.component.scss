@@ -83,6 +83,25 @@ app-chat-input {
 // The sticky-date overlay is rendered by <app-sticky-date-overlay> (shared with the playground). Its top
 // offset reads --sd-top (set on .msg-container above = the header height).
 
+// P2P blocked banner: replaces the composer when the caller has blocked the peer. Tapping unblocks.
+// Integer height (48px) keeps the flex-column measurement whole; sits in the input's normal-flow slot.
+.msg-blocked-banner {
+  flex: 0 0 auto;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 16px;
+  background: var(--app-hover);
+  color: var(--app-text);
+  font-size: 13px;
+  line-height: 20px;
+  text-align: center;
+  cursor: pointer;
+  border-top: 1px solid var(--app-border);
+  &:hover { background: var(--app-active, var(--app-hover)); }
+}
+
 // Initial-load shimmer skeleton: now in the shared global partial _cb-skeleton.scss (imported via
 // styles.scss), identical for production and the playground. .msg-viewport is the positioning context
 // (position:relative above); the component's skeletonVisible signal delay-gates the reveal.

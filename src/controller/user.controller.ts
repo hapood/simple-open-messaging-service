@@ -46,7 +46,11 @@ import {
   QueryValidThreadDto,
   QueryPendingThreadDto,
   UpdateProfileDto,
+  BlockDto,
+  ReportDto,
 } from '../dto/user.dto.js';
+import { UserBlockService } from '../user-block/user-block.service.js';
+import { UserReportService } from '../user-report/user-report.service.js';
 
 @ApiTags('user')
 @Controller()
@@ -60,6 +64,8 @@ export class UserController {
     private readonly uploadService: UploadService,
     private readonly sseService: SseService,
     private readonly messageService: MessageService,
+    private readonly userBlockService: UserBlockService,
+    private readonly userReportService: UserReportService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -170,12 +176,19 @@ export class UserController {
       me,
       list.map((p) => p.threadId),
     );
-    // Sort recent-first (by the thread's denormalized lastMessageAt); empty threads sink to the bottom.
-    // In-memory sort of ≤take rows is trivial and avoids a new index; threadId breaks ties deterministically.
+    // Pinned tier first (pinned = true), within it most-recently-pinned first (pinnedAt desc); then the
+    // unpinned tier recent-first by lastMessageAt; empty threads sink. In-memory sort of ≤take rows is
+    // trivial; threadId breaks ties deterministically. (Pinned/pinnedAt are on the participant row.)
     list.sort((a, b) => {
-      const ta = a.thread.lastMessageAt?.getTime() ?? -Infinity;
-      const tb = b.thread.lastMessageAt?.getTime() ?? -Infinity;
-      return tb - ta || a.threadId - b.threadId;
+      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+      if (a.pinned) {
+        const ta = a.pinnedAt?.getTime() ?? -Infinity;
+        const tb = b.pinnedAt?.getTime() ?? -Infinity;
+        return tb - ta || a.threadId - b.threadId;
+      }
+      const la = a.thread.lastMessageAt?.getTime() ?? -Infinity;
+      const lb = b.thread.lastMessageAt?.getTime() ?? -Infinity;
+      return lb - la || a.threadId - b.threadId;
     });
     // Hydrate P2P peers: the other active participant on each P2P thread.
     const p2pThreadIds = list
@@ -195,6 +208,12 @@ export class UserController {
       delete u.hashPwd;
       userDict[u.id] = u;
     });
+    // Hydrate each P2P peer's blocked-by-caller flag in one batched UserBlock lookup, so the chat
+    // header menu shows Block ↔ Unblock and the banner reflects state on first load.
+    const blockedPeers = await this.userBlockService.blockedAmong(
+      me,
+      peers.map((p) => p.userId),
+    );
     // Hydrate GROUP conversations by their threadId.
     const groupThreadIds = list
       .filter((p) => p.thread.type === 'GROUP')
@@ -246,6 +265,13 @@ export class UserController {
           p.thread.lastMessageSenderId != null
             ? (senderNameById.get(p.thread.lastMessageSenderId) ?? null)
             : null,
+        // Per-user display state: mute (notification suppression), pin (top-tier ordering), and the
+        // per-user clear-history watermark (query-messages hides rows older than this for this user).
+        muted: p.muted,
+        pinned: p.pinned,
+        pinnedAt: p.pinnedAt ?? null,
+        clearedAt: p.clearedAt ?? null,
+        alias: p.alias ?? null,
       } as {
         id: number;
         threadId: number;
@@ -257,12 +283,21 @@ export class UserController {
         lastMessageAt: Date | null;
         lastMessageSenderId: number | null;
         lastMessageSenderName: string | null;
+        muted: boolean;
+        pinned: boolean;
+        pinnedAt: Date | null;
+        clearedAt: Date | null;
+        blocked?: boolean;
+        alias: string | null;
         peerUser?: unknown;
         group?: unknown;
       };
       if (p.thread.type === 'P2P') {
         const peerId = peerByThread.get(p.threadId);
-        if (peerId !== undefined) item.peerUser = userDict[peerId];
+        if (peerId !== undefined) {
+          item.peerUser = userDict[peerId];
+          item.blocked = blockedPeers.has(peerId);
+        }
       } else {
         item.group = groupByThread.get(p.threadId);
       }
@@ -522,6 +557,46 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
+  @Post('user/block')
+  @ApiOperation({
+    summary:
+      'Block / unblock a user (P2P). Independent of friendship; the message path drops delivery + hides their messages.',
+  })
+  async setBlock(@Request() req, @Body() dto: BlockDto): Promise<ApiResult> {
+    if (req.user.userId === dto.userId) {
+      return { code: BusinessCode.FRIEND_SELF, message: 'can not block self' };
+    }
+    if (dto.block) {
+      await this.userBlockService.block(req.user.userId, dto.userId);
+    } else {
+      await this.userBlockService.unblock(req.user.userId, dto.userId);
+    }
+    // No peer SSE: a block never reveals itself to the blocked user. The blocker's own other devices
+    // will refetch the thread view to show the blocked banner; no live frame is needed for correctness.
+    return {
+      code: BusinessCode.OK,
+      message: dto.block ? 'user blocked' : 'user unblocked',
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/report')
+  @ApiOperation({
+    summary: 'File an abuse/complaint report against a user (admin-console ingestion; no chat effect).',
+  })
+  async reportUser(@Request() req, @Body() dto: ReportDto): Promise<ApiResult> {
+    if (req.user.userId === dto.userId) {
+      return { code: BusinessCode.FRIEND_SELF, message: 'can not report self' };
+    }
+    await this.userReportService.report(req.user.userId, dto.userId, dto.reason);
+    return { code: BusinessCode.OK, message: 'report submitted' };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
   @Post('user/query')
   @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
   @ApiResultResponse(UserResponseDto, true)
@@ -596,6 +671,11 @@ export class UserController {
       lastMessagePreview: p.thread.lastMessagePreview ?? null,
       lastMessageAt: p.thread.lastMessageAt ?? null,
       lastMessageSenderId: p.thread.lastMessageSenderId ?? null,
+      muted: p.muted,
+      pinned: p.pinned,
+      pinnedAt: p.pinnedAt ?? null,
+      clearedAt: p.clearedAt ?? null,
+      alias: p.alias ?? null,
     } as {
       id: number;
       threadId: number;
@@ -607,6 +687,12 @@ export class UserController {
       lastMessageAt: Date | null;
       lastMessageSenderId: number | null;
       lastMessageSenderName?: string | null;
+      muted: boolean;
+      pinned: boolean;
+      pinnedAt: Date | null;
+      clearedAt: Date | null;
+      blocked?: boolean;
+      alias: string | null;
       peerUser?: unknown;
       group?: unknown;
     };
@@ -625,6 +711,7 @@ export class UserController {
           delete peerUser.hashPwd;
           item.peerUser = peerUser;
         }
+        item.blocked = await this.userBlockService.isBlocked(me, peerId);
       }
     } else {
       const [group] = await this.groupService.queryGroups({

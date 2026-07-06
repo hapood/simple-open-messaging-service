@@ -50,13 +50,6 @@
         <span>{{ themeLabel() }}</span>
       </button>
 
-      <button class="nav-item" (click)="cycleLang()"
-        [attr.aria-label]="'nav.languageAria' | transloco:{ label: langLabel() }"
-        [title]="'nav.languageAria' | transloco:{ label: langLabel() }">
-        <app-icon [type]="AppIconType.GLOBE" [style]="{ width: '24px', height: '24px' }"></app-icon>
-        <span>{{ langLabel() }}</span>
-      </button>
-
       <button class="nav-item" (click)="settings()"
         [attr.aria-label]="'nav.settings' | transloco" [title]="'nav.settings' | transloco">
         <app-icon [type]="AppIconType.SETTINGS" [style]="{ width: '24px', height: '24px' }"></app-icon>
@@ -65,8 +58,4 @@
 
     </nav>
   </mat-sidenav>
-
-  <mat-sidenav-content>
-    <ng-content></ng-content>
-  </mat-sidenav-content>
 </mat-sidenav-container>

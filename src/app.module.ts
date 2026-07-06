@@ -17,6 +17,8 @@ import { NotifyController } from './controller/notify.controller.js';
 import { ThreadParticipantModule } from './thread-participant/thread-participant.module.js';
 import { FriendshipModule } from './friendship/friendship.module.js';
 import { PushModule } from './push/push.module.js';
+import { UserBlockModule } from './user-block/user-block.module.js';
+import { UserReportModule } from './user-report/user-report.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
 import { NotificationQueryService } from './notification/notification-query.service.js';
@@ -40,6 +42,8 @@ import { NotificationQueryService } from './notification/notification-query.serv
     ThreadParticipantModule,
     FriendshipModule,
     PushModule,
+    UserBlockModule,
+    UserReportModule,
   ],
   controllers: [
     MessageController,

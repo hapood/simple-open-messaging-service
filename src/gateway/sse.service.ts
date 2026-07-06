@@ -242,6 +242,16 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'READ_CURSOR', data);
   }
 
+  /**
+   * Per-user thread metadata change (mute / pin / clear-history). Fanned to the caller's OWN connections
+   * only — these are per-user display settings, not shared state, so (like onReadCursor) this is NOT a
+   * peer broadcast. It carries whichever fields just changed so each of the user's other online
+   * tabs/devices patches its conversation-list row + re-sorts without a full reload.
+   */
+  onThreadMeta(userId: number, data: unknown) {
+    this.pushToUser(userId, 'THREAD_META', data);
+  }
+
   /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop all of
    *  the user's PRIMARY connections, and close their notification-stream connection(s) too (an FGS
    *  holding a notification stream must stop on logout). */

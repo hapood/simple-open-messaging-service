@@ -33,6 +33,7 @@
     "folders": "Folders",
     "logout": "Log out",
     "settings": "Settings",
+    "search": "Search",
     "themeAria": "Theme: {{label}}",
     "languageAria": "Language: {{label}}",
     "theme": {
@@ -45,6 +46,15 @@
     "openMenuAria": "Open menu",
     "searchAria": "Search",
     "resizerTitle": "Drag to resize; double-click to reset"
+  },
+  "globalSearch": {
+    "placeholder": "Search messages, chats and contacts",
+    "back": "Back",
+    "clear": "Clear",
+    "groupThreads": "Chats and contacts",
+    "groupMessages": "Messages",
+    "noResults": "No results",
+    "moreMessages": "More messages available — refine your search to see them"
   },
   "auth": {
     "loginTitle": "Login to SOMS",
@@ -76,7 +86,8 @@
     }
   },
   "profile": {
-    "title": "Profile",
+    "title": "Contact info",
+    "editTitle": "Edit profile",
     "name": "Name",
     "namePlaceholder": "Your name",
     "bio": "Bio",
@@ -116,6 +127,11 @@
     "noChats": "No chats",
     "deleteFolder": "Delete folder",
     "selected": "{count, plural, other {# selected}}",
+    "statusRule": "Status",
+    "status": {
+      "none": "Any",
+      "unread": "Unread only"
+    },
     "type": {
       "all": "All types",
       "direct": "Direct",
@@ -187,14 +203,12 @@
     "searchPlaceholder": "Search",
     "groupNamePlaceholder": "Group name",
     "setPhotoAria": "Set group photo",
-    "createAria": "Create group",
-    "nextAria": "Next",
-    "memberCount": "{count, plural, =1 {# member} other {# members}}"
+    "create": "Create"
   },
   "chat": {
     "emptyTagline": "Select a chat to start your conversation",
     "emptyFooter": "Your messages are protected end-to-end in transit. SOMS cannot read them.",
-    "searchPlaceholder": "Search",
+    "searchPlaceholder": "Search by chat name",
     "all": "All",
     "loading": "Loading…",
     "inputPlaceholder": "Type a message…",
@@ -203,9 +217,11 @@
     "openFileAria": "Open file",
     "retrySendAria": "Retry send",
     "fileFallback": "File",
-    "inviteTitle": "{{name}} invited you to join:",
     "invitedBy": "Invited by {{name}}",
     "validUntil": "Valid until {{date}}",
+    "groupInvitation": "Group invitation",
+    "inviteStatusValid": "Valid",
+    "inviteStatusExpired": "Expired",
     "joined": "Joined ✓",
     "openGroup": "Open group",
     "join": "Join",
@@ -217,7 +233,37 @@
       "video": "[Video]",
       "file": "[File]",
       "voice": "[Voice message]"
-    }
+    },
+    "menuViewInfo": "Contact info",
+    "menuSearch": "Search",
+    "menuMute": "Mute notifications",
+    "menuUnmute": "Unmute notifications",
+    "menuPin": "Pin",
+    "menuUnpin": "Unpin",
+    "menuMarkRead": "Mark as read",
+    "menuClearHistory": "Clear messages",
+    "clearConfirmTitle": "Clear all messages?",
+    "clearConfirmBody": "All messages in this chat will be cleared from this device. This can't be undone.",
+    "clearConfirmAction": "Clear messages",
+    "menuBlock": "Block",
+    "menuUnblock": "Unblock",
+    "menuBlockConfirm": "Block this contact? They won't be able to message you.",
+    "menuReport": "Report",
+    "menuReportPrompt": "What's wrong with this contact?",
+    "menuReportSent": "Report sent. Thank you.",
+    "menuDeleteChat": "Delete chat",
+    "menuDeleteChatConfirm": "Delete this chat and remove the friend?",
+    "menuLeaveGroup": "Exit group",
+    "menuLeaveGroupConfirm": "Exit this group?",
+    "menuConfirm": "Confirm",
+    "menuCancel": "Cancel",
+    "blockedBanner": "You blocked this contact. Tap to unblock.",
+    "searchInChatPlaceholder": "Search in this chat",
+    "searchNoResult": "No results",
+    "searchCount": "{{i}} of {{n}}",
+    "alias": "Remark",
+    "aliasAdd": "Add remark",
+    "aliasPlaceholder": "Enter a remark (e.g. Alice (work))"
   },
   "gallery": {
     "failed": "Image failed to load",
@@ -244,7 +290,8 @@
     "noMatchSub": "Try a different keyword, or clear the search.",
     "emptyTitle": "No chats yet",
     "emptySub": "Add a friend to start your first conversation.",
-    "addFriend": "Add friend"
+    "addFriend": "Add friend",
+    "muted": "Muted"
   },
   "errors": {
     "removedFromGroup": "You were removed from {{group}}",

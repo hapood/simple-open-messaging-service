@@ -4,13 +4,9 @@
         [style]="{width:'32px',height:'32px'}"></app-icon></button>
     <span class="title">{{ 'newGroup.title' | transloco }}</span>
     @if (step() === 1) {
-      <button class="icon-btn action" (click)="goStep2()" [attr.aria-label]="'newGroup.nextAria' | transloco">
-        <app-icon [type]="AppIconType.ARROW_FORWARD" [style]="{width:'24px',height:'24px'}"></app-icon>
-      </button>
+      <button mat-button (click)="goStep2()">{{ 'common.next' | transloco }}</button>
     } @else {
-      <button class="icon-btn action" [disabled]="!name().trim()" (click)="confirm()" [attr.aria-label]="'newGroup.createAria' | transloco">
-        <app-icon [type]="AppIconType.CHECK" [style]="{width:'24px',height:'24px'}"></app-icon>
-      </button>
+      <button mat-button [disabled]="!name().trim()" (click)="confirm()">{{ 'newGroup.create' | transloco }}</button>
     }
   </div>
 
@@ -67,9 +63,6 @@
           [ngModel]="name()" (ngModelChange)="onNameInput($event)" (keydown.enter)="confirm()" />
         <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
       </div>
-    </div>
-    <div class="summary">
-      {{ 'newGroup.memberCount' | transloco:{ count: selectedList().length } }}
     </div>
   </div>
 

@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsBoolean,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -26,6 +27,36 @@ export class UserIdDto {
   @IsInt()
   @Min(1)
   userId: number;
+}
+
+/** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
+ *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
+ *  query-messages so the blocker never sees the blocked user's messages. */
+export class BlockDto {
+  @ApiProperty({ example: 1, description: 'User id to block / unblock' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  userId: number;
+
+  @ApiProperty({ example: true, description: 'true = block, false = unblock' })
+  @IsBoolean()
+  block: boolean;
+}
+
+/** File an abuse/complaint report against a user. Passive ingestion for the admin console; no chat effect. */
+export class ReportDto {
+  @ApiProperty({ example: 1, description: 'Reported user id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  userId: number;
+
+  @ApiProperty({ example: 'spam', description: 'Report reason (≤255 chars)' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  reason: string;
 }
 
 export class ThreadIdDto {

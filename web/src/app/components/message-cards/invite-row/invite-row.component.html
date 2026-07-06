@@ -19,16 +19,18 @@
       [class.invite-expired]="status() === 1"
       (click)="openDetail()"
     >
+      <span class="invite-watermark" aria-hidden="true"></span>
       <div class="invite-card">
-        <div class="invite-title">{{ 'chat.inviteTitle' | transloco:{ name: data().name } }}</div>
+        <div class="invite-title">{{ 'chat.groupInvitation' | transloco }}</div>
         <div class="invite-group">
           <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName" [src]="invite().groupAvatar"></app-user-avatar>
-          <div class="invite-name">{{ invite().groupName }}</div>
+          <span class="invite-name">{{ invite().groupName }}</span>
           <span class="invite-chev" aria-hidden="true">›</span>
         </div>
-        @if (expiryLabel()) {
-          <div class="invite-expiry">{{ 'chat.validUntil' | transloco:{ date: expiryLabel() } }}</div>
-        }
+        <div class="invite-status" [class.invite-status--expired]="status() === 1">
+          <span class="invite-status-dot" aria-hidden="true"></span>
+          {{ status() === 1 ? ('chat.inviteStatusExpired' | transloco) : ('chat.inviteStatusValid' | transloco) }}
+        </div>
       </div>
     </button>
   </div>

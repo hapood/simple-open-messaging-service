@@ -48,7 +48,6 @@ export class InviteRowComponent implements OnInit {
     token: string;
     expiryDate?: string;
   }>({ groupName: '', token: '' });
-  readonly expiryLabel = signal('');
   /** 0 = valid, 1 = expired — drives a dimmed preview (the dialog re-checks on join). */
   readonly status = signal(0);
 
@@ -57,9 +56,7 @@ export class InviteRowComponent implements OnInit {
   ngOnInit() {
     const parsed = this.parseInvite(this.data().text);
     this.invite.set(parsed);
-    this.expiryLabel.set(
-      parsed.expiryDate ? dayjs(parsed.expiryDate).format('YYYY-MM-DD HH:mm') : '',
-    );
+    // The card surfaces only valid/expired state; the concrete expiry time is shown in the detail dialog.
     this.status.set(
       parsed.expiryDate && dayjs().isAfter(dayjs(parsed.expiryDate)) ? 1 : 0,
     );

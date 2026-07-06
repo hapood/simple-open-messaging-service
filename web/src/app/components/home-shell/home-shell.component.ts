@@ -10,8 +10,10 @@ import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConnectionBannerComponent } from '../connection-banner/connection-banner.component';
 import { UpdateBannerComponent } from '../update-banner/update-banner.component';
+import { GlobalSearchComponent } from '../global-search/global-search.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { SearchService } from '../../services/search.service';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
@@ -50,7 +52,7 @@ const overlaySlide = trigger('overlaySlide', [
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent, ConnectionBannerComponent, UpdateBannerComponent],
+  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent, ConnectionBannerComponent, UpdateBannerComponent, GlobalSearchComponent],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
   animations: [overlaySlide],
@@ -59,6 +61,7 @@ export class HomeShellComponent {
   private readonly router = inject(Router)
   private readonly layout = inject(LayoutService)
   private readonly convList = inject(ConversationListService)
+  readonly search = inject(SearchService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode
@@ -140,6 +143,12 @@ export class HomeShellComponent {
    *  the user clicked. */
   openChat(item: ConversationItem) {
     this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }], { replaceUrl: true })
+  }
+
+  /** Close the aside drawer (clears the named outlet). Wired to the desktop drawer-mask click. Uses the
+   *  outlet-only command form — the primary-in-array form is misparsed (the aside never clears). */
+  closeAside() {
+    void this.router.navigate([{ outlets: { aside: null } }])
   }
 
   /** After a group is created, refresh the shared thread list (forwarded to icon-rail / nav-drawer). */

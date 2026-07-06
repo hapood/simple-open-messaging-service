@@ -1,6 +1,8 @@
 import { Injectable, inject, signal } from '@angular/core';
+import { filter } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { UserService } from './user.service';
+import { WebsocketService } from './websocket.service';
 import { ConversationItem } from './model';
 import { toFriendlyHttpError } from './http-error';
 
@@ -33,6 +35,7 @@ export type ConversationLoadStatus =
 export class ConversationListService {
   private readonly userService = inject(UserService);
   private readonly transloco = inject(TranslocoService);
+  private readonly ws = inject(WebsocketService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -65,6 +68,56 @@ export class ConversationListService {
    *  a reload passes, which is correct (it IS new to the in-memory state); only same/older duplicates
    *  are blocked. */
   private readonly lastSeenMsgId = new Map<number, string>();
+
+  constructor() {
+    // Multi-device sync for per-user thread settings (mute/pin/clear): the server fans a THREAD_META
+    // frame to the caller's OTHER connections on each change, so this device patches the affected row
+    // and re-sorts without a full reload. Mirrors how onReadCursor keeps the unread badge in sync.
+    this.ws.eventSubject
+      .pipe(filter((m) => m.event === 'THREAD_META'))
+      .subscribe((m) => {
+        const d = (m.data ?? {}) as {
+          threadId?: number;
+          muted?: boolean;
+          pinned?: boolean;
+          pinnedAt?: number | null;
+          clearedAt?: number | null;
+          alias?: string | null;
+        };
+        if (d.threadId === undefined) return;
+        this.applyThreadMeta(d.threadId, {
+          muted: d.muted,
+          pinned: d.pinned,
+          pinnedAt: d.pinnedAt,
+          clearedAt: d.clearedAt,
+          alias: d.alias,
+        });
+      });
+  }
+
+  /** Patch per-user thread metadata (mute/pin/clear/block) on a row, then re-sort so pin/unpin reorders
+   *  it live. Only defined fields are applied. Called from the THREAD_META SSE handler (multi-device)
+   *  and from local optimistic actions (mute/pin toggle, block/unblock). */
+  applyThreadMeta(
+    threadId: number,
+    patch: {
+      muted?: boolean;
+      pinned?: boolean;
+      pinnedAt?: number | null;
+      clearedAt?: number | null;
+      blocked?: boolean;
+      alias?: string | null;
+    },
+  ): void {
+    this._items.update((list) => {
+      const idx = list.findIndex((t) => t.threadId === threadId);
+      if (idx === -1) return list;
+      const next = list.slice();
+      next[idx] = { ...next[idx], ...patch };
+      next.sort(byPinRank);
+      return next;
+    });
+  }
 
   /** Fetch the conversation list from the server (authoritative state). */
   load() {
@@ -115,8 +168,13 @@ export class ConversationListService {
   }
 
   private applyItems(items: ConversationItem[]): void {
+    // Server returns the page already pin-first-ordered, but sort defensively so the in-memory order
+    // matches byPinRank exactly (the server and this comparator are kept in lockstep). An explicit
+    // topId (markTopOnNextUpdate / markTopOnNextNewThread — a just-created/joined thread) is promoted
+    // to index 0 ON TOP of the pin tier, so the user sees their new thread immediately.
+    const sorted = [...items].sort(byPinRank);
     const topId = this.resolveTopId(items);
-    const ordered = topId != null ? moveToTop(items, topId) : items;
+    const ordered = topId != null ? moveToTop(sorted, topId) : sorted;
     this._items.set(ordered);
     this._status.set('READY');
     if (topId != null) this._topInserted.set(topId);
@@ -138,13 +196,27 @@ export class ConversationListService {
     return topId;
   }
 
-  /** Mark a thread as open (selected); fire mark-read + clear its badge optimistically. */
+  /** Mark a thread as open (selected); advance its read cursor on the server and clear the badge
+   *  optimistically. The HTTP mark-read is fired ONLY when the thread actually has unread messages:
+   *  re-opening an already-read conversation (common — the user revisits a thread) is a server-side
+   *  no-op whose request would still burn the per-IP throttle budget, so skipping it keeps mark-read
+   *  volume proportional to real unread state. It also makes the call loop-proof — after the first fire
+   *  clears the badge to 0, any re-entrant open() (effect re-run, close→reopen lag on mobile) is a
+   *  no-op until a NEW_MESSAGE bumps unread again. The request is fire-and-forget: a 429 (rate-limited)
+   *  or network failure is swallowed rather than surfacing as an uncaught HttpErrorResponse — the
+   *  cursor converges on the next open() or the READ_CURSOR SSE echo. */
   open(threadId: number) {
     const prev = this._openThreadId();
     this._openThreadId.set(threadId);
-    if (threadId !== prev) {
+    if (threadId === prev) return;
+    const item = this._items().find((t) => t.threadId === threadId);
+    if ((item?.unreadCount ?? 0) > 0) {
       this.clearUnread(threadId);
-      this.userService.markRead({ threadId }).subscribe();
+      this.userService.markRead({ threadId }).subscribe({
+        error: () => {
+          /* fire-and-forget — cursor converges on next open() / READ_CURSOR echo */
+        },
+      });
     }
   }
 
@@ -239,9 +311,12 @@ export class ConversationListService {
           item.type === 'GROUP' ? null : item.lastMessageSenderName,
         unreadCount: unread,
       };
+      // Re-sort by pin rank instead of unconditionally unshifting to index 0: a new message must NOT
+      // displace a pinned thread (pinned stay top; the updated thread rises only to the top of its
+      // tier — pinned if pinned, else the head of the unpinned tier).
       const next = list.slice();
-      next.splice(idx, 1);
-      next.unshift(updated);
+      next[idx] = updated;
+      next.sort(byPinRank);
       return next;
     });
     if (!existed) this.load();
@@ -264,6 +339,25 @@ function moveToTop<T extends { threadId: number }>(items: T[], threadId: number)
   const [moved] = next.splice(idx, 1);
   next.unshift(moved);
   return next;
+}
+
+/**
+ * Pin-aware conversation-list rank comparator — the SINGLE source of truth for client-side ordering,
+ * kept in lockstep with the backend's query-thread/valid ORDER BY. Pinned tier first (most-recently-
+ * pinned first via pinnedAt desc); then unpinned recent-first by lastMessageAt; empty threads sink;
+ * threadId breaks ties deterministically. Used by applyItems (reload), onNewMessage (live bump), and
+ * applyThreadMeta (pin/unpin reorder).
+ */
+function byPinRank(a: ConversationItem, b: ConversationItem): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
+  if (a.pinned) {
+    const ta = a.pinnedAt ?? -Infinity;
+    const tb = b.pinnedAt ?? -Infinity;
+    return tb - ta || a.threadId - b.threadId;
+  }
+  const la = a.lastMessageAt ?? -Infinity;
+  const lb = b.lastMessageAt ?? -Infinity;
+  return lb - la || a.threadId - b.threadId;
 }
 
 /** Derive the short list preview by content type — mirrors backend derivePreview (keep in sync). The

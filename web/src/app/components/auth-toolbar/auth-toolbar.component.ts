@@ -1,16 +1,18 @@
 import { Component, computed, inject } from '@angular/core';
+import { MatSelectModule, MatSelectChange } from '@angular/material/select';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { ThemeService } from '../../services/theme.service';
-import { LanguageService } from '../../services/language.service';
+import { LanguageService, AppLang } from '../../services/language.service';
 
 /**
- * Theme + language toggle bar for the auth (login/register) split-screen shell.
- * Mirrors the nav-drawer's cycle-on-click UX — system -> light -> dark, then
- * en -> zh-CN — so appearance and language are reachable before the user is
- * signed in. Renders two icon-only buttons (the theme icon morphs to reflect
- * the current mode; language is always the globe, with the active language in
- * its tooltip/aria-label).
+ * Theme + language bar for the auth (login/register) split-screen shell.
+ *
+ * The theme button cycles system -> light -> dark (the icon morphs to match).
+ * The language control is a `<mat-select>` dropdown — the same picker the
+ * Settings page exposes — so appearance and language are both reachable before
+ * the user is signed in. The trigger shows the globe icon + the active
+ * language's native name; opening it lists every available language.
  *
  * The host is absolutely positioned in the top-right corner of its parent: the
  * auth shell's `.form-pane`, which the `auth-shell` mixin makes
@@ -18,13 +20,11 @@ import { LanguageService } from '../../services/language.service';
  */
 @Component({
   selector: 'app-auth-toolbar',
-  imports: [IconComponent, TranslocoPipe],
+  imports: [IconComponent, TranslocoPipe, MatSelectModule],
   templateUrl: './auth-toolbar.component.html',
   styleUrl: './auth-toolbar.component.scss',
 })
 export class AuthToolbarComponent {
-  readonly AppIconType = AppIconType;
-
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
@@ -42,9 +42,16 @@ export class AuthToolbarComponent {
     return this.transloco.translate('auth.theme.' + this.themeService.mode());
   });
 
-  /** Native-script label for the current language (always self-identifies). */
+  /** Languages offered, in dropdown order (mirrors the Settings picker). */
+  readonly availableLangs = this.languageService.availableLangs;
+  /** Current language (bound to the `<mat-select>` so the active option is marked). */
+  readonly lang = this.languageService.lang;
+  /** Native-script label for the current language (trigger + aria-label). */
   readonly langLabel = this.languageService.langLabel;
+  /** Native-script label for an arbitrary language id (dropdown options). */
+  langLabelOf(l: AppLang): string { return this.languageService.langLabelOf(l); }
 
   cycleTheme(): void { this.themeService.cycleMode(); }
-  cycleLang(): void { this.languageService.cycleLang(); }
+  /** Apply a language chosen from the dropdown. */
+  onLangChange(e: MatSelectChange): void { this.languageService.setLang(e.value as AppLang); }
 }

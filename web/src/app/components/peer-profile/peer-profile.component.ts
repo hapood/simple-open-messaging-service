@@ -3,6 +3,7 @@ import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationItem } from '../../services/model';
@@ -16,7 +17,7 @@ import { ConversationItem } from '../../services/model';
  */
 @Component({
   selector: 'app-peer-profile',
-  imports: [MatButtonModule, UserAvatarComponent, TranslocoPipe],
+  imports: [MatButtonModule, UserAvatarComponent, TranslocoPipe, ThreadAliasEditorComponent],
   template: `
     <div class="panel">
       <div class="msg-header">
@@ -36,6 +37,8 @@ import { ConversationItem } from '../../services/model';
           <div class="name">{{ peer()?.uniqName }}</div>
         </div>
 
+        <app-thread-alias-editor [threadId]="threadId()!" />
+
         @if (confirmUnfriend()) {
           <div class="confirm-row">
             <span>{{ 'profile.removeFriendConfirm' | transloco:{ name: peer()?.uniqName } }}</span>
@@ -52,7 +55,7 @@ import { ConversationItem } from '../../services/model';
   `,
   styles: [`
     :host { display: block; height: 100%; background: var(--app-surface); }
-    .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; overflow-y: auto; }
+    .panel { display: flex; flex-direction: column; height: 100%; min-height: 0; }
     .msg-header {
       height: 56px; flex: 0 0 auto; display: flex; align-items: center; gap: 8px; padding: 0 8px;
       border-bottom: 1px solid var(--app-border); box-sizing: border-box;
@@ -64,7 +67,7 @@ import { ConversationItem } from '../../services/model';
       border-radius: var(--app-radius-sm);
     }
     .icon-btn:hover { background: var(--app-hover); }
-    .body { display: flex; flex-direction: column; gap: 20px; padding: 28px 16px; }
+    .body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; padding: 28px 16px; }
     .identity { display: flex; flex-direction: column; align-items: center; gap: 10px; }
     .identity app-user-avatar { width: 72px; height: 72px; }
     .name { font-size: 18px; font-weight: 600; }
@@ -123,9 +126,11 @@ export class PeerProfileComponent {
     })
   }
 
-  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. */
+  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. Uses the outlet-only
+   *  command form `[{ outlets: { aside: null } }]` — bundling the outlet spec inside a primary command
+   *  array (`['chat', tid, { outlets: ... }]`) is misparsed (the object becomes matrix params, so the
+   *  aside never clears). Same fix as settings.component's goBack. */
   goBack() {
-    const threadId = this.threadId()
-    if (threadId !== undefined) this.router.navigate(['chat', threadId, { outlets: { aside: null } }])
+    void this.router.navigate([{ outlets: { aside: null } }])
   }
 }

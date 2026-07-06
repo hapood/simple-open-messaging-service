@@ -4,8 +4,9 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service'
 import { ConversationListService, ConversationLoadStatus } from '../../services/conversation-list.service'
 import { UserService } from '../../services/user.service'
-import { ConversationItem } from '../../services/model'
+import { ConversationItem, displayThreadName } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { IconComponent, AppIconType } from '../icon/icon.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { ChatFolder, inFolder } from '../../services/folder.service'
 import { LanguageService } from '../../services/language.service'
@@ -19,12 +20,14 @@ import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
  */
 @Component({
     selector: 'app-thread-list',
-    imports: [UserAvatarComponent, NgClass, EmptyStateComponent, TranslocoPipe],
+    imports: [UserAvatarComponent, IconComponent, NgClass, EmptyStateComponent, TranslocoPipe],
     templateUrl: './thread-list.component.html',
     styleUrl: './thread-list.component.scss'
 })
 export class ThreadListComponent implements OnInit {
   readonly UserAvatarType = UserAvatarType
+  /** exposes the icon enum to the template (mute indicator on muted threads). */
+  readonly AppIconType = AppIconType
   /** active folder; undefined = no folder filter (show all) */
   readonly folder = input<ChatFolder | undefined>(undefined)
   /** local name search; '' = no filter. */
@@ -76,7 +79,7 @@ export class ThreadListComponent implements OnInit {
     return this.items().filter(t => {
       if (folder && !inFolder(t, folder)) return false
       if (q) {
-        const name = (t.type === 'P2P' ? t.peerUser?.uniqName : t.group?.name) ?? ''
+        const name = displayThreadName(t)
         if (!name.toLowerCase().includes(q)) return false
       }
       return true
@@ -110,6 +113,11 @@ export class ThreadListComponent implements OnInit {
     '[File]': 'chat.preview.file',
     '[Voice message]': 'chat.preview.voice',
   };
+
+  /** Display name for a thread — alias (备注) overrides the real name. */
+  displayName(t: ConversationItem): string {
+    return displayThreadName(t)
+  }
 
   previewText(t: ConversationItem): string {
     this.language.lang();

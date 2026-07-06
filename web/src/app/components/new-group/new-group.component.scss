@@ -39,12 +39,6 @@
   align-items: center;
   justify-content: center;
   color: var(--app-text-muted);
-
-  // Header confirm / forward action — brand-accented.
-  &.action {
-    color: var(--app-brand);
-    &:disabled { color: var(--app-text-faint); cursor: default; }
-  }
 }
 
 // ── shared step shell ──
@@ -200,12 +194,6 @@ app-user-list {
   font-size: 12px;
   color: var(--app-text-faint);
   text-align: right;
-}
-
-.summary {
-  margin-top: 18px;
-  font-size: 13px;
-  color: var(--app-text-muted);
 }
 
 // avatar-upload spinner

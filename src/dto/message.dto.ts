@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -125,4 +126,158 @@ export class MarkReadDto {
   @IsString()
   @Matches(/^\d+$/, { message: 'lastReadMessageId must be a numeric string' })
   lastReadMessageId?: string;
+}
+
+/** Toggle mute for a conversation (the caller's ThreadParticipant row). */
+export class SetMutedDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+
+  @ApiProperty({ example: true, description: 'true = mute (suppress notifications), false = unmute' })
+  @IsBoolean()
+  muted: boolean;
+}
+
+/** Toggle pin for a conversation (the caller's ThreadParticipant row). */
+export class SetPinnedDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+
+  @ApiProperty({ example: true, description: 'true = pin to top, false = unpin' })
+  @IsBoolean()
+  pinned: boolean;
+}
+
+/** Per-user "clear chat history": hides all messages up to now for the caller (peer's copy untouched). */
+export class ClearHistoryDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+}
+
+/** Set a per-user alias/remark (备注) for a conversation — a nickname that overrides the peer's handle
+ *  (P2P) or the group's name (GROUP) in the CALLER's chat header + conversation list. Per-user only.
+ *  An empty/whitespace string clears it (back to the real name). */
+export class SetAliasDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+
+  @ApiProperty({
+    required: false,
+    example: 'Alice (work)',
+    description: 'Alias/remark (≤64 chars). Empty/omitted clears it.',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  alias?: string;
+}
+
+/**
+ * Search a conversation's message history by substring. Returns lightweight {id, createdAt} matches
+ * (no full bodies) paginated by message-id cursor — the client jumps the kernel to each match and the
+ * server renders the bubble on demand via the normal query-messages path. ILIKE + the Message content
+ * trigram GIN index backs the substring scan. Non-text types never carry searchable content.
+ */
+export class SearchMessagesDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+
+  @ApiProperty({ example: 'hello', description: 'Search keyword (substring, case-insensitive)' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  keyword: string;
+
+  @ApiProperty({
+    example: 20,
+    description: 'Number of match ids to take (1-50)',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50, { message: 'take must be at most 50' })
+  take: number;
+
+  @ApiProperty({
+    required: false,
+    example: '9007199254740993',
+    description: 'Cursor (BigInt→string): return matches with id < lastId (descending). Omit for the first page.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d+$/, { message: 'lastId must be a numeric string' })
+  lastId?: string;
+}
+
+/**
+ * Global cross-conversation search. Searches the caller's ACTIVE conversations for two wings:
+ *  - messages: PURE_TEXT body substring OR FILE attachment name (case-insensitive). Other content
+ *    types carry no searchable text — IMAGE is a {url,w,h} blob, INVITE is a server-signed token.
+ *  - conversations/contacts: group name, P2P peer display name, or the caller's per-thread alias —
+ *    whichever the conversation list itself shows (COALESCE(alias, realName)).
+ *
+ * Membership is enforced by joining the caller's active ThreadParticipant row, so non-participants
+ * never see threads they aren't in. clearedAt (per-user "clear history" watermark) and the caller's
+ * blocks are re-applied on the message wing, mirroring query-messages. No ThreadAccessGuard is used —
+ * the scope IS the caller's own membership set, keyed off req.user.userId.
+ */
+export class GlobalSearchDto {
+  @ApiProperty({
+    example: 'hello',
+    description: 'Search keyword (substring, case-insensitive across all active conversations)',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  keyword: string;
+
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Max message hits to return (1-50). Default 20.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  messageTake?: number;
+
+  @ApiProperty({
+    required: false,
+    example: 20,
+    description: 'Max conversation/contact hits to return (1-50). Default 20.',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(50)
+  threadTake?: number;
+
+  @ApiProperty({
+    required: false,
+    example: '9007199254740993',
+    description:
+      'Cursor (BigInt→string): return message hits with id < lastMsgId (descending). Omit for the first page.',
+  })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d+$/, { message: 'lastMsgId must be a numeric string' })
+  lastMsgId?: string;
 }

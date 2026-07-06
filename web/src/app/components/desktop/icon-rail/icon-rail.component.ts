@@ -4,6 +4,7 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../../icon/icon.component';
 import { RouteService, PopupType } from '../../../services/route.service';
+import { SearchService } from '../../../services/search.service';
 import { UserService } from '../../../services/user.service';
 import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
@@ -11,8 +12,8 @@ import { LanguageService } from '../../../services/language.service';
 /**
  * Telegram-style left rail: account avatar on top, section/action buttons at
  * the bottom. Replaces the mobile home-header hamburger menu on desktop. Mirrors
- * <app-nav-drawer>: same actions (friend requests / new group / folders / theme /
- * language), exposed as icon-only buttons with translated tooltips. Log out lives
+ * <app-nav-drawer>: same actions (friend requests / new group / folders / theme),
+ * exposed as icon-only buttons with translated tooltips. Log out lives
  * in the profile dialog (PopupType.EDIT_PROFILE), not the rail.
  */
 @Component({
@@ -25,6 +26,10 @@ import { LanguageService } from '../../../services/language.service';
           [title]="'nav.editProfileAria' | transloco" [attr.aria-label]="'nav.editProfileAria' | transloco">
           <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'"
             [src]="sessionProfile()?.userExtra?.avatar" />
+        </button>
+        <button class="rail-btn" (click)="search.open()"
+          [title]="'nav.search' | transloco" [attr.aria-label]="'nav.search' | transloco">
+          <app-icon [type]="AppIconType.SEARCH" [style]="{ width: '24px', height: '24px' }"></app-icon>
         </button>
       </div>
       <div class="bottom">
@@ -59,11 +64,6 @@ import { LanguageService } from '../../../services/language.service';
           [title]="'nav.themeAria' | transloco:{ label: themeLabel() }"
           [attr.aria-label]="'nav.themeAria' | transloco:{ label: themeLabel() }">
           <app-icon [type]="themeIcon()" [style]="{ width: '24px', height: '24px' }"></app-icon>
-        </button>
-        <button class="rail-btn" (click)="cycleLang()"
-          [title]="'nav.languageAria' | transloco:{ label: langLabel() }"
-          [attr.aria-label]="'nav.languageAria' | transloco:{ label: langLabel() }">
-          <app-icon [type]="AppIconType.GLOBE" [style]="{ width: '24px', height: '24px' }"></app-icon>
         </button>
         <button class="rail-btn" (click)="settings()"
           [title]="'nav.settings' | transloco" [attr.aria-label]="'nav.settings' | transloco">
@@ -121,6 +121,7 @@ export class IconRailComponent {
   readonly onThreadListChanged = input<(() => void) | undefined>(undefined)
 
   private readonly routeService = inject(RouteService);
+  readonly search = inject(SearchService);
   private readonly userService = inject(UserService);
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);
@@ -141,10 +142,6 @@ export class IconRailComponent {
     return this.transloco.translate('nav.theme.' + this.themeService.mode());
   });
   cycleTheme(): void { this.themeService.cycleMode(); }
-
-  /** Native-script label for the current language (always self-identifies). */
-  readonly langLabel = this.languageService.langLabel;
-  cycleLang(): void { this.languageService.cycleLang(); }
 
   friendRequests() {
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)

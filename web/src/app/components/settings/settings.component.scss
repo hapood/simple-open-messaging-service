@@ -13,7 +13,6 @@
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  overflow-y: auto;
 }
 
 .msg-header {
@@ -53,6 +52,9 @@
 }
 
 .body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -136,8 +138,9 @@
   min-height: 32px;
 }
 
-// The 3-way theme toggle group can overflow on very narrow widths — let it shrink and keep its
-// segmented borders crisp inside the row.
+// The 3-way theme toggle sits in the list-item's trailing [matListItemMeta] slot (.mdc-list-item__end),
+// which is not an overflow-hidden context — keep it from compressing so its segmented borders stay crisp
+// on narrow widths.
 .theme-toggle {
   flex-shrink: 0;
 }

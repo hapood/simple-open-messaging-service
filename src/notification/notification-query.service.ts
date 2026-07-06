@@ -57,7 +57,12 @@ export class NotificationQueryService {
       userId,
       list.map((p) => p.threadId),
     );
-    const withUnread = list.filter((p) => (unread.get(p.threadId) ?? 0) > 0);
+    // Unread + NOT muted: muted conversations never trigger the away-notification (the user explicitly
+    // silenced them). Unread is still tracked for the in-app list badge — this filter is about the
+    // heads-up notification surface only.
+    const withUnread = list.filter(
+      (p) => !p.muted && (unread.get(p.threadId) ?? 0) > 0,
+    );
     if (withUnread.length === 0) return [];
 
     // Most-recent unread first — the poller notifies about the freshest conversation.

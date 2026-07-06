@@ -44,9 +44,12 @@ import { FolderService, ChatFolder } from '../../../services/folder.service';
       flex-direction: column;
       height: 100%;
       background: var(--app-surface);
-      border-right: 1px solid var(--app-border);
       box-sizing: border-box;
       overflow: hidden;
+      /* No border-right here: the inter-pane divider is owned by the shell, not the pane. On desktop the
+         .resizer strip is the divider; on tablet the shell paints .drawer-body's border-right. Painting
+         it here doubled the desktop divider (this 1px + the 4px resizer) and offset the grip dots 0.5px
+         from the composite strip's center — which is why the dots read as crooked. */
     }
     .search { padding: 10px; box-sizing: border-box; }
     .search input {

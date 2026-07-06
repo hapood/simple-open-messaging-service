@@ -33,7 +33,7 @@ const DAYJS_LOCALE: Record<AppLang, string> = {
  * reflects the resolved language onto the document and the active Transloco
  * language. The choice is restored from storage on construction (defaulting to
  * the browser language, then English) and can be changed at runtime via
- * {@link cycleLang} / {@link setLang}; runtime switches take effect immediately
+ * {@link setLang}; runtime switches take effect immediately
  * without a reload.
  *
  * `providedIn: 'root'`; eagerly instantiated by injecting it into `AppComponent`
@@ -82,12 +82,6 @@ export class LanguageService {
     } catch {
       // localStorage disabled (private mode) — keep the in-memory signal only.
     }
-  }
-
-  /** Cycle through available languages (single-button toggle UX). */
-  cycleLang(): void {
-    const order = this.availableLangs;
-    this.setLang(order[(order.indexOf(this.lang()) + 1) % order.length]);
   }
 
   /** Reflect one language onto Transloco, `<html lang>`, and dayjs. */

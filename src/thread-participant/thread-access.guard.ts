@@ -60,7 +60,7 @@ export class ThreadAccessGuard implements CanActivate {
       field,
     );
 
-    const participant = await this.participantService.findActiveParticipant(
+    const participant = await this.participantService.findActiveParticipantWithThread(
       userId,
       threadId,
     );
@@ -71,7 +71,11 @@ export class ThreadAccessGuard implements CanActivate {
       );
     }
 
-    req.threadAccess = { threadId, participant };
+    req.threadAccess = {
+      threadId,
+      threadType: participant.thread.type,
+      participant,
+    };
     return true;
   }
 }

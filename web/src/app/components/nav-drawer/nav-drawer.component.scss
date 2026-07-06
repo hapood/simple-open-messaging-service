@@ -1,15 +1,40 @@
 @use "../../assets/utils.scss" as *;
 
+/* Shell-level overlay, NOT a thread-list wrapper. The host is position:fixed over the whole
+   viewport, so the mat-sidenav-container's backdrop (position:absolute; inset:0) naturally spans
+   the full screen — covering the inline chat too — instead of being clipped to the thread-list
+   column as it was when the list was projected into mat-sidenav-content. pointer-events:none lets
+   the closed overlay pass clicks through to the list/chat underneath: the panel is translated
+   off-screen and the backdrop is visibility:hidden (which, unlike opacity:0, captures no events).
+   The panel and the shown backdrop re-enable pointer-events below. z-index 45 sits above the chat
+   panes (2–3) and the mobile aside (40), but below the search takeover (50) and the status banners
+   (51/52) which must stay visible. */
 :host {
   display: block;
-  height: 100%;
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 45;
 }
 
 .nav-drawer-container {
   height: 100%;
+  /* The container is just a carrier for the panel + backdrop now (the list is no longer projected
+     into it). Material gives it an opaque --mat-sys-background by default, which — on a host that
+     is position:fixed over the whole viewport — would blank the screen behind the closed drawer.
+     Transparent: only the panel and the shown backdrop should ever paint. */
+  background: transparent;
+}
+
+/* Backdrop is a descendant of the pointer-events:none host, so it must opt back in to capture the
+   close click. When closed it is visibility:hidden, which captures no events — so the overlay still
+   passes clicks through. */
+:host ::ng-deep .mat-drawer-backdrop {
+  pointer-events: auto;
 }
 
 .nav-drawer {
+  pointer-events: auto;   // the menu is the one interactive surface besides the shown backdrop
   width: 280px;
   max-width: 85vw;            // narrow phones must not overflow
   display: flex;

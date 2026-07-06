@@ -10,7 +10,6 @@ import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationItem } from '../../services/model';
-import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import { apiPrefix } from '../../services/constants';
@@ -46,25 +45,22 @@ export class NewGroupComponent {
   /** True while an avatar crop is uploading. */
   readonly busy = signal(false)
 
-  /** Group name — defaults to a member-derived prefill (WhatsApp-style) until the user edits it. */
+  /** Group name — user-entered on step 2 (never prefilled); required, must be non-empty. */
   readonly name = signal('')
-  private nameEdited = signal(false)
 
   selectedDict = signal<Record<number, boolean | undefined>>({})
   selectedList = signal<ConversationItem[]>([])
 
   private readonly routeService = inject(RouteService)
   private readonly groupService = inject(GroupService)
-  private readonly userService = inject(UserService)
   private readonly http = inject(HttpClient)
   private readonly snackBar = inject(MatSnackBar)
   private readonly transloco = inject(TranslocoService)
   private readonly convList = inject(ConversationListService)
 
-  /** User typed into the name field → stop auto-deriving from the member set. */
+  /** User typed into the name field. */
   onNameInput(v: string) {
     this.name.set(v)
-    this.nameEdited.set(true)
   }
 
   onSearchInput(v: string) {
@@ -93,9 +89,8 @@ export class NewGroupComponent {
     this.selectedList.set(this.selectedList().filter((i) => i.id !== item.id))
   }
 
-  /** Advance to the name/avatar step; derive a default name first unless the user typed one. */
+  /** Advance to the name/avatar step. */
   goStep2() {
-    if (!this.nameEdited()) this.rederiveName()
     this.step.set(2)
   }
 
@@ -107,19 +102,6 @@ export class NewGroupComponent {
   onBack() {
     if (this.step() === 2) this.goStep1()
     else this.routeService.closeDlg()
-  }
-
-  /** Derive a short group name from the creator + selected members (truncated to NAME_MAX chars). */
-  private rederiveName() {
-    let n = this.userService.sessionProfile()?.userExtra.name ?? ''
-    for (const item of this.selectedList()) {
-      n += ' ' + item.peerUser.userExtra.name
-      if (n.length > 26) {
-        n = n.slice(0, 22) + ' ...'
-        break
-      }
-    }
-    this.name.set(n.trim())
   }
 
   /** Pick a group photo via the cropper, upload it, stage the returned URL (not yet persisted). */

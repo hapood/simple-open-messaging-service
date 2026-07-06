@@ -211,6 +211,52 @@ export class ConversationItemDto {
   lastMessageSenderName?: string | null;
 
   @ApiProperty({
+    example: false,
+    description:
+      'Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).',
+  })
+  muted: boolean;
+
+  @ApiProperty({
+    example: false,
+    description: 'Whether the caller has pinned this conversation to the top of their list.',
+  })
+  pinned: boolean;
+
+  @ApiProperty({
+    example: 1_700_000_000_000,
+    nullable: true,
+    description:
+      'Most-recently-pinned timestamp (ms). Drives pinned-tier ordering (desc). Null when not pinned.',
+  })
+  pinnedAt?: number | null;
+
+  @ApiProperty({
+    example: 1_700_000_000_000,
+    nullable: true,
+    description:
+      'Per-user "clear chat history" watermark (ms). query-messages hides rows older than this for THIS user only; the peer copy is untouched. Null when history has not been cleared.',
+  })
+  clearedAt?: number | null;
+
+  @ApiProperty({
+    required: false,
+    example: false,
+    description:
+      'Whether the caller has blocked the peer (P2P conversations only). Absent on GROUP. Drives the Block ↔ Unblock label + the blocked banner.',
+  })
+  blocked?: boolean;
+
+  @ApiProperty({
+    required: false,
+    example: 'Alice (work)',
+    nullable: true,
+    description:
+      'Per-user alias/remark (备注). Overrides peer.uniqName (P2P) / group.name (GROUP) in the CALLER\'s chat header + list. Null when not set (real name used).',
+  })
+  alias?: string | null;
+
+  @ApiProperty({
     type: UserResponseDto,
     description: 'Peer user (P2P conversations only)',
   })

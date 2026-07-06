@@ -15,11 +15,6 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { FriendshipDto, MessageResponseDto } from '../dto/response.dto.js';
-import {
-  SendMessageDto,
-  QueryMessagesDto,
-  MarkReadDto,
-} from '../dto/message.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
@@ -30,6 +25,18 @@ import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js'
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
 import { parseFileContent } from '../upload/file-content.js';
+import { UserBlockService } from '../user-block/user-block.service.js';
+import {
+  SendMessageDto,
+  QueryMessagesDto,
+  MarkReadDto,
+  SetMutedDto,
+  SetPinnedDto,
+  ClearHistoryDto,
+  SetAliasDto,
+  SearchMessagesDto,
+  GlobalSearchDto,
+} from '../dto/message.dto.js';
 
 @ApiTags('message')
 @Controller()
@@ -41,6 +48,7 @@ export class MessageController {
     private readonly friendshipService: FriendshipService,
     private readonly pushService: PushService,
     private readonly notifQuery: NotificationQueryService,
+    private readonly userBlockService: UserBlockService,
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -84,27 +92,34 @@ export class MessageController {
     // shape as the HTTP response; the client can render it directly without a second query-messages).
     const msgData = serializeBody({ threadId: dto.threadId, ...data });
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
-    const userIds = await this.participantService.getActiveParticipantUserIds(
+    // Participants now carry `muted` so the notification channels (push + notif-snapshot) can honor mute.
+    const participants = await this.participantService.getActiveParticipantUserIds(
       dto.threadId,
     );
-    userIds.forEach((item) => {
-      this.sseService.onNewMessage(item.userId, msgData);
+    // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push,
+    // no notif snapshot — the blocked user is invisible to the blocker's message stream).
+    const blockers = await this.userBlockService.blockersOf(req.user.userId);
+    // SSE: deliver to everyone active except blocking recipients. The sender stays in the set so their
+    // own other tabs/devices get the echo (multi-device consistency); block never applies to self.
+    const sseTargets = participants.filter((p) => !blockers.has(p.userId));
+    sseTargets.forEach((p) => {
+      this.sseService.onNewMessage(p.userId, msgData);
     });
-    // FCM wake-up for OFFLINE recipients (PushService filters out the sender and anyone with a live SSE
-    // connection). Fire-and-forget — push latency must not delay this HTTP response, and dispatchForMessage
-    // swallows all errors so a push failure can never break message delivery.
+    // Notification channels (FCM/Web Push wake-up + Android FGS unread snapshot): additionally exclude
+    // MUTED recipients (mute = suppress the heads-up notification, NOT the in-app delivery — the bubble
+    // still renders via SSE above) and the sender (foregrounded). Fire-and-forget; push failures never
+    // break delivery.
+    const notifTargets = sseTargets.filter(
+      (p) => !p.muted && p.userId !== req.user.userId,
+    );
     void this.pushService.dispatchForMessage(
-      userIds,
+      notifTargets,
       req.user.userId,
       dto.threadId,
       msgData,
     );
-    // Backgrounded Android-foreground-service recipients with a live notification stream: push their
-    // updated unread snapshot so the away-notification coalesces/updates in near-real-time. Gated by
-    // hasNotifClient → only backgrounded-FGS users pay the snapshot computation; the sender is
-    // foregrounded (just sent), so they're filtered out naturally. Fire-and-forget, same as FCM.
-    userIds.forEach((item) => {
-      const uid = item.userId;
+    notifTargets.forEach((p) => {
+      const uid = p.userId;
       if (this.sseService.hasNotifClient(uid)) {
         void this.notifQuery
           .buildUnreadSnapshot(uid)
@@ -138,9 +153,20 @@ export class MessageController {
     if (dto.lastId) {
       newParams.cursor = { id: BigInt(dto.lastId) };
     }
+    // Per-viewer filters: clearedAt hides the caller's "clear history" tail (P2P + GROUP), and on P2P
+    // threads a blocked peer's messages are hidden (group threads leave blocked members visible —
+    // WhatsApp neutral-ground). blockedByMe is empty for ~all users, so the creator filter is skipped.
+    const filters: { clearedAfter?: Date | null; hideCreatorIds?: number[] } = {
+      clearedAfter: req.threadAccess.participant.clearedAt,
+    };
+    if (req.threadAccess.threadType === 'P2P') {
+      const blocked = await this.userBlockService.blockedByMe(req.user.userId);
+      if (blocked.size > 0) filters.hideCreatorIds = [...blocked];
+    }
     const rows = await this.messageService.queryMessages(
       dto.threadId,
       newParams,
+      filters,
     );
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
@@ -227,5 +253,152 @@ export class MessageController {
       );
     }
     return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SetMutedDto>('threadId')
+  @Throttle(30, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/set-muted')
+  @ApiOperation({ summary: 'Mute / unmute a conversation (suppresses notifications, not delivery)' })
+  async setMuted(@Request() req, @Body() dto: SetMutedDto): Promise<ApiResult> {
+    await this.participantService.setMuted(req.user.userId, dto.threadId, dto.muted);
+    // Sync the caller's other online devices so their list row swaps the mute icon live (no reload).
+    this.sseService.onThreadMeta(
+      req.user.userId,
+      serializeBody({ event: 'THREAD_META', threadId: dto.threadId, muted: dto.muted }),
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SetPinnedDto>('threadId')
+  @Throttle(30, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/set-pinned')
+  @ApiOperation({ summary: 'Pin / unpin a conversation (pinned-first ordering)' })
+  async setPinned(@Request() req, @Body() dto: SetPinnedDto): Promise<ApiResult> {
+    const updated = await this.participantService.setPinned(
+      req.user.userId,
+      dto.threadId,
+      dto.pinned,
+    );
+    // Carry the resulting pinnedAt so other devices sort the row into the pinned tier correctly
+    // (pinning stamps now(); unpinning clears it).
+    this.sseService.onThreadMeta(
+      req.user.userId,
+      serializeBody({
+        event: 'THREAD_META',
+        threadId: dto.threadId,
+        pinned: dto.pinned,
+        pinnedAt: updated.pinnedAt,
+      }),
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<ClearHistoryDto>('threadId')
+  @Throttle(10, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/clear-history')
+  @ApiOperation({
+    summary: 'Clear chat history for me (hides all messages up to now; peer copy untouched)',
+  })
+  async clearHistory(@Request() req, @Body() dto: ClearHistoryDto): Promise<ApiResult> {
+    const updated = await this.participantService.clearHistory(
+      req.user.userId,
+      dto.threadId,
+    );
+    this.sseService.onThreadMeta(
+      req.user.userId,
+      serializeBody({ event: 'THREAD_META', threadId: dto.threadId, clearedAt: updated.clearedAt }),
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SetAliasDto>('threadId')
+  @Throttle(30, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('thread/set-alias')
+  @ApiOperation({
+    summary: 'Set a per-user alias/remark (备注) for a conversation (overrides the displayed name for the caller)',
+  })
+  async setAlias(@Request() req, @Body() dto: SetAliasDto): Promise<ApiResult> {
+    const updated = await this.participantService.setAlias(
+      req.user.userId,
+      dto.threadId,
+      dto.alias,
+    );
+    // Carry the resolved alias (null when cleared) so other devices flip their header/list title live.
+    this.sseService.onThreadMeta(
+      req.user.userId,
+      serializeBody({ event: 'THREAD_META', threadId: dto.threadId, alias: updated.alias }),
+    );
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SearchMessagesDto>('threadId')
+  @Throttle(30, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('search-messages')
+  @ApiOperation({
+    summary: 'Search a conversation by substring (returns lightweight match ids for kernel jump)',
+  })
+  async searchMessages(@Body() dto: SearchMessagesDto): Promise<ApiResult> {
+    // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants). The match
+    // list excludes blocked/muted indirectly: blocked creators' messages are already hidden at the
+    // source by the send fan-out, and clearedAt only affects the user's own view — search returns the
+    // raw id matches; the client jumps the kernel, which loads each via query-messages (re-applying
+    // clearedAt/block). take+1 hasMore trick.
+    const lastId = dto.lastId !== undefined ? BigInt(dto.lastId) : undefined;
+    const rows = await this.messageService.searchMessages(
+      dto.threadId,
+      dto.keyword,
+      dto.take,
+      lastId,
+    );
+    const hasMore = rows.length > dto.take;
+    const data = hasMore ? rows.slice(0, dto.take) : rows;
+    return { code: BusinessCode.OK, message: 'successful', data, hasMore };
+  }
+
+  // No ThreadAccessGuard here — the scope IS the caller's own membership (the service joins their
+  // active ThreadParticipant row), so non-participants simply never see threads they aren't in.
+  // Throttled tighter than the single-thread search (20/min) since this scans every conversation.
+  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @Throttle(20, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('search/global')
+  @ApiOperation({
+    summary: 'Global cross-conversation search (messages by text/file-name + conversations/contacts by display name)',
+  })
+  async searchGlobal(@Request() req, @Body() dto: GlobalSearchDto): Promise<ApiResult> {
+    const userId = req.user.userId;
+    const messageTake = dto.messageTake ?? 20;
+    const threadTake = dto.threadTake ?? 20;
+    const lastMsgId =
+      dto.lastMsgId !== undefined ? BigInt(dto.lastMsgId) : undefined;
+    const [msgResult, threads] = await Promise.all([
+      this.messageService.searchMessagesGlobal(userId, dto.keyword, messageTake, lastMsgId),
+      this.messageService.searchThreadsGlobal(userId, dto.keyword, threadTake),
+    ]);
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: {
+        threads,
+        messages: msgResult.hits,
+        hasMoreMessages: msgResult.hasMore,
+      },
+    };
   }
 }

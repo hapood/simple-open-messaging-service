@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
-import { FolderService, ChatFolder, FolderTypeFilter } from '../../services/folder.service';
+import { FolderService, ChatFolder, FolderTypeFilter, FolderStatusFilter } from '../../services/folder.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { UserService } from '../../services/user.service';
 import { ConversationItem } from '../../services/model';
@@ -41,6 +41,7 @@ export class FolderEditorComponent implements OnInit {
   readonly isEditingExisting = signal(false)
   readonly name = signal('')
   readonly typeFilter = signal<FolderTypeFilter>('ALL')
+  readonly statusFilter = signal<FolderStatusFilter>('NONE')
   readonly includedIds = signal<number[]>([])
   readonly threadOptions = signal<ConversationItem[]>([])
 
@@ -55,6 +56,12 @@ export class FolderEditorComponent implements OnInit {
     { value: 'ALL', key: 'folder.type.all' },
     { value: 'P2P', key: 'folder.type.direct' },
     { value: 'GROUP', key: 'folder.type.group' },
+  ]
+
+  /** Status-rule options; mirrors typeOptions. `key` is resolved in the template. */
+  readonly statusOptions: ReadonlyArray<{ value: FolderStatusFilter; key: string }> = [
+    { value: 'NONE', key: 'folder.status.none' },
+    { value: 'UNREAD', key: 'folder.status.unread' },
   ]
 
   ngOnInit() {
@@ -72,8 +79,10 @@ export class FolderEditorComponent implements OnInit {
    *  Reads the language signal so it re-evaluates on a language switch. */
   summary(f: ChatFolder): string {
     this.language.lang()
-    const key = f.typeFilter === 'ALL' ? 'folder.type.all' : f.typeFilter === 'P2P' ? 'folder.type.direct' : 'folder.type.group'
-    const t = this.transloco.translate(key)
+    const typeKey = f.typeFilter === 'ALL' ? 'folder.type.all' : f.typeFilter === 'P2P' ? 'folder.type.direct' : 'folder.type.group'
+    const parts = [this.transloco.translate(typeKey)]
+    if (f.statusFilter === 'UNREAD') parts.push(this.transloco.translate('folder.status.unread'))
+    const t = parts.join(' · ')
     return f.includedIds.length
       ? `${t} · ${this.transloco.translate('folder.selected', { count: f.includedIds.length })}`
       : t
@@ -88,6 +97,7 @@ export class FolderEditorComponent implements OnInit {
     this.isEditingExisting.set(false)
     this.name.set('')
     this.typeFilter.set('ALL')
+    this.statusFilter.set('NONE')
     this.includedIds.set([])
     this.editing.set(true)
   }
@@ -97,6 +107,7 @@ export class FolderEditorComponent implements OnInit {
     this.isEditingExisting.set(true)
     this.name.set(f.name)
     this.typeFilter.set(f.typeFilter)
+    this.statusFilter.set(f.statusFilter)
     this.includedIds.set([...f.includedIds])
     this.editing.set(true)
   }
@@ -113,7 +124,7 @@ export class FolderEditorComponent implements OnInit {
   save() {
     const name = this.name().trim()
     if (!name) return
-    const payload = { name, typeFilter: this.typeFilter(), includedIds: this.includedIds() }
+    const payload = { name, typeFilter: this.typeFilter(), statusFilter: this.statusFilter(), includedIds: this.includedIds() }
     if (this.editingExistingId) this.folderService.update(this.editingExistingId, payload)
     else this.folderService.create(payload)
     this.routeService.closeDlg(true)

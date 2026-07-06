@@ -1,54 +1,94 @@
 // Invite message row: EMBEDDED + SOLID + side-agnostic. The invite rides the normal chat-bubble shape
-// (tail, sender-grouping, shared avatar — no special gap/avatar logic) but uses ONE solid brand-tinted
-// color for BOTH sides — not the green/white side colors, not a gradient, not translucent — so every
-// invite looks identical regardless of who sent it. The bubble IS the surface (no inner card layer);
-// the invite's richness is its content (a 40px group avatar + bold name + a clock-tagged expiry). The
-// card is a real <button> (keyboard/a11y) so it needs a chrome reset.
+// (sender-grouping, shared avatar) but is rendered as ONE stable card — fixed-width, left-aligned, with
+// a giant translucent brand-logo watermark bleeding off the lower-right edge. One solid brand-tinted
+// color for BOTH sides (not the green/white side colors, not a gradient); the bubble IS the surface
+// (no inner card layer). The card is a real <button> (keyboard/a11y) so it needs a chrome reset.
 @use '../row-base' as *;
 
-// Clock glyph for the expiry meta — an SVG mask; currentColor (the faint expiry text color) fills it.
-$msg-clock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='9'/%3E%3Cpath d='M12 7v5l3 2'/%3E%3C/svg%3E");
-
 // One solid color for both sides (overrides the green/white side bg from row-base). Brand-tinted so
-// it reads as an invite; fully opaque; identical for self and other. Exposed as --invite-bg so the
-// tail reuses the exact same color.
+// it reads as an invite; fully opaque; identical for self and other.
 .msg-bubble.invite {
   --invite-bg: color-mix(in srgb, var(--app-surface) 70%, var(--app-brand) 30%);
   background: var(--invite-bg);
   padding: 8px 10px;
   display: block;
+  position: relative;        // positioning context for the watermark (also inherited from row-base; explicit)
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08); // a touch more elevation than a plain text bubble
-}
-// Tail matches the invite solid (overrides the green/white tail from row-base) — same color both sides.
-.msg-bubble.invite.msg-head::before {
-  background: var(--invite-bg);
+  overflow: hidden;          // clip the giant logo watermark that bleeds past the right/bottom edges — the invite
+                             // card carries no tail (see below), so overflow:hidden is side-effect-free here
 }
 
-// The <button> is the bubble itself; reset native button chrome so the bubble styling wins.
+// No tail on the invite — it is a card, not a tailed bubble, and self/other share one solid surface.
+// Removing the tail ::before (from row-base's .msg-head) also keeps the overflow:hidden above side-effect-free.
+.msg-bubble.invite.msg-head::before {
+  background: var(--invite-bg); // kept for specifity parity with row-base; display:none neutralizes it
+  display: none;
+}
+
+// The <button> is the bubble/card itself; reset native button chrome so the card styling wins.
 .invite-tappable {
   border: none;
   font: inherit;
   color: inherit;
   cursor: pointer;
-  width: 100%;            // the invite spans the full column (a wide card-like bubble, by design)
-  border-radius: inherit; // match the bubble's rounded corners
+  width: 240px;              // FIXED card width — an invite is a stable card, NOT a content-sized bubble. A long
+                             // group name used to stretch the column; a short one shrank it. Absolute width +
+                             // max-width:100% is the cycle-free self-contained-width pattern (see _row-base.scss
+                             // §2: max-width does not participate in content-size computation, so there is no
+                             // cycle); max-width lets it shrink on very narrow viewports without overflowing msg-col.
+  max-width: 100%;
+  border-radius: inherit;    // match the bubble's rounded corners
   outline: none;
+  text-align: left;          // reset the UA button text-align:center → every text line in the card is left-aligned
 }
 .invite-tappable:focus-visible {
   outline: 2px solid var(--app-brand, #2196f3);
   outline-offset: 2px;
 }
 
-// Kicker — the inviter line. Subordinate (muted) so the group identity below is the hero.
+// Giant translucent group watermark — ONLY the white "users" glyph from the group default avatar
+// (user-avatar.component.html; the name-hashed gradient ground is dropped — same foreground-only treatment
+// as a logo mark; see public/group-watermark.svg), parked hard against the UPPER-right and oversized so it
+// bleeds past the card's right/top edges and is clipped by .msg-bubble.invite's overflow:hidden
+// ("bleeds off the card" look). Anchored at the upper-right (not lower-right) on purpose: the figures'
+// bodies stay visible inside the card while only the heads peek past the top edge — anchoring at the
+// lower-right used to clip the bodies off. Absolute positioning takes it out of flow → it does NOT
+// contribute to offsetHeight, so the kernel's height model is untouched. Kept behind the content layer so
+// text stays fully readable. White-on-light needs a higher opacity to register; on dark the white glyph is
+// high-contrast so it is dropped back to a moderate tint (theme-aware via :host-context, same pattern as
+// auth-brand / home-shell).
+.invite-watermark {
+  position: absolute;
+  right: -20px;              // hug the right edge, spilling 20px past it (clipped to nothing outside)
+  top: -15px;                // anchor upper-right: heads peek past the top edge, bodies stay visible inside the card
+  width: 180px;
+  height: 180px;
+  background: url('/group-watermark.svg') no-repeat top right / contain;
+  opacity: 0.7;              // light theme: white glyph on the light brand-tinted surface needs a solid tint to register
+  pointer-events: none;
+  z-index: 0;
+}
+:host-context([data-theme='dark']) .invite-watermark {
+  opacity: 0.28;             // dark theme: white glyph is high-contrast on dark → a moderate tint is enough
+}
+
+// Content layer — lifted above the watermark so all text reads cleanly.
+.invite-card {
+  position: relative;
+  z-index: 1;
+}
+
+// Kicker — a fixed "Group invitation" label (no inviter name) signaling what this card is.
 .invite-title {
   font-size: 12px;
   line-height: 14px; // integer px — see the integer-height contract in _row-base.scss
   color: var(--app-text-muted);
   margin: 0 0 6px;
+  text-align: left;
 }
 
-// Group identity (the hero): a sized 40px group avatar + bold name + a chevron hinting the bubble
-// opens a detail view.
+// Group identity (the hero): a sized 40px group avatar + bold name + a chevron hinting the card opens a
+// detail view.
 .invite-group {
   display: flex;
   align-items: center;
@@ -70,7 +110,10 @@ $msg-clock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   font-weight: 600;
   color: var(--app-text);
   flex: 1 1 auto;
-  min-width: 0;       // allow shrink so the chevron never overflows on a narrow bubble
+  min-width: 0;              // allow shrink so the chevron never overflows on a narrow card
+  white-space: nowrap;       // truncate an over-long group name with an ellipsis (the detail dialog wraps it)
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .invite-chev {
   font-size: 18px;
@@ -80,35 +123,31 @@ $msg-clock: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   margin-left: 2px;
   transition: color 120ms ease;
 }
-// On hover, brand the chevron — a micro-cue that the whole bubble is tappable.
+// On hover, brand the chevron — a micro-cue that the whole card is tappable.
 .invite-tappable:hover .invite-chev {
   color: var(--app-brand);
 }
 
-// Expiry — tertiary meta, sat below the hero by spacing. The clock glyph pairs with the time text.
-.invite-expiry {
+// Valid / Expired status — the card surfaces ONLY the state; the concrete expiry time lives in the
+// expanded invite-detail dialog. A colored dot carries the state at a glance (brand = valid, muted = expired).
+.invite-status {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   font-size: 11px;
   line-height: 13px; // integer px
   color: var(--app-text-faint);
   margin: 6px 0 0;
 }
-.invite-expiry::before {
-  content: '';
-  width: 12px;
-  height: 12px;
+.invite-status-dot {
+  width: 7px;
+  height: 7px;
   flex: 0 0 auto;
-  background-color: currentColor;
-  mask-image: $msg-clock;
-  mask-position: center;
-  mask-size: contain;
-  mask-repeat: no-repeat;
-  -webkit-mask-image: $msg-clock;
-  -webkit-mask-position: center;
-  -webkit-mask-size: contain;
-  -webkit-mask-repeat: no-repeat;
+  border-radius: 50%;
+  background-color: var(--app-brand);
+}
+.invite-status--expired .invite-status-dot {
+  background-color: var(--app-text-faint);
 }
 
 // Expired token → dim the whole preview (the dialog re-checks and disables Join).

@@ -24,10 +24,10 @@ declare const ngDevMode: boolean | null | undefined;
 
 import type { CbSource } from './cb-source';
 import type {
-  CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts, Anchor,
+  CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts, Anchor, KernelState,
 } from './chat-box-scroller';
 
-export type { CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts, Anchor } from './chat-box-scroller';
+export type { CbItem, CbElement, CbHooks, CbOptions, CbScrollInfo, CbDebugStats, CbConfig, ScrollerApi, CbInitOpts, Anchor, KernelState } from './chat-box-scroller';
 
 const DEFAULTS: Required<CbConfig> = {
   edge: 1000, mountItem: 50, thresholdFloor: 6000, vhExtra: 2000, initBatch: 100,
@@ -130,9 +130,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** Reset generation: incremented by openAround; compared after the await in loadOlder/loadNewer so stale batches are
    *  not mounted (guards against a jump overtaking an in-flight load). */
   private gen = 0;
-  /** Re-seed in progress (between resetWindowState and mount): appendLive drops WS during this (already in the source
-   *  cache, retrieved by getNewer when scrolling back). */
-  private resetting = false;
+  /** Kernel lifecycle (category A); see {@link KernelState}. */
+  private state: KernelState = 'steady';
+  /** Derived phase questions (read-only views over {@link state} — single source of truth, cannot drift). Getters, not
+   *  flags, so each access is a FRESH read: the many post-`await` `destroyed` checks stay correct even though TypeScript
+   *  (unsoundly) narrows a mutable member across `await`. */
+  private get steady(): boolean { return this.state === 'steady'; }
+  private get filling(): boolean { return this.state === 'filling'; }
+  private get destroyed(): boolean { return this.state === 'destroyed'; }
   /** Debug switch: turn off the mount checkpoint (balance will not trigger loadOlder/loadNewer). Guarded by ngDevMode
    *  inside balance → removed in prod AOT. Default false (checkpoint loads normally). */
   closeCheckpoint = false;
@@ -150,7 +155,6 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   private resizeDeferred = false;
   private mounting = false;
   private measuring = false;
-  private destroyed = false;
   private dirty = false;
   private rafId = 0;
   private lastScrollTop = 0;
@@ -257,7 +261,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     // id). Plan A relies on overflow-anchor to pin the viewport (no manual compensation). NOT the optimistic-confirm
     // path — that goes through onMessageSignal (reconcile).
     this.source.pushLive(rawItems);
-    if (this.resetting) { this.emit(); return; }
+    if (this.filling) { this.emit(); return; }
     const remaining = rawItems.filter(it => this.indexOfId(it.id) < 0);
     if (remaining.length === 0) { this.emit(); return; }
     if (!this.noNewer) { this.emit(); return; }              // newer end trimmed → cache only
@@ -274,7 +278,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    *  reconcile so the target is the final bottom (the optimistic duplicate is already removed, not counted) — and trim.
    *  Plan A relies on overflow-anchor (no manual scrollTop compensation). */
   async onMessageSignal(): Promise<void> {
-    if (this.destroyed || this.resetting) return;
+    if (!this.steady) return;
     // Single-flight + tail-coalesce (mirrors Kernel B): two SSE frames can land in the same microtask window. Running
     // them concurrently races — the second's loadNewer bails on inflightNewer (orphaning its items in the live cache)
     // and both flipMove the optimistic tail (leaking `animating`, double-playing the shove). Collapse any overlap into
@@ -285,7 +289,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       do {
         this.signalQueued = false;
         await this.runMessageSignal();
-      } while (this.signalQueued && !this.destroyed && !this.resetting);
+      } while (this.signalQueued && this.steady);
     } finally {
       this.signalInFlight = false;
     }
@@ -343,7 +347,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * and need no rebuild. The new entry is marked transient (not a source cursor).
    */
   insertAfter(afterId: string | number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean {
-    if (this.destroyed || this.resetting) return false;
+    if (!this.steady) return false;
     // Empty window: there is no anchor to insert "after", so the item becomes the sole entry (prev=null). This is the
     // first-message-in-an-empty-thread path — afterId is irrelevant there (and typically '' / the optimistic's own id,
     // since tailAnchorId() is empty when nothing is mounted). animate=true: a new message is appearing. Plan A needs no
@@ -389,7 +393,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * with each other and with inserts; only balance is gated by animating. Returns the count scheduled for removal.
    */
   removeItem(ids: string | number | (string | number)[]): number {
-    if (this.destroyed || this.resetting) return 0;
+    if (!this.steady) return 0;
     const list = Array.isArray(ids) ? ids : [ids];
     const targets: Entry<T>[] = [];
     for (const id of list) {
@@ -451,7 +455,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * Plan B's reasoning (DOM scrollHeight may already reflect a pending change).
    */
   private captureAnchor(): Anchor {
-    if (!this.resetting && this.pendingMeasure.length === 0
+    if (this.steady && this.pendingMeasure.length === 0
       && this.viewport.scrollTop + this.vh >= this.totalH() - 1) return { mode: 'bottom' };
     const idx = this.topVisibleIdx();
     if (idx < 0) return { mode: 'bottom' };
@@ -537,7 +541,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * Reset the window around id: unmount the current window → source.init(id, older, newer) fetches one bidirectional
    * batch → mount → fillAround fills both ways → position onto id. Plan A **does not compensate scrollTop** (the
    * browser's overflow-anchor pins the viewport); gen is incremented so in-flight loadOlder/loadNewer are invalidated;
-   * resetting drops appendLive (WS messages are cached in the source, retrieved by getNewer on scroll-back). A centered
+   * the filling state drops appendLive (WS messages are cached in the source, retrieved by getNewer on scroll-back). A centered
    * anchor needs enough content on both sides for a "true center"; fillAround grows the window to threshold (best-effort
    * near boundaries, where clamp concedes).
    */
@@ -567,7 +571,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       this.updateGhost();
       this.emit();
     } finally {
-      this.resetting = false;
+      this.state = 'steady';
     }
   }
 
@@ -686,7 +690,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.inflightOlder = false;
     this.inflightNewer = false;
     this.lastScrollTop = 0;
-    this.resetting = true;
+    this.state = 'filling';
     this.shifting = true;
     this.viewport.scrollTop = 0; // content is empty, reset to zero
     this.shifting = false;
@@ -736,7 +740,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   destroy(): void {
-    this.destroyed = true;
+    this.state = 'destroyed';
     cancelAnimationFrame(this.rafId);
     cancelAnimationFrame(this.vvRafId); this.vvRafId = 0;
     window.visualViewport?.removeEventListener('resize', this.onVisualViewportChange);
@@ -1344,7 +1348,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * is reconcileOptimistic's job on confirm) — both are no-ops here.
    */
   async reconcilePending(): Promise<void> {
-    if (this.destroyed || this.resetting) return;
+    if (!this.steady) return;
     const fresh = this.source.getPending();
 
     // Optimistic entries form a contiguous tail block; collect the non-leaving ones (leaving ones are mid-exit).
@@ -1618,7 +1622,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
       }
     }
     this.measuring = false;
-    if (ngDevMode && (zeros > 0 || this.resetting)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
+    if (ngDevMode && (zeros > 0 || this.filling)) console.log('[JUMP] measure n=', entries.length, 'zeroH=', zeros, 'contentScrollH=', this.content.scrollHeight);
   }
 
   private emit(): void { this.onScroll?.(this.getInfo()); }

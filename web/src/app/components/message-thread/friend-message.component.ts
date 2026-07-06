@@ -1,5 +1,6 @@
 import {
   Component,
+  computed,
   effect,
   ElementRef,
   EnvironmentInjector,
@@ -12,6 +13,7 @@ import {
 } from '@angular/core';
 import { HttpEventType, HttpResponse } from '@angular/common/http';
 import { firstValueFrom, filter, map } from 'rxjs';
+import { TranslocoModule } from '@jsverse/transloco';
 import {
   ChatBoxScroller,
   type ScrollerApi,
@@ -24,6 +26,7 @@ import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../me
 import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
+import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ChatInputComponent, type ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
@@ -32,6 +35,7 @@ import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import { LayoutService } from '../../services/layout.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import { GalleryViewerService } from '../gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../file-detail-viewer/file-detail-viewer.service';
 import type { ConversationItem, StandardResponse } from '../../services/model';
@@ -58,7 +62,7 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
 @Component({
   selector: 'app-message-thread',
   standalone: true,
-  imports: [MessageHeaderComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent],
+  imports: [MessageHeaderComponent, MessageSearchComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, TranslocoModule],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss',
 })
@@ -87,6 +91,7 @@ export class MessageThreadComponent implements OnDestroy {
   private readonly layout = inject(LayoutService);
   private readonly galleryViewer = inject(GalleryViewerService);
   private readonly fileDetail = inject(FileDetailService);
+  private readonly convList = inject(ConversationListService);
 
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
@@ -107,6 +112,12 @@ export class MessageThreadComponent implements OnDestroy {
   /** Reveal the skeleton only after this delay (ms) — the "don't flash on fast loads" gate. */
   private static readonly SKELETON_DELAY = 300;
   private skeletonTimer?: ReturnType<typeof setTimeout>;
+
+  /** Whether the in-chat search bar is open (toggled from the header MORE menu). */
+  readonly searchOpen = signal(false);
+  /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
+   *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
+  readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
 
   /** Optimistic sends queued while the newer end was trimmed (scrolled into history); drained in onScroll once
    *  the kernel reports noNewer (the mounted tail is the global newest → safe to anchor on). */
@@ -462,6 +473,39 @@ export class MessageThreadComponent implements OnDestroy {
   teardownKernel(): void {
     this.teardown();
     this.currentTrdId = null;
+  }
+
+  // ---------- chat header MORE-menu integration ----------
+
+  /** Jump the kernel to a search match id (from the search bar's prev/next). The kernel re-seeds around
+   *  an unmounted id and flashes the row via the existing highlight path. */
+  onSearchJump(id: string): void {
+    this.scroller?.scrollToIndex(id, 'center', true);
+  }
+
+  /** Clear-history landed on the server: tear down + re-init so the now-empty view (filtered by the
+   *  caller's clearedAt watermark) reloads from scratch. Same shape as teardownKernel but re-inits on the
+   *  same item; the constructor effect does NOT re-fire (its deps — viewport/content/userMsgTrd — are
+   *  unchanged), so this is the sole re-init path here. */
+  onHistoryCleared(): void {
+    const vp = this.viewportRef()?.nativeElement;
+    const ct = this.contentRef()?.nativeElement;
+    const trd = this.userMsgTrd();
+    if (!vp || !ct || !trd) return;
+    this.teardown();
+    this.currentTrdId = null;
+    this.initScroller(vp, ct, trd);
+    this.currentTrdId = trd.id;
+  }
+
+  /** Unblock the P2P peer from the blocked banner (mirrors the header menu's unblock path). */
+  unblockPeer(): void {
+    const trd = this.userMsgTrd();
+    const peerId = trd?.peerUser?.id;
+    if (peerId === undefined) return;
+    this.userService.setBlock({ userId: peerId, block: false }).subscribe((res) => {
+      if (res.code === 0) this.convList.applyThreadMeta(trd!.threadId, { blocked: false });
+    });
   }
 
   ngOnDestroy(): void {

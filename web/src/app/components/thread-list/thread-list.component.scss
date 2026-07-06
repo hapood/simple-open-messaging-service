@@ -65,6 +65,18 @@
       line-height: 16px;
     }
 
+    // Mute indicator: a small speaker-slash next to the timestamp. Grey, matching the WhatsApp /
+    // Telegram / WeChat convention (mute reads as "quiet", not "alert" — danger red is reserved for
+    // block/report/delete). Integer 16px line-height keeps the row's measured height whole (CLAUDE.md
+    // integer-pixel rule); the 14px icon sits inside that line box without growing it.
+    .thread-muted {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      color: var(--app-text-muted);
+      line-height: 16px;
+    }
+
     .thread-msg {
       flex: 1 1 auto;
       min-width: 0;

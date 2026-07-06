@@ -29,11 +29,68 @@ export class ThreadParticipantService {
     return p && p.leftAt === null ? p : null;
   }
 
-  /** Active member userIds of a conversation — the SSE fan-out set (P2P and GROUP alike). */
+  /** Active member userIds of a conversation — the SSE fan-out set (P2P and GROUP alike).
+   *  Carries `muted` so the send path can drop notifications / push / notif-snapshot for muted
+   *  recipients (the in-app bubble still renders via their own SSE pull — mute is a notification
+   *  concern, not a delivery concern). */
   getActiveParticipantUserIds(threadId: number) {
     return this.prisma.threadParticipant.findMany({
       where: { threadId, leftAt: null },
-      select: { userId: true },
+      select: { userId: true, muted: true },
+    });
+  }
+
+  /** The caller's participant row with the thread's type, only if still active. Used by ThreadAccessGuard
+   *  to attach `threadType` so message routes can branch on P2P vs GROUP (e.g. block-filter scoping). */
+  async findActiveParticipantWithThread(userId: number, threadId: number) {
+    const p = await this.prisma.threadParticipant.findUnique({
+      where: { userId_threadId: { userId, threadId } },
+      include: { thread: { select: { type: true } } },
+    });
+    return p && p.leftAt === null ? p : null;
+  }
+
+  /** Toggle mute for the caller's row. Idempotent (writing the same value is a no-op write). */
+  setMuted(userId: number, threadId: number, muted: boolean) {
+    return this.prisma.threadParticipant.update({
+      where: { userId_threadId: { userId, threadId } },
+      data: { muted },
+    });
+  }
+
+  /**
+   * Toggle pin for the caller's row. Pinning stamps pinnedAt = now (most-recently-pinned-first ordering);
+   * unpin clears both the flag and the timestamp. Idempotent at the row level — re-pinning an already
+   * pinned thread refreshes pinnedAt so it jumps to the top of the pinned tier.
+   */
+  setPinned(userId: number, threadId: number, pinned: boolean) {
+    return this.prisma.threadParticipant.update({
+      where: { userId_threadId: { userId, threadId } },
+      data: pinned ? { pinned: true, pinnedAt: new Date() } : { pinned: false, pinnedAt: null },
+    });
+  }
+
+  /**
+   * Per-user "clear chat history": stamp clearedAt = now. query-messages then hides rows older than this
+   * watermark FOR THIS USER ONLY — the peer's copy is untouched (WhatsApp "clear for me"). Stamping
+   * (not deleting) keeps the Message rows intact for the peer and for any future un-clear, and keeps
+   * lastReadMsgId untouched so the unread badge doesn't regress.
+   */
+  clearHistory(userId: number, threadId: number) {
+    return this.prisma.threadParticipant.update({
+      where: { userId_threadId: { userId, threadId } },
+      data: { clearedAt: new Date() },
+    });
+  }
+
+  /** Set a per-user alias/remark for a conversation. An empty/whitespace string CLEARS it (null) so the
+   *  real name shows again. The alias overrides peer.uniqName (P2P) / group.name (GROUP) in the caller's
+   *  view only. */
+  setAlias(userId: number, threadId: number, alias: string | undefined) {
+    const trimmed = alias?.trim();
+    return this.prisma.threadParticipant.update({
+      where: { userId_threadId: { userId, threadId } },
+      data: { alias: trimmed && trimmed.length > 0 ? trimmed : null },
     });
   }
 

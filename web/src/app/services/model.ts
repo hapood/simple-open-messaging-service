@@ -24,6 +24,16 @@ export type ConversationItem = Omit<
   group: S['GroupResponseDto']
 }
 
+/**
+ * The name to display for a conversation in the chat header + conversation list. A per-user alias (备注)
+ * overrides the real name (peer handle for P2P, group name for GROUP); otherwise the real name is used.
+ * Single source of truth — call this everywhere a thread title is rendered so an alias takes effect uniformly.
+ */
+export function displayThreadName(t: ConversationItem): string {
+  if (t.alias) return t.alias
+  return t.type === 'P2P' ? t.peerUser.uniqName : t.group.name
+}
+
 /** A P2P relationship row (thread/by-user-id returns this). */
 export type Friendship = S['FriendshipDto']
 /** A pending-list row — the backend additionally attaches the peer's userId for client profile lookup. */
@@ -47,4 +57,34 @@ export interface StandardResponse<T = unknown> {
   data?: T
   /** Only paginated endpoints (query-messages) return this: whether an earlier page exists. */
   hasMore?: boolean
+}
+
+/** One message hit from POST /search/global. The snippet is server-built (keyword-centered excerpt for
+ *  PURE_TEXT, attachment name for FILE); createdAt is a ms timestamp (the serializer turns Date→number). */
+export interface GlobalSearchMessageHit {
+  id: string
+  threadId: number
+  snippet: string
+  contentType: string
+  createdAt: number
+  creatorName: string
+  threadDisplayName: string
+  threadAvatar: string
+  threadType: MessageThreadType
+}
+
+/** One conversation/contact hit from POST /search/global. `name` is already the display name (alias
+ *  precedence over the real group/peer name), matching the conversation list. */
+export interface GlobalSearchThreadHit {
+  threadId: number
+  type: MessageThreadType
+  name: string
+  avatar: string
+  lastMessageAt: number | null
+}
+
+export interface GlobalSearchResult {
+  threads: GlobalSearchThreadHit[]
+  messages: GlobalSearchMessageHit[]
+  hasMoreMessages: boolean
 }

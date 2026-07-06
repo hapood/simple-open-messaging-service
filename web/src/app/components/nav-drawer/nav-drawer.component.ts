@@ -10,12 +10,12 @@ import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
 
 /**
- * Left navigation drawer: mat-sidenav(mode=over) + avatar/user-name + action items.
- * Replaces the home-header's hand-written material-menu. The over mode ships
- * backdrop-click close, ESC close, focus trap, and slide animation — fixing every
- * shortcoming of the old dropdown at once. Main content is projected via
- * <ng-content> into mat-sidenav-content, so mobile/tablet-home wrap their content
- * in <app-nav-drawer>.
+ * Left navigation drawer — a shell-level overlay (host is position:fixed; see the SCSS), NOT a
+ * wrapper around the thread list. Rendering only the mat-sidenav panel + its backdrop at the shell
+ * level makes the backdrop span the full viewport (covering the inline chat too), instead of being
+ * scoped to the thread-list column as it was when the list was projected into mat-sidenav-content.
+ * mode=over still gives backdrop-click close, ESC close, focus trap, and the slide animation. The
+ * thread list itself is a plain sibling column owned by HomeShellComponent.
  */
 @Component({
   selector: 'app-nav-drawer',
@@ -28,7 +28,8 @@ export class NavDrawerComponent {
   readonly AppIconType = AppIconType
   /** Callback to refresh the list after a group is created (forwarded from the parent). */
   readonly onThreadListChanged = input<(() => void) | undefined>(undefined)
-  /** Emits when the drawer opens/closes (so the parent can react, e.g. close the search box). */
+  /** Emits when the drawer opens/closes (so the parent can react, e.g. close the search box). Fires
+   *  at the end of the open/close animation — Material's `openedChange` semantics. */
   readonly drawerOpenChange = output<boolean>()
 
   private readonly sidenav = viewChild(MatSidenav)
@@ -54,11 +55,6 @@ export class NavDrawerComponent {
   });
   /** Cycle theme without closing the drawer, so the change is visible and re-toggleable. */
   cycleTheme(): void { this.themeService.cycleMode(); }
-
-  /** Native-script label for the current language (always self-identifies). */
-  readonly langLabel = this.languageService.langLabel;
-  /** Cycle language without closing the drawer, so the change is visible and re-toggleable. */
-  cycleLang(): void { this.languageService.cycleLang(); }
 
   toggle() { this.sidenav()?.toggle() }
   close() { this.sidenav()?.close() }

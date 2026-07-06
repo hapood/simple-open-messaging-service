@@ -2,7 +2,7 @@
 // the request after a successful auth guard (JwtAuthGuard / LocalAuthGuard / AdminAuthGuard).
 // Augmenting the interface here gives the whole codebase type-safe access to `req.user`
 // (userId for the C-end auth, adminId for the admin console) without scattering casts.
-import type { Group, ThreadParticipant } from '../prisma/generated/client.js';
+import type { Group, MessageThreadType, ThreadParticipant } from '../prisma/generated/client.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -29,6 +29,9 @@ declare module 'fastify' {
      */
     threadAccess?: {
       threadId: number;
+      /** P2P vs GROUP — resolved by the guard so message routes can branch (e.g. block-filter scoping
+       *  applies to P2P only; group threads leave blocked members' messages visible). */
+      threadType: MessageThreadType;
       participant: ThreadParticipant;
     };
   }

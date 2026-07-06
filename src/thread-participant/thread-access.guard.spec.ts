@@ -15,7 +15,7 @@ import { RESOURCE_ID_KEY } from '../common/resource-id.decorator.js';
  */
 describe('ThreadAccessGuard', () => {
   const participantService = {
-    findActiveParticipant: vi.fn(),
+    findActiveParticipantWithThread: vi.fn(),
   };
   // The guard reads the body field the route declared via @ResourceId<Dto>('threadId'). The mock
   // returns that field by default; the "missing @ResourceId" test overrides it to undefined.
@@ -30,7 +30,7 @@ describe('ThreadAccessGuard', () => {
   // Call history on the shared mocks persists across tests; reset so per-test assertions see only the
   // current test's calls.
   beforeEach(() => {
-    participantService.findActiveParticipant.mockReset();
+    participantService.findActiveParticipantWithThread.mockReset();
     reflector.get.mockReset();
     reflector.get.mockReturnValue('threadId');
   });
@@ -49,20 +49,20 @@ describe('ThreadAccessGuard', () => {
   }
 
   it('attaches req.threadAccess and allows an ACTIVE member', async () => {
-    const participant = { id: 9, userId: 7, threadId: 12, leftAt: null };
-    participantService.findActiveParticipant.mockResolvedValueOnce(participant);
+    const participant = { id: 9, userId: 7, threadId: 12, leftAt: null, thread: { type: "P2P" } };
+    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(participant);
     const ctx = makeCtx(7, { threadId: 12 });
 
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(reflector.get).toHaveBeenCalledWith(RESOURCE_ID_KEY, expect.anything());
-    expect(participantService.findActiveParticipant).toHaveBeenCalledWith(7, 12);
+    expect(participantService.findActiveParticipantWithThread).toHaveBeenCalledWith(7, 12);
     expect(
       (ctx.switchToHttp().getRequest() as { threadAccess: unknown }).threadAccess,
-    ).toEqual({ threadId: 12, participant });
+    ).toEqual({ threadId: 12, threadType: "P2P", participant });
   });
 
   it('throws THREAD_NOT_FOUND (non-leaking) when the caller is not an active member', async () => {
-    participantService.findActiveParticipant.mockResolvedValueOnce(null);
+    participantService.findActiveParticipantWithThread.mockResolvedValueOnce(null);
     const ctx = makeCtx(7, { threadId: 12 });
 
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
@@ -77,7 +77,7 @@ describe('ThreadAccessGuard', () => {
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
       bizCode: BusinessCode.VALIDATION_FAILED,
     });
-    expect(participantService.findActiveParticipant).not.toHaveBeenCalled();
+    expect(participantService.findActiveParticipantWithThread).not.toHaveBeenCalled();
   });
 
   it('throws INTERNAL when the route is missing @ResourceId (wiring bug, not a client error)', async () => {
@@ -86,6 +86,6 @@ describe('ThreadAccessGuard', () => {
     await expect(guard.canActivate(ctx)).rejects.toMatchObject({
       bizCode: BusinessCode.INTERNAL,
     });
-    expect(participantService.findActiveParticipant).not.toHaveBeenCalled();
+    expect(participantService.findActiveParticipantWithThread).not.toHaveBeenCalled();
   });
 });

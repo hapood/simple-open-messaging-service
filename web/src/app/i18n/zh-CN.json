@@ -33,6 +33,7 @@
     "folders": "分组",
     "logout": "退出登录",
     "settings": "设置",
+    "search": "搜索",
     "themeAria": "主题：{{label}}",
     "languageAria": "语言：{{label}}",
     "theme": {
@@ -45,6 +46,15 @@
     "openMenuAria": "打开菜单",
     "searchAria": "搜索",
     "resizerTitle": "拖动以调整大小；双击恢复默认"
+  },
+  "globalSearch": {
+    "placeholder": "搜索消息、聊天和联系人",
+    "back": "返回",
+    "clear": "清除",
+    "groupThreads": "聊天和联系人",
+    "groupMessages": "消息",
+    "noResults": "无搜索结果",
+    "moreMessages": "还有更多消息，请缩小范围以查看"
   },
   "auth": {
     "loginTitle": "登录 SOMS",
@@ -76,7 +86,8 @@
     }
   },
   "profile": {
-    "title": "个人资料",
+    "title": "联系人信息",
+    "editTitle": "编辑个人资料",
     "name": "昵称",
     "namePlaceholder": "你的昵称",
     "bio": "个人简介",
@@ -116,6 +127,11 @@
     "noChats": "暂无聊天",
     "deleteFolder": "删除分组",
     "selected": "{count, plural, other {已选 # 项}}",
+    "statusRule": "状态",
+    "status": {
+      "none": "不限",
+      "unread": "仅未读"
+    },
     "type": {
       "all": "全部类型",
       "direct": "单聊",
@@ -187,14 +203,12 @@
     "searchPlaceholder": "搜索",
     "groupNamePlaceholder": "群名称",
     "setPhotoAria": "设置群头像",
-    "createAria": "创建群组",
-    "nextAria": "下一步",
-    "memberCount": "{count, plural, other {# 名成员}}"
+    "create": "创建"
   },
   "chat": {
     "emptyTagline": "选择一个聊天开始对话",
     "emptyFooter": "你的消息在传输中受端到端加密保护，SOMS 无法读取。",
-    "searchPlaceholder": "搜索",
+    "searchPlaceholder": "搜索聊天名称",
     "all": "全部",
     "loading": "加载中…",
     "inputPlaceholder": "输入消息…",
@@ -203,9 +217,11 @@
     "openFileAria": "打开文件",
     "retrySendAria": "重试发送",
     "fileFallback": "文件",
-    "inviteTitle": "{{name}} 邀请你加入：",
     "invitedBy": "{{name}} 邀请你",
     "validUntil": "有效期至 {{date}}",
+    "groupInvitation": "群聊邀请",
+    "inviteStatusValid": "有效",
+    "inviteStatusExpired": "已过期",
     "joined": "已加入 ✓",
     "openGroup": "打开群组",
     "join": "加入",
@@ -217,7 +233,37 @@
       "video": "[视频]",
       "file": "[文件]",
       "voice": "[语音消息]"
-    }
+    },
+    "menuViewInfo": "查看资料",
+    "menuSearch": "搜索",
+    "menuMute": "静音通知",
+    "menuUnmute": "取消静音",
+    "menuPin": "置顶",
+    "menuUnpin": "取消置顶",
+    "menuMarkRead": "标为已读",
+    "menuClearHistory": "清空消息",
+    "clearConfirmTitle": "清空全部消息？",
+    "clearConfirmBody": "将清空此聊天中的所有消息。此操作无法撤销。",
+    "clearConfirmAction": "清空消息",
+    "menuBlock": "拉黑",
+    "menuUnblock": "取消拉黑",
+    "menuBlockConfirm": "确定拉黑？对方将无法向你发送消息。",
+    "menuReport": "举报",
+    "menuReportPrompt": "举报该联系人？请输入原因。",
+    "menuReportSent": "已举报，感谢反馈。",
+    "menuDeleteChat": "删除聊天",
+    "menuDeleteChatConfirm": "删除此聊天并移除好友？",
+    "menuLeaveGroup": "退出群聊",
+    "menuLeaveGroupConfirm": "退出此群聊？",
+    "menuConfirm": "确认",
+    "menuCancel": "取消",
+    "blockedBanner": "你已拉黑该联系人。点击取消拉黑。",
+    "searchInChatPlaceholder": "在此聊天中搜索",
+    "searchNoResult": "无结果",
+    "searchCount": "{{i}} / {{n}}",
+    "alias": "备注",
+    "aliasAdd": "添加备注",
+    "aliasPlaceholder": "输入备注（如：Alice（工作））"
   },
   "gallery": {
     "failed": "图片加载失败",
@@ -244,7 +290,8 @@
     "noMatchSub": "换个关键词试试，或清除搜索。",
     "emptyTitle": "暂无聊天",
     "emptySub": "添加好友，开始你的第一次对话。",
-    "addFriend": "添加好友"
+    "addFriend": "添加好友",
+    "muted": "已静音"
   },
   "errors": {
     "removedFromGroup": "你已被移出 {{group}}",

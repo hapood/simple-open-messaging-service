@@ -1,9 +1,9 @@
-<div class="edit-profile">
+<div class="edit-profile" [appFitDialog]="fitOpts">
   <div class="msg-header">
     <button class="icon-btn" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
-    <span class="title">{{ 'profile.title' | transloco }}</span>
+    <span class="title">{{ 'profile.editTitle' | transloco }}</span>
     <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.save' | transloco }}</button>
   </div>
 

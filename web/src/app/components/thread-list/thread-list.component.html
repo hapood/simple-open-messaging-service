@@ -28,12 +28,17 @@
           <div class="thread-item" [attr.data-flip-key]="thread.threadId" [ngClass]="{ active: thread.threadId === openThreadId() }" (click)="onUsrTrdClick(thread)">
             @if (thread.type === 'P2P') {
               <div class="thread-avatar">
-                <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
+                <app-user-avatar [type]="UserAvatarType.OTHER" [name]="displayName(thread)"
                   [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
               </div>
               <div class="thread-info">
                 <div class="thread-row">
-                  <span class="thread-name">{{ thread.peerUser.uniqName }}</span>
+                  <span class="thread-name">{{ displayName(thread) }}</span>
+                  @if (thread.muted) {
+                    <span class="thread-muted" [title]="'threadList.muted' | transloco">
+                      <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                    </span>
+                  }
                   <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
                 </div>
                 <div class="thread-row">
@@ -45,12 +50,17 @@
               </div>
             } @else {
               <div class="thread-avatar">
-                <app-user-avatar [type]="UserAvatarType.GROUP" [name]="thread.group.name"
+                <app-user-avatar [type]="UserAvatarType.GROUP" [name]="displayName(thread)"
                   [src]="thread.group.avatar"></app-user-avatar>
               </div>
               <div class="thread-info">
                 <div class="thread-row">
-                  <span class="thread-name">{{ thread.group.name }}</span>
+                  <span class="thread-name">{{ displayName(thread) }}</span>
+                  @if (thread.muted) {
+                    <span class="thread-muted" [title]="'threadList.muted' | transloco">
+                      <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                    </span>
+                  }
                   <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
                 </div>
                 <div class="thread-row">

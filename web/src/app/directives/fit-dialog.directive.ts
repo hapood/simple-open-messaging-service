@@ -1,4 +1,4 @@
-import { Directive, ElementRef, Input, OnDestroy, OnInit, inject } from '@angular/core';
+import { Directive, ElementRef, Input, OnDestroy, AfterViewInit, inject } from '@angular/core';
 import { LayoutService } from '../services/layout.service';
 
 /**
@@ -50,7 +50,7 @@ export interface FitDialogOptions {
 }
 
 @Directive({ selector: '[appFitDialog]' })
-export class FitDialogDirective implements OnInit, OnDestroy {
+export class FitDialogDirective implements AfterViewInit, OnDestroy {
   private readonly host = inject(ElementRef<HTMLElement>);
   private readonly layout = inject(LayoutService);
 
@@ -61,24 +61,26 @@ export class FitDialogDirective implements OnInit, OnDestroy {
   /** Bound via `[appFitDialog]="opts"`; bare `[appFitDialog]` yields '' → all defaults. */
   @Input('appFitDialog') opts: FitDialogOptions | '' = '';
 
-  ngOnInit(): void {
+  ngAfterViewInit(): void {
     if (!this.layout.isDesktop()) return; // mobile/tablet are full-screen, no fit needed
     const el = this.host.nativeElement;
     // The host (app-xxx / root div) defaults to display:inline, which breaks scrollHeight and flex
     // layout; promote to block only when it's actually inline — never disturb an existing flex column.
     const disp = getComputedStyle(el).display;
     if (disp === 'inline' || disp === 'inline-block') el.style.display = 'block';
-    // First paint: pin to the natural content height (clamped), so the dialog is at its final size
-    // from the very first frame — neither "auto-shrinks then jumps to the locked value" nor "sits at
-    // the minHeight floor then grows to natural" (the latter is the edit-profile symptom). The RO
-    // below still catches height changes from async content loads. If an ancestor is still
-    // display:none here, measure() returns 0 and clamp falls back to the minHeight floor — identical
-    // to the old behavior, and the RO corrects to the real natural height once visible.
+    // Measure in ngAfterViewInit, NOT ngOnInit: a directive's ngOnInit fires when the host node is
+    // created but BEFORE its template children (header/body/avatar/handle/…) are rendered, so
+    // scrollHeight read there is ~0 → clamp fell back to the minHeight floor (380) → the dialog
+    // painted short, then the ResizeObserver re-locked to the real natural height (~510) once the
+    // children rendered. That re-lock was the visible "grows after show" jump (the text lines were
+    // just the content arriving in the growth frame). ngAfterViewInit runs after the host's whole
+    // view is initialized and still within the same change-detection pass (before the browser
+    // paints), so the first pin already equals the final natural height — nothing to grow to.
+    // If an ancestor is still display:none here, measure() returns 0 and clamp falls back to the
+    // minHeight floor; the RO below then corrects to the real natural height once visible.
     const natural = this.measure();
     const height = this.clamp(natural);
     el.style.height = height + 'px';
-    // Temporary diagnostic: confirms first paint == final (natural should equal height → no grow). Remove after verifying.
-    console.log('[appFitDialog] init %s natural=%d height=%d', el.tagName, natural, height);
     this.ro = new ResizeObserver(() => this.onResize());
     this.ro.observe(el);
   }

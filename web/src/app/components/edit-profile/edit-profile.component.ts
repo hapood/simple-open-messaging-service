@@ -8,6 +8,7 @@ import { WebsocketService } from '../../services/websocket.service';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 
 /**
  * Edit-profile dialog (WhatsApp-minimal): avatar + display name + bio; the login handle is read-only.
@@ -16,7 +17,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
  */
 @Component({
   selector: 'app-edit-profile',
-  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent, TranslocoPipe],
+  imports: [FormsModule, MatButtonModule, UserAvatarComponent, IconComponent, FitDialogDirective, TranslocoPipe],
   templateUrl: './edit-profile.component.html',
   styleUrl: './edit-profile.component.scss',
 })
@@ -29,6 +30,9 @@ export class EditProfileComponent {
 
   readonly UserAvatarType = UserAvatarType
   readonly AppIconType = AppIconType
+  /** Pins the dialog to its natural height (clamped to 80vh) on desktop so the body scrolls
+   *  internally and the header stays fixed — matches the other popup dialogs. */
+  readonly fitOpts = { minHeight: 380 } as const
 
   readonly sessionProfile = this.userService.sessionProfile
 
