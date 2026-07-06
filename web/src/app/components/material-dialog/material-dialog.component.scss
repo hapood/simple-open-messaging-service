@@ -1,6 +1,13 @@
 .material-modal {
   position: fixed;
-  z-index: 1;
+  // The dialog layer must sit above the whole app shell. The shell's routed overlays (mobile chat-slot /
+  // aside-slot) paint at z-index 30/40, and the A/B ChatPane's absolute layers resolve at the SAME root
+  // stacking context (no ancestor creates one) at z-index 2-3 — so the old z-index:1 was occluded by both,
+  // hiding every popup (new-group, etc.). 1000 is the app's elevated-UI tier (matches chat-editor), staying
+  // below the 1100 lightbox viewers (the documented top-most overlay). Nested popups stack via
+  // [style]="{zIndex:$index}" (0,1,2…) scoped WITHIN this element's own stacking context (position:fixed +
+  // z-index), so they order correctly regardless of this base value.
+  z-index: 1000;
   left: 0;
   top: 0;
   width: 100vw;
