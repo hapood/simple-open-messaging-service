@@ -32,6 +32,7 @@
     "newGroup": "新建群组",
     "folders": "分组",
     "logout": "退出登录",
+    "settings": "设置",
     "themeAria": "主题：{{label}}",
     "languageAria": "语言：{{label}}",
     "theme": {
@@ -203,6 +204,7 @@
     "retrySendAria": "重试发送",
     "fileFallback": "文件",
     "inviteTitle": "{{name}} 邀请你加入：",
+    "invitedBy": "{{name}} 邀请你",
     "validUntil": "有效期至 {{date}}",
     "joined": "已加入 ✓",
     "openGroup": "打开群组",
@@ -316,5 +318,35 @@
   "notif": {
     "missedOne": "你离开时 {{name}} 给你发了新消息",
     "missedMany": "你有 {{count}} 个会话的新消息"
+  },
+  "settings": {
+    "title": "设置",
+    "appearance": "外观",
+    "theme": "主题",
+    "themeSystem": "跟随系统",
+    "themeLight": "浅色",
+    "themeDark": "深色",
+    "language": "语言",
+    "languageRow": "语言",
+    "push": "推送",
+    "fcm": "FCM 推送",
+    "fcmActive": "已启用",
+    "fcmUnavailable": "不可用（无 Google 服务）",
+    "fcmCheckButton": "检测",
+    "fcmChecking": "检测中…",
+    "fcmLastCheck": "上次检测 {{time}}",
+    "fcmNever": "未检测",
+    "keepAliveFgs": "前台实时保活",
+    "keepAliveFgsDesc": "后台保持连接，消息近实时到达（FCM 不可用时使用）。Android 限制每日约 6 小时。",
+    "fgsHintFcmActive": "FCM 已启用，前台服务无需运行",
+    "keepAlivePoll": "定时拉取（约每 6h）",
+    "keepAlivePollDesc": "大约每 6 小时检查一次新消息。关闭可省电——通知可能会延迟到达。",
+    "nextPullLabel": "下次拉取",
+    "nextPullApprox": "约 {{time}}",
+    "nextPullSoon": "即将",
+    "about": "关于",
+    "version": "版本",
+    "backend": "服务器",
+    "notConnected": "未配置"
   }
 }

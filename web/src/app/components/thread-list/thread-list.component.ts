@@ -1,4 +1,4 @@
-import { Component, input, signal, computed, EventEmitter, Output, inject, OnInit } from '@angular/core';
+import { Component, input, signal, computed, EventEmitter, Output, inject, OnInit, ElementRef, effect } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service'
@@ -10,6 +10,7 @@ import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { ChatFolder, inFolder } from '../../services/folder.service'
 import { LanguageService } from '../../services/language.service'
 import { formatListTime } from '../message-cards/date-format'
+import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
 
 /**
  * Conversation list view. A thin view over the shared ConversationListService (the client-side source
@@ -34,6 +35,33 @@ export class ThreadListComponent implements OnInit {
   private readonly userService = inject(UserService)
   private readonly transloco = inject(TranslocoService)
   private readonly language = inject(LanguageService)
+  private readonly host = inject(ElementRef)
+  /** Last-known row rects — the "before" snapshot the next top-insert FLIPs against. Refreshed on
+   *  every render that doesn't itself animate, so a later insert measures against current positions. */
+  private prevRects = new Map<string, DOMRect>()
+
+  constructor() {
+    // FLIP list animation: re-runs whenever the shared list mutates (read items() reactively). The
+    // rAF defers the rect read until the DOM has settled into the new layout; on a deliberate
+    // top-insert (convList.topInserted pulse) it plays the enter + shift, otherwise it refreshes the
+    // "before" snapshot so routine reloads / message bumps / filter changes keep the map current
+    // without animating.
+    effect(() => {
+      this.convList.items()
+      requestAnimationFrame(() => {
+        const container = (this.host.nativeElement as HTMLElement | null)
+          ?.querySelector('.thread-list') as HTMLElement | null
+        if (!container) return
+        const tid = this.convList.topInserted()
+        if (tid != null) {
+          this.prevRects = playFlipList(container, this.prevRects)
+          this.convList.clearTopInserted()
+        } else {
+          this.prevRects = snapshotFlipRects(container)
+        }
+      })
+    })
+  }
 
   readonly items = this.convList.items
   readonly status = this.convList.status

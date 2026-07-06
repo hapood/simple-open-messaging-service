@@ -49,7 +49,14 @@ export class LanguageService {
   readonly lang = signal<AppLang>(this.resolveInitial());
 
   /** Native-script label for the switcher row (`'English'` / `'简体中文'`). */
-  readonly langLabel = computed(() => NATIVE_LABEL[this.lang()]);
+  readonly langLabel = computed(() => this.langLabelOf(this.lang()));
+
+  /** Native-script label for an arbitrary language id — used to render each option in pickers
+   *  that list every available language (e.g. the Settings dropdown). Deliberately not translated:
+   *  each language self-identifies. */
+  langLabelOf(l: AppLang): string {
+    return NATIVE_LABEL[l];
+  }
 
   private readonly transloco = inject(TranslocoService);
 

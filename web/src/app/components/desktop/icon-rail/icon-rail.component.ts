@@ -1,4 +1,5 @@
 import { Component, inject, input, computed } from '@angular/core';
+import { Router } from '@angular/router';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../../icon/icon.component';
@@ -64,6 +65,10 @@ import { LanguageService } from '../../../services/language.service';
           [attr.aria-label]="'nav.languageAria' | transloco:{ label: langLabel() }">
           <app-icon [type]="AppIconType.GLOBE" [style]="{ width: '24px', height: '24px' }"></app-icon>
         </button>
+        <button class="rail-btn" (click)="settings()"
+          [title]="'nav.settings' | transloco" [attr.aria-label]="'nav.settings' | transloco">
+          <app-icon [type]="AppIconType.SETTINGS" [style]="{ width: '24px', height: '24px' }"></app-icon>
+        </button>
       </div>
     </div>
   `,
@@ -120,6 +125,7 @@ export class IconRailComponent {
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
+  private readonly router = inject(Router);
   /** Current logged-in profile (used for the SELF avatar's initial). */
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -157,5 +163,10 @@ export class IconRailComponent {
 
   folderEditor() {
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
+  }
+
+  /** Open the Settings page in the aside outlet (same surface profile / group-info use). */
+  settings(): void {
+    void this.router.navigate([{ outlets: { aside: ['settings'] } }])
   }
 }

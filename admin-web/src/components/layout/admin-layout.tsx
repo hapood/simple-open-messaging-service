@@ -1,6 +1,6 @@
 import { type ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
-import { BellRing, LogOut, Monitor, Radio, ShieldBan, ShieldCheck, Users } from 'lucide-react'
+import { Bell, BellRing, LogOut, Monitor, Radio, ShieldBan, ShieldCheck, Users } from 'lucide-react'
 import { useAuth } from '@/auth/auth-context'
 import { Button } from '@/components/ui/button'
 
@@ -11,6 +11,7 @@ const NAV = [
   { to: '/admin-sessions', label: '管理员会话', icon: ShieldCheck },
   { to: '/bans', label: '封禁管理', icon: ShieldBan },
   { to: '/reuse', label: '重用告警', icon: BellRing },
+  { to: '/push', label: '推送管理', icon: Bell },
 ]
 
 export function AdminLayout({ children }: { children: ReactNode }) {

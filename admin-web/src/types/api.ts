@@ -104,3 +104,28 @@ export interface ConnectionSnapshot {
   uniqueUsers: number
   clients: ConnectionClient[]
 }
+
+// 推送设备 token（POST /admin/push/tokens）。platform: ANDROID/IOS 走 FCM，WEB 走 Web Push
+export interface PushToken {
+  id: number
+  userId: number
+  platform: 'ANDROID' | 'WEB' | 'IOS'
+  token: string
+  deviceId: string | null
+  createdAt: number
+  lastSeenAt: number
+  user: { id: number; uniqName: string } | null
+}
+
+export interface PushTokenListResult {
+  list: PushToken[]
+  total: number
+  fcmConfigured: boolean
+  webPushConfigured: boolean
+}
+
+// 测试推送结果（POST /admin/push/test；ok=false 时 error 给出原因，例如 token 失效 / 通道未配置）
+export interface PushTestResult {
+  ok: boolean
+  error?: string
+}

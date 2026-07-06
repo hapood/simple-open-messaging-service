@@ -1,4 +1,5 @@
-// Invite message row: reuse the shared rules (@use row-base) + invite card styling.
+// Invite message row: reuse the shared rules (@use row-base) + invite card styling. The card is a
+// real <button> (keyboard/a11y) so it needs a reset; the bubble styling dominates the look.
 @use '../row-base' as *;
 
 .pg-bubble.pg-invite {
@@ -7,17 +8,34 @@
   background: var(--app-surface);
 }
 
+// Tappable preview card: <button> reset so the bubble/card styling wins.
+.pg-invite-tappable {
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  width: 100%;
+  border-radius: inherit; // match the bubble's rounded corners
+  outline: none;
+  transition: background-color 120ms ease;
+}
+.pg-invite-tappable:focus-visible {
+  outline: 2px solid var(--app-brand, #2196f3);
+  outline-offset: 2px;
+}
+
 .pg-invite-card {
   padding: 12px 14px;
   min-width: 220px;
+  text-align: left; // card text left-aligned regardless of the button reset
 }
 .pg-invite-title {
   font-size: 12px;
-  line-height: 14px; // integer px (was default) — see the integer-height contract in _row-base.scss
+  line-height: 14px; // integer px — see the integer-height contract in _row-base.scss
   color: var(--app-text-muted);
   margin-bottom: 4px;
 }
-// Group identity row: avatar + name side by side.
+// Group identity row: avatar + name + a chevron hinting the card opens a detail view.
 .pg-invite-group {
   display: flex;
   align-items: center;
@@ -26,24 +44,24 @@
 }
 .pg-invite-name {
   font-size: 15px;
-  line-height: 18px; // integer px (was default) — see the integer-height contract in _row-base.scss
+  line-height: 18px; // integer px
   font-weight: 600;
+  flex: 1 1 auto;
 }
-.pg-invite-joined {
-  font-size: 12px;
-  line-height: 14px; // integer px (was default) — see the integer-height contract in _row-base.scss
-  color: var(--app-success, #2e7d32);
-  margin-bottom: 6px;
+.pg-invite-chev {
+  font-size: 18px;
+  line-height: 18px;
+  color: var(--app-text-faint);
+  flex: 0 0 auto;
 }
 .pg-invite-expiry {
   font-size: 11px;
-  line-height: 13px; // integer px (was default) — see the integer-height contract in _row-base.scss
+  line-height: 13px; // integer px
   color: var(--app-text-faint);
-  margin-bottom: 8px;
 }
-.pg-invite-result {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 14px; // integer px (was default) — see the integer-height contract in _row-base.scss
-  color: #e53935;
+
+// Expired token → dim the whole preview (the dialog re-checks and disables Join).
+.pg-invite-expired {
+  opacity: 0.55;
+  cursor: default;
 }

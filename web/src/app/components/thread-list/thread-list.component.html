@@ -25,7 +25,7 @@
         }
       } @else {
         @for (thread of filteredThreadList(); track thread.id) {
-          <div class="thread-item" [ngClass]="{ active: thread.threadId === openThreadId() }" (click)="onUsrTrdClick(thread)">
+          <div class="thread-item" [attr.data-flip-key]="thread.threadId" [ngClass]="{ active: thread.threadId === openThreadId() }" (click)="onUsrTrdClick(thread)">
             @if (thread.type === 'P2P') {
               <div class="thread-avatar">
                 <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"

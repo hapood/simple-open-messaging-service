@@ -34,8 +34,9 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  * (leave/kick/transfer/set-role/update).
  *
  * Membership is no longer stored ad-hoc here — ThreadParticipant is the single source of truth.
- * createNewGroup/joinGroup write ThreadParticipant rows (OWNER for the creator, MEMBER for joiners
- * and directly-added friends); roster lookups and SSE fan-out go through ThreadParticipantService.
+ * createNewGroup/joinGroup write ThreadParticipant rows (OWNER for the creator, MEMBER for joiners);
+ * roster lookups and SSE fan-out go through ThreadParticipantService. Initial members at creation
+ * are INVITED (a GROUP_INVITE in their P2P thread), not directly added — they join via group/join.
  *
  * Authorization is split: GroupAccessGuard + RolesGuard decide the OPERATOR's membership and role
  * (throwing BusinessException → HTTP 200 + domain code). The methods below then validate the
@@ -98,19 +99,16 @@ export class GroupService implements OnModuleInit {
   }
 
   /**
-   * Create a group: GROUP thread + Group metadata + the owner as an OWNER participant, plus any
-   * directly-added friends as MEMBER participants (friendship is validated by the controller
-   * before calling). Returns the group; the controller emits GROUP_MEMBER_JOINED per added member.
+   * Create a group shell: GROUP thread + Group metadata + the owner as an OWNER participant. No
+   * other members are added here — the controller writes GROUP_INVITE messages into each invited
+   * friend's P2P thread (via writeInvites); they become members only on group/join. Returns the
+   * group; the controller fans out GROUP_MEMBER_JOINED as invitees accept.
    */
   async createNewGroup(params: {
     name: string;
     avatar?: string;
     owner: number;
-    memberIds?: number[];
   }) {
-    const memberIds = Array.from(
-      new Set((params.memberIds ?? []).filter((id) => id !== params.owner)),
-    );
     return this.prisma.$transaction(async (prisma) => {
       const trdData = await prisma.messageThread.create({
         data: { type: MessageThreadType.GROUP },
@@ -130,16 +128,6 @@ export class GroupService implements OnModuleInit {
           role: GroupRole.OWNER,
         },
       });
-      if (memberIds.length > 0) {
-        await prisma.threadParticipant.createMany({
-          data: memberIds.map((id) => ({
-            userId: id,
-            threadId: grpData.threadId,
-            role: GroupRole.MEMBER,
-          })),
-          skipDuplicates: true,
-        });
-      }
       return grpData;
     });
   }

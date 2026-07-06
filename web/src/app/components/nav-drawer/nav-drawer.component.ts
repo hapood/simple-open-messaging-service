@@ -1,4 +1,5 @@
 import { Component, input, output, inject, viewChild, computed } from '@angular/core';
+import { Router } from '@angular/router';
 import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
@@ -36,6 +37,7 @@ export class NavDrawerComponent {
   private readonly themeService = inject(ThemeService)
   private readonly languageService = inject(LanguageService)
   private readonly transloco = inject(TranslocoService)
+  private readonly router = inject(Router)
 
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -83,5 +85,11 @@ export class NavDrawerComponent {
   folderEditor() {
     this.close()
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
+  }
+
+  /** Open the Settings page in the aside outlet (same surface profile / group-info use). */
+  settings() {
+    this.close()
+    void this.router.navigate([{ outlets: { aside: ['settings'] } }])
   }
 }

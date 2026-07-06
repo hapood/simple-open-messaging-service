@@ -23,6 +23,7 @@ import {
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
+import { NotificationQueryService } from '../notification/notification-query.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
@@ -39,6 +40,7 @@ export class MessageController {
     private readonly participantService: ThreadParticipantService,
     private readonly friendshipService: FriendshipService,
     private readonly pushService: PushService,
+    private readonly notifQuery: NotificationQueryService,
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -97,6 +99,18 @@ export class MessageController {
       dto.threadId,
       msgData,
     );
+    // Backgrounded Android-foreground-service recipients with a live notification stream: push their
+    // updated unread snapshot so the away-notification coalesces/updates in near-real-time. Gated by
+    // hasNotifClient → only backgrounded-FGS users pay the snapshot computation; the sender is
+    // foregrounded (just sent), so they're filtered out naturally. Fire-and-forget, same as FCM.
+    userIds.forEach((item) => {
+      const uid = item.userId;
+      if (this.sseService.hasNotifClient(uid)) {
+        void this.notifQuery
+          .buildUnreadSnapshot(uid)
+          .then((snapshot) => this.sseService.pushNotifSnapshot(uid, snapshot));
+      }
+    });
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 

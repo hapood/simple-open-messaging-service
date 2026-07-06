@@ -8,6 +8,7 @@ import { ConnectionsPage } from '@/routes/connections/connections-page'
 import { AdminSessionsPage } from '@/routes/admin-sessions/admin-sessions-page'
 import { BansPage } from '@/routes/bans/bans-page'
 import { ReuseAlertsPage } from '@/routes/reuse/reuse-alerts-page'
+import { PushPage } from '@/routes/push/push-page'
 import { NotFoundPage } from '@/routes/not-found-page'
 
 /** 根 layout：AuthProvider 必须在 RouterProvider 内，login/logout 的 useNavigate 才可用 */
@@ -34,6 +35,7 @@ export const router = createBrowserRouter([
           { path: '/admin-sessions', element: <AdminSessionsPage /> },
           { path: '/bans', element: <BansPage /> },
           { path: '/reuse', element: <ReuseAlertsPage /> },
+          { path: '/push', element: <PushPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

@@ -85,7 +85,9 @@ export class GroupEventService implements OnDestroy {
     if (targetsMe) {
       switch (event) {
         case 'GROUP_MEMBER_JOINED':
-          // I just joined (this session or another). My list does not yet hold the thread → fetch it.
+          // I just joined (this session or another). My list does not yet hold the thread → fetch it,
+          // promoting the new group to the top with a FLIP enter animation.
+          this.convList.markTopOnNextUpdate(p.threadId);
           this.convList.load();
           break;
         case 'GROUP_MEMBER_KICKED':

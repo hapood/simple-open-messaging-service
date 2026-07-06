@@ -48,6 +48,24 @@ declare global {
       /** Push the resolved backend origin into Android storage — the poller can't read window globals
        *  (no WebView alive when it fires). Android-only. */
       setApiOrigin: (origin: string | null) => void;
+      /** Read whether the 6-hour background-sync poller is enabled (stored in EncryptedSharedPreferences
+       *  so the WorkManager worker can read it with no WebView alive). Defaults to true. Android-only;
+       *  absent in the browser/desktop builds (guarded by isTauri() && isAndroid()). */
+      getPollingEnabled: () => boolean;
+      /** Enable/disable the 6-hour background-sync poller: persists the pref into EncryptedSharedPreferences
+       *  AND cancels / re-enqueues the WorkManager schedule. Android-only. */
+      setPollingEnabled: (enabled: boolean) => void;
+      /** Whether the dataSync foreground service (MessageSyncService) is enabled (default false). Android-only. */
+      getForegroundServiceEnabled: () => boolean;
+      /** Enable/disable the foreground service: persists the pref AND starts/stops the service to match. Android-only. */
+      setForegroundServiceEnabled: (enabled: boolean) => void;
+      /** Next scheduled WorkManager poll time (epoch ms), or -1 if not scheduled. For the Settings display. Android-only. */
+      getNextPullTime: () => number;
+      /** FCM status snapshot as a JSON string `{"hasToken":boolean,"lastCheck":number}`. `hasToken` is the
+       *  proxy for "FCM available" (a token was obtained → Google Play Services present). Android-only. */
+      getFcmStatus: () => string;
+      /** Manual FCM availability check — force a token fetch + refresh lastCheck, bypassing the daily gate. Android-only. */
+      requestFcmCheck: () => void;
     };
     __SOMS_FCM_TOKEN__?: (token: string) => void;
     __SOMS_DEEP_LINK__?: (threadId: string) => void;

@@ -6,9 +6,10 @@ import { promisify } from 'util';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
 import {
-  FILE_MIME_EXT,
   MAX_FILE_BYTES,
   MAX_FILE_NAME_LEN,
+  parseFileExt,
+  resolveFileType,
 } from './file-content.js';
 
 const writeFileAsync = promisify(writeFile);
@@ -113,19 +114,16 @@ export class UploadService {
   }
 
   /**
-   * 从 multipart/form-data 请求里消费单个通用文件：单文件契约，粗筛 mimetype（白名单 FILE_MIME_EXT，
-   * 不含可执行/脚本），toBuffer 后再校验 MAX_FILE_BYTES。与 consumeImage 对称，但走通用文件白名单。
-   */
-  /**
-   * Consume a single generic file from multipart/form-data: whitelist the mimetype
-   * (FILE_MIME_EXT — no executables/scripts), cap at MAX_FILE_BYTES, and require a filename.
-   * url/name/size/mimeType are all server-generated downstream, so extra fields are ignored.
-   * Delegates the multipart draining to consumeSingle; the filename contract is enforced here
-   * (it is route-specific, not a property of the shared draining loop).
+   * Consume a single generic file from multipart/form-data: buffer it (capped at MAX_FILE_BYTES),
+   * require a filename, reject an empty body, then resolve a safe on-disk extension + a display
+   * MIME. The open model accepts ANY file type — there is no whitelist, and the client-declared
+   * Content-Type is used only for the display MIME (icon tint), never for a security decision.
+   * Serving-side headers (Content-Disposition: attachment + nosniff for non-images) are what make
+   * an uploaded .html/.svg/.exe safe. Delegates the multipart draining to consumeSingle with no
+   * `allowed` MIME filter; url/name/size/mimeType are all server-generated downstream.
    */
   async consumeFile(req: FastifyRequest): Promise<ConsumedFile> {
     const r = await this.consumeSingle(req, {
-      allowed: (mimetype) => mimetype in FILE_MIME_EXT,
       maxBytes: MAX_FILE_BYTES,
     });
     if (r.kind === 'rejected') {
@@ -134,9 +132,13 @@ export class UploadService {
     if (!r.filename) {
       return { kind: 'rejected', reason: 'bad-name' };
     }
+    if (r.buffer.length === 0) {
+      return { kind: 'rejected', reason: 'no-file' };
+    }
+    const ft = resolveFileType(r.filename, r.mimetype);
     return {
       kind: 'file',
-      mimetype: r.mimetype,
+      mimetype: ft.mime,
       buffer: r.buffer,
       filename: r.filename,
     };
@@ -154,14 +156,18 @@ export class UploadService {
    * (Tiny files happen to fit one chunk, which is why this regressed silently.)
    *
    * Single-file contract: only the first file is kept; extras are resumed so the parser can
-   * advance. `allowed` is the coarse mimetype whitelist (forgeable — callers re-verify via magic
-   * number / sharp). `maxBytes` is the explicit per-route cap beneath the global multipart ceiling.
-   * The filename is captured when present (the generic-file route requires it; image routes ignore
-   * it). Non-file parts are collected into `fields` (bounded by multipart field-size limits).
+   * advance. `allowed`, when present, is a coarse mimetype whitelist that rejects BEFORE buffering
+   * (the image route uses it — browsers set image MIME reliably, so it avoids buffering a huge
+   * non-image part). It is forgeable, so the image route re-verifies on the buffer via isImage;
+   * the generic-file route omits `allowed` entirely (the open model accepts any type, with
+   * security at the serving layer). `maxBytes` is the explicit per-route cap beneath the global
+   * multipart ceiling. The filename is captured when present (the generic-file route requires it;
+   * image routes ignore it). Non-file parts are collected into `fields` (bounded by multipart
+   * field-size limits).
    */
   private async consumeSingle(
     req: FastifyRequest,
-    opts: { allowed: (mimetype: string) => boolean; maxBytes: number },
+    opts: { allowed?: (mimetype: string) => boolean; maxBytes: number },
   ): Promise<
     | {
         kind: 'file';
@@ -186,8 +192,9 @@ export class UploadService {
         part.file.resume();
         continue;
       }
-      // Coarse mimetype filter (forgeable): reject before buffering.
-      if (!opts.allowed(part.mimetype)) {
+      // Coarse mimetype filter (forgeable; image route only): reject before buffering. Omitted by
+      // the generic-file route, which validates content (extension + magic bytes) after buffering.
+      if (opts.allowed && !opts.allowed(part.mimetype)) {
         part.file.resume();
         return { kind: 'rejected', reason: 'wrong-type' };
       }
@@ -262,9 +269,10 @@ export class UploadService {
   }
 
   /**
-   * 通用文件落盘：on-disk 文件名用 `<ts>-<randomHex>.<ext>`（ext 来自白名单，绝不信任客户端扩展名），
-   * 防碰撞/可预测/路径穿越；返回 { url, name, size, mimeType } 作为 FILE 消息内容。展示名 name 取客户端
-   * 原始文件名的安全化结果（剥目录 + 控制符 + 长度上限）。url 形态与 save() 一致，供 parseFileContent 校验。
+   * 通用文件落盘：on-disk 文件名用 `<ts>-<randomHex>.<ext>`（ext 由 parseFileExt 从客户端原始
+   * 文件名 sanitize 出，仅 [a-z0-9]{1,16}；无安全扩展名时省略扩展名）。防碰撞/可预测/路径穿越；
+   * 返回 { url, name, size, mimeType } 作为 FILE 消息内容。展示名 name 取客户端原始文件名的安全化
+   * 结果（剥目录 + 控制符 + 长度上限）。url 形态与 save() 一致，供 parseFileContent 校验。
    */
   async saveFile(
     mimetype: string,
@@ -272,8 +280,10 @@ export class UploadService {
     buf: Buffer,
   ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
     this.ensureDir();
-    const ext = FILE_MIME_EXT[mimetype];
-    const diskName = `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
+    const ext = parseFileExt(originalName);
+    const diskName = ext
+      ? `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`
+      : `${Date.now()}-${randomBytes(6).toString('hex')}`;
     await writeFileAsync(join(this.uploadDir, diskName), buf);
     return {
       url: `/uploads/${diskName}`,
@@ -285,7 +295,8 @@ export class UploadService {
 
   /**
    * 安全化展示文件名：basename 剥离客户端传入的目录分量（防穿越）；剔除控制符与 Windows/Unix
-   * 非法字符；trim + 长度上限。空结果或无扩展名时回退为 `<ext>`，保证 name 始终带可信扩展名。
+   * 非法字符；trim + 长度上限。空结果回退为 `<ext>` 或 `file`。仅当存在可信扩展名时才回补扩展名——
+   * 无（安全）扩展名的文件按原样存储/展示（服务侧以 application/octet-stream + attachment 下发）。
    */
   private sanitizeName(raw: string, ext: string): string {
     let base = basename(raw ?? 'file');
@@ -297,7 +308,8 @@ export class UploadService {
       base = base.slice(0, MAX_FILE_NAME_LEN).trim();
     // Strip a trailing dot/dot-extension so we can re-append the trusted extension cleanly.
     base = base.replace(/\.+$/, '');
-    if (!base) base = ext;
+    if (!base) base = ext || 'file';
+    if (!ext) return base; // no trusted extension → don't invent one
     // Re-append the validated extension if the (sanitized) base lacks it.
     return base.toLowerCase().endsWith(`.${ext}`) ? base : `${base}.${ext}`;
   }

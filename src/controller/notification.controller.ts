@@ -3,37 +3,42 @@ import {
   Post,
   Get,
   Request,
+  Req,
+  Res,
   UseGuards,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyRequest, FastifyReply } from 'fastify';
 import { NotificationTokenGuard } from '../auth/notification-token.guard.js';
-import { MessageService } from '../message/message.service.js';
-import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { UserService } from '../user/user.service.js';
-import { GroupService } from '../group/group.service.js';
+import { SseService } from '../gateway/sse.service.js';
+import { NotificationQueryService } from '../notification/notification-query.service.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 
 /**
- * Read-only "what did I miss" endpoint consumed by the Android NotificationSyncWorker (background
- * poll) using a scoped notification token (NotificationTokenGuard). Returns the threads with unread >
- * 0 + a display name per thread, so the poller can post a local notification "{name} sent you new
- * messages while you were away" without holding a 15-minute access token.
+ * Read-only notification surface for background clients that hold ONLY the scoped notification token
+ * (no access token, no live WebView):
+ *  - POST /notifications/missed — the WorkManager poller's one-shot HTTP pull.
+ *  - GET  /notifications/stream — the Android foreground service's live SSE feed.
  *
- * Hydration mirrors UserController.queryValidThread (the conversation list) but is paginated-light:
- * no preview/sender fields, filtered to unread>0, projected to the minimal notification shape.
+ * Both reuse {@link NotificationQueryService.buildUnreadSnapshot} for the unread-threads snapshot: the
+ * HTTP endpoint returns it once per poll; the stream pushes it on every change (and once on connect)
+ * so the FGS can render ONE coalesced away-notification statelessly (last snapshot wins).
+ *
+ * Auth is {@link NotificationTokenGuard} (not JwtAuthGuard): a scoped 30-day opaque token validated by
+ * DB lookup, minted at POST /auth/notification-token. The stream validates once at connect, then pushes
+ * for the connection's lifetime; mid-stream revocation drops the connection via SseService's
+ * `auth.sessions-invalidated` handler.
  */
 @ApiTags('notification')
 @ApiBearerAuth()
 @Controller()
 export class NotificationController {
   constructor(
-    private readonly participantService: ThreadParticipantService,
-    private readonly messageService: MessageService,
-    private readonly userService: UserService,
-    private readonly groupService: GroupService,
+    private readonly notifQuery: NotificationQueryService,
+    private readonly sseService: SseService,
   ) {}
 
   /** Public: the VAPID public key the browser needs to subscribe via PushManager.subscribe. Public
@@ -55,81 +60,24 @@ export class NotificationController {
   @Post('notifications/missed')
   @ApiOperation({ summary: 'Threads with unread messages + display names (background poller)' })
   async missed(@Request() req): Promise<ApiResult> {
-    const me = req.user.userId as number;
-
-    // Active threads only (leftAt null), newest lastMessageAt first — same ordering as the conv list.
-    const list = await this.participantService.queryParticipants({
-      where: { userId: me, leftAt: null },
-      orderBy: { id: 'asc' },
-      include: { thread: true },
-    });
-    if (list.length === 0) {
-      return { code: BusinessCode.OK, message: 'successful', data: [] };
-    }
-
-    // Batched unread count via the Message(threadId,id) index — the single reusable building block.
-    const unread = await this.messageService.countUnreadByThread(
-      me,
-      list.map((p) => p.threadId),
-    );
-    const withUnread = list.filter((p) => (unread.get(p.threadId) ?? 0) > 0);
-    if (withUnread.length === 0) {
-      return { code: BusinessCode.OK, message: 'successful', data: [] };
-    }
-    // Most-recent unread first — the poller notifies about the freshest conversation.
-    withUnread.sort((a, b) => {
-      const ta = a.thread.lastMessageAt?.getTime() ?? -Infinity;
-      const tb = b.thread.lastMessageAt?.getTime() ?? -Infinity;
-      return tb - ta || a.threadId - b.threadId;
-    });
-
-    // Resolve P2P display names (the peer's UserExtra.name, falling back to uniqName).
-    const p2pThreadIds = withUnread
-      .filter((p) => p.thread.type === 'P2P')
-      .map((p) => p.threadId);
-    const peers = await this.participantService.findP2PPeers(p2pThreadIds, me);
-    const peerByThread = new Map(peers.map((p) => [p.threadId, p.userId]));
-    const peerUsers =
-      p2pThreadIds.length > 0
-        ? await this.userService.queryUsers({
-            where: { id: { in: peers.map((p) => p.userId) }, isDeleted: false },
-            include: { userExtra: true },
-          })
-        : [];
-    const peerNameByThread = new Map<number, string>();
-    peers.forEach((p) => {
-      const u = peerUsers.find((u) => u.id === p.userId) as
-        | (typeof peerUsers)[number]
-        | undefined;
-      const extra = (u as { userExtra?: { name?: string } | null } | undefined)?.userExtra;
-      peerNameByThread.set(p.threadId, extra?.name || u?.uniqName || 'Unknown');
-    });
-
-    // Resolve GROUP display names (Group.name by threadId).
-    const groupThreadIds = withUnread
-      .filter((p) => p.thread.type === 'GROUP')
-      .map((p) => p.threadId);
-    const groups =
-      groupThreadIds.length > 0
-        ? await this.groupService.queryGroups({ where: { threadId: { in: groupThreadIds } } })
-        : [];
-    const groupNameByThread = new Map<number, string>();
-    groups.forEach((g) => groupNameByThread.set(g.threadId, g.name));
-
-    const data = withUnread.map((p) => ({
-      threadId: p.threadId,
-      type: p.thread.type,
-      displayName:
-        p.thread.type === 'P2P'
-          ? (peerNameByThread.get(p.threadId) ?? 'Unknown')
-          : (groupNameByThread.get(p.threadId) ?? 'Unknown'),
-      unreadCount: unread.get(p.threadId) ?? 0,
-      // The thread's denormalized newest message id (BigInt→string). The WorkManager poller uses this
-      // as a per-thread dedup cursor shared with FCM: only notify when it advances past the last value
-      // the device notified, so FCM (real-time) and WorkManager (periodic) never double-notify.
-      latestMessageId: p.thread.lastMessageId?.toString() ?? null,
-    }));
-
+    const data = await this.notifQuery.buildUnreadSnapshot(req.user.userId as number);
     return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /** Live SSE feed of the same unread-threads snapshot consumed by the Android foreground service.
+   *  NotificationTokenGuard validates the scoped token once at connect; SseService owns the stream
+   *  (headers + heartbeat + res.on('close') cleanup, mirroring GET /events). On connect the current
+   *  snapshot is pushed immediately so the FGS renders the away-notification without waiting for the
+   *  next message; subsequent frames are pushed by the send-message fan-out. */
+  @UseGuards(NotificationTokenGuard)
+  @Get('notifications/stream')
+  @ApiOperation({ summary: 'Live unread-threads SSE stream (Android foreground service)' })
+  async stream(@Req() req: FastifyRequest, @Res() reply: FastifyReply): Promise<void> {
+    reply.hijack();
+    const userId = (req.user as { userId: number }).userId;
+    this.sseService.registerNotif(userId, reply.raw);
+    // Push the current snapshot so the FGS's away-notification is correct from the first moment.
+    const snapshot = await this.notifQuery.buildUnreadSnapshot(userId);
+    this.sseService.pushNotifSnapshot(userId, snapshot);
   }
 }

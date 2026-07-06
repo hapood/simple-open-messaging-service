@@ -7,6 +7,7 @@ import { PushService } from './services/push.service';
 import { WebPushService } from './services/web-push.service';
 import { SseLifecycleService } from './services/sse-lifecycle.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
+import { BackgroundSyncService } from './services/background-sync.service';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet],
@@ -34,6 +35,10 @@ export class AppComponent {
     // a NEW_MESSAGE arrives while the window is unfocused. Covers PC desktop + browser. Eagerly
     // constructed so the focus listener + SSE subscription are live for the whole session.
     private readonly attention = inject(UnreadAttentionService);
+    // BackgroundSyncService owns the Android 6-hour keep-alive poller preference. Eagerly constructed
+    // so the stored preference (read from Kotlin SomsSecureStore via the bridge) is reflected into the
+    // signal + re-applied to the WorkManager schedule at every boot. A no-op off-Android.
+    private readonly bgSync = inject(BackgroundSyncService);
     constructor() {
         this.push.init();
         void this.webPush.init();

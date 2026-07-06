@@ -1,12 +1,14 @@
 import { Component, signal, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { FormsModule } from '@angular/forms';
-import { TranslocoPipe } from '@jsverse/transloco';
+import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MatButtonModule } from '@angular/material/button';
 import { GroupService } from '../../services/group.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationItem } from '../../services/model';
 import { UserService } from '../../services/user.service';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
@@ -55,6 +57,9 @@ export class NewGroupComponent {
   private readonly groupService = inject(GroupService)
   private readonly userService = inject(UserService)
   private readonly http = inject(HttpClient)
+  private readonly snackBar = inject(MatSnackBar)
+  private readonly transloco = inject(TranslocoService)
+  private readonly convList = inject(ConversationListService)
 
   /** User typed into the name field → stop auto-deriving from the member set. */
   onNameInput(v: string) {
@@ -150,17 +155,31 @@ export class NewGroupComponent {
     })
   }
 
-  /** Create the group with the staged name/avatar/members, then close the dialog. */
+  /** Create the group, invite the selected friends, surface the result, then close the dialog. */
   confirm() {
     const name = this.name().trim()
     if (!name) return
-    // Add the selected friends as members directly at creation (WhatsApp-style) — they are all
-    // friends by construction (the picker lists conversations), so no invite-token round-trip.
-    const memberIds = this.selectedList().map((item) => item.peerUser.id)
+    // Invite the selected friends at creation — each receives a GROUP_INVITE in their P2P thread
+    // and must accept via group/join (same path as group-info's "Invite" button). They are all
+    // friends by construction (the picker lists conversations), so `skipped` is normally empty.
+    const inviteUserIds = this.selectedList().map((item) => item.peerUser.id)
     const avatar = this.pendingAvatar()
-    this.groupService.createGroup({ name, avatar, memberIds }).subscribe((res) => {
-      if (res.code === 0) {
-        this.routeService.closeDlg({ groupId: res.data!.groupId })
+    this.groupService.createGroup({ name, avatar, inviteUserIds }).subscribe((res) => {
+      if (res.code === 0 && res.data) {
+        // Reuse the same toast copy/keys as group-info's invite flow for consistency.
+        const invited = res.data.invited?.length ?? 0
+        const skipped = res.data.skipped?.length ?? 0
+        const msg =
+          skipped > 0
+            ? this.transloco.translate('errors.invitedPartial', { n: invited, skipped })
+            : invited > 0
+              ? this.transloco.translate('errors.invited', { n: invited })
+              : this.transloco.translate('errors.noInvites')
+        this.snackBar.open(msg, this.transloco.translate('common.ok'), { duration: 4000 })
+        // Promote the new group to the top of the list (the caller's refresh→load converges on it)
+        // so it animates in via the FLIP enter rather than sinking to the bottom (empty lastMessageAt).
+        this.convList.markTopOnNextUpdate(res.data.threadId)
+        this.routeService.closeDlg({ groupId: res.data.groupId })
       }
     })
   }

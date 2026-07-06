@@ -5,7 +5,11 @@ import { StandardResponse } from './model';
 
 export interface GrpCreateInfo {
   threadId: number,
-  groupId: number
+  groupId: number,
+  /** Friend user ids who were successfully sent a GROUP_INVITE at creation. */
+  invited: number[],
+  /** Friends who could not be invited (not a friend / no P2P thread / write failure). */
+  skipped: { userId: number, reason: string }[],
 }
 
 /** One row of a group roster (group/members). Mirrors the backend GroupMemberDto. */
@@ -29,8 +33,9 @@ export class GroupService {
   constructor(private http: HttpClient) {
   }
 
-  /** Create a group; memberIds adds those friends as members directly (no invite-token round-trip). */
-  createGroup(params: { name: string, avatar?: string, memberIds?: number[] }) {
+  /** Create a group; inviteUserIds sends each friend a GROUP_INVITE they must accept via group/join
+   *  (no direct add). The response carries { invited, skipped } so the caller can toast the result. */
+  createGroup(params: { name: string, avatar?: string, inviteUserIds?: number[] }) {
     return this.http.post<StandardResponse<GrpCreateInfo>>(`${apiPrefix}/group/create`, params)
   }
 

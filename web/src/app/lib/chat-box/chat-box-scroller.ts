@@ -2026,12 +2026,22 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // independent (see isAtBottom/captureAnchor), and every control-flow comparison already carries a tolerance that
     // dwarfs the residual seam (≥1 px; balance uses cfg.edge=1000). VS_DRIFT_TOLERANCE_PX is the maximum constant
     // offset expected under the integer contract; a larger |d| means a row broke that contract.
+    //
+    // The comparison is ONLY valid when content overflows the viewport (sh > vh): the shell sets min-height:100% +
+    // justify-content:flex-end on content (.pg-content / .msg-content), so an under-viewport thread pegs scrollHeight
+    // at the viewport height (the flex filler above the bottom-pinned messages) while totalH correctly tracks only
+    // real content. Comparing them below the viewport is a guaranteed false positive — the filler is viewport-sized,
+    // not per-row drift (sub-pixel accumulation could never reach hundreds of px at n=2). The regression this guard
+    // catches only manifests at scale, i.e. once content overflows and min-height saturates, so the gate loses no real
+    // signal.
     if (ngDevMode) {
       const sh = this.content.scrollHeight;
-      const t = this.totalH();
-      const d = Math.round(t - sh);
-      if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
-        console.warn(`[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`);
+      if (sh > this.vh) { // min-height saturated → scrollHeight reflects true content height (valid independent check)
+        const t = this.totalH();
+        const d = Math.round(t - sh);
+        if (Math.abs(d) > VS_DRIFT_TOLERANCE_PX) {
+          console.warn(`[vs.measure] height model drifted ${d}px past tolerance (n=${entries.length} mount=${this.mounted.length} totalH=${Math.round(t)} sh=${sh} vh=${this.vh}) — a row is likely rendering at a fractional line-height; re-audit _row-base.scss`);
+        }
       }
     }
   }

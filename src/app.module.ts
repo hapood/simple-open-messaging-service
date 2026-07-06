@@ -19,6 +19,7 @@ import { FriendshipModule } from './friendship/friendship.module.js';
 import { PushModule } from './push/push.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
+import { NotificationQueryService } from './notification/notification-query.service.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -49,6 +50,6 @@ import { NotificationController } from './controller/notification.controller.js'
     DeviceController,
     NotificationController,
   ],
-  providers: [],
+  providers: [NotificationQueryService],
 })
 export class AppModule {}

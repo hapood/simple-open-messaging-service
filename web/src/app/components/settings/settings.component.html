@@ -1,0 +1,125 @@
+<div class="panel">
+  <div class="msg-header">
+    <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
+      <app-icon [type]="AppIconType.BACK" [style]="{ width: '28px', height: '28px' }"></app-icon>
+    </button>
+    <span class="title">{{ 'settings.title' | transloco }}</span>
+    <span></span>
+  </div>
+
+  <div class="body">
+    <!-- Appearance -->
+    <section class="settings-group">
+      <h3 class="group-title">{{ 'settings.appearance' | transloco }}</h3>
+      <div class="settings-card">
+        <mat-list>
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.theme' | transloco }}</span>
+            <mat-button-toggle-group
+              class="theme-toggle"
+              [value]="theme.mode()"
+              hideSingleSelectionIndicator
+              (change)="onThemeChange($event)">
+              <mat-button-toggle value="system" [attr.aria-label]="'settings.themeSystem' | transloco">
+                {{ 'settings.themeSystem' | transloco }}
+              </mat-button-toggle>
+              <mat-button-toggle value="light" [attr.aria-label]="'settings.themeLight' | transloco">
+                {{ 'settings.themeLight' | transloco }}
+              </mat-button-toggle>
+              <mat-button-toggle value="dark" [attr.aria-label]="'settings.themeDark' | transloco">
+                {{ 'settings.themeDark' | transloco }}
+              </mat-button-toggle>
+            </mat-button-toggle-group>
+          </mat-list-item>
+        </mat-list>
+      </div>
+    </section>
+
+    <!-- Language -->
+    <section class="settings-group">
+      <h3 class="group-title">{{ 'settings.language' | transloco }}</h3>
+      <div class="settings-card">
+        <mat-list>
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.languageRow' | transloco }}</span>
+            <mat-select [value]="language.lang()" (selectionChange)="onLangChange($event)">
+              @for (l of language.availableLangs; track l) {
+                <mat-option [value]="l">{{ languageLabel(l) }}</mat-option>
+              }
+            </mat-select>
+          </mat-list-item>
+        </mat-list>
+      </div>
+    </section>
+
+    <!-- Push (Android only): FCM status + foreground service + periodic poll -->
+    @if (showPush) {
+      <section class="settings-group">
+        <h3 class="group-title">{{ 'settings.push' | transloco }}</h3>
+        <div class="settings-card">
+          <mat-list>
+            <!-- FCM status (read-only) + manual "check now" -->
+            <mat-list-item>
+              <span matListItemTitle>{{ 'settings.fcm' | transloco }}</span>
+              <span matListItemLine class="hint">{{ fcmLastCheckLabel() }}</span>
+              <span class="status-pill" [class.active]="fcmActive()">{{ fcmStatusLabel() }}</span>
+              <button mat-button type="button" class="check-btn" (click)="requestFcmCheck()"
+                [disabled]="checking()">
+                {{ (checking() ? 'settings.fcmChecking' : 'settings.fcmCheckButton') | transloco }}
+              </button>
+            </mat-list-item>
+
+            <!-- Foreground service (real-time keep-alive) -->
+            <mat-list-item>
+              <span matListItemTitle>{{ 'settings.keepAliveFgs' | transloco }}</span>
+              <span matListItemLine class="hint">{{ 'settings.keepAliveFgsDesc' | transloco }}</span>
+              @if (fcmActive()) {
+                <span matListItemLine class="hint hint-accent">{{ 'settings.fgsHintFcmActive' | transloco }}</span>
+              }
+              <mat-slide-toggle
+                [checked]="bgSync.fgsEnabled()"
+                [attr.aria-label]="'settings.keepAliveFgs' | transloco"
+                (change)="onFgsChange($event)">
+              </mat-slide-toggle>
+            </mat-list-item>
+
+            <!-- Periodic poll (~6h) + next scheduled time -->
+            <mat-list-item>
+              <span matListItemTitle>{{ 'settings.keepAlivePoll' | transloco }}</span>
+              <span matListItemLine class="hint">{{ 'settings.keepAlivePollDesc' | transloco }}</span>
+              @if (bgSync.enabled() && nextPullLabel()) {
+                <span matListItemLine class="hint">
+                  {{ 'settings.nextPullLabel' | transloco }}: {{ 'settings.nextPullApprox' | transloco:{ time: nextPullLabel() } }}
+                </span>
+              }
+              <mat-slide-toggle
+                [checked]="bgSync.enabled()"
+                [attr.aria-label]="'settings.keepAlivePoll' | transloco"
+                (change)="onPollChange($event)">
+              </mat-slide-toggle>
+            </mat-list-item>
+          </mat-list>
+        </div>
+      </section>
+    }
+
+    <!-- About -->
+    <section class="settings-group">
+      <h3 class="group-title">{{ 'settings.about' | transloco }}</h3>
+      <div class="settings-card">
+        <mat-list>
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.version' | transloco }}</span>
+            <span class="meta">{{ appVersion }}</span>
+          </mat-list-item>
+          @if (showBackend) {
+            <mat-list-item>
+              <span matListItemTitle>{{ 'settings.backend' | transloco }}</span>
+              <span class="meta">{{ backendLabel() || ('settings.notConnected' | transloco) }}</span>
+            </mat-list-item>
+          }
+        </mat-list>
+      </div>
+    </section>
+  </div>
+</div>

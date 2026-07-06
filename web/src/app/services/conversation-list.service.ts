@@ -46,6 +46,26 @@ export class ConversationListService {
   private readonly _openThreadId = signal<number | undefined>(undefined);
   readonly openThreadId = this._openThreadId.asReadonly();
 
+  /** A thread promoted to index 0 on the most recent update (and to be FLIP-animated by the list),
+   *  or null. Set in applyItems when a top-insert was requested; the list clears it after animating. */
+  private readonly _topInserted = signal<number | null>(null);
+  readonly topInserted = this._topInserted.asReadonly();
+  /** Explicit thread to force-top on the next applyItems (set by markTopOnNextUpdate). */
+  private _pendingTopId: number | null = null;
+  /** When true, the next applyItems promotes the first newly-appearing thread (set by
+   *  markTopOnNextNewThread, for events where the new threadId is unknown, e.g. FRIEND_APPROVED). */
+  private _topNextNew = false;
+
+  /** Per-thread high-water-mark of the newest message id applied via onNewMessage. Guards against SSE
+   *  redelivery (e.g. a frame duplicated across a reconnect) double-bumping the unread badge: if an
+   *  inbound event's id isn't strictly newer than the last one applied for that thread, it's discarded
+   *  before touching the list. BigInt ids are monotonic same-length numeric strings per thread, so
+   *  lexicographic compare on equal length is exact (mirrors SomsSecureStore.advanceCursor). Not seeded
+   *  from the loaded list (items carry lastReadMsgId, not lastMessageId) — so the first live event after
+   *  a reload passes, which is correct (it IS new to the in-memory state); only same/older duplicates
+   *  are blocked. */
+  private readonly lastSeenMsgId = new Map<number, string>();
+
   /** Fetch the conversation list from the server (authoritative state). */
   load() {
     this._status.set('LOADING');
@@ -61,9 +81,61 @@ export class ConversationListService {
     });
   }
 
+  /** Force `threadId` to index 0 on the next update and emit `topInserted` so the row animates in.
+   *  Use when the caller knows the new id (group join SSE, group create response). */
+  markTopOnNextUpdate(threadId: number): void {
+    this._pendingTopId = threadId;
+  }
+
+  /** On the next update, promote the first newly-appearing thread to index 0 (and animate). Use when
+   *  the caller cannot name the new id (FRIEND_APPROVED carries only the approver's userId). */
+  markTopOnNextNewThread(): void {
+    this._topNextNew = true;
+  }
+
+  /** Clear the `topInserted` pulse after the list has played its enter/FLIP animation. */
+  clearTopInserted(): void {
+    this._topInserted.set(null);
+  }
+
+  /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is
+   *  not yet in the list (up to `timeoutMs`). Used by the join hero transition so the overlay's
+   *  MessageThreadComponent can init its kernel with a real item instead of a hand-rolled stub. */
+  async ensureThread(threadId: number, timeoutMs = 2000): Promise<ConversationItem | undefined> {
+    const found = this._items().find((t) => t.threadId === threadId);
+    if (found) return found;
+    if (this._status() === 'READY') this.load();
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 80));
+      const it = this._items().find((t) => t.threadId === threadId);
+      if (it) return it;
+    }
+    return undefined;
+  }
+
   private applyItems(items: ConversationItem[]): void {
-    this._items.set(items);
+    const topId = this.resolveTopId(items);
+    const ordered = topId != null ? moveToTop(items, topId) : items;
+    this._items.set(ordered);
     this._status.set('READY');
+    if (topId != null) this._topInserted.set(topId);
+  }
+
+  /** Determine which thread (if any) to promote to index 0 on this update, consuming the pending
+   *  flags. Priority: an explicit id (markTopOnNextUpdate), else the first newly-appearing thread
+   *  when markTopOnNextNewThread was armed. */
+  private resolveTopId(items: ConversationItem[]): number | undefined {
+    let topId: number | undefined;
+    if (this._pendingTopId != null && items.some((t) => t.threadId === this._pendingTopId)) {
+      topId = this._pendingTopId;
+    } else if (this._topNextNew) {
+      const oldIds = new Set(this._items().map((t) => t.threadId));
+      topId = items.find((t) => !oldIds.has(t.threadId))?.threadId;
+    }
+    this._pendingTopId = null;
+    this._topNextNew = false;
+    return topId;
   }
 
   /** Mark a thread as open (selected); fire mark-read + clear its badge optimistically. */
@@ -126,11 +198,19 @@ export class ConversationListService {
    */
   onNewMessage(msg: {
     threadId: number;
+    id: string;
     contentType: string;
     content: string;
     creator: number;
     createdAt: number;
   }) {
+    // High-water-mark guard: discard a redelivered/out-of-order event whose id isn't strictly newer
+    // than the last one applied for this thread. SSE can re-emit a frame across a reconnect, and
+    // without this the same message would double-bump the unread badge and overwrite the preview twice.
+    const prev = this.lastSeenMsgId.get(msg.threadId);
+    if (prev !== undefined && !isMsgNewer(msg.id, prev)) return;
+    this.lastSeenMsgId.set(msg.threadId, msg.id);
+
     const preview = previewFor(msg.contentType, msg.content, this.transloco);
     const open = this._openThreadId();
     const mine = msg.creator === this.userService.sessionProfile()?.id;
@@ -166,6 +246,24 @@ export class ConversationListService {
     });
     if (!existed) this.load();
   }
+}
+
+/** Strict "is `id` newer than `prevId`" — BigInt message ids are monotonic same-length numeric
+ *  strings within a thread, so longer = newer; equal length → lexicographic. Mirrors the Kotlin
+ *  `SomsSecureStore.advanceCursor` comparison so client and native agree on ordering. */
+function isMsgNewer(id: string, prevId: string): boolean {
+  return id.length > prevId.length || (id.length === prevId.length && id > prevId);
+}
+
+/** Return a new array with the first item matching `threadId` moved to index 0 (no-op if absent or
+ *  already first). Used by applyItems to force-top a just-joined/created thread. */
+function moveToTop<T extends { threadId: number }>(items: T[], threadId: number): T[] {
+  const idx = items.findIndex((t) => t.threadId === threadId);
+  if (idx <= 0) return items;
+  const next = items.slice();
+  const [moved] = next.splice(idx, 1);
+  next.unshift(moved);
+  return next;
 }
 
 /** Derive the short list preview by content type — mirrors backend derivePreview (keep in sync). The

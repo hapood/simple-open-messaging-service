@@ -32,6 +32,7 @@
     "newGroup": "New group",
     "folders": "Folders",
     "logout": "Log out",
+    "settings": "Settings",
     "themeAria": "Theme: {{label}}",
     "languageAria": "Language: {{label}}",
     "theme": {
@@ -203,6 +204,7 @@
     "retrySendAria": "Retry send",
     "fileFallback": "File",
     "inviteTitle": "{{name}} invited you to join:",
+    "invitedBy": "Invited by {{name}}",
     "validUntil": "Valid until {{date}}",
     "joined": "Joined ✓",
     "openGroup": "Open group",
@@ -316,5 +318,35 @@
   "notif": {
     "missedOne": "{{name}} sent you new messages while you were away",
     "missedMany": "You have new messages in {{count}} conversations"
+  },
+  "settings": {
+    "title": "Settings",
+    "appearance": "Appearance",
+    "theme": "Theme",
+    "themeSystem": "System",
+    "themeLight": "Light",
+    "themeDark": "Dark",
+    "language": "Language",
+    "languageRow": "Language",
+    "push": "Push",
+    "fcm": "FCM push",
+    "fcmActive": "Active",
+    "fcmUnavailable": "Unavailable (no Google services)",
+    "fcmCheckButton": "Check",
+    "fcmChecking": "Checking…",
+    "fcmLastCheck": "Last checked {{time}}",
+    "fcmNever": "Not checked yet",
+    "keepAliveFgs": "Real-time keep-alive",
+    "keepAliveFgsDesc": "Holds a live background connection so messages arrive in near-real-time when FCM is unavailable. Bounded to ~6h/day by Android.",
+    "fgsHintFcmActive": "FCM is active — foreground service not needed",
+    "keepAlivePoll": "Periodic poll (~6h)",
+    "keepAlivePollDesc": "Check for new messages roughly every 6 hours. Turn off to save battery — notifications may arrive late.",
+    "nextPullLabel": "Next pull",
+    "nextPullApprox": "≈ {{time}}",
+    "nextPullSoon": "soon",
+    "about": "About",
+    "version": "Version",
+    "backend": "Backend",
+    "notConnected": "Not configured"
   }
 }

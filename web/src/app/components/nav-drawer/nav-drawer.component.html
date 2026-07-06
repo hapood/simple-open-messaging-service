@@ -57,6 +57,12 @@
         <span>{{ langLabel() }}</span>
       </button>
 
+      <button class="nav-item" (click)="settings()"
+        [attr.aria-label]="'nav.settings' | transloco" [title]="'nav.settings' | transloco">
+        <app-icon [type]="AppIconType.SETTINGS" [style]="{ width: '24px', height: '24px' }"></app-icon>
+        <span>{{ 'nav.settings' | transloco }}</span>
+      </button>
+
     </nav>
   </mat-sidenav>
 

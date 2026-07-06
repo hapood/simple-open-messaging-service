@@ -10,6 +10,7 @@ import { jwtConstants } from '../auth/constants.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { UserManageModule } from '../user-manage/user-manage.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
+import { PushModule } from '../push/push.module.js';
 
 @Module({
   imports: [
@@ -19,6 +20,8 @@ import { GatewayModule } from '../gateway/gateway.module.js';
     UserManageModule,
     // SseService（导出自 GatewayModule）供 admin/connections 观测在线 SSE 连接。
     GatewayModule,
+    // PushService（导出自 PushModule）供 admin/push 设备 token 管理 + 测试推送。
+    PushModule,
   ],
   controllers: [AdminController],
   providers: [AdminAuthService, AdminJwtStrategy, AdminAuthGuard, PrismaService],

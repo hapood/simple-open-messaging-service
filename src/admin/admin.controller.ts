@@ -19,6 +19,8 @@ import {
   AdminResetPasswordDto,
   AdminUnbanDto,
   AdminListSessionsDto,
+  AdminListPushTokensDto,
+  AdminPushTestDto,
 } from './admin.dto.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -27,6 +29,7 @@ import { UserManageService } from '../user-manage/user-manage.service.js';
 import { LocalStrategy } from '../auth/local.strategy.js';
 import { PrismaService } from '../prisma.service.js';
 import { SseService } from '../gateway/sse.service.js';
+import { PushService } from '../push/push.service.js';
 
 /**
  * Admin 控制台鉴权端点（Phase A）：login / renew-access / logout。
@@ -42,6 +45,7 @@ export class AdminController {
     private readonly localStrategy: LocalStrategy,
     private readonly prisma: PrismaService,
     private readonly sseService: SseService,
+    private readonly pushService: PushService,
   ) {}
 
   @HttpCode(HttpStatus.OK)
@@ -113,6 +117,54 @@ export class AdminController {
     ]);
     list.forEach((u) => delete (u as any).hashPwd);
     return { code: BusinessCode.OK, message: 'success', data: { list, total } };
+  }
+
+  // ===== 推送管理（FCM / device tokens） =====
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/push/tokens')
+  @ApiOperation({ summary: '推送设备 token 列表（分页 + 搜索）+ FCM/Web Push 配置状态' })
+  async listPushTokens(@Body() dto: AdminListPushTokensDto): Promise<ApiResult> {
+    const { list, total } = await this.pushService.listTokens({
+      skip: dto.skip ?? 0,
+      take: dto.take ?? 20,
+      search: dto.search,
+    });
+    return {
+      code: BusinessCode.OK,
+      message: 'success',
+      data: {
+        list,
+        total,
+        fcmConfigured: this.pushService.fcmConfigured,
+        webPushConfigured: this.pushService.webPushConfigured,
+      },
+    };
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/push/tokens/:id/delete')
+  @ApiOperation({ summary: '删除（注销）一个推送设备 token' })
+  async deletePushToken(@Param('id') id: string): Promise<ApiResult> {
+    await this.pushService.deleteTokenById(Number(id));
+    return { code: BusinessCode.OK, message: 'success' };
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/push/test')
+  @ApiOperation({ summary: '向指定设备 token 发送测试推送（FCM / Web Push）' })
+  async sendPushTest(@Body() dto: AdminPushTestDto): Promise<ApiResult> {
+    // The push may legitimately fail (transport unconfigured, dead token) — surface that as a normal
+    // result (code OK + data.ok=false) rather than an API error, so the admin sees the reason.
+    const r = await this.pushService.sendTestPush(dto.id, dto.title, dto.body ?? '');
+    return {
+      code: BusinessCode.OK,
+      message: 'success',
+      data: r.ok ? { ok: true } : { ok: false, error: r.error },
+    };
   }
 
   @UseGuards(AdminAuthGuard)

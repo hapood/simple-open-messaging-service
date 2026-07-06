@@ -45,6 +45,15 @@ export const routes: Routes = [
         loadComponent: () =>
           import('./components/group-info/group-info.component').then((m) => m.GroupInfoComponent),
       },
+      // The Settings page targets the `aside` auxiliary outlet alongside profile / group-info. It owns
+      // no :threadId (preferences are global), so a bare path is enough; the home-shell's overlaySlide
+      // animation handles the slide-in/side-panel transition automatically.
+      {
+        path: 'settings',
+        outlet: 'aside',
+        loadComponent: () =>
+          import('./components/settings/settings.component').then((m) => m.SettingsComponent),
+      },
     ],
   },
   { path: 'nav', component: PageNavgatorComponent, canActivate: [authGuard] },

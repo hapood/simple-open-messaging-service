@@ -52,7 +52,11 @@ export class HomeComponent implements OnInit, OnDestroy {
         .pipe(filter((m) => m.event === 'NOTIFY'))
         .subscribe((m) => {
           const t = m.data?.type;
-          if (t === 'FRIEND_APPROVED' || t === 'FRIEND_DELETED') {
+          if (t === 'FRIEND_APPROVED') {
+            // A new P2P thread appeared (the new friend) → promote it to the top with a FLIP enter.
+            this.convList.markTopOnNextNewThread();
+            this.convList.load();
+          } else if (t === 'FRIEND_DELETED') {
             this.convList.load();
           } else {
             this.userService.updateSessionProfile();

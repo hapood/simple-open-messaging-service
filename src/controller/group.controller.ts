@@ -84,73 +84,53 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/create')
-  @ApiOperation({ summary: 'Create a group (optionally add friends as members)' })
+  @ApiOperation({ summary: 'Create a group and invite the given friends (invite token per friend)' })
   @ApiResultResponse(CreateGroupResponseDto)
   async createNewGroup(
     @Request() req,
     @Body() dto: CreateGroupDto,
   ): Promise<ApiResult> {
     const owner = req.user.userId;
-    // Only friends can be added directly at creation; validate up front so the transaction never
-    // partially succeeds. Dedup + drop self defensively (the DTO layer already coerced types).
-    const memberIds = Array.from(
-      new Set((dto.memberIds ?? []).filter((id) => id !== owner)),
-    );
-    for (const id of memberIds) {
-      const { isFriend } = await this.friendshipService.getFriendship(owner, id);
-      if (!isFriend) {
-        return {
-          code: BusinessCode.GROUP_NOT_FRIEND,
-          message: `[${id}] is not your friend`,
-        };
-      }
-    }
     const grp = await this.groupService.createNewGroup({
       name: dto.name,
       avatar: dto.avatar,
       owner,
-      memberIds,
     });
-    // Announce each directly-added member through the SAME fan-out path as group/join. After
-    // createNewGroup the active set is {owner ∪ added members}, so each event reaches the owner's
-    // other devices (which only get {threadId, groupId} from the HTTP response otherwise) and every
-    // co-added member — letting every roster converge without a follow-up group/members fetch.
-    for (const id of memberIds) {
-      await this.fanoutGroup(grp.threadId, grp.id, GROUP_SSE.GROUP_MEMBER_JOINED, {
-        userId: id,
-        role: GroupRole.MEMBER,
-        byUserId: owner,
-      });
-    }
+    // Invite every selected friend into their P2P thread with the creator — they become members
+    // only on group/join. Non-friends / write failures come back in `skipped`; the create itself
+    // still succeeds for the owner and the rest.
+    const { invited, skipped } = await this.writeInvites(
+      owner,
+      grp,
+      dto.inviteUserIds ?? [],
+    );
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: { threadId: grp.threadId, groupId: grp.id },
+      data: { threadId: grp.threadId, groupId: grp.id, invited, skipped },
     };
   }
 
-  @UseGuards(JwtAuthGuard, GroupAccessGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @ResourceId<InviteGroupDto>('groupId')
-  @Post('group/invite')
-  @ApiOperation({ summary: 'Invite friends to the group (invite token written to each P2P thread)' })
-  async inviteUsers(
-    @Request() req,
-    @Body() dto: InviteGroupDto,
-  ): Promise<ApiResult> {
-    const group = req.groupAccess!.group;
-    const inviter = req.user.userId;
+  /**
+   * Write one GROUP_INVITE message into each target's P2P thread with the inviter, minting a 3-day
+   * invite token per user. Shared by group/create (inviter = the new owner) and group/invite. A
+   * target is SKIPPED (not fatal) if they are not a friend, have no P2P thread, or the write throws.
+   * Returns the split so each caller can surface it.
+   */
+  private async writeInvites(
+    inviter: number,
+    group: { id: number; name: string; avatar: string },
+    userIds: number[],
+  ): Promise<{ invited: number[]; skipped: { userId: number; reason: string }[] }> {
     // One token expiry window shared across the batch — every invite from this action expires
     // together (3 days, as before).
     const expiryDate = dayjs().add(3, 'day').valueOf();
     // Dedup defensively (the DTO layer already coerced types); order preserved.
-    const userIds = Array.from(new Set(dto.userIds));
+    const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
     const skipped: { userId: number; reason: string }[] = [];
-    for (const userId of userIds) {
-      // Inviter membership is enforced by GroupAccessGuard; require friendship + an established P2P
-      // thread to carry the invite message. Skip (don't abort the whole batch) on any per-user failure.
+    for (const userId of deduped) {
+      // Require friendship + an established P2P thread to carry the invite message.
       const { friendship, isFriend } = await this.friendshipService.getFriendship(inviter, userId);
       if (!isFriend || !friendship?.threadId) {
         skipped.push({ userId, reason: 'not a friend or no conversation' });
@@ -185,6 +165,24 @@ export class GroupController {
         });
       }
     }
+    return { invited, skipped };
+  }
+
+  @UseGuards(JwtAuthGuard, GroupAccessGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<InviteGroupDto>('groupId')
+  @Post('group/invite')
+  @ApiOperation({ summary: 'Invite friends to the group (invite token written to each P2P thread)' })
+  async inviteUsers(
+    @Request() req,
+    @Body() dto: InviteGroupDto,
+  ): Promise<ApiResult> {
+    const group = req.groupAccess!.group;
+    const inviter = req.user.userId;
+    // Inviter membership is enforced by GroupAccessGuard; writeInvites handles friendship/P2P-thread
+    // checks and per-user skip-on-failure, returning the {invited, skipped} split.
+    const { invited, skipped } = await this.writeInvites(inviter, group, dto.userIds);
     return {
       code: BusinessCode.OK,
       message: 'successful',

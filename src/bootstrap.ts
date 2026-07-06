@@ -51,6 +51,19 @@ function extractBearer(header: string | undefined): string | undefined {
   return match ? match[1] : undefined;
 }
 
+/** Image extensions served INLINE from /uploads (avatars + chat-images, which are magic-byte-
+ *  verified at POST /upload). Everything else is forced to download — see registerStaticServing. */
+const INLINE_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+
+/** Whether a /uploads resource path should be served inline (an image rendered via <img src>) or
+ *  forced to a download. Non-image user uploads MUST download so an uploaded .html/.svg/.exe can
+ *  never inline-render in this origin (XSS via the same-origin httpOnly media_token cookie). */
+function isInlineImage(resourcePath: string): boolean {
+  const dot = resourcePath.lastIndexOf('.');
+  if (dot < 0) return false;
+  return INLINE_IMAGE_EXTS.has(resourcePath.slice(dot + 1).toLowerCase());
+}
+
 /**
  * Shared Fastify/Nest wiring — the single place plugins, global pipes/filters/interceptors,
  * the API prefix, Swagger UI, and static serving are configured. Called by both main.ts
@@ -172,7 +185,7 @@ async function registerStaticServing(
     },
   );
 
-  // Uploaded images are served at /uploads/*. decorateReply:false because we never use
+  // Uploaded files are served at /uploads/*. decorateReply:false because we never use
   // reply.sendFile (the SPA fallback reads index.html directly), and multiple @fastify/static
   // registrations must not re-decorate the reply.
   // cacheControl:false makes the `send` stream omit its own Cache-Control (otherwise it emits
@@ -180,14 +193,29 @@ async function registerStaticServing(
   // off, setHeaders controls the directive: `private` (no proxy caching — the resource is
   // auth-gated) with a short browser max-age; Vary:Cookie so a shared browser doesn't reuse one
   // session's response for another.
+  //
+  // Open upload model (any file type accepted at POST /upload/file): serving-side headers carry
+  // the security the old whitelist used to. nosniff is set on EVERYTHING so the extension's
+  // Content-Type is honored, never sniffed into text/html. Non-image responses get
+  // Content-Disposition: attachment — the browser downloads them, never navigates/renders, so an
+  // uploaded .html/.svg/.exe cannot execute in this origin. send/Content-Type is left untouched
+  // (Content-Disposition alone is sufficient and avoids fighting @fastify/static's Content-Type,
+  // which it sets after setHeaders). Images stay inline so <img src> renders.
   await app.register(fastifyStatic, {
     root: uploadsDir,
     prefix: '/uploads/',
     decorateReply: false,
     cacheControl: false,
-    setHeaders: (res: { setHeader: (name: string, value: string) => void }) => {
+    setHeaders: (
+      res: { setHeader: (name: string, value: string) => void },
+      resourcePath: string,
+    ) => {
       res.setHeader('Cache-Control', 'private, max-age=300');
       res.setHeader('Vary', 'Cookie');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      if (!isInlineImage(resourcePath)) {
+        res.setHeader('Content-Disposition', 'attachment');
+      }
     },
   });
 

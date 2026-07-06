@@ -68,6 +68,44 @@ export class AdminUnbanDto {
   uniqName?: string;
 }
 
+/** Push-token list input (pagination + search over uniqName/token/deviceId). */
+export class AdminListPushTokensDto {
+  @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  skip?: number;
+
+  @ApiProperty({ required: false, example: 20, description: 'Records to take (optional)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  take?: number;
+
+  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search uniqName/token/deviceId (optional)' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
+
+/** Send-test-push input. `id` is a PushToken id; title/body are the literal notification text. */
+export class AdminPushTestDto {
+  @ApiProperty({ example: 42, description: 'PushToken id' })
+  @Type(() => Number)
+  @IsNumber()
+  id: number;
+
+  @ApiProperty({ example: 'Test', description: 'Notification title' })
+  @IsString()
+  @IsNotEmpty()
+  title: string;
+
+  @ApiProperty({ required: false, example: 'sent from admin console', description: 'Notification body (optional)' })
+  @IsOptional()
+  @IsString()
+  body?: string;
+}
+
 /** System-wide active session list input (pagination + filter by userId/ip). */
 export class AdminListSessionsDto {
   @ApiProperty({ required: false, example: 0, description: 'Number of records to skip (optional)' })

@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseFileContent,
-  FILE_MIME_EXT,
+  parseFileExt,
+  resolveFileType,
   MAX_FILE_BYTES,
 } from './file-content.js';
 
@@ -15,6 +16,40 @@ function ok(over: Partial<{ url: string; name: string; size: number; mimeType: s
     ...over,
   });
 }
+
+describe('parseFileExt', () => {
+  it('lowercases the extension and strips any directory component', () => {
+    expect(parseFileExt('report.PDF')).toBe('pdf');
+    expect(parseFileExt('a/b\\c/archive.ZIP')).toBe('zip');
+  });
+
+  it('returns "" for no extension, non-alpha extensions, or over-long extensions', () => {
+    expect(parseFileExt('Makefile')).toBe('');
+    expect(parseFileExt('weird.<x>')).toBe('');
+    expect(parseFileExt('a.htaccess')).toBe('htaccess'); // alpha, <=16 → accepted (open model)
+    expect(parseFileExt(`a.${'x'.repeat(17)}`)).toBe(''); // > 16 chars → dropped
+  });
+});
+
+describe('resolveFileType', () => {
+  it('derives ext from the filename and trusts a valid client-declared MIME for display', () => {
+    expect(resolveFileType('doc.pdf', 'application/pdf')).toEqual({
+      ext: 'pdf',
+      mime: 'application/pdf',
+    });
+  });
+
+  it('falls back to application/octet-stream when the declared MIME is absent or malformed', () => {
+    // The common bug: browsers leave File.type empty for many extensions.
+    expect(resolveFileType('data.docx', '')).toEqual({ ext: 'docx', mime: 'application/octet-stream' });
+    expect(resolveFileType('data.docx', 'not a mime')).toEqual({ ext: 'docx', mime: 'application/octet-stream' });
+  });
+
+  it('accepts ANY extension (open model — no whitelist) and empty extensions', () => {
+    expect(resolveFileType('weird.zzz', 'application/octet-stream')).toEqual({ ext: 'zzz', mime: 'application/octet-stream' });
+    expect(resolveFileType('Makefile', '')).toEqual({ ext: '', mime: 'application/octet-stream' });
+  });
+});
 
 describe('parseFileContent', () => {
   it('accepts a well-formed FILE content blob', () => {
@@ -49,15 +84,17 @@ describe('parseFileContent', () => {
     expect(parseFileContent(ok({ url: '/other/x.pdf' }))).toBeNull();
   });
 
-  it('rejects a mimetype outside the whitelist (e.g. an executable)', () => {
-    expect(parseFileContent(ok({ mimeType: 'application/x-msdownload' }))).toBeNull();
-    expect(parseFileContent(ok({ mimeType: 'image/png' }))).toBeNull(); // images are not FILEs
+  it('accepts any non-empty mimeType (open model — no whitelist)', () => {
+    // The whitelist was removed: any type is admissible at the content layer (serving-side
+    // headers carry the security). Only an EMPTY mimeType is rejected.
+    expect(parseFileContent(ok({ mimeType: 'application/x-msdownload' }))).not.toBeNull();
+    expect(parseFileContent(ok({ mimeType: 'application/octet-stream' }))).not.toBeNull();
+    expect(parseFileContent(ok({ mimeType: 'weird/anything' }))).not.toBeNull();
+    expect(parseFileContent(ok({ mimeType: '' }))).toBeNull();
   });
 
-  it('every whitelist key round-trips as a valid mimeType', () => {
-    for (const mime of Object.keys(FILE_MIME_EXT)) {
-      expect(parseFileContent(ok({ mimeType: mime }))).not.toBeNull();
-    }
+  it('accepts a URL with no extension (a file stored without a safe extension)', () => {
+    expect(parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345' }))).not.toBeNull();
   });
 
   it('rejects non-positive, non-finite, or over-capacity sizes', () => {

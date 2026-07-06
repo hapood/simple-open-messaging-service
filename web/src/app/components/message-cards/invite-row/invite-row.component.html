@@ -13,7 +13,12 @@
     @if (showName()) {
       <div class="pg-name pg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
-    <div class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-invite">
+    <button
+      type="button"
+      class="pg-bubble pg-{{ side() }} pg-{{ pos() }} pg-invite pg-invite-tappable"
+      [class.pg-invite-expired]="status() === 1"
+      (click)="openDetail()"
+    >
       <div class="pg-invite-card">
         <div class="pg-invite-title">{{ 'chat.inviteTitle' | transloco:{ name: data().name } }}</div>
         <div class="pg-invite-group">
@@ -21,28 +26,13 @@
             <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [src]="invite().groupAvatar"></app-user-avatar>
           }
           <div class="pg-invite-name">{{ invite().groupName }}</div>
+          <span class="pg-invite-chev" aria-hidden="true">›</span>
         </div>
         @if (expiryLabel()) {
           <div class="pg-invite-expiry">{{ 'chat.validUntil' | transloco:{ date: expiryLabel() } }}</div>
         }
-        @switch (status()) {
-          @case (0) {
-            @if (joined()) {
-              <div class="pg-invite-joined">{{ 'chat.joined' | transloco }}</div>
-              <button mat-raised-button color="primary" (click)="openGroup()">{{ 'chat.openGroup' | transloco }}</button>
-            } @else {
-              <button mat-raised-button color="primary" (click)="joinGroup()">{{ 'chat.join' | transloco }}</button>
-            }
-            @if (resultMsg()) {
-              <div class="pg-invite-result">{{ resultMsg() }}</div>
-            }
-          }
-          @case (1) {
-            <button mat-raised-button disabled>{{ 'chat.expired' | transloco }}</button>
-          }
-        }
       </div>
-    </div>
+    </button>
   </div>
 
   @if (showAvatar() && side() === 'self') {

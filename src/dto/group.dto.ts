@@ -16,7 +16,7 @@ import { GroupRole } from '../prisma/generated/client.js';
  * Group-domain request DTOs. Validation rules:
  * - id fields: @Type(()=>Number)+@IsInt with the global ValidationPipe transform converts JSON/string input
  *   to number (Prisma needs number).
- * - memberIds: @Type(()=>Number) transforms each array element; @IsInt({each:true}) validates.
+ * - inviteUserIds: @Type(()=>Number) transforms each array element; @IsInt({each:true}) validates.
  */
 
 export class CreateGroupDto {
@@ -36,21 +36,22 @@ export class CreateGroupDto {
   avatar?: string;
 
   /**
-   * Friends to add as MEMBER participants directly at creation (WhatsApp-style — they join
-   * without an invite token). Each must be an APPROVED friend of the creator; the controller
-   * validates that. Members added here are not announced via the invite-message flow.
+   * Friends to invite at creation — each receives a GROUP_INVITE message in their P2P thread with
+   * the creator and must accept via group/join before becoming a member. Each must be an APPROVED
+   * friend with an existing P2P thread; non-friends are skipped (returned in the response `skipped`
+   * list) rather than aborting the whole create.
    */
   @ApiProperty({
     required: false,
     type: [Number],
     example: [3, 7],
-    description: 'Friend user ids to add as members at creation (must be friends)',
+    description: 'Friend user ids to invite at creation (each must be a friend with a P2P thread)',
   })
   @IsOptional()
   @IsArray()
   @IsInt({ each: true })
   @Type(() => Number)
-  memberIds?: number[];
+  inviteUserIds?: number[];
 }
 
 export class InviteGroupDto {

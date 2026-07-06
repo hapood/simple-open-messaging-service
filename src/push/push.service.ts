@@ -203,4 +203,95 @@ export class PushService {
       this.logger.error(`push dispatchForMessage failed: ${(e as Error).message}`);
     }
   }
+
+  // ── admin surface ────────────────────────────────────────────────────────────
+
+  /** FCM transport configured (GOOGLE_APPLICATION_CREDENTIALS set + firebase-admin initialized). */
+  get fcmConfigured(): boolean {
+    return this.messaging !== null;
+  }
+  /** Web Push transport configured (VAPID_* keys set). */
+  get webPushConfigured(): boolean {
+    return this.webPushEnabled;
+  }
+
+  /** Admin: paginated device-token list with the owning user's id + uniqName, optional fuzzy search
+   *  over uniqName / token / deviceId. Newest lastSeen first. */
+  async listTokens(opts: { skip: number; take: number; search?: string }): Promise<{
+    list: Array<{
+      id: number;
+      userId: number;
+      platform: string;
+      token: string;
+      deviceId: string | null;
+      createdAt: Date;
+      lastSeenAt: Date;
+      user: { id: number; uniqName: string } | null;
+    }>;
+    total: number;
+  }> {
+    const search = opts.search?.trim();
+    const where = search
+      ? {
+          OR: [
+            { user: { uniqName: { contains: search, mode: 'insensitive' as const } } },
+            { token: { contains: search } },
+            { deviceId: { contains: search } },
+          ],
+        }
+      : undefined;
+    const [list, total] = await Promise.all([
+      this.prisma.pushToken.findMany({
+        where,
+        orderBy: { lastSeenAt: 'desc' },
+        skip: opts.skip,
+        take: opts.take,
+        include: { user: { select: { id: true, uniqName: true } } },
+      }),
+      this.prisma.pushToken.count({ where }),
+    ]);
+    return { list, total };
+  }
+
+  /** Admin: delete a device token by id (unregister). Idempotent via deleteMany. */
+  async deleteTokenById(tokenId: number): Promise<void> {
+    await this.prisma.pushToken.deleteMany({ where: { id: tokenId } });
+  }
+
+  /** Admin: send a one-off test push to a specific device token (looked up by id) to verify delivery.
+   *  Routes by subscription shape — FCM (`send`) for ANDROID/IOS, Web Push for browser subs. The payload
+   *  carries `type: 'admin-test'` so the client posts the literal title/body as a notification (a delivery
+   *  check) instead of triggering a real message wake-up. Returns `{ ok, error? }`; never throws. */
+  async sendTestPush(
+    tokenId: number,
+    title: string,
+    body: string,
+  ): Promise<{ ok: boolean; error?: string }> {
+    const row = await this.prisma.pushToken.findUnique({ where: { id: tokenId } });
+    if (!row) return { ok: false, error: 'token not found' };
+    const isWeb = !!row.webP256dh && !!row.webAuth;
+    try {
+      if (isWeb) {
+        if (!this.webPushEnabled) return { ok: false, error: 'Web Push not configured' };
+        await webpush.sendNotification(
+          { endpoint: row.token, keys: { p256dh: row.webP256dh!, auth: row.webAuth! } },
+          JSON.stringify({ type: 'admin-test', title, body }),
+        );
+        return { ok: true };
+      }
+      if (!this.messaging) return { ok: false, error: 'FCM not configured' };
+      await this.messaging.send({
+        token: row.token,
+        data: { type: 'admin-test', title, body },
+        android: { priority: 'high' },
+      });
+      return { ok: true };
+    } catch (e) {
+      // A definitively-dead FCM token surfaces here — prune it so the list self-cleans.
+      if ((e as { code?: string }).code === 'messaging/registration-token-not-registered') {
+        await this.prisma.pushToken.deleteMany({ where: { id: tokenId } });
+      }
+      return { ok: false, error: (e as Error).message };
+    }
+  }
 }

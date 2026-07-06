@@ -4,8 +4,8 @@
  * the extension badge, and the human-readable size render identically in the two places that show a file.
  */
 
-/** Display category derived from mimeType (drives the icon tint). Mirrors the backend FILE_MIME_EXT set without
- *  depending on it. */
+/** Display category derived from mimeType (drives the icon tint). The backend accepts any file
+ *  type (open model), so unknown MIMEs fall through to the generic 'file' category. */
 export type FileCategory =
   | 'pdf'
   | 'doc'

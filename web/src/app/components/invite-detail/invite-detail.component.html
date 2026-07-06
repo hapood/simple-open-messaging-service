@@ -1,0 +1,43 @@
+<div class="ivd-backdrop" (click)="onClose()">
+  <div class="ivd-card" role="dialog" aria-modal="true" (click)="$event.stopPropagation()">
+    <button mat-icon-button class="ivd-close" (click)="onClose()" [attr.aria-label]="'common.close' | transloco">
+      <span class="ivd-x" aria-hidden="true">×</span>
+    </button>
+
+    <div class="ivd-avatar">
+      <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName || '?'" [src]="invite().groupAvatar" />
+    </div>
+
+    <h2 class="ivd-name">{{ invite().groupName || ('common.unknown' | transloco) }}</h2>
+
+    @if (inviterName()) {
+      <p class="ivd-inviter">{{ 'chat.invitedBy' | transloco:{ name: inviterName() } }}</p>
+    }
+
+    @if (expiryLabel()) {
+      <p class="ivd-expiry">{{ 'chat.validUntil' | transloco:{ date: expiryLabel() } }}</p>
+    }
+
+    @if (errorMsg()) {
+      <p class="ivd-error" role="alert">{{ errorMsg() }}</p>
+    }
+
+    <div class="ivd-actions">
+      @switch (status()) {
+        @case (0) {
+          @if (joined()) {
+            <button mat-raised-button color="primary" (click)="onOpen()">{{ 'chat.openGroup' | transloco }}</button>
+          } @else {
+            <button mat-raised-button color="primary" [disabled]="busy()" (click)="onJoin()">
+              {{ 'chat.join' | transloco }}
+            </button>
+          }
+        }
+        @case (1) {
+          <button mat-raised-button disabled>{{ 'chat.expired' | transloco }}</button>
+        }
+      }
+      <button mat-button (click)="onClose()">{{ 'common.cancel' | transloco }}</button>
+    </div>
+  </div>
+</div>
