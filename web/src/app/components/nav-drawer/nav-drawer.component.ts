@@ -69,8 +69,18 @@ export class NavDrawerComponent {
   /** Cycle theme without closing the drawer, so the change is visible and re-toggleable. */
   cycleTheme(): void { this.themeService.cycleMode(); }
 
-  toggle() { this.sidenav()?.toggle() }
+  toggle() {
+    // TEMP debug — locate where the hamburger→drawer chain breaks. Remove once diagnosed.
+    console.log('[DRAWER-DBG] nav-drawer.toggle() called; sidenav=', this.sidenav())
+    this.sidenav()?.toggle()
+  }
   close() { this.sidenav()?.close() }
+
+  // TEMP debug.
+  onOpenedChange(open: boolean): void {
+    console.log('[DRAWER-DBG] mat-sidenav openedChange:', open)
+    this.drawerOpenChange.emit(open)
+  }
 
   editProfile() {
     this.close()
