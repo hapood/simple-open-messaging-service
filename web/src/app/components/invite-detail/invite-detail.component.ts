@@ -7,7 +7,6 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { InviteDetailService } from './invite-detail.service';
 import { prefersReducedMotion } from '../../lib/motion-utils';
 
 /** Enter timing — matches the app's overlaySlide rhythm so this card enters in step. */
@@ -56,7 +55,6 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
   private readonly nav = inject(NavStateMachineService);
-  private readonly inviteDetail = inject(InviteDetailService);
   private readonly transloco = inject(TranslocoService);
 
   readonly invite = signal<ParsedInvite>({ groupName: '', token: '' });
@@ -173,20 +171,18 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
       return;
     }
     const tid = (res.data as { threadId?: number } | undefined)?.threadId;
-    // openChat's replaceState consumes the invite-detail sentinel (the current entry), so close the overlay
-    // SILENTLY (no history.back — that would pop the just-replaced chat entry) and open the group thread.
-    this.inviteDetail.closeSilent();
+    // openChat clears the pane stack → the invite-detail entry is removed → the TransientOverlayService
+    // effect disposes the CDK overlay. No explicit close needed.
     if (tid != null) {
       this.nav.openChat(tid);
     }
   }
 
-  /** Already joined → open the group. Same silent-close + openChat as onJoin. */
+  /** Already joined → open the group. openChat clears the pane stack → overlay disposed. */
   async onOpen(): Promise<void> {
     const gid = this.invite().groupId;
     const tid = this.convList.items().find((t) => t.group?.id === gid)?.threadId;
     if (tid == null) return;
-    this.inviteDetail.closeSilent();
     this.nav.openChat(tid);
   }
 }
