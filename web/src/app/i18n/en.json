@@ -45,7 +45,8 @@
   "home": {
     "openMenuAria": "Open menu",
     "searchAria": "Search",
-    "resizerTitle": "Drag to resize; double-click to reset"
+    "resizerTitle": "Drag to resize; double-click to reset",
+    "pressAgainToExit": "Press Back again to exit"
   },
   "globalSearch": {
     "placeholder": "Search messages, chats and contacts",
@@ -177,6 +178,7 @@
     "title": "Group Info",
     "groupNamePlaceholder": "Group name",
     "changeAvatarHint": "Change",
+    "groupDescPlaceholder": "Description",
     "members": "{count, plural, =1 {# member} other {# members}}",
     "actionsAria": "actions",
     "makeRole": "Make {{role}}",
@@ -202,6 +204,7 @@
     "title": "New group",
     "searchPlaceholder": "Search",
     "groupNamePlaceholder": "Group name",
+    "groupDescPlaceholder": "Description (optional)",
     "setPhotoAria": "Set group photo",
     "create": "Create"
   },
@@ -248,9 +251,6 @@
     "menuBlock": "Block",
     "menuUnblock": "Unblock",
     "menuBlockConfirm": "Block this contact? They won't be able to message you.",
-    "menuReport": "Report",
-    "menuReportPrompt": "What's wrong with this contact?",
-    "menuReportSent": "Report sent. Thank you.",
     "menuDeleteChat": "Delete chat",
     "menuDeleteChatConfirm": "Delete this chat and remove the friend?",
     "menuLeaveGroup": "Exit group",

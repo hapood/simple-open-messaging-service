@@ -38,6 +38,7 @@
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-fastify": "^11.1.27",
     "@nestjs/swagger": "^11.4.5",
+    "@noble/curves": "^2.2.0",
     "@prisma/adapter-pg": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "argon2": "^0.44.0",
@@ -54,6 +55,7 @@
     "reflect-metadata": "^0.2.0",
     "rxjs": "^7.8.1",
     "sharp": "^0.35.2",
+    "ulid": "^3.0.2",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

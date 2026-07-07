@@ -128,6 +128,9 @@ export class GroupResponseDto {
   })
   avatar: string;
 
+  @ApiProperty({ example: 'Frontend team sync', description: 'Group description / intro' })
+  description: string;
+
   @ApiProperty({ example: 12, description: 'Group message thread id' })
   threadId: number;
 

@@ -11,12 +11,13 @@ import { UserService } from '../../services/user.service';
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { RouteService, PopupType } from '../../services/route.service';
+import { AsideOutletService } from '../../services/aside-outlet.service';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
  * the top-right MORE button, which opens a {@link ChatActionMenuComponent} anchored CDK overlay with
  * the full per-thread action set (view info, search, mute, pin, mark-read, clear; P2P: block,
- * report, delete; GROUP: leave). System settings is NOT here — it lives in the global nav
+ * delete; GROUP: leave). System settings is NOT here — it lives in the global nav
  * (icon-rail / nav-drawer), not a per-thread context menu.
  *
  * Destructive actions use a two-tap inline confirm driven by swapping the menu's entry list (no separate
@@ -48,6 +49,7 @@ export class MessageHeaderComponent {
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
+  private readonly asideOutlet = inject(AsideOutletService);
 
   /** desktop renders the chat inline (no overlay to leave), so the back arrow is mobile-only. */
   protected readonly isDesktop = this.layout.isDesktop;
@@ -58,6 +60,14 @@ export class MessageHeaderComponent {
     // A per-user alias (备注) overrides the real name in the caller's header.
     if (trd.alias) return trd.alias;
     return trd.type === 'P2P' ? trd.peerUser.uniqName : trd.group.name;
+  });
+
+  /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).
+   *  Empty when neither is set, so the header collapses to a single centered line (template @if). */
+  readonly subtitle = computed(() => {
+    const trd = this.userMsgTrd();
+    if (!trd) return '';
+    return trd.type === 'P2P' ? (trd.peerUser.userExtra?.bio ?? '') : (trd.group.description ?? '');
   });
 
   /** Whether the action menu overlay is open. */
@@ -78,7 +88,9 @@ export class MessageHeaderComponent {
     if (!trd) return [];
     const isP2P = trd.type === 'P2P';
     const list: ChatMenuEntry[] = [
-      { kind: 'action', key: 'viewInfo', labelKey: 'chat.menuViewInfo', icon: AppIconType.EYE },
+      // Label mirrors the panel title it opens: "Contact info" for P2P, "Group Info" for groups — so
+      // the menu item and the弹窗 (aside panel) header read the same (chat.menuViewInfo / group.title).
+      { kind: 'action', key: 'viewInfo', labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title', icon: AppIconType.EYE },
       { kind: 'action', key: 'search', labelKey: 'chat.menuSearch', icon: AppIconType.SEARCH },
       { kind: 'divider' },
       { kind: 'action', key: 'markRead', labelKey: 'chat.menuMarkRead' },
@@ -113,7 +125,6 @@ export class MessageHeaderComponent {
           icon: AppIconType.BLOCK,
           danger: !trd.blocked,
         },
-        { kind: 'action', key: 'report', labelKey: 'chat.menuReport', icon: AppIconType.REPORT, danger: true },
         {
           kind: 'action',
           key: 'deleteChat',
@@ -140,7 +151,6 @@ export class MessageHeaderComponent {
       block: 'chat.menuBlockConfirm',
       deleteChat: 'chat.menuDeleteChatConfirm',
       leaveGroup: 'chat.menuLeaveGroupConfirm',
-      report: 'chat.menuReport',
     };
     return [
       { kind: 'action', key: '__confirm__', labelKey: confirmLabel[pending] ?? '', danger: true },
@@ -174,7 +184,7 @@ export class MessageHeaderComponent {
     }
     // Destructive actions stage the inline two-tap confirm first. (clearHistory is excluded — it pops
     // the app-level modal instead, via runAction.)
-    if (key === 'block' || key === 'deleteChat' || key === 'leaveGroup' || key === 'report') {
+    if (key === 'block' || key === 'deleteChat' || key === 'leaveGroup') {
       this.confirmKey.set(key);
       return;
     }
@@ -214,9 +224,6 @@ export class MessageHeaderComponent {
         return;
       case 'block':
         this.toggleBlock(trd, !trd.blocked);
-        return;
-      case 'report':
-        this.report(trd);
         return;
       case 'deleteChat':
         this.deleteChat(trd);
@@ -287,13 +294,6 @@ export class MessageHeaderComponent {
     });
   }
 
-  /** File a generic abuse report (admin-console ingestion). */
-  private report(trd: ConversationItem): void {
-    const peerId = trd.peerUser?.id;
-    if (peerId === undefined) return;
-    this.userService.reportUser({ userId: peerId, reason: 'Reported via chat menu' }).subscribe();
-  }
-
   /** Delete-friend (P2P): the server soft-leaves both participants; drop the thread and go home. */
   private deleteChat(trd: ConversationItem): void {
     const peerId = trd.peerUser?.id;
@@ -321,22 +321,26 @@ export class MessageHeaderComponent {
   }
 
   /**
-   * Open (or toggle) the peer-profile / group-info panel in the `aside` auxiliary outlet. Toggling the
-   * SAME panel closed reuses the URL state.
+   * Open (or toggle) the peer-profile / group-info panel in the `aside` auxiliary outlet. Opening uses the
+   * OUTLET-COMMAND form `[{ outlets: { aside: [seg] } }]` (no primary path) so the router only re-targets
+   * the named outlet — the primary stays on the current `chat/:threadId`. Bundling the outlet spec inside a
+   * primary command array (`['chat', tid, { outlets: { aside: seg } }]`) makes the router look `seg` up as
+   * a child of `chat/:threadId` (which has none) → falls through to `**` → 404. The panels resolve their
+   * thread from `ConversationListService.openThreadId`, so the primary path is not needed here. Mirrors the
+   * working settings-open nav in icon-rail / nav-drawer.
    *
-   * Navigation uses the OUTLET-COMMAND form `[{ outlets: { aside: [seg] } }]` (no primary path) so the
-   * router only re-targets the named outlet — the primary stays on the current `chat/:threadId`. Bundling
-   * the outlet spec inside a primary command array (`['chat', tid, { outlets: { aside: seg } }]`) makes the
-   * router look `seg` up as a child of `chat/:threadId` (which has none) → falls through to `**` → 404.
-   * The panels resolve their thread from `ConversationListService.openThreadId`, so the primary path is
-   * not needed here. Mirrors the working settings-open nav in icon-rail / nav-drawer.
+   * Toggling the SAME panel closed POPS the pushed open-entry via AsideOutletService (≈ hardware-back),
+   * rather than pushing a "closed" sibling — which would orphan the panel-open URL and let back re-open it.
    */
   showThreadInfo(): void {
     const trd = this.userMsgTrd();
     if (!trd) return;
     const seg = trd.type === 'GROUP' ? 'group-info' : 'profile';
     const openSeg = this.router.url.match(/\(aside:([a-z-]+)\)/)?.[1];
-    const outlets = openSeg === seg ? { aside: null } : { aside: [seg] };
-    void this.router.navigate([{ outlets }]);
+    if (openSeg === seg) {
+      this.asideOutlet.close();
+      return;
+    }
+    void this.router.navigate([{ outlets: { aside: [seg] } }]);
   }
 }

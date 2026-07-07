@@ -1,11 +1,14 @@
 import { Component, input, output, inject, viewChild, computed } from '@angular/core';
-import { Router } from '@angular/router';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { NavigationEnd, Router } from '@angular/router';
+import { filter } from 'rxjs';
 import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
+import { SearchService } from '../../services/search.service';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
 
@@ -35,12 +38,24 @@ export class NavDrawerComponent {
   private readonly sidenav = viewChild(MatSidenav)
   private readonly routeService = inject(RouteService)
   readonly userService = inject(UserService)
+  private readonly searchService = inject(SearchService)
   private readonly themeService = inject(ThemeService)
   private readonly languageService = inject(LanguageService)
   private readonly transloco = inject(TranslocoService)
   private readonly router = inject(Router)
 
   readonly sessionProfile = this.userService.sessionProfile
+
+  constructor() {
+    // Close on any successful navigation: thread switches, system back (popstate), and deep links.
+    // mode=over is a covering drawer, so leaving it open across a navigation would occlude the
+    // destination. The menu actions below call close() themselves before navigating; this mainly
+    // catches navigations triggered from outside the drawer (thread list, browser/Android back).
+    this.router.events.pipe(
+      filter((e): e is NavigationEnd => e instanceof NavigationEnd),
+      takeUntilDestroyed(),
+    ).subscribe(() => this.close());
+  }
 
   /** Icon reflecting the current theme mode (predictable cycling affordance). */
   readonly themeIcon = computed<AppIconType>(() => {
@@ -65,6 +80,11 @@ export class NavDrawerComponent {
   }
 
   // Each menu action first closes the drawer, then triggers its popup/navigation (logic migrated from the old home-header.clickMenu).
+  search() {
+    this.close()
+    this.searchService.open()
+  }
+
   friendRequests() {
     this.close()
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)

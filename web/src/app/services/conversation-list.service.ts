@@ -227,13 +227,14 @@ export class ConversationListService {
 
   // ── live group-lifecycle updates (driven by GroupEventService from the GROUP_* SSE events) ──
 
-  /** Apply a rename / avatar change from a GROUP_UPDATED event (live list + header refresh). */
-  applyGroupUpdate(threadId: number, patch: { name?: string; avatar?: string }): void {
+  /** Apply a rename / avatar / description change from a GROUP_UPDATED event (live list + header refresh). */
+  applyGroupUpdate(threadId: number, patch: { name?: string; description?: string; avatar?: string }): void {
     this._items.update((list) =>
       list.map((t) => {
         if (t.threadId !== threadId || !t.group) return t;
         const group = { ...t.group };
         if (patch.name !== undefined) group.name = patch.name;
+        if (patch.description !== undefined) group.description = patch.description;
         if (patch.avatar !== undefined) group.avatar = patch.avatar;
         return { ...t, group };
       }),

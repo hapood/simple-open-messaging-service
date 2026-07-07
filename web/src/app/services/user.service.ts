@@ -174,11 +174,6 @@ export class UserService {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/block`, params)
   }
 
-  /** File an abuse/complaint report against a user (admin-console ingestion; no chat effect). */
-  reportUser(params: { userId: number, reason: string }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/user/report`, params)
-  }
-
 }
 
 /** Avatar edge sizes (aligned with the backend UploadService.AVATAR_SIZES). */

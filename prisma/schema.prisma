@@ -37,8 +37,6 @@ model User {
   notificationTokens NotificationToken[]
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
   userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
-  userReportsFiled   UserReport[]        @relation("UserReportsFiled") // reports THIS user has filed
-  userReportsAgainst UserReport[]        @relation("UserReportsAgainst") // reports filed against THIS user
 
   @@unique([uniqName, domain])
 }
@@ -113,11 +111,12 @@ model NotificationToken {
 }
 
 model Group {
-  id         Int           @id @default(autoincrement())
-  name       String
-  ownerId    Int
-  owner      User          @relation(fields: [ownerId], references: [id])
-  avatar     String
+  id          Int           @id @default(autoincrement())
+  name        String
+  description String        @default("")
+  ownerId     Int
+  owner       User          @relation(fields: [ownerId], references: [id])
+  avatar      String
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
   threadId   Int
@@ -181,7 +180,7 @@ model Friendship {
   userB       User             @relation("FriendB", fields: [userBId], references: [id])
   requesterId Int // who initiated (direction without two rows)
   status      FriendshipStatus @default(PENDING)
-  reqMessage  String           @default("")
+  reqMessage  String           @default("") @db.VarChar(255) // friend-request note/reason (≤255; local + federated; matches lastMessagePreview/bio convention)
   threadId    Int? // the P2P MessageThread, created on APPROVED
   thread      MessageThread?   @relation(fields: [threadId], references: [id])
   createdAt   DateTime         @default(now())
@@ -207,26 +206,16 @@ model UserBlock {
   @@index([blockedId]) // "who has blocked me" lookup (message send/query filter)
 }
 
-/// Abuse/complaint report filed against a user. Passive ingestion for the admin console — no behavioral
-/// effect on chat. One row per report; the admin surface reads by reportedUserId.
-model UserReport {
-  id             Int      @id @default(autoincrement())
-  reporterId     Int
-  reportedUserId Int
-  reason         String   @db.VarChar(255)
-  reporter       User     @relation("UserReportsFiled", fields: [reporterId], references: [id])
-  reported       User     @relation("UserReportsAgainst", fields: [reportedUserId], references: [id])
-  createdAt      DateTime @default(now())
-
-  @@index([reportedUserId]) // admin queue: reports against a user
-}
-
 model MessageThread {
   id        Int               @id @default(autoincrement())
   type      MessageThreadType
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
   isDeleted Boolean           @default(false)
+  // Federation: who owns this thread's identity + sequence. "local" = this server is the origin.
+  // A remote thread is referenced locally by federatedId (origin is the peer that owns it).
+  origin      String          @default("local") @db.VarChar(63)
+  federatedId String?         @unique @db.VarChar(127) // thr_<ulid>@<origin-domain>; null for local-origin threads
 
   // Denormalized "last message" read-cache for the conversation list (the hottest read path).
   // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
@@ -339,4 +328,66 @@ model AdminRefreshToken {
 
   @@index([adminId])
   @@index([familyId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Federation (S2S). See docs/federation-protocol.md. Added 2026-07-07.
+// Trust model: FederatedPeer is a DOMAIN ALLOW-LIST only (no key pinning); signing
+// keys are fetched from each peer's /.well-known/soms over HTTPS and cached (S2SKeyCache).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A peer server we may federate with. PURE DOMAIN ALLOW-LIST (trust data only — NOT keys,
+/// NOT inbox URL; those are fetched from <domain>/.well-known/soms and cached by DiscoveryService).
+/// Adding a peer = admin sets pending → fetch .well-known → trusted (OOB fingerprint optional).
+model FederatedPeer {
+  domain      String    @id @db.VarChar(63) // e.g. other.com
+  trustLevel  String    @default("pending") @db.VarChar(15) // pending | trusted | blocked
+  addedBy     String?   @db.VarChar(31) // admin username who approved
+  createdAt   DateTime  @default(now())
+  lastSeenAt  DateTime?
+
+  @@index([trustLevel])
+}
+
+/// Cached peer signing keys. Fetched from <domain>/.well-known/soms (HTTPS), TTL'd by fetchedAt.
+/// Multiple rows per domain during key rotation (overlapping keyIds). JWKS-style key set.
+model S2SKeyCache {
+  domain     String   @db.VarChar(63)
+  keyId      String   @db.VarChar(127) // e.g. "other.com/key-1"
+  publicKey  String   @db.VarChar(127) // ed25519 public key, raw bytes base64
+  fetchedAt  DateTime @default(now())
+
+  @@id([domain, keyId])
+  @@index([domain])
+}
+
+/// Outbound delivery queue. Durable; drained by S2SOutboxWorker with exponential backoff.
+/// One row per (envelope, recipient-domain) fan-out. status: pending | in_flight | delivered | dead.
+model S2SOutbox {
+  id                String    @id // generated in app (randomUUID)
+  envelopeId        String    @db.VarChar(127) // origin-assigned ULID; dedup key with origin
+  envelopeType      String    @db.VarChar(31) // friend.request | friend.approve | friend.delete | thread.invite | message | ...
+  origin            String    @db.VarChar(63) // this server's domain (we are always the origin of outbound)
+  threadFederatedId String?   @db.VarChar(127) // null for friend.* (no thread yet)
+  recipientDomain   String    @db.VarChar(63)
+  payload           Json      // the full envelope
+  status            String    @default("pending") @db.VarChar(15)
+  attempts          Int       @default(0)
+  nextRetryAt       DateTime?
+  lastError         String?   @db.VarChar(255)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([status, nextRetryAt])
+  @@index([recipientDomain, status])
+  @@index([threadFederatedId, recipientDomain])
+}
+
+/// Inbound dedup. At-least-once delivery requires idempotent dedup by (origin, envelopeId).
+model S2SInboxSeen {
+  origin      String   @db.VarChar(63)
+  envelopeId  String   @db.VarChar(127)
+  receivedAt  DateTime @default(now())
+
+  @@id([origin, envelopeId])
 }

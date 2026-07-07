@@ -23,9 +23,14 @@
         </label>
         <input class="name-input" [ngModel]="nameEdit()" (ngModelChange)="nameEdit.set($event)"
           maxlength="31" [placeholder]="'group.groupNamePlaceholder' | transloco" (keydown.enter)="saveEdit()" />
+        <textarea class="desc-input" rows="2" [maxlength]="DESC_MAX" [ngModel]="descEdit()"
+          (ngModelChange)="descEdit.set($event)" [placeholder]="'group.groupDescPlaceholder' | transloco"></textarea>
       } @else {
         <app-user-avatar [type]="UserAvatarType.GROUP" [name]="group()?.name ?? ''" [src]="avatarUrl()"></app-user-avatar>
         <div class="name">{{ group()?.name }}</div>
+        @if (group()?.description) {
+          <div class="group-desc">{{ group()?.description }}</div>
+        }
       }
     </div>
     @if (editing()) {

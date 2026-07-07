@@ -4,7 +4,12 @@
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
   }
-  <div class="msg-title" (click)="showThreadInfo()" [title]="title()">{{ title() }}</div>
+  <div class="msg-title">
+    <span class="msg-title-text" (click)="showThreadInfo()" [title]="title()">{{ title() }}</span>
+    @if (subtitle()) {
+      <span class="msg-subtitle" (click)="showThreadInfo()" [title]="subtitle()">{{ subtitle() }}</span>
+    }
+  </div>
   <button
     class="icon-btn"
     cdkOverlayOrigin

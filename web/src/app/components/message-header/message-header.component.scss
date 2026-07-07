@@ -17,16 +17,40 @@
 
 // Title takes the middle space and truncates so a long peer/group name never pushes the MORE
 // button off-screen. min-width:0 is the flexbox truncation enabler.
+// Title column: the name (always) + an optional subtitle line (peer bio / group description). The
+// outer .msg-title owns flex:1 + vertical centering; each line truncates independently so a long name
+// or bio never pushes the MORE button off-screen, and a missing subtitle collapses to a single line.
 .msg-title {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 4px;
+}
+
+.msg-title-text {
+  cursor: pointer;
   font-size: 16px;
   line-height: 20px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  &:hover { opacity: 0.8; }
+}
+
+// Subtitle: the peer's bio (P2P) or the group description (GROUP). Rendered only when non-empty
+// (template @if), so an empty bio/description collapses the header to a single centered line.
+.msg-subtitle {
   cursor: pointer;
-  padding: 0 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--app-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 2px;
   &:hover { opacity: 0.8; }
 }
 

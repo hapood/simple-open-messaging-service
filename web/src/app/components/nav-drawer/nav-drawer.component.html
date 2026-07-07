@@ -10,6 +10,11 @@
     </div>
 
     <nav class="drawer-menu">
+      <button class="nav-item" (click)="search()">
+        <app-icon [type]="AppIconType.SEARCH" [style]="{ width: '24px', height: '24px' }"></app-icon>
+        <span>{{ 'nav.search' | transloco }}</span>
+      </button>
+
       <button class="nav-item" (click)="friendRequests()">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -42,20 +47,23 @@
         </svg>
         <span>{{ 'nav.folders' | transloco }}</span>
       </button>
+    </nav>
 
-      <button class="nav-item" (click)="cycleTheme()"
-        [attr.aria-label]="'nav.themeAria' | transloco:{ label: themeLabel() }"
-        [title]="'nav.themeAria' | transloco:{ label: themeLabel() }">
-        <app-icon [type]="themeIcon()" [style]="{ width: '24px', height: '24px' }"></app-icon>
-        <span>{{ themeLabel() }}</span>
-      </button>
-
-      <button class="nav-item" (click)="settings()"
+    <!-- Telegram-style pinned footer: a Settings row + a circular quick theme toggle pinned to the
+         bottom, separated from the navigation body by a divider — mirrors Telegram's drawer footer
+         (Settings + night-mode toggle in the bottom corner). The body above scrolls independently
+         (flex:1 + overflow-y:auto) so the footer stays pinned however long the menu grows. -->
+    <div class="drawer-footer">
+      <button class="nav-item footer-item" (click)="settings()"
         [attr.aria-label]="'nav.settings' | transloco" [title]="'nav.settings' | transloco">
         <app-icon [type]="AppIconType.SETTINGS" [style]="{ width: '24px', height: '24px' }"></app-icon>
         <span>{{ 'nav.settings' | transloco }}</span>
       </button>
-
-    </nav>
+      <button class="theme-toggle" (click)="cycleTheme()"
+        [attr.aria-label]="'nav.themeAria' | transloco:{ label: themeLabel() }"
+        [title]="'nav.themeAria' | transloco:{ label: themeLabel() }">
+        <app-icon [type]="themeIcon()" [style]="{ width: '24px', height: '24px' }"></app-icon>
+      </button>
+    </div>
   </mat-sidenav>
 </mat-sidenav-container>

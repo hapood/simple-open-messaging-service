@@ -72,6 +72,10 @@
 .drawer-menu {
   flex: 1;
   min-height: 0;
+  /* Independent scroll keeps the system controls in .drawer-footer pinned to the bottom however long
+     the navigation body grows. min-height:0 lets the flex item shrink below its content so the
+     scrollbar engages instead of pushing the footer off-screen. */
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   padding: 8px 0;
@@ -110,4 +114,44 @@
 
   &:hover { background: var(--app-hover); }
   &:active { background: var(--app-active); }
+}
+
+/* Telegram-style pinned footer: Settings row on the left + circular quick theme toggle on the right,
+   separated from the scrolling body by a top divider. flex:0 0 auto pins it; .drawer-menu (flex:1,
+   overflow-y:auto) scrolls above it. */
+.drawer-footer {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid var(--app-border);
+
+  /* The Settings row reuses .nav-item's look but spans the footer: .nav-item's 0 8px margin would
+     double-inset against the footer's own padding, so drop it here and let the footer padding carry
+     the inset. flex:1 1 auto pushes the circular toggle to the right edge. */
+  .footer-item {
+    flex: 1 1 auto;
+    margin: 0;
+  }
+
+  /* Circular quick theme toggle (Telegram night-mode affordance): icon-only, balanced against the
+     48px Settings row so the two read as a single footer pair. */
+  .theme-toggle {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: 50%;
+    background: none;
+    color: var(--app-text);
+    cursor: pointer;
+
+    &:hover { background: var(--app-hover); }
+    &:active { background: var(--app-active); }
+  }
 }

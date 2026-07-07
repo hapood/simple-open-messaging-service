@@ -21,6 +21,7 @@ interface GroupEventPayload {
   byUserId?: number;
   /** GROUP_UPDATED fields. */
   name?: string;
+  description?: string;
   avatar?: string;
 }
 
@@ -73,7 +74,7 @@ export class GroupEventService implements OnDestroy {
 
   private handle(event: string, p: GroupEventPayload): void {
     if (event === 'GROUP_UPDATED') {
-      this.convList.applyGroupUpdate(p.threadId, { name: p.name, avatar: p.avatar });
+      this.convList.applyGroupUpdate(p.threadId, { name: p.name, description: p.description, avatar: p.avatar });
       return;
     }
     const me = this.userService.sessionProfile()?.id;

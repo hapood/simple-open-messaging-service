@@ -35,6 +35,17 @@ export class CreateGroupDto {
   @IsOptional()
   avatar?: string;
 
+  /** Group description / intro (群简介) — shown as the subtitle under the name in the chat header. */
+  @ApiProperty({
+    required: false,
+    example: 'Frontend team sync',
+    description: 'Group description / intro (≤240 chars)',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(240, { message: 'group description must be at most 240 characters' })
+  description?: string;
+
   /**
    * Friends to invite at creation — each receives a GROUP_INVITE message in their P2P thread with
    * the creator and must accept via group/join before becoming a member. Each must be an APPROVED
@@ -161,4 +172,15 @@ export class UpdateGroupDto {
   @IsString()
   @IsOptional()
   avatar?: string;
+
+  /** Updated group description / intro. Empty string clears it. */
+  @ApiProperty({
+    required: false,
+    example: 'Frontend team sync',
+    description: 'New group description / intro (≤240 chars)',
+  })
+  @IsString()
+  @IsOptional()
+  @MaxLength(240, { message: 'group description must be at most 240 characters' })
+  description?: string;
 }

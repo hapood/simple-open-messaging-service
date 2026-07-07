@@ -14,6 +14,7 @@ import { GlobalSearchComponent } from '../global-search/global-search.component'
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { SearchService } from '../../services/search.service';
+import { AsideOutletService } from '../../services/aside-outlet.service';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
@@ -62,6 +63,7 @@ export class HomeShellComponent {
   private readonly layout = inject(LayoutService)
   private readonly convList = inject(ConversationListService)
   readonly search = inject(SearchService)
+  private readonly asideOutlet = inject(AsideOutletService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode
@@ -138,17 +140,21 @@ export class HomeShellComponent {
   }
 
   /** Open a conversation by route, closing any open info panel (it is scoped to the previous chat).
-   *  replaceUrl: switching threads from the always-mounted list must NOT stack a new history entry per
-   *  chat — back returns to the conversation list (the entry before the chat), not through every thread
-   *  the user clicked. */
+   *
+   *  History is what makes back behave: drilling from the list INTO a chat PUSHES a layer (so the stack
+   *  is [home, chat] and browser-back returns to the list — one layer up — instead of falling out of the
+   *  app); only switching from one chat to ANOTHER replaces (lateral moves from the always-mounted
+   *  desktop list must not stack a thread per click). The list→exit back is then guarded by
+   *  BackExitGuardService ("press back again to exit"). */
   openChat(item: ConversationItem) {
-    this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }], { replaceUrl: true })
+    const lateralSwitch = /\/chat\//.test(this.router.url)
+    this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }], { replaceUrl: lateralSwitch })
   }
 
-  /** Close the aside drawer (clears the named outlet). Wired to the desktop drawer-mask click. Uses the
-   *  outlet-only command form — the primary-in-array form is misparsed (the aside never clears). */
+  /** Close the aside drawer (clears the named outlet). Wired to the desktop drawer-mask click. Delegates
+   *  to AsideOutletService, which pops the pushed panel-open entry so back can't re-open it. */
   closeAside() {
-    void this.router.navigate([{ outlets: { aside: null } }])
+    this.asideOutlet.close()
   }
 
   /** After a group is created, refresh the shared thread list (forwarded to icon-rail / nav-drawer). */

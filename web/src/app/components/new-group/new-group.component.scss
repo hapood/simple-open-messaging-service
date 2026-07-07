@@ -196,6 +196,31 @@ app-user-list {
   text-align: right;
 }
 
+// ── step 2: group description (optional 群简介) ──
+.desc-field {
+  display: block;
+  margin-top: 16px;
+}
+
+.desc-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 64px;
+  padding: 8px 12px;
+  border: 1px solid var(--app-border-strong);
+  border-radius: var(--app-radius-md);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--app-text);
+  background: var(--app-surface);
+  outline: none;
+  resize: vertical;
+  &::placeholder { color: var(--app-text-faint); }
+  &:focus { border-color: var(--app-brand); }
+}
+
 // avatar-upload spinner
 .spin {
   width: 14px;

@@ -63,6 +63,30 @@
     text-align: center;
     outline: none;
   }
+  .desc-input {
+    width: min(85%, 360px);
+    min-height: 56px;
+    padding: 8px 10px;
+    border: 1px solid var(--app-border-strong);
+    border-radius: var(--app-radius-md);
+    font-family: inherit;
+    font-size: 14px;
+    line-height: 20px;
+    color: var(--app-text);
+    background: var(--app-surface);
+    outline: none;
+    resize: vertical;
+    &:focus { border-color: var(--app-brand); }
+  }
+  .group-desc {
+    max-width: 90%;
+    font-size: 13px;
+    color: var(--app-text-muted);
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
 }
 .avatar-edit {
   position: relative;

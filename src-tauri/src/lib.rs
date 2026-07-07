@@ -91,6 +91,7 @@ pub fn run() {
             set_api_origin,
             set_access_token,
             clear_access_token,
+            exit_app,
         ])
         .setup(move |app| {
             // Resolve the app-data config path and load the persisted origin, overriding the env/default
@@ -251,4 +252,14 @@ fn clear_access_token(state: tauri::State<'_, ProxyState>) {
     if let Ok(mut g) = state.token.lock() {
         *g = None;
     }
+}
+
+/// Quit the desktop app cleanly. Called by the web back-exit guard's "press back again to exit" — a
+/// second mouse-back / Alt-Left at the conversation list within 2 s. The browser build instead traverses
+/// history to the page that preceded the SPA; the Android build handles hardware back natively and never
+/// reaches this command. `app.exit` runs the normal run-loop teardown (window close, plugin drop), so it
+/// is the correct single-window quit path on PC/macOS.
+#[tauri::command]
+fn exit_app(app: tauri::AppHandle) {
+    app.exit(0);
 }

@@ -6,6 +6,7 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { AsideOutletService } from '../../services/aside-outlet.service';
 import { ConversationItem } from '../../services/model';
 
 /**
@@ -90,6 +91,7 @@ export class PeerProfileComponent {
   readonly UserAvatarType = UserAvatarType
 
   private readonly router = inject(Router)
+  private readonly asideOutlet = inject(AsideOutletService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
 
@@ -126,11 +128,9 @@ export class PeerProfileComponent {
     })
   }
 
-  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. Uses the outlet-only
-   *  command form `[{ outlets: { aside: null } }]` — bundling the outlet spec inside a primary command
-   *  array (`['chat', tid, { outlets: ... }]`) is misparsed (the object becomes matrix params, so the
-   *  aside never clears). Same fix as settings.component's goBack. */
+  /** Close the aside (back to the chat) by popping the pushed panel-open entry via AsideOutletService —
+   *  pushing a "closed" sibling instead would orphan the panel-open URL and let back re-open it. */
   goBack() {
-    void this.router.navigate([{ outlets: { aside: null } }])
+    this.asideOutlet.close()
   }
 }

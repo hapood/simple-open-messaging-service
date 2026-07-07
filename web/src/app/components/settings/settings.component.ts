@@ -1,5 +1,5 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { Router } from '@angular/router';
+import { AsideOutletService } from '../../services/aside-outlet.service';
 import { MatListModule } from '@angular/material/list';
 import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
 import { MatButtonToggleModule, MatButtonToggleChange } from '@angular/material/button-toggle';
@@ -44,7 +44,7 @@ export class SettingsComponent {
   readonly AppIconType = AppIconType;
   readonly appVersion = appVersion;
 
-  private readonly router = inject(Router);
+  private readonly asideOutlet = inject(AsideOutletService);
   private readonly transloco = inject(TranslocoService);
   readonly theme = inject(ThemeService);
   readonly language = inject(LanguageService);
@@ -112,8 +112,9 @@ export class SettingsComponent {
     window.setTimeout(() => this.checking.set(false), 2700);
   }
 
-  /** Close the aside panel — mirrors PeerProfileComponent.goBack (clears the auxiliary outlet). */
+  /** Close the aside panel — pops the pushed panel-open entry via AsideOutletService so back can't
+   *  re-open it. */
   goBack(): void {
-    void this.router.navigate([{ outlets: { aside: null } }]);
+    this.asideOutlet.close();
   }
 }

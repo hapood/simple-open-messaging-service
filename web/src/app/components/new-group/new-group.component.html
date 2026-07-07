@@ -64,6 +64,13 @@
         <div class="counter">{{ name().length }} / {{ NAME_MAX }}</div>
       </div>
     </div>
+
+    <label class="desc-field">
+      <textarea class="desc-input" rows="2" [maxlength]="DESC_MAX"
+        [placeholder]="'newGroup.groupDescPlaceholder' | transloco"
+        [ngModel]="description()" (ngModelChange)="onDescInput($event)"></textarea>
+      <span class="counter">{{ description().length }} / {{ DESC_MAX }}</span>
+    </label>
   </div>
 
   <input #fileInput type="file" accept="image/*" hidden (change)="pickAvatar($any($event.target))" />

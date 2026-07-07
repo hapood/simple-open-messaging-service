@@ -11,6 +11,7 @@ import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService, GroupMember } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
+import { AsideOutletService } from '../../services/aside-outlet.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
@@ -41,6 +42,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly UserAvatarType = UserAvatarType
 
   private readonly router = inject(Router)
+  private readonly asideOutlet = inject(AsideOutletService)
   private readonly groupService = inject(GroupService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
@@ -74,6 +76,10 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   /** Inline identity-edit mode (admin+). */
   readonly editing = signal(false)
   readonly nameEdit = signal('')
+  /** Max length of the group description (群简介). */
+  readonly DESC_MAX = 240
+  /** Staged description while editing (admin+); seeded from the current value on beginEdit. */
+  readonly descEdit = signal('')
   /** staged new avatar URL (uploaded already); undefined = unchanged. */
   readonly pendingAvatar = signal<string | undefined>(undefined)
 
@@ -221,6 +227,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   beginEdit() {
     if (!this.isAdmin() || this.group() === undefined) return
     this.nameEdit.set(this.group()!.name)
+    this.descEdit.set(this.group()!.description ?? '')
     this.pendingAvatar.set(undefined)
     this.editing.set(true)
   }
@@ -270,7 +277,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     const avatar = this.pendingAvatar()
     this.busy.set(true)
     this.groupService
-      .updateGroup({ groupId: id, name, avatar })
+      .updateGroup({ groupId: id, name, description: this.descEdit(), avatar })
       .subscribe(() => {
         this.busy.set(false)
         this.editing.set(false)
@@ -326,10 +333,9 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     })
   }
 
-  /** Close just the aside (back to the chat) by clearing the auxiliary outlet. Uses the outlet-only
-   *  command form — the primary-in-array form is misparsed (object becomes matrix params, aside never
-   *  clears). Same fix as settings.component's goBack. */
+  /** Close the aside (back to the chat) by popping the pushed panel-open entry via AsideOutletService —
+   *  pushing a "closed" sibling instead would orphan the panel-open URL and let back re-open it. */
   goBack() {
-    void this.router.navigate([{ outlets: { aside: null } }])
+    this.asideOutlet.close()
   }
 }

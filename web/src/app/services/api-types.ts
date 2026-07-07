@@ -157,6 +157,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/search/global": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Global cross-conversation search (messages by text/file-name + conversations/contacts by display name) */
+        post: operations["MessageController_searchGlobal"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -509,23 +526,6 @@ export interface paths {
         put?: never;
         /** Block / unblock a user (P2P). Independent of friendship; the message path drops delivery + hides their messages. */
         post: operations["UserController_setBlock"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/report": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** File an abuse/complaint report against a user (admin-console ingestion; no chat effect). */
-        post: operations["UserController_reportUser"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1490,6 +1490,28 @@ export interface components {
              */
             lastId?: string;
         };
+        GlobalSearchDto: {
+            /**
+             * @description Search keyword (substring, case-insensitive across all active conversations)
+             * @example hello
+             */
+            keyword: string;
+            /**
+             * @description Max message hits to return (1-50). Default 20.
+             * @example 20
+             */
+            messageTake?: number;
+            /**
+             * @description Max conversation/contact hits to return (1-50). Default 20.
+             * @example 20
+             */
+            threadTake?: number;
+            /**
+             * @description Cursor (BigInt→string): return message hits with id < lastMsgId (descending). Omit for the first page.
+             * @example 9007199254740993
+             */
+            lastMsgId?: string;
+        };
         LoginDto: {
             /**
              * @description Login unique name
@@ -1645,6 +1667,11 @@ export interface components {
              */
             avatar: string;
             /**
+             * @description Group description / intro
+             * @example Frontend team sync
+             */
+            description: string;
+            /**
              * @description Group message thread id
              * @example 12
              */
@@ -1791,18 +1818,6 @@ export interface components {
              */
             block: boolean;
         };
-        ReportDto: {
-            /**
-             * @description Reported user id
-             * @example 1
-             */
-            userId: number;
-            /**
-             * @description Report reason (≤255 chars)
-             * @example spam
-             */
-            reason: string;
-        };
         QueryUsersDto: {
             /**
              * @description List of user ids (≤100 per query)
@@ -1877,6 +1892,11 @@ export interface components {
              * @example https://.../g.webp
              */
             avatar?: string;
+            /**
+             * @description Group description / intro (≤240 chars)
+             * @example Frontend team sync
+             */
+            description?: string;
             /**
              * @description Friend user ids to invite at creation (each must be a friend with a P2P thread)
              * @example [
@@ -2007,6 +2027,11 @@ export interface components {
              * @example https://.../g.webp
              */
             avatar?: string;
+            /**
+             * @description New group description / intro (≤240 chars)
+             * @example Frontend team sync
+             */
+            description?: string;
         };
         RegisterDeviceDto: {
             /**
@@ -2336,6 +2361,27 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SearchMessagesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_searchGlobal: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GlobalSearchDto"];
             };
         };
         responses: {
@@ -2802,27 +2848,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["BlockDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UserController_reportUser: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ReportDto"];
             };
         };
         responses: {

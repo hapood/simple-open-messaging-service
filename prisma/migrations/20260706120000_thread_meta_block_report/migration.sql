@@ -53,10 +53,3 @@ ALTER TABLE "UserReport" ADD CONSTRAINT "UserReport_reporterId_fkey" FOREIGN KEY
 
 -- AddForeignKey
 ALTER TABLE "UserReport" ADD CONSTRAINT "UserReport_reportedUserId_fkey" FOREIGN KEY ("reportedUserId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
-
--- pg_trgm GIN index to back the substring ILIKE filter in search-messages. The extension is created
--- idempotently (IF NOT EXISTS); the GIN index lets `content ILIKE '%kw%'` use trigram fast-scan
--- instead of a full-thread sequential scan. Pure-text messages only; non-text types never carry
--- searchable content (the client filters them out before sending the query).
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE INDEX "Message_content_trgm_idx" ON "Message" USING gin ("content" gin_trgm_ops);

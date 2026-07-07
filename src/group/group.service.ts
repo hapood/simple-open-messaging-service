@@ -106,6 +106,7 @@ export class GroupService implements OnModuleInit {
    */
   async createNewGroup(params: {
     name: string;
+    description?: string;
     avatar?: string;
     owner: number;
   }) {
@@ -116,6 +117,7 @@ export class GroupService implements OnModuleInit {
       const grpData = await prisma.group.create({
         data: {
           name: params.name,
+          description: params.description ?? '',
           avatar: params.avatar ?? '',
           ownerId: params.owner,
           threadId: trdData.id,
@@ -355,14 +357,16 @@ export class GroupService implements OnModuleInit {
     });
   }
 
-  /** Update a group's name and/or avatar (only provided fields are written). */
+  /** Update a group's name / description / avatar (only provided fields are written). */
   async updateGroup(params: {
     groupId: number;
     name?: string;
+    description?: string;
     avatar?: string;
   }) {
     const data: Prisma.GroupUpdateInput = {};
     if (params.name !== undefined) data.name = params.name;
+    if (params.description !== undefined) data.description = params.description;
     if (params.avatar !== undefined) data.avatar = params.avatar;
     return this.prisma.group.update({
       where: { id: params.groupId },

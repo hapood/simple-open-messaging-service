@@ -44,21 +44,6 @@ export class BlockDto {
   block: boolean;
 }
 
-/** File an abuse/complaint report against a user. Passive ingestion for the admin console; no chat effect. */
-export class ReportDto {
-  @ApiProperty({ example: 1, description: 'Reported user id' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId: number;
-
-  @ApiProperty({ example: 'spam', description: 'Report reason (≤255 chars)' })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(255)
-  reason: string;
-}
-
 export class ThreadIdDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
   @Type(() => Number)

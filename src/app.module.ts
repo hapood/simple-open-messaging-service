@@ -18,7 +18,7 @@ import { ThreadParticipantModule } from './thread-participant/thread-participant
 import { FriendshipModule } from './friendship/friendship.module.js';
 import { PushModule } from './push/push.module.js';
 import { UserBlockModule } from './user-block/user-block.module.js';
-import { UserReportModule } from './user-report/user-report.module.js';
+import { FederationModule } from './federation/federation.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
 import { NotificationQueryService } from './notification/notification-query.service.js';
@@ -43,7 +43,7 @@ import { NotificationQueryService } from './notification/notification-query.serv
     FriendshipModule,
     PushModule,
     UserBlockModule,
-    UserReportModule,
+    FederationModule,
   ],
   controllers: [
     MessageController,

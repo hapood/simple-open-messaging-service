@@ -35,7 +35,7 @@ export class GroupService {
 
   /** Create a group; inviteUserIds sends each friend a GROUP_INVITE they must accept via group/join
    *  (no direct add). The response carries { invited, skipped } so the caller can toast the result. */
-  createGroup(params: { name: string, avatar?: string, inviteUserIds?: number[] }) {
+  createGroup(params: { name: string, avatar?: string, description?: string, inviteUserIds?: number[] }) {
     return this.http.post<StandardResponse<GrpCreateInfo>>(`${apiPrefix}/group/create`, params)
   }
 
@@ -73,7 +73,7 @@ export class GroupService {
     return this.http.post<StandardResponse>(`${apiPrefix}/group/set-role`, params)
   }
 
-  updateGroup(params: { groupId: number, name?: string, avatar?: string }) {
+  updateGroup(params: { groupId: number, name?: string, description?: string, avatar?: string }) {
     return this.http.post<StandardResponse>(`${apiPrefix}/group/update`, params)
   }
 }

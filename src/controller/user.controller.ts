@@ -47,10 +47,8 @@ import {
   QueryPendingThreadDto,
   UpdateProfileDto,
   BlockDto,
-  ReportDto,
 } from '../dto/user.dto.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
-import { UserReportService } from '../user-report/user-report.service.js';
 
 @ApiTags('user')
 @Controller()
@@ -65,7 +63,6 @@ export class UserController {
     private readonly sseService: SseService,
     private readonly messageService: MessageService,
     private readonly userBlockService: UserBlockService,
-    private readonly userReportService: UserReportService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -577,21 +574,6 @@ export class UserController {
       code: BusinessCode.OK,
       message: dto.block ? 'user blocked' : 'user unblocked',
     };
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/report')
-  @ApiOperation({
-    summary: 'File an abuse/complaint report against a user (admin-console ingestion; no chat effect).',
-  })
-  async reportUser(@Request() req, @Body() dto: ReportDto): Promise<ApiResult> {
-    if (req.user.userId === dto.userId) {
-      return { code: BusinessCode.FRIEND_SELF, message: 'can not report self' };
-    }
-    await this.userReportService.report(req.user.userId, dto.userId, dto.reason);
-    return { code: BusinessCode.OK, message: 'report submitted' };
   }
 
   @UseGuards(JwtAuthGuard)

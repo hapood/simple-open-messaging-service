@@ -47,8 +47,10 @@ export type ChatMenuEntry =
       [cdkConnectedOverlayPositions]="positions"
       [cdkConnectedOverlayHasBackdrop]="true"
       [cdkConnectedOverlayBackdropClass]="'cdk-overlay-transparent-backdrop'"
+      [cdkConnectedOverlayDisposeOnNavigation]="true"
       (backdropClick)="closed.emit()"
       (detach)="closed.emit()"
+      (overlayKeydown)="onOverlayKeydown($event)"
     >
       <div class="chat-menu" role="menu" (click)="$event.stopPropagation()">
         @for (entry of entries; track entry.kind === 'divider' ? 'd' + $index : entry.key) {
@@ -122,6 +124,13 @@ export class ChatActionMenuComponent {
 
   @Output() readonly select = new EventEmitter<string>();
   @Output() readonly closed = new EventEmitter<void>();
+
+  /** ESC closes the menu. A CDK connected overlay with a backdrop does NOT auto-close on Escape,
+   *  so the doc'd "ESC close it" behavior must be wired explicitly. Route-change close is handled
+   *  separately by cdkConnectedOverlayDisposeOnNavigation (which fires detach → closed above). */
+  onOverlayKeydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape') this.closed.emit();
+  }
 
   /** Anchored below the origin's right edge (left of the button, dropping down), with flip fallbacks. */
   readonly positions: ConnectedPosition[] = [

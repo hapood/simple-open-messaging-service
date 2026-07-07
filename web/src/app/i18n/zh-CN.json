@@ -45,7 +45,8 @@
   "home": {
     "openMenuAria": "打开菜单",
     "searchAria": "搜索",
-    "resizerTitle": "拖动以调整大小；双击恢复默认"
+    "resizerTitle": "拖动以调整大小；双击恢复默认",
+    "pressAgainToExit": "再按一次退出"
   },
   "globalSearch": {
     "placeholder": "搜索消息、聊天和联系人",
@@ -177,6 +178,7 @@
     "title": "群信息",
     "groupNamePlaceholder": "群名称",
     "changeAvatarHint": "更改",
+    "groupDescPlaceholder": "群简介",
     "members": "{count, plural, other {# 名成员}}",
     "actionsAria": "操作",
     "makeRole": "设为{{role}}",
@@ -202,6 +204,7 @@
     "title": "新建群组",
     "searchPlaceholder": "搜索",
     "groupNamePlaceholder": "群名称",
+    "groupDescPlaceholder": "群简介（选填）",
     "setPhotoAria": "设置群头像",
     "create": "创建"
   },
@@ -248,9 +251,6 @@
     "menuBlock": "拉黑",
     "menuUnblock": "取消拉黑",
     "menuBlockConfirm": "确定拉黑？对方将无法向你发送消息。",
-    "menuReport": "举报",
-    "menuReportPrompt": "举报该联系人？请输入原因。",
-    "menuReportSent": "已举报，感谢反馈。",
     "menuDeleteChat": "删除聊天",
     "menuDeleteChatConfirm": "删除此聊天并移除好友？",
     "menuLeaveGroup": "退出群聊",

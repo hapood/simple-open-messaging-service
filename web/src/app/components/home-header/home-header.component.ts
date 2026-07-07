@@ -1,12 +1,12 @@
-import { Component, inject, output } from '@angular/core';
+import { Component, output } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { SearchService } from '../../services/search.service';
 
 /**
- * Top bar: hamburger button (toggleDrawer output) + SOMS title + search button.
- * Menu logic (friend requests / new group / folders / log out) moved to <app-nav-drawer>;
- * this component only triggers the drawer toggle + global-search open and holds no menu state.
+ * Mobile/tablet top bar: hamburger button (toggleDrawer output) + SOMS title.
+ * Menu logic (friend requests / new group / folders / log out) lives in <app-nav-drawer>;
+ * global search lives in <app-icon-rail> (desktop) and <app-nav-drawer> (mobile/tablet).
+ * This component only triggers the drawer toggle and holds no menu/search state.
  */
 @Component({
   selector: 'app-home-header',
@@ -17,5 +17,4 @@ import { SearchService } from '../../services/search.service';
 export class HomeHeaderComponent {
   readonly AppIconType = AppIconType
   readonly toggleDrawer = output<void>()
-  readonly search = inject(SearchService)
 }

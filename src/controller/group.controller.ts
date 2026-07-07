@@ -93,6 +93,7 @@ export class GroupController {
     const owner = req.user.userId;
     const grp = await this.groupService.createNewGroup({
       name: dto.name,
+      description: dto.description,
       avatar: dto.avatar,
       owner,
     });
@@ -420,10 +421,12 @@ export class GroupController {
     const updated = await this.groupService.updateGroup({
       groupId: group.id,
       name: dto.name,
+      description: dto.description,
       avatar: dto.avatar,
     });
     await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_UPDATED, {
       name: updated.name,
+      description: updated.description,
       avatar: updated.avatar,
     });
     return { code: BusinessCode.OK, message: 'successful' };

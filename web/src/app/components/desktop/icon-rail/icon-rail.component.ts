@@ -10,11 +10,13 @@ import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
 
 /**
- * Telegram-style left rail: account avatar on top, section/action buttons at
- * the bottom. Replaces the mobile home-header hamburger menu on desktop. Mirrors
- * <app-nav-drawer>: same actions (friend requests / new group / folders / theme),
- * exposed as icon-only buttons with translated tooltips. Log out lives
- * in the profile dialog (PopupType.EDIT_PROFILE), not the rail.
+ * Telegram-style left rail: account avatar + navigation actions (search / friend
+ * requests / new group / folders) at the top, and the system controls (settings /
+ * theme) pinned to the bottom — mirroring Telegram's drawer footer (Settings +
+ * night-mode toggle in the bottom corner). Replaces the mobile home-header
+ * hamburger menu on desktop. Mirrors <app-nav-drawer>: same actions and the same
+ * top/bottom grouping, exposed as icon-only buttons with translated tooltips. Log
+ * out lives in the profile dialog (PopupType.EDIT_PROFILE), not the rail.
  */
 @Component({
   selector: 'app-icon-rail',
@@ -31,8 +33,6 @@ import { LanguageService } from '../../../services/language.service';
           [title]="'nav.search' | transloco" [attr.aria-label]="'nav.search' | transloco">
           <app-icon [type]="AppIconType.SEARCH" [style]="{ width: '24px', height: '24px' }"></app-icon>
         </button>
-      </div>
-      <div class="bottom">
         <button class="rail-btn" (click)="friendRequests()"
           [title]="'nav.friendRequests' | transloco" [attr.aria-label]="'nav.friendRequests' | transloco">
           <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -60,14 +60,16 @@ import { LanguageService } from '../../../services/language.service';
             <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
           </svg>
         </button>
+      </div>
+      <div class="bottom">
+        <button class="rail-btn" (click)="settings()"
+          [title]="'nav.settings' | transloco" [attr.aria-label]="'nav.settings' | transloco">
+          <app-icon [type]="AppIconType.SETTINGS" [style]="{ width: '24px', height: '24px' }"></app-icon>
+        </button>
         <button class="rail-btn" (click)="cycleTheme()"
           [title]="'nav.themeAria' | transloco:{ label: themeLabel() }"
           [attr.aria-label]="'nav.themeAria' | transloco:{ label: themeLabel() }">
           <app-icon [type]="themeIcon()" [style]="{ width: '24px', height: '24px' }"></app-icon>
-        </button>
-        <button class="rail-btn" (click)="settings()"
-          [title]="'nav.settings' | transloco" [attr.aria-label]="'nav.settings' | transloco">
-          <app-icon [type]="AppIconType.SETTINGS" [style]="{ width: '24px', height: '24px' }"></app-icon>
         </button>
       </div>
     </div>

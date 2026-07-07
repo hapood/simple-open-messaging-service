@@ -35,6 +35,8 @@ export class NewGroupComponent {
   readonly AppIconType = AppIconType
   readonly UserAvatarType = UserAvatarType
   readonly NAME_MAX = 31
+  /** Max length of the optional group description (群简介). */
+  readonly DESC_MAX = 240
 
   /** Wizard step: 1 = pick members, 2 = name + avatar. */
   readonly step = signal<Step>(1)
@@ -47,6 +49,8 @@ export class NewGroupComponent {
 
   /** Group name — user-entered on step 2 (never prefilled); required, must be non-empty. */
   readonly name = signal('')
+  /** Optional group description (群简介) — also entered on step 2. */
+  readonly description = signal('')
 
   selectedDict = signal<Record<number, boolean | undefined>>({})
   selectedList = signal<ConversationItem[]>([])
@@ -61,6 +65,11 @@ export class NewGroupComponent {
   /** User typed into the name field. */
   onNameInput(v: string) {
     this.name.set(v)
+  }
+
+  /** User typed into the description field. */
+  onDescInput(v: string) {
+    this.description.set(v)
   }
 
   onSearchInput(v: string) {
@@ -146,7 +155,7 @@ export class NewGroupComponent {
     // friends by construction (the picker lists conversations), so `skipped` is normally empty.
     const inviteUserIds = this.selectedList().map((item) => item.peerUser.id)
     const avatar = this.pendingAvatar()
-    this.groupService.createGroup({ name, avatar, inviteUserIds }).subscribe((res) => {
+    this.groupService.createGroup({ name, avatar, description: this.description().trim() || undefined, inviteUserIds }).subscribe((res) => {
       if (res.code === 0 && res.data) {
         // Reuse the same toast copy/keys as group-info's invite flow for consistency.
         const invited = res.data.invited?.length ?? 0
