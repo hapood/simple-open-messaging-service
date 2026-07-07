@@ -66,13 +66,16 @@ export class NavStateMachineService {
 
   // --- chat layer ---
   /** Open a chat thread. Closing a chat-scoped aside on a thread switch mirrors the old openChat (which
-   *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread. */
+   *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
+   *  Also clears the pane stack — a thread switch scopes away any open dialog/overlay/search. */
   openChat(threadId: number): void {
+    this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set(undefined);
     this.chatThreadId.set(threadId);
   }
-  /** Leave the chat → home. Also closes the aside (a chat-scoped panel can't outlive its chat). */
+  /** Leave the chat → home. Also closes the aside + clears the pane stack. */
   closeChat(): void {
+    this.closeAllPanes();
     this.chatThreadId.set(undefined);
     this.aside.set(undefined);
   }
@@ -101,6 +104,15 @@ export class NavStateMachineService {
     const removed = stack.slice(idx); // target + everything above
     this.paneStack.set(stack.slice(0, idx));
     for (let i = removed.length - 1; i >= 0; i--) removed[i].onResult?.(i === 0 ? result : undefined);
+  }
+
+  /** Clear the entire pane stack (each onResult gets `undefined` = cancel). Called by openChat/closeChat
+   *  so a thread switch or going home dismisses any open dialog/overlay/search. */
+  closeAllPanes(): void {
+    const stack = this.paneStack();
+    if (stack.length === 0) return;
+    this.paneStack.set([]);
+    for (let i = stack.length - 1; i >= 0; i--) stack[i].onResult?.(undefined);
   }
 
   /**

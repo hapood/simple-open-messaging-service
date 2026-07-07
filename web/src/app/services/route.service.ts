@@ -1,4 +1,4 @@
-import { Injectable, signal, Type } from '@angular/core';
+import { computed, inject, Injectable, Type } from '@angular/core';
 import { Router } from '@angular/router';
 import { Subject } from 'rxjs';
 import { AvatarEditorComponent } from '../components/avatar-editor/avatar-editor.component';
@@ -9,16 +9,17 @@ import { EditProfileComponent } from '../components/edit-profile/edit-profile.co
 import { SessionsComponent } from '../components/sessions/sessions.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
 import { AppIconType } from '../components/icon/model';
+import { NavStateMachineService } from './nav-state.service';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
 }
 
 /**
- * Transient dialogs only. The navigation-bearing views (chat thread, peer profile, group info) are
- * router routes now (see app.routes.ts) — no longer managed here. `DlgRef` + `closeDialogAndAbove`
- * remain for these dialogs. CONFIRM is the generic destructive/confirming-action modal (not an editor),
- * reused by any caller that needs an app-level "are you sure?".
+ * Transient dialogs only. The dialogs are entries on {@link NavStateMachineService.paneStack} (kind
+ * `'dialog'`); this service is the typed façade over them (component resolution, input/result contracts,
+ * the {@link DlgRef} handle). `dlgList` is a computed view of the dialog entries that RootPopup renders.
+ * The auth-page `navigate`/`redirect` helpers stay (those are page-level router routes, not app-nav).
  */
 export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR, CONFIRM }
 
@@ -76,38 +77,23 @@ export interface DlgInfo {
  * from outside the dialog itself — e.g. when an event invalidates the conversation it was opened from.
  */
 export interface DlgRef {
-  /** internal id matching a DlgEntry */
+  /** Matches the nav state machine pane entry id. */
   readonly id: number
-}
-
-interface DlgEntry {
-  id: number
-  info: DlgInfo
-  onResult?: (result: unknown) => void
 }
 
 @Injectable({
   providedIn: 'root',
 })
 export class RouteService {
-  private dlgStack: DlgEntry[] = []
-  dlgList = signal<DlgInfo[]>([])
+  private readonly nav = inject(NavStateMachineService);
 
-  /** Monotonic id source for {@link DlgRef} identity. */
-  private nextDlgId = 0
-  /**
-   * Count of browser-history traversals we initiated ourselves (via closeDlg / closeDialogAndAbove) whose
-   * resulting popstate must be ignored so we don't double-close. Each programmatic close fires exactly one
-   * popstate (history.back or history.go), so this is a 1:1 counter per initiated traversal.
-   */
-  private selfBackPending = 0
+  constructor(private router: Router) {}
 
-  constructor(private router: Router) {
-    // Each open dialog owns one history entry, so pressing back (system or
-    // programmatic) closes the topmost dialog one at a time. Page navigation
-    // correctness is handled by the route guards, not here.
-    window.addEventListener('popstate', () => this.onPopStateEvent())
-  }
+  /** The dialog stack as {@link DlgInfo}s — RootPopup renders this via @for + *ngComponentOutlet. Derived
+   *  from the nav state machine's dialog pane entries. */
+  readonly dlgList = computed<DlgInfo[]>(() =>
+    this.nav.dialogs().map((p) => ({ component: p.component as Type<unknown>, inputs: p.inputs })),
+  );
 
   getPageRoute(page: RoutePage, params?: any) {
     let commands: string[] | undefined
@@ -144,75 +130,48 @@ export class RouteService {
     }
   }
 
+  /** Push a dialog onto the nav pane stack; returns a {@link DlgRef} for targeted close. The dialog's
+   *  `onResult` is delivered the close result (or `undefined` on cancel / back / scope-clear). */
   popupDlg<K extends PopupType>(
     popupType: K,
     inputs?: PopupInput[K],
     onResult?: (result: PopupResult[K]) => void
   ): DlgRef {
-    // push a sentinel history entry so system-back closes this dialog
-    history.pushState({ tag: 'soms-dlg' }, '')
-    const ref: DlgRef = { id: this.nextDlgId++ }
-    const entry: DlgEntry = {
-      id: ref.id,
-      info: { component: componentDict[popupType], inputs: inputs as Record<string, unknown> | undefined },
-      onResult: onResult as ((result: unknown) => void) | undefined
-    }
-    this.dlgStack.push(entry)
-    this.dlgList.update(list => list.concat([entry.info]))
-    return ref
+    const id = this.nav.pushPane({
+      kind: 'dialog',
+      component: componentDict[popupType],
+      inputs: inputs as Record<string, unknown> | undefined,
+      onResult: onResult as ((result: unknown) => void) | undefined,
+    })
+    return { id }
   }
 
   /**
-   * Close the topmost dialog (a dialog closing itself). State updates synchronously; the sentinel history
-   * entry is reconciled via one suppressed history.back so the popstate it fires is not mistaken for a
-   * system-back. `result` is delivered to the opener's onResult. A genuine system-back reaches the same
-   * close path via {@link onPopStateEvent}, delivering undefined.
+   * Close the topmost dialog (a dialog closing itself), delivering `result`. Finds the topmost `dialog`
+   * entry on the pane stack (search/overlay panes, if any, sit above dialogs and are left alone).
    */
   closeDlg(result?: unknown): void {
-    const top = this.dlgStack.pop()
-    if (!top) return
-    this.dlgList.update(list => list.slice(0, -1))
-    top.onResult?.(result)
-    this.reconcileBack(1)
+    const stack = this.nav.paneStack()
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i].kind === 'dialog') {
+        this.nav.closePane(stack[i].id, result)
+        return
+      }
+    }
   }
 
   /**
-   * Close a specific dialog (by ref) together with every dialog stacked above it — its nested descendants.
+   * Close a specific dialog (by ref) together with every pane stacked above it — its nested descendants.
    * For events that invalidate a whole scope: e.g. the chat a profile/info popup hangs off of is deleted, so
-   * the children (scoped to that chat) must close with it; or an external SSE removal drops the thread while
-   * its chat popup is open. Unlike {@link closeDlg} (top-only), this works regardless of what currently sits
-   * on top. `result` is delivered to the target dialog's onResult; descendants close with undefined.
+   *  the children (scoped to that chat) must close with it; or an external SSE removal drops the thread while
+   *  its chat popup is open. `result` is delivered to the target dialog's onResult; descendants close with
+   *  undefined.
    */
   closeDialogAndAbove(ref: DlgRef, result?: unknown): void {
-    const idx = this.dlgStack.findIndex(e => e.id === ref.id)
-    if (idx === -1) return // already closed
-    const removed = this.dlgStack.splice(idx) // target (idx) + everything above it
-    this.dlgList.update(list => list.slice(0, idx))
-    // deliver top-down so descendants finalize before the target; only the target receives `result`
-    for (let i = removed.length - 1; i >= 0; i--) {
-      removed[i].onResult?.(i === 0 ? result : undefined)
-    }
-    this.reconcileBack(removed.length)
+    this.nav.closePane(ref.id, result)
   }
 
-  /** Consume `delta` sentinel history entries we created, suppressing the popstate they fire. */
-  private reconcileBack(delta: number): void {
-    if (delta <= 0) return
-    this.selfBackPending++
-    if (delta === 1) history.back()
-    else history.go(-delta)
-  }
-
-  onPopStateEvent(): void {
-    // a popstate from our own programmatic close — state already updated, nothing to do
-    if (this.selfBackPending > 0) { this.selfBackPending--; return }
-    // genuine system-back: close the topmost dialog the same way closeDlg does (result undefined)
-    const top = this.dlgStack.pop()
-    if (!top) return // nothing open → let the browser/router handle the back
-    this.dlgList.update(list => list.slice(0, -1))
-    top.onResult?.(undefined)
-  }
-
+  /** Traverse browser history by `delta`. (App nav no longer uses history — left for any ad-hoc need.) */
   go(delta: number) {
     history.go(delta)
   }
