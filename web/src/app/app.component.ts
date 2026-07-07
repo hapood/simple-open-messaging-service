@@ -8,7 +8,6 @@ import { WebPushService } from './services/web-push.service';
 import { SseLifecycleService } from './services/sse-lifecycle.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
 import { BackgroundSyncService } from './services/background-sync.service';
-import { BackExitGuardService } from './services/back-exit-guard.service';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet],
@@ -40,10 +39,6 @@ export class AppComponent {
     // so the stored preference (read from Kotlin SomsSecureStore via the bridge) is reflected into the
     // signal + re-applied to the WorkManager schedule at every boot. A no-op off-Android.
     private readonly bgSync = inject(BackgroundSyncService);
-    // BackExitGuardService implements the "press back again to exit" guard on the home conversation list
-    // for the browser + desktop shell (Android handles hardware back natively; the service self-disables
-    // there). Eagerly constructed so its popstate listener is live for the whole session.
-    private readonly backExitGuard = inject(BackExitGuardService);
     constructor() {
         this.push.init();
         void this.webPush.init();

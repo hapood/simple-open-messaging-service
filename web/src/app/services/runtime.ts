@@ -70,11 +70,6 @@ declare global {
     __SOMS_FCM_TOKEN__?: (token: string) => void;
     __SOMS_DEEP_LINK__?: (threadId: string) => void;
     __SOMS_PENDING_THREAD_ID__?: string;
-    /** Browser/desktop boot deep-link: main.ts captures a non-home launch URL (e.g. a pasted `/chat/2`)
-     *  and rewrites the address bar to `/` BEFORE Angular boots, stashing the original here. The back-exit
-     *  guard then PUSHES the original route once home has mounted, normalizing the stack to `[home, route]`
-     *  so back→home works uniformly. Absent on Android (deep-links arrive via __SOMS_PENDING_THREAD_ID__). */
-    __SOMS_BOOT_ROUTE__?: string;
   }
 }
 

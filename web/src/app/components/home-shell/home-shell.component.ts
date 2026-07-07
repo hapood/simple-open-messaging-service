@@ -141,11 +141,10 @@ export class HomeShellComponent {
 
   /** Open a conversation by route, closing any open info panel (it is scoped to the previous chat).
    *
-   *  History is what makes back behave: drilling from the list INTO a chat PUSHES a layer (so the stack
-   *  is [home, chat] and browser-back returns to the list — one layer up — instead of falling out of the
-   *  app); only switching from one chat to ANOTHER replaces (lateral moves from the always-mounted
-   *  desktop list must not stack a thread per click). The list→exit back is then guarded by
-   *  BackExitGuardService ("press back again to exit"). */
+   *  History is what makes in-app back behave: drilling from the list INTO a chat PUSHES a layer (so the
+   *  stack is [home, chat] and back returns to the list — one layer up); only switching from one chat to
+   *  ANOTHER replaces (lateral moves from the always-mounted desktop list must not stack a thread per
+   *  click). Browser-back past the list is left to the browser (no interception). */
   openChat(item: ConversationItem) {
     const lateralSwitch = /\/chat\//.test(this.router.url)
     this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }], { replaceUrl: lateralSwitch })

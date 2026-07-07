@@ -45,8 +45,7 @@
   "home": {
     "openMenuAria": "Open menu",
     "searchAria": "Search",
-    "resizerTitle": "Drag to resize; double-click to reset",
-    "pressAgainToExit": "Press Back again to exit"
+    "resizerTitle": "Drag to resize; double-click to reset"
   },
   "globalSearch": {
     "placeholder": "Search messages, chats and contacts",

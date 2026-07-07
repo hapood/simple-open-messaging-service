@@ -45,8 +45,7 @@
   "home": {
     "openMenuAria": "打开菜单",
     "searchAria": "搜索",
-    "resizerTitle": "拖动以调整大小；双击恢复默认",
-    "pressAgainToExit": "再按一次退出"
+    "resizerTitle": "拖动以调整大小；双击恢复默认"
   },
   "globalSearch": {
     "placeholder": "搜索消息、聊天和联系人",
