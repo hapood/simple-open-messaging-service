@@ -9,6 +9,7 @@ import { SseLifecycleService } from './services/sse-lifecycle.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
 import { BackgroundSyncService } from './services/background-sync.service';
 import { NavStateMachineService } from './services/nav-state.service';
+import { isTauri, isAndroid } from './services/runtime';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet],
@@ -46,6 +47,15 @@ export class AppComponent {
     private readonly nav = inject(NavStateMachineService);
     constructor() {
         this.nav.initFromUrl();
+        // Android hardware-back: Kotlin's OnBackPressedCallback evals window.__SOMS_BACK__(); peel one
+        // nav layer, and if nothing's left (at home) call SomsBack.exit() (a Kotlin @JavascriptInterface)
+        // to finish the activity. Desktop/browser have no native back — history is flat, so browser-back
+        // exits there. Dormant until the Kotlin side wires the callback (the Phase 3 Kotlin half).
+        if (isTauri() && isAndroid()) {
+            window.__SOMS_BACK__ = () => {
+                if (!this.nav.back()) window.SomsBack?.exit();
+            };
+        }
         this.push.init();
         void this.webPush.init();
     }
