@@ -123,6 +123,7 @@ export class RegisterComponent {
   }
 
   jumpToLogin() {
-    this.routeService.navigate(RoutePage.AUTH_LOGIN)
+    // replaceUrl: see jumpToRegister — login↔register must replace, not stack.
+    this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 }

@@ -88,6 +88,9 @@ export class LoginComponent {
   }
 
   jumpToRegister() {
-    this.routeService.navigate(RoutePage.AUTH_REGISTER)
+    // replaceUrl: switching login↔register must not stack an auth entry beneath the next one — otherwise
+    // back from home after a successful login could reach the login page (the clean-history contract in
+    // auth.guard.ts: every navigation INTO an auth page replaces).
+    this.routeService.redirect(RoutePage.AUTH_REGISTER)
   }
 }
