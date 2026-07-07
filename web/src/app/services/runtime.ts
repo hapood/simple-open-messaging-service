@@ -70,6 +70,14 @@ declare global {
     __SOMS_FCM_TOKEN__?: (token: string) => void;
     __SOMS_DEEP_LINK__?: (threadId: string) => void;
     __SOMS_PENDING_THREAD_ID__?: string;
+    /** Android hardware-back hook: Kotlin's `OnBackPressedCallback` evals this on the webview. The handler
+     *  peels one navigation layer via NavStateMachineService.back(); if nothing is left to peel it calls
+     *  `SomsBack.exit()` (a Kotlin @JavascriptInterface) so the activity finishes. Absent on browser +
+     *  desktop Tauri (browser-back naturally exits the flat history there). See NavStateMachineService. */
+    __SOMS_BACK__?: () => void;
+    /** Kotlin `@JavascriptInterface` exposed by the Android shell: finishes the activity (clean app exit)
+     *  when NavStateMachineService.back() has nothing left to peel. Android-only. */
+    SomsBack?: { exit: () => void };
   }
 }
 
