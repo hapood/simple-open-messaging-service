@@ -34,8 +34,8 @@ interface ParsedInvite {
  * re-enables its own. A WAAPI scale+fade enter animation plays once on mount (snapped under reduced
  * motion), and the frame re-pins on window resize for the dialog's transient lifetime.
  *
- * Join flow: call group/join → router.navigate(['chat', tid], { replaceUrl: true }) (replaceUrl swaps
- * this dialog's sentinel entry for the group thread; the overlay disposes on navigation). The A/B
+ * Join flow: call group/join → nav.openChat(tid). The nav state machine clears the pane stack, so this
+ * dialog's entry is removed and the TransientOverlayService effect disposes the CDK overlay. The A/B
  * chat-pane buffer then resets the target thread in its background pane and reveals it with a circular
  * clip-path once ready. Reduced motion is handled inside the buffer (instant swap).
  */

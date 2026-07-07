@@ -170,9 +170,4 @@ export class RouteService {
   closeDialogAndAbove(ref: DlgRef, result?: unknown): void {
     this.nav.closePane(ref.id, result)
   }
-
-  /** Traverse browser history by `delta`. (App nav no longer uses history — left for any ad-hoc need.) */
-  go(delta: number) {
-    history.go(delta)
-  }
 }

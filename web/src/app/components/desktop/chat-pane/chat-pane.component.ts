@@ -40,8 +40,9 @@ type SlotKey = 'A' | 'B';
  * inline styles) — blanking a content-bearing foreground on rapid switches. There is no animation lifecycle
  * to race or leak here, by construction.
  *
- * The target comes from `ConversationListService.openThreadId` (URL-driven; sole writer is the home shell).
- * This component is route-reused (`ChatReuseStrategy`) and never remounted.
+ * The target comes from `ConversationListService.openThreadId` (driven by NavStateMachineService via the
+ * home shell). This component is always-mounted as a direct child of HomeShell (NO router, NO route-reuse
+ * strategy) — the kernel never remounts on open/close.
  */
 @Component({
   selector: 'app-chat-pane',
