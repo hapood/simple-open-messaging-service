@@ -50,7 +50,8 @@ export class NavDrawerComponent {
     // subscription: app nav no longer goes through the router.) The menu actions below call close()
     // themselves before opening a pane.
     effect(() => {
-      this.nav.chatThreadId();
+      const tid = this.nav.chatThreadId();
+      console.log('[DRAWER-DBG] effect run; chatThreadId=', tid)
       this.close();
     });
   }
@@ -71,10 +72,19 @@ export class NavDrawerComponent {
 
   toggle() {
     // TEMP debug — locate where the hamburger→drawer chain breaks. Remove once diagnosed.
-    console.log('[DRAWER-DBG] nav-drawer.toggle() called; sidenav=', this.sidenav())
-    this.sidenav()?.toggle()
+    const sv = this.sidenav()
+    console.log('[DRAWER-DBG] toggle(); sidenav=', sv)
+    const p = sv?.toggle()
+    console.log('[DRAWER-DBG] toggle() returned:', p)
+    p?.then(
+      (r) => console.log('[DRAWER-DBG] toggle PROMISE resolved:', r),
+      (e) => console.error('[DRAWER-DBG] toggle PROMISE rejected:', e),
+    )
   }
-  close() { this.sidenav()?.close() }
+  close() {
+    console.log('[DRAWER-DBG] close() called')
+    this.sidenav()?.close()
+  }
 
   // TEMP debug.
   onOpenedChange(open: boolean): void {
