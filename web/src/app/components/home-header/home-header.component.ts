@@ -17,10 +17,4 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 export class HomeHeaderComponent {
   readonly AppIconType = AppIconType
   readonly toggleDrawer = output<void>()
-
-  // TEMP debug — locate where the hamburger→drawer chain breaks. Remove once diagnosed.
-  onHamburger(): void {
-    console.log('[DRAWER-DBG] hamburger click → emit toggleDrawer')
-    this.toggleDrawer.emit()
-  }
 }

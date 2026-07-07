@@ -1,4 +1,4 @@
-import { Component, input, output, inject, viewChild, computed, effect } from '@angular/core';
+import { Component, input, output, inject, viewChild, computed, effect, untracked } from '@angular/core';
 import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
@@ -46,13 +46,13 @@ export class NavDrawerComponent {
 
   constructor() {
     // Close when a chat opens (state machine) — mode=over is a covering drawer, so leaving it open would
-    // occlude the chat the user just opened from the inline list. (Replaces the old router NavigationEnd
-    // subscription: app nav no longer goes through the router.) The menu actions below call close()
-    // themselves before opening a pane.
+    // occlude the chat the user just opened from the inline list. CRITICAL: `untracked` around close() —
+    // close() reads the sidenav() viewChild, and tracking it makes this effect re-run on every view change
+    // (and close() mutating the sidenav feeds the loop), which slams the drawer shut right after the user
+    // opens it. untracked limits tracking to chatThreadId only. (Replaces the old router NavigationEnd
+    // subscription: app nav no longer goes through the router.)
     effect(() => {
-      const tid = this.nav.chatThreadId();
-      console.log('[DRAWER-DBG] effect run; chatThreadId=', tid)
-      this.close();
+      if (this.nav.chatThreadId() !== undefined) untracked(() => this.close());
     });
   }
 
@@ -70,27 +70,8 @@ export class NavDrawerComponent {
   /** Cycle theme without closing the drawer, so the change is visible and re-toggleable. */
   cycleTheme(): void { this.themeService.cycleMode(); }
 
-  toggle() {
-    // TEMP debug — locate where the hamburger→drawer chain breaks. Remove once diagnosed.
-    const sv = this.sidenav()
-    console.log('[DRAWER-DBG] toggle(); sidenav=', sv)
-    const p = sv?.toggle()
-    console.log('[DRAWER-DBG] toggle() returned:', p)
-    p?.then(
-      (r) => console.log('[DRAWER-DBG] toggle PROMISE resolved:', r),
-      (e) => console.error('[DRAWER-DBG] toggle PROMISE rejected:', e),
-    )
-  }
-  close() {
-    console.log('[DRAWER-DBG] close() called')
-    this.sidenav()?.close()
-  }
-
-  // TEMP debug.
-  onOpenedChange(open: boolean): void {
-    console.log('[DRAWER-DBG] mat-sidenav openedChange:', open)
-    this.drawerOpenChange.emit(open)
-  }
+  toggle() { this.sidenav()?.toggle() }
+  close() { this.sidenav()?.close() }
 
   editProfile() {
     this.close()

@@ -1,5 +1,5 @@
 <div class="home-header">
-  <button class="icon-btn" (click)="onHamburger()" [attr.aria-label]="'home.openMenuAria' | transloco">
+  <button class="icon-btn" (click)="toggleDrawer.emit()" [attr.aria-label]="'home.openMenuAria' | transloco">
     <app-icon [type]="AppIconType.MENU" [style]="{width:'32px',height:'32px'}"></app-icon>
   </button>
   <div class="title">{{ 'common.appName' | transloco }}</div>

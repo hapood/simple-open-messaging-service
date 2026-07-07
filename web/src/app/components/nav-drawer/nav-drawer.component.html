@@ -1,6 +1,6 @@
 <mat-sidenav-container class="nav-drawer-container">
   <mat-sidenav #nav class="nav-drawer" mode="over" position="start"
-    (openedChange)="onOpenedChange($event)">
+    (openedChange)="drawerOpenChange.emit($event)">
     <div class="drawer-header">
       <button class="avatar" type="button" (click)="editProfile()" [attr.aria-label]="'nav.editProfileAria' | transloco">
         <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'"
