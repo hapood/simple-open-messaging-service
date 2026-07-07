@@ -132,3 +132,18 @@ The backend (`PushService.dispatchForMessage`) sends data-only, `android.priorit
 `preview` is included only for `PURE_TEXT` (truncated to 120 chars). No `notification` field — the
 client builds the visible notification from this data so the canonical Message row stays the single
 source of truth and `onMessageReceived` is always invoked (even when the OS has killed the app).
+
+## Hardware-back bridge
+
+Hardware-back is routed to the web nav state machine (`NavStateMachineService`), which peels one layer
+(pane → aside → chat → home) and finishes the activity when the stack is empty. This replaces the default
+(WryActivity's webview-history traversal, disabled via `TauriActivity.handleBackNavigation = false`).
+
+| Direction | Carrier | Mechanism |
+|---|---|---|
+| Kotlin → JS (hardware-back press) | `OnBackPressedDispatcher` callback in `MainActivity.onCreate` → `SomsBridge.eval("window.__SOMS_BACK__ && window.__SOMS_BACK__();")` | Same `evaluateJavascript`-global-hook pattern as the token/deep-link emissions |
+| JS → Kotlin (exit at home) | `@JavascriptInterface` named `SomsBack` (`exit()`), attached in `onWebViewCreate` | Same `@JavascriptInterface` pattern as `SomsFcm`; `exit()` finishes the activity on the UI thread |
+
+JS registers `window.__SOMS_BACK__` at boot (`AppComponent`, gated `isTauri() && isAndroid()`): it calls
+`nav.back()`; if that returns `false` (at home), it calls `window.SomsBack.exit()`. Desktop/browser have no
+native back — history is flat, so browser-back exits there.
