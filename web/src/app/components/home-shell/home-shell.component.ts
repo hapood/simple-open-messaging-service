@@ -64,7 +64,7 @@ const overlaySlide = trigger('overlaySlide', [
 export class HomeShellComponent {
   private readonly layout = inject(LayoutService)
   private readonly convList = inject(ConversationListService)
-  private readonly nav = inject(NavStateMachineService)
+  private readonly navState = inject(NavStateMachineService)
   readonly search = inject(SearchService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
@@ -74,10 +74,10 @@ export class HomeShellComponent {
   readonly listWidth = signal<number>(this.readListWidth())
 
   /** Chat/aside "open" classes position the mobile overlays (and toggle the desktop drawer mask). */
-  readonly chatActive = computed(() => this.nav.chatThreadId() !== undefined)
-  readonly asideActive = computed(() => this.nav.aside() !== undefined)
+  readonly chatActive = computed(() => this.navState.chatThreadId() !== undefined)
+  readonly asideActive = computed(() => this.navState.aside() !== undefined)
   /** The aside panel kind (template @switch), or undefined when no aside is open. */
-  readonly asidePanel = computed<AsidePanel | undefined>(() => this.nav.aside()?.panel)
+  readonly asidePanel = computed<AsidePanel | undefined>(() => this.navState.aside()?.panel)
 
   /** Drives [@overlaySlide] on the chat-slot: only mobile animates (closed↔open); desktop/tablet stay
    *  `static` so the inline flex column is never transformed. */
@@ -98,7 +98,7 @@ export class HomeShellComponent {
     // LAGS so the chat-pane keeps its data through the leave slide (the real chat slides out, then
     // onSlideDone resets it); on desktop/tablet (no slide) it closes immediately.
     effect(() => {
-      const tid = this.nav.chatThreadId()
+      const tid = this.navState.chatThreadId()
       if (tid !== undefined) {
         this.convList.open(tid)
       } else if (this.mode() !== 'mobile') {
@@ -121,7 +121,7 @@ export class HomeShellComponent {
    *  so interrupted transitions stay balanced: every start has a matching done. */
   onSlideDone(event: AnimationEvent, slot: 'chat' | 'aside'): void {
     if (event.toState === 'mobile-open' || event.toState === 'mobile-closed') this.layout.thawReflow()
-    if (slot === 'chat' && event.toState === 'mobile-closed' && this.nav.chatThreadId() === undefined) {
+    if (slot === 'chat' && event.toState === 'mobile-closed' && this.navState.chatThreadId() === undefined) {
       this.convList.close()
     }
   }
@@ -129,12 +129,12 @@ export class HomeShellComponent {
   /** Open a conversation. The state machine sets chatThreadId (→ URL mirror + this shell's convList.open
    *  effect via the A/B pane buffer) and closes any chat-scoped aside on a thread switch. */
   openChat(item: ConversationItem) {
-    this.nav.openChat(item.threadId)
+    this.navState.openChat(item.threadId)
   }
 
   /** Close the aside drawer (desktop drawer-mask click). The state machine clears the aside signal. */
   closeAside() {
-    this.nav.closeAside()
+    this.navState.closeAside()
   }
 
   /** After a group is created, refresh the shared thread list (forwarded to icon-rail / nav-drawer). */

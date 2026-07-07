@@ -56,11 +56,16 @@ export class NavStateMachineService {
 
   constructor() {
     // URL mirror — one-way (state → URL), `replaceState` only (never `push`), so the history stays a
-    // single entry and browser-back exits on desktop/PWA. `/chat/N`, or `/` at the list.
+    // single entry and browser-back exits on desktop/PWA. `/chat/N`, or `/` at the list. Gated to the app
+    // shell only: page routes (playground, auth, config, forbidden) own their URLs — mirroring here would
+    // clobber them (e.g. rewrite `/playground/...` → `/` at boot).
     effect(() => {
+      if (typeof location === 'undefined' || typeof history === 'undefined') return;
+      const p = location.pathname;
+      if (p !== '/' && !p.startsWith('/chat/')) return;
       const tid = this.chatThreadId();
       const url = tid === undefined ? '/' : `/chat/${tid}`;
-      if (typeof history !== 'undefined') history.replaceState(history.state, '', url);
+      history.replaceState(history.state, '', url);
     });
   }
 
