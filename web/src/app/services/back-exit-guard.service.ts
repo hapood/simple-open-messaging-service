@@ -1,4 +1,4 @@
-import { inject, Injectable, OnDestroy } from '@angular/core';
+import { afterNextRender, inject, Injectable, OnDestroy } from '@angular/core';
 import { Location } from '@angular/common';
 import { NavigationEnd, Router } from '@angular/router';
 import { MatSnackBar, type MatSnackBarRef, type TextOnlySnackBar } from '@angular/material/snack-bar';
@@ -67,12 +67,13 @@ export class BackExitGuardService implements OnDestroy {
       .pipe(filter((e): e is NavigationEnd => e instanceof NavigationEnd))
       .subscribe(() => this.sync());
     window.addEventListener('popstate', this.onPopState);
-    // The router's initial navigation completes BEFORE the root component is constructed, so this guard
-    // (injected in AppComponent) subscribes to router.events too late to receive that first NavigationEnd
-    // — sync() would never run at boot, no anchor would be pushed, and browser-back at `/` (a single
-    // history entry) would silently leave the SPA with no popstate to intercept. Sync once now against the
-    // already-current URL. Idempotent with the subscription above (which covers subsequent navigations).
-    this.sync();
+    // First sync once the first render settles. The router's initial navigation commits with a
+    // replaceState that overwrites whatever entry is current, so an anchor pushed synchronously here
+    // would be clobbered — leaving no anchor at boot and the first browser-back still exiting.
+    // afterNextRender fires strictly after that commit (and after the initial NavigationEnd, which this
+    // guard subscribes too late to receive — it is injected in AppComponent, built post-navigation), so
+    // the anchor pushed there survives. The subscription above covers every navigation from then on.
+    afterNextRender(() => this.sync());
   }
 
   ngOnDestroy(): void {
@@ -99,10 +100,15 @@ export class BackExitGuardService implements OnDestroy {
     }
 
     if (this.isHome()) {
-      if (!this.anchored) {
+      // Push the anchor only if it isn't already the top entry. Keying off the live history.state.tag
+      // (not the `anchored` flag) survives the router clobbering a previously-pushed anchor at boot — the
+      // flag would stay stale, the real state cannot lie about what is current — and it never stacks a
+      // duplicate on the two construction-time sync() calls.
+      const topIsAnchor = (history.state as { tag?: string } | null)?.tag === BackExitGuardService.TAG;
+      if (!topIsAnchor) {
         history.pushState({ tag: BackExitGuardService.TAG }, '');
-        this.anchored = true;
       }
+      this.anchored = true;
     } else if (this.anchored) {
       // Left bare home (opened a chat / aside / auth) — the anchor entry is gone (traversed/replaced).
       this.anchored = false;
