@@ -67,6 +67,12 @@ export class BackExitGuardService implements OnDestroy {
       .pipe(filter((e): e is NavigationEnd => e instanceof NavigationEnd))
       .subscribe(() => this.sync());
     window.addEventListener('popstate', this.onPopState);
+    // The router's initial navigation completes BEFORE the root component is constructed, so this guard
+    // (injected in AppComponent) subscribes to router.events too late to receive that first NavigationEnd
+    // — sync() would never run at boot, no anchor would be pushed, and browser-back at `/` (a single
+    // history entry) would silently leave the SPA with no popstate to intercept. Sync once now against the
+    // already-current URL. Idempotent with the subscription above (which covers subsequent navigations).
+    this.sync();
   }
 
   ngOnDestroy(): void {
