@@ -1,12 +1,11 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { Router } from '@angular/router';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { AsideOutletService } from '../../services/aside-outlet.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
 import { ConversationItem } from '../../services/model';
 
 /**
@@ -90,8 +89,7 @@ import { ConversationItem } from '../../services/model';
 export class PeerProfileComponent {
   readonly UserAvatarType = UserAvatarType
 
-  private readonly router = inject(Router)
-  private readonly asideOutlet = inject(AsideOutletService)
+  private readonly nav = inject(NavStateMachineService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
 
@@ -122,15 +120,14 @@ export class PeerProfileComponent {
         // Drop the now-deleted thread, then return to the list — navigating to '/' closes both the chat
         // (primary outlet) and this panel (aside outlet) in one step.
         this.convList.removeThread(threadId)
-        this.router.navigate(['/'])
+        this.nav.closeChat()
       },
       error: () => this.busy.set(false),
     })
   }
 
-  /** Close the aside (back to the chat) by popping the pushed panel-open entry via AsideOutletService —
-   *  pushing a "closed" sibling instead would orphan the panel-open URL and let back re-open it. */
+  /** Close the aside (back to the chat). Clears the aside signal — back won't re-open it. */
   goBack() {
-    this.asideOutlet.close()
+    this.nav.closeAside()
   }
 }

@@ -52,7 +52,8 @@ export class FriendshipService {
     };
   }
 
-  async makeFriendRequest(fromUserId: number, toUserId: number) {
+  async makeFriendRequest(fromUserId: number, toUserId: number, message = '') {
+    const reqMessage = (message ?? '').slice(0, 255); // Friendship.reqMessage is VARCHAR(255)
     return this.prisma.$transaction(async (tx) => {
       const existing = await this.findFriendshipInTx(tx, fromUserId, toUserId);
       if (existing === null) {
@@ -63,6 +64,7 @@ export class FriendshipService {
             userBId: b,
             requesterId: fromUserId,
             status: FriendshipStatus.PENDING,
+            reqMessage,
           },
         });
         await this.notifyService.recordFriendRequest(tx, fromUserId, toUserId);
@@ -75,7 +77,7 @@ export class FriendshipService {
           // re-arm as a fresh request from fromUserId
           await tx.friendship.update({
             where: { id: existing.id },
-            data: { status: FriendshipStatus.PENDING, requesterId: fromUserId },
+            data: { status: FriendshipStatus.PENDING, requesterId: fromUserId, reqMessage },
           });
           await this.notifyService.recordFriendRequest(
             tx,
@@ -97,7 +99,16 @@ export class FriendshipService {
     });
   }
 
-  async approveFriendRequest(requesterId: number, approverId: number) {
+  async approveFriendRequest(
+    requesterId: number,
+    approverId: number,
+    /**
+     * Federation: when the APPROVED thread is a federated 1:1 whose origin is THIS server, pass
+     * { origin, federatedId } so approveInTx stamps them on the created MessageThread. Omitted for
+     * purely-local approvals (origin defaults to "local", federatedId null).
+     */
+    threadMeta?: { origin: string; federatedId: string },
+  ) {
     return this.prisma.$transaction(async (tx) => {
       const f = await this.findFriendshipInTx(tx, requesterId, approverId);
       if (
@@ -105,7 +116,7 @@ export class FriendshipService {
         f.status === FriendshipStatus.PENDING &&
         f.requesterId === requesterId
       ) {
-        await this.approveInTx(tx, f);
+        await this.approveInTx(tx, f, threadMeta);
         return { status: 0 };
       }
       return { status: 1 };
@@ -189,6 +200,40 @@ export class FriendshipService {
     });
   }
 
+  /**
+   * Create this server's LOCAL reference to a federated 1:1 thread (this server is the REMOTE
+   * participant; the origin server owns the thread identity + sequence). Called by the InboxHandler
+   * on an inbound `thread.invite`: the Friendship is already APPROVED on this side (from the inbound
+   * friend.approve on the origin), but had no local thread yet. Creates the MessageThread
+   * {origin, federatedId} + both ThreadParticipants + links Friendship.threadId.
+   *
+   * Idempotent on federatedId: a redelivered thread.invite finds the existing thread and no-ops
+   * (at-least-once delivery + the federatedId @unique constraint).
+   */
+  async attachRemoteThread(
+    userX: number,
+    userY: number,
+    origin: string,
+    federatedId: string,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.messageThread.findUnique({ where: { federatedId } });
+      if (existing) return; // already attached (redelivered invite)
+      const f = await this.findFriendshipInTx(tx, userX, userY);
+      if (!f || f.status !== FriendshipStatus.APPROVED) return; // no approved edge to attach to
+      const thread = await tx.messageThread.create({
+        data: { type: MessageThreadType.P2P, origin, federatedId },
+      });
+      await tx.threadParticipant.createMany({
+        data: [
+          { userId: f.userAId, threadId: thread.id },
+          { userId: f.userBId, threadId: thread.id },
+        ],
+      });
+      await tx.friendship.update({ where: { id: f.id }, data: { threadId: thread.id } });
+    });
+  }
+
   private findFriendshipInTx(
     tx: Prisma.TransactionClient,
     userX: number,
@@ -203,14 +248,19 @@ export class FriendshipService {
   /**
    * Approve a pending friendship atomically: create the P2P MessageThread + both ThreadParticipant rows,
    * then set status APPROVED with the thread id. Runs on the caller's transaction (used by both the public
-   * approve endpoint and the mutual-auto-approve path inside makeFriendRequest).
+   * approve endpoint and the mutual-auto-approve path inside makeFriendRequest). threadMeta stamps the
+   * federation origin/federatedId on the thread when this server is the origin of a federated 1:1.
    */
   private async approveInTx(
     tx: Prisma.TransactionClient,
     f: { id: number; userAId: number; userBId: number },
+    threadMeta?: { origin: string; federatedId: string },
   ) {
     const thread = await tx.messageThread.create({
-      data: { type: MessageThreadType.P2P },
+      data: {
+        type: MessageThreadType.P2P,
+        ...(threadMeta ? { origin: threadMeta.origin, federatedId: threadMeta.federatedId } : {}),
+      },
     });
     await tx.threadParticipant.createMany({
       data: [

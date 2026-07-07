@@ -1,7 +1,4 @@
-import { Component, input, output, inject, viewChild, computed } from '@angular/core';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-import { NavigationEnd, Router } from '@angular/router';
-import { filter } from 'rxjs';
+import { Component, input, output, inject, viewChild, computed, effect } from '@angular/core';
 import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
@@ -11,6 +8,7 @@ import { UserService } from '../../services/user.service';
 import { SearchService } from '../../services/search.service';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
 
 /**
  * Left navigation drawer — a shell-level overlay (host is position:fixed; see the SCSS), NOT a
@@ -42,19 +40,19 @@ export class NavDrawerComponent {
   private readonly themeService = inject(ThemeService)
   private readonly languageService = inject(LanguageService)
   private readonly transloco = inject(TranslocoService)
-  private readonly router = inject(Router)
+  private readonly nav = inject(NavStateMachineService)
 
   readonly sessionProfile = this.userService.sessionProfile
 
   constructor() {
-    // Close on any successful navigation: thread switches, system back (popstate), and deep links.
-    // mode=over is a covering drawer, so leaving it open across a navigation would occlude the
-    // destination. The menu actions below call close() themselves before navigating; this mainly
-    // catches navigations triggered from outside the drawer (thread list, browser/Android back).
-    this.router.events.pipe(
-      filter((e): e is NavigationEnd => e instanceof NavigationEnd),
-      takeUntilDestroyed(),
-    ).subscribe(() => this.close());
+    // Close when a chat opens (state machine) — mode=over is a covering drawer, so leaving it open would
+    // occlude the chat the user just opened from the inline list. (Replaces the old router NavigationEnd
+    // subscription: app nav no longer goes through the router.) The menu actions below call close()
+    // themselves before opening a pane.
+    effect(() => {
+      this.nav.chatThreadId();
+      this.close();
+    });
   }
 
   /** Icon reflecting the current theme mode (predictable cycling affordance). */
@@ -103,9 +101,9 @@ export class NavDrawerComponent {
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
   }
 
-  /** Open the Settings page in the aside outlet (same surface profile / group-info use). */
+  /** Open the Settings page in the aside slot (same surface profile / group-info use). */
   settings() {
     this.close()
-    void this.router.navigate([{ outlets: { aside: ['settings'] } }])
+    this.nav.openAside('settings')
   }
 }

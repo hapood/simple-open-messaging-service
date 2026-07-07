@@ -49,7 +49,10 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     uniqName: string,
     password: string,
   ): Promise<UserModel | undefined> {
-    const user = await this.userService.findUniqueUser({ uniqName }, true);
+    const user = await this.userService.findUniqueUser(
+      { uniqName_domain: { uniqName, domain: 'local' } },
+      true,
+    );
     if (user === null) {
       return undefined;
     }

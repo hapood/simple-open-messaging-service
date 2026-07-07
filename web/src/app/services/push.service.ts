@@ -1,8 +1,8 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Router } from '@angular/router';
 import { apiPrefix } from './constants';
 import { isTauri, apiOrigin } from './runtime';
+import { NavStateMachineService } from './nav-state.service';
 
 /**
  * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
@@ -24,7 +24,7 @@ import { isTauri, apiOrigin } from './runtime';
 @Injectable({ providedIn: 'root' })
 export class PushService {
   private readonly http = inject(HttpClient);
-  private readonly router = inject(Router);
+  private readonly nav = inject(NavStateMachineService);
 
   /** The FCM token currently registered with the backend (null = not yet registered). */
   private registeredToken: string | null = null;
@@ -150,10 +150,9 @@ export class PushService {
     window.SomsFcm?.requestNotificationPermission();
   }
 
-  /** Navigate to the tapped thread. The `chat/:threadId` route is always-mounted (ChatReuseStrategy),
-   *  and ChatPane renders from ConversationListService.openThreadId which the home shell syncs from the
-   *  URL — so a plain navigate is all the deep link needs. */
+  /** Open the tapped thread via the nav state machine (the URL mirror updates `/chat/:id`; ChatPane renders
+   *  from ConversationListService.openThreadId which the home shell syncs from the state machine). */
   private openThread(threadId: string) {
-    this.router.navigate(['chat', threadId]).catch(() => { /* navigation races during boot are benign */ });
+    this.nav.openChat(Number(threadId));
   }
 }

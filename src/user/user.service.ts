@@ -74,7 +74,7 @@ export class UserService implements OnModuleInit {
   addUser(params: { uniqName: string; hashPwd: string }) {
     return this.prisma.$transaction(async (prisma) => {
       const user = await prisma.user.findUnique({
-        where: { uniqName: params.uniqName, domain: null },
+        where: { uniqName_domain: { uniqName: params.uniqName, domain: 'local' } },
       });
       if (user !== null) {
         return {

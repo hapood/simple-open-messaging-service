@@ -8,6 +8,7 @@ import { WebPushService } from './services/web-push.service';
 import { SseLifecycleService } from './services/sse-lifecycle.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
 import { BackgroundSyncService } from './services/background-sync.service';
+import { NavStateMachineService } from './services/nav-state.service';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet],
@@ -39,7 +40,12 @@ export class AppComponent {
     // so the stored preference (read from Kotlin SomsSecureStore via the bridge) is reflected into the
     // signal + re-applied to the WorkManager schedule at every boot. A no-op off-Android.
     private readonly bgSync = inject(BackgroundSyncService);
+    // NavStateMachineService: eagerly constructed so its URL-mirror effect is live, and so initFromUrl()
+    // runs here (synchronously, before the effect's first async tick) to seed the chat from a cold URL
+    // like `/chat/2` before the mirror's first replaceState.
+    private readonly nav = inject(NavStateMachineService);
     constructor() {
+        this.nav.initFromUrl();
         this.push.init();
         void this.webPush.init();
     }

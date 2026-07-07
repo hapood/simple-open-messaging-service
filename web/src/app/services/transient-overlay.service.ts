@@ -36,6 +36,9 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
 
   /** True while we own an outstanding sentinel history entry for the currently-open overlay. */
   private entryActive = false;
+  /** Whether this overlay is currently open. Readable so callers (e.g. an openChat that consumes the
+   *  sentinel via replaceState) can close the overlay WITHOUT a history.back (see {@link closeSilent}). */
+  get isOpen(): boolean { return this.entryActive; }
   /** Count of history traversals we initiated whose resulting popstate must be ignored (1:1 per traversal). */
   private selfBackPending = 0;
 
@@ -84,6 +87,14 @@ export abstract class TransientOverlayService<TInputs> implements OnDestroy {
       this.selfBackPending++;
       history.back();
     }
+  }
+
+  /** Dismiss the overlay WITHOUT touching history — for the case where the caller's own navigation
+   *  (e.g. NavStateMachineService.openChat's `replaceState`) already consumed our sentinel entry, so a
+   *  `history.back` here would pop the wrong (post-replace) entry. Clears state + disposes the CDK overlay. */
+  closeSilent(): void {
+    this.entryActive = false;
+    this.disposeOverlay();
   }
 
   ngOnDestroy(): void {

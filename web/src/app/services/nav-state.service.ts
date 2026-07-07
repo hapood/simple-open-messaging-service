@@ -1,7 +1,6 @@
 import { computed, effect, inject, Injectable, signal, type Type } from '@angular/core';
-import { ConversationListService } from './conversation-list.service';
 
-/** The aside auxiliary panel kinds (mirrors the old `(aside:...)` outlet segments). */
+/** The aside auxiliary panel kinds (the old `(aside:...)` outlet segments, now signal-driven). */
 export type AsidePanel = 'profile' | 'group-info' | 'settings';
 
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
@@ -27,24 +26,24 @@ let nextPaneId = 0;
 /**
  * The single source of truth for app view state — replaces the Angular Router + the sentinel system for
  * in-app navigation (chat thread, aside panel, transient panes). Browser history is NOT used for app
- * navigation: state is mirrored to the URL one-way via `history.replaceState` (history stays a single
- * entry deep, so browser-back naturally exits on desktop/PWA), and mobile intercepts hardware back
- * natively and calls {@link back}.
+ * navigation: state mirrors to the URL one-way via `history.replaceState` (history stays a single entry
+ * deep, so browser-back naturally exits on desktop/PWA), and mobile intercepts hardware back natively
+ * and calls {@link back}.
  *
  * Layered model: `chatThreadId` (base) ← `aside` (overlay 1) ← `paneStack` (overlay 2, topmost last).
  * {@link back} peels one layer: topmost pane → aside → chat → (home: returns `false`, caller exits).
  *
- * `ConversationListService.openThreadId` remains the chat data-layer signal; this service is its sole
- * writer (replacing the old HomeShell URL-derived effect). All existing readers (ChatPane, thread-list,
- * peer-profile, group-info) are unchanged.
+ * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
+ * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
+ * with the mobile close-slide lag — the way it used to read the routed thread id). All other readers
+ * (ChatPane, thread-list, peer-profile, group-info) are unchanged.
  *
- * Phase 0: dormant — `providedIn:'root'` is lazy, so until Phase 1+ inject it, this service is never
- * constructed and the URL-mirror effect never runs. No behavior change until wired in.
+ * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel is session-state, NOT
+ * mirrored — it isn't deep-linkable, and an `(aside:…)` URL segment would make the router try to match
+ * an auxiliary outlet we no longer have.
  */
 @Injectable({ providedIn: 'root' })
 export class NavStateMachineService {
-  private readonly convList = inject(ConversationListService);
-
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
   /** The open aside panel, or `undefined`. */
@@ -52,31 +51,30 @@ export class NavStateMachineService {
   /** Transient pane stack (dialogs + overlays + search). Top = last entry. */
   readonly paneStack = signal<readonly PaneEntry[]>([]);
 
-  /** Dialog entries (derived) — Phase 3 wires RootPopup to this instead of `RouteService.dlgList`. */
+  /** Dialog entries (derived) — RootPopup reads this (Phase 3 rewire; today RouteService.dlgList still drives it). */
   readonly dialogs = computed(() => this.paneStack().filter((p) => p.kind === 'dialog'));
 
   constructor() {
     // URL mirror — one-way (state → URL), `replaceState` only (never `push`), so the history stays a
-    // single entry and browser-back exits on desktop/PWA. `/chat/N`, optionally with `(aside:panel)`.
+    // single entry and browser-back exits on desktop/PWA. `/chat/N`, or `/` at the list.
     effect(() => {
       const tid = this.chatThreadId();
-      const aside = this.aside();
-      const base = tid === undefined ? '/' : `/chat/${tid}`;
-      const url = aside ? (base === '/' ? `/(aside:${aside.panel})` : `${base}(aside:${aside.panel})`) : base;
+      const url = tid === undefined ? '/' : `/chat/${tid}`;
       if (typeof history !== 'undefined') history.replaceState(history.state, '', url);
     });
   }
 
   // --- chat layer ---
+  /** Open a chat thread. Closing a chat-scoped aside on a thread switch mirrors the old openChat (which
+   *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread. */
   openChat(threadId: number): void {
+    if (this.chatThreadId() !== threadId) this.aside.set(undefined);
     this.chatThreadId.set(threadId);
-    this.convList.open(threadId);
   }
-  /** Leave the chat → home. Closes the aside too (a chat-scoped panel can't outlive its chat). */
+  /** Leave the chat → home. Also closes the aside (a chat-scoped panel can't outlive its chat). */
   closeChat(): void {
     this.chatThreadId.set(undefined);
     this.aside.set(undefined);
-    this.convList.close();
   }
 
   // --- aside layer ---
@@ -129,15 +127,10 @@ export class NavStateMachineService {
     return false;
   }
 
-  /** Cold-load: seed chat/aside from the URL once at boot (Phase 1 wires the call). Idempotent. */
+  /** Cold-load: seed the chat from the URL once at boot (HomeShell wires the call). Idempotent. */
   initFromUrl(): void {
     if (typeof location === 'undefined') return;
     const chatMatch = location.pathname.match(/^\/chat\/(\d+)/);
     if (chatMatch) this.openChat(Number(chatMatch[1]));
-    const asideMatch = location.pathname.match(/\(aside:([a-z-]+)\)/);
-    if (asideMatch) {
-      const panel = asideMatch[1];
-      if (panel === 'profile' || panel === 'group-info' || panel === 'settings') this.openAside(panel);
-    }
   }
 }

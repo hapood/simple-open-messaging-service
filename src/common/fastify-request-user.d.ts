@@ -34,6 +34,18 @@ declare module 'fastify' {
       threadType: MessageThreadType;
       participant: ThreadParticipant;
     };
+    /**
+     * Captured by the S2S preParsing hook (scoped to /api/v1/s2s/*): the exact request body bytes as
+     * received over the wire. Required for RFC 9421 content-digest verification — re-serialized JSON
+     * would not match the digest the sender signed. Read by S2sSignatureGuard.
+     */
+    rawBody?: Buffer;
+    /**
+     * Attached by S2sSignatureGuard on inbound S2S requests after a successful signature verify:
+     * the verified signer's domain + keyId. Downstream handlers trust this (the guard verified the
+     * signature + allow-list + binding rule).
+     */
+    peer?: { domain: string; keyId: string };
   }
 }
 

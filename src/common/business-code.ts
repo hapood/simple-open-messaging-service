@@ -1,45 +1,59 @@
 /**
- * 业务码段定义（P1b 状态码对齐）。
+ * Business code segments (P1b status-code alignment).
  *
- * 设计对标 WhatsApp Cloud API 的「按域前缀分组」独立码空间：
- * - 0       成功
- * - 10xxx   通用业务（参数校验 / 资源不存在 / 冲突 / 未认证 / 限流 / 服务器）
- * - 20xxx   好友·会话状态机
- * - 30xxx   消息域
- * - 40xxx   群组域
+ * Modeled on WhatsApp Cloud API's "grouped by domain prefix" independent code space:
+ * - 0       success
+ * - 10xxx   generic business (validation / not-found / conflict / unauthenticated / rate-limit / server)
+ * - 20xxx   friend & conversation state machine
+ * - 30xxx   message domain
+ * - 40xxx   group domain
+ * - 50xxx   federation S2S (peer not trusted / bad signature / binding violation / duplicate /
+ *           unsupported type / key-fetch failed / malformed)
  *
- * 原则（见 protocol-plan §5.2）：业务结果一律走 HTTP 200 + 业务码；仅未认证(401) /
- * 资源不存在(404) / 冲突(409) / 服务器异常(500) 这类协议·系统层保留 HTTP 状态码给大类，
- * body.code 仍映射到对应 10xxx 段。
+ * Convention (see protocol-plan §5.2): business outcomes always return HTTP 200 + a business code;
+ * only the protocol/system layer — unauthenticated(401) / not-found(404) / conflict(409) /
+ * server-error(500) — retains its HTTP status code for the broad category, with body.code mapped
+ * to the matching 10xxx segment. The S2S inbox is entirely protocol/system-tier
+ * (auth/system/conflict), so the HTTP status drives outbox retry (2xx delivered / 4xx permanent
+ * dead / 5xx backoff retry) and the code is for logging/detail.
  */
 export enum BusinessCode {
   OK = 0,
 
-  // 10xxx 通用
-  VALIDATION_FAILED = 10000, // 参数校验失败（原 ValidationPipe 400）
-  NOT_FOUND = 10001, // 资源不存在
-  ALREADY_EXISTS = 10002, // 资源已存在（冲突）
-  UNAUTHENTICATED = 10003, // 未认证
-  FORBIDDEN = 10004, // 无权限
-  RATE_LIMITED = 10005, // 限流 / IP 封禁
-  REFRESH_REUSE_DETECTED = 10006, // refresh token 重用 → 前端强制重登（家族已连根吊销）
-  SESSION_REVOKED = 10007, // 会话已被吊销（全设备登出/改密/单设备踢出）
-  INTERNAL = 10999, // 服务器异常
+  // 10xxx generic
+  VALIDATION_FAILED = 10000, // parameter validation failed (was ValidationPipe 400)
+  NOT_FOUND = 10001, // resource not found
+  ALREADY_EXISTS = 10002, // resource already exists (conflict)
+  UNAUTHENTICATED = 10003, // unauthenticated
+  FORBIDDEN = 10004, // forbidden
+  RATE_LIMITED = 10005, // rate limited / IP banned
+  REFRESH_REUSE_DETECTED = 10006, // refresh-token reuse → force frontend re-login (family revoked at the root)
+  SESSION_REVOKED = 10007, // session revoked (all-device logout / password change / single-device kick)
+  INTERNAL = 10999, // server error
 
-  // 20xxx 好友·会话状态机
-  FRIEND_SELF = 20001, // 不能加自己为好友
-  FRIEND_UNKNOWN_STATE = 20002, // 好友状态机未知状态
-  FRIEND_NO_INCOMING = 20003, // 无待处理好友请求
+  // 20xxx friend & conversation state machine
+  FRIEND_SELF = 20001, // cannot friend yourself
+  FRIEND_UNKNOWN_STATE = 20002, // friend state machine unknown state
+  FRIEND_NO_INCOMING = 20003, // no pending friend request
 
-  // 30xxx 消息域
-  MESSAGE_EMPTY = 30001, // 消息无内容
-  THREAD_NOT_APPROVED = 30002, // 会话未建立 / 未批准
-  THREAD_NOT_FOUND = 30003, // 无此会话
+  // 30xxx message domain
+  MESSAGE_EMPTY = 30001, // message has no content
+  THREAD_NOT_APPROVED = 30002, // conversation not established / not approved
+  THREAD_NOT_FOUND = 30003, // no such conversation
 
-  // 40xxx 群组域
-  GROUP_NOT_FRIEND = 40002, // 非好友不可邀请
-  GROUP_INVALID_TOKEN = 40003, // 无效邀请 token
-  GROUP_OWNER_MUST_TRANSFER = 40004, // 群主退出前须先转让
-  GROUP_FORBIDDEN = 40005, // 角色权限不足（不可踢/改/转让该对象）
-  GROUP_TARGET_NOT_MEMBER = 40006, // 操作目标不是群内活跃成员
+  // 40xxx group domain
+  GROUP_NOT_FRIEND = 40002, // non-friend cannot be invited
+  GROUP_INVALID_TOKEN = 40003, // invalid invite token
+  GROUP_OWNER_MUST_TRANSFER = 40004, // owner must transfer before leaving
+  GROUP_FORBIDDEN = 40005, // role permission denied (cannot kick/modify/transfer this target)
+  GROUP_TARGET_NOT_MEMBER = 40006, // target is not an active member of the group
+
+  // 50xxx federation (S2S) — all protocol/system-tier; HTTP status drives outbox retry, code is detail.
+  FEDERATION_PEER_NOT_TRUSTED = 50001, // signer domain not in FederatedPeer trusted (401, no retry)
+  FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
+  FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
+  FEDERATION_DUPLICATE = 50004, // (origin, envelopeId) already applied (409 → idempotent success)
+  FEDERATION_TYPE_UNSUPPORTED = 50005, // envelope type not handled yet, e.g. message in v0.1 (422, no retry)
+  FEDERATION_KEY_FETCH_FAILED = 50006, // .well-known key fetch transient failure (503 → retry)
+  FEDERATION_MALFORMED = 50007, // malformed Signature-Input / envelope (401, no retry)
 }

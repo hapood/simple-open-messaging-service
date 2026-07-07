@@ -1,5 +1,4 @@
 import { Component, inject, input, computed } from '@angular/core';
-import { Router } from '@angular/router';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../../icon/icon.component';
@@ -8,6 +7,7 @@ import { SearchService } from '../../../services/search.service';
 import { UserService } from '../../../services/user.service';
 import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
+import { NavStateMachineService } from '../../../services/nav-state.service';
 
 /**
  * Telegram-style left rail: account avatar + navigation actions (search / friend
@@ -128,7 +128,7 @@ export class IconRailComponent {
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
-  private readonly router = inject(Router);
+  private readonly nav = inject(NavStateMachineService);
   /** Current logged-in profile (used for the SELF avatar's initial). */
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -164,8 +164,8 @@ export class IconRailComponent {
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
   }
 
-  /** Open the Settings page in the aside outlet (same surface profile / group-info use). */
+  /** Open the Settings page in the aside slot (same surface profile / group-info use). */
   settings(): void {
-    void this.router.navigate([{ outlets: { aside: ['settings'] } }])
+    this.nav.openAside('settings')
   }
 }

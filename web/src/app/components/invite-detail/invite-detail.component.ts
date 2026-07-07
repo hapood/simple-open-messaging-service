@@ -6,7 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { Router } from '@angular/router';
+import { NavStateMachineService } from '../../services/nav-state.service';
 import { InviteDetailService } from './invite-detail.service';
 import { prefersReducedMotion } from '../../lib/motion-utils';
 
@@ -55,7 +55,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
 
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
-  private readonly router = inject(Router);
+  private readonly nav = inject(NavStateMachineService);
   private readonly inviteDetail = inject(InviteDetailService);
   private readonly transloco = inject(TranslocoService);
 
@@ -173,24 +173,20 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
       return;
     }
     const tid = (res.data as { threadId?: number } | undefined)?.threadId;
-    // Pop the sentinel and AWAIT the router's popstate NavigationEnd before navigating — otherwise that
-    // NavigationEnd lands after the group navigate and snaps openThreadId back to the P2P thread.
-    await this.inviteDetail.closeForReplace();
+    // openChat's replaceState consumes the invite-detail sentinel (the current entry), so close the overlay
+    // SILENTLY (no history.back — that would pop the just-replaced chat entry) and open the group thread.
+    this.inviteDetail.closeSilent();
     if (tid != null) {
-      // The A/B chat-pane buffer takes over: navigate → openThreadId → background reset → circular reveal.
-      // replaceUrl now overwrites the P2P entry (current after the pop) → back from the group lands on list.
-      await this.router.navigate(['chat', tid], { replaceUrl: true });
+      this.nav.openChat(tid);
     }
   }
 
-  /** Already joined → open the group. closeForReplace pops the sentinel and awaits the router's popstate
-   *  NavigationEnd (avoids the snap-back race); the navigate then replaces the P2P entry → back lands on
-   *  the conversation list. */
+  /** Already joined → open the group. Same silent-close + openChat as onJoin. */
   async onOpen(): Promise<void> {
     const gid = this.invite().groupId;
     const tid = this.convList.items().find((t) => t.group?.id === gid)?.threadId;
     if (tid == null) return;
-    await this.inviteDetail.closeForReplace();
-    await this.router.navigate(['chat', tid], { replaceUrl: true });
+    this.inviteDetail.closeSilent();
+    this.nav.openChat(tid);
   }
 }

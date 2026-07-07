@@ -1,5 +1,4 @@
 import { Component, computed, inject, input, output, signal } from '@angular/core';
-import { Router } from '@angular/router';
 import { OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -11,7 +10,7 @@ import { UserService } from '../../services/user.service';
 import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { RouteService, PopupType } from '../../services/route.service';
-import { AsideOutletService } from '../../services/aside-outlet.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -42,14 +41,13 @@ export class MessageHeaderComponent {
   /** Emitted after clear-history succeeds (parent resets the kernel against the now-empty view). */
   readonly historyCleared = output<void>();
 
-  private readonly router = inject(Router);
+  private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
   private readonly msgService = inject(MsgService);
   private readonly userService = inject(UserService);
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
-  private readonly asideOutlet = inject(AsideOutletService);
 
   /** desktop renders the chat inline (no overlay to leave), so the back arrow is mobile-only. */
   protected readonly isDesktop = this.layout.isDesktop;
@@ -93,7 +91,7 @@ export class MessageHeaderComponent {
       { kind: 'action', key: 'viewInfo', labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title', icon: AppIconType.EYE },
       { kind: 'action', key: 'search', labelKey: 'chat.menuSearch', icon: AppIconType.SEARCH },
       { kind: 'divider' },
-      { kind: 'action', key: 'markRead', labelKey: 'chat.menuMarkRead' },
+      { kind: 'action', key: 'markRead', labelKey: 'chat.menuMarkRead', icon: AppIconType.CHECK },
       {
         kind: 'action',
         key: 'mute',
@@ -301,7 +299,7 @@ export class MessageHeaderComponent {
     this.userService.deleteFriend({ userId: peerId }).subscribe((res) => {
       if (res.code !== 0) return;
       this.convList.removeThread(trd.threadId);
-      void this.router.navigate(['/']);
+      this.nav.closeChat();
     });
   }
 
@@ -311,36 +309,28 @@ export class MessageHeaderComponent {
     if (groupId === undefined) return;
     this.groupService.leaveGroup({ groupId }).subscribe(() => {
       this.convList.load();
-      void this.router.navigate(['/']);
+      this.nav.closeChat();
     });
   }
 
-  /** Mobile: the chat is a routed overlay — back returns to the conversation list. */
+  /** Mobile: back returns to the conversation list (closes the chat). */
   goBack(): void {
-    this.router.navigate(['/']);
+    this.nav.closeChat();
   }
 
   /**
-   * Open (or toggle) the peer-profile / group-info panel in the `aside` auxiliary outlet. Opening uses the
-   * OUTLET-COMMAND form `[{ outlets: { aside: [seg] } }]` (no primary path) so the router only re-targets
-   * the named outlet — the primary stays on the current `chat/:threadId`. Bundling the outlet spec inside a
-   * primary command array (`['chat', tid, { outlets: { aside: seg } }]`) makes the router look `seg` up as
-   * a child of `chat/:threadId` (which has none) → falls through to `**` → 404. The panels resolve their
-   * thread from `ConversationListService.openThreadId`, so the primary path is not needed here. Mirrors the
-   * working settings-open nav in icon-rail / nav-drawer.
-   *
-   * Toggling the SAME panel closed POPS the pushed open-entry via AsideOutletService (≈ hardware-back),
-   * rather than pushing a "closed" sibling — which would orphan the panel-open URL and let back re-open it.
+   * Open (or toggle) the peer-profile / group-info panel in the `aside` slot. The panels resolve their
+   * thread from `ConversationListService.openThreadId`, so no threadId is needed. Toggling the SAME panel
+   * closed just clears the aside signal (≈ hardware-back).
    */
   showThreadInfo(): void {
     const trd = this.userMsgTrd();
     if (!trd) return;
     const seg = trd.type === 'GROUP' ? 'group-info' : 'profile';
-    const openSeg = this.router.url.match(/\(aside:([a-z-]+)\)/)?.[1];
-    if (openSeg === seg) {
-      this.asideOutlet.close();
+    if (this.nav.aside()?.panel === seg) {
+      this.nav.closeAside();
       return;
     }
-    void this.router.navigate([{ outlets: { aside: [seg] } }]);
+    this.nav.openAside(seg);
   }
 }

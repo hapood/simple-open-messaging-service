@@ -1,9 +1,9 @@
 import { Component, computed, effect, inject, ElementRef, OnDestroy, signal, viewChild } from '@angular/core';
-import { Router } from '@angular/router';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { ChatEmptyComponent } from '../../chat-empty/chat-empty.component';
 import { ConversationListService } from '../../../services/conversation-list.service';
 import { SearchService } from '../../../services/search.service';
+import { NavStateMachineService } from '../../../services/nav-state.service';
 import { prefersReducedMotion } from '../../../lib/motion-utils';
 import type { ConversationItem } from '../../../services/model';
 
@@ -136,7 +136,7 @@ type SlotKey = 'A' | 'B';
 })
 export class ChatPaneComponent implements OnDestroy {
   private readonly convList = inject(ConversationListService);
-  private readonly router = inject(Router);
+  private readonly nav = inject(NavStateMachineService);
 
   /** The thread the shell has marked open (URL-driven; sole writer is the home shell). */
   readonly openThreadId = this.convList.openThreadId;
@@ -228,7 +228,7 @@ export class ChatPaneComponent implements OnDestroy {
           this.loadAttemptedFor = target;
           this.convList.load();
         } else {
-          void this.router.navigate(['/']);
+          this.nav.closeChat();
         }
         return;
       }

@@ -1,5 +1,5 @@
 import { Component, computed, inject, signal } from '@angular/core';
-import { AsideOutletService } from '../../services/aside-outlet.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
 import { MatListModule } from '@angular/material/list';
 import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
 import { MatButtonToggleModule, MatButtonToggleChange } from '@angular/material/button-toggle';
@@ -44,7 +44,7 @@ export class SettingsComponent {
   readonly AppIconType = AppIconType;
   readonly appVersion = appVersion;
 
-  private readonly asideOutlet = inject(AsideOutletService);
+  private readonly nav = inject(NavStateMachineService);
   private readonly transloco = inject(TranslocoService);
   readonly theme = inject(ThemeService);
   readonly language = inject(LanguageService);
@@ -112,9 +112,8 @@ export class SettingsComponent {
     window.setTimeout(() => this.checking.set(false), 2700);
   }
 
-  /** Close the aside panel — pops the pushed panel-open entry via AsideOutletService so back can't
-   *  re-open it. */
+  /** Close the aside panel. Clears the aside signal so back can't re-open it. */
   goBack(): void {
-    this.asideOutlet.close();
+    this.nav.closeAside();
   }
 }

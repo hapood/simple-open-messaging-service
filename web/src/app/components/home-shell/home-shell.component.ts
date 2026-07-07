@@ -1,12 +1,14 @@
 import { Component, computed, effect, inject, signal, viewChild } from '@angular/core';
-import { Router, RouterOutlet, NavigationEnd } from '@angular/router';
 import { trigger, transition, state, style, animate, type AnimationEvent } from '@angular/animations';
-import { toSignal } from '@angular/core/rxjs-interop';
-import { filter, map } from 'rxjs';
 import { LayoutService } from '../../services/layout.service';
+import { NavStateMachineService, type AsidePanel } from '../../services/nav-state.service';
 import { IconRailComponent } from '../desktop/icon-rail/icon-rail.component';
 import { NavDrawerComponent } from '../nav-drawer/nav-drawer.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
+import { ChatPaneComponent } from '../desktop/chat-pane/chat-pane.component';
+import { PeerProfileComponent } from '../peer-profile/peer-profile.component';
+import { GroupInfoComponent } from '../group-info/group-info.component';
+import { SettingsComponent } from '../settings/settings.component';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConnectionBannerComponent } from '../connection-banner/connection-banner.component';
 import { UpdateBannerComponent } from '../update-banner/update-banner.component';
@@ -14,7 +16,6 @@ import { GlobalSearchComponent } from '../global-search/global-search.component'
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { SearchService } from '../../services/search.service';
-import { AsideOutletService } from '../../services/aside-outlet.service';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
@@ -43,27 +44,28 @@ const overlaySlide = trigger('overlaySlide', [
 ])
 
 /**
- * The single responsive home shell. Hosts the two persistent router-outlets (primary = chat,
- * `aside` = profile/group-info) so they survive every breakpoint change — CSS reflows per layout,
- * routes never remount. The conversation list is always-mounted chrome (the base view on mobile; a
- * column on desktop/tablet). `icon-rail` is desktop-only; `nav-drawer` (hamburger) is tablet/mobile.
+ * The single responsive home shell. Hosts the always-mounted chat surface + the aside panel — both driven
+ * by {@link NavStateMachineService} signals (NO router-outlets: the router only renders this shell for `/`
+ * and `/chat/:threadId`; the state machine owns which thread/panel is shown and mirrors the URL one-way via
+ * replaceState). The conversation list is always-mounted chrome (the base view on mobile; a column on
+ * desktop/tablet). `icon-rail` is desktop-only; `nav-drawer` (hamburger) is tablet/mobile.
  *
- * Layout positioning of the outlets is CSS-driven and gated by `chat-open` / `aside-open` classes
- * derived from the current URL (e.g. the mobile chat overlay is hidden at `/`, so the list shows).
+ * Layout positioning of the chat/aside slots is CSS-driven and gated by `chat-open` / `aside-open` classes
+ * derived from the nav state (e.g. the mobile chat overlay is hidden when no thread is open, so the list
+ * shows through).
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [RouterOutlet, IconRailComponent, NavDrawerComponent, ChatListPaneComponent, HomeHeaderComponent, ConnectionBannerComponent, UpdateBannerComponent, GlobalSearchComponent],
+  imports: [IconRailComponent, NavDrawerComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent, ConnectionBannerComponent, UpdateBannerComponent, GlobalSearchComponent],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
   animations: [overlaySlide],
 })
 export class HomeShellComponent {
-  private readonly router = inject(Router)
   private readonly layout = inject(LayoutService)
   private readonly convList = inject(ConversationListService)
+  private readonly nav = inject(NavStateMachineService)
   readonly search = inject(SearchService)
-  private readonly asideOutlet = inject(AsideOutletService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode
@@ -71,25 +73,11 @@ export class HomeShellComponent {
   /** chat-list width (desktop), persisted across sessions. */
   readonly listWidth = signal<number>(this.readListWidth())
 
-  /** Latest post-navigation URL as a signal — drives the chat/aside "open" classes that position the
-   *  overlays per layout (e.g. hide the mobile chat overlay at `/` so the list shows through). */
-  private readonly navUrl = toSignal(
-    this.router.events.pipe(
-      filter((e): e is NavigationEnd => e instanceof NavigationEnd),
-      map((e) => e.url),
-    ),
-    { initialValue: this.router.url },
-  )
-  readonly chatActive = computed(() => /\/chat\//.test(this.navUrl()))
-  readonly asideActive = computed(() => /\(aside:/.test(this.navUrl()))
-
-  /** The numeric thread id parsed from the URL (`/chat/:id`); undefined at `/`. The URL is the source of truth
-   *  for which chat is open; this drives the open/close coordination below and (via ConversationListService)
-   *  the routed ChatPane. */
-  readonly routeThreadId = computed<number | undefined>(() => {
-    const m = this.navUrl().match(/\/chat\/(\d+)/)
-    return m ? Number(m[1]) : undefined
-  })
+  /** Chat/aside "open" classes position the mobile overlays (and toggle the desktop drawer mask). */
+  readonly chatActive = computed(() => this.nav.chatThreadId() !== undefined)
+  readonly asideActive = computed(() => this.nav.aside() !== undefined)
+  /** The aside panel kind (template @switch), or undefined when no aside is open. */
+  readonly asidePanel = computed<AsidePanel | undefined>(() => this.nav.aside()?.panel)
 
   /** Drives [@overlaySlide] on the chat-slot: only mobile animates (closed↔open); desktop/tablet stay
    *  `static` so the inline flex column is never transformed. */
@@ -98,20 +86,19 @@ export class HomeShellComponent {
   )
 
   /** Drives [@overlaySlide] on the aside-slot: the peer-profile / group-info overlay slides in from the
-   *  right on mobile (stacking above the chat at z-index 40). Desktop/tablet stay `static` — the desktop
-   *  side panel and the tablet absolute overlay are not transformed. */
+   *  right on mobile (stacking above the chat at z-index 40). Desktop/tablet stay `static`. */
   readonly asideSlotState = computed<OverlaySlideState>(() =>
     this.mode() === 'mobile' ? (this.asideActive() ? 'mobile-open' : 'mobile-closed') : 'static',
   )
 
   constructor() {
-    // Route → openThreadId coordination. The URL selects which chat is open; this effect is the single writer
-    // of openThreadId's OPEN edge (mark-read + active-row highlight + the chrome ChatPane resolving the
-    // thread). The CLOSE edge is timing-aware: on mobile it LAGS so the chat-pane keeps its data through the
-    // leave slide (the real chat slides out, then onSlideDone resets it); on desktop/tablet (no slide) it
-    // closes immediately.
+    // Nav state → openThreadId coordination. The state machine is the source of truth for which chat is
+    // open; this effect is the single writer of openThreadId's OPEN edge (mark-read + active-row highlight
+    // + the always-mounted ChatPane resolving the thread). The CLOSE edge is timing-aware: on mobile it
+    // LAGS so the chat-pane keeps its data through the leave slide (the real chat slides out, then
+    // onSlideDone resets it); on desktop/tablet (no slide) it closes immediately.
     effect(() => {
-      const tid = this.routeThreadId()
+      const tid = this.nav.chatThreadId()
       if (tid !== undefined) {
         this.convList.open(tid)
       } else if (this.mode() !== 'mobile') {
@@ -130,30 +117,24 @@ export class HomeShellComponent {
   }
   /** (@overlaySlide.done) — close the immunity frame, AND on a mobile chat-close finish the lagged reset:
    *  clear openThreadId so the chrome ChatPane tears down its kernel now that the real chat has slid out of
-   *  view (desktop closed immediately in the route effect — no slide, so it never reaches here). Counter-based,
+   *  view (desktop closed immediately in the nav effect — no slide, so it never reaches here). Counter-based,
    *  so interrupted transitions stay balanced: every start has a matching done. */
   onSlideDone(event: AnimationEvent, slot: 'chat' | 'aside'): void {
     if (event.toState === 'mobile-open' || event.toState === 'mobile-closed') this.layout.thawReflow()
-    if (slot === 'chat' && event.toState === 'mobile-closed' && this.routeThreadId() === undefined) {
+    if (slot === 'chat' && event.toState === 'mobile-closed' && this.nav.chatThreadId() === undefined) {
       this.convList.close()
     }
   }
 
-  /** Open a conversation by route, closing any open info panel (it is scoped to the previous chat).
-   *
-   *  History is what makes in-app back behave: drilling from the list INTO a chat PUSHES a layer (so the
-   *  stack is [home, chat] and back returns to the list — one layer up); only switching from one chat to
-   *  ANOTHER replaces (lateral moves from the always-mounted desktop list must not stack a thread per
-   *  click). Browser-back past the list is left to the browser (no interception). */
+  /** Open a conversation. The state machine sets chatThreadId (→ URL mirror + this shell's convList.open
+   *  effect via the A/B pane buffer) and closes any chat-scoped aside on a thread switch. */
   openChat(item: ConversationItem) {
-    const lateralSwitch = /\/chat\//.test(this.router.url)
-    this.router.navigate(['chat', item.threadId, { outlets: { aside: null } }], { replaceUrl: lateralSwitch })
+    this.nav.openChat(item.threadId)
   }
 
-  /** Close the aside drawer (clears the named outlet). Wired to the desktop drawer-mask click. Delegates
-   *  to AsideOutletService, which pops the pushed panel-open entry so back can't re-open it. */
+  /** Close the aside drawer (desktop drawer-mask click). The state machine clears the aside signal. */
   closeAside() {
-    this.asideOutlet.close()
+    this.nav.closeAside()
   }
 
   /** After a group is created, refresh the shared thread list (forwarded to icon-rail / nav-drawer). */

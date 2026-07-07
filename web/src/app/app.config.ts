@@ -1,5 +1,5 @@
 import { ApplicationConfig, isDevMode, provideZonelessChangeDetection } from '@angular/core';
-import { provideRouter, withComponentInputBinding, RouteReuseStrategy } from '@angular/router';
+import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideHttpClient, withInterceptorsFromDi, HTTP_INTERCEPTORS } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideTransloco } from '@jsverse/transloco';
@@ -9,7 +9,6 @@ import { AuthInterceptor } from './auth.interceptor';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
-import { ChatReuseStrategy } from './chat-reuse-strategy';
 
 export const appConfig: ApplicationConfig = {
   providers: [
@@ -20,9 +19,6 @@ export const appConfig: ApplicationConfig = {
       multi: true
     },
     provideRouter(routes, withComponentInputBinding()),
-    // Always-mounted chat: reuse the ChatPane instance across `''` (list) ↔ `chat/:threadId` (open chat) so
-    // the kernel never remounts on open/close. See chat-reuse-strategy.ts.
-    { provide: RouteReuseStrategy, useClass: ChatReuseStrategy },
     provideHttpClient(withInterceptorsFromDi()),
     provideAnimationsAsync(),
     provideTransloco({

@@ -601,7 +601,7 @@ export class UserController {
   @ApiResultResponse(UserResponseDto)
   async getUserByUniqName(@Body() dto: UserByUniqNameDto): Promise<ApiResult> {
     const user = await this.userService.findUniqueUser(
-      { uniqName: dto.uniqName, isDeleted: false },
+      { uniqName_domain: { uniqName: dto.uniqName, domain: 'local' }, isDeleted: false },
       true,
     );
     if (user !== null) {

@@ -1,18 +1,21 @@
 import { Global, Module } from '@nestjs/common';
 import { KeypairService } from './keypair.service.js';
+import { SignatureService } from './signature.service.js';
+import { DiscoveryService } from './discovery.service.js';
+import { WellKnownController } from './well-known.controller.js';
+import { PrismaService } from '../prisma.service.js';
 
 /**
- * Federation (S2S). @Global because its services are injected across modules:
- * SignatureService/DiscoveryService by the S2S inbox controller, FederationService by
- * UserController (to enqueue outbound friend ops) and AdminController (peer approval),
- * KeypairService by the .well-known controller. Mirrors RedisModule's @Global rationale.
+ * Federation (S2S). @Global so its services inject across modules: SignatureService/DiscoveryService
+ * by the S2S inbox (Phase C) + init handshake (Phase E), FederationService by UserController (Phase D)
+ * + AdminController (Phase E), KeypairService by this .well-known controller.
  *
- * Phase A wires only KeypairService; signing/discovery/inbox/outbound services are added
- * in later phases.
+ * PrismaService is provided here (it is not @Global) so DiscoveryService can read/write S2SKeyCache.
  */
 @Global()
 @Module({
-  providers: [KeypairService],
-  exports: [KeypairService],
+  controllers: [WellKnownController],
+  providers: [KeypairService, SignatureService, DiscoveryService, PrismaService],
+  exports: [KeypairService, SignatureService, DiscoveryService],
 })
 export class FederationModule {}

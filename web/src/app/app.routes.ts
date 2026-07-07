@@ -10,52 +10,13 @@ import { authGuard, guestGuard } from './auth.guard';
 import { isTauri } from './services/runtime';
 
 export const routes: Routes = [
-  {
-    path: '',
-    component: HomeComponent,
-    canActivate: [authGuard],
-    // Guards don't inherit to children — re-protect the chat / aside child routes.
-    canActivateChild: [authGuard],
-    children: [
-      // Both children render ChatPane. ChatReuseStrategy (see app.config) reuses the SAME instance across
-      // `''` ↔ `chat/:threadId`, so the chat surface is effectively always-mounted: navigating list ↔ chat
-      // never remounts the kernel. ChatPane reads ConversationListService.openThreadId (synced from the URL
-      // by the home shell, lagged on mobile close so the real chat slides out before its data resets) and
-      // renders the thread, the deep-link loading state, or ChatEmpty when idle.
-      {
-        path: '',
-        loadComponent: () => import('./components/desktop/chat-pane/chat-pane.component').then((m) => m.ChatPaneComponent),
-      },
-      {
-        path: 'chat/:threadId',
-        loadComponent: () => import('./components/desktop/chat-pane/chat-pane.component').then((m) => m.ChatPaneComponent),
-      },
-      // The profile / group-info panels target the `aside` auxiliary outlet (siblings of the chat route,
-      // so the outlet lives in the home shell alongside the primary one). The active conversation is read
-      // from ConversationListService.openThreadId, so no :threadId needs to be duplicated into these paths.
-      {
-        path: 'profile',
-        outlet: 'aside',
-        loadComponent: () =>
-          import('./components/peer-profile/peer-profile.component').then((m) => m.PeerProfileComponent),
-      },
-      {
-        path: 'group-info',
-        outlet: 'aside',
-        loadComponent: () =>
-          import('./components/group-info/group-info.component').then((m) => m.GroupInfoComponent),
-      },
-      // The Settings page targets the `aside` auxiliary outlet alongside profile / group-info. It owns
-      // no :threadId (preferences are global), so a bare path is enough; the home-shell's overlaySlide
-      // animation handles the slide-in/side-panel transition automatically.
-      {
-        path: 'settings',
-        outlet: 'aside',
-        loadComponent: () =>
-          import('./components/settings/settings.component').then((m) => m.SettingsComponent),
-      },
-    ],
-  },
+  // App shell. NavStateMachineService drives chat/aside state — there are NO app-nav child routes and NO
+  // router-outlets in the shell (ChatPane is always-mounted; the aside is a @switch on nav.aside()). Both
+  // `/` and `/chat/:threadId` render the same shell so cold-load / refresh / deep-link match a route
+  // (otherwise they'd fall through to `**` → 404); the state machine reads the URL once at boot
+  // (initFromUrl) and mirrors it back via replaceState. The aside panel is session-state, not routed.
+  { path: '', component: HomeComponent, canActivate: [authGuard] },
+  { path: 'chat/:threadId', component: HomeComponent, canActivate: [authGuard] },
   { path: 'nav', component: PageNavgatorComponent, canActivate: [authGuard] },
   { path: 'auth/login', component: LoginPageComponent, canActivate: [guestGuard] },
   { path: 'auth/register', component: RegisterPageComponent, canActivate: [guestGuard] },

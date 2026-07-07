@@ -1,4 +1,4 @@
-import { ValidationPipe } from '@nestjs/common';
+import { ValidationPipe, RequestMethod } from '@nestjs/common';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type {
   FastifyAdapter,
@@ -12,6 +12,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
 import { existsSync, mkdirSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
 import { AccessTokenValidator, MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
@@ -92,6 +93,22 @@ export async function configureApp(
   // the /uploads/ preHandler hook (registered in registerStaticServing).
   await app.register(fastifyCookie);
 
+  // S2S raw-body capture: RFC 9421 content-digest verification needs the EXACT body bytes the sender
+  // signed — re-serialized JSON would not match. Scoped to /api/v1/s2s/* so only S2S requests pay
+  // the double-buffer cost; every other route passes through untouched. S2sSignatureGuard reads
+  // req.rawBody.
+  adapter.getInstance().addHook('preParsing', async (req, _reply, payload) => {
+    if (!req.url.startsWith('/api/v1/s2s/')) return payload;
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload as AsyncIterable<Buffer>) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    req.rawBody = raw;
+    const stream = new Readable();
+    stream.push(raw);
+    stream.push(null);
+    return stream;
+  });
+
   // CORS posture:
   //  - Same-origin production deploy (single-image, path-prefix) needs none.
   //  - Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
@@ -118,7 +135,11 @@ export async function configureApp(
 
   // Global route prefix. All HTTP endpoints (incl. SSE /events) live under /api/v1 (must be set
   // before Swagger createDocument so doc paths include it). Swagger UI mounts at /api/v1/docs.
-  app.setGlobalPrefix('api/v1');
+  // .well-known/soms is excluded — it must be served at the bare path per RFC 8615 (peers fetch it
+  // without knowing our /api/v1 prefix).
+  app.setGlobalPrefix('api/v1', {
+    exclude: [{ path: '.well-known/soms', method: RequestMethod.GET }],
+  });
 
   const config = new DocumentBuilder()
     .setTitle('Simple Open Chat API')

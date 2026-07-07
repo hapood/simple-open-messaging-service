@@ -8,6 +8,9 @@ export type EffectiveTheme = 'light' | 'dark';
 const THEME_KEY = 'soms.theme';
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
+/** Quick-toggle cycle order for the single-button affordance (icon rail, nav drawer, auth toolbar). */
+const THEME_CYCLE: readonly ThemeMode[] = ['system', 'light', 'dark'];
+
 /** `<meta name="theme-color">`: brand in light, dark surface in dark, so mobile browser chrome blends. */
 const META_THEME_COLOR: Record<EffectiveTheme, string> = {
   light: '#2196f3',
@@ -64,14 +67,16 @@ export class ThemeService implements OnDestroy {
     this.mq?.removeEventListener('change', this.onSystemChange);
   }
 
-  /** Single-button toggle: flip the painted theme each click (dark ⇄ light).
-   *  Always commits to an explicit mode, so every click produces a visible change. The previous
-   *  `system → light → dark` cycle had a dead step whenever the OS preference matched an explicit
-   *  mode (e.g. OS light: `system` and `light` paint identically), which surfaced as a no-op click
-   *  and made returning to the prior theme take an extra click. `system` remains the default initial
-   *  mode and still auto-follows the OS via `prefers-color-scheme`. */
+  /** Single-button cycle: `system → light → dark → system`. Exposing `system` from the
+   *  quick-toggle buttons (icon rail, nav drawer, auth toolbar) — not only the Settings page —
+   *  lets users return to OS-following without a detour into Settings. The one dead step is
+   *  re-entering `system` while the OS already matches the current paint (e.g. OS dark: `dark`
+   *  and `system` render identically); the CONTRAST icon + "System" label still flip, so every
+   *  click yields visible affordance feedback. `system` is also the default initial mode and
+   *  auto-follows the OS via `prefers-color-scheme`. */
   cycleMode(): void {
-    this.setMode(this.effective() === 'dark' ? 'light' : 'dark');
+    const order = THEME_CYCLE;
+    this.setMode(order[(order.indexOf(this.mode()) + 1) % order.length]);
   }
 
   setMode(m: ThemeMode): void {

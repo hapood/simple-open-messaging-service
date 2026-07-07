@@ -1,6 +1,6 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { Router } from '@angular/router';
 import { LayoutService } from './layout.service';
+import { NavStateMachineService } from './nav-state.service';
 
 /**
  * Global-search overlay coordinator. The overlay itself is a signal-gated panel in the home shell
@@ -18,7 +18,7 @@ import { LayoutService } from './layout.service';
  */
 @Injectable({ providedIn: 'root' })
 export class SearchService {
-  private readonly router = inject(Router);
+  private readonly nav = inject(NavStateMachineService);
   private readonly layout = inject(LayoutService);
 
   /** Whether the global-search overlay is currently open. */
@@ -67,7 +67,10 @@ export class SearchService {
    *  tablet/mobile dismiss it — the navigate's replaceUrl already consumed the sentinel, so dismissal
    *  is signal-only (no history.back). */
   openThread(threadId: number): void {
-    void this.router.navigate(['chat', threadId, { outlets: { aside: null } }], { replaceUrl: true });
+    // openChat's replaceState consumes the search sentinel (the current entry) on fullscreen, so the
+    // signal-only dismiss is correct (no history.back — that would pop the just-replaced chat entry).
+    // Desktop has no sentinel; the conditional keeps the panel open there for continued browsing.
+    this.nav.openChat(threadId);
     if (this.isFullscreen) this.dismissSilently();
   }
 
@@ -76,7 +79,7 @@ export class SearchService {
    *  thread init (openAround) or, if the thread is already open, via MessageThread's startMsgId effect. */
   openThreadAtMessage(threadId: number, msgId: string): void {
     this.pendingJump.set({ threadId, msgId });
-    void this.router.navigate(['chat', threadId, { outlets: { aside: null } }], { replaceUrl: true });
+    this.nav.openChat(threadId);
     if (this.isFullscreen) this.dismissSilently();
   }
 
@@ -86,9 +89,9 @@ export class SearchService {
     this.pendingJump.set(undefined);
   }
 
-  /** Tablet/mobile: hide the overlay without touching history (the navigate's replaceUrl already
-   *  consumed the sentinel, so there is nothing to pop). */
-  private dismissSilently(): void {
+  /** Tablet/mobile: hide the overlay without touching history (openChat's replaceState already consumed
+   *  the sentinel, so there is nothing to pop). */
+  dismissSilently(): void {
     this.searchActive.set(false);
     this.pendingJump.set(undefined);
   }

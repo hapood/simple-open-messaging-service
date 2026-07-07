@@ -1,6 +1,6 @@
 import { Component, computed, inject, OnInit, OnDestroy, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Router } from '@angular/router';
+import { NavStateMachineService } from '../../services/nav-state.service';
 import { Subscription, filter } from 'rxjs';
 import { UserListComponent } from '../user-list/user-list.component';
 import { RouteService, PopupType } from '../../services/route.service';
@@ -11,7 +11,6 @@ import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { GroupService, GroupMember } from '../../services/group.service';
 import { UserService } from '../../services/user.service';
-import { AsideOutletService } from '../../services/aside-outlet.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
@@ -41,8 +40,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   readonly AppIconType = AppIconType
   readonly UserAvatarType = UserAvatarType
 
-  private readonly router = inject(Router)
-  private readonly asideOutlet = inject(AsideOutletService)
+  private readonly nav = inject(NavStateMachineService)
   private readonly groupService = inject(GroupService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
@@ -218,7 +216,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
       // the conversation is gone from the caller's list; refresh the shared store, then return to the
       // list — navigating to '/' closes both the chat (primary outlet) and this panel (aside outlet).
       this.convList.load()
-      this.router.navigate(['/'])
+      this.nav.closeChat()
     })
   }
 
@@ -333,9 +331,8 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     })
   }
 
-  /** Close the aside (back to the chat) by popping the pushed panel-open entry via AsideOutletService —
-   *  pushing a "closed" sibling instead would orphan the panel-open URL and let back re-open it. */
+  /** Close the aside (back to the chat). Clears the aside signal — back won't re-open it. */
   goBack() {
-    this.asideOutlet.close()
+    this.nav.closeAside()
   }
 }
