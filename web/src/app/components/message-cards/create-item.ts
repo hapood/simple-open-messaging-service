@@ -83,7 +83,9 @@ export function createMsgCbElement(
   const data = item.data as ChatMsgData; // source returns only messages; date is derived at the render layer
 
   const comp: Type<RowComponent> =
-    data.contentType === 'IMAGE'
+    data.contentType === 'IMAGE' ||
+    data.contentType === 'VIDEO' ||
+    data.contentType === 'AUDIO'
       ? MediaRowComponent
       : data.contentType === 'INVITE'
         ? InviteRowComponent

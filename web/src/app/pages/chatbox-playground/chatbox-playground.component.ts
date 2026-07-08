@@ -863,13 +863,13 @@ function readImages(files: File[]): Promise<AlbumImage[]> {
     const reader = new FileReader();
     reader.onload = () => {
       const src = typeof reader.result === 'string' ? reader.result : '';
-      if (!src) { resolve({ src: '', w: 400, h: 300 }); return; }
+      if (!src) { resolve({ kind: 'image', src: '', w: 400, h: 300 }); return; }
       const probe = new Image();
-      probe.onload = () => resolve({ src, w: probe.naturalWidth || 400, h: probe.naturalHeight || 300 });
-      probe.onerror = () => resolve({ src, w: 400, h: 300 });
+      probe.onload = () => resolve({ kind: 'image', src, w: probe.naturalWidth || 400, h: probe.naturalHeight || 300 });
+      probe.onerror = () => resolve({ kind: 'image', src, w: 400, h: 300 });
       probe.src = src;
     };
-    reader.onerror = () => resolve({ src: '', w: 400, h: 300 });
+    reader.onerror = () => resolve({ kind: 'image', src: '', w: 400, h: 300 });
     reader.readAsDataURL(f);
   })));
 }

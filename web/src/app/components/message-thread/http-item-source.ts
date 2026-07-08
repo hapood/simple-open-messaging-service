@@ -286,11 +286,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       const id = String(m.id);
       if (this.knownMsgIds.has(id)) continue; // IO dedup (guard against SSE/pagination duplicates)
       this.knownMsgIds.add(id);
-      // Each IMAGE message → a single-element images array (carrying its own msgId); consecutive same-creator
-      // images are merged into an album by the kernel's mergeItems.
-      const images: AlbumImage[] | null = m.contentType === 'IMAGE'
-        ? [{ ...parseImageContent(m.content), msgId: id }]
-        : null;
+      // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
+      // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
+      let images: AlbumImage[] | null = null;
+      if (m.contentType === 'IMAGE') {
+        images = [{ ...parseImageContent(m.content), msgId: id }];
+      } else if (m.contentType === 'VIDEO') {
+        const v = parseVideoContent(m.content);
+        if (v) images = [{ ...v, msgId: id }];
+      } else if (m.contentType === 'AUDIO') {
+        const a = parseAudioContent(m.content);
+        if (a) images = [{ ...a, msgId: id }];
+      }
       // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
       const file: FileInfo | null = m.contentType === 'FILE' ? parseFileContent(m.content) : null;
       // Surface the clientMessageId so the kernel can pair this server-confirmed real with the optimistic
@@ -320,7 +327,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (missing.size === 0) return;
     const res = await firstValueFrom(this.userService.queryUserInfo({ userIds: [...missing] }));
     if (res.code === 0 && res.data) {
-      for (const u of res.data) this.profiles.set(u.id, { name: u.uniqName, isSelf: u.id === this.myUserId });
+      for (const u of res.data) this.profiles.set(u.id, { name: u.name, isSelf: u.id === this.myUserId });
     }
   }
 }
@@ -328,17 +335,65 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 // ---------- helpers ----------
 
 function parseImageContent(content: string): AlbumImage {
-  // w/h are read on the frontend via createImageBitmap and stored with the message in content
-  // (the composer sends IMAGE content as JSON {url,w,h}; the backend writeMsgToThread stores it verbatim), so in
-  // production this is always valid — the `|| 0` fallback was removed to surface contract violations.
-  // layoutAlbum's ratio() still tolerates NaN/0 with a 4:3 fallback (so bad data can't poison totalH).
+  // IMAGE content = JSON {url,w,h,size}. w/h come from the composer's createImageBitmap; size from the
+  // upload response (drives the meta bar). layoutAlbum's ratio() tolerates NaN/0 with a 4:3 fallback.
   try {
     const o = JSON.parse(content);
-    return { src: String(o.url ?? ''), w: Number(o.w), h: Number(o.h) };
+    return {
+      kind: 'image',
+      src: String(o.url ?? ''),
+      w: Number(o.w),
+      h: Number(o.h),
+      size: Number(o.size) || 0,
+    };
   } catch {
-    // Isolate malformed JSON (a single bad message must not crash all of rawToItems); w/h=0 falls back to
-    // layoutAlbum's 4:3.
-    return { src: '', w: 0, h: 0 };
+    // Isolate malformed JSON (a single bad message must not crash all of rawToItems).
+    return { kind: 'image', src: '', w: 0, h: 0 };
+  }
+}
+
+/** Parse a VIDEO message's content ({url,name,size,mimeType,w,h,duration}) into a media cell. w/h come
+ *  from the composer's <video> loadedmetadata probe (server-untrusted); duration likewise. Lenient on
+ *  malformed JSON (returns null → no cell) so one bad row can't crash rawToItems. */
+function parseVideoContent(content: string): AlbumImage | null {
+  try {
+    const o = JSON.parse(content);
+    if (typeof o !== 'object' || o === null) return null;
+    const src = String(o.url ?? '');
+    if (!src) return null;
+    return {
+      kind: 'video',
+      src,
+      w: Number(o.w) || 0,
+      h: Number(o.h) || 0,
+      size: Number(o.size) || 0,
+      duration: Number(o.duration) || 0,
+      name: typeof o.name === 'string' ? o.name : '',
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Parse an AUDIO message's content ({url,name,size,mimeType,duration}). Audio has no intrinsic w/h, so a
+ *  placeholder landscape aspect is used to give layoutAlbum a compact card (it renders a gray cell + ▶). */
+function parseAudioContent(content: string): AlbumImage | null {
+  try {
+    const o = JSON.parse(content);
+    if (typeof o !== 'object' || o === null) return null;
+    const src = String(o.url ?? '');
+    if (!src) return null;
+    return {
+      kind: 'audio',
+      src,
+      w: 280,
+      h: 120, // placeholder aspect (audio is a gray cell + ▶; no real dimensions)
+      size: Number(o.size) || 0,
+      duration: Number(o.duration) || 0,
+      name: typeof o.name === 'string' ? o.name : '',
+    };
+  } catch {
+    return null;
   }
 }
 

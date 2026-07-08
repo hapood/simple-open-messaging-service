@@ -53,9 +53,9 @@
       @for (m of roster(); track m.userId) {
         <div class="member">
           <div class="member-main">
-            <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.uniqName" [src]="m.avatar"></app-user-avatar>
+            <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.name" [src]="m.avatar"></app-user-avatar>
             <div class="member-info">
-              <span class="member-name">{{ m.name || m.uniqName }}@if (m.userId === myUserId()) { {{ 'common.you' | transloco }}}</span>
+              <span class="member-name">{{ m.name }}@if (m.userId === myUserId()) { {{ 'common.you' | transloco }}}</span>
               <span class="role-badge" [class.owner]="m.role === 'OWNER'" [class.admin]="m.role === 'ADMIN'">{{ roleName(m.role) }}</span>
             </div>
           </div>
@@ -67,7 +67,7 @@
           <div class="action-sheet">
             @if (confirmAction()?.userId === m.userId) {
               <div class="confirm-row">
-                <span>{{ 'group.confirmPrompt' | transloco:{ action: actionLabel(confirmAction()!.action), name: m.name || m.uniqName } }}</span>
+                <span>{{ 'group.confirmPrompt' | transloco:{ action: actionLabel(confirmAction()!.action), name: m.name } }}</span>
                 <button mat-stroked-button (click)="cancelConfirm()">{{ 'common.cancel' | transloco }}</button>
                 <button mat-raised-button color="warn" [disabled]="busy()" (click)="doConfirm()">{{ 'common.confirm' | transloco }}</button>
               </div>

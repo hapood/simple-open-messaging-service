@@ -320,7 +320,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 获取当前用户资料 */
+        /** Get the current user profile */
         post: operations["UserController_getMyProfile"];
         delete?: never;
         options?: never;
@@ -337,7 +337,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 更新当前用户头像（multipart file；sharp 重写为 32/64/128/256/512 多档 webp） */
+        /** Update the current user avatar (multipart file; sharp rewrites to 32/64/128/256/512 multi-size webp) */
         post: operations["UserController_updateAvatar"];
         delete?: never;
         options?: never;
@@ -354,7 +354,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 更新当前用户昵称/简介（handle 不可改） */
+        /** Update the current user display name / bio (username is immutable) */
         post: operations["UserController_updateProfile"];
         delete?: never;
         options?: never;
@@ -371,7 +371,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询有效会话列表（含对端 user/group 信息） */
+        /** List active conversations (includes peer user/group info) */
         post: operations["UserController_queryValidThread"];
         delete?: never;
         options?: never;
@@ -388,7 +388,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询待处理（对方发起的）好友请求 */
+        /** List pending (incoming) friend requests */
         post: operations["UserController_queryPendingThread"];
         delete?: never;
         options?: never;
@@ -405,7 +405,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询我发出的待处理好友请求 */
+        /** List my outgoing pending friend requests */
         post: operations["UserController_queryFromPendingThread"];
         delete?: never;
         options?: never;
@@ -422,7 +422,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 发送好友请求 */
+        /** Send a friend request (optional ≤255 note; federated recipients go via S2S automatically) */
         post: operations["UserController_sendFriendRequest"];
         delete?: never;
         options?: never;
@@ -439,7 +439,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 同意好友请求 */
+        /** Accept a friend request */
         post: operations["UserController_acceptFriendRequest"];
         delete?: never;
         options?: never;
@@ -456,7 +456,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 拒绝好友请求 */
+        /** Decline a friend request */
         post: operations["UserController_declineFriendRequest"];
         delete?: never;
         options?: never;
@@ -473,7 +473,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 撤销我发出的好友请求 */
+        /** Cancel my outgoing friend request */
         post: operations["UserController_cancelFriendRequest"];
         delete?: never;
         options?: never;
@@ -524,7 +524,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 按 userId 批量查用户（≤100） */
+        /** Look up users by userId in batch (≤100) */
         post: operations["UserController_queryUserBase"];
         delete?: never;
         options?: never;
@@ -532,7 +532,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/by-uniq-name": {
+    "/api/v1/user/peer-trust-status": {
         parameters: {
             query?: never;
             header?: never;
@@ -541,8 +541,59 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 按 uniqName 查用户 */
-        post: operations["UserController_getUserByUniqName"];
+        /** Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated address search. */
+        post: operations["UserController_peerTrustStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve a user by {username, domain} (local lookup, or federated via S2S) */
+        post: operations["UserController_resolveUser"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fuzzy local user discovery by uniqName OR display name (local users only) */
+        post: operations["UserController_searchUsers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/user/sync-peer-profile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh a federated peer profile if stale (chat-open hook). Probes the peer /revision and re-pulls avatar/name/bio only when newer; local users are a no-op. */
+        post: operations["UserController_syncPeerProfile"];
         delete?: never;
         options?: never;
         head?: never;
@@ -558,7 +609,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查询会话详情（含对端 user/group） */
+        /** Get conversation details (includes peer user/group) */
         post: operations["UserController_queryUserThreadInfo"];
         delete?: never;
         options?: never;
@@ -575,7 +626,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 注册新用户 */
+        /** Register a new user */
         post: operations["UserController_registerLocal"];
         delete?: never;
         options?: never;
@@ -899,6 +950,40 @@ export interface paths {
         put?: never;
         /** 上传通用文件（返回 url/name/size/mimeType） */
         post: operations["UploadController_uploadFile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upload/video": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传视频（magic-byte 校验，宽高时长前端探测） */
+        post: operations["UploadController_uploadVideo"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upload/audio": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** 上传音频（magic-byte 校验，时长前端探测） */
+        post: operations["UploadController_uploadAudio"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1245,6 +1330,188 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/federation/peers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Federated-peer lifecycle list (trust state + audit cols), paginated + filterable */
+        post: operations["AdminFederationController_listPeers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** A peer trust-lifecycle event timeline (trust → demote → re-trust …) */
+        post: operations["AdminFederationController_peerEvents"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Block a peer domain — federation is refused until unblocked */
+        post: operations["AdminFederationController_blockPeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}/unblock": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Unblock a peer domain — moves to pending; the next contact re-handshakes */
+        post: operations["AdminFederationController_unblockPeer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/gc": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reclaim orphaned media (MediaAsset refs<=0) + sweep stale tmp */
+        post: operations["MediaAssetGcController_triggerGc"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/reconcile": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Scan-driven reconcile of shards vs MediaAsset (O(files); run sparingly) */
+        post: operations["MediaAssetGcController_reconcile"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/.well-known/soms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["WellKnownController_getWellKnown"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/inbox": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postInbox"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/users/{username}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getUserProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/users/{username}/revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getUserRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/init": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sInitController_postInit"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1318,7 +1585,7 @@ export interface components {
              */
             content: string;
             /**
-             * @description Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only; VIDEO/AUDIO have no upload pipeline yet.
+             * @description Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only.
              * @enum {string}
              */
             contentType?: "PURE_TEXT" | "INVITE" | "IMAGE" | "VIDEO" | "FILE" | "AUDIO";
@@ -1596,7 +1863,7 @@ export interface components {
         };
         UpdateProfileDto: {
             /**
-             * @description Display name (1-30 chars)
+             * @description Display name (1-30 chars; unicode/emoji allowed)
              * @example Alice
              */
             name?: string;
@@ -1764,6 +2031,18 @@ export interface components {
              */
             skip?: number;
         };
+        SendFriendRequestDto: {
+            /**
+             * @description User id (local user OR federated stub id)
+             * @example 1
+             */
+            userId: number;
+            /**
+             * @description Friend-request note (≤255 chars)
+             * @example Hi from the conference
+             */
+            message?: string;
+        };
         BlockDto: {
             /**
              * @description User id to block / unblock
@@ -1787,12 +2066,41 @@ export interface components {
              */
             userIds: number[];
         };
-        UserByUniqNameDto: {
+        PeerTrustStatusDto: {
             /**
-             * @description Login unique name
+             * @description Peer domain (the part after @ in a federated address)
+             * @example bbb.local
+             */
+            domain: string;
+        };
+        UserResolveDto: {
+            /**
+             * @description Username (a local uniqName, or the peer user's username)
              * @example alice
              */
-            uniqName: string;
+            username: string;
+            /**
+             * @description Peer domain. Omitted/empty = local lookup.
+             * @example bbb.com
+             */
+            domain?: string;
+        };
+        UserSearchDto: {
+            /**
+             * @description Search query (≥2 chars; matches uniqName OR display name)
+             * @example ali
+             */
+            q: string;
+            /**
+             * @description Records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Records to take (1-20; clamped server-side)
+             * @example 20
+             */
+            take?: number;
         };
         ThreadIdDto: {
             /**
@@ -1803,10 +2111,15 @@ export interface components {
         };
         RegisterDto: {
             /**
-             * @description Login unique name: 1-20 chars [\w.-], at least 3 letters
+             * @description Login unique name: 3-31 chars [a-zA-Z0-9_], must start with a letter
              * @example alice
              */
             uniqName: string;
+            /**
+             * @description Display name (1-30 chars; unicode/emoji allowed)
+             * @example Alice
+             */
+            name: string;
             /**
              * @description Password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]
              * @example P@ssw0rd
@@ -2119,6 +2432,42 @@ export interface components {
              * @example 1.2.3.4
              */
             ip?: string;
+        };
+        AdminListFederationPeersDto: {
+            /**
+             * @description Records to skip (optional)
+             * @example 0
+             */
+            skip?: number;
+            /**
+             * @description Records to take (optional)
+             * @example 20
+             */
+            take?: number;
+            /**
+             * @description Fuzzy search by peer domain (optional)
+             * @example bbb
+             */
+            search?: string;
+            /**
+             * @description Filter by trust level: pending | trusted | demoted | blocked (optional)
+             * @example trusted
+             */
+            status?: string;
+        };
+        AdminFederationPeerEventsDto: {
+            /**
+             * @description Max events to return (optional, default 100)
+             * @example 100
+             */
+            take?: number;
+        };
+        AdminFederationBlockDto: {
+            /**
+             * @description Optional block note (≤255)
+             * @example spam source
+             */
+            note?: string;
         };
     };
     responses: never;
@@ -2679,7 +3028,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserIdDto"];
+                "application/json": components["schemas"]["SendFriendRequestDto"];
             };
         };
         responses: {
@@ -2821,7 +3170,7 @@ export interface operations {
             };
         };
     };
-    UserController_getUserByUniqName: {
+    UserController_peerTrustStatus: {
         parameters: {
             query?: never;
             header?: never;
@@ -2830,7 +3179,74 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserByUniqNameDto"];
+                "application/json": components["schemas"]["PeerTrustStatusDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_resolveUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserResolveDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["UserResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    UserController_searchUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserSearchDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UserController_syncPeerProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UserIdDto"];
             };
         };
         responses: {
@@ -3269,6 +3685,40 @@ export interface operations {
             };
         };
     };
+    UploadController_uploadVideo: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_uploadAudio: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AdminController_login: {
         parameters: {
             query?: never;
@@ -3655,6 +4105,215 @@ export interface operations {
             path: {
                 jti: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_listPeers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminListFederationPeersDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_peerEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationPeerEventsDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_blockPeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationBlockDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_unblockPeer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaAssetGcController_triggerGc: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MediaAssetGcController_reconcile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    WellKnownController_getWellKnown: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postInbox: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getUserProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getUserRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                username: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sInitController_postInit: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;

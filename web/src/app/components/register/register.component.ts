@@ -23,26 +23,25 @@ export class RegisterComponent {
   private readonly transloco = inject(TranslocoService);
 
   uniqName = signal('');
+  name = signal('');
   password = signal('');
   password2 = signal('');
   uniqNameHint = signal('');
+  nameHint = signal('');
   passwordHint = signal('');
   isUniqNameVld = signal(false);
+  isNameVld = signal(false);
   isPwdVld = signal(false);
   resp = signal('');
   showPassword = signal(false)
   isReging = signal(false)
   isRegBtnDisabled = computed(() => {
-    return this.isSuccess() || this.isReging() || this.isUniqNameVld() === false || this.isPwdVld() === false
+    return this.isSuccess() || this.isReging() || this.isUniqNameVld() === false || this.isNameVld() === false || this.isPwdVld() === false
   })
   isSuccess = signal(false)
-  /*^ Start of string
-    (?=[\w.-]{5,20}$) Assert 5-20 of the allowed characters
-    (?:[\d_.-]*[a-zA-Z]){3} Match 3 times a-zA-Z followed by optional digits _ . -
-    [\w.-]* Match optional word chars or . or -
-    $ End of string
-  */
-  private _uniqNameRegex = /^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/
+  // Telegram-style handle: starts with a letter, then 2-30 more of [a-zA-Z0-9_] (3-31 total). Matches
+  // the backend RegisterDto rule; alnum + underscore keeps the handle URL/address-safe for username@domain.
+  private _uniqNameRegex = /^[a-zA-Z][a-zA-Z0-9_]{2,30}$/
   private _passwordRegx: RegExp = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/;
   constructor(private userService: UserService, private routeService: RouteService) {
     effect(() => {
@@ -53,6 +52,18 @@ export class RegisterComponent {
       } else {
         this.isUniqNameVld.set(true)
         this.uniqNameHint.set('')
+      }
+    })
+    effect(() => {
+      // Display name: lenient charset (unicode/emoji ok), only a length bound client-side. The backend
+      // (@IsDisplayName) additionally strips control chars + trims, so this is UX pre-feedback only.
+      const name = this.name().trim()
+      if (name.length < 1 || name.length > 30) {
+        this.isNameVld.set(false)
+        this.nameHint.set(this.transloco.translate('auth.displayNameHint'))
+      } else {
+        this.isNameVld.set(true)
+        this.nameHint.set('')
       }
     })
     effect(() => {
@@ -73,6 +84,11 @@ export class RegisterComponent {
 
   onUniqNameInput(v: string) {
     this.uniqName.set(v)
+    this.clearError()
+  }
+
+  onNameInput(v: string) {
+    this.name.set(v)
     this.clearError()
   }
 
@@ -102,7 +118,7 @@ export class RegisterComponent {
       return
     }
     this.isReging.set(true)
-    this.userService.register({ uniqName, password })
+    this.userService.register({ uniqName, name: this.name().trim(), password })
       .subscribe({
         next: (res) => {
           if (res.code === 0) {

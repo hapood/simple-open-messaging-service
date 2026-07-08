@@ -46,6 +46,9 @@ export class FriendRequestsComponent implements OnDestroy {
   private trustSub: Subscription | undefined
   private searchSub: Subscription | undefined
   readonly userData = signal<User | undefined>(undefined)
+  /** Local fuzzy discovery results (Add tab). When non-empty, the Add tab renders this list instead of
+   *  the single resolved-user card. Cleared when a result is picked (→ single card) or on a new search. */
+  readonly localResults = signal<User[]>([])
   readonly errMsg = signal('')
   readonly reqRspTxt = signal('')
   readonly addTabStatus = signal<AddTabStatus>(AddTabStatus.INIT)
@@ -83,69 +86,26 @@ export class FriendRequestsComponent implements OnDestroy {
     this.addTabStatus.set(AddTabStatus.SEARCHING)
     this.reqRspTxt.set('')
     this.cancelInFlight()
+    this.localResults.set([])
 
-    // A federated-shaped handle (localpart@domain) MAY need the init handshake. Whether it does is a
-    // known server-side fact (a FederatedPeer 'trusted' row), NOT a latency guess — so ask the server
-    // first (peer-trust-status, a cheap local lookup). Only an untrusted domain means a first-contact
-    // handshake will run during the resolve, so only then do we surface the "Connecting to <domain>…"
-    // banner. An already-trusted domain resolves fast and stays on the plain "Searching…" hint. The
-    // rare already-trusted-but-failing case (the peer reset its server and lost the handshake, or a
-    // key/cert change forced a re-handshake) falls through to the normal searching state and surfaces as
-    // an error from the resolve itself.
+    // Branch on shape: a federated address (username@domain) resolves EXACTLY (you can't enumerate a
+    // remote user table — only resolve a known handle via S2S); anything else is LOCAL fuzzy discovery
+    // (POST /user/search, matches uniqName OR display name). The first-contact handshake banner only
+    // applies to the federated path.
+    // The `@` is a UI input aid ONLY — split the typed `username@domain` into two fields here, at the
+    // input boundary, so the API never carries an @-joined string. A bare username (no `@`) is a local
+    // lookup (domain omitted).
     const at = curSearchText.lastIndexOf('@')
     const domain = at > 0 && at < curSearchText.length - 1 ? curSearchText.slice(at + 1) : null
+    const username = at > 0 ? curSearchText.slice(0, at) : curSearchText
 
+    // Federated: exact resolve → establish trust (if needed) → fetch peer profile → single card.
     const runResolve = () => {
-      this.searchSub = this.userService.getUserInfoByUniqName({ uniqName: curSearchText }).subscribe({
+      this.searchSub = this.userService.resolveUser({ username, ...(domain ? { domain } : {}) }).subscribe({
         next: res => {
           this.connectingDomain.set(null)
           if (res.code === 0) {
-            if (res.data!.uniqName === this.userService.sessionProfile()!.uniqName) {
-              this.userData.set(res.data)
-              this.addTabStatus.set(AddTabStatus.SUCCESS)
-              this.canAdd.set(false)
-              this.reqRspTxt.set(this.transloco.translate('friend.error.canNotAddSelf'))
-            } else {
-              // First query the P2P thread status with this user to decide which state applies
-              // (can add / already friends / request already sent / they sent one to you), instead of
-              // always showing Send Request (avoids re-inviting an existing friend and misleading copy).
-              this.msgService.getThreadByUserId({ userId: res.data!.id }).subscribe(res2 => {
-                this.userData.set(res.data)
-                this.addTabStatus.set(AddTabStatus.SUCCESS)
-                if (res2.code === 30003) {
-                  // THREAD_NOT_FOUND: no relationship yet — a friend request can be sent.
-                  this.canAdd.set(true)
-                  this.reqRspTxt.set('')
-                  return
-                }
-                if (res2.code !== 0) {
-                  this.canAdd.set(true)
-                  this.reqRspTxt.set('')
-                  return
-                }
-                switch (res2.data?.status) {
-                  case 'APPROVED':
-                    this.canAdd.set(false)
-                    this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
-                    break
-                  case 'PENDING':
-                    // Direction disambiguates incoming vs outgoing (the friendship is one row per pair).
-                    if (res2.data?.requesterId === this.userService.sessionProfile()!.id) {
-                      this.canAdd.set(false)
-                      this.reqRspTxt.set(this.transloco.translate('friend.error.requestAlreadySent'))
-                    } else {
-                      // They already sent you a request → guide to the Pending tab to accept, not re-send.
-                      this.canAdd.set(false)
-                      this.reqRspTxt.set(this.transloco.translate('friend.error.sentYouRequest'))
-                    }
-                    break
-                  default:
-                    // BLOCKED / DELETED still allow (re)sending.
-                    this.canAdd.set(true)
-                    this.reqRspTxt.set('')
-                }
-              })
-            }
+            this.applySelectedUser(res.data!)
           } else {
             this.curSearchText.set(curSearchText)
             this.addTabStatus.set(AddTabStatus.EMPTY)
@@ -158,11 +118,41 @@ export class FriendRequestsComponent implements OnDestroy {
       })
     }
 
+    // Local: fuzzy discovery → result list (each row picks → single card via applySelectedUser).
+    const runLocalSearch = () => {
+      this.searchSub = this.userService.searchUsers({ q: curSearchText }).subscribe({
+        next: res => {
+          if (res.code === 0 && res.data) {
+            const myId = this.userService.sessionProfile()!.id
+            const list = res.data.list.filter((u) => u.id !== myId)
+            if (list.length > 0) {
+              this.localResults.set(list)
+              this.addTabStatus.set(AddTabStatus.SUCCESS)
+            } else {
+              this.curSearchText.set(curSearchText)
+              this.addTabStatus.set(AddTabStatus.EMPTY)
+            }
+          } else {
+            this.curSearchText.set(curSearchText)
+            this.addTabStatus.set(AddTabStatus.EMPTY)
+          }
+        },
+        error: () => {
+          this.errMsg.set(this.transloco.translate('friend.error.unknownError'))
+          this.addTabStatus.set(AddTabStatus.ERROR)
+        },
+      })
+    }
+
     if (domain) {
+      // A federated address MAY need the init handshake. Whether it does is a known server-side fact
+      // (a FederatedPeer 'trusted' row), NOT a latency guess — ask first (peer-trust-status, a cheap
+      // local lookup). Only an untrusted domain means a first-contact handshake will run during the
+      // resolve, so only then surface the "Connecting to <domain>…" banner. An already-trusted domain
+      // resolves fast and stays on the plain "Searching…" hint.
       this.trustSub = this.userService.peerTrustStatus({ domain }).subscribe({
         next: res => {
           if (res.code === 0 && !res.data!.trusted) {
-            // First contact: the resolve below will run the init handshake — show the specific banner.
             this.connectingDomain.set(domain)
           }
           runResolve()
@@ -173,8 +163,66 @@ export class FriendRequestsComponent implements OnDestroy {
         },
       })
     } else {
-      runResolve()
+      runLocalSearch()
     }
+  }
+
+  /** A single user has been resolved (federated) or picked (local list): check the P2P relationship
+   *  state to decide can-add / already-friends / request-already-sent / they-sent-you-one, then show
+   *  the single-user card. Shared by both search paths so the post-select UX is identical. */
+  private applySelectedUser(user: User) {
+    if (user.id === this.userService.sessionProfile()!.id) {
+      this.userData.set(user)
+      this.addTabStatus.set(AddTabStatus.SUCCESS)
+      this.canAdd.set(false)
+      this.reqRspTxt.set(this.transloco.translate('friend.error.canNotAddSelf'))
+      return
+    }
+    // First query the P2P thread status with this user to decide which state applies
+    // (can add / already friends / request already sent / they sent one to you), instead of
+    // always showing Send Request (avoids re-inviting an existing friend and misleading copy).
+    this.msgService.getThreadByUserId({ userId: user.id }).subscribe(res2 => {
+      this.userData.set(user)
+      this.addTabStatus.set(AddTabStatus.SUCCESS)
+      if (res2.code === 30003) {
+        // THREAD_NOT_FOUND: no relationship yet — a friend request can be sent.
+        this.canAdd.set(true)
+        this.reqRspTxt.set('')
+        return
+      }
+      if (res2.code !== 0) {
+        this.canAdd.set(true)
+        this.reqRspTxt.set('')
+        return
+      }
+      switch (res2.data?.status) {
+        case 'APPROVED':
+          this.canAdd.set(false)
+          this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
+          break
+        case 'PENDING':
+          // Direction disambiguates incoming vs outgoing (the friendship is one row per pair).
+          if (res2.data?.requesterId === this.userService.sessionProfile()!.id) {
+            this.canAdd.set(false)
+            this.reqRspTxt.set(this.transloco.translate('friend.error.requestAlreadySent'))
+          } else {
+            // They already sent you a request → guide to the Pending tab to accept, not re-send.
+            this.canAdd.set(false)
+            this.reqRspTxt.set(this.transloco.translate('friend.error.sentYouRequest'))
+          }
+          break
+        default:
+          // BLOCKED / DELETED still allow (re)sending.
+          this.canAdd.set(true)
+          this.reqRspTxt.set('')
+      }
+    })
+  }
+
+  /** A local discovery result was clicked: drop the list and show that user's single card. */
+  pickLocalUser(user: User) {
+    this.localResults.set([])
+    this.applySelectedUser(user)
   }
 
   /** Abort any in-flight trust pre-check or resolve and drop the connecting banner. The init handshake
@@ -192,6 +240,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.cancelInFlight()
     this.addTabStatus.set(AddTabStatus.INIT)
     this.searchText.set('')
+    this.localResults.set([])
   }
 
   ngOnDestroy() {
@@ -277,7 +326,7 @@ export class FriendRequestsComponent implements OnDestroy {
               if (userData) {
                 return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.peerUserId, uniqName: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, uniqName: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.pendingReqList.set(list)
@@ -316,7 +365,7 @@ export class FriendRequestsComponent implements OnDestroy {
               if (userData) {
                 return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.peerUserId, uniqName: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, uniqName: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.sentReqList.set(list)

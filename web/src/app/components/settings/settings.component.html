@@ -41,6 +41,24 @@
       </div>
     </section>
 
+    <!-- Media -->
+    <section class="settings-group">
+      <h3 class="group-title">Media</h3>
+      <div class="settings-card">
+        <mat-list>
+          <mat-list-item>
+            <span matListItemTitle>Image load threshold</span>
+            <span matListItemLine class="hint">Larger images show a tap-to-load placeholder.</span>
+            <mat-select [value]="mediaSize.kb()" (selectionChange)="onThresholdChange($event)">
+              @for (kb of mediaThresholdOptions; track kb) {
+                <mat-option [value]="kb">{{ thresholdLabel(kb) }}</mat-option>
+              }
+            </mat-select>
+          </mat-list-item>
+        </mat-list>
+      </div>
+    </section>
+
     <!-- Language -->
     <section class="settings-group">
       <h3 class="group-title">{{ 'settings.language' | transloco }}</h3>

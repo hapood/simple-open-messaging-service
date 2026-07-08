@@ -23,9 +23,9 @@ model User {
   isForeigner        Boolean
   // Domain: "local" for users homed on THIS server, <peer-domain> for federated stubs. Non-null +
   // the @@unique([uniqName, domain]) below enforce both local-user and stub uniqueness (a standalone
-  // uniqName @unique would block a foreign stub sharing a localpart with a local user). The federated
-  // handle/display use the real config.domain at runtime; "local" is an internal sentinel only
-  // (mirrors MessageThread.origin's "local" pattern).
+  // uniqName @unique would block a foreign stub sharing a username with a local user). The federated
+  // address/display use the real config.domain at runtime; "local" is an internal sentinel only
+  // (MessageThread itself carries no federation columns in Step 1 — each server owns its own thread).
   domain             String              @default("local") @db.VarChar(63)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
@@ -223,6 +223,7 @@ model MessageThread {
   Friendship        Friendship[]
   Message           Message[]
   Group             Group[]
+  MediaMessage      MediaMessage[] // per-object media authz index (digest → thread)
 }
 
 enum ContentType {
@@ -250,6 +251,8 @@ model Message {
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
   clientMessageId String?       @unique @db.VarChar(36)
 
+  mediaMessages MediaMessage[] // per-object media authz index (digest → thread)
+
   @@index([threadId, id]) // history pagination — the hot path
   @@index([threadId, createdAt])
   @@index([creator])
@@ -275,6 +278,26 @@ model MediaAsset {
   createdAt DateTime @default(now())
 
   @@index([refs]) // GC sweep: WHERE refs <= 0
+}
+
+// Per-object media authorization index. The /uploads/shards/* gate answers "is this user allowed to read
+// this digest?" with one indexed EXISTS over this table joined to ThreadParticipant. Written atomically
+// at send time for every IMAGE/FILE/VIDEO/AUDIO message (one row per distinct digest a message references).
+// threadId is denormalized from Message so the gate skips a JOIN to Message. Never returned in API responses.
+model MediaMessage {
+  id        BigInt   @id @default(autoincrement())
+  messageId BigInt
+  threadId  Int // denormalized from Message (avoids a JOIN to Message on the hot gate path)
+  digest    String   @db.VarChar(64) // sha256 hex; the CAS url stem — matches MediaAsset.digest
+  createdAt DateTime @default(now())
+
+  message Message       @relation(fields: [messageId], references: [id])
+  thread  MessageThread @relation(fields: [threadId], references: [id])
+
+  @@unique([messageId, digest]) // one row per (message, digest); album-duplicate safe
+  @@index([digest]) // hot gate path: WHERE digest = $D
+  @@index([messageId]) // future message-delete cleanup: WHERE messageId = $M
+  @@index([threadId])
 }
 
 enum NotifyType {
@@ -350,17 +373,45 @@ model AdminRefreshToken {
 // keys are fetched from each peer's /.well-known/soms over HTTPS and cached (S2SKeyCache).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A peer server we may federate with. PURE DOMAIN ALLOW-LIST (trust data only — NOT keys,
+/// A peer server we may federate with. The CURRENT-STATE row of the trust lifecycle (the append-only
+/// transition history lives in FederatedPeerEvent). PURE DOMAIN ALLOW-LIST (trust data only — NOT keys,
 /// NOT inbox URL; those are fetched from <domain>/.well-known/soms and cached by DiscoveryService).
-/// Adding a peer = admin sets pending → fetch .well-known → trusted (OOB fingerprint optional).
+///
+/// trustLevel state machine: `pending` (seen but init not yet ok) → `trusted` (mutual trust via init)
+/// → `demoted` (a trusted peer failed a signed op: cert/key change, server reset, unreachable — it
+/// leaves active trust and re-handshakes on next contact, self-healing). `blocked` is an admin intent
+/// that forbids federation (ensurePeerTrusted refuses to re-handshake; the inbound guard rejects it).
+/// Lifecycle audit columns capture the trust→loss process for the admin timeline view.
 model FederatedPeer {
-  domain      String    @id @db.VarChar(63) // e.g. other.com
-  trustLevel  String    @default("pending") @db.VarChar(15) // pending | trusted | blocked
-  addedBy     String?   @db.VarChar(31) // admin username who approved
-  createdAt   DateTime  @default(now())
-  lastSeenAt  DateTime?
+  domain       String    @id @db.VarChar(63) // e.g. other.com
+  trustLevel   String    @default("pending") @db.VarChar(15) // pending | trusted | demoted | blocked
+  addedBy      String?   @db.VarChar(31) // admin username who set the state, or null = auto-accepted via init
+  createdAt    DateTime  @default(now()) // first discovered
+  trustedAt    DateTime? // start of the current trust epoch (init ok); reset on re-trust after a demote
+  lastSuccessAt DateTime? // last successful signed S2S op (liveness signal); advanced on every GET/POST ok
+  demotedAt    DateTime? // last trusted→demoted transition (a failure while trusted/pending)
+  demoteReason String?   @db.VarChar(255) // latest failure message (refreshed on each failure; cleared on re-trust)
+  demotionCount Int      @default(0) // how many times demoted — a flakiness signal
+  blockedAt    DateTime? // admin block time
 
   @@index([trustLevel])
+  @@index([lastSuccessAt]) // "stale / never-heard-from" peers sweep
+}
+
+/// Append-only trust-lifecycle event log — one row per state transition, the source of the admin
+/// "trust → connection-loss" timeline. Decoupled from FederatedPeer (NO foreign key) so the history
+/// survives any future peer-row state change and can't trigger cascade deletes; `domain` is a plain
+/// indexed string. Low volume by design: only transitions are logged (discovered/trusted/demoted/
+/// blocked/unblocked), not every signed op (per-op liveness is the cheap lastSuccessAt UPDATE above).
+model FederatedPeerEvent {
+  id        BigInt   @id @default(autoincrement())
+  domain    String   @db.VarChar(63)
+  type      String   @db.VarChar(15) // discovered | trusted | demoted | blocked | unblocked
+  reason    String?  @db.VarChar(255) // demoted: the failure message; blocked: optional admin note
+  createdAt DateTime @default(now())
+
+  @@index([domain, createdAt])
+  @@index([createdAt])
 }
 
 /// Cached peer signing keys. Fetched from <domain>/.well-known/soms (HTTPS), TTL'd by fetchedAt.

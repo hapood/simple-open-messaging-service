@@ -56,13 +56,12 @@
       white-space: nowrap;
     }
 
-    .thread-handle {
-      font-size: 13px;
-      color: var(--app-text-muted);
-      margin-top: 2px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
+    // Federated-domain chip (globe + domain) — the secondary line under the nickname, shown only for
+    // federated peers (local users render nothing here). align-self keeps it from stretching across
+    // the flex-column so it hugs its content like a chip.
+    .thread-fed {
+      align-self: flex-start;
+      margin-top: 3px;
     }
   }
 }

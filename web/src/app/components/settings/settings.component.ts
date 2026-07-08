@@ -11,6 +11,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { ThemeService, ThemeMode } from '../../services/theme.service';
 import { LanguageService, AppLang } from '../../services/language.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
+import { MediaSizeThresholdService, MEDIA_THRESHOLD_OPTIONS_KB } from '../../services/media-size-threshold.service';
 import { isAndroid, isTauri, apiOrigin, apiOriginIsLocalhost } from '../../services/runtime';
 import { appVersion } from '../../version';
 
@@ -49,6 +50,9 @@ export class SettingsComponent {
   readonly theme = inject(ThemeService);
   readonly language = inject(LanguageService);
   readonly bgSync = inject(BackgroundSyncService);
+  readonly mediaSize = inject(MediaSizeThresholdService);
+  /** Image load threshold options (KB; 0 = unlimited). */
+  readonly mediaThresholdOptions = MEDIA_THRESHOLD_OPTIONS_KB;
 
   /** The Push section (FCM + FGS + poll) exists only in the Tauri Android shell. */
   readonly showPush = isTauri() && isAndroid();
@@ -94,6 +98,17 @@ export class SettingsComponent {
 
   onLangChange(e: MatSelectChange): void {
     this.language.setLang(e.value as AppLang);
+  }
+
+  onThresholdChange(e: MatSelectChange): void {
+    this.mediaSize.setKb(Number(e.value));
+  }
+
+  /** Display label for a threshold option: "512 KB" / "1 MB" / "2 MB" / "No limit". */
+  thresholdLabel(kb: number): string {
+    if (kb <= 0) return 'No limit';
+    if (kb >= 1024) return `${kb / 1024} MB`;
+    return `${kb} KB`;
   }
 
   onPollChange(e: MatSlideToggleChange): void {

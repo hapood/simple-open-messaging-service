@@ -32,6 +32,7 @@ import { SseService } from '../gateway/sse.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import {
   ConversationItemDto,
   FriendshipDto,
@@ -42,7 +43,8 @@ import {
   UserIdDto,
   SendFriendRequestDto,
   ThreadIdDto,
-  UserByUniqNameDto,
+  UserResolveDto,
+  UserSearchDto,
   PeerTrustStatusDto,
   QueryUsersDto,
   QueryValidThreadDto,
@@ -51,7 +53,7 @@ import {
   BlockDto,
 } from '../dto/user.dto.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
-import { FederationService, parseHandle, type S2SProfile } from '../federation/federation.service.js';
+import { FederationService, type S2SProfile } from '../federation/federation.service.js';
 
 @ApiTags('user')
 @Controller()
@@ -131,7 +133,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
-  @ApiOperation({ summary: 'Update the current user display name / bio (handle is immutable)' })
+  @ApiOperation({ summary: 'Update the current user display name / bio (username is immutable)' })
   @ApiResultResponse(UserResponseDto)
   async updateProfile(
     @Request() req,
@@ -237,7 +239,7 @@ export class UserController {
         : [];
     const senderNameById = new Map<number, string>();
     groupSenders.forEach((u) => {
-      senderNameById.set(u.id, u.name || u.uniqName);
+      senderNameById.set(u.id, u.name);
     });
     const data = list.map((p) => {
       const item = {
@@ -396,15 +398,15 @@ export class UserController {
       if (res.status === 0 || res.status === 2 || res.status === 3) {
         try {
           // Resolve-on-demand: if the foreign stub was addressed by id without a prior resolve (so it's
-          // a bare localpart with no avatar/name), pull + localize the profile first. No-op when the
+          // a bare username with no avatar/name), pull + localize the profile first. No-op when the
           // resolve endpoint already localized it. The send would fail against the same peer anyway.
           await this.federationService.ensureForeignUserLocalized(friend.id, {
-            localpart: friend.uniqName,
+            username: friend.uniqName,
             domain: friend.domain,
           });
           await this.federationService.sendFriendRequest(
             req.user.userId,
-            { localpart: friend.uniqName, domain: friend.domain },
+            { username: friend.uniqName, domain: friend.domain },
             message,
           );
         } catch (e) {
@@ -476,7 +478,7 @@ export class UserController {
       // other tabs/devices get the live NOTIFY.
       try {
         await this.federationService.sendFriendApprove(req.user.userId, {
-          localpart: requester.uniqName,
+          username: requester.uniqName,
           domain: requester.domain,
         });
       } catch (e) {
@@ -621,7 +623,7 @@ export class UserController {
   @Post('user/peer-trust-status')
   @ApiOperation({
     summary:
-      'Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated handle search.',
+      'Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated address search.',
   })
   async peerTrustStatus(@Body() dto: PeerTrustStatusDto): Promise<ApiResult> {
     // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
@@ -636,47 +638,49 @@ export class UserController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @Post('user/by-uniq-name')
-  @ApiOperation({ summary: 'Look up a user by uniqName or localpart@domain handle (federated resolves via S2S)' })
+  @Post('user/resolve')
+  @ApiOperation({ summary: 'Resolve a user by {username, domain} (local lookup, or federated via S2S)' })
   @ApiResultResponse(UserResponseDto)
-  async getUserByUniqName(@Body() dto: UserByUniqNameDto): Promise<ApiResult> {
-    // The query can be a plain localpart ("alice") or a full handle ("bob@bbb.com").
-    const h = parseHandle(dto.uniqName);
-    // Federated handle (@localpart@<peer-domain>) → establish mutual trust (init handshake, if not
+  async resolveUser(@Body() dto: UserResolveDto): Promise<ApiResult> {
+    const { username, domain } = dto;
+    // Federated (username + a peer domain != ours) → establish mutual trust (init handshake, if not
     // already trusted), fetch the peer's profile (avatar inline as base64), find-or-create a stub, and
     // localize it (persist the avatar via saveAvatars + write name/bio), so the caller can address the
     // user by id in subsequent friend ops (same as a local lookup).
-    if (h && h.domain !== this.federationService.ourDomain) {
+    if (domain && domain !== this.federationService.ourDomain) {
       try {
         // Trust prerequisite: the signed profile GET below is allow-list-gated on the peer, and our
         // guard gates their reply traffic — so mutual trust must exist first. Idempotent (no-op if
         // already trusted). The peer auto-accepts us via the init handshake.
-        await this.federationService.ensurePeerTrusted(h.domain);
+        await this.federationService.ensurePeerTrusted(domain);
       } catch (e) {
+        if (e instanceof BusinessException && e.bizCode === BusinessCode.FEDERATION_PEER_BLOCKED) {
+          // Admin intent — distinct from an unreachable peer so the client can show "blocked by admin".
+          return { code: BusinessCode.FEDERATION_PEER_BLOCKED, message: `${domain} is blocked by an admin` };
+        }
         return {
           code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-          message: `could not establish trust with ${h.domain}: ${(e as Error).message}`,
+          message: `could not establish trust with ${domain}: ${(e as Error).message}`,
         };
       }
       let profile: S2SProfile;
       try {
-        profile = await this.federationService.fetchRemoteUser(h);
+        profile = await this.federationService.fetchRemoteUser({ username, domain });
       } catch (e) {
         return {
           code: BusinessCode.FEDERATION_DELIVERY_FAILED,
-          message: `could not reach ${h.domain}: ${(e as Error).message}`,
+          message: `could not reach ${domain}: ${(e as Error).message}`,
         };
       }
-      const foreignId = await this.federationService.ensureForeignUser(h.localpart, h.domain);
+      const foreignId = await this.federationService.ensureForeignUser(username, domain);
       await this.federationService.localizeForeignProfile(foreignId, profile);
       // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
       const data = await this.userService.findUniqueUser({ id: foreignId });
       return { code: BusinessCode.OK, message: 'successful', data };
     }
-    // Local: plain localpart, or a handle whose domain is ours → look up by localpart.
-    const localpart = h ? h.localpart : dto.uniqName;
+    // Local: no domain, or a domain equal to ours → look up by username.
     const user = await this.userService.findUniqueUser({
-      uniqName_domain: { uniqName: localpart, domain: 'local' },
+      uniqName_domain: { uniqName: username, domain: 'local' },
       isDeleted: false,
     });
     if (user !== null) {
@@ -684,8 +688,28 @@ export class UserController {
     }
     return {
       code: BusinessCode.NOT_FOUND,
-      message: `can not find user [${dto.uniqName}]`,
+      message: `can not find user [${username}]`,
     };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/search')
+  @ApiOperation({
+    summary: 'Fuzzy local user discovery by uniqName OR display name (local users only)',
+  })
+  async searchUsers(@Body() dto: UserSearchDto): Promise<ApiResult> {
+    // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
+    // take cap here (a client must never page through the whole user table). Federated users are not
+    // discoverable: resolve those by exact username + domain via /user/resolve. Only local,
+    // non-deleted accounts are returned.
+    const take = Math.min(dto.take ?? 20, 20);
+    const data = await this.userService.searchUsers(dto.q.trim(), {
+      skip: dto.skip ?? 0,
+      take,
+    });
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -797,7 +821,7 @@ export class UserController {
         const [sender] = await this.userService.queryUsers({
           where: { id: p.thread.lastMessageSenderId },
         });
-        item.lastMessageSenderName = sender ? sender.name || sender.uniqName : null;
+        item.lastMessageSenderName = sender ? sender.name : null;
       }
     }
     return { code: BusinessCode.OK, message: 'successful', data: item };
@@ -813,6 +837,7 @@ export class UserController {
        service → 200 + ALREADY_EXISTS. */
     const res = await this.userService.addUser({
       uniqName: dto.uniqName,
+      name: dto.name,
       hashPwd: await this.authService.hashStr(dto.password),
     });
     if (res.status === 2) {

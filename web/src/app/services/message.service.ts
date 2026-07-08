@@ -45,6 +45,29 @@ export class MsgService {
     )
   }
 
+  /** Upload a video (multipart: file). The server validates only the container family via magic bytes
+   *  (no probe/extract); w/h/duration are NOT sent here — they are client-probed via <video>
+   *  loadedmetadata and ride in the VIDEO message content. Returns {url,name,size,mimeType}. */
+  uploadVideo(file: File) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
+      `${apiPrefix}/upload/video`,
+      fd,
+    )
+  }
+
+  /** Upload an audio clip (multipart: file). Same contract as uploadVideo (magic-byte check only);
+   *  duration is client-probed and carried in the AUDIO message content. */
+  uploadAudio(file: File) {
+    const fd = new FormData()
+    fd.append('file', file)
+    return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
+      `${apiPrefix}/upload/audio`,
+      fd,
+    )
+  }
+
   queryMessageLog(params: QueryMessageLogParams) {
     return this.http.post<StandardResponse<Message[]>>(`${apiPrefix}/query-messages`, params)
   }

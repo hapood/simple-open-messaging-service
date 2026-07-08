@@ -61,7 +61,38 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  addUser(params: { uniqName: string; hashPwd: string }) {
+  /** Local user discovery: case-insensitive substring match on uniqName OR name. Local, non-deleted
+   *  users only (isForeigner:false) — federated stubs are not discoverable here. Returns { list, total }
+   *  for pagination. The caller (POST /user/search) caps `take` as an abuse guardrail. */
+  async searchUsers(
+    q: string,
+    opts: { skip?: number; take: number },
+  ): Promise<{
+    list: Prisma.UserGetPayload<{ omit: { hashPwd: true; hasUrFriendReq: true } }>[];
+    total: number;
+  }> {
+    const where: Prisma.UserWhereInput = {
+      isDeleted: false,
+      isForeigner: false,
+      OR: [
+        { uniqName: { contains: q, mode: 'insensitive' } },
+        { name: { contains: q, mode: 'insensitive' } },
+      ],
+    };
+    const [list, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        skip: opts.skip,
+        take: opts.take,
+        orderBy: { createdAt: 'desc' },
+        omit: { hashPwd: true, hasUrFriendReq: true },
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+    return { list, total };
+  }
+
+  addUser(params: { uniqName: string; name: string; hashPwd: string }) {
     return this.prisma.$transaction(async (prisma) => {
       const user = await prisma.user.findUnique({
         where: { uniqName_domain: { uniqName: params.uniqName, domain: 'local' } },
@@ -74,7 +105,8 @@ export class UserService implements OnModuleInit {
           uniqName: params.uniqName,
           isForeigner: false,
           hashPwd: params.hashPwd,
-          name: params.uniqName,
+          // Display name is now a required registration input (no longer defaulted to uniqName).
+          name: params.name,
           avatar: '',
         },
       });

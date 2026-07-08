@@ -2,11 +2,25 @@
 
 > **Status:** Source of truth for both protocol integrators and node operators.
 > **Scope:** Server-to-server (S2S) federation for SOMS IM threads.
-> **Last updated:** 2026-07-07
+> **Last updated:** 2026-07-08
 
 ---
 
 ## 0. Read this first — what SOMS federation is, and is not
+
+> **What v0.1 ships (Step 1 — friend federation).** Cross-server **friendship**: a user on one server
+> adds a user on another (`alice@aaa.com` ↔ `bob@bbb.com`), and on approve **each server owns its own
+> 1:1 thread** for that pair. Delivery is **synchronous** (sign + POST inline, no outbox/worker) — friend
+> ops are idempotent, so a peer that's down makes the action fail and the user retries safely. Avatars
+> federate inline (base64). Trust is established by the auto-accepting **init handshake** and tracked
+> through a full **trust lifecycle** (trusted → demoted on failure → re-handshake), observable from the
+> admin console.
+>
+> **What v0.1 does NOT ship (Step 2/3 — reserved, not built).** Cross-server **messages**, read receipts,
+> presence/typing, history **backfill**, a shared federated **thread id**, the async **outbox + retry
+> worker**, and federated **groups**. The envelope reserves slots for these (`content`, `type: message`,
+> `origin_seq`, etc.); they are described below as the future design, clearly marked. Do not implement
+> against them as if shipped.
 
 SOMS federation lets two independently deployed SOMS instances exchange messages across their users — **like email, but for chat.** This document is the single reference for anyone who wants to **integrate with** a SOMS node (Part I) or **deploy** one (Part II).
 
@@ -38,8 +52,8 @@ A **lightweight, JSON-based, IM-native federation protocol.** ActivityPub-inspir
 3. **Plain JSON.** No XML streams (XMPP), no JSON-LD `@context` (ActivityPub).
 4. **Borrow, don't invent.** HTTP delivery, WebFinger-style discovery, HTTP Message Signatures (RFC 9421), Ed25519, ULIDs, idempotency keys, exponential backoff — all de-facto/W3C/RFC standards.
 5. **Allow-list federation by default.** Open federation is not supported in v0.1.
-6. **Two delivery channels.** Durable (reliable, retried) for messages/receipts/friendship; ephemeral (best-effort) for presence/typing (v0.2).
-7. **No global ordering.** Sort within a thread by `(ts, origin_seq)`. Accept eventual consistency. **This line is never crossed** — anything requiring a DAG, vector clocks, or state resolution is out of scope forever.
+6. **Sync delivery in Step 1.** Envelopes are signed + POSTed **inline** (synchronously, 10 s timeout) — no outbox, no worker, no retry queue. Friend ops are idempotent, so a peer that's down makes the action fail and the user retries safely (the receiver dedupes via `S2SInboxSeen`). A durable outbox + retry worker (the "durable channel") revive **only if Step 2 messages** need reliable cross-server delivery; until then sync is the only channel. Ephemeral presence/typing (best-effort) is v0.2.
+7. **No global ordering, ever.** Sort within a thread by `(ts, origin_seq)` (Step 2). Accept eventual consistency. **This line is never crossed** — anything requiring a DAG, vector clocks, or state resolution is out of scope forever.
 
 ### Non-goals (v0.1)
 
@@ -66,13 +80,13 @@ The complexity that sank Matrix (global consistency / DAG) and the complexity Mo
 
 | Concept | Description |
 | --- | --- |
-| **Actor (User)** | Identity `localpart@domain`, e.g. `alice@soms.io`. DNS-discoverable. |
-| **User stub** | A remote user is represented locally as a `User` row with `origin = <domain>` and `federatedId = bob@other.com`. Friendship and thread participation reference these stubs like any local user. |
-| **Friend edge** | A bidirectional friendship between two actors. **The access primitive:** no thread exists between two users (1:1) without one, and no group invite is sent without one. Replicated on both servers. |
-| **Thread** | A bounded conversation (1:1 or group). Has exactly one **origin server** owning its identity and monotonic sequence. Federated id: `thr_<rand>@<origin-domain>`. |
-| **Message** | A durable payload in a thread. Immutable once issued; edits are separate envelopes referencing it. |
-| **Receipt** | Delivery / read confirmation. (Delivery logic v0.2.) |
-| **Thread membership** | The canonical access gate at the inbox: **you only receive envelopes for threads you are a member of.** For 1:1 threads, membership is backed by the friend edge. Origin server holds the canonical roster. |
+| **Actor (User)** | Identity = a `{username, domain}` pair (e.g. `{username:"alice", domain:"soms.io"}`). The `alice@soms.io` form is a **UI input aid only** — the client splits it before any API call (§3.1). DNS-discoverable by `domain`. |
+| **User stub** | A remote user is represented locally as a `User` row with `domain = <peer-domain>` (local users carry the `"local"` sentinel — never exposed; display uses the real `config.domain`). `@@unique([uniqName, domain)]` enforces both local and stub uniqueness (a local "bob" does not block "bob@bbb.com"). Friendship and thread participation reference these stubs like any local user. |
+| **Friend edge** | A bidirectional friendship between two actors (`Friendship`, one normalized row per pair + `requesterId` for direction). **The access primitive:** no 1:1 thread exists between two users without one. Replicated on both servers via `friend.request`/`friend.approve`; carries an optional ≤255-char `reqMessage`. |
+| **Thread (Step 1)** | A bounded conversation. In Step 1, **each server owns its own local 1:1 `MessageThread`** for a federated pair on approve — there is **no shared federated thread id** (the `thr_<rand>@<origin-domain>` form returns only for federated **groups**, Step 3). 1:1 messages (Step 2) route by `from`/`to` → `Friendship` → the local thread. |
+| **Trust lifecycle** | `FederatedPeer.trustLevel`: `pending → trusted → demoted → trusted…` (+ `blocked` = admin intent). A trusted peer whose signed op fails is immediately demoted and re-handshakes on next contact (self-healing). Append-only `FederatedPeerEvent` records every transition (§5.2). |
+| **Message / Receipt** | Reserved payload types for Step 2 (cross-server messages) / v0.2 (read receipts). The envelope reserves the slots; not shipped. |
+| **Thread membership** | The canonical access gate at the inbox: **you only receive envelopes for threads/relationships you are a party to.** For 1:1, membership is the friend edge; for groups (Step 3), the local roster. |
 
 ---
 
@@ -80,13 +94,15 @@ The complexity that sank Matrix (global consistency / DAG) and the complexity Mo
 
 ### 3.1 Federated identifiers
 
+A user identity is a **pair of fields — `username` + `domain`** — never an `@`-joined string on the wire:
+
 ```
-actor   := localpart "@" domain            # alice@soms.io (email form — no leading @)
-thread  := "thr_" rand "@" origin-domain   # thr_8x3k@soms.io
-message := origin-assigned ULID            # 01J8X3... (globally unique, time-sortable)
+actor := { username, domain }      // e.g. { username: "alice", domain: "soms.io" }
 ```
 
-A thread's origin server is encoded in the thread id and **never changes.** Remote participants hold a reference, not a copy.
+`username` is the peer's `uniqName`; `domain` is the peer server. The S2S envelope `from`/`to` carry these as objects (`{username, domain}`), and the resolve endpoint is `/users/:username`. The `@` separator is a **UI input aid ONLY** — a user types `alice@soms.io` in the search box, the client splits it into the two fields before any API call, and no `@`-joined string ever crosses the wire or appears in a backend definition. (SOMS local `uniqName`s never contain `@`, so the client split is unambiguous.)
+
+> **Reserved for Step 2/3** (not shipped): a federated **thread** id (origin-domain + local id, for cross-server **groups**) and an origin-assigned **message** ULID. Step 1 has neither — each server owns its own local 1:1 thread, and messages are local until Step 2.
 
 ### 3.2 Discovery — layered
 
@@ -125,7 +141,9 @@ See Part II §D2 for SRV record format and configuration.
 
 ## 4. Wire format (envelope)
 
-Every S2S payload is a plain-JSON envelope. `type` routes handling; `durability` selects the channel.
+Every S2S payload is a plain-JSON envelope. `type` routes handling.
+
+> **Step 1 ships only `friend.request` / `friend.approve`** (§4.1). The `message` example below and every non-`friend.*` `type` (`message` / `receipt` / `presence` / `typing` / `thread.invite` / `thread.leave`) are **reserved slots for Step 2/3**, shown for forward compatibility — the `durability` / `origin_seq` / `thread` / `prev` / `client_message_id` fields exist so a future message layer needs no envelope change. Do not implement against them as if shipped.
 
 ```json
 {
@@ -135,8 +153,8 @@ Every S2S payload is a plain-JSON envelope. `type` routes handling; `durability`
   "origin": "soms.io",
   "origin_seq": 12345,
   "thread": "thr_8x3k@soms.io",
-  "from": "alice@soms.io",
-  "to": ["bob@other.com", "carol@third.org"],
+  "from": { "username": "alice", "domain": "soms.io" },
+  "to": [{ "username": "bob", "domain": "other.com" }, { "username": "carol", "domain": "third.org" }],
   "ts": 1719500000000,
   "prev": "01J8X3KF7Q9P1...",
   "client_message_id": "urn:uuid:...",
@@ -152,14 +170,14 @@ Every S2S payload is a plain-JSON envelope. `type` routes handling; `durability`
 | `origin` | yes | Origin server domain. |
 | `origin_seq` | yes (durable) | Monotonic per-`(thread, origin)`. Intra-thread ordering tiebreaker. |
 | `thread` | yes (most) | Federated thread id. Absent on `friend.*` envelopes that predate a thread. |
-| `from` | yes | Sender actor id. |
-| `to` | yes | Remote actors to deliver to (recipient server resolves which are local). |
+| `from` | yes | Sender actor: `{ username, domain }` (split fields — never an `@`-joined string). |
+| `to` | yes | Recipient actors: `[{ username, domain }, ...]`. The recipient server resolves which are local. |
 | `ts` | yes | Origin timestamp, ms since epoch. |
 | `prev` | no | Parent message id — display-only reply threading, **not a DAG edge.** |
 | `client_message_id` | no | For optimistic-send reconciliation. |
 | `content` | yes (`message`) | Opaque payload matching the SOMS message content schema. Reserved as an encryption envelope for future E2EE. |
 | `message` | no | `friend.request` note/reason (≤255 chars). Human-readable accompanying text. |
-| `profile` | no (`friend.request`) | The sender's public profile (`{ uniqName, domain, displayName, avatar, bio, updatedAt }`) embedded on `friend.request` so the receiver creates the stub localized, inline (avatar is `{ b64, w, h }` per §11, or null). `updatedAt` is stored as the stub's `remoteUpdatedAt` for the staleness probe. `friend.approve` does NOT carry a profile — it's a pure state confirmation (§4.1). |
+| `profile` | no (`friend.request`) | The sender's public profile (`{ uniqName, domain, displayName, avatar, bio, updatedAt }`) embedded on `friend.request` so the receiver creates the stub localized, inline (avatar is `{ b64, w, h }` per §10.1, or null). `updatedAt` is stored as the stub's `remoteUpdatedAt` for the staleness probe. `friend.approve` does NOT carry a profile — it's a pure state confirmation (§4.1). |
 
 `content` is intentionally opaque so it can carry:
 - today: the existing `{ kind, body }` / album / file-card payloads
@@ -169,8 +187,8 @@ Every S2S payload is a plain-JSON envelope. `type` routes handling; `durability`
 
 | `type` | Carries | Notes |
 | --- | --- | --- |
-| `friend.request` | `from` → `to` | "Alice wants to add Bob." Carries the sender's `profile` (avatar inline as base64 — §11): the target has no stub of the requester yet, so the profile is REQUIRED to create the stub and render the request card. Delivered to Bob's server, surfaced as a friend request to Bob. |
-| `friend.approve` | `from` → `to` | "Bob accepted." Pure state confirmation — carries **no** profile. The requester already resolved + localized the approver's stub before sending the request; any later profile change is picked up lazily by the chat-open `/revision` probe (§11). Both servers materialize the friend edge. **Only after this may a `thread.invite` be sent.** |
+| `friend.request` | `from` → `to` | "Alice wants to add Bob." Carries the sender's `profile` (avatar inline as base64 — §10.1): the target has no stub of the requester yet, so the profile is REQUIRED to create the stub and render the request card. Delivered to Bob's server, surfaced as a friend request to Bob. |
+| `friend.approve` | `from` → `to` | "Bob accepted." Pure state confirmation — carries **no** profile. The requester already resolved + localized the approver's stub before sending the request; any later profile change is picked up lazily by the chat-open `/revision` probe (§10.1). Both servers materialize the friend edge and **each creates its own local 1:1 thread** (no `thread.invite` in Step 1; that returns only for federated groups, Step 3). |
 
 Asymmetry is intentional: `request` must carry the profile (stub creation), `approve` need not (the stub
 already exists; freshness is the chat-open probe's job, which also covers the request→approve window).
@@ -185,22 +203,27 @@ client SSE events (federation adds the S2S delivery layer); `FRIEND_DELETED` rem
 
 There are **two gates. Both must pass** for any communication:
 
-### Gate 1 — Server allow-list
+### Gate 1 — Trusted peers (the allow-list)
 
 ```
 FederatedPeer
-  domain           PK   # e.g. other.com  (WHICH domains we federate with)
-  trustLevel            # pending | trusted | blocked
-  addedBy               # admin who approved
-  createdAt
-  lastSeenAt
+  domain            PK     # e.g. other.com  (WHICH domains we federate with)
+  trustLevel               # pending | trusted | demoted | blocked
+  addedBy                  # admin who set the state, or null = auto-accepted via init
+  createdAt                # first discovered
+  trustedAt                # start of the current trust epoch (reset on re-trust after demote)
+  lastSuccessAt            # last successful signed S2S op (liveness; advanced every GET/POST ok)
+  demotedAt                # last trusted→demoted transition
+  demoteReason             # latest failure message (cleared on re-trust)
+  demotionCount            # flakiness signal
+  blockedAt                # admin block time
 ```
 
-`FederatedPeer` is a **domain allow-list only** — it records *which* domains are trusted, not their keys. Signing keys are fetched from each peer's `/.well-known/soms` on demand and TTL-cached (§5.1). Inbound requests are accepted **only** from domains in `FederatedPeer` with `trustLevel = trusted` **and** a valid signature over a key the peer currently publishes. Everything else is `401`. No open-federation path in v0.1. Domains enter `trusted` via the **init handshake** (§D7) — user-triggered, auto-accepting in v0.1 (a manual admin allow-list step is not required).
+`FederatedPeer` is a **trusted-domain registry** — it records *which* domains are trusted and their current lifecycle state, not their keys. Signing keys are fetched from each peer's `/.well-known/soms` on demand and TTL-cached (§5.1). Inbound requests are accepted **only** from domains with `trustLevel = trusted` **and** a valid signature over a key the peer currently publishes; `demoted`/`pending`/`blocked` are rejected at the guard. No open-federation path. Domains enter `trusted` via the **init handshake** (§D7) — user-triggered, auto-accepting (no manual allow-list step). The full lifecycle is in §5.2.
 
 ### Gate 2 — Thread membership (the friend gate)
 
-At the inbox, a `message` envelope `{from: @alice, to: @bob}` is rejected unless **Bob is a member of that thread.** For a 1:1 thread, membership is established exclusively by a prior friend edge. This is the user-controlled gate that makes "trust the server" acceptable:
+At the inbox, every envelope is gated by relationship. In Step 1 a `friend.*` envelope is accepted only for a real local recipient; in Step 2 a `message` `{from: @alice, to: @bob}` will be rejected unless **Bob is a member of that thread** (for 1:1, membership is exclusively a prior friend edge). This is the user-controlled gate that makes "trust the server" acceptable:
 
 - The server vouches for **sender identity** (it signed the request; the sender is one of its users).
 - The friend edge / thread membership is the **user-controlled admission** gate.
@@ -243,13 +266,47 @@ No peer re-approval needed. If a peer's `.well-known` fetch fails at switch time
 
 > **Two distinct keys, two distinct jobs.** The **TLS certificate** (CA-issued for the domain, §D5) secures the HTTPS transport layer. The **Ed25519 S2S keypair** (self-generated, persisted, this section) signs S2S requests at the application layer — the DKIM-equivalent key. They are independent; do not confuse them.
 
+### 5.2 Trust lifecycle (state machine + audit log)
+
+`trustLevel` is a small state machine; `FederationService` owns **all** transitions so the row and the event log stay consistent:
+
+```
+pending ──init ok──▶ trusted ◀──re-handshake── demoted
+                       │                           ▲
+                  (op fails:                     │
+                   cert/key/network) ─────────────┘
+trusted/pending/demoted ──admin──▶ blocked ──admin──▶ pending (must re-handshake to re-trust)
+```
+
+- **`markTrusted(domain)`** — single source for trust establishment (used by outbound `ensurePeerTrusted` and inbound `S2sInitController`). Creates `trusted` + `discovered`/`trusted` events on first contact; promotes `pending`/`demoted` → `trusted` (reset `trustedAt`/`lastSuccessAt`, clear demote cols, event `trusted`); refreshes `lastSuccessAt` only if already trusted (idempotent, no event). **No-op for `blocked`** (admin intent wins).
+- **`markContactSuccess(domain)`** — advances `lastSuccessAt` on every successful signed op (`sendEnvelope`/`getSigned`). Throttled: an in-memory per-domain guard skips the DB round trip within a 60 s window, and a conditional `UPDATE … WHERE lastSuccessAt IS NULL OR older-than-window` keeps it correct across restart + multi-instance. Precision is deliberately coarse (~±1 min) — liveness needs minute, not sub-second, granularity, and this avoids a write per message in Step 2.
+- **`markDemoted(domain, reason)`** — on any failed signed op to a trusted/pending peer (network/timeout/cert/key), flip to `demoted`, `demotionCount++`, refresh `demotedAt`/`demoteReason`, **purge `S2SKeyCache` for the domain** (a rotated/stale key is the likely cause), and log a `demoted` event. **Self-healing:** the next `ensurePeerTrusted` sees non-trusted → re-runs the init handshake → `trusted` again.
+- **`markBlocked` / `markUnblocked`** — admin intent. Block sets `blocked` + `blockedAt` + event; `ensurePeerTrusted` then throws `FEDERATION_PEER_BLOCKED` (50009) so the resolve surfaces "peer blocked." Unblock → `pending` (must re-handshake to re-trust).
+
+Every transition is also written to an **append-only audit log**:
+
+```prisma
+model FederatedPeerEvent {
+  id        BigInt   @id @default(autoincrement())
+  domain    String   @db.VarChar(63)   // NO FK → FederatedPeer (decoupled: history survives any peer-row change)
+  type      String   @db.VarChar(15)   // discovered | trusted | demoted | blocked | unblocked
+  reason    String?  @db.VarChar(255)  // demoted: failure msg; blocked: optional admin note
+  createdAt DateTime @default(now())
+  @@index([domain, createdAt])
+}
+```
+
+This current-state cache (`FederatedPeer`) + append-only history (`FederatedPeerEvent`) split is the standard pattern when you must show a *process*, not just a snapshot: columns alone collapse repeated trust↔demote cycles into the latest. The admin Federation page renders the per-peer timeline from these events (newest-first) — "let the admin see trust → connection-loss end to end."
+
 ---
 
 ## 6. Delivery
 
-### 6.1 Durable channel (v0.1)
+> **Step 1 = synchronous.** Envelopes are signed + POSTed **inline** in the request path (`FederationService.send*`, 10 s `callTimeoutSec`). There is **no outbox, no worker, no retry queue** in v0.1 — a peer that's down makes the action fail, and the user retries (the receiver dedupes via `S2SInboxSeen`, so a retry is safe). The durable outbox + retry worker below (§6.2, §6.4) revive **only if Step 2 messages** need reliable cross-server delivery.
 
-Sender-responsible push, mirroring email SMTP and ActivityPub inbox delivery.
+### 6.1 The S2S POST (sync, Step 1)
+
+Sender-responsible push, mirroring email SMTP and ActivityPub inbox delivery — but synchronous:
 
 ```
 POST https://<recipient-domain>/api/s2s/inbox
@@ -273,7 +330,9 @@ Body: <envelope>
 
 **Semantics: at-least-once with idempotent dedup.** Recipients MUST dedupe by `(origin, id)`. Exactly-once is never attempted — it requires distributed consensus and is the path to Matrix-level complexity.
 
-### 6.2 Retry budget (resolved from v0.1 open questions)
+### 6.2 Retry budget — Future (Step 2)
+
+> **Not built in Step 1** (no outbox). The schedule below is the design for when a durable outbox + worker revive (Step 2 messages needing reliable cross-server delivery).
 
 Backoff schedule: **30s → 1m → 5m → 30m → 2h → 24h**, then **dead-letter** for operator inspection. Single-worker per `(thread, recipient-domain)` to preserve `origin_seq` order; parallelism across threads/domains is fine.
 
@@ -283,7 +342,7 @@ Presence and typing are lossy; carry no `id` and are never retried. Candidate tr
 
 ### 6.4 Outbound target & address selection
 
-When the `S2SOutboxWorker` delivers an envelope, it selects where to connect in three layers. All three live in our own client code — we do **not** rely on Node's Happy Eyeballs (see "Why explicit racing" below).
+When the S2S client delivers an envelope (the sync `FederationService` today; the outbox worker if it revives in Step 2), it selects where to connect in three layers. All three live in our own client code — we do **not** rely on Node's Happy Eyeballs (see "Why explicit racing" below).
 
 **Layer 1 — SRV priority (failover ordering).** Sort SRV targets by `priority` ascending. Every target at a lower priority must be exhausted before any target at a higher priority is tried — strict primary/backup ordering.
 
@@ -302,7 +361,9 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 
 ---
 
-## 7. Ordering & consistency
+## 7. Ordering & consistency — Future (Step 2)
+
+> **Not applicable in Step 1** — there are no cross-server messages yet, so no federated ordering. Each server owns its own local 1:1 thread and orders locally. The rules below govern Step 2 message federation.
 
 - **Within a thread:** sort by `(ts, origin_seq)`. `ts` is the origin's clock; `origin_seq` (per-thread, monotonic on origin) breaks ties.
 - **`origin_seq`:** allocated by a per-thread counter on the origin server. No cross-thread coordination.
@@ -314,7 +375,9 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 
 ---
 
-## 8. History backfill
+## 8. History backfill — Future (Step 2/3)
+
+> **Not built in Step 1.** There is no shared federated thread id and no backfill endpoint yet. The design below is for when cross-server messages/groups need history replay.
 
 A server pulls thread history from the origin when its user is added/rejoins:
 
@@ -333,28 +396,30 @@ Signature: ...
 
 ## 9. Federation flows
 
-### 9.1 Cross-server friendship → 1:1 thread
+### 9.1 Cross-server friendship → each server's own 1:1 thread
 
 ```
 Alice@soms.io wants to chat with Bob@other.com.
 
+0. (first contact only) soms.io POST /api/v1/s2s/init → other.com: mutual trust established (§D7).
 1. Alice's client → soms.io: "add friend bob@other.com"      (existing friend-request flow)
-2. soms.io → other.com /api/s2s/inbox:
-     { type: "friend.request", from: "alice@soms.io", to: ["bob@other.com"], ... }
+2. soms.io resolves {username:"bob", domain:"other.com"} (GET /api/v1/s2s/users/:username → stub on soms.io), then
+   soms.io → other.com POST /api/v1/s2s/inbox:
+     { type: "friend.request", from: {username:"alice",domain:"soms.io"}, to: [{username:"bob",domain:"other.com"}], profile: {...} }
 3. other.com verifies Bob exists; surfaces friend request to Bob (existing FRIEND_REQUEST SSE).
 4. Bob approves.
-5. other.com → soms.io /api/s2s/inbox:
-     { type: "friend.approve", from: "bob@other.com", to: ["alice@soms.io"], ... }
-6. BOTH servers materialize the friend edge (Alice↔Bob stub) locally.
-7. soms.io creates the Thread (origin=soms.io, federated id thr_8x3k@soms.io).
-8. soms.io → other.com /api/s2s/inbox:
-     { type: "thread.invite", thread: "thr_8x3k@soms.io", from: "alice@soms.io", to: ["bob@other.com"] }
-9. other.com creates a local Thread record pointing to the federated id; pushes NEW_THREAD to Bob.
+5. other.com → soms.io POST /api/v1/s2s/inbox:
+     { type: "friend.approve", from: {username:"bob",domain:"other.com"}, to: [{username:"alice",domain:"soms.io"}] }
+6. BOTH servers materialize the friend edge (Friendship APPROVED, Alice↔Bob stub) locally.
+7. EACH server creates its OWN local 1:1 MessageThread for the pair on approve, and pushes
+   NEW_THREAD to its own user. There is NO thread.invite and NO shared federated thread id.
 ```
 
-**No `thread.invite` may precede a `friend.approve`.** Step 7 onward is the original spec's thread-creation flow; the friend phase is prepended.
+**No `thread.invite` envelope exists in Step 1.** Each server owns its own thread; a Step 2 message from Alice routes on `soms.io` by `from`/`to` → `Friendship` → the local thread, and is delivered to `other.com` where it routes the same way to Bob's local thread. A shared federated thread id returns only for federated **groups** (Step 3).
 
-### 9.2 Send a message
+### 9.2 Send a message — Future (Step 2)
+
+> **Not built in Step 1.** No cross-server messages yet. The flow below is the Step 2 design; the `S2SOutbox` it references revives only then.
 
 ```
 1. Alice's client → soms.io: send message (existing HTTP write)
@@ -367,7 +432,7 @@ Alice@soms.io wants to chat with Bob@other.com.
 
 Federation is purely additive — appended after the existing local push.
 
-### 9.3 Cross-server group invite
+### 9.3 Cross-server group invite — Future (Step 3)
 
 Group invites remain friend-gated: **the inviter and invitee must already be friends across servers** (consistent with local SOMS, where groups invite friends). A `thread.invite` addressed to the new participant triggers backfill (§8) on their server so they see prior history. Once a member, their access grant is thread membership — pairwise friendship with every other member is **not** required (matches local group semantics).
 
@@ -393,68 +458,79 @@ SOMS semantics; only new delivery is blocked.)
 ## 10. Schema (Prisma)
 
 ```prisma
-// Existing models gain origin/federatedId for federation awareness
+// A remote user is a local User stub: domain = <peer-domain> (local users carry the "local" sentinel,
+// never exposed — display uses the real config.domain). The compound unique key enforces BOTH local
+// uniqueness and stub uniqueness (a local "bob" does not block "bob@bbb.com").
 model User {
   // ... existing fields
-  origin       String   @default("local")   // "local" | <origin-domain>
-  federatedId  String?                       // user@domain, null for local-origin
+  domain       String   @default("local") @db.VarChar(63)   // "local" | <peer-domain>
+  @@unique([uniqName, domain])
 }
 
-model MessageThread {
-  // ... existing fields
-  origin       String   @default("local")
-  federatedId  String?                       // thr_xxx@origin, null for local-origin
+// MessageThread is UNCHANGED — Step 1 drops origin/federatedId. Each server owns its own local
+// thread; there is no shared federated thread id (that returns only for federated groups, Step 3).
+
+// Friendship: one normalized row per pair (userAId=min, userBId=max) + requesterId for direction.
+// reqMessage is the ≤255-char friend-request note (local + federated). threadId is the P2P
+// MessageThread, created on APPROVED — each server creates its OWN local thread.
+model Friendship {
+  // ... userAId, userBId, requesterId, status
+  reqMessage  String   @default("") @db.VarChar(255)
+  threadId    Int?
+  @@unique([userAId, userBId])
 }
 
-// Friendship references User rows (local or remote stub) unchanged;
-// federation awareness comes from User.origin/federatedId.
-
-// New: domain allow-list (WHICH domains we federate with — not their keys)
+// Trusted-domain registry + lifecycle state (Gate 1). Keys are NOT stored here — fetched from
+// each peer's /.well-known/soms and cached in S2SKeyCache. See §5.2 for the state machine.
 model FederatedPeer {
-  domain       String   @id
-  trustLevel   String   @default("pending")  // pending | trusted | blocked
-  addedBy      String?
-  createdAt    DateTime @default(now())
-  lastSeenAt   DateTime?
+  domain        String   @id @db.VarChar(63)
+  trustLevel    String   @default("pending") @db.VarChar(15)  // pending | trusted | demoted | blocked
+  addedBy       String?  @db.VarChar(31)
+  createdAt     DateTime @default(now())
+  trustedAt     DateTime?
+  lastSuccessAt DateTime?
+  demotedAt     DateTime?
+  demoteReason  String?  @db.VarChar(255)
+  demotionCount Int      @default(0)
+  blockedAt     DateTime?
+  @@index([trustLevel])
+  @@index([lastSuccessAt])
 }
 
-// New: cached peer signing keys (fetched from each peer's /.well-known/soms, TTL'd)
-model S2SKeyCache {
-  domain       String
-  keyId        String
-  publicKey    String                        // ed25519, base64
-  fetchedAt    DateTime @default(now())
+// Append-only audit log of every trust transition (NO FK → FederatedPeer; decoupled). The admin
+// Federation page renders the per-peer timeline from this. See §5.2.
+model FederatedPeerEvent {
+  id        BigInt   @id @default(autoincrement())
+  domain    String   @db.VarChar(63)
+  type      String   @db.VarChar(15)   // discovered | trusted | demoted | blocked | unblocked
+  reason    String?  @db.VarChar(255)
+  createdAt DateTime @default(now())
+  @@index([domain, createdAt])
+  @@index([createdAt])
+}
 
+// Cached peer signing keys (fetched from /.well-known/soms, TTL'd; JWKS-style; multiple rows per
+// domain during rotation).
+model S2SKeyCache {
+  domain     String   @db.VarChar(63)
+  keyId      String   @db.VarChar(127)
+  publicKey  String   @db.VarChar(127)
+  fetchedAt  DateTime @default(now())
   @@id([domain, keyId])
   @@index([domain])
 }
 
-// New: outbound delivery queue
-model S2SOutbox {
-  id              String   @id @default(cuid())
-  envelopeId      String                        // origin message id
-  threadId        String?
-  recipientDomain String
-  payload         Json                          // the full envelope
-  status          String   @default("pending")  // pending | in_flight | delivered | dead
-  attempts        Int      @default(0)
-  nextRetryAt     DateTime?
-  lastError       String?
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
-
-  @@index([status, nextRetryAt])
-  @@index([threadId, recipientDomain])
-}
-
-// New: inbound dedup
+// Inbound dedup: at-least-once delivery, idempotent apply. Step 1 sync delivery still benefits —
+// a user retry of a friend op re-POSTs the same envelope and is absorbed here.
 model S2SInboxSeen {
-  origin       String
-  envelopeId   String
-  receivedAt   DateTime @default(now())
-
+  origin      String   @db.VarChar(63)
+  envelopeId  String   @db.VarChar(127)
+  receivedAt  DateTime @default(now())
   @@id([origin, envelopeId])
 }
+
+// NOTE: there is NO S2SOutbox in Step 1 (sync delivery). It revives in Step 2 if durable
+// cross-server message retry is needed — see §6.2 for the planned shape.
 ```
 
 ### Endpoints
@@ -462,33 +538,43 @@ model S2SInboxSeen {
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/s2s/init` | Trust-establishment bootstrap (auto-accept; NOT allow-list-gated — §D7) |
-| `POST` | `/api/v1/s2s/inbox` | Receive friend.* envelopes from trusted peers (allow-list-gated) |
-| `GET` | `/api/v1/s2s/users/:handle` | A local user's public profile (avatar inline as base64 — §11) |
-| `GET` | `/api/v1/s2s/users/:handle/revision` | Lightweight profile-revision probe (staleness check, no avatar) |
-| `GET` | `/api/v1/s2s/threads/:id/messages` | Backfill history (origin only) |
-| `GET` | `/.well-known/soms` | Publish server key + endpoints |
+| `POST` | `/api/v1/s2s/inbox` | Receive `friend.*` envelopes from trusted peers (allow-list-gated) |
+| `GET` | `/api/v1/s2s/users/:username` | A local user's public profile (avatar inline as base64 — §10.1) |
+| `GET` | `/api/v1/s2s/users/:username/revision` | Lightweight profile-revision probe (staleness check, no avatar) |
+| `GET` | `/.well-known/soms` | Publish server keys + endpoints |
+
+> Backfill `GET /api/v1/s2s/threads/:id/messages` is **Step 2/3** (no shared thread id yet) — see §8.
 
 ### Services (NestJS)
 
-- `FederationService` — tail of the message-send pipeline. Identifies remote participants, writes `S2SOutbox` rows.
-- `S2SOutboxWorker` — drains `pending` rows, signs + POSTs, applies backoff.
-- `InboxHandler` — checks `FederatedPeer` allow-list, verifies signature (fetches key on `keyId`-miss from `.well-known`, §5.1), **verifies thread membership**, dedupes via `S2SInboxSeen`, routes by `type`.
+- `FederationService` — owns **all** peer-lifecycle state transitions (`markTrusted`/`markContactSuccess`/`markDemoted`/`markBlocked`/`markUnblocked`) AND the sync outbound path: builds + signs + POSTs envelopes inline (`sendEnvelope`/`getSigned`), advances `lastSuccessAt` on success, demotes on failure. Admin reads (`listPeers`/`peerEvents`) and the consumer pre-flight (`isPeerTrusted`) live here too.
+- `S2sVerifyService` — shared keyId-parse + `.well-known` key fetch + RFC 9421 signature verify (used by both the init endpoint and the inbox guard).
+- `S2sSignatureGuard` — the inbox allow-list gate: rejects `trustLevel !== 'trusted'`, then verifies the signature (fetches key on `keyId`-miss, §5.1).
+- `InboxHandler` — purely-inbound: dedupes via `S2SInboxSeen`, routes `friend.*` by `type`, localizes embedded profiles.
 - `SignatureService` — Ed25519 sign/verify; RFC 9421 `Signature-Input`/`Signature` construction (DKIM-model, §5.1).
 - `DiscoveryService` — SRV + `.well-known/soms` resolution + caching.
+
+### 10.1 Avatar federation (implemented, v0.1)
+
+A user's avatar crosses servers **inline as base64**, never by cross-origin URL (CSP blocks the receiving client from fetching the peer's `/uploads/*`, and a URL would leak the peer's media-token path). The wire shape is `{ b64, w, h }` — base64 of the source image bytes plus the source pixel dimensions (the receiver does **not** assume square). It rides in two places:
+
+- the S2S profile response `GET /api/v1/s2s/users/:username` (the resolve endpoint), and
+- the `profile` slot on `friend.request` envelopes (§4.1), so the receiver creates/refreshes the stub localized, with no second round-trip and no nested S2S call inside the inbox. (`friend.approve` carries no profile — §4.1.)
+
+**Recommended transmission size is 512×512 webp** (~40 KB → ~55 KB base64) — the largest size a local upload stores. The receiver runs the bytes back through the standard avatar pipeline (`saveAvatars` center-crops to the 32/64/128/256/512 set), so a federated avatar is byte-identical on disk to a locally-uploaded one and is served **same-origin** via the existing `/uploads/*` path + media-token cookie. Non-square sources are center-cropped to the largest square; smaller than 512 risks upscaling blur; larger wastes wire for a low-frequency, idempotent fetch. The declared `w`/`h` get a cheap pre-validation, but `sharp`'s own metadata read is the authoritative pixel-bomb check (a compromised peer can't lie past it). The global Fastify `bodyLimit` (1 MiB) accommodates the envelope with headroom.
+
+**Staleness** — the receiver stores the profile's `updatedAt` as the stub's `remoteUpdatedAt`. On chat-open, a lightweight probe `GET /api/v1/s2s/users/:username/revision` returns just `{ updatedAt }` (no avatar transfer); if newer than `remoteUpdatedAt`, the server re-pulls the full profile + re-localizes (best-effort — a transient peer outage keeps the cached profile). `localizeForeignProfile` is idempotent and gated on the revision, so re-delivered envelopes and no-change re-pulls do no work; a corrupt/oversized avatar is isolated (name/bio/remoteUpdatedAt still advance, the existing avatar is kept) so a broken avatar can't break friend-flow. Local users are always fresh locally (no probe).
+
+**No approve-time refresh** — `friend.approve` carries no profile and triggers no re-pull on either side. The requester's stub of the approver was created at resolve time; any profile drift (across the request→approve window or later) is caught uniformly by the chat-open probe. This keeps `approve` a pure state-confirmation and avoids a redundant avatar transfer + a nested S2S call inside the inbox.
+
+Avatars are the **only media that federates in v0.1** — message-image federation (album/file photos **in chat**) is a separate, larger step (see Deferred below + `docs/federation-quotas.md`).
 
 ### Deferred (explicit non-goals for v0.1)
 
 - **E2EE** — `content` reserved; crypto is a separate effort.
 - **Presence / typing** — ephemeral channel, v0.2.
 - **Read receipts across federation** — `receipt` type reserved; logic v0.2.
-- **Avatar federation (implemented, v0.1)** — a user's avatar crosses servers **inline as base64**, never by cross-origin URL (CSP blocks the receiving client from fetching the peer's `/uploads/*`, and a URL would leak the peer's media-token path). The wire shape is `{ b64, w, h }` — base64 of the source image bytes plus the source pixel dimensions (the receiver does **not** assume square). It rides in two places:
-  - the S2S profile response `GET /api/v1/s2s/users/:handle` (the resolve endpoint), and
-  - the `profile` slot on `friend.request` / `friend.approve` envelopes (§4.1), so the receiver creates/refreshes the stub localized, with no second round-trip and no nested S2S call inside the inbox.
-  - **Recommended transmission size is 512×512 webp** (~40 KB → ~55 KB base64) — the largest size a local upload stores. The receiver runs the bytes back through the standard avatar pipeline (`saveAvatars` center-crops to the 32/64/128/256/512 set), so a federated avatar is byte-identical on disk to a locally-uploaded one and is served **same-origin** via the existing `/uploads/*` path + media-token cookie. Non-square sources are center-cropped to the largest square; smaller than 512 risks upscaling blur; larger wastes wire for a low-frequency, idempotent fetch. The declared `w`/`h` get a cheap pre-validation, but `sharp`'s own metadata read is the authoritative pixel-bomb check (a compromised peer can't lie past it). The global Fastify `bodyLimit` (1 MiB) accommodates the envelope with headroom.
-  - **Staleness** — the receiver stores the profile's `updatedAt` as the stub's `remoteUpdatedAt`. On chat-open, a lightweight probe `GET /api/v1/s2s/users/:handle/revision` returns just `{ updatedAt }` (no avatar transfer); if newer than `remoteUpdatedAt`, the server re-pulls the full profile + re-localizes (best-effort — a transient peer outage keeps the cached profile). `localizeForeignProfile` is idempotent and gated on the revision, so re-delivered envelopes and no-change re-pulls do no work; a corrupt/oversized avatar is isolated (name/bio/remoteUpdatedAt still advance, the existing avatar is kept) so a broken avatar can't break friend-flow. Local users are always fresh locally (no probe).
-  - **No approve-time refresh** — `friend.approve` carries no profile and triggers no re-pull on either side. The requester's stub of the approver was created at resolve time; any profile drift (across the request→approve window or later) is caught uniformly by the chat-open probe. This keeps `approve` a pure state-confirmation and avoids a redundant avatar transfer + a nested S2S call inside the inbox.
-  - Message-image federation (album/file photos **in chat**) is a separate, larger step and remains deferred — avatars above are the only media that federates in v0.1.
-- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars above are the exception).
+- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). Per-peer **quotas** for that future step are designed (daily message/image/file limits + size caps, admin-adjustable) but also deferred — see `docs/federation-quotas.md`.
 - **Open federation / anti-spam** — allow-list only.
 - **Bridges to Matrix / XMPP / ActivityPub** — separate adapter services.
 - **Identity portability** — `user@domain` is bound to its server in v0.1.
@@ -523,7 +609,7 @@ This part takes you from zero to a federating SOMS node. Every decision here is 
 3. **A SOMS instance** reachable on some host:port (reverse-proxied on 443, or direct on a custom port).
 4. **Accurate system clock (NTP).** Run `systemd-timesyncd` / `chrony` / `ntpd`, enabled at boot. RFC 9421 signatures carry a `created` timestamp and TLS certs have validity windows, so clock skew breaks both (§5.1). NTP's ms-level accuracy is sufficient; the protocol is tolerant beyond that (replays absorbed by dedup, ordering tolerates skew).
 
-Your federation identity is `@<your-localpart>@<your-domain>`. The domain in every handle below is the domain whose DNS zone you control.
+Your federation identity is `<your-username>@<your-domain>` (email form — no leading `@`; `<your-username>` is your SOMS `uniqName`). The domain in every address below is the domain whose DNS zone you control.
 
 ## D2. DNS setup
 
@@ -675,7 +761,7 @@ Bind SOMS to all interfaces and both families so peers reach you on whichever IP
 Trust between two SOMS servers is established by an **explicit server-to-server init handshake BEFORE any
 inbox traffic**, not by a manual admin allow-list step. It is **user-triggered and auto-accepting** in v0.1:
 
-1. **A's user** searches `bob@other.com` (a handle on a domain A doesn't yet trust).
+1. **A's user** searches `bob@other.com` (an address on a domain A doesn't yet trust).
 2. **A** fetches `other.com/.well-known/soms` over HTTPS (SRV/HTTPS discovery; TLS-protected + CA-validated, so the published `keys` are trustworthy as-is).
 3. **A** sends a signed `POST /api/v1/s2s/init` to `other.com`. The signature (over the request's content-digest) + keyId is what proves A controls its domain — `other.com` fetches **A's** `.well-known` to verify (no inline key; `.well-known` is authoritative so A can't lie).
 4. **`other.com` auto-accepts**: it verifies A's signature (§5.1 key fetch) and upserts A into its `FederatedPeer` `trusted`. A does the symmetric upsert for `other.com`. Mutual trust now exists.
@@ -693,9 +779,10 @@ there is no message read access without an approved friend edge, so server-level
 The reverse direction (their user searches one of ours) is covered by our `/init` endpoint auto-accepting
 them; a re-init (e.g. after a genuinely broken key, not normal rotation) just re-runs the handshake.
 
-Only after both sides are `trusted` do `friend.request` / `thread.invite` / `message` envelopes flow. **Key
-rotation does not require re-init** — it's handled silently by `.well-known` republishing + the proactive
-key-refresh worker (§5.1).
+Only after both sides are `trusted` does any envelope flow — in Step 1 that's `friend.*`; `message`
+(Step 2) and `thread.invite` (Step 3) follow the same gate when they ship. **Key rotation does not
+require re-init** — it's handled silently by `.well-known` republishing + the proactive key-refresh
+worker (§5.1).
 
 ---
 

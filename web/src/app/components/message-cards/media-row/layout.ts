@@ -42,17 +42,23 @@ export interface AlbumLayout {
   rects: AlbumRect[];
   /** Grid total height (px) — the rendered row height the kernel measures. */
   totalH: number;
+  /** Container width (px). For a single media item the bubble narrows to the cell's computed width
+   *  (so a 1:1 image is 240px wide, not the full baseW); for an album it is the full baseW. */
+  containerW: number;
   /** When >6 images, the last cell shows a "+moreCount" badge; 0 means none. */
   moreCount: number;
 }
 
-export const ALBUM_W = 320;
+export const ALBUM_W = 280;
 const ALBUM_GAP = 2;
 /** Fallback aspect ratio (h/w) for bad w/h, 4:3 (matches historical data). */
 const DEFAULT_R = 3 / 4;
 /** Row-height clamp range (relative to baseW): minH prevents extreme flat strips, maxH prevents tall portraits from blowing up the message. */
 export const ALBUM_MIN_ROW_H_RATIO = 0.35;
-export const ALBUM_MAX_ROW_H_RATIO = 1;
+export const ALBUM_MAX_ROW_H_RATIO = 0.8;
+/** Single-media (1 image/video) absolute height cap (px) — tighter than the album row max so a 1:1
+ * image doesn't fill the whole bubble. WhatsApp-style. */
+export const ALBUM_SINGLE_MAX_H = 240;
 
 /** Convert a baseW-relative px width to a percentage of the container width. */
 function pct(px: number, baseW: number): number {
@@ -124,9 +130,40 @@ function rowPlan(shown: number): number[] {
 
 export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLayout {
   const n = images.length;
-  if (n === 0) return { rects: [], totalH: 0, moreCount: 0 };
+  if (n === 0) return { rects: [], totalH: 0, containerW: baseW, moreCount: 0 };
 
   const gap = ALBUM_GAP;
+
+  // Single media — three regimes:
+  //  (a) portrait rawH > SINGLE_MAX → cap height at SINGLE_MAX, narrow width to preserve ratio (bubble
+  //      shrinks below baseW; e.g. 1:1 → 240×240, 9:16 → 135×240).
+  //  (b) normal rawH ∈ [minH, SINGLE_MAX] → full baseW width, justified height (e.g. 4:3 → 280×210).
+  //  (c) extreme panorama rawH < minH → clamp height at minH, keep full baseW width (cover crop; avoids
+  //      the width explosion that pure justified would produce for a near-zero ratio).
+  if (n === 1) {
+    const r = ratio(images[0]);
+    const minH = baseW * ALBUM_MIN_ROW_H_RATIO;
+    const rawH = baseW * r; // height if the image filled the full baseW
+    let rowH: number, widthPx: number;
+    if (rawH > ALBUM_SINGLE_MAX_H) {
+      rowH = ALBUM_SINGLE_MAX_H;
+      widthPx = rowH / r; // portrait: shrink width, preserve ratio
+    } else if (rawH < minH) {
+      rowH = minH;
+      widthPx = baseW; // panorama: clamp height, full width, cover crop
+    } else {
+      rowH = rawH;
+      widthPx = baseW; // normal: full width, justified height
+    }
+    const totalH = Math.round(rowH);
+    return {
+      rects: [{ xPct: 0, wPct: 100, yPx: 0, hPx: totalH }],
+      totalH,
+      containerW: Math.round(widthPx),
+      moreCount: 0,
+    };
+  }
+
   const shown = Math.min(n, 6);
   const plan = rowPlan(shown);
   const rects: AlbumRect[] = [];
@@ -156,5 +193,5 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
     last.hPx = totalH - last.yPx;
   }
 
-  return { rects, totalH, moreCount: n > 6 ? n - 6 : 0 };
+  return { rects, totalH, containerW: baseW, moreCount: n > 6 ? n - 6 : 0 };
 }

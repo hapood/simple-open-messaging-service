@@ -1,18 +1,26 @@
-// IMAGE message row: reuse the shared rules (@use row-base) + media-specific (grid/cell/media timestamp badge).
+// Unified media row (IMAGE / VIDEO / AUDIO). Reuses the shared row rules (@use row-base) + media-specific
+// grid/cell/overlay/meta-bar. Integer-pixel contract: every line-height + vertical padding is an integer
+// px so the bubble's offsetHeight stays a whole number (the kernel's height model).
 @use '../row-base' as *;
 
-// Media bubble: images flush to the edge (padding:0), outer overflow:hidden cuts the rounded corners.
-// width:320px (= layoutAlbum's baseW, MUST match): absolute width — cannot use min(100%,320px). Media content is
-// absolute cells (no intrinsic width, unlike text bubbles which text stretches), so a percentage width inside a flex
-// column cyclically depends on the col size → resolves to 0 (blank album). max-width:100% lets narrow screens
-// (col<320) shrink it, and does not participate in content-size computation → no cycle.
+// Media bubble: media flush to the edge (padding:0). The width is set inline by [style.width.px]=containerW
+// (single media narrows to the cell's computed width; album = full baseW) — no fixed width here, to avoid
+// fighting the inline binding. max-width clamps on narrow screens. When a meta bar is present (single
+// media) it adds flow height below the grid; the kernel measures the real offsetHeight either way.
 .msg-bubble.msg-media {
   padding: 0;
   min-height: 0;
-  width: 320px;
   max-width: 100%;
   display: block; // override the text bubble's flex vertical-centering
   overflow: hidden;
+  // Media cards have NO bubble fill — the image IS the bubble (WhatsApp style). Drop the self/other
+  // bubble color so the picture + the translucent meta chip float directly on the chat background.
+  background: transparent !important;
+  // No tail on media cards: row-base paints a msg-head ::before tail in the bubble color, and with no
+  // bubble fill it would float as a stray green/white triangle beside the image.
+  &::before {
+    display: none !important;
+  }
 }
 
 .msg-media-grid {
@@ -20,29 +28,125 @@
   width: 100%;
 }
 
-// Cell: absolute positioning + background-image (height locked to px by layoutAlbum, not via grid/aspect-ratio).
+// Cell: absolute positioning; height locked to px by layoutAlbum before render.
 .msg-media-cell {
   position: absolute;
   overflow: hidden;
-  background: rgba(127, 127, 127, 0.18); // placeholder gray before the image loads
+  background: rgba(127, 127, 127, 0.18); // placeholder gray (image pre-load; video error; audio cell)
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
 }
 
-// Media timestamp: dark pill at the bottom-right, overlaid on the image (readable on any photo).
-.msg-media .msg-time {
-  right: 6px;
+// "Tap to load · {size}" placeholder for IMAGE cells over the user size threshold. Centered text over
+// the gray cell; pointer-events:none so the click reaches the cell div (which loads the image).
+.msg-media-tap {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 12px;
+  color: rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+// <video> fills its cell — the browser renders the first frame (preload=metadata). object-fit:cover so
+// portrait/landscape both fill without gaps. pointer-events:none so clicks reach the cell div.
+.msg-media-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+}
+
+// Centered ▶ play badge over video / audio cells (a dark circle with a CSS-triangle play glyph).
+.msg-media-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 44px;
+  height: 44px;
+  background: rgba(0, 0, 0, 0.5);
+  border-radius: 50%;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  &::before {
+    content: '';
+    border-style: solid;
+    border-width: 9px 0 9px 14px;
+    border-color: transparent transparent transparent #fff;
+    margin-left: 4px; // optical centering of a play triangle
+  }
+}
+
+// Duration badge: bottom-LEFT dark pill (video / audio cells).
+.msg-media-dur {
+  position: absolute;
+  left: 6px;
   bottom: 6px;
   padding: 1px 6px;
   background: rgba(0, 0, 0, 0.45);
   color: #fff;
+  font-size: 11px;
+  line-height: 14px;
   border-radius: var(--app-radius-pill);
+  pointer-events: none;
 }
 
-// Media status tick: TOP-RIGHT corner over the image (same placement as text bubbles). A bare icon on an arbitrary
-// photo is low-contrast, so it sits in a small dark circle badge (mirrors the timestamp pill's chrome). White tick;
-// the failed retry stays danger-red for emphasis.
+// Size badge: bottom-RIGHT dark pill (every cell — image / video / audio). The send time moved to the
+// meta bar so this corner is free. Shows "unknown size" when the message carries no size (legacy
+// content created before Phase 1, or a probe failure). pointer-events:none → clicks reach the cell.
+.msg-media-size {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  padding: 1px 6px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 10px;
+  line-height: 12px;
+  border-radius: var(--app-radius-pill);
+  pointer-events: none;
+}
+
+// Bottom meta bar (EVERY media row — single OR album): media counts (left) + send time (right).
+// Narrow + on its own neutral grey chip background (NOT the bubble color) — a compact info strip
+// under the media, in the spirit of Telegram/WeChat's tight media captions. Integer-px line-heights.
+.msg-media-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 8px;
+  min-height: 18px;
+  // Translucent grey chip on the chat background. The media bubble itself is transparent (no
+  // self/other fill), so this never picks up a bubble color — it reads as a subtle info strip that
+  // adapts to light/dark via the background it sits on.
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--im-bubble-text);
+  font-size: 11px;
+  line-height: 14px;
+}
+.msg-media-meta-count {
+  display: flex;
+  gap: 6px;
+  opacity: 0.6;
+}
+.msg-media-meta-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+// Media status tick: TOP-RIGHT corner over the image, in a small dark circle badge.
 .msg-media .msg-status {
   right: 6px;
   top: 6px;
@@ -55,8 +159,7 @@
   }
 }
 
-
-// "+N" more badge (album >6 images: last cell covered with a translucent black overlay + a centered number).
+// "+N" more badge (album >6: last cell covered with a translucent black overlay + a centered number).
 .msg-cell-more::after {
   content: '';
   position: absolute;

@@ -13,7 +13,7 @@ import type { AlbumImage, ChatItemData } from './chat-item';
  */
 describe('mergeAlbumItems', () => {
   /** A single image (its msgId is the owning message's id). */
-  const img = (msgId: string): AlbumImage => ({ src: `data:,${msgId}`, w: 100, h: 100, msgId });
+  const img = (msgId: string): AlbumImage => ({ kind: 'image', src: `data:,${msgId}`, w: 100, h: 100, msgId });
 
   /** A single-image IMAGE msg item (creator defaults to 1 = self). */
   const imageItem = (id: string, clientMessageId?: string, creator = 1): CbItem<ChatItemData> => ({
@@ -129,7 +129,7 @@ describe('mergeAlbumItems', () => {
 });
 
 describe('absorbAlbumTail (cross-batch absorb hook)', () => {
-  const oneImg = (msgId: string): AlbumImage => ({ src: `data:,${msgId}`, w: 100, h: 100, msgId });
+  const oneImg = (msgId: string): AlbumImage => ({ kind: 'image', src: `data:,${msgId}`, w: 100, h: 100, msgId });
   /** An IMAGE msg carrying `n` images (default 1, mirroring the source's one-image-per-msg). */
   const imageItem = (id: string, n = 1, creator = 1): CbItem<ChatItemData> => ({
     id,

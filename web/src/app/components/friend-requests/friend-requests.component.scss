@@ -284,6 +284,54 @@ $danger: var(--app-danger);
   }
 }
 
+/* local discovery result list (Add tab — local fuzzy search returns multiple matches) */
+.search-results {
+  display: flex;
+  flex-direction: column;
+
+  .result-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 10px 8px;
+    border: none;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+    border-radius: var(--app-radius-md);
+    box-sizing: border-box;
+
+    &:hover {
+      background: var(--app-hover);
+    }
+
+    .user-avatar {
+      width: 44px;
+      height: 44px;
+      flex: 0 0 auto;
+    }
+
+    .result-meta {
+      flex: 1;
+      min-width: 0;
+
+      .user-name {
+        font-size: 15px;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+    }
+  }
+}
+
+// Federated chip on its own line directly under the nickname (single resolved card + discovery rows).
+.card-fed {
+  margin-top: 3px;
+}
+
 /* pending list */
 .pending-area {
   flex: 1;
@@ -312,6 +360,11 @@ $danger: var(--app-danger);
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+      }
+
+      // Federated-domain chip, on its own line directly under the nickname (local users render none).
+      .pending-fed {
+        margin-top: 3px;
       }
 
       .pending-date {

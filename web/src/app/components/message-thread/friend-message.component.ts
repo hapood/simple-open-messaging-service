@@ -127,7 +127,7 @@ export class MessageThreadComponent implements OnDestroy {
   private pendingOptimistic: CbItem<ChatItemData>[] = [];
   /** Original File for each in-flight image/file send (keyed by clientMessageId), so a failed-send retry can
    *  replay the upload + send. Cleaned by sweepPendingFiles as confirms drop the pending entries. */
-  private readonly pendingFiles = new Map<string, { file: File; kind: 'image' | 'file' }>();
+  private readonly pendingFiles = new Map<string, { file: File; kind: 'image' | 'file' | 'video' | 'audio' }>();
   /** Object URLs created for optimistic FILE cards (download anchor); revoked on teardown to avoid leaks. */
   private readonly blobUrls = new Set<string>();
 
@@ -261,7 +261,7 @@ export class MessageThreadComponent implements OnDestroy {
       const cid = this.newClientMessageId();
       const dims = await readImageDims(f);
       const dataURL = await readFileAsDataURL(f);
-      const images: AlbumImage[] = [{ src: dataURL, w: dims.w, h: dims.h, msgId: cid }];
+      const images: AlbumImage[] = [{ kind: 'image', src: dataURL, w: dims.w, h: dims.h, size: f.size, msgId: cid }];
       const item = this.makeOptimisticItem(cid, '', 'IMAGE', images, null);
       this.pendingFiles.set(cid, { file: f, kind: 'image' });
       this.dispatchPending(item);
@@ -272,15 +272,61 @@ export class MessageThreadComponent implements OnDestroy {
   private async sendFiles(files: FileList): Promise<void> {
     if (!this.threadId()) return;
     for (const f of Array.from(files)) {
-      const cid = this.newClientMessageId();
-      const url = URL.createObjectURL(f);
-      this.blobUrls.add(url);
-      const file: FileInfo = { url, name: f.name, size: f.size, mimeType: f.type || 'application/octet-stream' };
-      const item = this.makeOptimisticItem(cid, '', 'FILE', null, file);
-      this.pendingFiles.set(cid, { file: f, kind: 'file' });
-      this.dispatchPending(item);
-      void this.uploadAndSendFile(cid, f, item);
+      // Route by MIME: video/audio become VIDEO/AUDIO media cards; everything else stays a FILE message.
+      if (f.type.startsWith('video/')) {
+        void this.sendVideo(f);
+      } else if (f.type.startsWith('audio/')) {
+        void this.sendAudio(f);
+      } else {
+        void this.sendFile(f);
+      }
     }
+  }
+
+  /** Send a generic (non-video/audio) file as a FILE message. */
+  private async sendFile(f: File): Promise<void> {
+    const cid = this.newClientMessageId();
+    const url = URL.createObjectURL(f);
+    this.blobUrls.add(url);
+    const file: FileInfo = { url, name: f.name, size: f.size, mimeType: f.type || 'application/octet-stream' };
+    const item = this.makeOptimisticItem(cid, '', 'FILE', null, file);
+    this.pendingFiles.set(cid, { file: f, kind: 'file' });
+    this.dispatchPending(item);
+    void this.uploadAndSendFile(cid, f, item);
+  }
+
+  /** Send a video as a VIDEO message: probe w/h/duration client-side (<video> loadedmetadata), render
+   *  an optimistic media cell (blob url + first frame), then upload + send. The server validates only
+   *  the container family; w/h/duration ride in the content JSON (server-untrusted). */
+  private async sendVideo(f: File): Promise<void> {
+    const cid = this.newClientMessageId();
+    const meta = await readVideoMeta(f);
+    const url = URL.createObjectURL(f);
+    this.blobUrls.add(url);
+    const images: AlbumImage[] = [{
+      kind: 'video', src: url, w: meta.w, h: meta.h,
+      size: f.size, duration: meta.duration, name: f.name, msgId: cid,
+    }];
+    const item = this.makeOptimisticItem(cid, '', 'VIDEO', images, null);
+    this.pendingFiles.set(cid, { file: f, kind: 'video' });
+    this.dispatchPending(item);
+    void this.uploadAndSendVideo(cid, f, item, meta);
+  }
+
+  /** Send an audio clip as an AUDIO message: probe duration client-side, optimistic gray cell, upload + send. */
+  private async sendAudio(f: File): Promise<void> {
+    const cid = this.newClientMessageId();
+    const meta = await readAudioMeta(f);
+    const url = URL.createObjectURL(f);
+    this.blobUrls.add(url);
+    const images: AlbumImage[] = [{
+      kind: 'audio', src: url, w: 280, h: 120, // placeholder aspect (audio is a gray cell + ▶)
+      size: f.size, duration: meta.duration, name: f.name, msgId: cid,
+    }];
+    const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
+    this.pendingFiles.set(cid, { file: f, kind: 'audio' });
+    this.dispatchPending(item);
+    void this.uploadAndSendAudio(cid, f, item, meta);
   }
 
   private dispatchHttpSendText(item: CbItem<ChatItemData>): void {
@@ -319,6 +365,50 @@ export class MessageThreadComponent implements OnDestroy {
       if (!data) { await this.failPending(item); return; }
       const res = await firstValueFrom(this.msgService.sendMessage({
         threadId: tid, content: JSON.stringify(data), contentType: 'FILE', clientMessageId: cid,
+      }));
+      if (res.code !== 0) await this.failPending(item);
+    } catch {
+      await this.failPending(item);
+    }
+  }
+
+  private async uploadAndSendVideo(
+    cid: string, f: File, item: CbItem<ChatItemData>, meta: { w: number; h: number; duration: number },
+  ): Promise<void> {
+    const tid = this.threadId();
+    if (!tid) return;
+    try {
+      const up = await firstValueFrom(this.msgService.uploadVideo(f));
+      if (up.code !== 0 || !up.data) { await this.failPending(item); return; }
+      const res = await firstValueFrom(this.msgService.sendMessage({
+        threadId: tid,
+        content: JSON.stringify({
+          url: up.data.url, name: up.data.name, size: up.data.size, mimeType: up.data.mimeType,
+          w: meta.w, h: meta.h, duration: meta.duration,
+        }),
+        contentType: 'VIDEO', clientMessageId: cid,
+      }));
+      if (res.code !== 0) await this.failPending(item);
+    } catch {
+      await this.failPending(item);
+    }
+  }
+
+  private async uploadAndSendAudio(
+    cid: string, f: File, item: CbItem<ChatItemData>, meta: { duration: number },
+  ): Promise<void> {
+    const tid = this.threadId();
+    if (!tid) return;
+    try {
+      const up = await firstValueFrom(this.msgService.uploadAudio(f));
+      if (up.code !== 0 || !up.data) { await this.failPending(item); return; }
+      const res = await firstValueFrom(this.msgService.sendMessage({
+        threadId: tid,
+        content: JSON.stringify({
+          url: up.data.url, name: up.data.name, size: up.data.size, mimeType: up.data.mimeType,
+          duration: meta.duration,
+        }),
+        contentType: 'AUDIO', clientMessageId: cid,
       }));
       if (res.code !== 0) await this.failPending(item);
     } catch {
@@ -423,7 +513,7 @@ export class MessageThreadComponent implements OnDestroy {
       msgId: clientMessageId,
       creator: profile?.id ?? 0,
       isSelf: true,
-      name: profile?.uniqName ?? 'Me',
+      name: profile?.name ?? 'Me',
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
       contentType, images, file, createdAtMs: now.getTime(),
@@ -566,5 +656,41 @@ function readFileAsDataURL(f: File): Promise<string> {
     r.onload = () => resolve(typeof r.result === 'string' ? r.result : '');
     r.onerror = () => resolve('');
     r.readAsDataURL(f);
+  });
+}
+
+/** Probe a video's real dimensions + duration via <video> loadedmetadata (for the optimistic cell +
+ *  the VIDEO message content). The server does NOT probe — these are client-measured, server-untrusted.
+ *  0 fallbacks on failure (layoutAlbum's ratio() tolerates 0 with a 4:3 fallback). */
+function readVideoMeta(f: File): Promise<{ w: number; h: number; duration: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(f);
+    const v = document.createElement('video');
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      const w = v.videoWidth || 0;
+      const h = v.videoHeight || 0;
+      const duration = Number.isFinite(v.duration) ? v.duration : 0;
+      URL.revokeObjectURL(url);
+      resolve({ w, h, duration });
+    };
+    v.onerror = () => { URL.revokeObjectURL(url); resolve({ w: 0, h: 0, duration: 0 }); };
+    v.src = url;
+  });
+}
+
+/** Probe an audio clip's duration via <audio> loadedmetadata (for the AUDIO message content + overlay). */
+function readAudioMeta(f: File): Promise<{ duration: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(f);
+    const a = document.createElement('audio');
+    a.preload = 'metadata';
+    a.onloadedmetadata = () => {
+      const duration = Number.isFinite(a.duration) ? a.duration : 0;
+      URL.revokeObjectURL(url);
+      resolve({ duration });
+    };
+    a.onerror = () => { URL.revokeObjectURL(url); resolve({ duration: 0 }); };
+    a.src = url;
   });
 }

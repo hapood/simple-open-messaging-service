@@ -7,7 +7,7 @@ import {
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { S2sVerifyService } from './s2s-verify.service.js';
-import { PrismaService } from '../prisma.service.js';
+import { FederationService } from './federation.service.js';
 import { BusinessCode } from '../common/business-code.js';
 
 /**
@@ -31,7 +31,7 @@ import { BusinessCode } from '../common/business-code.js';
 export class S2sInitController {
   constructor(
     private readonly verify: S2sVerifyService,
-    private readonly prisma: PrismaService,
+    private readonly federationService: FederationService,
   ) {}
 
   @Post('init')
@@ -46,13 +46,11 @@ export class S2sInitController {
     const { keyId, domain } = this.verify.parseSigner(headers);
     await this.verify.fetchAndVerify(this.verify.signedRequest(req), headers, keyId, domain);
 
-    // AUTO-ACCEPT (v0.1): trust established. Upsert is idempotent — a re-init (e.g. after a broken key)
-    // just refreshes lastSeenAt + re-verifies. addedBy is null (auto-accepted, no admin).
-    await this.prisma.federatedPeer.upsert({
-      where: { domain },
-      create: { domain, trustLevel: 'trusted' },
-      update: { trustLevel: 'trusted', lastSeenAt: new Date() },
-    });
+    // AUTO-ACCEPT (v0.1): trust established. markTrusted is idempotent + transition-aware — a first
+    // contact logs discovered+trusted; a re-init from a demoted peer re-trusts and logs the transition;
+    // a repeat init from an already-trusted peer just refreshes lastSuccessAt. addedBy is null
+    // (auto-accepted, no admin).
+    await this.federationService.markTrusted(domain);
     return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 }

@@ -21,6 +21,7 @@
     "bans": "封禁管理",
     "reuse": "重用告警",
     "push": "推送管理",
+    "federation": "联邦",
     "logout": "登出"
   },
   "language": {
@@ -179,6 +180,57 @@
       "ANDROID": "Android · FCM",
       "IOS": "iOS · FCM",
       "WEB": "Web Push"
+    }
+  },
+  "federation": {
+    "title": "联邦",
+    "desc": "信任白名单中的对端服务器及其生命周期：信任 → 降级（签名调用失败，下次连接会重新握手）→ 重新信任，以及管理员手动屏蔽的域。点开某个对端可查看完整时间线。",
+    "searchPlaceholder": "搜索域名",
+    "status": {
+      "all": "全部",
+      "trusted": "已信任",
+      "demoted": "已降级",
+      "pending": "待握手",
+      "blocked": "已屏蔽"
+    },
+    "col": {
+      "domain": "域名",
+      "status": "状态",
+      "lastSuccess": "最近成功",
+      "demotions": "降级次数",
+      "created": "发现时间"
+    },
+    "action": {
+      "viewTimeline": "查看时间线",
+      "block": "屏蔽",
+      "unblock": "取消屏蔽"
+    },
+    "toast": {
+      "blocked": "已屏蔽该对端——在取消屏蔽前拒绝联邦",
+      "unblocked": "已取消屏蔽——下次连接将重新握手"
+    },
+    "total": "共 {{count}} 个对端",
+    "empty": "暂无联邦对端",
+    "meta": {
+      "createdAt": "发现时间",
+      "trustedAt": "信任起始于",
+      "lastSuccessAt": "最近成功联系",
+      "demotedAt": "降级时间",
+      "demotionCount": "降级次数",
+      "addedBy": "操作者",
+      "auto": "自动（init）",
+      "lastError": "最近错误"
+    },
+    "timeline": {
+      "title": "生命周期时间线",
+      "empty": "尚无生命周期事件"
+    },
+    "event": {
+      "discovered": "发现对端",
+      "trusted": "建立信任",
+      "demoted": "连接丢失 / 降级",
+      "blocked": "管理员屏蔽",
+      "unblocked": "管理员取消屏蔽"
     }
   },
   "resetPassword": {

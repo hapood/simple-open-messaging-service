@@ -13,28 +13,61 @@
     @if (showName()) {
       <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
-    <div class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media" [class.msg-sending]="isSending()">
+    <div
+      class="msg-bubble msg-{{ side() }} msg-{{ pos() }} msg-media"
+      [class.msg-sending]="isSending()"
+      [style.width.px]="containerW()"
+    >
       <div class="msg-media-grid" [style.height.px]="totalH()">
         @for (c of cells(); track $index) {
           <div
-            class="msg-media-cell{{ c.isMore ? ' msg-cell-more' : '' }}"
+            class="msg-media-cell msg-media-cell--{{ c.kind }}{{ c.unplayable ? ' msg-media-cell--placeholder' : '' }}{{ c.isMore ? ' msg-cell-more' : '' }}"
             [style.left.%]="c.rect.xPct"
             [style.top.px]="c.rect.yPx"
             [style.width.%]="c.rect.wPct"
             [style.height.px]="c.rect.hPx"
-            [style.background-image]="'url(&quot;' + c.src + '&quot;)'"
-            role="button"
-            tabindex="0"
-            [attr.aria-label]="'chat.openImageAria' | transloco"
-            (click)="openImage.emit({ images: data().images ?? [], index: $index })"
-            (keydown.enter)="openImage.emit({ images: data().images ?? [], index: $index })"
+            [style.background-image]="c.kind === 'image' && !c.placeholder ? ('url(&quot;' + c.src + '&quot;)') : null"
+            [attr.role]="c.kind === 'image' ? 'button' : null"
+            [attr.tabindex]="c.kind === 'image' ? 0 : null"
+            [attr.aria-label]="c.kind === 'image' ? ('chat.openImageAria' | transloco) : null"
+            (click)="onCellClick($index)"
+            (keydown.enter)="onCellClick($index)"
           >
+            @if (c.placeholder) {
+              <span class="msg-media-tap">Tap to load</span>
+            }
+            @if (c.kind === 'video' && !c.unplayable) {
+              <video
+                class="msg-media-video"
+                [src]="c.src"
+                preload="metadata"
+                aria-hidden="true"
+                (error)="onVideoError($index)"
+              ></video>
+            }
+            @if (c.kind === 'video' || c.kind === 'audio') {
+              <span class="msg-media-play" aria-hidden="true"></span>
+              @if (c.duration) {
+                <span class="msg-media-dur">{{ formatDuration(c.duration) }}</span>
+              }
+            }
+            <span class="msg-media-size">{{ c.sizeText || 'unknown size' }}</span>
             @if (c.isMore) {
               <span class="msg-media-more">+{{ moreCount() }}</span>
             }
           </div>
         }
       </div>
+
+      <div class="msg-media-meta">
+        <span class="msg-media-meta-count">
+          @if (metaBar().images) { <span>{{ metaBar().images }} 图</span> }
+          @if (metaBar().videos) { <span>{{ metaBar().videos }} 视频</span> }
+          @if (metaBar().audios) { <span>{{ metaBar().audios }} 音频</span> }
+        </span>
+        <span class="msg-media-meta-time">{{ metaBar().time }}</span>
+      </div>
+
       @if (statusTick()) {
         @if (isFailed()) {
           <span class="msg-status msg-status--failed" role="button" tabindex="0"
@@ -46,7 +79,6 @@
           <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }
       }
-      <span class="msg-time">{{ data().time }}</span>
     </div>
   </div>
 

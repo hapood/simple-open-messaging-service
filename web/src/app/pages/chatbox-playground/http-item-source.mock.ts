@@ -396,7 +396,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
         const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
         const [rw, rh] = RATIOS[Math.floor(rand() * RATIOS.length)];
         const id = `id-${items.length}`;
-        const imgs: AlbumImage[] = [{ src: placeholderImage(imgSeed++, rw, rh), w: rw * 100, h: rh * 100, msgId: id }];
+        const imgs: AlbumImage[] = [{ kind: 'image', src: placeholderImage(imgSeed++, rw, rh), w: rw * 100, h: rh * 100, size: 200_000 + Math.floor(rand() * 2_800_000), msgId: id }];
         items.push({ id, data: makeSeedMsg(creator, '', 'IMAGE', imgs, date, id) });
       }
     } else {

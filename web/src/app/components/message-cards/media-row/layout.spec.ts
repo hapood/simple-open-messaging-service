@@ -1,11 +1,11 @@
-import { layoutAlbum, ALBUM_W, ALBUM_MIN_ROW_H_RATIO, ALBUM_MAX_ROW_H_RATIO } from './layout';
+import { layoutAlbum, ALBUM_W, ALBUM_MIN_ROW_H_RATIO, ALBUM_MAX_ROW_H_RATIO, ALBUM_SINGLE_MAX_H } from './layout';
 
 describe('layoutAlbum', () => {
   const mkFixed = (n: number, w = 400, h = 300) => Array.from({ length: n }, () => ({ w, h }));
   const mkMixed = (wh: [number, number][]) => wh.map(([w, h]) => ({ w, h }));
 
-  const MIN_H = ALBUM_W * ALBUM_MIN_ROW_H_RATIO; // 112
-  const MAX_H = ALBUM_W * ALBUM_MAX_ROW_H_RATIO; // 320
+  const MIN_H = ALBUM_W * ALBUM_MIN_ROW_H_RATIO; // 98
+  const MAX_H = ALBUM_W * ALBUM_MAX_ROW_H_RATIO; // 224 (album row cap; single-media uses ALBUM_SINGLE_MAX_H=240)
 
   /** 不变量守卫：rect 数=min(n,6)、不越界、两两不重叠、末行底===totalH、cell 非零。 */
   const assertInvariants = (imgs: { w: number; h: number }[]) => {
@@ -34,22 +34,30 @@ describe('layoutAlbum', () => {
     return { rects, totalH };
   };
 
-  it('n=1 单图 4:3：满宽、totalH=240（迁移锚点，行为同旧）', () => {
-    const { rects, totalH, moreCount } = layoutAlbum(mkFixed(1));
+  it('n=1 单图 4:3：满宽、totalH=210（normal regime，full width）', () => {
+    const { rects, totalH, moreCount, containerW } = layoutAlbum(mkFixed(1));
     expect(rects.length).toBe(1);
-    expect(totalH).toBe(240);
+    expect(totalH).toBe(210); // rawH = 280*0.75 = 210 ∈ [98,240] → justified full width
     expect(moreCount).toBe(0);
-    expect(rects[0]).toEqual({ xPct: 0, yPx: 0, wPct: 100, hPx: 240 });
+    expect(rects[0]).toEqual({ xPct: 0, yPx: 0, wPct: 100, hPx: 210 });
+    expect(containerW).toBe(280); // normal regime keeps full baseW
+  });
+
+  it('n=1 单图 1:1：portrait regime → cap 240、containerW 收窄到 240', () => {
+    const { rects, totalH, containerW } = layoutAlbum(mkMixed([[1, 1]]));
+    expect(totalH).toBe(240); // rawH=280 > 240 → cap
+    expect(rects[0].hPx).toBe(240);
+    expect(containerW).toBe(240); // width = 240/1 = 240 (narrowed)
   });
 
   it('n=2 两张 4:3：justified 保比例、等高、并排不重叠', () => {
-    // rawH = (320-2)/(2/0.75) = 119.25 ∈ [112,320] → justified
+    // rawH = (280-2)/(2/0.75) = 104.25 ∈ [98,224] → justified
     const { rects, totalH } = assertInvariants(mkFixed(2));
     expect(rects.length).toBe(2);
     expect(rects[0].hPx).toBe(rects[1].hPx); // 等高
     expect(rects[0].xPct).toBe(0);
     expect(rects[1].xPct).toBeGreaterThan(rects[0].xPct);
-    expect(totalH).toBe(119); // round(119.25)
+    expect(totalH).toBe(104); // round(104.25)
   });
 
   it('n=3 [2,1]：行1 两图、行2 单图满宽', () => {
@@ -96,18 +104,19 @@ describe('layoutAlbum', () => {
     expect(totalH).toBeLessThanOrEqual(MAX_H);
   });
 
-  it('单图超宽全景：行高受 minH 钳制不压扁', () => {
-    // 32:1 全景 (r=0.03125)：rawH=10 < 112 → clamp 112
-    const { rects, totalH } = assertInvariants(mkMixed([[32, 1]]));
+  it('单图超宽全景：行高受 minH 钳制不压扁、width 不爆炸', () => {
+    // 32:1 全景 (r=0.03125)：rawH=8.75 < 98 → panorama regime, clamp 98, full width (no width explosion)
+    const { rects, totalH, containerW } = layoutAlbum(mkMixed([[32, 1]]));
     expect(rects[0].hPx).toBeGreaterThanOrEqual(MIN_H);
     expect(totalH).toBeGreaterThanOrEqual(MIN_H);
     expect(rects[0].wPct).toBeCloseTo(100, 5); // 单图满宽
+    expect(containerW).toBe(280); // panorama keeps full baseW (NOT 98/r ≈ 3136)
   });
 
-  it('单图超竖：行高受 maxH 钳制不撑爆', () => {
-    // 1:32 竖图 (r=32)：rawH=10240 > 320 → clamp 320
+  it('单图超竖：portrait regime → 行高受 SINGLE_MAX 钳制', () => {
+    // 1:32 竖图 (r=32)：rawH=8960 > 240 → portrait regime, cap 240
     const { rects } = assertInvariants(mkMixed([[1, 32]]));
-    expect(rects[0].hPx).toBeLessThanOrEqual(MAX_H);
+    expect(rects[0].hPx).toBeLessThanOrEqual(ALBUM_SINGLE_MAX_H);
     expect(rects[0].wPct).toBeCloseTo(100, 5);
   });
 
@@ -131,8 +140,8 @@ describe('layoutAlbum', () => {
     }
   });
 
-  it('w/h=0 单图：fallback 4:3 → totalH=240（同正常 4:3 单图）', () => {
-    expect(layoutAlbum(mkMixed([[0, 0]])).totalH).toBe(240);
+  it('w/h=0 单图：fallback 4:3 → totalH=210（同正常 4:3 单图）', () => {
+    expect(layoutAlbum(mkMixed([[0, 0]])).totalH).toBe(210);
   });
 
   it('空数组：返回空 rects、totalH=0、moreCount=0', () => {

@@ -10,8 +10,10 @@
       }
     </div>
     <div class="thread-info">
-      <div class="thread-name">{{ thread.peerUser.name || thread.peerUser.uniqName }}</div>
-      <div class="thread-handle">{{ '@' + thread.peerUser.uniqName }}</div>
+      <div class="thread-name">{{ thread.peerUser.name }}</div>
+      @if (thread.peerUser.isForeigner) {
+        <app-federated-badge class="thread-fed" [domain]="thread.peerUser.domain"></app-federated-badge>
+      }
     </div>
   </div>
   }

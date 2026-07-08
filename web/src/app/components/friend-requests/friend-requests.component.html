@@ -63,28 +63,42 @@
         <div class="state-hint"><div class="state-title state-error">{{errMsg()}}</div></div>
         }
         @case(AddTabStatus.SUCCESS){
-        <div class="user-card">
-          <div class="user-main">
-            <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="userData()!.uniqName"
-                [src]="userData()!.avatar"></app-user-avatar></div>
-            <div class="user-meta">
-              <div class="user-name">{{displayUserName(userData()!)}}
-                @if(userData()!.isForeigner){<app-federated-badge [domain]="userData()!.domain"></app-federated-badge>}
-              </div>
+          @if (localResults().length > 0) {
+            <div class="search-results">
+              @for (u of localResults(); track u.id) {
+                <button class="result-row" type="button" (click)="pickLocalUser(u)">
+                  <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="u.name"
+                      [src]="u.avatar"></app-user-avatar></div>
+                  <div class="result-meta">
+                    <div class="user-name">{{displayUserName(u)}}</div>
+                    @if(u.isForeigner){<app-federated-badge class="card-fed" [domain]="u.domain"></app-federated-badge>}
+                  </div>
+                </button>
+              }
             </div>
-          </div>
-          <div class="user-actions">
-            @if(canAdd()){
-            <button mat-raised-button color="primary" (click)="sendRequest()"
-              [disabled]="addTabStatus()===AddTabStatus.SEARCHING">{{ 'friend.sendRequest' | transloco }}</button>
-            }
-          </div>
-          @if(canAdd()){
-          <textarea class="reason-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="friendReqMessage"
-            maxlength="255" rows="2" [placeholder]="'friend.reasonPh' | transloco"></textarea>
+          } @else {
+            <div class="user-card">
+              <div class="user-main">
+                <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="userData()!.name"
+                    [src]="userData()!.avatar"></app-user-avatar></div>
+                <div class="user-meta">
+                  <div class="user-name">{{displayUserName(userData()!)}}</div>
+                  @if(userData()!.isForeigner){<app-federated-badge class="card-fed" [domain]="userData()!.domain"></app-federated-badge>}
+                </div>
+              </div>
+              <div class="user-actions">
+                @if(canAdd()){
+                <button mat-raised-button color="primary" (click)="sendRequest()"
+                  [disabled]="addTabStatus()===AddTabStatus.SEARCHING">{{ 'friend.sendRequest' | transloco }}</button>
+                }
+              </div>
+              @if(canAdd()){
+              <textarea class="reason-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="friendReqMessage"
+                maxlength="255" rows="2" [placeholder]="'friend.reasonPh' | transloco"></textarea>
+              }
+              @if(reqRspTxt().length>0){<div class="response-text" [class.is-info]="!canAdd()">{{reqRspTxt()}}</div>}
+            </div>
           }
-          @if(reqRspTxt().length>0){<div class="response-text" [class.is-info]="!canAdd()">{{reqRspTxt()}}</div>}
-        </div>
         }
       }
     </div>
@@ -105,12 +119,11 @@
       } @else {
         @for(req of pendingReqList();track req.id){
         <div class="pending-row">
-          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.uniqName"
+          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
               [src]="req.avatar"></app-user-avatar></div>
           <div class="pending-meta">
-            <div class="user-name">{{displayUserName(req)}}
-              @if(req.isForeigner){<app-federated-badge [domain]="req.domain"></app-federated-badge>}
-            </div>
+            <div class="user-name">{{displayUserName(req)}}</div>
+            @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
             @if(req.reqMessage){<div class="pending-reason">{{req.reqMessage}}</div>}
             <div class="pending-date">{{req.date}}</div>
           </div>
@@ -144,12 +157,11 @@
       } @else {
         @for(req of sentReqList();track req.id){
         <div class="pending-row">
-          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.uniqName"
+          <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
               [src]="req.avatar"></app-user-avatar></div>
           <div class="pending-meta">
-            <div class="user-name">{{displayUserName(req)}}
-              @if(req.isForeigner){<app-federated-badge [domain]="req.domain"></app-federated-badge>}
-            </div>
+            <div class="user-name">{{displayUserName(req)}}</div>
+            @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
             <div class="pending-date">{{req.date}}</div>
           </div>
           <div class="pending-actions">

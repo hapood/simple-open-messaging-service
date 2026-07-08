@@ -2,12 +2,11 @@ import { Component, input } from '@angular/core';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 
 /**
- * A small "federated" indicator chip: a globe glyph + the peer's domain (e.g. 🌐 bbb.local). Shown next
- * to a federated user's name/avatar so the cross-server identity is scannable at a glance. Renders
- * nothing when `domain` is empty/null (local users, unknown peers) — so callers can bind it
- * unconditionally and it self-hides. The name itself stays the bare localpart (see displayUserName) —
- * this chip is the single place the server identity appears, avoiding the redundant `bob@bbb.local`
- * run-in with the name.
+ * A small "federated" indicator chip: a globe glyph + the peer's domain (e.g. 🌐 bbb.local). Shown under
+ * a federated user's avatar so the cross-server identity is scannable at a glance. Renders nothing when
+ * `domain` is empty/null (local users, unknown peers) — so callers can bind it unconditionally and it
+ * self-hides. The name itself stays the nickname (see displayUserName) — this chip is the single place
+ * the server identity appears, avoiding the redundant `bob@bbb.local` run-in with the name.
  */
 @Component({
   selector: 'app-federated-badge',

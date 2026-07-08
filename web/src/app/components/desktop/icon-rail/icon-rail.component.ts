@@ -25,7 +25,7 @@ import { NavStateMachineService } from '../../../services/nav-state.service';
       <div class="top">
         <button class="rail-btn avatar" (click)="editProfile()"
           [title]="'nav.editProfileAria' | transloco" [attr.aria-label]="'nav.editProfileAria' | transloco">
-          <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'"
+          <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.name || 'SOMS'"
             [src]="sessionProfile()?.avatar" />
         </button>
         <button class="rail-btn" (click)="friendRequests()"

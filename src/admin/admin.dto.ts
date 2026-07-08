@@ -131,3 +131,50 @@ export class AdminListSessionsDto {
   @IsString()
   ip?: string;
 }
+
+/** Pagination + filter for the federated-peer lifecycle list. `status` filters by trustLevel
+ *  (pending | trusted | demoted | blocked); `search` is a fuzzy domain match. */
+export class AdminListFederationPeersDto {
+  @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  skip?: number;
+
+  @ApiProperty({ required: false, example: 20, description: 'Records to take (optional)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  take?: number;
+
+  @ApiProperty({ required: false, example: 'bbb', description: 'Fuzzy search by peer domain (optional)' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @ApiProperty({
+    required: false,
+    example: 'trusted',
+    description: 'Filter by trust level: pending | trusted | demoted | blocked (optional)',
+  })
+  @IsOptional()
+  @IsString()
+  status?: string;
+}
+
+/** A peer's lifecycle event timeline query (how many recent events to return). */
+export class AdminFederationPeerEventsDto {
+  @ApiProperty({ required: false, example: 100, description: 'Max events to return (optional, default 100)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  take?: number;
+}
+
+/** Optional note attached to an admin block (recorded on the `blocked` lifecycle event). */
+export class AdminFederationBlockDto {
+  @ApiProperty({ required: false, example: 'spam source', description: 'Optional block note (≤255)' })
+  @IsOptional()
+  @IsString()
+  note?: string;
+}

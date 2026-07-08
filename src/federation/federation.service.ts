@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, HttpStatus } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { ulid } from 'ulid';
 import { PrismaService } from '../prisma.service.js';
@@ -6,20 +6,15 @@ import { UploadService } from '../upload/upload.service.js';
 import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
 
-/** A `localpart@domain` handle (email form) split into its parts. */
-export interface ParsedHandle {
-  localpart: string;
+/** A federated user identity on the wire: two separate fields (username + domain). The `@` separator
+ *  is a UI input convention ONLY — the browser splits a typed `alice@bbb.com` into these two fields
+ *  before any API call; S2S envelopes + endpoints + consumer DTOs never carry an `@`-joined string. */
+export interface S2SActor {
+  username: string;
   domain: string;
-}
-
-/** Parse a federated handle → { localpart, domain }. The handle is the email-style
- *  `alice@aaa.com` (NO leading `@` — email form, not the ActivityPub `@alice@aaa.com`). Local
- *  uniqNames never contain `@` (register regex), so any `<x>@<y>` input is unambiguously a federated
- *  handle; a bare localpart (no `@`) returns null → caller treats it as a local lookup. */
-export function parseHandle(h: string): ParsedHandle | null {
-  const m = /^([^@]+)@(.+)$/.exec(h);
-  return m ? { localpart: m[1], domain: m[2] } : null;
 }
 
 /**
@@ -36,7 +31,7 @@ export interface S2SAvatar {
 }
 
 /**
- * A user's public profile as transmitted over S2S — the resolve endpoint (GET /api/v1/s2s/users/:handle)
+ * A user's public profile as transmitted over S2S — the resolve endpoint (GET /api/v1/s2s/users/:username)
  * response body and the `profile` slot on friend.request / friend.approve envelopes. `updatedAt` is the
  * sender's User.updatedAt in ms (the profile revision); receivers store it as the stub's remoteUpdatedAt
  * so the lightweight /revision probe can detect staleness without re-transferring the avatar.
@@ -56,8 +51,8 @@ export interface S2SEnvelope {
   durability: 'durable' | 'ephemeral';
   id: string; // origin-assigned ULID; dedup key with origin
   origin: string;
-  from: string; // localpart@domain
-  to: string[]; // [localpart@domain, ...]
+  from: S2SActor; // sender identity (split fields — never an @-joined string)
+  to: S2SActor[]; // recipients (split fields)
   ts: number; // ms since epoch
   message?: string; // friend.request note (≤255)
   content?: unknown; // message payload (opaque; future E2EE slot)
@@ -81,8 +76,8 @@ export interface S2SEnvelope {
  * friend ops.
  *
  * Identity model: local users have domain="local" (isForeigner=false); federated peers are foreign
- * User stubs (domain=<peer>, isForeigner=true, unusable random hashPwd). Federation handles always
- * use the REAL config.domain for local users (<uniqName>@<config.domain>), never "local".
+ * User stubs (domain=<peer>, isForeigner=true, unusable random hashPwd). Federation addresses always
+ * use the REAL config.domain for local users' wire identities ({ username: <uniqName>, domain: <config.domain> }), never "local".
  *
  * Avatar localization: foreign stubs carry the peer's avatar/name/bio/remoteUpdatedAt, localized from
  * the profile embedded in friend.request/friend.approve envelopes (and refreshed via fetchRemoteUser on
@@ -100,32 +95,32 @@ export class FederationService {
     private readonly upload: UploadService,
   ) {}
 
-  /** The federated handle of a LOCAL user: <uniqName>@<our real domain> (email form). */
-  localHandle(uniqName: string): string {
-    return `${uniqName}@${this.config.domain}`;
+  /** The wire identity of a LOCAL user: { username, domain } (domain = our real config.domain). */
+  localActor(uniqName: string): S2SActor {
+    return { username: uniqName, domain: this.config.domain };
   }
 
-  /** This server's domain (config.domain) — for handle-domain comparison in controllers. */
+  /** This server's domain (config.domain) — for address-domain comparison in controllers. */
   get ourDomain(): string {
     return this.config.domain;
   }
 
-  /** Find a LOCAL user id by localpart (domain="local"). Null if not found / not local. */
-  async findLocalUserId(localpart: string): Promise<number | null> {
+  /** Find a LOCAL user id by username (domain="local"). Null if not found / not local. */
+  async findLocalUserId(username: string): Promise<number | null> {
     const u = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: localpart, domain: 'local' } },
+      where: { uniqName_domain: { uniqName: username, domain: 'local' } },
     });
     return u && !u.isForeigner ? u.id : null;
   }
 
-  /** Look up a local user id from a full handle (must be localpart@<our domain>). */
-  async findLocalUserIdByHandle(handle: ParsedHandle): Promise<number | null> {
-    if (handle.domain !== this.config.domain) return null;
-    return this.findLocalUserId(handle.localpart);
+  /** Look up a local user id from a full address (must be username@<our domain>). */
+  async findLocalUserIdByAddress(address: S2SActor): Promise<number | null> {
+    if (address.domain !== this.config.domain) return null;
+    return this.findLocalUserId(address.username);
   }
 
   /** Load a local user (full row) by id; throw if missing or not local. The single source for the
-   *  `from` handle + outbound profile builders, replacing the old localUniqName() helper. */
+   *  `from` address + outbound profile builders, replacing the old localUniqName() helper. */
   private async requireLocalUser(userId: number): Promise<{
     id: number;
     uniqName: string;
@@ -158,42 +153,42 @@ export class FederationService {
     };
   }
 
-  /** Public profile of a local user (GET /api/v1/s2s/users/:handle). Null if not local / not found. */
-  async getLocalUserProfile(handle: ParsedHandle): Promise<S2SProfile | null> {
-    if (handle.domain !== this.config.domain) return null;
+  /** Public profile of a local user (GET /api/v1/s2s/users/:username). Null if not local / not found. */
+  async getLocalUserProfile(address: S2SActor): Promise<S2SProfile | null> {
+    if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: handle.localpart, domain: 'local' } },
+      where: { uniqName_domain: { uniqName: address.username, domain: 'local' } },
     });
     if (!u || u.isForeigner) return null;
     return this.toS2SProfile(u);
   }
 
-  /** Lightweight revision probe (GET /api/v1/s2s/users/:handle/revision): just the profile revision,
+  /** Lightweight revision probe (GET /api/v1/s2s/users/:username/revision): just the profile revision,
    *  no avatar transfer. Receivers compare against the stub's remoteUpdatedAt to decide whether to
    *  re-pull the full profile. Null if not local / not found. */
-  async getLocalUserRevision(handle: ParsedHandle): Promise<{ updatedAt: number } | null> {
-    if (handle.domain !== this.config.domain) return null;
+  async getLocalUserRevision(address: S2SActor): Promise<{ updatedAt: number } | null> {
+    if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: handle.localpart, domain: 'local' } },
+      where: { uniqName_domain: { uniqName: address.username, domain: 'local' } },
       select: { updatedAt: true, isForeigner: true },
     });
     if (!u || u.isForeigner) return null;
     return { updatedAt: u.updatedAt.getTime() };
   }
 
-  /** Find or create a foreign User stub for @localpart@<peer-domain>. Stubs never authenticate. */
-  async ensureForeignUser(localpart: string, domain: string): Promise<number> {
+  /** Find or create a foreign User stub for username@<peer-domain>. Stubs never authenticate. */
+  async ensureForeignUser(username: string, domain: string): Promise<number> {
     const existing = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: localpart, domain } },
+      where: { uniqName_domain: { uniqName: username, domain } },
     });
     if (existing) return existing.id;
     const created = await this.prisma.user.create({
       data: {
-        uniqName: localpart,
+        uniqName: username,
         domain,
         isForeigner: true,
         hashPwd: randomUUID(), // unusable — stubs never log in
-        name: localpart,
+        name: username,
         avatar: '',
         bio: '',
       },
@@ -204,17 +199,17 @@ export class FederationService {
   /**
    * Resolve-on-demand safety net for send-friend-request: ensure a foreign stub has been localized
    * (profile pulled) at least once. No-op if already localized (remoteUpdatedAt set). If the caller
-   * addresses a foreign user by id without a prior resolve (so the stub is a bare localpart), pull the
+   * addresses a foreign user by id without a prior resolve (so the stub is a bare username), pull the
    * profile now. Throws on peer failure so the controller surfaces FEDERATION_DELIVERY_FAILED (the
    * subsequent send would fail against the same peer anyway).
    */
-  async ensureForeignUserLocalized(userId: number, handle: ParsedHandle): Promise<void> {
+  async ensureForeignUserLocalized(userId: number, address: S2SActor): Promise<void> {
     const stub = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { remoteUpdatedAt: true },
     });
     if (!stub || stub.remoteUpdatedAt !== null) return; // already localized (or gone)
-    const profile = await this.fetchRemoteUser(handle);
+    const profile = await this.fetchRemoteUser(address);
     await this.localizeForeignProfile(userId, profile);
   }
 
@@ -243,11 +238,16 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
+      await this.markDemoted(recipientDomain, `POST network/timeout: ${(e as Error).message}`);
       throw new Error(
         `S2S POST to ${recipientDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
-    if (res.status === 200 || res.status === 202 || res.status === 409) return; // delivered or idempotent
+    if (res.status === 200 || res.status === 202 || res.status === 409) {
+      await this.markContactSuccess(recipientDomain); // delivered or idempotent → advance liveness
+      return;
+    }
+    await this.markDemoted(recipientDomain, `POST HTTP ${res.status}`);
     throw new Error(`S2S POST to ${recipientDomain} rejected: HTTP ${res.status}`);
   }
 
@@ -269,11 +269,16 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
+      await this.markDemoted(peerDomain, `GET ${path} network/timeout: ${(e as Error).message}`);
       throw new Error(
         `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
-    if (!res.ok) throw new Error(`S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`);
+    if (!res.ok) {
+      await this.markDemoted(peerDomain, `GET ${path} HTTP ${res.status}`);
+      throw new Error(`S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`);
+    }
+    await this.markContactSuccess(peerDomain);
     return (await res.json()) as T;
   }
 
@@ -288,28 +293,33 @@ export class FederationService {
    * FEDERATION_DELIVERY_FAILED so the user retries. No dangling trust: we add them to our allow-list
    * only AFTER their /init accepts us.
    *
-   * Triggered on-demand by the federated resolve path (a local user searching @handle@<untrusted-domain>).
+   * Triggered on-demand by the federated resolve path (a local user searching username@<untrusted-domain>).
    * The reverse direction (their user searches ours) is covered by our inbound /init endpoint auto-accepting them.
    */
   async ensurePeerTrusted(domain: string): Promise<void> {
     const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
     if (existing?.trustLevel === 'trusted') return; // mutual trust already established
+    if (existing?.trustLevel === 'blocked') {
+      // Admin intent — refuse to (re-)handshake. Surfaced as FEDERATION_PEER_BLOCKED (distinct from a
+      // delivery failure) so the client can show "blocked by your admin" rather than "unreachable".
+      throw new BusinessException(
+        BusinessCode.FEDERATION_PEER_BLOCKED,
+        `${domain} is blocked by an admin`,
+        HttpStatus.FORBIDDEN,
+      );
+    }
     // Confirm they're a real SOMS peer (public .well-known fetch over HTTPS; also warms their key cache
     // so the signature on their reply traffic verifies without a cold fetch).
     await this.discovery.fetchWellKnown(domain);
     // Bootstrap mutual trust: they auto-accept us on verifying this init's signature.
     await this.sendInit(domain);
-    // They trust us now → trust them back (idempotent upsert; re-init just refreshes lastSeenAt).
-    await this.prisma.federatedPeer.upsert({
-      where: { domain },
-      create: { domain, trustLevel: 'trusted' },
-      update: { trustLevel: 'trusted', lastSeenAt: new Date() },
-    });
+    // They trust us now → trust them back (idempotent + transition-aware: logs discovered/trusted).
+    await this.markTrusted(domain);
   }
 
   /** Whether mutual trust with a peer domain is ALREADY established — a pure local lookup of the
    *  FederatedPeer allow-list (a row at trustLevel 'trusted'). No network, no side effects. Our own
-   *  domain always reads trusted (a localpart@<our-domain> query is a local lookup, never a handshake).
+   *  domain always reads trusted (a username@<our-domain> query is a local lookup, never a handshake).
    *
    *  Used by the user-facing pre-flight (POST /user/peer-trust-status) so the client can tell
    *  FIRST-CONTACT — a handshake IS expected during the upcoming resolve, so show a "Connecting to
@@ -321,6 +331,185 @@ export class FederationService {
     if (domain === this.config.domain) return true;
     const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
     return existing?.trustLevel === 'trusted';
+  }
+
+  // ─── trust lifecycle (state machine + audit log) ──────────────────────────────
+  //
+  // FederatedPeer holds the CURRENT state (the cheap read path); FederatedPeerEvent is the append-only
+  // log of every transition (the admin timeline). FederationService is the single owner: every
+  // transition — runtime (init, op success/failure) and admin (block/unblock) — flows through these
+  // methods, so the row + the event stay consistent. State machine:
+  //   pending ──init ok──► trusted ──op failed──► demoted ──init ok──► trusted …   (+ blocked: admin)
+
+  /** Best-practice liveness watermark window. "Last successful contact" is an admin observability
+   *  signal whose consumer needs MINUTE granularity (is this peer up?), not sub-second — so write
+   *  frequency is matched to that real precision need (see markContactSuccess). The window is the
+   *  precision knob: lower it if a consumer genuinely needs finer. */
+  private static readonly LAST_SUCCESS_WINDOW_MS = 60_000;
+  /** Per-domain in-memory guard so the hot S2S path skips the liveness DB round trip entirely within
+   *  the window (59 of 60 ops do zero DB work). Bounded by the (small) trusted-peer count; resets on
+   *  restart — the conditional write below keeps correctness across restart + instances. */
+  private readonly lastSuccessSentAt = new Map<string, number>();
+
+  /** The single source of truth for trust establishment — used by outbound ensurePeerTrusted and the
+   *  inbound S2sInitController. Idempotent + transition-aware: writes the FederatedPeer row AND the
+   *  matching FederatedPeerEvent(s).
+   *  - no row yet        → create `trusted`, stamp trustedAt/lastSuccessAt, log `discovered` + `trusted`.
+   *  - `blocked`         → NO-OP (do not silently re-trust an admin-blocked peer).
+   *  - pending | demoted → promote to `trusted`, reset trustedAt/lastSuccessAt, clear demote fields, log `trusted`.
+   *  - already `trusted` → refresh lastSuccessAt only (idempotent re-init; no event spam). */
+  async markTrusted(domain: string, opts?: { addedBy?: string }): Promise<void> {
+    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    const now = new Date();
+    if (!existing) {
+      await this.prisma.federatedPeer.create({
+        data: {
+          domain,
+          trustLevel: 'trusted',
+          addedBy: opts?.addedBy ?? null,
+          trustedAt: now,
+          lastSuccessAt: now,
+          demotionCount: 0,
+        },
+      });
+      await this.logEvent(domain, 'discovered');
+      await this.logEvent(domain, 'trusted');
+      return;
+    }
+    if (existing.trustLevel === 'blocked') return; // respect admin intent
+    if (existing.trustLevel === 'trusted') {
+      // Idempotent re-init: advance liveness, no transition, no event.
+      await this.prisma.federatedPeer.update({ where: { domain }, data: { lastSuccessAt: now } });
+      return;
+    }
+    // pending | demoted → (re-)establish trust.
+    await this.prisma.federatedPeer.update({
+      where: { domain },
+      data: {
+        trustLevel: 'trusted',
+        trustedAt: now,
+        lastSuccessAt: now,
+        demotedAt: null,
+        demoteReason: null,
+      },
+    });
+    await this.logEvent(domain, 'trusted');
+  }
+
+  /** Advance the per-op liveness watermark (lastSuccessAt) on a successful signed S2S op. Throttled to
+   *  ≤1 round trip + ≤1 write per domain per LAST_SUCCESS_WINDOW_MS — two layers keep it cheap AND
+   *  correct: (1) an in-memory per-domain guard skips the round trip entirely within the window; (2) a
+   *  conditional UPDATE (`WHERE lastSuccessAt IS NULL OR older-than-window`) is correct across restart
+   *  and multiple instances (a no-op zero-row probe within the window). Precision is deliberately
+   *  ±window — a liveness watermark needs minute, not sub-second, granularity. No event (events are
+   *  for state transitions only, keeping the log low-volume). Best-effort: a write failure is swallowed
+   *  so a DB hiccup can never break the caller's real S2S op. */
+  async markContactSuccess(domain: string): Promise<void> {
+    const now = Date.now();
+    const last = this.lastSuccessSentAt.get(domain);
+    if (last !== undefined && now - last < FederationService.LAST_SUCCESS_WINDOW_MS) return;
+    this.lastSuccessSentAt.set(domain, now);
+    try {
+      await this.prisma.federatedPeer.updateMany({
+        where: {
+          domain,
+          OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: new Date(now - FederationService.LAST_SUCCESS_WINDOW_MS) } }],
+        },
+        data: { lastSuccessAt: new Date(now) },
+      });
+    } catch {
+      // Best-effort liveness watermark — never break the caller's op.
+    }
+  }
+
+  /** Record a failed signed S2S op. Always refreshes the latest failure (demotedAt + demoteReason) so
+   *  the admin sees the most recent error; if the peer was `trusted` or `pending`, this is a real
+   *  trusted→demoted transition — flip the state, bump demotionCount, log a `demoted` event, and PURGE
+   *  the cached signing keys (a stale/rotated key is the likely cause; the next ensurePeerTrusted
+   *  re-fetches them). `blocked` is admin intent → no-op. Self-healing: a demoted peer re-runs the init
+   *  handshake on the next resolve (ensurePeerTrusted sees non-trusted). */
+  async markDemoted(domain: string, reason: string): Promise<void> {
+    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    if (!existing || existing.trustLevel === 'blocked') return;
+    const now = new Date();
+    const transitioned = existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
+    await this.prisma.federatedPeer.update({
+      where: { domain },
+      data: {
+        ...(transitioned ? { trustLevel: 'demoted', demotionCount: { increment: 1 } } : {}),
+        demotedAt: now,
+        demoteReason: reason.slice(0, 255),
+      },
+    });
+    if (transitioned) {
+      await this.prisma.s2SKeyCache.deleteMany({ where: { domain } });
+      await this.logEvent(domain, 'demoted', reason);
+    }
+  }
+
+  /** Admin block: forbid federation with a peer (ensurePeerTrusted refuses to re-handshake; the inbound
+   *  guard rejects it since trustLevel !== 'trusted'). Idempotent. Logs a `blocked` event. */
+  async markBlocked(domain: string, note?: string): Promise<void> {
+    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    if (existing?.trustLevel === 'blocked') return;
+    const now = new Date();
+    await this.prisma.federatedPeer.upsert({
+      where: { domain },
+      create: { domain, trustLevel: 'blocked', blockedAt: now },
+      update: { trustLevel: 'blocked', blockedAt: now },
+    });
+    await this.logEvent(domain, 'blocked', note);
+  }
+
+  /** Admin unblock: move the peer to `pending` so the next contact re-runs the init handshake to
+   *  re-establish trust (it is NOT auto-re-trusted). Logs an `unblocked` event. No-op if not blocked. */
+  async markUnblocked(domain: string): Promise<void> {
+    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    if (!existing || existing.trustLevel !== 'blocked') return;
+    await this.prisma.federatedPeer.update({
+      where: { domain },
+      data: { trustLevel: 'pending', blockedAt: null },
+    });
+    await this.logEvent(domain, 'unblocked');
+  }
+
+  /** Append a lifecycle transition to the audit log. Best-effort: the peer-state mutation is the
+   *  primary effect; a log failure must not break the caller's flow. */
+  private async logEvent(domain: string, type: string, reason?: string): Promise<void> {
+    try {
+      await this.prisma.federatedPeerEvent.create({
+        data: { domain, type, reason: reason ? reason.slice(0, 255) : null },
+      });
+    } catch {
+      // Swallow — audit row is secondary to the state mutation.
+    }
+  }
+
+  /** Admin list: peers with their lifecycle columns, filtered by free-text domain + trust state. */
+  async listPeers(opts: { skip: number; take: number; search?: string; status?: string }) {
+    const where = {
+      ...(opts.search ? { domain: { contains: opts.search, mode: 'insensitive' as const } } : {}),
+      ...(opts.status ? { trustLevel: opts.status } : {}),
+    };
+    const [list, total] = await Promise.all([
+      this.prisma.federatedPeer.findMany({
+        where,
+        skip: opts.skip,
+        take: opts.take,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.federatedPeer.count({ where }),
+    ]);
+    return { list, total };
+  }
+
+  /** Admin timeline: a peer's lifecycle events, newest-first. */
+  async peerEvents(domain: string, take = 100) {
+    return this.prisma.federatedPeerEvent.findMany({
+      where: { domain },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
   }
 
   /** Send a signed POST /api/v1/s2s/init to a peer so they auto-accept us into their allow-list. The
@@ -356,8 +545,8 @@ export class FederationService {
 
   // ─── friend flows (synchronous) ──────────────────────────────────────────────
 
-  /** Send a friend.request from a local user to @localpart@<peer>, carrying the sender's profile. */
-  async sendFriendRequest(fromLocalUserId: number, to: ParsedHandle, message = ''): Promise<void> {
+  /** Send a friend.request from a local user to a peer user ({username, domain}), carrying the sender's profile. */
+  async sendFriendRequest(fromLocalUserId: number, to: S2SActor, message = ''): Promise<void> {
     const from = await this.requireLocalUser(fromLocalUserId);
     const profile = await this.toS2SProfile(from);
     await this.sendEnvelope(
@@ -366,8 +555,8 @@ export class FederationService {
         durability: 'durable',
         id: ulid(),
         origin: this.config.domain,
-        from: this.localHandle(from.uniqName),
-        to: [`${to.localpart}@${to.domain}`],
+        from: this.localActor(from.uniqName),
+        to: [{ username: to.username, domain: to.domain }],
         ts: Date.now(),
         message: (message ?? '').slice(0, 255),
         profile,
@@ -376,12 +565,12 @@ export class FederationService {
     );
   }
 
-  /** Send a friend.approve from a local user (the approver) to @localpart@<peer> (the requester). Pure
+  /** Send a friend.approve from a local user (the approver) to a peer user {username, domain} (the requester). Pure
    *  state confirmation — carries NO profile: the requester already resolved + localized the approver's
    *  stub before sending the request, and any later profile change is picked up lazily by the chat-open
    *  /revision probe (syncForeignUserIfStale). Contrast friend.request, which MUST carry the sender's
    *  profile so the target can create the stub from scratch + render the request card. */
-  async sendFriendApprove(localApproverId: number, to: ParsedHandle): Promise<void> {
+  async sendFriendApprove(localApproverId: number, to: S2SActor): Promise<void> {
     const fromUniqName = (await this.requireLocalUser(localApproverId)).uniqName;
     await this.sendEnvelope(
       {
@@ -389,8 +578,8 @@ export class FederationService {
         durability: 'durable',
         id: ulid(),
         origin: this.config.domain,
-        from: this.localHandle(fromUniqName),
-        to: [`${to.localpart}@${to.domain}`],
+        from: this.localActor(fromUniqName),
+        to: [{ username: to.username, domain: to.domain }],
         ts: Date.now(),
       },
       to.domain,
@@ -398,23 +587,23 @@ export class FederationService {
   }
 
   /**
-   * Fetch a peer user's public profile (signed GET /api/v1/s2s/users/:handle). Used by federated
+   * Fetch a peer user's public profile (signed GET /api/v1/s2s/users/:username). Used by federated
    * resolve (the add-friend card), ensureForeignUserLocalized (send-friend-request safety net), and
    * the chat-open staleness re-pull (syncForeignUserIfStale). Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
-  async fetchRemoteUser(handle: ParsedHandle): Promise<S2SProfile> {
+  async fetchRemoteUser(address: S2SActor): Promise<S2SProfile> {
     return this.getSigned<S2SProfile>(
-      `/api/v1/s2s/users/${handle.localpart}@${handle.domain}`,
-      handle.domain,
+      `/api/v1/s2s/users/${address.username}`,
+      address.domain,
     );
   }
 
   /** Fetch only the peer user's profile revision (signed GET .../revision). Cheap staleness probe. */
-  async fetchRemoteRevision(handle: ParsedHandle): Promise<{ updatedAt: number }> {
+  async fetchRemoteRevision(address: S2SActor): Promise<{ updatedAt: number }> {
     return this.getSigned<{ updatedAt: number }>(
-      `/api/v1/s2s/users/${handle.localpart}@${handle.domain}/revision`,
-      handle.domain,
+      `/api/v1/s2s/users/${address.username}/revision`,
+      address.domain,
     );
   }
 
@@ -482,16 +671,16 @@ export class FederationService {
       select: { isForeigner: true, uniqName: true, domain: true, remoteUpdatedAt: true },
     });
     if (!stub || !stub.isForeigner) return;
-    const handle: ParsedHandle = { localpart: stub.uniqName, domain: stub.domain };
+    const address: S2SActor = { username: stub.uniqName, domain: stub.domain };
     try {
-      const rev = await this.fetchRemoteRevision(handle);
+      const rev = await this.fetchRemoteRevision(address);
       if (
         stub.remoteUpdatedAt !== null &&
         rev.updatedAt <= stub.remoteUpdatedAt.getTime()
       ) {
         return; // fresh
       }
-      const profile = await this.fetchRemoteUser(handle);
+      const profile = await this.fetchRemoteUser(address);
       await this.localizeForeignProfile(userId, profile);
     } catch {
       // Best-effort: keep the cached profile. The next chat-open retries.

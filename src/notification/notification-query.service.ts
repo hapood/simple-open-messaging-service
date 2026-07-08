@@ -88,7 +88,7 @@ export class NotificationQueryService {
       const u = peerUsers.find((u) => u.id === p.userId) as
         | (typeof peerUsers)[number]
         | undefined;
-      peerNameByThread.set(p.threadId, u?.name || u?.uniqName || 'Unknown');
+      peerNameByThread.set(p.threadId, u?.name || 'Unknown');
     });
 
     // Resolve GROUP display names (Group.name by threadId).

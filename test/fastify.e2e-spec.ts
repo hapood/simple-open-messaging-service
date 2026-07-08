@@ -56,7 +56,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     );
     await request(app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'fastify', password: 'Pass1234' });
+      .send({ uniqName: 'fastify', name: 'Fastify', password: 'Pass1234' });
     const login = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ uniqName: 'fastify', password: 'Pass1234' });

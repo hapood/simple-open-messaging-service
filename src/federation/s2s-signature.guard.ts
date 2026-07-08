@@ -7,7 +7,6 @@ import {
 import type { FastifyRequest } from 'fastify';
 import { PrismaService } from '../prisma.service.js';
 import { S2sVerifyService } from './s2s-verify.service.js';
-import { parseHandle } from './federation.service.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 
@@ -66,14 +65,14 @@ export class S2sSignatureGuard implements CanActivate {
 
     // 6. Binding rule (envelopes only — a `from` field implies an envelope; GET /users has none):
     // the asserted sender must live on the signer's domain, so a trusted peer can't forge users of
-    // another peer.
-    const fromHandle = (req.body as { from?: string } | undefined)?.from;
-    if (fromHandle) {
-      const from = parseHandle(fromHandle);
-      if (!from || from.domain !== signerDomain) {
+    // another peer. `from` is a {username, domain} object — no @-joined string on the wire.
+    const fromActor = (req.body as { from?: { username?: unknown; domain?: unknown } } | undefined)?.from;
+    if (fromActor) {
+      const fromDomain = typeof fromActor.domain === 'string' ? fromActor.domain : undefined;
+      if (!fromDomain || fromDomain !== signerDomain) {
         throw new BusinessException(
           BusinessCode.FEDERATION_BINDING_VIOLATION,
-          `from.domain (${from?.domain ?? 'malformed'}) != signer (${signerDomain})`,
+          `from.domain (${fromDomain ?? 'malformed'}) != signer (${signerDomain})`,
           HttpStatus.UNAUTHORIZED,
         );
       }

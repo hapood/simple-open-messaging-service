@@ -9,6 +9,7 @@ import { AdminSessionsPage } from '@/routes/admin-sessions/admin-sessions-page'
 import { BansPage } from '@/routes/bans/bans-page'
 import { ReuseAlertsPage } from '@/routes/reuse/reuse-alerts-page'
 import { PushPage } from '@/routes/push/push-page'
+import { FederationPage } from '@/routes/federation/federation-page'
 import { NotFoundPage } from '@/routes/not-found-page'
 
 /** Root layout: AuthProvider must sit inside RouterProvider so login/logout can use useNavigate. */
@@ -36,6 +37,7 @@ export const router = createBrowserRouter([
           { path: '/bans', element: <BansPage /> },
           { path: '/reuse', element: <ReuseAlertsPage /> },
           { path: '/push', element: <PushPage /> },
+          { path: '/federation', element: <FederationPage /> },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

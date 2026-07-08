@@ -8,14 +8,14 @@
 // One solid color for both sides (overrides the green/white side bg from row-base). Brand-tinted so
 // it reads as an invite; fully opaque; identical for self and other.
 .msg-bubble.invite {
-  --invite-bg: color-mix(in srgb, var(--app-surface) 70%, var(--app-brand) 30%);
-  background: var(--invite-bg);
-  padding: 8px 10px;
+  // No bubble fill — the invite is a transparent card floating on the chat background (matching the
+  // media-card treatment). The brand watermark + title carry the invite identity; the bottom meta bar
+  // carries the valid/expired status + time.
+  padding: 0;
   display: block;
-  position: relative;        // positioning context for the watermark (also inherited from row-base; explicit)
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08); // a touch more elevation than a plain text bubble
-  overflow: hidden;          // clip the giant logo watermark that bleeds past the right/bottom edges — the invite
-                             // card carries no tail (see below), so overflow:hidden is side-effect-free here
+  position: relative;        // positioning context for the watermark
+  overflow: hidden;          // clip the watermark that bleeds past the edges
+  background: transparent !important;
 }
 
 // No tail on the invite — it is a card, not a tailed bubble, and self/other share one solid surface.
@@ -76,6 +76,7 @@
 .invite-card {
   position: relative;
   z-index: 1;
+  padding: 8px 10px;
 }
 
 // Kicker — a fixed "Group invitation" label (no inviter name) signaling what this card is.
@@ -116,16 +117,42 @@
   text-overflow: ellipsis;
 }
 
-// Valid / Expired status — the card surfaces ONLY the state; the concrete expiry time lives in the
-// expanded invite-detail dialog. A colored dot carries the state at a glance (brand = valid, muted = expired).
+// Bottom meta bar: valid/expired status (left) + send time (right). Same translucent-grey chip as the
+// media meta bar so every card type shares one info-strip style; the status dot keeps its brand/muted
+// color to signal validity at a glance.
+.invite-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 8px;
+  min-height: 18px;
+  margin-top: 2px;        // independent strip BELOW the card (not embedded in it)
+  width: 240px;           // match the invite-tappable card width → aligned with the card above
+  max-width: 100%;
+  box-sizing: border-box;
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--im-bubble-text);
+  font-size: 11px;
+  line-height: 14px;
+  border-radius: var(--app-radius-sm, 6px);  // its own chip radius (no longer clipped by the card)
+}
+.invite-meta-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}
+
+// Valid / Expired status (now inside the meta bar) — the card surfaces ONLY the state; the concrete
+// expiry time lives in the expanded invite-detail dialog. A colored dot carries the state at a glance
+// (brand = valid, muted = expired).
 .invite-status {
   display: flex;
   align-items: center;
   gap: 5px;
   font-size: 11px;
-  line-height: 13px; // integer px
-  color: var(--app-text-faint);
-  margin: 6px 0 0;
+  line-height: 14px; // integer px — matches the meta-bar time font
+  color: inherit;    // same color as the time text (the meta bar's --im-bubble-text); only the dot carries state
+  opacity: 0.6;
 }
 .invite-status-dot {
   width: 7px;

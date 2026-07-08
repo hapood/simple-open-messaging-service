@@ -26,7 +26,7 @@ export type ConversationItem = Omit<
 
 /**
  * The name to display for a conversation in the chat header + conversation list. A per-user alias (备注)
- * overrides the real name (peer handle for P2P, group name for GROUP); otherwise the real name is used.
+ * overrides the real name (peer nickname for P2P, group name for GROUP); otherwise the real name is used.
  * Single source of truth — call this everywhere a thread title is rendered so an alias takes effect uniformly.
  */
 export function displayThreadName(t: ConversationItem): string {
@@ -35,12 +35,14 @@ export function displayThreadName(t: ConversationItem): string {
 }
 
 /**
- * A user's display name — the bare localpart/uniqName (e.g. "bob"). For federated peers the DOMAIN is
- * shown separately via <app-federated-badge> (globe + domain) next to the name, so the name stays clean
- * and the server identity is a distinct, scannable chip. Single source for the name text.
+ * A user's display name — the nickname (e.g. "Bob"), NOT the login handle. Registration guarantees a
+ * non-empty nickname, so there is no uniqName fallback (the handle is never shown as a label). For
+ * federated peers the DOMAIN is shown separately via <app-federated-badge> (globe + domain) under the
+ * avatar, so the name stays clean and the server identity is a distinct, scannable chip. Single source
+ * for the name text.
  */
-export function displayUserName(u: { uniqName: string }): string {
-  return u.uniqName
+export function displayUserName(u: { name?: string | null }): string {
+  return u.name ?? ''
 }
 
 /** A P2P relationship row (thread/by-user-id returns this). */

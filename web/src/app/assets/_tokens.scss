@@ -106,6 +106,7 @@ $app-gray-900: #111827;
   --im-bubble-self:    #d9fdd3;   // outgoing bubble (current WhatsApp green; legacy #dcf8c6)
   --im-bubble-other:   #ffffff;   // incoming bubble
   --im-bubble-text:    #111b21;   // bubble body text
+  --im-meta-bg:        #ececf1;   // media meta bar fill (independent of bubble color — neutral grey chip)
   --im-time:           #667781;   // in-bubble timestamp (gray-green shared by green/white bubbles)
   --im-avatar-self:    #25d366;   // self avatar fill (WhatsApp brand green)
   --im-avatar-other:   #c7c7cc;   // other avatar fill (placeholder gray)
@@ -170,6 +171,7 @@ $app-gray-900: #111827;
   --im-bubble-self:    #005c4b;
   --im-bubble-other:   #202c33;
   --im-bubble-text:    #e9edef;
+  --im-meta-bg:        #111b21;   // media meta bar fill (deeper than the bubble so it reads as a chip)
   --im-time:           rgba(233, 237, 239, 0.5);
   --im-avatar-self:    #25d366;
   --im-avatar-other:   #37424a;

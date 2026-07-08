@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
+import { extractDigests } from '../upload/file-content.js';
 
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
 const PREVIEW_TEXT_MAX = 200;
@@ -98,6 +99,24 @@ export class MessageService implements OnModuleInit {
           where: { userId_threadId: { userId, threadId } },
           data: { lastReadMsgId: msg.id },
         });
+        // Per-object media authz: record every CAS digest this message references so the /uploads/shards/*
+        // gate can authorize readers against thread membership (one indexed EXISTS). One row per distinct
+        // digest; skipDuplicates honors @@unique([messageId, digest]) for album duplicates. PURE_TEXT/
+        // INVITE reference no media; legacy-flat URLs carry no digest and are skipped by extractDigests.
+        if (
+          type === ContentType.IMAGE ||
+          type === ContentType.FILE ||
+          type === ContentType.VIDEO ||
+          type === ContentType.AUDIO
+        ) {
+          const digests = extractDigests(content);
+          if (digests.length > 0) {
+            await tx.mediaMessage.createMany({
+              data: digests.map((digest) => ({ messageId: msg.id, threadId, digest })),
+              skipDuplicates: true,
+            });
+          }
+        }
         return msg;
       });
     } catch (e) {

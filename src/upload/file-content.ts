@@ -100,6 +100,22 @@ export function isUploadUrl(url: string): boolean {
   return CAS_UPLOAD_URL_RE.test(url) || FLAT_UPLOAD_URL_RE.test(url);
 }
 
+/** Global capture of the digest inside a CAS shard URL. Used by extractDigests to pull every sha256
+ *  referenced by a message's content string (IMAGE/FILE/VIDEO/AUDIO) so MediaMessage authz rows can be
+ *  written at send time. Legacy flat URLs have no digest and are intentionally ignored. */
+const SHARD_DIGEST_RE = /\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./g;
+
+/** Extract every distinct CAS digest referenced by a message's raw content string. Scans the whole
+ *  JSON (works for single-image `{url,...}`, FILE/VIDEO/AUDIO shapes, and future album arrays alike)
+ *  and de-duplicates — one MediaMessage row per (message, digest). Returns [] for PURE_TEXT and for
+ *  content that references only legacy-flat URLs (no digest → no authz row → served auth-n-only). */
+export function extractDigests(content: string): string[] {
+  if (!content) return [];
+  const out = new Set<string>();
+  for (const m of content.matchAll(SHARD_DIGEST_RE)) out.add(m[1]);
+  return [...out];
+}
+
 /**
  * Resolve a safe on-disk extension and a display MIME for an accepted upload. The open model
  * rejects nothing here (any type is allowed; security is at serving) — the caller rejects only on

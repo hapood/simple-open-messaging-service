@@ -117,6 +117,6 @@ export async function bootFederationApp(opts: {
 /** Truncate the federation-relevant tables (both apps share soms_test). User CASCADE clears its kin. */
 export async function truncateFederationTables(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "User", "Friendship", "MessageThread", "FederatedPeer", "S2SKeyCache", "S2SInboxSeen" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "User", "Friendship", "MessageThread", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "S2SInboxSeen" RESTART IDENTITY CASCADE',
   );
 }

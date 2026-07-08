@@ -11,6 +11,7 @@ import {
 } from './federation-harness.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { SignatureService } from '../src/federation/signature.service.js';
+import { FederationService } from '../src/federation/federation.service.js';
 import { UploadService } from '../src/upload/upload.service.js';
 import { UserService } from '../src/user/user.service.js';
 
@@ -52,7 +53,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Seed alice @ appA.
     await request(appA.app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'alice', password: 'Pass1234' });
+      .send({ uniqName: 'alice', name: 'Alice', password: 'Pass1234' });
     const loginA = await request(appA.app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ uniqName: 'alice', password: 'Pass1234' });
@@ -65,7 +66,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Seed bob @ appB.
     await request(appB.app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'bob', password: 'Pass1234' });
+      .send({ uniqName: 'bob', name: 'Bob', password: 'Pass1234' });
     const loginB = await request(appB.app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ uniqName: 'bob', password: 'Pass1234' });
@@ -96,9 +97,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('init handshake establishes mutual trust on resolve', async () => {
     // alice@appA resolves bob@bbb.local → triggers ensurePeerTrusted(bbb.local) → mutual init.
     const res = await request(appA.app.getHttpServer())
-      .post('/api/v1/user/by-uniq-name')
+      .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ uniqName: `bob@${DOM_B}` });
+      .send({ username: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
     expect(res.body.data.isForeigner).toBe(true);
@@ -222,7 +223,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     };
     const evilSig = new SignatureService(evilKeypair as never);
     const authority = `127.0.0.1:${appA.port}`;
-    const body = JSON.stringify({ type: 'friend.request', from: "mallory@aaa.local-evil", to: [] });
+    const body = JSON.stringify({ type: 'friend.request', from: { username: 'mallory', domain: 'aaa.local-evil' }, to: [] });
     const headers = evilSig.signOutbound({
       method: 'POST',
       path: '/api/v1/s2s/inbox',
@@ -238,5 +239,102 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.status).toBe(401);
     const json = await res.json();
     expect(json.code).toBe(BusinessCode.FEDERATION_PEER_NOT_TRUSTED);
+  });
+
+  // ─── trust lifecycle: demote on failure → re-handshake → block ───────────────────────────────
+  // These run after the friend-flow tests; aaa↔bbb are still mutually trusted (unfriending above is
+  // local-only and does not demote). They drive the state machine through real signed S2S traffic:
+  // a dead loopback URL forces a network failure → markDemoted; restoring it → ensurePeerTrusted
+  // re-handshakes → markTrusted; markBlocked → resolve surfaces FEDERATION_PEER_BLOCKED.
+
+  it('demotes a trusted peer when a signed op fails (network), logs the event + purges keys', async () => {
+    // Precondition: aaa still trusts bbb, and bbb's signing keys are cached on aaa (fetched at init).
+    const peerBefore = await appA.prisma.federatedPeer.findUnique({ where: { domain: DOM_B } });
+    expect(peerBefore?.trustLevel).toBe('trusted');
+    const keysBefore = await appA.prisma.s2SKeyCache.findMany({ where: { domain: DOM_B } });
+    expect(keysBefore.length).toBeGreaterThan(0);
+
+    // Point bbb's loopback base at a dead port → the resolve's signed GET refuses the connection.
+    const liveB = TestDiscoveryService.portMap[DOM_B];
+    TestDiscoveryService.portMap[DOM_B] = 'http://127.0.0.1:1';
+
+    // alice@appA resolves bob@bbb.local again. ensurePeerTrusted short-circuits (trusted), then
+    // fetchRemoteUser fails (ECONNREFUSED) → markDemoted(DOM_B) → resolve surfaces DELIVERY_FAILED.
+    const res = await request(appA.app.getHttpServer())
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ username: 'bob', domain: DOM_B });
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe(BusinessCode.FEDERATION_DELIVERY_FAILED);
+
+    // aaa demoted bbb: state flipped, count bumped, demoted event logged, keys purged.
+    const peerAfter = await appA.prisma.federatedPeer.findUnique({ where: { domain: DOM_B } });
+    expect(peerAfter?.trustLevel).toBe('demoted');
+    expect(peerAfter?.demotionCount).toBe(1);
+    expect(peerAfter?.demotedAt).not.toBeNull();
+    expect(peerAfter?.demoteReason).toContain('network/timeout');
+
+    const demotedEvent = await appA.prisma.federatedPeerEvent.findFirst({
+      where: { domain: DOM_B, type: 'demoted' },
+    });
+    expect(demotedEvent).not.toBeNull();
+    expect(demotedEvent!.reason).toContain('network/timeout');
+
+    const keysAfter = await appA.prisma.s2SKeyCache.findMany({ where: { domain: DOM_B } });
+    expect(keysAfter.length).toBe(0);
+
+    // Restore bbb's live loopback URL for the re-handshake test below.
+    TestDiscoveryService.portMap[DOM_B] = liveB;
+  });
+
+  it('re-handshakes a demoted peer back to trusted on the next resolve (self-healing)', async () => {
+    // alice@appA resolves bob@bbb.local once more → ensurePeerTrusted sees `demoted` → re-runs the init
+    // handshake → markTrusted flips back to trusted + logs a `trusted` event AFTER the demoted one.
+    const res = await request(appA.app.getHttpServer())
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ username: 'bob', domain: DOM_B });
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe(BusinessCode.OK);
+
+    const peer = await appA.prisma.federatedPeer.findUnique({ where: { domain: DOM_B } });
+    expect(peer?.trustLevel).toBe('trusted');
+    expect(peer?.demotedAt).toBeNull();
+    expect(peer?.demoteReason).toBeNull();
+
+    // peerEvents is newest-first, so the most recent transition is types[0] — after a re-handshake
+    // that must be `trusted` (trust re-established), and the timeline still contains the earlier demote.
+    const events = await appA.app.get(FederationService).peerEvents(DOM_B, 50);
+    const types = (events as { type: string; createdAt: string }[]).map((e) => e.type);
+    expect(types[0]).toBe('trusted');
+    expect(types).toContain('demoted');
+  });
+
+  it('blocks a peer: resolve fails fast with FEDERATION_PEER_BLOCKED + admin reads work', async () => {
+    const fedA = appA.app.get(FederationService);
+
+    // Admin blocks bbb on appA (the persistent control). Then resolve must NOT attempt a handshake —
+    // it surfaces FEDERATION_PEER_BLOCKED (distinct from an unreachable peer).
+    await fedA.markBlocked(DOM_B, 'abuse');
+    const blocked = await appA.prisma.federatedPeer.findUnique({ where: { domain: DOM_B } });
+    expect(blocked?.trustLevel).toBe('blocked');
+
+    const res = await request(appA.app.getHttpServer())
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ username: 'bob', domain: DOM_B });
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe(BusinessCode.FEDERATION_PEER_BLOCKED);
+
+    // Admin reads (the admin page's data sources): the list filters by state, the timeline (newest-first)
+    // carries the full discovered → trusted → demoted → trusted → blocked process, with blocked on top.
+    const list = await fedA.listPeers({ skip: 0, take: 10, status: 'blocked' });
+    expect((list as { list: { domain: string }[] }).list.some((p) => p.domain === DOM_B)).toBe(true);
+
+    const tl = (await fedA.peerEvents(DOM_B, 50)) as { type: string }[];
+    const types = tl.map((e) => e.type);
+    expect(types).toContain('discovered');
+    expect(types).toContain('demoted');
+    expect(types[0]).toBe('blocked');
   });
 });

@@ -34,9 +34,9 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
 
       <div class="body">
         <div class="identity">
-          <app-user-avatar [type]="UserAvatarType.OTHER" [name]="peer()?.uniqName ?? ''" />
-          <div class="name">{{ peerDisplayName() }}</div>
+          <app-user-avatar [type]="UserAvatarType.OTHER" [name]="peer()?.name ?? ''" />
           <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
+          <div class="name">{{ peerDisplayName() }}</div>
         </div>
 
         <app-thread-alias-editor [threadId]="threadId()!" />
@@ -106,7 +106,8 @@ export class PeerProfileComponent {
     return id !== undefined ? this.convList.items().find((t) => t.threadId === id) : undefined
   })
   readonly peer = computed(() => this.userMsgTrd()?.peerUser)
-  /** Display label for the peer: bare localpart for local users, `@localpart@domain` for federated. */
+  /** Display label for the peer — the nickname. The federated domain (if any) is shown via the badge
+   *  directly under the avatar, not folded into the name. */
   readonly peerDisplayName = computed(() => {
     const p = this.peer();
     return p ? displayUserName(p) : '';

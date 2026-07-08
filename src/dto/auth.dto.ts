@@ -4,9 +4,8 @@ import {
   IsOptional,
   IsString,
   Matches,
-  MaxLength,
-  MinLength,
 } from 'class-validator';
+import { IsDisplayName } from '../common/validators.js';
 
 /**
  * Auth request DTOs. Validation rules are ported 1:1 from the original inline controller checks to avoid
@@ -42,15 +41,28 @@ export class LoginDto {
  * returning 200 + code:2.
  */
 export class RegisterDto {
-  // 1-20 chars, at least 3 letters (original user.controller.register nameRegex)
+  // 3-31 chars, [a-zA-Z0-9_], must start with a letter (Telegram-style handle). The leading-letter +
+  // alnum+underscore charset keeps handles URL/address-safe for the username@domain federation identity;
+  // the DB column is VarChar(31), so 31 is the hard ceiling. Existing users keep their handles — this
+  // only gates NEW registrations.
   @ApiProperty({
     example: 'alice',
-    description: 'Login unique name: 1-20 chars [\\w.-], at least 3 letters',
+    description: 'Login unique name: 3-31 chars [a-zA-Z0-9_], must start with a letter',
   })
-  @Matches(/^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$/, {
-    message: 'uniqName must be 1-20 chars ([\\w.-]) with at least 3 letters',
+  @Matches(/^[a-zA-Z][a-zA-Z0-9_]{2,30}$/, {
+    message: 'uniqName must be 3-31 chars ([a-zA-Z0-9_]) and start with a letter',
   })
   uniqName: string;
+
+  // Display name is the primary identity shown everywhere (lists, headers, avatars). Lenient on charset
+  // — any visible unicode incl. CJK/emoji — but required + length-capped (see IsDisplayName).
+  @ApiProperty({
+    example: 'Alice',
+    description: 'Display name (1-30 chars; unicode/emoji allowed)',
+  })
+  @IsDisplayName()
+  @IsNotEmpty()
+  name: string;
 
   // 6-20 chars, allowed [a-zA-Z0-9.@!#$%^&*()] (original pwdRegex)
   @ApiProperty({

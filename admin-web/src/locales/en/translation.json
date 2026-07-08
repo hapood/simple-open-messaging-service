@@ -21,6 +21,7 @@
     "bans": "Ban Management",
     "reuse": "Reuse Alerts",
     "push": "Push Management",
+    "federation": "Federation",
     "logout": "Log Out"
   },
   "language": {
@@ -179,6 +180,57 @@
       "ANDROID": "Android · FCM",
       "IOS": "iOS · FCM",
       "WEB": "Web Push"
+    }
+  },
+  "federation": {
+    "title": "Federation",
+    "desc": "Peer servers on the trust allow-list and their lifecycle: trust → demote (a signed op failed; re-handshakes on next contact) → re-trust, plus admin-blocked domains. Open a peer for the full timeline.",
+    "searchPlaceholder": "Search domain",
+    "status": {
+      "all": "All",
+      "trusted": "Trusted",
+      "demoted": "Demoted",
+      "pending": "Pending",
+      "blocked": "Blocked"
+    },
+    "col": {
+      "domain": "Domain",
+      "status": "Status",
+      "lastSuccess": "Last Success",
+      "demotions": "Demotions",
+      "created": "Discovered"
+    },
+    "action": {
+      "viewTimeline": "View timeline",
+      "block": "Block",
+      "unblock": "Unblock"
+    },
+    "toast": {
+      "blocked": "Peer blocked — federation refused until unblocked",
+      "unblocked": "Peer unblocked — will re-handshake on next contact"
+    },
+    "total": "{{count}} peers",
+    "empty": "No federated peers",
+    "meta": {
+      "createdAt": "Discovered",
+      "trustedAt": "Trusted since",
+      "lastSuccessAt": "Last successful contact",
+      "demotedAt": "Demoted at",
+      "demotionCount": "Demotion count",
+      "addedBy": "Set by",
+      "auto": "auto (init)",
+      "lastError": "Last failure"
+    },
+    "timeline": {
+      "title": "Lifecycle timeline",
+      "empty": "No lifecycle events recorded"
+    },
+    "event": {
+      "discovered": "Discovered",
+      "trusted": "Trust established",
+      "demoted": "Connection lost / demoted",
+      "blocked": "Blocked by admin",
+      "unblocked": "Unblocked by admin"
     }
   },
   "resetPassword": {

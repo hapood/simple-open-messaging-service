@@ -1,11 +1,27 @@
-/** 相册单张图：layoutAlbum 按 {w,h} 算布局，src 供 background-image 加载。 */
-export interface AlbumImage {
+/**
+ * A single media cell (image / video / audio). layoutAlbum lays out by {w,h}; `src` is used for
+ * background-image (image) / <video> first-frame (video) / download anchor (audio). `kind` drives
+ * the render branch; size/duration/name feed the bottom meta bar + overlay.
+ */
+export interface AlbumMedia {
+  kind: 'image' | 'video' | 'audio';
+  /** /uploads/... URL (image / video / audio). */
   src: string;
   w: number;
   h: number;
-  /** 该图所属的原 msg id（相册聚合多 msg 时各图不同）；layout 不读，仅供 dev 角标显聚合范围 `[min-max]`。 */
+  /** Bytes — drives the meta bar (formatBytes). */
+  size?: number;
+  /** Seconds — drives the video/audio duration overlay (formatDuration). */
+  duration?: number;
+  /** Display name — video/audio meta bar (images usually omit). */
+  name?: string;
+  /** Owning original msg id (differs across cells in a merged album); layout ignores it, used only
+   *  for the dev badge showing the aggregation range `[min-max]`. */
   msgId?: string;
 }
+
+/** Legacy alias — gallery-viewer and older call sites still reference AlbumImage. */
+export type AlbumImage = AlbumMedia;
 
 /** FILE 消息附件：服务端 POST /upload/file 返回的 { url, name, size, mimeType }（存于 Message.content 的 JSON）。 */
 export interface FileInfo {
@@ -44,8 +60,8 @@ export interface ChatMsgData {
   /** HH:mm（日期上下文交 date 分隔行）。 */
   time: string;
   contentType: 'PURE_TEXT' | 'INVITE' | 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO';
-  /** IMAGE：相册图片（同发送者连续 IMAGE 已合并为一条）。null=非图片。 */
-  images: AlbumImage[] | null;
+  /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
+  images: AlbumMedia[] | null;
   /** FILE：附件元信息（url/name/size/mimeType）。null=非文件。 */
   file: FileInfo | null;
   /** 原始毫秒（日期分隔判定）。 */

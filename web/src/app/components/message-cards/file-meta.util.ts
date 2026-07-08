@@ -81,3 +81,16 @@ export function fileExt(name: string): string {
   const i = name.lastIndexOf('.');
   return i >= 0 ? name.slice(i + 1).toUpperCase() : 'FILE';
 }
+
+/** Human-readable playback duration: <1h → "M:SS", ≥1h → "H:MM:SS". Empty for 0 / unknown / non-finite.
+ *  Used by the video/audio duration overlay on the unified media card. */
+export function formatDuration(sec: number): string {
+  if (!Number.isFinite(sec) || sec <= 0) return '';
+  const total = Math.floor(sec);
+  const s = total % 60;
+  const m = Math.floor(total / 60) % 60;
+  const h = Math.floor(total / 3600);
+  const ss = String(s).padStart(2, '0');
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${ss}`;
+  return `${m}:${ss}`;
+}

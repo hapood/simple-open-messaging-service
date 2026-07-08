@@ -6,7 +6,7 @@ import { SseService } from '../gateway/sse.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import { FederationService, parseHandle, type S2SEnvelope, type ParsedHandle } from './federation.service.js';
+import { FederationService, type S2SEnvelope, type S2SActor } from './federation.service.js';
 
 /**
  * Inbound S2S envelope router. The S2sSignatureGuard already verified the signature + allow-list +
@@ -69,17 +69,17 @@ export class InboxHandler {
   /** Inbound friend.request: remote user wants to add our local user. The envelope carries the
    *  requester's profile, so the stub is localized (avatar/name/bio) inline — no extra fetch. */
   private async handleFriendRequest(env: S2SEnvelope): Promise<void> {
-    const from = this.requireHandle(env.from); // the remote requester → foreign stub
-    const to = this.requireHandle(env.to[0]); // the local target
-    const foreignId = await this.federation.ensureForeignUser(from.localpart, from.domain);
+    const from = this.requireActor(env.from); // the remote requester → foreign stub
+    const to = this.requireActor(env.to[0]); // the local target
+    const foreignId = await this.federation.ensureForeignUser(from.username, from.domain);
     if (env.profile) {
       await this.federation.localizeForeignProfile(foreignId, env.profile);
     }
-    const localId = await this.federation.findLocalUserIdByHandle(to);
+    const localId = await this.federation.findLocalUserIdByAddress(to);
     if (localId === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `local user ${env.to[0]} not found`,
+        `local user ${env.to[0].username} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -98,14 +98,14 @@ export class InboxHandler {
    *  profile change is picked up lazily by the chat-open /revision probe). Just ensure the approver
    *  stub exists + create THIS server's own P2P thread (each-server-own-thread model). */
   private async handleFriendApprove(env: S2SEnvelope): Promise<void> {
-    const from = this.requireHandle(env.from); // the remote approver → foreign stub
-    const to = this.requireHandle(env.to[0]); // the local requester
-    const foreignId = await this.federation.ensureForeignUser(from.localpart, from.domain);
-    const localId = await this.federation.findLocalUserIdByHandle(to);
+    const from = this.requireActor(env.from); // the remote approver → foreign stub
+    const to = this.requireActor(env.to[0]); // the local requester
+    const foreignId = await this.federation.ensureForeignUser(from.username, from.domain);
+    const localId = await this.federation.findLocalUserIdByAddress(to);
     if (localId === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `local user ${env.to[0]} not found`,
+        `local user ${env.to[0].username} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -120,15 +120,16 @@ export class InboxHandler {
     }
   }
 
-  private requireHandle(h: string): ParsedHandle {
-    const p = parseHandle(h);
-    if (!p) {
+  /** Validate a wire actor has non-empty username + domain (defense against malformed peer input).
+   *  The S2sSignatureGuard already bound from.domain==signer; this just guards the shape. */
+  private requireActor(a: S2SActor): S2SActor {
+    if (!a || !a.username || !a.domain) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        `malformed handle "${h}"`,
+        `malformed actor ${JSON.stringify(a)}`,
         HttpStatus.BAD_REQUEST,
       );
     }
-    return p;
+    return a;
   }
 }

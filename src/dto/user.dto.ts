@@ -8,12 +8,13 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
-  Length,
   Max,
   MaxLength,
   Min,
+  MinLength,
 } from 'class-validator';
 import { MessageThreadType } from '../prisma/generated/client.js';
+import { IsDisplayName } from '../common/validators.js';
 
 /**
  * User-domain request DTOs. Validation rules are ported from the original inline checks.
@@ -30,7 +31,7 @@ export class UserIdDto {
 }
 
 /** Send a friend request, optionally with a ≤255-char note. Federated recipients are addressed by
- *  first resolving @localpart@domain via /user/resolve-federated (which mints/finds a local stub),
+ *  first resolving {username, domain} via /user/resolve (which mints/finds a local stub),
  *  then passing that stub's userId here — same DTO + path for local and federated. */
 export class SendFriendRequestDto {
   @ApiProperty({ example: 1, description: 'User id (local user OR federated stub id)' })
@@ -45,11 +46,6 @@ export class SendFriendRequestDto {
   @MaxLength(255)
   message?: string;
 }
-
-/** Resolve a @localpart@domain handle to a local user (our domain) or a foreign stub (peer domain).
- *  FOLDED INTO /user/by-uniq-name: its `uniqName` field accepts a full handle too, so the federated
- *  resolve (signed GET /api/v1/s2s/users/:handle + find-or-create stub) lives there — no separate
- *  endpoint or DTO needed (consistent with how send/approve/delete-friend reuse their endpoints). */
 
 /** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
  *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
@@ -74,21 +70,56 @@ export class ThreadIdDto {
   threadId: number;
 }
 
-export class UserByUniqNameDto {
-  @ApiProperty({ example: 'alice', description: 'Login unique name' })
+/** Resolve a user to address in friend ops. `username` alone = local lookup; `username` + `domain` =
+ *  federated (runs the init handshake + signed profile GET + stub localization). The `@` separator is a
+ *  UI input aid ONLY — the client splits a typed `alice@bbb.com` into these two fields; the API never
+ *  carries an @-joined string. */
+export class UserResolveDto {
+  @ApiProperty({ example: 'alice', description: "Username (a local uniqName, or the peer user's username)" })
   @IsString()
   @IsNotEmpty()
-  uniqName: string;
+  username: string;
+
+  @ApiProperty({ required: false, example: 'bbb.com', description: 'Peer domain. Omitted/empty = local lookup.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(63)
+  domain?: string;
 }
 
-/** Pre-flight trust check for a federated handle search: has mutual trust with this peer domain
+/** Local user discovery (fuzzy). Matches uniqName OR display name case-insensitively; min 2 chars so a
+ *  single keystroke can't enumerate the user base. take is clamped server-side (see POST /user/search).
+ *  Federated users are NOT discoverable here — resolve those by exact username + domain via UserResolveDto. */
+export class UserSearchDto {
+  @ApiProperty({ example: 'ali', description: 'Search query (≥2 chars; matches uniqName OR display name)' })
+  @IsString()
+  @IsNotEmpty()
+  @MinLength(2, { message: 'q must be at least 2 chars' })
+  q: string;
+
+  @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  skip?: number;
+
+  @ApiProperty({ required: false, example: 20, description: 'Records to take (1-20; clamped server-side)' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  take?: number;
+}
+
+/** Pre-flight trust check for a federated address search: has mutual trust with this peer domain
  *  already been established? Drives the client's first-contact affordance — a "Connecting to
  *  <domain>…" banner shown only when a handshake is actually expected (the server knows whether a
  *  FederatedPeer 'trusted' row exists), rather than guessed from request latency. */
 export class PeerTrustStatusDto {
   @ApiProperty({
     example: 'bbb.local',
-    description: 'Peer domain (the part after @ in a federated handle)',
+    description: 'Peer domain (the part after @ in a federated address)',
   })
   @IsString()
   @IsNotEmpty()
@@ -98,17 +129,16 @@ export class PeerTrustStatusDto {
 
 /**
  * Update the current user's profile (nickname/bio). All fields optional; send only what changes.
- * handle (uniqName) cannot be changed here — identity changes go through a separate flow.
+ * username (uniqName) cannot be changed here — identity changes go through a separate flow.
  */
 export class UpdateProfileDto {
   @ApiProperty({
     required: false,
     example: 'Alice',
-    description: 'Display name (1-30 chars)',
+    description: 'Display name (1-30 chars; unicode/emoji allowed)',
   })
   @IsOptional()
-  @IsString()
-  @Length(1, 30, { message: 'name must be 1-30 chars' })
+  @IsDisplayName()
   name?: string;
 
   @ApiProperty({

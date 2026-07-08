@@ -57,4 +57,5 @@ export enum BusinessCode {
   FEDERATION_KEY_FETCH_FAILED = 50006, // .well-known key fetch transient failure (503 → retry)
   FEDERATION_MALFORMED = 50007, // malformed Signature-Input / envelope (401, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
+  FEDERATION_PEER_BLOCKED = 50009, // an admin blocked this peer domain — federation refused (403, no retry)
 }

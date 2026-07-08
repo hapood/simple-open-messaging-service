@@ -3,10 +3,11 @@ import { UserService } from '../../services/user.service'
 import { ConversationItem } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 
 @Component({
     selector: 'app-user-list',
-    imports: [UserAvatarComponent, IconComponent],
+    imports: [UserAvatarComponent, IconComponent, FederatedBadgeComponent],
     templateUrl: './user-list.component.html',
     styleUrl: './user-list.component.scss'
 })

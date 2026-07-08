@@ -25,6 +25,11 @@ import type { ChatItemData } from './chat-item';
  *  burst splits consistently regardless of how it arrives. Presentation-only — the source keeps every individual IMAGE msg. */
 export const ALBUM_MAX = 10;
 
+/** Whether a content type participates in album aggregation (IMAGE + VIDEO; AUDIO is a standalone bubble). */
+function isAlbumMedia(t: ChatItemData['contentType']): boolean {
+  return t === 'IMAGE' || t === 'VIDEO';
+}
+
 /** Collect the member msgIds of an album's images (for kernel jump resolution + the dev badge / viewer). Undefined when
  *  the album has fewer than 2 (a lone image is identified by its own id). Shared by both merge paths so the ids contract
  *  is identical. */
@@ -55,13 +60,13 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
   while (i < items.length) {
     const it = items[i];
     const msg = it.data;
-    if (msg.contentType === 'IMAGE' && msg.images) {
+    if (isAlbumMedia(msg.contentType) && msg.images) {
       const imgs = [...msg.images];
       let boundary = it.boundary; // head's boundary wins
       let j = i + 1;
       while (j < items.length) {
         const nj = items[j].data;
-        if (nj.contentType !== 'IMAGE' || nj.creator !== msg.creator) break; // break: not IMAGE, or sender changed
+        if (!isAlbumMedia(nj.contentType) || nj.creator !== msg.creator) break; // break: not album media, or sender changed
         const nextImgs = nj.images ?? [];
         if (imgs.length + nextImgs.length > ALBUM_MAX) break; // cap: absorbing would exceed it -> remaining same-creator
         // images start a fresh album (the outer loop resumes from j).
@@ -101,7 +106,7 @@ export function mergeAlbumItems(items: CbItem<ChatItemData>[]): CbItem<ChatItemD
  */
 export function absorbAlbumTail(target: CbItem<ChatItemData>, incoming: CbItem<ChatItemData>): CbItem<ChatItemData> | null {
   const t = target.data, ic = incoming.data;
-  if (t.contentType !== 'IMAGE' || ic.contentType !== 'IMAGE') return null; // only images absorb
+  if (!isAlbumMedia(t.contentType) || !isAlbumMedia(ic.contentType)) return null; // only IMAGE/VIDEO absorb
   if (t.creator !== ic.creator) return null;                               // same sender only
   const tImgs = t.images ?? [], icImgs = ic.images ?? [];
   if (tImgs.length + icImgs.length > ALBUM_MAX) return null;                // cap (all-or-nothing -> new album)
