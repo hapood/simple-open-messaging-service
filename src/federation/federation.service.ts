@@ -643,7 +643,6 @@ export class FederationService {
       newAvatarUrl = ''; // peer explicitly has no avatar → clear our localized copy
     }
 
-    const oldAvatar = stub.avatar;
     const data: { name: string; bio: string; remoteUpdatedAt: Date; avatar?: string } = {
       name: profile.displayName,
       bio: profile.bio,
@@ -652,10 +651,9 @@ export class FederationService {
     if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
     await this.prisma.user.update({ where: { id: userId }, data });
 
-    // Clean up the previous localized avatar files only when we actually replaced them.
-    if (newAvatarUrl !== null && oldAvatar && oldAvatar !== newAvatarUrl) {
-      await this.upload.deleteByUrl(oldAvatar);
-    }
+    // The previous localized avatar files are intentionally LEFT on disk — gcOrphanedAvatars reaps
+    // them once they are no longer any User/Group's current avatar (no delete racing a render, and
+    // re-localization on a transient profile-fetch hiccup no longer thrashes the disk).
   }
 
   /**

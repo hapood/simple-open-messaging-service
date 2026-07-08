@@ -16,6 +16,7 @@ import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
 import { AccessTokenValidator, MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
+import { MediaAccessService } from './upload/media-access.service.js';
 import { BusinessCode } from './common/business-code.js';
 
 // Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
@@ -24,6 +25,12 @@ import { BusinessCode } from './common/business-code.js';
 // also raise them. consumeImage/consumeFile/consumeVideo/consumeAudio treat over-limit as a
 // 'too-large' rejection (not a 500).
 const MULTIPART_LIMIT = 100 * 1024 * 1024;
+
+/** Matches a CAS shard URL at the start of a request path and captures the 64-hex digest. The
+ *  /uploads/ preHandler uses this to decide whether a request needs per-object authorization (a
+ *  shard path → yes; avatars / legacy-flat → no, auth-n-only). No `g` flag: .exec is stateless
+ *  across requests, which the shared hook requires. */
+const SHARD_DIGEST_GATE_RE = /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./;
 
 /** Parse a comma-separated ALLOWED_ORIGINS env into a trimmed, de-duplicated list. Empty when
  *  unset → CORS falls back to the dev/permissive posture (see configureApp). Used to admit
@@ -188,6 +195,7 @@ async function registerStaticServing(
   // loses media access too. Registered on the root instance as a global preHandler; Fastify
   // propagates parent hooks into the @fastify/static child context that owns the /uploads/ route.
   const tokenValidator = app.get(AccessTokenValidator);
+  const mediaAccess = app.get(MediaAccessService);
   adapter.getInstance().addHook(
     'preHandler',
     async (request: FastifyRequest, reply: FastifyReply) => {
@@ -208,6 +216,24 @@ async function registerStaticServing(
         });
       }
       request.user = { userId: principal.userId };
+
+      // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
+      // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by
+      // guessing/leaking the URL. Require an active thread membership for the digest. Avatars
+      // (/uploads/avatars/*) and legacy-flat files match neither the shard shape nor any MediaMessage
+      // row → they stay auth-n-only (avatars must render cross-thread; legacy is natural attrition).
+      const shard = SHARD_DIGEST_GATE_RE.exec(request.url);
+      if (shard) {
+        const allowed = await mediaAccess.canReadDigest(principal.userId, shard[1]);
+        if (!allowed) {
+          return reply.code(403).type('application/json').send({
+            statusCode: 403,
+            code: BusinessCode.FORBIDDEN,
+            message: 'forbidden',
+            data: null,
+          });
+        }
+      }
     },
   );
 

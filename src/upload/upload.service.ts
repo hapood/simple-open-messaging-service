@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { existsSync, mkdirSync, writeFile, readFile, unlink, rename, mkdir } from 'fs';
+import { existsSync, mkdirSync, writeFile, readFile, rename, mkdir } from 'fs';
 import { basename, dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { promisify } from 'util';
@@ -15,10 +15,10 @@ import {
 } from './file-content.js';
 import { MediaAssetService } from './media-asset.service.js';
 import { detectMedia } from './media-sig.js';
+import { AVATAR_SIZES, AVATAR_MAX } from './avatar-path.js';
 
 const writeFileAsync = promisify(writeFile);
 const readFileAsync = promisify(readFile);
-const unlinkAsync = promisify(unlink);
 const renameAsync = promisify(rename);
 const mkdirAsync = promisify(mkdir);
 
@@ -101,10 +101,6 @@ export class UploadService {
 
   constructor(private readonly mediaAsset: MediaAssetService) {}
 
-  /** 头像多档边长（2 的幂，覆盖侧栏/消息行/详情页 + retina）；按需可调。 */
-  static readonly AVATAR_SIZES = [32, 64, 128, 256, 512] as const;
-  /** 头像代表档：avatar 字段存该档完整 URL，其余档由前端 avatarUrl() 派生。 */
-  static readonly AVATAR_MAX = 512;
   /** 头像像素上限（防解压炸弹：小文件解压成超大画布吃内存）。 */
   static readonly MAX_AVATAR_PIXELS = 4000 * 4000;
   /** Image size cap (avatars + chat images). Enforced in consumeImage so the global multipart
@@ -455,13 +451,20 @@ export class UploadService {
   }
 
   /**
-   * 头像专用：sharp decode→按 EXIF 正向→cover 裁剪正方形→多档 webp 重编码。
-   * - 重写剥离 EXIF/恶意 chunk（防隐私泄露与 polyglot 载荷）；sharp decode 非图片即抛错；
-   * - 像素上限防解压炸弹；多档供前端按位置取用省带宽。
-   * 返回最大档 URL 作代表，其余档按 /uploads/<base>-<size>.webp 由前端 avatarUrl() 派生。
+   * Avatar-only: sharp decode→EXIF-orient→cover-crop square→multi-size webp re-encode. Strips
+   * EXIF/malicious chunks (privacy + anti-polyglot); sharp decode throws on non-image; pixel cap
+   * defuses decompression bombs; multi-size saves bandwidth by position.
+   *
+   * Avatars live in their own namespace `uploads/avatars/<base>-<size>.webp`, deliberately OUTSIDE
+   * `uploads/shards/` so the per-object media-authz gate (which authorizes by thread membership)
+   * never applies to them — avatars must render cross-thread (member lists, search, federation
+   * profiles). Returns the largest size's URL as the representative; the frontend derives the other
+   * sizes by substituting the `-<size>` suffix.
    */
   async saveAvatars(buf: Buffer): Promise<string> {
     this.ensureDir();
+    const avatarsDir = join(this.uploadDir, 'avatars');
+    await mkdirAsync(avatarsDir, { recursive: true });
     const meta = await sharp(buf).metadata();
     if (
       (meta.width ?? 0) * (meta.height ?? 0) >
@@ -471,15 +474,15 @@ export class UploadService {
     }
     const base = `${Date.now()}-${randomBytes(6).toString('hex')}`;
     const src = sharp(buf).rotate();
-    for (const size of UploadService.AVATAR_SIZES) {
+    for (const size of AVATAR_SIZES) {
       const out = await src
         .clone()
         .resize(size, size, { fit: 'cover', position: 'center' })
         .webp({ quality: 85 })
         .toBuffer();
-      await writeFileAsync(join(this.uploadDir, `${base}-${size}.webp`), out);
+      await writeFileAsync(join(avatarsDir, `${base}-${size}.webp`), out);
     }
-    return `/uploads/${base}-${UploadService.AVATAR_MAX}.webp`;
+    return `/uploads/avatars/${base}-${AVATAR_MAX}.webp`;
   }
 
   /**
@@ -528,26 +531,5 @@ export class UploadService {
     }
     const buf = Buffer.from(avatar.b64, 'base64');
     return this.saveAvatars(buf);
-  }
-
-  /**
-   * 按 URL 删除落盘文件：多尺寸头像删该 base 全部档；单文件（外链/旧格式）删单个；非 /uploads/ 跳过。
-   * 头像一人一份无共享，删除失败一律静默（unlink ENOENT 不影响主流程）。
-   */
-  async deleteByUrl(url: string): Promise<void> {
-    if (!url?.startsWith('/uploads/')) return;
-    const m = url.match(/^\/uploads\/(.+)-\d+\.webp$/);
-    if (m) {
-      const base = m[1];
-      for (const size of UploadService.AVATAR_SIZES) {
-        await unlinkAsync(join(this.uploadDir, `${base}-${size}.webp`)).catch(
-          () => {},
-        );
-      }
-    } else {
-      await unlinkAsync(
-        join(this.uploadDir, url.slice('/uploads/'.length)),
-      ).catch(() => {});
-    }
   }
 }

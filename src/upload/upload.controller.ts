@@ -59,6 +59,47 @@ export class UploadController {
   }
 
   /**
+   * Avatar upload (user + group avatars): multipart/form-data, field file=<image>. Same image
+   * validation as /upload (consumeImage + magic-byte), then the sharp multi-size webp avatar
+   * pipeline (saveAvatars). Returns { avatar: representativeUrl } — the frontend stores it verbatim
+   * as Group.avatar (create/update). User avatars still go through /user/update-avatar (which calls
+   * saveAvatars directly); this endpoint is the canonical upload for GROUP avatars so they land in
+   * uploads/avatars/ (outside the per-object authz gate's shards/ scope) instead of generic /upload
+   * (which writes to shards/ and would 401 under thread-membership authz).
+   */
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('upload/avatar')
+  @ApiOperation({ summary: 'Upload avatar image (multi-size webp, returns representative url)' })
+  @ApiConsumes('multipart/form-data')
+  async uploadAvatar(@Request() req: FastifyRequest): Promise<ApiResult> {
+    const img = await this.uploadService.consumeImage(req);
+    if (img.kind === 'rejected') {
+      return {
+        code: BusinessCode.VALIDATION_FAILED,
+        message:
+          img.reason === 'no-file'
+            ? 'no file'
+            : img.reason === 'too-large'
+              ? 'file too large'
+              : 'invalid image',
+      };
+    }
+    if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
+      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+    }
+    let avatar: string;
+    try {
+      avatar = await this.uploadService.saveAvatars(img.buffer);
+    } catch {
+      // sharp decode failure (corrupt / pixel-bomb / non-image past the magic-byte check) → invalid.
+      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+    }
+    return { code: BusinessCode.OK, message: 'successful', data: { avatar } };
+  }
+
+  /**
    * Generic file upload: multipart/form-data, field file=<binary>. Returns the server-generated
    * { url, name, size, mimeType } the client stores verbatim as a FILE message's content. The
    * client cannot forge any of these — url/name/mimeType are produced by the server, size is the

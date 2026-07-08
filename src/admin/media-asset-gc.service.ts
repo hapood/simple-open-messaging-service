@@ -4,6 +4,7 @@ import { readdir, unlink } from 'fs';
 import { promisify } from 'util';
 import { PrismaService } from '../prisma.service.js';
 import { UploadService } from '../upload/upload.service.js';
+import { parseAvatarBase } from '../upload/avatar-path.js';
 
 const readdirAsync = promisify(readdir);
 const unlinkAsync = promisify(unlink);
@@ -95,6 +96,82 @@ export class MediaAssetGcService {
     }
     this.logger.log(`reconcileShards: reaped ${reaped} unreferenced file(s).`);
     return reaped;
+  }
+
+  /**
+   * Reap orphaned AVATARS — files under uploads/avatars/ (and legacy-flat uploads/<base>-<size>.webp)
+   * whose `<base>` is not the current avatar of any User or Group. "Expired" = no longer referenced,
+   * NOT a time-based TTL. One rule covers every orphan source:
+   *  - superseded-on-replace (avatar changes no longer delete the old files — see UploadService),
+   *  - deleted-user avatars (no User row references them),
+   *  - dissolved-group avatars (no Group row references them).
+   * The multi-size family ([32,64,128,256,512]) is handled by keying on `<base>`: all 5 sizes of a
+   * live base are kept, all 5 of a dead base are swept together. NEVER touches uploads/shards/ (that
+   * is gcOrphanedAssets' domain via MediaAsset.refs).
+   */
+  async gcOrphanedAvatars(): Promise<{ sweptFiles: number }> {
+    // Live `<base>` set from the two avatar columns. parseAvatarBase strips the size + path, so all 5
+    // sizes of one logical avatar collapse to one key.
+    const [users, groups] = await Promise.all([
+      this.prisma.user.findMany({
+        where: { NOT: { avatar: '' } },
+        select: { avatar: true },
+      }),
+      this.prisma.group.findMany({ select: { avatar: true } }),
+    ]);
+    const live = new Set<string>();
+    for (const r of [...users, ...groups]) {
+      const base = parseAvatarBase(r.avatar);
+      if (base) live.add(base);
+    }
+
+    let swept = 0;
+    // New location: uploads/avatars/<base>-<size>.webp.
+    swept += await this.sweepAvatarDir(
+      join(this.upload.uploadDir, 'avatars'),
+      live,
+    );
+    // Legacy flat: uploads/<base>-<size>.webp (pre-folder-move). Only flat files in the root —
+    // subdirs (avatars/, shards/) are skipped by the isDirectory() guard.
+    swept += await this.sweepLegacyFlatAvatars(this.upload.uploadDir, live);
+
+    this.logger.log(`gcOrphanedAvatars: swept ${swept} orphaned avatar file(s).`);
+    return { sweptFiles: swept };
+  }
+
+  /** Sweep one avatar directory: unlink every `<base>-<size>.webp` whose base is not live. */
+  private async sweepAvatarDir(dir: string, live: Set<string>): Promise<number> {
+    let swept = 0;
+    try {
+      for (const name of await readdirAsync(dir)) {
+        const base = parseAvatarBase(name); // bare filename → AVATAR_FILE_RE
+        if (base && !live.has(base)) {
+          await unlinkAsync(join(dir, name)).catch(() => {});
+          swept++;
+        }
+      }
+    } catch {
+      // dir missing — nothing to sweep.
+    }
+    return swept;
+  }
+
+  /** Sweep flat avatar files in the uploads root (legacy location): skip subdirs, unlink orphans. */
+  private async sweepLegacyFlatAvatars(dir: string, live: Set<string>): Promise<number> {
+    let swept = 0;
+    try {
+      for (const entry of await readdirAsync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) continue; // only flat files; avatars/ + shards/ are subdirs
+        const base = parseAvatarBase(entry.name);
+        if (base && !live.has(base)) {
+          await unlinkAsync(join(dir, entry.name)).catch(() => {});
+          swept++;
+        }
+      }
+    } catch {
+      // dir missing — nothing to sweep.
+    }
+    return swept;
   }
 
   /** Delete the shard file(s) for a digest. The on-disk ext is NOT stored on MediaAsset, so glob

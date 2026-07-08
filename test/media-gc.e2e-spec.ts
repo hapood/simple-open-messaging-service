@@ -10,6 +10,7 @@ import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
 import { UploadService } from '../src/upload/upload.service';
 import { MediaAssetGcService } from '../src/admin/media-asset-gc.service';
+import { makePng } from './federation-harness';
 
 /**
  * Phase 5 garbage collection: verify refs<=0 rows are reaped (DB row + shard file) and refs>0 rows
@@ -83,5 +84,43 @@ describe('Media asset garbage collection (Phase 5)', () => {
     // Cleanup so repeated runs / forks stay deterministic (the file is live, so GC won't take it).
     await prisma.mediaAsset.delete({ where: { digest } }).catch(() => {});
     await unlink(absPath).catch(() => {});
+  });
+
+  it('gcOrphanedAvatars reaps superseded avatars and keeps the live one', async () => {
+    // Two avatars via the real pipeline — each writes 5 webp sizes to uploads/avatars/ under a unique
+    // base (saveAvatars mints Date.now()+random, so identical bytes still produce distinct files).
+    // makePng: a sharp-generated PNG (saveAvatars DECODES via sharp; hand-written base64 PNGs throw).
+    const png = await makePng(123);
+    const liveUrl = await upload.saveAvatars(png);
+    const orphanUrl = await upload.saveAvatars(png);
+    // `liveUrl` is the CURRENT avatar of a user → live; `orphanUrl` references nothing → expired.
+    await prisma.user.upsert({
+      where: { uniqName_domain: { uniqName: 'avatar-gc-live', domain: 'local' } },
+      create: {
+        uniqName: 'avatar-gc-live',
+        domain: 'local',
+        hashPwd: 'x',
+        name: 'live',
+        isForeigner: false,
+        avatar: liveUrl,
+      },
+      update: { avatar: liveUrl },
+    });
+    const livePath = join(upload.uploadDir, liveUrl.slice('/uploads/'.length));
+    const orphanPath = join(upload.uploadDir, orphanUrl.slice('/uploads/'.length));
+    expect(existsSync(livePath)).toBe(true);
+    expect(existsSync(orphanPath)).toBe(true);
+
+    await gc.gcOrphanedAvatars();
+
+    expect(existsSync(livePath)).toBe(true); // referenced by a User → kept
+    expect(existsSync(orphanPath)).toBe(false); // superseded, referenced by nothing → reaped
+
+    // Cleanup the live user so repeated runs / forks stay deterministic.
+    await prisma.user
+      .delete({
+        where: { uniqName_domain: { uniqName: 'avatar-gc-live', domain: 'local' } },
+      })
+      .catch(() => {});
   });
 });

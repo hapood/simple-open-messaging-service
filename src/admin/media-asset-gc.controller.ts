@@ -41,4 +41,14 @@ export class MediaAssetGcController {
     const reapedFiles = await this.gc.reconcileShards();
     return { code: BusinessCode.OK, message: 'successful', data: { reapedFiles } };
   }
+
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/media/gc-avatars')
+  @ApiOperation({
+    summary: 'Reap orphaned avatars (no longer any User/Group current avatar) from uploads/avatars + legacy flat',
+  })
+  async gcAvatars(): Promise<ApiResult> {
+    const data = await this.gc.gcOrphanedAvatars();
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
 }

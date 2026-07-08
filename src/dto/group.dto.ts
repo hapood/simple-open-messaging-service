@@ -11,6 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { GroupRole } from '../prisma/generated/client.js';
+import { IsValidAvatarPath } from '../upload/avatar-path.js';
 
 /**
  * Group-domain request DTOs. Validation rules:
@@ -31,7 +32,7 @@ export class CreateGroupDto {
     example: 'https://.../g.webp',
     description: 'Group avatar URL (optional)',
   })
-  @IsString()
+  @IsValidAvatarPath()
   @IsOptional()
   avatar?: string;
 
@@ -169,7 +170,7 @@ export class UpdateGroupDto {
     example: 'https://.../g.webp',
     description: 'New group avatar URL',
   })
-  @IsString()
+  @IsValidAvatarPath()
   @IsOptional()
   avatar?: string;
 

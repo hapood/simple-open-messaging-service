@@ -7,6 +7,8 @@ import http from 'node:http';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
+import { BusinessCode } from '../src/common/business-code';
+import { makePng } from './federation-harness';
 
 // Verifies the surfaces rewritten for the Express→Fastify migration that the auth e2e does
 // not cover: Swagger UI on Fastify, the @fastify/multipart upload path (UploadService.consumeImage)
@@ -26,10 +28,35 @@ const MP4_MIN = Buffer.from([
 // 'OggS' signature — the ogg/opus container magic byte.
 const OGG_MIN = Buffer.from([0x4f, 0x67, 0x67, 0x53]);
 
+/** Grant `userId` read access to a CAS digest by linking it to a P2P thread they're an active member
+ *  of — exactly what writeMsgToThread does on a real send. Used by the serving tests so they can
+ *  exercise @fastify/static BEHIND the per-object gate without the full send-message round-trip. */
+async function authorizeDigest(
+  prisma: PrismaService,
+  userId: number,
+  digest: string,
+): Promise<void> {
+  const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+  await prisma.threadParticipant.create({
+    data: { userId, threadId: thread.id },
+  });
+  const msg = await prisma.message.create({
+    data: { contentType: 'IMAGE', content: '', threadId: thread.id, creator: userId },
+  });
+  await prisma.mediaMessage.create({
+    data: { messageId: msg.id, threadId: thread.id, digest },
+  });
+}
+
 describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let token: string;
+  let token2: string;
+  let userAId: number;
+  let userBId: number;
+  let avatarPng: Buffer;
+  let authzPng: Buffer;
   let port: number;
 
   beforeAll(async () => {
@@ -61,6 +88,24 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .post('/api/v1/auth/login')
       .send({ uniqName: 'fastify', password: 'Pass1234' });
     token = login.body.data.access_token;
+    // Second local user for the per-object media-authz tests (the non-member).
+    await request(app.getHttpServer())
+      .post('/api/v1/user/register')
+      .send({ uniqName: 'fastify2', name: 'Fastify2', password: 'Pass1234' });
+    const login2 = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ uniqName: 'fastify2', password: 'Pass1234' });
+    token2 = login2.body.data.access_token;
+    userAId = (await prisma.user.findFirst({ where: { uniqName: 'fastify' } }))!
+      .id;
+    userBId = (await prisma.user.findFirst({ where: { uniqName: 'fastify2' } }))!
+      .id;
+    // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written
+    // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).
+    avatarPng = await makePng(200);
+    // A DISTINCT PNG for the authz test so its CAS digest is not pre-authorized by the earlier
+    // image-upload test (PNG_1X1 dedupes to the same digest across tests).
+    authzPng = await makePng(150);
   });
 
   afterAll(async () => {
@@ -91,6 +136,14 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
 
     // The uploaded file is reachable via @fastify/static at the returned url. /uploads/* is auth-gated
     // (AccessTokenValidator via the media_token cookie OR a Bearer header) — send the Bearer token.
+    // The per-object gate further requires a MediaMessage row tying this digest to a thread the caller
+    // is in; authorize it (a real send would write that row in writeMsgToThread).
+    const digest = res.body.data.url
+      .slice('/uploads/shards/'.length)
+      .split('/')
+      .pop()!
+      .replace(/\.png$/, '');
+    await authorizeDigest(prisma, userAId, digest);
     const file = await request(app.getHttpServer())
       .get(res.body.data.url)
       .set('Authorization', `Bearer ${token}`);
@@ -141,6 +194,13 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(res.body.data.mimeType).toBe('video/mp4');
     expect(res.body.data.size).toBe(MP4_MIN.length);
     // Video is served INLINE (no Content-Disposition: attachment) so <video src> can stream-play.
+    // Authorize the digest for the uploader so the per-object gate permits the GET (see image test).
+    const digest = res.body.data.url
+      .slice('/uploads/shards/'.length)
+      .split('/')
+      .pop()!
+      .replace(/\.mp4$/, '');
+    await authorizeDigest(prisma, userAId, digest);
     const file = await request(app.getHttpServer())
       .get(res.body.data.url)
       .set('Authorization', `Bearer ${token}`);
@@ -166,6 +226,105 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     expect(res.body.code).toBe(0);
     expect(res.body.data.url).toMatch(/\.ogg$/);
     expect(res.body.data.mimeType).toBe('audio/ogg');
+  });
+
+  it('authorizes /uploads/shards/ by thread membership (member 200, non-member 403)', async () => {
+    // A uploads an image → a CAS shard url embedding the digest.
+    const up = await request(app.getHttpServer())
+      .post('/api/v1/upload')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', authzPng, 'authz.png')
+      .field('w', '1')
+      .field('h', '1');
+    expect(up.body.code).toBe(0);
+    const url: string = up.body.data.url;
+    const digest = url
+      .slice('/uploads/shards/'.length)
+      .split('/')
+      .pop()!
+      .replace(/\.\w+$/, '');
+
+    // Before any message references the digest there is no MediaMessage row, so even the uploader
+    // is denied — the gate is purely row-driven, never "logged-in ⇒ allowed".
+    const preA = await request(app.getHttpServer())
+      .get(url)
+      .set('Authorization', `Bearer ${token}`);
+    expect(preA.status).toBe(403);
+
+    // Create a P2P thread with A as the SOLE active participant (B is not a member).
+    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+    await prisma.threadParticipant.create({
+      data: { userId: userAId, threadId: thread.id },
+    });
+
+    // A sends an IMAGE message → writeMsgToThread writes the MediaMessage authz row in-tx.
+    const send = await request(app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        threadId: thread.id,
+        contentType: 'IMAGE',
+        content: JSON.stringify({ url, w: 1, h: 1, size: PNG_1X1.length }),
+      });
+    expect(send.body.code).toBe(0);
+
+    // The MediaMessage row now links digest → this thread.
+    const mm = await prisma.mediaMessage.findFirst({ where: { digest } });
+    expect(mm).not.toBeNull();
+    expect(mm?.threadId).toBe(thread.id);
+
+    // A (active member) may now read it; B (non-member) is still forbidden.
+    const aGet = await request(app.getHttpServer())
+      .get(url)
+      .set('Authorization', `Bearer ${token}`);
+    expect(aGet.status).toBe(200);
+    const bGet = await request(app.getHttpServer())
+      .get(url)
+      .set('Authorization', `Bearer ${token2}`);
+    expect(bGet.status).toBe(403);
+  });
+
+  it('serves avatars at /uploads/avatars/ to ANY authed user (auth-n only, gate-exempt)', async () => {
+    const up = await request(app.getHttpServer())
+      .post('/api/v1/upload/avatar')
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', avatarPng, 'av.png');
+    expect(up.body.code).toBe(0);
+    expect(up.body.data.avatar).toMatch(
+      /^\/uploads\/avatars\/.+-(?:32|64|128|256|512)\.webp$/,
+    );
+    const avatarUrl: string = up.body.data.avatar;
+    // Avatars live outside shards/, so the per-object gate never applies — any authed user reads them
+    // (they render cross-thread in lists/search/federation).
+    const aGet = await request(app.getHttpServer())
+      .get(avatarUrl)
+      .set('Authorization', `Bearer ${token}`);
+    expect(aGet.status).toBe(200);
+    const bGet = await request(app.getHttpServer())
+      .get(avatarUrl)
+      .set('Authorization', `Bearer ${token2}`);
+    expect(bGet.status).toBe(200);
+  });
+
+  it('rejects a forged Group.avatar pointing at /uploads/shards/ or an external URL', async () => {
+    // The @IsValidAvatarPath DTO guard guarantees no group avatar can ever sit under the gated shards/
+    // path (which would 401 under thread-membership authz) or reference an external URL the server
+    // does not control. ValidationPipe → HTTP 200 + VALIDATION_FAILED (code 10000).
+    const forgedShard = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'forged',
+        avatar:
+          '/uploads/shards/aa/bb/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.png',
+      });
+    expect(forgedShard.body.code).toBe(BusinessCode.VALIDATION_FAILED);
+
+    const forgedExternal = await request(app.getHttpServer())
+      .post('/api/v1/group/create')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'forged2', avatar: 'https://evil.example/g.webp' });
+    expect(forgedExternal.body.code).toBe(BusinessCode.VALIDATION_FAILED);
   });
 
   it('opens an SSE stream (reply.hijack + reply.raw) and emits the connected frame', async () => {

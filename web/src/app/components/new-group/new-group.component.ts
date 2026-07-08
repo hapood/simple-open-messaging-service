@@ -19,7 +19,7 @@ type Step = 1 | 2;
 /**
  * New-group dialog, laid out as the WhatsApp / Telegram two-step flow:
  *   1. Add members — search + removable selected chips + friend list with a brand check.
- *   2. Name + avatar — group photo (cropper → /upload) + name input with a char counter.
+ *   2. Name + avatar — group photo (cropper → /upload/avatar) + name input with a char counter.
  *
  * Both steps stay in the DOM (toggled via `[hidden]`) so the friend list isn't refetched
  * when navigating back, and `appFitDialog` locks the card height on the taller step 1.
@@ -123,24 +123,16 @@ export class NewGroupComponent {
     })
   }
 
-  private async uploadAvatar(file: File) {
+  private uploadAvatar(file: File) {
     this.busy.set(true)
-    let bmp: ImageBitmap
-    try {
-      // /upload wants the pixel dims (read via createImageBitmap) alongside the file.
-      bmp = await createImageBitmap(file)
-    } catch {
-      this.busy.set(false)
-      return
-    }
+    // /upload/avatar runs the server-side sharp cover-crop, so it needs only the file (no w/h —
+    // avatars are square). Returns { avatar } (a /uploads/avatars/ url) staged until group creation.
     const fd = new FormData()
     fd.append('file', file)
-    fd.append('w', String(bmp.width))
-    fd.append('h', String(bmp.height))
-    this.http.post<{ code: number; data?: { url: string } }>(`${apiPrefix}/upload`, fd).subscribe({
+    this.http.post<{ code: number; data?: { avatar: string } }>(`${apiPrefix}/upload/avatar`, fd).subscribe({
       next: (res) => {
         this.busy.set(false)
-        if (res?.code === 0 && res.data?.url) this.pendingAvatar.set(res.data.url)
+        if (res?.code === 0 && res.data?.avatar) this.pendingAvatar.set(res.data.avatar)
       },
       error: () => this.busy.set(false),
     })

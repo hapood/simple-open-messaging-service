@@ -244,24 +244,16 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
     })
   }
 
-  private async uploadAvatar(file: File) {
+  private uploadAvatar(file: File) {
     this.busy.set(true)
-    let bmp: ImageBitmap
-    try {
-      // /upload wants the pixel dims (frontend reads them via createImageBitmap) alongside the file.
-      bmp = await createImageBitmap(file)
-    } catch {
-      this.busy.set(false)
-      return
-    }
+    // /upload/avatar runs the server-side sharp cover-crop, so it needs only the file (no w/h —
+    // avatars are square). Returns { avatar } (a /uploads/avatars/ url) which we stage on the group.
     const fd = new FormData()
     fd.append('file', file)
-    fd.append('w', String(bmp.width))
-    fd.append('h', String(bmp.height))
-    this.http.post<{ code: number; data?: { url: string } }>(`${apiPrefix}/upload`, fd).subscribe({
+    this.http.post<{ code: number; data?: { avatar: string } }>(`${apiPrefix}/upload/avatar`, fd).subscribe({
       next: (res) => {
         this.busy.set(false)
-        if (res?.code === 0 && res.data?.url) this.pendingAvatar.set(res.data.url)
+        if (res?.code === 0 && res.data?.avatar) this.pendingAvatar.set(res.data.avatar)
       },
       error: () => this.busy.set(false),
     })

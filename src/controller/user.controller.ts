@@ -111,8 +111,9 @@ export class UserController {
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
-    // Read old avatar → write new multi-size → update DB → delete old sizes (order guarantees the DB is updated before old files are deleted).
-    const old = await this.userService.findUniqueUser({ id: req.user.userId });
+    // Write new multi-size avatar → update DB. The previous avatar files are intentionally LEFT on
+    // disk: gcOrphanedAvatars reaps them once they are no longer any User/Group's current avatar, so
+    // there is no delete racing a still-rendering <img> on another device/tab.
     let url: string;
     try {
       url = await this.uploadService.saveAvatars(img.buffer);
@@ -121,7 +122,6 @@ export class UserController {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
     await this.userService.updateAvatar(req.user.userId, url);
-    await this.uploadService.deleteByUrl(old?.avatar ?? '');
     return {
       code: BusinessCode.OK,
       message: 'successful',
