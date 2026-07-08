@@ -102,7 +102,7 @@ export class ThreadParticipantService {
   getRoster(threadId: number) {
     return this.prisma.threadParticipant.findMany({
       where: { threadId, leftAt: null },
-      include: { user: { include: { userExtra: true } } },
+      include: { user: true },
       orderBy: { joinedAt: 'asc' },
     });
   }

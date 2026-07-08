@@ -59,8 +59,19 @@ async function bootstrap() {
             cert: readFileSync(tlsCert as string),
             key: readFileSync(tlsKey as string),
           },
+          // Global cap on every inbound request body (JSON API + S2S envelopes). Multipart
+          // uploads are NOT affected — @fastify/multipart enforces its own fileSize/fieldSize,
+          // so large image/file uploads are unaffected. 1 MiB comfortably fits the largest legit
+          // JSON body — an S2S friend.request/approve envelope carrying a ~55 KiB base64 avatar
+          // (512×512 webp) inline — and acts as a hard anti-OOM ceiling against a peer shipping
+          // an oversized payload. See docs/federation-protocol.md (avatar federation).
+          bodyLimit: 1_048_576,
         }
-      : { trustProxy: 1 },
+      : {
+          trustProxy: 1,
+          // See the h2 branch above: global JSON/body ceiling (fits a ~55 KiB base64 S2S avatar), multipart-exempt.
+          bodyLimit: 1_048_576,
+        },
   );
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {

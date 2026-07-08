@@ -29,6 +29,28 @@ export class UserIdDto {
   userId: number;
 }
 
+/** Send a friend request, optionally with a ≤255-char note. Federated recipients are addressed by
+ *  first resolving @localpart@domain via /user/resolve-federated (which mints/finds a local stub),
+ *  then passing that stub's userId here — same DTO + path for local and federated. */
+export class SendFriendRequestDto {
+  @ApiProperty({ example: 1, description: 'User id (local user OR federated stub id)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  userId: number;
+
+  @ApiProperty({ required: false, example: 'Hi from the conference', description: 'Friend-request note (≤255 chars)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  message?: string;
+}
+
+/** Resolve a @localpart@domain handle to a local user (our domain) or a foreign stub (peer domain).
+ *  FOLDED INTO /user/by-uniq-name: its `uniqName` field accepts a full handle too, so the federated
+ *  resolve (signed GET /api/v1/s2s/users/:handle + find-or-create stub) lives there — no separate
+ *  endpoint or DTO needed (consistent with how send/approve/delete-friend reuse their endpoints). */
+
 /** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
  *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
  *  query-messages so the blocker never sees the blocked user's messages. */

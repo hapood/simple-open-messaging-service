@@ -2,7 +2,6 @@ import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserService } from '../user/user.service.js';
 import { JwtService } from '@nestjs/jwt';
-import { User as UserModel } from '../prisma/generated/client.js';
 import argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
@@ -48,11 +47,10 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   async validateUser(
     uniqName: string,
     password: string,
-  ): Promise<UserModel | undefined> {
-    const user = await this.userService.findUniqueUser(
-      { uniqName_domain: { uniqName, domain: 'local' } },
-      true,
-    );
+  ) {
+    const user = await this.userService.findUniqueUserForAuth({
+      uniqName_domain: { uniqName, domain: 'local' },
+    });
     if (user === null) {
       return undefined;
     }

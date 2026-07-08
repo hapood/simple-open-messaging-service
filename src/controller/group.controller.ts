@@ -273,8 +273,8 @@ export class GroupController {
     const data = rows.map((r) => ({
       userId: r.userId,
       uniqName: r.user.uniqName,
-      name: r.user.userExtra.name,
-      avatar: r.user.userExtra.avatar,
+      name: r.user.name,
+      avatar: r.user.avatar,
       role: r.role,
       joinedAt: r.joinedAt,
       isOwner: group.ownerId === r.userId,

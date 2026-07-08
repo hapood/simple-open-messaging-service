@@ -1,18 +1,35 @@
-// E2E environment bootstrap — runs in each Jest worker before tests.
+// E2E environment bootstrap — runs in each vitest worker (fork) before tests.
 //
-// Loads the dev `.env` for the JWT secrets etc., then forces the database to the
-// isolated `soms_test` instance so the suite can never touch dev data. The DB name
-// is rewritten (last URL path segment) so this stays correct regardless of the
-// credentials/host configured in `.env`.
+// Loads the dev `.env` for JWT secrets, then gives each parallel fork its OWN database
+// (`soms_test_fork<poolId>`) so concurrent e2e files never race on a shared table. Every e2e file
+// TRUNCATEs `User` in its setup — if they shared one DB, one fork's TRUNCATE would wipe another's
+// just-seeded user mid-test (observed as spurious 401s). Per-fork DBs make that impossible.
+//
+// The fork DBs persist across runs: `prisma migrate deploy` is idempotent, so an existing fork DB
+// is reused (no orphans accumulate). global-setup only ensures the base `soms_test` is reachable.
 import 'dotenv/config';
-
-function toTestDatabase(url: string): string {
-  return url.replace(/^(.*\/)[^/?]*(\?.*)?$/, '$1soms_test$2');
-}
+import { execSync } from 'node:child_process';
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
     'DATABASE_URL missing — copy .env.example to .env and configure it.',
   );
 }
-process.env.DATABASE_URL = toTestDatabase(process.env.DATABASE_URL);
+
+const poolId = process.env.VITEST_POOL_ID ?? '0';
+const forkDb = `soms_test_fork${poolId}`;
+
+// CREATE DATABASE has no IF NOT EXISTS — connect to the maintenance `postgres` DB and guard with SELECT.
+const adminUrl = new URL(process.env.DATABASE_URL);
+adminUrl.pathname = '/postgres';
+adminUrl.search = ''; // psql ignores Prisma's ?schema= param; strip it for the maintenance call
+execSync(
+  `psql "${adminUrl.toString()}" -v ON_ERROR_STOP=1 -tAc "SELECT 1 FROM pg_database WHERE datname='${forkDb}'" | grep -q 1 || psql "${adminUrl.toString()}" -v ON_ERROR_STOP=1 -c "CREATE DATABASE ${forkDb}"`,
+  { stdio: 'inherit' },
+);
+
+// Point this fork at its DB + migrate (fresh DB → all migrations applied to its public schema).
+const forkUrl = new URL(process.env.DATABASE_URL);
+forkUrl.pathname = `/${forkDb}`;
+process.env.DATABASE_URL = forkUrl.toString();
+execSync('npx prisma migrate deploy', { stdio: 'inherit' });

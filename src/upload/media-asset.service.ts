@@ -1,0 +1,75 @@
+import { Injectable } from '@nestjs/common';
+import { Prisma } from '../prisma/generated/client.js';
+import { PrismaService } from '../prisma.service.js';
+
+/**
+ * Reference-counted content-addressed media asset records. Every successful CAS upload upserts a row
+ * here with refs++ (a dedup hit lands on the same row and increments); a future message-delete path
+ * decrements; the GC sweep deletes rows whose refs reach 0 along with their shard file.
+ *
+ * The upsert compiles to `INSERT ... ON CONFLICT (digest) DO UPDATE SET refs = refs + 1`, which is
+ * atomic under concurrency — two simultaneous uploads of identical bytes both succeed and land at
+ * refs = 2. A defensive P2002 branch covers Prisma configs that surface the conflict as an error
+ * instead of a clean upsert.
+ *
+ * File-write ordering is the caller's job (UploadService.saveCas): write the shard file FIRST, then
+ * call upsertAndRef. That way a DB failure leaves a reclaimable orphan file (refs = 0 → GC'd), never
+ * a dangling DB reference to a missing file.
+ *
+ * Only digest + bytes are stored (besides refs/createdAt). The on-disk extension and MIME are NOT
+ * recorded here — the extension is recoverable from the filename, MIME is mapped at serving time,
+ * and the upload response MIME comes from the request. See the MediaAsset model doc.
+ */
+@Injectable()
+export class MediaAssetService {
+  constructor(private prisma: PrismaService) {}
+
+  /**
+   * Record a reference to a CAS asset: create with refs = 1, or increment refs on conflict. Atomic
+   * under concurrent identical uploads. Throws on non-P2002 errors so the upload route surfaces a 500
+   * and the client retries (the shard file already exists; the retry re-hashes to the same digest,
+   * rewrites it idempotently, and re-upserts to increment refs).
+   */
+  async upsertAndRef(digest: string, bytes: bigint): Promise<void> {
+    try {
+      await this.prisma.mediaAsset.upsert({
+        where: { digest },
+        create: { digest, bytes, refs: 1 },
+        update: { refs: { increment: 1 } },
+      });
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        // Lost the concurrent upsert race: another request inserted this digest first. Increment
+        // their row. (Some Prisma/Postgres configs surface ON CONFLICT as a unique violation.)
+        await this.prisma.mediaAsset.update({
+          where: { digest },
+          data: { refs: { increment: 1 } },
+        });
+        return;
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Decrement the ref count. Intended for the future message-delete path (not wired today — messages
+   * are permanent for now, so refs only grow). Returns the post-decrement count so the caller can
+   * reap the file when it hits 0, or null if the row is already gone (nothing to decrement).
+   */
+  async decrement(digest: string): Promise<number | null> {
+    try {
+      const row = await this.prisma.mediaAsset.update({
+        where: { digest },
+        data: { refs: { decrement: 1 } },
+        select: { refs: true },
+      });
+      return row.refs;
+    } catch {
+      // Row already deleted (e.g. concurrent GC) — nothing to decrement.
+      return null;
+    }
+  }
+}

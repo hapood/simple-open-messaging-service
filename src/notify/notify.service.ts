@@ -7,7 +7,7 @@ import { Prisma, NotifyType } from '../prisma/generated/client.js';
  *
  * Responsibilities:
  *  - recordFriendRequest: append a Notify row + arm the recipient's
- *    `userNotiBox.hasUrFriendReq` badge, ATOMICALLY inside the caller's
+ *    `User.hasUrFriendReq` badge, ATOMICALLY inside the caller's
  *    transaction (takes the tx client as a parameter).
  *  - markFriendReqRead: clear the badge once the user has opened the
  *    friend-requests dialog (Notify rows are kept as append-only history).
@@ -22,10 +22,10 @@ export class NotifyService {
 
   /**
    * Record a friend-request notification for `toUserId` within the caller's
-   * transaction. Appends a Notify row and arms the badge via a nested to-one
-   * update (no separate notiBox-id fetch). Errors propagate so the surrounding
-   * `$transaction` rolls back — defense-in-depth; the caller pre-validates the
-   * recipient exists, so a P2025 here is a genuine inconsistency, not a flow.
+   * transaction. Appends a Notify row and arms the inline hasUrFriendReq badge.
+   * Errors propagate so the surrounding `$transaction` rolls back — defense-in-depth;
+   * the caller pre-validates the recipient exists, so a P2025 here is a genuine
+   * inconsistency, not a flow.
    */
   async recordFriendRequest(
     tx: Prisma.TransactionClient,
@@ -41,7 +41,7 @@ export class NotifyService {
     });
     await tx.user.update({
       where: { id: toUserId },
-      data: { userNotiBox: { update: { hasUrFriendReq: true } } },
+      data: { hasUrFriendReq: true },
     });
   }
 
@@ -52,7 +52,7 @@ export class NotifyService {
   async markFriendReqRead(userId: number): Promise<void> {
     await this.prisma.user.update({
       where: { id: userId },
-      data: { userNotiBox: { update: { hasUrFriendReq: false } } },
+      data: { hasUrFriendReq: false },
     });
   }
 }

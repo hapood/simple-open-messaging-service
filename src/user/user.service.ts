@@ -8,21 +8,27 @@ export class UserService implements OnModuleInit {
 
   async onModuleInit() {}
 
-  findUniqueUser(
-    userWhereUniqueInput: Prisma.UserWhereUniqueInput,
-    hasExtra = true,
-    hasNotiBox = false,
-  ) {
+  // Sensitive columns are omitted at the Prisma layer (never loaded → can't leak into responses),
+  // so there are no per-site `delete` lines. hashPwd + hasUrFriendReq are omitted by default; the
+  // two opt-in reads below re-include exactly one of them where a legitimate internal consumer needs it.
+  findUniqueUser(userWhereUniqueInput: Prisma.UserWhereUniqueInput) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
-      include: {
-        userExtra: hasExtra,
-        // Private per-user flag (unread friend-request badge). Opt-in: callers that
-        // return the user to OTHER clients (e.g. by-uniq-name search) must NOT include
-        // it — only the self-profile read enables it, so hasUrFriendReq never leaks.
-        userNotiBox: hasNotiBox,
-      },
+      omit: { hashPwd: true, hasUrFriendReq: true },
     });
+  }
+
+  /** Login path only: keeps hashPwd (argon2.verify needs it), omits the self-only badge. Auth-only. */
+  findUniqueUserForAuth(userWhereUniqueInput: Prisma.UserWhereUniqueInput) {
+    return this.prisma.user.findUnique({
+      where: userWhereUniqueInput,
+      omit: { hasUrFriendReq: true },
+    });
+  }
+
+  /** Self-profile only: keeps the hasUrFriendReq badge, omits hashPwd. */
+  findSelfProfile(userId: number) {
+    return this.prisma.user.findUnique({ where: { id: userId }, omit: { hashPwd: true } });
   }
 
   updateUser(params: {
@@ -30,45 +36,29 @@ export class UserService implements OnModuleInit {
     data: Prisma.UserUpdateInput;
   }): Promise<User> {
     const { where, data } = params;
-    return this.prisma.user.update({
-      data,
-      where,
-    });
+    return this.prisma.user.update({ data, where });
   }
 
-  updateUserExtra(params: {
-    where: Prisma.UserWhereUniqueInput;
-    data: Prisma.UserUpdateInput;
-  }): Promise<User> {
-    const { where, data } = params;
-    return this.prisma.user.update({
-      data,
-      where,
-    });
-  }
-
-  /** 更新当前用户头像（嵌套更新 UserExtra.avatar）。 */
+  /** Update the current user's avatar (inline User.avatar). */
   updateAvatar(userId: number, avatar: string) {
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: { userExtra: { update: { avatar } } },
-    });
+    return this.prisma.user.update({ where: { id: userId }, data: { avatar } });
   }
 
-  /** 更新当前用户昵称/简介（嵌套更新 UserExtra，带 include 返回完整 User）。 */
+  /** Update the current user's display name / bio (inline User columns). */
   updateProfile(userId: number, data: { name?: string; bio?: string }) {
-    const extra: Record<string, string> = {};
-    if (data.name !== undefined) extra.name = data.name;
-    if (data.bio !== undefined) extra.bio = data.bio;
-    return this.prisma.user.update({
-      where: { id: userId },
-      data: { userExtra: { update: extra } },
-      include: { userExtra: true },
-    });
+    const update: Prisma.UserUpdateInput = {};
+    if (data.name !== undefined) update.name = data.name;
+    if (data.bio !== undefined) update.bio = data.bio;
+    return this.prisma.user.update({ where: { id: userId }, data: update, omit: { hashPwd: true } });
   }
 
   queryUsers(params: Prisma.UserFindManyArgs) {
-    return this.prisma.user.findMany(params);
+    // Default-omit sensitive columns. Callers needing an explicit `select` must hit prisma directly
+    // (select + omit are mutually exclusive in Prisma); all current callers pass only `where`.
+    return this.prisma.user.findMany({
+      ...params,
+      omit: { hashPwd: true, hasUrFriendReq: true, ...(params.omit ?? {}) },
+    });
   }
 
   addUser(params: { uniqName: string; hashPwd: string }) {
@@ -77,33 +67,20 @@ export class UserService implements OnModuleInit {
         where: { uniqName_domain: { uniqName: params.uniqName, domain: 'local' } },
       });
       if (user !== null) {
-        return {
-          status: 2,
-        };
+        return { status: 2 };
       }
-      const newUserData: Prisma.UserCreateInput = {
-        uniqName: params.uniqName,
-        isForeigner: false,
-        hashPwd: params.hashPwd,
-        userExtra: {
-          create: {
-            name: params.uniqName,
-            avatar: '',
-          },
-        },
-        userNotiBox: {
-          create: {},
-        },
-      };
       const newUser = await prisma.user.create({
-        data: newUserData,
+        data: {
+          uniqName: params.uniqName,
+          isForeigner: false,
+          hashPwd: params.hashPwd,
+          name: params.uniqName,
+          avatar: '',
+        },
       });
       return {
         status: 0,
-        data: {
-          id: newUser.id,
-          uniqName: newUser.uniqName,
-        },
+        data: { id: newUser.id, uniqName: newUser.uniqName },
       };
     });
   }

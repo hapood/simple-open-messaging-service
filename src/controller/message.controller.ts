@@ -24,7 +24,11 @@ import { ThreadParticipantService } from '../thread-participant/thread-participa
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
-import { parseFileContent } from '../upload/file-content.js';
+import {
+  parseAudioContent,
+  parseFileContent,
+  parseVideoContent,
+} from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import {
   SendMessageDto,
@@ -35,7 +39,6 @@ import {
   ClearHistoryDto,
   SetAliasDto,
   SearchMessagesDto,
-  GlobalSearchDto,
 } from '../dto/message.dto.js';
 
 @ApiTags('message')
@@ -71,14 +74,27 @@ export class MessageController {
       return { code: BusinessCode.MESSAGE_EMPTY, message: 'no content' };
     }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
-    // FILE content is a server-trust contract: the client only forwards what POST /upload/file
-    // returned. parseFileContent rejects any non-upload URL, disallowed mimetype, or bad shape so a
-    // forged `javascript:`/external/traversal URL or oversized value can never be stored (and later
-    // rendered into a download link). PURE_TEXT/IMAGE keep their existing verbatim storage.
+    // Media content (FILE/VIDEO/AUDIO) is a server-trust contract: the client only forwards what
+    // the matching POST /upload/* route returned. parse{File,Video,Audio}Content reject any non-upload
+    // URL, disallowed mimetype, or bad shape so a forged `javascript:`/external/traversal URL or
+    // oversized value can never be stored (and later rendered into a link). PURE_TEXT/IMAGE keep
+    // their existing verbatim storage.
     if (contentType === ContentType.FILE && !parseFileContent(dto.content)) {
       return {
         code: BusinessCode.VALIDATION_FAILED,
         message: 'invalid file content',
+      };
+    }
+    if (contentType === ContentType.VIDEO && !parseVideoContent(dto.content)) {
+      return {
+        code: BusinessCode.VALIDATION_FAILED,
+        message: 'invalid video content',
+      };
+    }
+    if (contentType === ContentType.AUDIO && !parseAudioContent(dto.content)) {
+      return {
+        code: BusinessCode.VALIDATION_FAILED,
+        message: 'invalid audio content',
       };
     }
     const data = await this.messageService.writeMsgToThread(
@@ -368,37 +384,5 @@ export class MessageController {
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
     return { code: BusinessCode.OK, message: 'successful', data, hasMore };
-  }
-
-  // No ThreadAccessGuard here — the scope IS the caller's own membership (the service joins their
-  // active ThreadParticipant row), so non-participants simply never see threads they aren't in.
-  // Throttled tighter than the single-thread search (20/min) since this scans every conversation.
-  @UseGuards(JwtAuthGuard, ThrottleGuard)
-  @Throttle(20, 60)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('search/global')
-  @ApiOperation({
-    summary: 'Global cross-conversation search (messages by text/file-name + conversations/contacts by display name)',
-  })
-  async searchGlobal(@Request() req, @Body() dto: GlobalSearchDto): Promise<ApiResult> {
-    const userId = req.user.userId;
-    const messageTake = dto.messageTake ?? 20;
-    const threadTake = dto.threadTake ?? 20;
-    const lastMsgId =
-      dto.lastMsgId !== undefined ? BigInt(dto.lastMsgId) : undefined;
-    const [msgResult, threads] = await Promise.all([
-      this.messageService.searchMessagesGlobal(userId, dto.keyword, messageTake, lastMsgId),
-      this.messageService.searchThreadsGlobal(userId, dto.keyword, threadTake),
-    ]);
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: {
-        threads,
-        messages: msgResult.hits,
-        hasMoreMessages: msgResult.hasMore,
-      },
-    };
   }
 }

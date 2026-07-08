@@ -16,11 +16,17 @@ import {
  * classes are not hoisted — otherwise you hit the TDZ → runtime ReferenceError).
  */
 
-export class UserExtraResponseDto {
+export class UserResponseDto {
+  @ApiProperty({ example: 1 })
+  id: number;
+
+  @ApiProperty({ example: 'alice', description: 'Login unique name' })
+  uniqName: string;
+
   @ApiProperty({ example: 'Alice', description: 'Display name' })
   name: string;
 
-  @ApiProperty({ example: 'https://.../a.png', description: 'Avatar URL' })
+  @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
   avatar: string;
 
   @ApiProperty({
@@ -28,22 +34,6 @@ export class UserExtraResponseDto {
     description: 'Bio (about)',
   })
   bio: string;
-}
-
-export class UserNotiBoxResponseDto {
-  @ApiProperty({
-    example: false,
-    description: 'Whether there are unread friend requests',
-  })
-  hasUrFriendReq: boolean;
-}
-
-export class UserResponseDto {
-  @ApiProperty({ example: 1 })
-  id: number;
-
-  @ApiProperty({ example: 'alice', description: 'Login unique name' })
-  uniqName: string;
 
   @ApiProperty({ example: false, description: 'Whether an external user' })
   isForeigner: boolean;
@@ -66,11 +56,14 @@ export class UserResponseDto {
   @ApiProperty({ example: false })
   isDeleted: boolean;
 
-  @ApiProperty({ description: 'User extra info' })
-  userExtra: UserExtraResponseDto;
-
-  @ApiProperty({ description: 'Notification box' })
-  userNotiBox: UserNotiBoxResponseDto;
+  // SELF-ONLY: whether the caller has unread friend requests. Populated solely by the self-profile
+  // read; every other response builder must leave it unset so the badge never leaks to other clients.
+  @ApiProperty({
+    required: false,
+    example: false,
+    description: 'Unread friend-request badge (self only)',
+  })
+  hasUrFriendReq?: boolean;
 
   // Note: hashPwd never appears in responses.
 }
@@ -300,6 +293,13 @@ export class FriendshipDto {
     description: 'PENDING | APPROVED | BLOCKED | DELETED',
   })
   status: FriendshipStatus;
+
+  @ApiProperty({
+    required: false,
+    example: 'Hi from the conference',
+    description: 'The PENDING request note/reason the requester sent (≤255 chars). Absent on non-PENDING rows.',
+  })
+  reqMessage?: string;
 
   @ApiProperty({
     example: 12,

@@ -18,12 +18,12 @@ import { SerializeInterceptor } from './common/serialize.interceptor.js';
 import { AccessTokenValidator, MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
 import { BusinessCode } from './common/business-code.js';
 
-// Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to the
-// generic-file limit so POST /upload/file can accept large documents; images stay bounded at
-// UploadService.MAX_IMAGE_BYTES (enforced in consumeImage) so this higher ceiling does not also
-// raise it for avatars/chat-images. consumeImage/consumeFile treat over-limit as a 'too-large'
-// rejection (not a 500).
-const MULTIPART_LIMIT = 50 * 1024 * 1024;
+// Multipart upload size cap — the hard ceiling for any single uploaded part. Raised to 100MB so
+// POST /upload/video can admit video; images stay bounded at UploadService.MAX_IMAGE_BYTES, files at
+// MAX_FILE_BYTES, audio at MAX_AUDIO_BYTES (each enforced in its consumer) so this ceiling does not
+// also raise them. consumeImage/consumeFile/consumeVideo/consumeAudio treat over-limit as a
+// 'too-large' rejection (not a 500).
+const MULTIPART_LIMIT = 100 * 1024 * 1024;
 
 /** Parse a comma-separated ALLOWED_ORIGINS env into a trimmed, de-duplicated list. Empty when
  *  unset → CORS falls back to the dev/permissive posture (see configureApp). Used to admit
@@ -52,17 +52,22 @@ function extractBearer(header: string | undefined): string | undefined {
   return match ? match[1] : undefined;
 }
 
-/** Image extensions served INLINE from /uploads (avatars + chat-images, which are magic-byte-
- *  verified at POST /upload). Everything else is forced to download — see registerStaticServing. */
-const INLINE_IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
+/** Media extensions served INLINE from /uploads. Images (magic-byte-verified at POST /upload) plus
+ *  video/audio containers — the latter so <video src>/<audio src> can stream-play rather than being
+ *  forced to download. Everything else (generic files: .html/.svg/.exe/...) is forced to download so
+ *  it can never inline-render in this origin (XSS via the same-origin httpOnly media_token cookie). */
+const INLINE_MEDIA_EXTS = new Set([
+  'png', 'jpg', 'jpeg', 'gif', 'webp', // images
+  'mp4', 'webm', 'mov', 'flv', 'avi', // video
+  'mp3', 'ogg', 'opus', 'wav', 'm4a', 'flac', 'aac', // audio
+]);
 
-/** Whether a /uploads resource path should be served inline (an image rendered via <img src>) or
- *  forced to a download. Non-image user uploads MUST download so an uploaded .html/.svg/.exe can
- *  never inline-render in this origin (XSS via the same-origin httpOnly media_token cookie). */
-function isInlineImage(resourcePath: string): boolean {
+/** Whether a /uploads resource path should be served inline (image/video/audio via <img>/<video>/
+ *  <audio src>) or forced to a download. Non-media user uploads MUST download. */
+function isInlineMedia(resourcePath: string): boolean {
   const dot = resourcePath.lastIndexOf('.');
   if (dot < 0) return false;
-  return INLINE_IMAGE_EXTS.has(resourcePath.slice(dot + 1).toLowerCase());
+  return INLINE_MEDIA_EXTS.has(resourcePath.slice(dot + 1).toLowerCase());
 }
 
 /**
@@ -234,7 +239,7 @@ async function registerStaticServing(
       res.setHeader('Cache-Control', 'private, max-age=300');
       res.setHeader('Vary', 'Cookie');
       res.setHeader('X-Content-Type-Options', 'nosniff');
-      if (!isInlineImage(resourcePath)) {
+      if (!isInlineMedia(resourcePath)) {
         res.setHeader('Content-Disposition', 'attachment');
       }
     },

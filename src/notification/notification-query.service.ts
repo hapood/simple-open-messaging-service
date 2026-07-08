@@ -72,7 +72,7 @@ export class NotificationQueryService {
       return tb - ta || a.threadId - b.threadId;
     });
 
-    // Resolve P2P display names (the peer's UserExtra.name, falling back to uniqName).
+    // Resolve P2P display names (the peer's User.name, falling back to uniqName).
     const p2pThreadIds = withUnread
       .filter((p) => p.thread.type === 'P2P')
       .map((p) => p.threadId);
@@ -81,7 +81,6 @@ export class NotificationQueryService {
       p2pThreadIds.length > 0
         ? await this.userService.queryUsers({
             where: { id: { in: peers.map((p) => p.userId) }, isDeleted: false },
-            include: { userExtra: true },
           })
         : [];
     const peerNameByThread = new Map<number, string>();
@@ -89,8 +88,7 @@ export class NotificationQueryService {
       const u = peerUsers.find((u) => u.id === p.userId) as
         | (typeof peerUsers)[number]
         | undefined;
-      const extra = (u as { userExtra?: { name?: string } | null } | undefined)?.userExtra;
-      peerNameByThread.set(p.threadId, extra?.name || u?.uniqName || 'Unknown');
+      peerNameByThread.set(p.threadId, u?.name || u?.uniqName || 'Unknown');
     });
 
     // Resolve GROUP display names (Group.name by threadId).

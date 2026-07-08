@@ -35,20 +35,19 @@ export class SendMessageDto {
   //  - INVITE: a system message carrying a server-SIGNED invite token, created exclusively by
   //    group/invite. Letting a client set it would let them forge invite cards / malformed payloads
   //    in any thread they belong to.
-  //  - VIDEO/AUDIO: no upload pipeline exists yet, so a client has no legitimate way to author
-  //    them; allowing them would store arbitrary unvalidated content under those types.
-  // FILE is allowed because POST /upload/file is the validated client-authoring path, and the
-  // FILE content shape (url/name/size/mimeType) is re-validated by parseFileContent in
-  // MessageController.sendMessage — a client cannot forge a non-upload URL or disallowed type.
-  // Add a type here only when a validated client-authoring path exists.
+  // PURE_TEXT/IMAGE/FILE/VIDEO/AUDIO are allowed because each has a validated client-authoring path
+  // (POST /upload, /upload/file, /upload/video, /upload/audio), and the content shape is re-validated
+  // by parseFileContent / parseVideoContent / parseAudioContent in MessageController.sendMessage — a
+  // client cannot forge a non-upload URL or disallowed shape. Add a type here only when such a path
+  // exists.
   @ApiProperty({
     enum: ContentType,
     required: false,
     description:
-      'Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only; VIDEO/AUDIO have no upload pipeline yet.',
+      'Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only.',
   })
   @IsOptional()
-  @IsIn(['PURE_TEXT', 'IMAGE', 'FILE'])
+  @IsIn(['PURE_TEXT', 'IMAGE', 'FILE', 'VIDEO', 'AUDIO'])
   contentType?: ContentType;
 
   @ApiProperty({
@@ -222,62 +221,4 @@ export class SearchMessagesDto {
   @IsString()
   @Matches(/^\d+$/, { message: 'lastId must be a numeric string' })
   lastId?: string;
-}
-
-/**
- * Global cross-conversation search. Searches the caller's ACTIVE conversations for two wings:
- *  - messages: PURE_TEXT body substring OR FILE attachment name (case-insensitive). Other content
- *    types carry no searchable text — IMAGE is a {url,w,h} blob, INVITE is a server-signed token.
- *  - conversations/contacts: group name, P2P peer display name, or the caller's per-thread alias —
- *    whichever the conversation list itself shows (COALESCE(alias, realName)).
- *
- * Membership is enforced by joining the caller's active ThreadParticipant row, so non-participants
- * never see threads they aren't in. clearedAt (per-user "clear history" watermark) and the caller's
- * blocks are re-applied on the message wing, mirroring query-messages. No ThreadAccessGuard is used —
- * the scope IS the caller's own membership set, keyed off req.user.userId.
- */
-export class GlobalSearchDto {
-  @ApiProperty({
-    example: 'hello',
-    description: 'Search keyword (substring, case-insensitive across all active conversations)',
-  })
-  @IsString()
-  @IsNotEmpty()
-  @MaxLength(255)
-  keyword: string;
-
-  @ApiProperty({
-    required: false,
-    example: 20,
-    description: 'Max message hits to return (1-50). Default 20.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50)
-  messageTake?: number;
-
-  @ApiProperty({
-    required: false,
-    example: 20,
-    description: 'Max conversation/contact hits to return (1-50). Default 20.',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50)
-  threadTake?: number;
-
-  @ApiProperty({
-    required: false,
-    example: '9007199254740993',
-    description:
-      'Cursor (BigInt→string): return message hits with id < lastMsgId (descending). Omit for the first page.',
-  })
-  @IsOptional()
-  @IsString()
-  @Matches(/^\d+$/, { message: 'lastMsgId must be a numeric string' })
-  lastMsgId?: string;
 }

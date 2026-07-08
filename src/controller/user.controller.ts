@@ -40,6 +40,7 @@ import {
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
+  SendFriendRequestDto,
   ThreadIdDto,
   UserByUniqNameDto,
   QueryUsersDto,
@@ -49,6 +50,7 @@ import {
   BlockDto,
 } from '../dto/user.dto.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
+import { FederationService, parseHandle, type S2SProfile } from '../federation/federation.service.js';
 
 @ApiTags('user')
 @Controller()
@@ -63,24 +65,20 @@ export class UserController {
     private readonly sseService: SseService,
     private readonly messageService: MessageService,
     private readonly userBlockService: UserBlockService,
+    private readonly federationService: FederationService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/my-profile')
-  @ApiOperation({ summary: '获取当前用户资料' })
+  @ApiOperation({ summary: 'Get the current user profile' })
   @ApiResultResponse(UserResponseDto)
   async getMyProfile(@Request() req): Promise<ApiResult> {
-    // hasNotiBox=true so the response carries userNotiBox.hasUrFriendReq — the source
-    // of truth for the friend-request badge. Without it the badge can never light up,
-    // even though the NOTIFY SSE + atomic flag write are wired end-to-end.
-    const data = await this.userService.findUniqueUser(
-      { id: req.user.userId },
-      true,
-      true,
-    );
-    delete data.hashPwd;
+    // findSelfProfile keeps the self-only hasUrFriendReq badge (the source of truth for the
+    // friend-request badge) and omits hashPwd. Every other user read uses findUniqueUser/queryUsers,
+    // which omit BOTH — so the badge only ever appears here, never on another user's data.
+    const data = await this.userService.findSelfProfile(req.user.userId);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -90,7 +88,7 @@ export class UserController {
   @Post('user/update-avatar')
   @ApiOperation({
     summary:
-      '更新当前用户头像（multipart file；sharp 重写为 32/64/128/256/512 多档 webp）',
+      'Update the current user avatar (multipart file; sharp rewrites to 32/64/128/256/512 multi-size webp)',
   })
   @ApiConsumes('multipart/form-data')
   async updateAvatar(@Request() req: FastifyRequest): Promise<ApiResult> {
@@ -106,21 +104,21 @@ export class UserController {
               : 'invalid image',
       };
     }
-    // magic number 前置：快速拒绝伪造 mimetype 的非图片（sharp 会在 saveAvatars 里二次校验）。
+    // Magic-number check first: quickly reject non-images with a forged mimetype (sharp re-validates in saveAvatars).
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
-    // 先读旧头像 → 落盘新多档 → 写库 → 清旧全部尺寸（顺序保证 DB 已更新才删旧文件）。
+    // Read old avatar → write new multi-size → update DB → delete old sizes (order guarantees the DB is updated before old files are deleted).
     const old = await this.userService.findUniqueUser({ id: req.user.userId });
     let url: string;
     try {
       url = await this.uploadService.saveAvatars(img.buffer);
     } catch {
-      // sharp decode 失败（损坏/像素炸弹/非图）→ 一律按 invalid image 拒绝，不落盘不写库。
+      // sharp decode failure (corrupt / pixel-bomb / non-image) → always rejected as invalid image; nothing written to disk or DB.
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
     await this.userService.updateAvatar(req.user.userId, url);
-    await this.uploadService.deleteByUrl(old?.userExtra?.avatar ?? '');
+    await this.uploadService.deleteByUrl(old?.avatar ?? '');
     return {
       code: BusinessCode.OK,
       message: 'successful',
@@ -132,14 +130,13 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
-  @ApiOperation({ summary: '更新当前用户昵称/简介（handle 不可改）' })
+  @ApiOperation({ summary: 'Update the current user display name / bio (handle is immutable)' })
   @ApiResultResponse(UserResponseDto)
   async updateProfile(
     @Request() req,
     @Body() dto: UpdateProfileDto,
   ): Promise<ApiResult> {
     const data = await this.userService.updateProfile(req.user.userId, dto);
-    delete data.hashPwd;
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -147,7 +144,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/valid')
-  @ApiOperation({ summary: '查询有效会话列表（含对端 user/group 信息）' })
+  @ApiOperation({ summary: 'List active conversations (includes peer user/group info)' })
   @ApiResultResponse(ConversationItemDto, true)
   async queryValidThread(
     @Request() req,
@@ -198,11 +195,9 @@ export class UserController {
         id: { in: peers.map((p) => p.userId) },
         isDeleted: false,
       },
-      include: { userExtra: true },
     });
     const userDict: Record<number, (typeof peerUsers)[number]> = {};
     peerUsers.forEach((u) => {
-      delete u.hashPwd;
       userDict[u.id] = u;
     });
     // Hydrate each P2P peer's blocked-by-caller flag in one batched UserBlock lookup, so the chat
@@ -237,15 +232,11 @@ export class UserController {
       groupSenderIds.length > 0
         ? await this.userService.queryUsers({
             where: { id: { in: groupSenderIds } },
-            include: { userExtra: true },
           })
         : [];
     const senderNameById = new Map<number, string>();
     groupSenders.forEach((u) => {
-      // queryUsers is a generic passthrough (Prisma.UserFindManyArgs) so its TS return is the base
-      // User; the userExtra include is present at runtime. Cast to read the display name.
-      const extra = (u as { userExtra?: { name?: string } | null }).userExtra;
-      senderNameById.set(u.id, extra?.name || u.uniqName);
+      senderNameById.set(u.id, u.name || u.uniqName);
     });
     const data = list.map((p) => {
       const item = {
@@ -307,7 +298,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/to-pending')
-  @ApiOperation({ summary: '查询待处理（对方发起的）好友请求' })
+  @ApiOperation({ summary: 'List pending (incoming) friend requests' })
   @ApiResultResponse(FriendshipDto, true)
   async queryPendingThread(
     @Request() req,
@@ -336,7 +327,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/from-pending')
-  @ApiOperation({ summary: '查询我发出的待处理好友请求' })
+  @ApiOperation({ summary: 'List my outgoing pending friend requests' })
   @ApiResultResponse(FriendshipDto, true)
   async queryFromPendingThread(
     @Request() req,
@@ -372,10 +363,10 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/send-friend-request')
-  @ApiOperation({ summary: '发送好友请求' })
+  @ApiOperation({ summary: 'Send a friend request (optional ≤255 note; federated recipients go via S2S automatically)' })
   async sendFriendRequest(
     @Request() req,
-    @Body() dto: UserIdDto,
+    @Body() dto: SendFriendRequestDto,
   ): Promise<ApiResult> {
     if (req.user.userId === dto.userId) {
       return {
@@ -383,10 +374,7 @@ export class UserController {
         message: 'can not make friend with self',
       };
     }
-    const friend = await this.userService.findUniqueUser(
-      { id: dto.userId },
-      false,
-    );
+    const friend = await this.userService.findUniqueUser({ id: dto.userId });
     if (!friend) {
       return {
         code: BusinessCode.NOT_FOUND,
@@ -394,16 +382,40 @@ export class UserController {
         messageKey: 'friend.msg.friendNotFound',
       };
     }
-    // makeFriendRequest 状态语义见 friendship.service.ts：
-    //  0 首次发请求 / 1 已是好友 / 2 删除后重发 / 3 对端先发过→互加成功 / 5 对端待处理或已拉黑
+    // makeFriendRequest status: 0 first / 1 already friends / 2 deleted→reset / 3 mutual→auto-approve / 5 pending|blocked
     const res = await this.friendshipService.makeFriendRequest(
       req.user.userId,
       friend.id,
+      dto.message ?? '',
     );
-    // status 0 (first request) and 2 (deleted→reset) both create a fresh pending request
-    // for the recipient → push a live NOTIFY so their badge arms instantly (the
-    // Notify row + hasUrFriendReq flag were already written atomically in the tx).
-    if (res.status === 0 || res.status === 2) {
+    const message = dto.message ?? '';
+    if (friend.isForeigner) {
+      // Federated recipient → synchronous S2S send (no local SSE; the peer surfaces it to its user).
+      // Idempotent on the receiver, so the user can retry safely if the peer was momentarily down.
+      if (res.status === 0 || res.status === 2 || res.status === 3) {
+        try {
+          // Resolve-on-demand: if the foreign stub was addressed by id without a prior resolve (so it's
+          // a bare localpart with no avatar/name), pull + localize the profile first. No-op when the
+          // resolve endpoint already localized it. The send would fail against the same peer anyway.
+          await this.federationService.ensureForeignUserLocalized(friend.id, {
+            localpart: friend.uniqName,
+            domain: friend.domain,
+          });
+          await this.federationService.sendFriendRequest(
+            req.user.userId,
+            { localpart: friend.uniqName, domain: friend.domain },
+            message,
+          );
+        } catch (e) {
+          return {
+            code: BusinessCode.FEDERATION_DELIVERY_FAILED,
+            message: `could not reach ${friend.domain}: ${(e as Error).message}`,
+          };
+        }
+      }
+    } else if (res.status === 0 || res.status === 2) {
+      // Local recipient → live NOTIFY so their badge arms instantly (the Notify row + hasUrFriendReq
+      // flag were already written atomically in the tx).
       this.sseService.onNotify(
         friend.id,
         serializeBody({
@@ -422,7 +434,7 @@ export class UserController {
       case 3:
         return { code: BusinessCode.OK, message: 'you are now friends', messageKey: 'friend.msg.nowFriends' };
       case 5:
-        // 对端已发过（幂等）或已拉黑。后者不回显"被拉黑"以免泄露屏蔽状态。
+        // Peer already sent (idempotent) or blocked. The latter is not echoed to avoid leaking the block.
         return { code: BusinessCode.OK, message: 'friend request sent', messageKey: 'friend.msg.sent' };
       default:
         return {
@@ -436,32 +448,48 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/approve-friend-request')
-  @ApiOperation({ summary: '同意好友请求' })
+  @ApiOperation({ summary: 'Accept a friend request' })
   async acceptFriendRequest(
     @Request() req,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
-    const res = await this.friendshipService.approveFriendRequest(
-      dto.userId,
-      req.user.userId,
-    );
+    const requester = await this.userService.findUniqueUser({ id: dto.userId });
+    if (!requester) {
+      return { code: BusinessCode.NOT_FOUND, message: `user [${dto.userId}] not found` };
+    }
+    const res = await this.friendshipService.approveFriendRequest(dto.userId, req.user.userId);
     if (res.status !== 0) {
       return {
         code: BusinessCode.FRIEND_NO_INCOMING,
         message: `user [${dto.userId}] did not send you a friend request.`,
       };
     }
-    // The tx just created a new P2P MessageThread + both ThreadParticipant rows. Notify BOTH
-    // participants so each side's conversation list picks up the new thread live: the original
-    // requester otherwise has no signal their request was accepted, and the approver's other
-    // online tabs/devices wouldn't see it from this HTTP response alone.
     const payload = serializeBody({
       event: 'NOTIFY',
       type: 'FRIEND_APPROVED',
       byUserId: req.user.userId,
     });
-    this.sseService.onNotify(dto.userId, payload);
-    this.sseService.onNotify(req.user.userId, payload);
+    if (requester.isForeigner) {
+      // Federated requester → synchronous S2S friend.approve (the peer creates its own thread +
+      // surfaces to the requester). No local SSE to the foreign stub; only the local approver's
+      // other tabs/devices get the live NOTIFY.
+      try {
+        await this.federationService.sendFriendApprove(req.user.userId, {
+          localpart: requester.uniqName,
+          domain: requester.domain,
+        });
+      } catch (e) {
+        return {
+          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
+          message: `could not reach ${requester.domain}: ${(e as Error).message}`,
+        };
+      }
+      this.sseService.onNotify(req.user.userId, payload);
+    } else {
+      // Local requester → NOTIFY both sides so each picks up the new thread live.
+      this.sseService.onNotify(dto.userId, payload);
+      this.sseService.onNotify(req.user.userId, payload);
+    }
     return { code: BusinessCode.OK, message: 'friend request approved' };
   }
 
@@ -469,7 +497,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/decline-friend-request')
-  @ApiOperation({ summary: '拒绝好友请求' })
+  @ApiOperation({ summary: 'Decline a friend request' })
   async declineFriendRequest(
     @Request() req,
     @Body() dto: UserIdDto,
@@ -492,7 +520,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/cancel-friend-request')
-  @ApiOperation({ summary: '撤销我发出的好友请求' })
+  @ApiOperation({ summary: 'Cancel my outgoing friend request' })
   async cancelFriendRequest(
     @Request() req,
     @Body() dto: UserIdDto,
@@ -521,33 +549,30 @@ export class UserController {
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
     if (req.user.userId === dto.userId) {
-      return {
-        code: BusinessCode.FRIEND_SELF,
-        message: 'can not unfriend self',
-      };
+      return { code: BusinessCode.FRIEND_SELF, message: 'can not unfriend self' };
     }
-    const res = await this.friendshipService.deleteFriendship(
-      req.user.userId,
-      dto.userId,
-    );
+    const peer = await this.userService.findUniqueUser({ id: dto.userId });
+    const res = await this.friendshipService.deleteFriendship(req.user.userId, dto.userId);
     if (res.status !== 'ok') {
       // No APPROVED relationship to end — idempotent. THREAD_NOT_FOUND matches the P2P "no
       // conversation" signal the rest of the message/thread routes use.
-      return {
-        code: BusinessCode.THREAD_NOT_FOUND,
-        message: `not friends with [${dto.userId}]`,
-      };
+      return { code: BusinessCode.THREAD_NOT_FOUND, message: `not friends with [${dto.userId}]` };
     }
-    // Tell the peer to drop the conversation immediately. Their participant row was soft-left in
-    // the same tx, so a refetch hides it too; the NOTIFY just avoids the round-trip latency.
-    this.sseService.onNotify(
-      dto.userId,
-      serializeBody({
-        event: 'NOTIFY',
-        type: 'FRIEND_DELETED',
-        byUserId: req.user.userId,
-      }),
-    );
+    if (!peer?.isForeigner) {
+      // Local peer → NOTIFY so their conversation list drops it immediately. Their participant row
+      // was soft-left in the tx; the NOTIFY just avoids the round-trip latency.
+      this.sseService.onNotify(
+        dto.userId,
+        serializeBody({
+          event: 'NOTIFY',
+          type: 'FRIEND_DELETED',
+          byUserId: req.user.userId,
+        }),
+      );
+    }
+    // Federated peer → LOCAL-ONLY deletion. No S2S notification is sent: unfriending never fans out.
+    // The peer discovers the severed edge lazily, via a rejection-on-send in Step 2 (the next time the
+    // peer tries to message, our inbox rejects it as "not friends"). See docs/federation-protocol.md.
     return { code: BusinessCode.OK, message: 'friend removed' };
   }
 
@@ -580,15 +605,11 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query')
-  @ApiOperation({ summary: '按 userId 批量查用户（≤100）' })
+  @ApiOperation({ summary: 'Look up users by userId in batch (≤100)' })
   @ApiResultResponse(UserResponseDto, true)
   async queryUserBase(@Body() dto: QueryUsersDto): Promise<ApiResult> {
     const list = await this.userService.queryUsers({
       where: { id: { in: dto.userIds }, isDeleted: false },
-      include: { userExtra: true },
-    });
-    list.forEach((item) => {
-      delete item.hashPwd;
     });
     return { code: BusinessCode.OK, message: 'successful', data: list };
   }
@@ -597,29 +618,83 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/by-uniq-name')
-  @ApiOperation({ summary: '按 uniqName 查用户' })
+  @ApiOperation({ summary: 'Look up a user by uniqName or localpart@domain handle (federated resolves via S2S)' })
   @ApiResultResponse(UserResponseDto)
   async getUserByUniqName(@Body() dto: UserByUniqNameDto): Promise<ApiResult> {
-    const user = await this.userService.findUniqueUser(
-      { uniqName_domain: { uniqName: dto.uniqName, domain: 'local' }, isDeleted: false },
-      true,
-    );
-    if (user !== null) {
-      delete user.hashPwd;
-      return { code: BusinessCode.OK, message: 'successful', data: user };
-    } else {
-      return {
-        code: BusinessCode.NOT_FOUND,
-        message: `can not find user [${dto.uniqName}]`,
-      };
+    // The query can be a plain localpart ("alice") or a full handle ("bob@bbb.com").
+    const h = parseHandle(dto.uniqName);
+    // Federated handle (@localpart@<peer-domain>) → establish mutual trust (init handshake, if not
+    // already trusted), fetch the peer's profile (avatar inline as base64), find-or-create a stub, and
+    // localize it (persist the avatar via saveAvatars + write name/bio), so the caller can address the
+    // user by id in subsequent friend ops (same as a local lookup).
+    if (h && h.domain !== this.federationService.ourDomain) {
+      try {
+        // Trust prerequisite: the signed profile GET below is allow-list-gated on the peer, and our
+        // guard gates their reply traffic — so mutual trust must exist first. Idempotent (no-op if
+        // already trusted). The peer auto-accepts us via the init handshake.
+        await this.federationService.ensurePeerTrusted(h.domain);
+      } catch (e) {
+        return {
+          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
+          message: `could not establish trust with ${h.domain}: ${(e as Error).message}`,
+        };
+      }
+      let profile: S2SProfile;
+      try {
+        profile = await this.federationService.fetchRemoteUser(h);
+      } catch (e) {
+        return {
+          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
+          message: `could not reach ${h.domain}: ${(e as Error).message}`,
+        };
+      }
+      const foreignId = await this.federationService.ensureForeignUser(h.localpart, h.domain);
+      await this.federationService.localizeForeignProfile(foreignId, profile);
+      // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
+      const data = await this.userService.findUniqueUser({ id: foreignId });
+      return { code: BusinessCode.OK, message: 'successful', data };
     }
+    // Local: plain localpart, or a handle whose domain is ours → look up by localpart.
+    const localpart = h ? h.localpart : dto.uniqName;
+    const user = await this.userService.findUniqueUser({
+      uniqName_domain: { uniqName: localpart, domain: 'local' },
+      isDeleted: false,
+    });
+    if (user !== null) {
+      return { code: BusinessCode.OK, message: 'successful', data: user };
+    }
+    return {
+      code: BusinessCode.NOT_FOUND,
+      message: `can not find user [${dto.uniqName}]`,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/sync-peer-profile')
+  @ApiOperation({
+    summary:
+      'Refresh a federated peer profile if stale (chat-open hook). Probes the peer /revision and re-pulls avatar/name/bio only when newer; local users are a no-op.',
+  })
+  @ApiResultResponse(UserResponseDto)
+  async syncPeerProfile(@Body() dto: UserIdDto): Promise<ApiResult> {
+    // Chat-open staleness hook: probe the peer's /revision; if newer than the stub's remoteUpdatedAt,
+    // re-pull + re-localize the avatar/name/bio. Best-effort — a transient peer outage keeps the cached
+    // profile so opening the conversation never blocks. Local users are always fresh locally (no probe).
+    await this.federationService.syncForeignUserIfStale(dto.userId);
+    const data = await this.userService.findUniqueUser({ id: dto.userId });
+    if (!data) {
+      return { code: BusinessCode.NOT_FOUND, message: `user [${dto.userId}] not found` };
+    }
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('/user/thread-info')
-  @ApiOperation({ summary: '查询会话详情（含对端 user/group）' })
+  @ApiOperation({ summary: 'Get conversation details (includes peer user/group)' })
   @ApiResultResponse(ConversationItemDto)
   async queryUserThreadInfo(
     @Request() req,
@@ -687,10 +762,8 @@ export class UserController {
       if (peerId !== undefined) {
         const [peerUser] = await this.userService.queryUsers({
           where: { id: peerId },
-          include: { userExtra: true },
         });
         if (peerUser) {
-          delete peerUser.hashPwd;
           item.peerUser = peerUser;
         }
         item.blocked = await this.userBlockService.isBlocked(me, peerId);
@@ -704,11 +777,8 @@ export class UserController {
       if (p.thread.lastMessageSenderId != null) {
         const [sender] = await this.userService.queryUsers({
           where: { id: p.thread.lastMessageSenderId },
-          include: { userExtra: true },
         });
-        // Same runtime-only userExtra include as the list path (queryUsers is a generic passthrough).
-        const extra = (sender as { userExtra?: { name?: string } | null } | undefined)?.userExtra;
-        item.lastMessageSenderName = sender ? extra?.name || sender.uniqName : null;
+        item.lastMessageSenderName = sender ? sender.name || sender.uniqName : null;
       }
     }
     return { code: BusinessCode.OK, message: 'successful', data: item };
@@ -717,10 +787,11 @@ export class UserController {
   @ApiTags('auth')
   @HttpCode(HttpStatus.OK)
   @Post('user/register')
-  @ApiOperation({ summary: '注册新用户' })
+  @ApiOperation({ summary: 'Register a new user' })
   async registerLocal(@Body() dto: RegisterDto): Promise<ApiResult> {
-    /* uniqName/password 的格式校验（regex）已移入 RegisterDto 的 @Matches → 失败走 ValidationPipe → 200/10000。
-       业务校验（uniqName 重复）仍在 service，走 200 + ALREADY_EXISTS。 */
+    /* Format validation (regex) for uniqName/password has moved into RegisterDto's @Matches → failures
+       go through ValidationPipe → 200/10000. Business validation (uniqName duplicate) stays in the
+       service → 200 + ALREADY_EXISTS. */
     const res = await this.userService.addUser({
       uniqName: dto.uniqName,
       hashPwd: await this.authService.hashStr(dto.password),

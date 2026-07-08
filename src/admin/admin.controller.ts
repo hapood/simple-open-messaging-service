@@ -115,7 +115,6 @@ export class AdminController {
       }),
       this.prisma.user.count({ where }),
     ]);
-    list.forEach((u) => delete (u as any).hashPwd);
     return { code: BusinessCode.OK, message: 'success', data: { list, total } };
   }
 

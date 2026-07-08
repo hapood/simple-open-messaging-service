@@ -50,11 +50,11 @@ export class UploadController {
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
-    const url = await this.uploadService.save(img.mimetype, img.buffer);
+    const { url, size } = await this.uploadService.save(img.mimetype, img.buffer);
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: { url, w: img.w, h: img.h },
+      data: { url, w: img.w, h: img.h, size },
     };
   }
 
@@ -91,5 +91,69 @@ export class UploadController {
       f.buffer,
     );
     return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /**
+   * Video upload: multipart/form-data, field file=<binary>. Backend validates only the container
+   * family via magic bytes (detectMedia) — NO probe/extract/transcode. w/h/duration are client-probed
+   * (<video> loadedmetadata) and carried in the VIDEO message content; the server neither reads nor
+   * trusts them. Returns {url, name, size, mimeType}; the client stores it verbatim as VIDEO content.
+   */
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('upload/video')
+  @ApiOperation({ summary: '上传视频（magic-byte 校验，宽高时长前端探测）' })
+  @ApiConsumes('multipart/form-data')
+  async uploadVideo(@Request() req: FastifyRequest): Promise<ApiResult> {
+    const v = await this.uploadService.consumeVideo(req);
+    if (v.kind === 'rejected') {
+      return {
+        code: BusinessCode.VALIDATION_FAILED,
+        message: this.mediaRejectMessage(v.reason, 'video'),
+      };
+    }
+    const data = await this.uploadService.saveMedia(
+      v.ext,
+      v.mime,
+      v.filename,
+      v.buffer,
+    );
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /** Audio upload: same contract as video with the audio family + cap. */
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('upload/audio')
+  @ApiOperation({ summary: '上传音频（magic-byte 校验，时长前端探测）' })
+  @ApiConsumes('multipart/form-data')
+  async uploadAudio(@Request() req: FastifyRequest): Promise<ApiResult> {
+    const a = await this.uploadService.consumeAudio(req);
+    if (a.kind === 'rejected') {
+      return {
+        code: BusinessCode.VALIDATION_FAILED,
+        message: this.mediaRejectMessage(a.reason, 'audio'),
+      };
+    }
+    const data = await this.uploadService.saveMedia(
+      a.ext,
+      a.mime,
+      a.filename,
+      a.buffer,
+    );
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /** Map a ConsumedMedia rejection reason to a user-facing message. Shared by video + audio. */
+  private mediaRejectMessage(
+    reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name',
+    kind: 'video' | 'audio',
+  ): string {
+    if (reason === 'no-file') return 'no file';
+    if (reason === 'too-large') return 'file too large';
+    if (reason === 'bad-name') return 'invalid filename';
+    return `invalid ${kind}`;
   }
 }

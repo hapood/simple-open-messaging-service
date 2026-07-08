@@ -1,19 +1,26 @@
 import { Injectable } from '@nestjs/common';
-import { existsSync, mkdirSync, writeFile, unlink } from 'fs';
-import { basename, join } from 'path';
-import { randomBytes } from 'crypto';
+import { existsSync, mkdirSync, writeFile, readFile, unlink, rename, mkdir } from 'fs';
+import { basename, dirname, join } from 'path';
+import { createHash, randomBytes } from 'crypto';
 import { promisify } from 'util';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
 import {
+  MAX_AUDIO_BYTES,
   MAX_FILE_BYTES,
   MAX_FILE_NAME_LEN,
+  MAX_VIDEO_BYTES,
   parseFileExt,
   resolveFileType,
 } from './file-content.js';
+import { MediaAssetService } from './media-asset.service.js';
+import { detectMedia } from './media-sig.js';
 
 const writeFileAsync = promisify(writeFile);
+const readFileAsync = promisify(readFile);
 const unlinkAsync = promisify(unlink);
+const renameAsync = promisify(rename);
+const mkdirAsync = promisify(mkdir);
 
 /** 允许的图片 mimetype → 扩展名（白名单 + 落盘扩展名映射）。 */
 const IMG_EXT: Record<string, string> = {
@@ -54,6 +61,24 @@ export type ConsumedFile =
     };
 
 /**
+ * consumeVideo / consumeAudio return: on success carries the trusted ext (derived from magic bytes,
+ * NOT the client filename), the display mime, the buffer, and the original filename. ext is what gets
+ * written to disk and served; the controller maps a 'rejected' to the matching business code.
+ */
+export type ConsumedMedia =
+  | {
+      kind: 'file';
+      ext: string;
+      mime: string;
+      buffer: Buffer;
+      filename: string;
+    }
+  | {
+      kind: 'rejected';
+      reason: 'no-file' | 'wrong-type' | 'too-large' | 'bad-name';
+    };
+
+/**
  * 图片上传服务。
  *
  * 普通图片（聊天相册）：零图片库依赖——@fastify/multipart 读到 buffer + magic number 校验，
@@ -73,6 +98,8 @@ export type ConsumedFile =
 @Injectable()
 export class UploadService {
   readonly uploadDir = join(process.cwd(), 'uploads');
+
+  constructor(private readonly mediaAsset: MediaAssetService) {}
 
   /** 头像多档边长（2 的幂，覆盖侧栏/消息行/详情页 + retina）；按需可调。 */
   static readonly AVATAR_SIZES = [32, 64, 128, 256, 512] as const;
@@ -139,6 +166,56 @@ export class UploadService {
     return {
       kind: 'file',
       mimetype: ft.mime,
+      buffer: r.buffer,
+      filename: r.filename,
+    };
+  }
+
+  /**
+   * Consume a single video from multipart/form-data: buffer it (capped at MAX_VIDEO_BYTES), require a
+   * filename, then gate on a video-container magic-byte signature (detectMedia family === 'video').
+   * The client-declared MIME is NOT trusted for the on-disk extension — detectMedia derives ext from
+   * the actual bytes. w/h/duration are NOT read server-side; the client probes them via <video>
+   * loadedmetadata and carries them in the VIDEO message content (parseVideoContent validates on send).
+   */
+  async consumeVideo(req: FastifyRequest): Promise<ConsumedMedia> {
+    return this.consumeMedia(req, 'video', MAX_VIDEO_BYTES);
+  }
+
+  /** Consume a single audio clip. Same contract as consumeVideo with the audio family + cap. */
+  async consumeAudio(req: FastifyRequest): Promise<ConsumedMedia> {
+    return this.consumeMedia(req, 'audio', MAX_AUDIO_BYTES);
+  }
+
+  /**
+   * Shared video/audio consumer: drain the multipart (single-file contract via consumeSingle), then
+   * detect the container family from magic bytes and gate on the expected family. The on-disk ext is
+   * the detected ext (trusted); the display mime is `<family>/<ext>` (display only — @fastify/static
+   * maps ext→Content-Type at serving time, and parseVideo/AudioContent carries this mime for the UI).
+   */
+  private async consumeMedia(
+    req: FastifyRequest,
+    family: 'video' | 'audio',
+    maxBytes: number,
+  ): Promise<ConsumedMedia> {
+    const r = await this.consumeSingle(req, { maxBytes });
+    if (r.kind === 'rejected') {
+      return { kind: 'rejected', reason: r.reason };
+    }
+    if (!r.filename) {
+      return { kind: 'rejected', reason: 'bad-name' };
+    }
+    if (r.buffer.length === 0) {
+      return { kind: 'rejected', reason: 'no-file' };
+    }
+    const detected = detectMedia(r.buffer);
+    if (!detected || detected.family !== family) {
+      return { kind: 'rejected', reason: 'wrong-type' };
+    }
+    return {
+      kind: 'file',
+      ext: detected.ext,
+      mime: `${family}/${detected.ext}`,
       buffer: r.buffer,
       filename: r.filename,
     };
@@ -252,20 +329,58 @@ export class UploadService {
     }
   }
 
-  /** 确保 uploads/ 存在（save 与 saveAvatars 共用）。 */
+  /** Ensure the flat uploads/ root exists (avatar multi-size files still land here). */
   private ensureDir() {
     if (!existsSync(this.uploadDir)) {
       mkdirSync(this.uploadDir, { recursive: true });
     }
   }
 
-  /** 落盘到 uploads/，返回可访问的 url（与 main.ts 的 @fastify/static prefix:'/uploads/' 对齐）。 */
-  async save(mimetype: string, buf: Buffer): Promise<string> {
-    this.ensureDir();
+  /**
+   * Content-addressed save: sha256 → uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>.
+   *
+   * Atomic publish via a tmp file + rename on the same filesystem: two concurrent writers of the
+   * same digest produce byte-identical files, the second rename overwrites the first, and there is
+   * no TOCTOU window (no existsSync pre-check). The MediaAsset ref bump is the CALLER's job — file
+   * write first, then ref, so a DB failure leaves a reclaimable orphan (refs = 0 → GC), never a
+   * dangling reference to a missing file. `ext` is the trusted on-disk extension (the caller decides
+   * the source: magic-byte-derived for images/video/audio, sanitized client-name-derived for files).
+   */
+  private async saveCas(
+    ext: string,
+    buf: Buffer,
+  ): Promise<{ url: string; digest: string; ext: string; size: number }> {
+    const digest = createHash('sha256').update(buf).digest('hex');
+    const rel = join(
+      'shards',
+      digest.slice(0, 2),
+      digest.slice(2, 4),
+      `${digest}.${ext}`,
+    );
+    const abs = join(this.uploadDir, rel);
+    await mkdirAsync(dirname(abs), { recursive: true });
+    // Atomic publish: write a unique tmp path, then rename (same filesystem → atomic). Identical
+    // concurrent uploads overwrite each other harmlessly (byte-identical content).
+    const tmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    await writeFileAsync(tmp, buf);
+    await renameAsync(tmp, abs);
+    return { url: `/uploads/${rel}`, digest, ext, size: buf.length };
+  }
+
+  /**
+   * Chat image save — content-addressed + deduped. Stored RAW (EXIF preserved, no sharp re-encode);
+   * only the on-disk extension is derived from the magic-byte-validated mimetype. Returns the serving
+   * URL and byte size so the client can store both in the IMAGE message content ({url,w,h,size}) for
+   * size-tiered lazy loading.
+   */
+  async save(
+    mimetype: string,
+    buf: Buffer,
+  ): Promise<{ url: string; size: number }> {
     const ext = IMG_EXT[mimetype];
-    const filename = `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`;
-    await writeFileAsync(join(this.uploadDir, filename), buf);
-    return `/uploads/${filename}`;
+    const { url, digest, size } = await this.saveCas(ext, buf);
+    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+    return { url, size };
   }
 
   /**
@@ -279,17 +394,42 @@ export class UploadService {
     originalName: string,
     buf: Buffer,
   ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
-    this.ensureDir();
     const ext = parseFileExt(originalName);
-    const diskName = ext
-      ? `${Date.now()}-${randomBytes(6).toString('hex')}.${ext}`
-      : `${Date.now()}-${randomBytes(6).toString('hex')}`;
-    await writeFileAsync(join(this.uploadDir, diskName), buf);
+    // Open model: any file type is accepted, so the on-disk ext comes from the sanitized client
+    // filename (there is no trustworthy magic byte for arbitrary file types). Fall back to 'bin' so
+    // the CAS path always carries an extension — served as application/octet-stream + attachment,
+    // matching the legacy no-ext behavior.
+    const casExt = ext || 'bin';
+    const { url, digest, size } = await this.saveCas(casExt, buf);
+    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
     return {
-      url: `/uploads/${diskName}`,
+      url,
       name: this.sanitizeName(originalName, ext),
-      size: buf.length,
+      size,
       mimeType: mimetype,
+    };
+  }
+
+  /**
+   * Persist a video/audio asset through the SAME CAS pipeline as images/files (sha256 dedup + ref
+   * count). The on-disk ext is the magic-byte-derived `ext` (trusted); the display name preserves the
+   * client's original extension (sanitizeName with ext='' keeps the original as-is), so a .mov
+   * uploaded and detected as mp4 shows as "clip.mov" to the user while the shard file is <digest>.mp4.
+   * Returns the shape stored verbatim in a VIDEO/AUDIO message's content.
+   */
+  async saveMedia(
+    ext: string,
+    mime: string,
+    originalName: string,
+    buf: Buffer,
+  ): Promise<{ url: string; name: string; size: number; mimeType: string }> {
+    const { url, digest, size } = await this.saveCas(ext, buf);
+    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+    return {
+      url,
+      name: this.sanitizeName(originalName, ''),
+      size,
+      mimeType: mime,
     };
   }
 
@@ -340,6 +480,54 @@ export class UploadService {
       await writeFileAsync(join(this.uploadDir, `${base}-${size}.webp`), out);
     }
     return `/uploads/${base}-${UploadService.AVATAR_MAX}.webp`;
+  }
+
+  /**
+   * Federation outbound: read a stored avatar file back as the S2S wire shape — base64 of the source
+   * bytes + the source pixel dimensions (declared, never trusted on the receiving side). Null when the
+   * user has no avatar. Used to embed the avatar inline in S2S profile responses + friend envelopes so
+   * the receiver can localize without a second round-trip (and without the receiving client fetching
+   * cross-origin /uploads/* that CSP would block).
+   */
+  async readAvatarAsWire(
+    url: string,
+  ): Promise<{ b64: string; w: number; h: number } | null> {
+    if (!url?.startsWith('/uploads/')) return null;
+    try {
+      const buf = await readFileAsync(join(this.uploadDir, url.slice('/uploads/'.length)));
+      const meta = await sharp(buf).metadata();
+      return { b64: buf.toString('base64'), w: meta.width ?? 0, h: meta.height ?? 0 };
+    } catch {
+      // Missing/corrupt avatar file (operational edge case — disk wiped, manual deletion, etc.).
+      // Degrade to "no avatar" on the wire rather than 500-ing the whole S2S profile response. The
+      // wire null is ambiguous (genuinely-no-avatar vs. couldn't-read-file), and localizeForeignProfile
+      // clears on null — so a transiently-missing file mis-clears the peer's localized copy. That only
+      // happens in an already-broken state (the peer's own users can't see the avatar either), and it
+      // self-corrects when the user re-uploads (which bumps User.updatedAt → the staleness probe re-fetches).
+      return null;
+    }
+  }
+
+  /**
+   * Federation inbound: decode an S2S wire avatar (base64 + declared dims) and persist it through the
+   * SAME multi-size webp pipeline as a local upload (saveAvatars center-crops to square + emits 32/64/
+   * 128/256/512 + strips EXIF). The declared w/h get a cheap pre-validation (reject an obviously-oversized
+   * source before spending CPU on a sharp decode); sharp's own metadata read is the authoritative pixel-bomb
+   * check (a compromised peer can lie about w/h, but can't lie past sharp). Returns the representative
+   * (512) URL, exactly like a local avatar upload.
+   */
+  async saveAvatarFromWire(avatar: {
+    b64: string;
+    w: number;
+    h: number;
+  }): Promise<string> {
+    const w = avatar.w | 0;
+    const h = avatar.h | 0;
+    if (w > 0 && h > 0 && w * h > UploadService.MAX_AVATAR_PIXELS) {
+      throw new Error('federated avatar too large in pixels');
+    }
+    const buf = Buffer.from(avatar.b64, 'base64');
+    return this.saveAvatars(buf);
   }
 
   /**

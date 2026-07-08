@@ -17,6 +17,9 @@ model User {
   id                 Int                 @id @default(autoincrement())
   uniqName           String              @db.VarChar(31)
   hashPwd            String              @db.VarChar(127)
+  name               String              // display name (folded from UserExtra.name)
+  avatar             String              @default("") // avatar path /uploads/... (folded from UserExtra.avatar)
+  bio                String              @default("") @db.VarChar(255) // (folded from UserExtra.bio)
   isForeigner        Boolean
   // Domain: "local" for users homed on THIS server, <peer-domain> for federated stubs. Non-null +
   // the @@unique([uniqName, domain]) below enforce both local-user and stub uniqueness (a standalone
@@ -28,10 +31,13 @@ model User {
   updatedAt          DateTime            @updatedAt
   isDeleted          Boolean             @default(false)
   tokenVersion       Int                 @default(0) // bumping this invalidates ALL of the user's access tokens (all-device logout / password change / force-kick)
-  userExtraId        Int                 @unique
-  userExtra          UserExtra           @relation(fields: [userExtraId], references: [id])
-  userNotiBoxId      Int                 @unique
-  userNotiBox        userNotiBox         @relation(fields: [userNotiBoxId], references: [id])
+  hasUrFriendReq     Boolean             @default(false) // unread friend-request badge (folded from userNotiBox). SELF-ONLY in responses — builders must omit it for non-self.
+  // Federated stubs only: the peer's profile revision (the peer's User.updatedAt, captured when this
+  // stub's avatar/name/bio was last localized from the peer). The chat-open staleness probe
+  // (GET /api/v1/s2s/users/:handle/revision) compares the peer's current revision against this; a newer
+  // peer value triggers a re-pull + re-localize. Null for local users (their own updatedAt is authoritative)
+  // and for stubs not yet localized. See docs/federation-protocol.md (avatar federation).
+  remoteUpdatedAt    DateTime?
   Group              Group[]
   threadParticipants ThreadParticipant[]
   friendshipsAsA     Friendship[]        @relation("FriendA")
@@ -46,23 +52,8 @@ model User {
   @@unique([uniqName, domain])
 }
 
-model UserExtra {
-  id        Int      @id @default(autoincrement())
-  name      String
-  avatar    String
-  bio       String   @default("") @db.VarChar(255)
-  User      User?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-}
-
-model userNotiBox {
-  id             Int      @id @default(autoincrement())
-  hasUrFriendReq Boolean  @default(false)
-  User           User?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-}
+// UserExtra and userNotiBox (former 1:1 profile/badge tables) folded into User as inline columns
+// (name/avatar/bio/hasUrFriendReq) — see the fold migration 20260707180000_fold_user_extra_notibox.
 
 /// Delivery platform for a push registration token. Determines the server-side transport
 /// (firebase-admin covers ANDROID/IOS today; WEB will use the standard Web Push / VAPID path).
@@ -217,10 +208,6 @@ model MessageThread {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
   isDeleted Boolean           @default(false)
-  // Federation: who owns this thread's identity + sequence. "local" = this server is the origin.
-  // A remote thread is referenced locally by federatedId (origin is the peer that owns it).
-  origin      String          @default("local") @db.VarChar(63)
-  federatedId String?         @unique @db.VarChar(127) // thr_<ulid>@<origin-domain>; null for local-origin threads
 
   // Denormalized "last message" read-cache for the conversation list (the hottest read path).
   // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
@@ -266,6 +253,28 @@ model Message {
   @@index([threadId, id]) // history pagination — the hot path
   @@index([threadId, createdAt])
   @@index([creator])
+}
+
+/// Content-addressed media asset (chat images / files / video / audio). One physical file per unique
+/// sha256 digest at uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>; `refs` is a
+/// denormalized reference count bumped on every upload (a dedup hit lands on the same row and
+/// increments refs) and decremented by a future message-delete path; the GC sweep reclaims the file
+/// + row when refs reaches 0. Avatars are NOT tracked here — they keep the legacy
+/// uploads/<base>-<size>.webp multi-size sharp pipeline. There is no FK to Message: Message.content
+/// is an opaque JSON string and the URL embeds the digest, so the link is by-value. Internal only —
+/// never surfaced in API responses (the upload routes derive {url,size,...} from the write).
+///
+/// Only the reference count + audit columns live here. The on-disk extension and MIME are NOT stored:
+/// the extension is recoverable from the filename (<digest>.<ext>), MIME is mapped by @fastify/static
+/// from the extension at serving time, and the upload response gets its MIME from the request (not
+/// from this row). Storing them would be pure redundancy. The GC path globs <digest>.* to unlink.
+model MediaAsset {
+  digest    String   @id @db.VarChar(64) // sha256 hex (64 chars); also the on-disk filename stem
+  bytes     BigInt // file size (BigInt: video cap 100MB; Int would overflow beyond ~2GB). Audit/monitoring only.
+  refs      Int      @default(0) // reference count; GC reclaims file + row at 0
+  createdAt DateTime @default(now())
+
+  @@index([refs]) // GC sweep: WHERE refs <= 0
 }
 
 enum NotifyType {
@@ -364,28 +373,6 @@ model S2SKeyCache {
 
   @@id([domain, keyId])
   @@index([domain])
-}
-
-/// Outbound delivery queue. Durable; drained by S2SOutboxWorker with exponential backoff.
-/// One row per (envelope, recipient-domain) fan-out. status: pending | in_flight | delivered | dead.
-model S2SOutbox {
-  id                String    @id // generated in app (randomUUID)
-  envelopeId        String    @db.VarChar(127) // origin-assigned ULID; dedup key with origin
-  envelopeType      String    @db.VarChar(31) // friend.request | friend.approve | friend.delete | thread.invite | message | ...
-  origin            String    @db.VarChar(63) // this server's domain (we are always the origin of outbound)
-  threadFederatedId String?   @db.VarChar(127) // null for friend.* (no thread yet)
-  recipientDomain   String    @db.VarChar(63)
-  payload           Json      // the full envelope
-  status            String    @default("pending") @db.VarChar(15)
-  attempts          Int       @default(0)
-  nextRetryAt       DateTime?
-  lastError         String?   @db.VarChar(255)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-
-  @@index([status, nextRetryAt])
-  @@index([recipientDomain, status])
-  @@index([threadFederatedId, recipientDomain])
 }
 
 /// Inbound dedup. At-least-once delivery requires idempotent dedup by (origin, envelopeId).
