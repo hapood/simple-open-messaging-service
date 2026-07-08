@@ -2,17 +2,9 @@
   <div class="msg-container" appKbdOffset>
     <app-message-header
       [userMsgTrd]="userMsgTrd()"
-      (openSearch)="searchOpen.set(true)"
+      (searchJump)="onSearchJump($event)"
       (historyCleared)="onHistoryCleared()"
     ></app-message-header>
-
-    @if (searchOpen()) {
-      <app-message-search
-        [threadId]="threadId()!"
-        (jumpTo)="onSearchJump($event)"
-        (close)="searchOpen.set(false)"
-      />
-    }
 
     <div class="msg-viewport" #viewport tabindex="0">
       <div class="msg-content" #content>
@@ -92,9 +84,10 @@
       }
     </div>
 
-    <!-- The floating date pill yields to the search bar: while search is open it would collide with the
-         search row, so suppress it (null label hides the overlay entirely). -->
-    <app-sticky-date-overlay [label]="searchOpen() ? null : stickyDate()" />
+    <!-- The floating date pill always tracks the topmost visible message. Search now lives inside the
+         header (no added height), so it never collides with the pill and the pill stays visible during
+         search — preserving date context while jumping between matches. -->
+    <app-sticky-date-overlay [label]="stickyDate()" />
 
     @if (blockedPeer()) {
       <div class="msg-blocked-banner" (click)="unblockPeer()">

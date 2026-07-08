@@ -5,10 +5,12 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 import { MsgService } from '../../services/message.service';
 
 /**
- * In-chat search bar (slides under the header when "Search" is picked from the action menu). Debounced
- * input drives a server-side substring search (PURE_TEXT only); the lightweight {id} matches are stored
- * ascending (oldest-first) and the prev/next arrows jump the parent kernel to each via `jumpTo`. The
- * parent owns the kernel + calls scrollToIndex(id, 'center', true) — the kernel flashes the row.
+ * In-chat search field, rendered INSIDE the chat header when "Search" is picked from the action menu —
+ * it replaces the title row in-place (same --msg-header-h height), so it adds no height and never
+ * collides with the floating date pill. Debounced input drives a server-side substring search
+ * (PURE_TEXT only); the lightweight {id} matches are stored ascending (oldest-first) and the prev/next
+ * arrows jump the parent kernel to each via `jumpTo`. The parent owns the kernel + calls
+ * scrollToIndex(id, 'center', true) — the kernel flashes the row.
  *
  * Loads the first page (50 newest matches). The counter shows `i / n+` when more pages exist (the `+`
  * marks an unbounded tail); paging deeper is deferred — search is a secondary surface and the common
@@ -37,14 +39,22 @@ import { MsgService } from '../../services/message.service';
     </div>
   `,
   styles: [`
+    :host {
+      // Fill the header's middle slot (the header is a flex row). Taking flex:1 here means the search
+      // field replaces the title row IN-PLACE — the header keeps its fixed --msg-header-h height, so the
+      // floating date pill below never needs re-anchoring and the viewport never resizes on open/close
+      // (no kernel reflow, unlike a displacing sibling bar that shrinks the viewport).
+      display: flex;
+      flex: 1 1 auto;
+      min-width: 0;
+    }
     .msg-search {
+      flex: 1 1 auto;
+      min-width: 0;
       display: flex;
       align-items: center;
       gap: 8px;
-      height: 48px; /* integer — measured header-adjacent row */
-      padding: 0 10px;
-      background: var(--app-surface);
-      border-bottom: 1px solid var(--app-border);
+      padding: 0 6px;
       box-sizing: border-box;
     }
     .msg-search-lead { color: var(--app-text-soft, var(--app-text)); flex: 0 0 18px; opacity: 0.7; }

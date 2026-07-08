@@ -3,6 +3,7 @@ import { OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { ChatActionMenuComponent, ChatMenuEntry } from '../chat-action-menu/chat-action-menu.component';
+import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ConversationItem, displayUserName } from '../../services/model';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { LayoutService } from '../../services/layout.service';
@@ -29,16 +30,18 @@ import { NavStateMachineService } from '../../services/nav-state.service';
  */
 @Component({
   selector: 'app-message-header',
-  imports: [IconComponent, ChatActionMenuComponent, OverlayModule, TranslocoModule, FederatedBadgeComponent],
+  imports: [IconComponent, ChatActionMenuComponent, OverlayModule, TranslocoModule, FederatedBadgeComponent, MessageSearchComponent],
   templateUrl: './message-header.component.html',
   styleUrl: './message-header.component.scss',
 })
 export class MessageHeaderComponent {
   readonly AppIconType = AppIconType;
   readonly userMsgTrd = input<ConversationItem>();
+  /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
+  readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
 
-  /** Emitted when the user opens in-chat search (parent slides the search bar in). */
-  readonly openSearch = output<void>();
+  /** Emits a message id to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
+  readonly searchJump = output<string>();
   /** Emitted after clear-history succeeds (parent resets the kernel against the now-empty view). */
   readonly historyCleared = output<void>();
 
@@ -49,6 +52,16 @@ export class MessageHeaderComponent {
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
+
+  /** In-chat search visibility is a layer of the app's virtual nav stack (see NavStateMachineService):
+   *  `back` peels it before the chat, so hardware-back exits search before leaving the thread — the same
+   *  model as the aside panel. Session-state only; NOT mirrored to the browser URL. The header reads/writes
+   *  it directly via `nav`. */
+  protected readonly searchOpen = this.nav.searchOpen;
+  /** Close the embedded search field — drops the search nav layer (search-component ✕ button). */
+  protected closeSearch(): void {
+    this.nav.closeSearch();
+  }
 
   /** The back arrow exists only to leave the mobile full-screen chat overlay. Tablet and desktop both
    *  render the chat inline alongside the conversation list (chat-slot is `static`), so there is no
@@ -209,7 +222,7 @@ export class MessageHeaderComponent {
         this.showThreadInfo();
         return;
       case 'search':
-        this.openSearch.emit();
+        this.nav.openSearch();
         return;
       case 'markRead':
         // Force mark-read + clear the local unread badge even on the currently-open thread (convList.open
@@ -322,9 +335,12 @@ export class MessageHeaderComponent {
     });
   }
 
-  /** Mobile: back returns to the conversation list (closes the chat). */
+  /** Mobile back arrow: delegate to the nav stack's `back`, which peels layers in priority order
+   *  (panes → aside → search → chat). This unifies the UI back arrow with the Android hardware-back path
+   *  (which also calls `nav.back()` via the `__SOMS_BACK__` bridge), so search is always exited before the
+   *  thread closes. */
   goBack(): void {
-    this.nav.closeChat();
+    this.nav.back();
   }
 
   /**

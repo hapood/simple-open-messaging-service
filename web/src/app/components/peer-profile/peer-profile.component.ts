@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
@@ -46,11 +46,11 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
             <span>{{ 'profile.removeFriendConfirm' | transloco:{ name: peerDisplayName() } }}</span>
             <div class="confirm-actions">
               <button mat-stroked-button [disabled]="busy()" (click)="cancelUnfriend()">{{ 'common.cancel' | transloco }}</button>
-              <button mat-raised-button color="warn" [disabled]="busy()" (click)="doUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
+              <button mat-flat-button color="warn" [disabled]="busy()" (click)="doUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
             </div>
           </div>
         } @else {
-          <button class="danger" [disabled]="busy()" (click)="askUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
+          <button mat-stroked-button color="warn" class="unfriend-btn" [disabled]="busy()" (click)="askUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
         }
       </div>
     </div>
@@ -73,12 +73,9 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
     .identity { display: flex; flex-direction: column; align-items: center; gap: 10px; }
     .identity app-user-avatar { width: 72px; height: 72px; }
     .name { font-size: 18px; font-weight: 600; }
-    .danger {
-      width: 100%; height: 40px; border: 1px solid var(--app-border-strong); background: var(--app-surface);
-      color: #e53935; border-radius: var(--app-radius-md); cursor: pointer; font-size: 14px;
-    }
-    .danger:hover { background: var(--app-hover); }
-    .danger:disabled { color: var(--app-text-faint); cursor: default; }
+    // Full-width destructive action — real mat-stroked-button color="warn" (red outline + text, Material
+    // state layer on hover, disabled styling built in). Matches the confirm-state unfriend button below.
+    .unfriend-btn { width: 100%; }
     .confirm-row {
       display: flex; flex-direction: column; gap: 12px; padding: 14px;
       border: 1px solid var(--app-border-strong); border-radius: var(--app-radius-md);
@@ -94,6 +91,31 @@ export class PeerProfileComponent {
   private readonly nav = inject(NavStateMachineService)
   private readonly userService = inject(UserService)
   private readonly convList = inject(ConversationListService)
+
+  constructor() {
+    // Federated catch-up at view time: when the panel opens over a FOREIGN friend, silently refresh the
+    // stub in the background — probe the peer /revision and re-localize avatar/name/bio only if newer
+    // (all the heavy work is server-side). Fire-and-forget; the returned User flows back through
+    // updatePeerUser and this panel's computed `peer` refreshes. Local peers are already kept fresh by
+    // the chat-open probe + the PEER_PROFILE_UPDATED push, so this probe is federated-only. The server's
+    // sinceUpdatedAt short-circuit keeps it from re-rendering: the in-flight refresh updates peer(), the
+    // effect re-runs once, the next probe returns data:null, and it settles.
+    effect(() => {
+      const p = this.peer()
+      const tid = this.threadId()
+      if (!p || !p.isForeigner || tid === undefined) return
+      this.userService
+        .syncPeerProfile({ userId: p.id, sinceUpdatedAt: p.updatedAt })
+        .subscribe({
+          next: (res) => {
+            if (res.code === 0 && res.data) this.convList.updatePeerUser(tid, res.data)
+          },
+          error: () => {
+            /* best-effort — keep the cached profile on a transient peer outage */
+          },
+        })
+    })
+  }
 
   readonly busy = signal(false)
   /** Two-step destructive confirm gate for Unfriend. */

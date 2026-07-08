@@ -92,15 +92,16 @@
   color: #e53935;
 }
 
+// Material dialog action row: right-aligned, natural-width buttons. Dismissive (Cancel, text) on the
+// left, affirmative/primary (Join/Open, filled) on the right — the canonical M3 dialog arrangement.
+// Container stays full card-width so the buttons can right-align within it; the buttons themselves are
+// content-sized (no width:100%), matching peer-profile's .confirm-actions and folder-editor's header.
 .ivd-actions {
   margin-top: 18px;
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 6px;
-  width: 100%;
-}
-// Full-width primary action; the Cancel text button sits beneath.
-.ivd-actions button[mat-raised-button] {
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
   width: 100%;
 }

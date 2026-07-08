@@ -24,21 +24,21 @@
       }
 
       <div class="ivd-actions">
+        <button mat-button (click)="onClose()">{{ 'common.cancel' | transloco }}</button>
         @switch (status()) {
           @case (0) {
             @if (joined()) {
-              <button mat-raised-button color="primary" (click)="onOpen()">{{ 'chat.openGroup' | transloco }}</button>
+              <button mat-flat-button color="primary" (click)="onOpen()">{{ 'chat.openGroup' | transloco }}</button>
             } @else {
-              <button mat-raised-button color="primary" [disabled]="busy()" (click)="onJoin()">
+              <button mat-flat-button color="primary" [disabled]="busy()" (click)="onJoin()">
                 {{ 'chat.join' | transloco }}
               </button>
             }
           }
           @case (1) {
-            <button mat-raised-button disabled>{{ 'chat.expired' | transloco }}</button>
+            <button mat-flat-button disabled>{{ 'chat.expired' | transloco }}</button>
           }
         }
-        <button mat-button (click)="onClose()">{{ 'common.cancel' | transloco }}</button>
       </div>
     </div>
   </div>

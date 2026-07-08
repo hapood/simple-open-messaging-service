@@ -4,30 +4,41 @@
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
   }
-  <div class="msg-title">
-    <span class="msg-title-text" (click)="showThreadInfo()" [title]="title()">{{ title() }}</span>
-    @if (federatedDomain(); as dom) {
-      <app-federated-badge [domain]="dom"></app-federated-badge>
-    }
-    @if (subtitle()) {
-      <span class="msg-subtitle" (click)="showThreadInfo()" [title]="subtitle()">{{ subtitle() }}</span>
-    }
-  </div>
-  <button
-    class="icon-btn"
-    cdkOverlayOrigin
-    #moreTrigger="cdkOverlayOrigin"
-    (click)="toggleMenu()"
-    [class.active]="menuOpen()"
-    aria-label="More options"
-  >
-    <app-icon [type]="AppIconType.MORE" [style]="{ width: '32px', height: '32px' }"></app-icon>
-  </button>
-  <app-chat-action-menu
-    [entries]="entries()"
-    [origin]="moreTrigger"
-    [open]="menuOpen()"
-    (select)="onSelect($event)"
-    (closed)="closeMenu()"
-  />
+  @if (searchOpen()) {
+    <!-- Search takes over the header: it replaces the title row in-place (the header keeps its fixed
+         --msg-header-h height), so the viewport never resizes and the floating date pill keeps working
+         unchanged — no --sd-top adjustment, no collision. -->
+    <app-message-search
+      [threadId]="threadId()"
+      (jumpTo)="searchJump.emit($event)"
+      (close)="closeSearch()"
+    />
+  } @else {
+    <div class="msg-title">
+      <span class="msg-title-text" (click)="showThreadInfo()" [title]="title()">{{ title() }}</span>
+      @if (federatedDomain(); as dom) {
+        <app-federated-badge [domain]="dom"></app-federated-badge>
+      }
+      @if (subtitle()) {
+        <span class="msg-subtitle" (click)="showThreadInfo()" [title]="subtitle()">{{ subtitle() }}</span>
+      }
+    </div>
+    <button
+      class="icon-btn"
+      cdkOverlayOrigin
+      #moreTrigger="cdkOverlayOrigin"
+      (click)="toggleMenu()"
+      [class.active]="menuOpen()"
+      aria-label="More options"
+    >
+      <app-icon [type]="AppIconType.MORE" [style]="{ width: '32px', height: '32px' }"></app-icon>
+    </button>
+    <app-chat-action-menu
+      [entries]="entries()"
+      [origin]="moreTrigger"
+      [open]="menuOpen()"
+      (select)="onSelect($event)"
+      (closed)="closeMenu()"
+    />
+  }
 </div>

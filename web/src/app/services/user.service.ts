@@ -133,9 +133,11 @@ export class UserService {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/send-friend-request`, params)
   }
 
-  /** Refresh a federated peer's avatar/name/bio if stale (chat-open hook). Cheap server-side /revision
-   *  probe; re-pulls + re-localizes only when the peer's profile is newer than the stub's remoteUpdatedAt. */
-  syncPeerProfile(params: { userId: number }) {
+  /** Refresh a peer's avatar/name/bio if stale (chat-open + profile-panel-open hook). Federated: cheap
+   *  server-side /revision probe, re-pull + re-localize only when newer; local: authoritative in-DB. Pass
+   *  the caller's last-seen peer updatedAt as `sinceUpdatedAt` for a lightweight data:null short-circuit
+   *  when unchanged — no payload, no re-render. */
+  syncPeerProfile(params: { userId: number; sinceUpdatedAt?: number }) {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/sync-peer-profile`, params)
   }
 

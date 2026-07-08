@@ -26,7 +26,6 @@ import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../me
 import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
-import { MessageSearchComponent } from '../message-search/message-search.component';
 import { ChatInputComponent, type ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
@@ -62,7 +61,7 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
 @Component({
   selector: 'app-message-thread',
   standalone: true,
-  imports: [MessageHeaderComponent, MessageSearchComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, TranslocoModule],
+  imports: [MessageHeaderComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, TranslocoModule],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss',
 })
@@ -116,8 +115,6 @@ export class MessageThreadComponent implements OnDestroy {
   private static readonly SKELETON_DELAY = 300;
   private skeletonTimer?: ReturnType<typeof setTimeout>;
 
-  /** Whether the in-chat search bar is open (toggled from the header MORE menu). */
-  readonly searchOpen = signal(false);
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
   readonly blockedPeer = computed(() => !!this.userMsgTrd()?.blocked);
@@ -546,10 +543,8 @@ export class MessageThreadComponent implements OnDestroy {
     this.scroller = undefined;
     this.source = undefined;
     this.kernelReady = false;
-    // The in-chat search bar is transient UI state scoped to a kernel session; a pane that is reset (re-init
-    // on thread switch) or idled (teardownKernel demote-to-background) must drop back to the default closed
-    // state so a re-opened thread doesn't inherit a stale open search bar.
-    this.searchOpen.set(false);
+    // (In-chat search visibility lives on NavStateMachineService now — cleared by openChat/closeChat on
+    // thread switch / going home — so no per-pane reset is needed here.)
     this.pendingOptimistic = [];
     this.pendingFiles.clear();
     for (const u of this.blobUrls) URL.revokeObjectURL(u);

@@ -5,17 +5,23 @@
 // (no inner card layer). The card is a real <button> (keyboard/a11y) so it needs a chrome reset.
 @use '../row-base' as *;
 
-// One solid color for both sides (overrides the green/white side bg from row-base). Brand-tinted so
-// it reads as an invite; fully opaque; identical for self and other.
+// One opaque brand-tinted fill for both sides (overrides the green/white side bg from row-base). Brand-tinted
+// so it reads as an invite; fully opaque (the chat wallpaper never shows through); identical for self and other.
+// See the --invite-bg token in _tokens.scss.
 .msg-bubble.invite {
-  // No bubble fill — the invite is a transparent card floating on the chat background (matching the
-  // media-card treatment). The brand watermark + title carry the invite identity; the bottom meta bar
-  // carries the valid/expired status + time.
+  // The invite is a solid brand-tinted card riding the normal chat-bubble shape. The brand watermark +
+  // title carry the invite identity; the bottom meta bar carries the valid/expired status + time.
   padding: 0;
   display: block;
   position: relative;        // positioning context for the watermark
   overflow: hidden;          // clip the watermark that bleeds past the edges
-  background: transparent !important;
+  background: var(--invite-bg) !important;
+  box-shadow: none;        // flat card — drop the bubble elevation shadow (from _row-base .msg-bubble) so no dark seam lands on the flush meta bar
+  // Square the bottom corners so the flush meta bar below (square top — see .invite-meta) meets the card with
+  // no gap and no grey "ears" poking past the card's rounded bottom. Overrides the pos()-derived bottom radius
+  // (msg-head / msg-body = 3px) from _row-base.scss — same specificity (0,2,0), this rule comes later → wins.
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 
 // No tail on the invite — it is a card, not a tailed bubble, and self/other share one solid surface.
@@ -127,7 +133,7 @@
   gap: 6px;
   padding: 2px 8px;
   min-height: 18px;
-  margin-top: 2px;        // independent strip BELOW the card (not embedded in it)
+  margin-top: 0;          // flush against the card's bottom edge — the meta bar is the card's footer strip (no gap)
   width: 240px;           // match the invite-tappable card width → aligned with the card above
   max-width: 100%;
   box-sizing: border-box;
@@ -135,7 +141,7 @@
   color: var(--im-bubble-text);
   font-size: 11px;
   line-height: 14px;
-  border-radius: var(--app-radius-sm, 6px);  // its own chip radius (no longer clipped by the card)
+  border-radius: 0 0 var(--app-radius-sm, 6px) var(--app-radius-sm, 6px);  // square top corners; bottom corners stay rounded
 }
 .invite-meta-time {
   flex: 0 0 auto;

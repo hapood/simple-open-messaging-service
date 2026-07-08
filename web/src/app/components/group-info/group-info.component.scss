@@ -218,18 +218,10 @@
   &:hover { background: var(--app-hover); }
 }
 
-// ── leave ──
-.leave {
+// ── leave ── destructive Text button: real mat-button color="warn" (red text + Material's warn state
+//    layer on hover, disabled styling built in). Only the full-width inset is custom.
+.leave-btn {
   display: block;
   width: calc(100% - 32px);
   margin: 24px 16px 0;
-  padding: 10px;
-  border: none;
-  border-radius: var(--app-radius-md);
-  background: transparent;
-  color: #e53935;
-  cursor: pointer;
-  font-size: 15px;
-  &:hover { background: rgba(229, 57, 53, 0.08); }
-  &:disabled { opacity: 0.5; cursor: default; }
 }

@@ -1,4 +1,5 @@
 import { Component, ChangeDetectionStrategy, input, inject } from '@angular/core';
+import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -21,7 +22,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
  */
 @Component({
   selector: 'app-confirm-dialog',
-  imports: [TranslocoPipe, IconComponent],
+  imports: [MatButtonModule, TranslocoPipe, IconComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="confirm" [class.danger]="danger()">
@@ -33,10 +34,10 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
       }
       <p class="message">{{ messageKey() | transloco: messageParams() }}</p>
       <div class="actions">
-        <button type="button" class="btn ghost" (click)="cancel()">
+        <button type="button" mat-stroked-button (click)="cancel()">
           {{ cancelKey() | transloco }}
         </button>
-        <button type="button" class="btn solid" (click)="confirm()">
+        <button type="button" mat-flat-button [color]="danger() ? 'warn' : 'primary'" (click)="confirm()">
           {{ confirmKey() | transloco }}
         </button>
       </div>
@@ -92,40 +93,19 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
       word-break: break-word;
     }
 
+    /* Action row: full-width split — cancel (outlined, left) + confirm (filled, right). The buttons are
+       real mat-stroked/mat-flat buttons, so state layer, ripple, theming, and disabled styling come from
+       Material; only the full-width split is custom. The danger variant flips the confirm to color="warn"
+       (red fill) via the [color] binding so the destructive action is the visually-heaviest control —
+       Material's "destructive buttons name + emphasize the action" guidance. */
     .actions {
       display: flex;
       gap: 12px; /* integer gap */
       width: 100%;
       max-width: 360px;
     }
-
-    .btn {
+    .actions button {
       flex: 1 1 0;
-      height: 42px;
-      padding: 0 16px;
-      border: 1px solid transparent;
-      border-radius: var(--app-radius-md);
-      font-size: 14px;
-      font-weight: 600;
-      line-height: 20px; /* integer line-height */
-      cursor: pointer;
-      box-sizing: border-box;
-    }
-    .btn.ghost {
-      background: transparent;
-      border-color: var(--app-border-strong);
-      color: var(--app-text);
-    }
-    .btn.ghost:hover { background: var(--app-hover); }
-    .btn.solid {
-      background: var(--app-brand);
-      color: #fff;
-    }
-    .btn.solid:hover { background: var(--app-brand-hover); }
-    /* Destructive variant: the confirming button wears the danger fill so the irreversible action is the
-       visually-heaviest control (Material's "destructive buttons name + emphasize the action" guidance). */
-    .confirm.danger .btn.solid {
-      background: var(--app-danger);
     }
   `],
 })

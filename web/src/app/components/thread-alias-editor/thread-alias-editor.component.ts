@@ -39,7 +39,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
           />
           <div class="alias-actions">
             <button mat-stroked-button (click)="cancel()">{{ 'common.cancel' | transloco }}</button>
-            <button mat-raised-button color="primary" (click)="save()">{{ 'common.save' | transloco }}</button>
+            <button mat-flat-button color="primary" (click)="save()">{{ 'common.save' | transloco }}</button>
           </div>
         </div>
       } @else {

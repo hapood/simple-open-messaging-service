@@ -4,7 +4,7 @@
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
     <span class="title">{{ 'profile.editTitle' | transloco }}</span>
-    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.save' | transloco }}</button>
+    <button mat-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.save' | transloco }}</button>
   </div>
 
   <div class="body">
@@ -38,6 +38,18 @@
       }
     </label>
 
+    <!-- Read-only identity field: the login handle (uniqName) is immutable. Rendered as a disabled
+         Material-style text field — dimmed outline + muted value + a "Cannot be changed" helper — so it
+         reads as a locked sibling of the editable Name/Bio inputs rather than a disconnected strip.
+         @handle sits directly under the display name, the standard profile identity grouping. -->
+    <div class="field field-readonly">
+      <div class="label-row">
+        <span class="label">{{ 'profile.username' | transloco }}</span>
+        <span class="readonly-hint">{{ 'profile.usernameReadonly' | transloco }}</span>
+      </div>
+      <div class="readonly-text">{{ sessionProfile()?.uniqName }}</div>
+    </div>
+
     <label class="field">
       <span class="label">{{ 'profile.bio' | transloco }}</span>
       <textarea class="textarea" rows="3" [ngModel]="bio()" (ngModelChange)="bio.set($event)"
@@ -45,13 +57,11 @@
       <span class="counter">{{ bio().length }}/120</span>
     </label>
 
-    <div class="handle">{{ 'profile.usernameHandle' | transloco:{ name: sessionProfile()?.uniqName } }}</div>
     <div class="account-actions">
-      <button type="button" class="account-btn" (click)="openSessions()"
-        [attr.aria-label]="'profile.manageSessions' | transloco">
+      <button mat-stroked-button (click)="openSessions()" [attr.aria-label]="'profile.manageSessions' | transloco">
         {{ 'profile.manageSessions' | transloco }}
       </button>
-      <button type="button" class="account-btn danger" (click)="logout()"
+      <button mat-stroked-button color="warn" class="logout-btn" (click)="logout()"
         [attr.aria-label]="'nav.logout' | transloco">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

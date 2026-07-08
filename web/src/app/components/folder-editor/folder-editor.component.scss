@@ -135,16 +135,9 @@
   text-align: center;
 }
 
+// Full-width destructive action — a real mat-stroked-button color="warn" (red outline + text, with
+// Material's state layer on hover). Only the full-width sizing is custom.
 .delete-btn {
   margin-top: 8px;
   width: 100%;
-  height: 36px;
-  border: 1px solid #fca5a5;
-  background: var(--app-surface);
-  color: var(--app-danger);
-  border-radius: var(--app-radius-md);
-  cursor: pointer;
-  font-size: 14px;
-
-  &:hover { background: var(--app-danger-soft); }
 }

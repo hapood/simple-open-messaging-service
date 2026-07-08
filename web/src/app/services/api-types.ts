@@ -592,7 +592,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh a federated peer profile if stale (chat-open hook). Probes the peer /revision and re-pulls avatar/name/bio only when newer; local users are a no-op. */
+        /** Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. Pass sinceUpdatedAt to get a lightweight data:null short-circuit when unchanged. */
         post: operations["UserController_syncPeerProfile"];
         delete?: never;
         options?: never;
@@ -933,6 +933,23 @@ export interface paths {
         put?: never;
         /** 上传图片（返回 url + 前端传入的宽高） */
         post: operations["UploadController_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/upload/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload avatar image (multi-size webp, returns representative url) */
+        post: operations["UploadController_uploadAvatar"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1432,6 +1449,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/media/gc-avatars": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reap orphaned avatars (no longer any User/Group current avatar) from uploads/avatars + legacy flat */
+        post: operations["MediaAssetGcController_gcAvatars"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/.well-known/soms": {
         parameters: {
             query?: never;
@@ -1488,6 +1522,54 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_getUserRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/new-msg-map": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getNewMsgMap"];
+        put?: never;
+        post: operations["S2sController_postNewMsgMap"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/ping": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_ping"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2101,6 +2183,18 @@ export interface components {
              * @example 20
              */
             take?: number;
+        };
+        SyncPeerProfileDto: {
+            /**
+             * @description User id
+             * @example 1
+             */
+            userId: number;
+            /**
+             * @description Caller's last-seen peer updatedAt (ms). When not older than the live row, the server returns data:null (no change).
+             * @example 1700000000000
+             */
+            sinceUpdatedAt?: number;
         };
         ThreadIdDto: {
             /**
@@ -3246,7 +3340,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UserIdDto"];
+                "application/json": components["schemas"]["SyncPeerProfileDto"];
             };
         };
         responses: {
@@ -3652,6 +3746,23 @@ export interface operations {
         };
     };
     UploadController_upload: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    UploadController_uploadAvatar: {
         parameters: {
             query?: never;
             header?: never;
@@ -4237,6 +4348,23 @@ export interface operations {
             };
         };
     };
+    MediaAssetGcController_gcAvatars: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     WellKnownController_getWellKnown: {
         parameters: {
             query?: never;
@@ -4297,6 +4425,82 @@ export interface operations {
             path: {
                 username: string;
             };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getNewMsgMap: {
+        parameters: {
+            query: {
+                cursor: string;
+                take: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postNewMsgMap: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getMessages: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                after: string;
+                take: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_ping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;

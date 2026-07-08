@@ -93,6 +93,19 @@ export class ConversationListService {
           alias: d.alias,
         });
       });
+
+    // Realtime peer profile refresh: when a friend changes avatar/name/bio — a local self-edit pushed
+    // straight away, or a federated stub re-localized on THIS server (the catch-up path) — the server
+    // fans the FULL fresh profile here. Patch the matching P2P row by peerUser.id; the message header +
+    // avatar read peerUser via computed, so they refresh automatically. Payload shape == thread-list
+    // peerUser (full User row), so a wholesale replace stays consistent with updatePeerUser.
+    this.ws.eventSubject
+      .pipe(filter((m) => m.event === 'PEER_PROFILE_UPDATED' && m.data !== undefined))
+      .subscribe((m) => {
+        const u = m.data as unknown as User;
+        if (typeof u?.id !== 'number') return;
+        this.updatePeerByUserId(u.id, u);
+      });
   }
 
   /** Patch per-user thread metadata (mute/pin/clear/block) on a row, then re-sort so pin/unpin reorders
@@ -218,18 +231,22 @@ export class ConversationListService {
         },
       });
     }
-    // Federated P2P peer: lazily refresh its avatar/name/bio if the peer's profile changed since the
-    // stub was localized. Fire-and-forget (chat-open is never blocked); the server /revision probe is
-    // cheap and re-pulls only when newer. The returned User flows into the item → header/avatar refresh.
-    if (item && item.type === 'P2P' && item.peerUser.isForeigner) {
-      this.userService.syncPeerProfile({ userId: item.peerUser.id }).subscribe({
-        next: (res) => {
-          if (res.code === 0 && res.data) this.updatePeerUser(threadId, res.data);
-        },
-        error: () => {
-          /* best-effort — keep the cached profile on a transient peer outage */
-        },
-      });
+    // P2P peer (local OR federated): lazily refresh avatar/name/bio if it changed since the list
+    // snapshot. Fire-and-forget (chat-open is never blocked); the server short-circuits with data:null
+    // when updatedAt is unchanged — one cheap lookup, no signal churn, no re-render. The returned User
+    // flows into the item → header/avatar refresh. This is the pull backstop behind the
+    // PEER_PROFILE_UPDATED push: it covers reconnects / missed pushes / federated laziness.
+    if (item && item.type === 'P2P' && item.peerUser) {
+      this.userService
+        .syncPeerProfile({ userId: item.peerUser.id, sinceUpdatedAt: item.peerUser.updatedAt })
+        .subscribe({
+          next: (res) => {
+            if (res.code === 0 && res.data) this.updatePeerUser(threadId, res.data);
+          },
+          error: () => {
+            /* best-effort — keep the cached profile on a transient outage */
+          },
+        });
     }
   }
 
@@ -238,6 +255,16 @@ export class ConversationListService {
   updatePeerUser(threadId: number, user: User): void {
     this._items.update((list) =>
       list.map((t) => (t.threadId === threadId && t.type === 'P2P' ? { ...t, peerUser: user } : t)),
+    );
+  }
+
+  /** Replace a P2P item's peerUser by the peer's userId — the PEER_PROFILE_UPDATED push carries a userId,
+   *  not a threadId. No-op for groups / absent items. Same computed-driven refresh as updatePeerUser. */
+  updatePeerByUserId(userId: number, user: User): void {
+    this._items.update((list) =>
+      list.map((t) =>
+        t.type === 'P2P' && t.peerUser.id === userId ? { ...t, peerUser: user } : t,
+      ),
     );
   }
 

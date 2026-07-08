@@ -141,65 +141,57 @@
   text-align: right;
 }
 
-// Read-only handle line. Fixed height + integer line-height + nowrap so this row's
-// contribution to the dialog's natural height is deterministic: the uniqName resolving
-// after open, or a longer handle wrapping, can never change its line count and
-// re-trigger appFitDialog's ResizeObserver (which would visibly re-lock the dialog
-// height — the "跳动高度" symptom). Mirrors the .account-btn geometry below it
-// (box-border fixed height, flex-centered single line).
-.handle {
-  width: 100%;
-  margin-top: 4px;
-  box-sizing: border-box;
-  height: 40px;
-  border-top: 1px solid var(--app-border);
+// Read-only (disabled) identity field — mirrors the editable .text input's geometry but wears the
+// Material disabled treatment so it reads as a locked sibling of Name/Bio rather than an interactive
+// input: a dimmer outline (--app-border, lighter than the enabled --app-border-strong) + a muted value.
+// The label and the "Cannot be changed" hint share one row (label left, hint right); the label is
+// dimmed to faint to reinforce the disabled state (Material dims a disabled field's label).
+.field-readonly .label-row {
   display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 10px;
-  font-size: 13px;
-  line-height: 18px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.field-readonly .label-row .label {
+  margin-bottom: 0;            // the row owns the bottom spacing, not the label
   color: var(--app-text-faint);
-  white-space: nowrap;
-  overflow: hidden;
 }
 
-// Account footer: "Manage sessions" + "Logout" share one row as a balanced pair of
-// outlined buttons with identical geometry; logout wears the danger token so the
-// destructive action reads distinctly. Heights/padding/gap/line-height are integer px
-// per the CSS integer-pixel rule (this dialog body is not virtually scrolled, but consistency holds).
+.readonly-text {
+  height: 36px;
+  padding: 0 10px;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md);
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--app-text-muted);
+}
+
+.readonly-hint {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--app-text-faint);
+}
+
+// Account footer: "Manage sessions" + "Logout" share one row as a balanced pair of Material outlined
+// buttons. Both are real mat-stroked-buttons (proper state layer / ripple / theming); logout wears
+// color="warn" so the destructive action reads distinctly. flex:1 gives the pair equal width.
 .account-actions {
   width: 100%;
   margin-top: 8px;
   display: flex;
   gap: 8px;
+
+  button { flex: 1 1 0; }
 }
 
-.account-btn {
-  flex: 1 1 0;
-  height: 40px;
-  padding: 0 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-md);
-  background: transparent;
-  color: var(--app-text);
-  font-size: 14px;
-  line-height: 20px;
-  font-family: inherit;
-  cursor: pointer;
-
-  &:hover { background: var(--app-hover); }
-  &:active { background: var(--app-active); }
-
-  &.danger {
-    border-color: var(--app-danger);
-    color: var(--app-danger);
-
-    &:hover { background: color-mix(in srgb, var(--app-danger) 10%, transparent); }
-    &:active { background: color-mix(in srgb, var(--app-danger) 18%, transparent); }
-  }
+// Spacing + baseline alignment for the logout icon inside the mat-stroked-button. Raw <svg> children get
+// no auto-gap or vertical centering from Material (unlike <mat-icon>), so the gap is set manually and
+// vertical-align:middle seats the glyph on the label's mid-line (Material's own mat-icon does the same).
+.logout-btn svg {
+  margin-right: 8px;
+  vertical-align: middle;
 }

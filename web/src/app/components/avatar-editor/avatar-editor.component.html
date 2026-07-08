@@ -4,7 +4,7 @@
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
     <span class="title">{{ 'profile.avatarTitle' | transloco }}</span>
-    <button mat-raised-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.done' | transloco }}</button>
+    <button mat-button color="primary" (click)="save()" [disabled]="!canSave()">{{ 'common.done' | transloco }}</button>
   </div>
 
   <div class="body">

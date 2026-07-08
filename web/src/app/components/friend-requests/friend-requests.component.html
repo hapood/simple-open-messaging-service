@@ -27,7 +27,7 @@
       <input class="search-input" [ngModelOptions]="{standalone: true}" [(ngModel)]="searchText" type="text"
         [placeholder]="'friend.searchPlaceholder' | transloco" autocomplete="off"
         [disabled]="addTabStatus()===AddTabStatus.SEARCHING">
-      <button mat-raised-button class="search-btn" type="submit"
+      <button mat-flat-button class="search-btn" type="submit"
         [disabled]="addTabStatus()===AddTabStatus.SEARCHING || !searchText().trim()">
         @if(addTabStatus()===AddTabStatus.SEARCHING){{{ 'common.searching' | transloco }}}@else{ {{ 'common.search' | transloco }} }
       </button>
@@ -88,7 +88,7 @@
               </div>
               <div class="user-actions">
                 @if(canAdd()){
-                <button mat-raised-button color="primary" (click)="sendRequest()"
+                <button mat-flat-button color="primary" (click)="sendRequest()"
                   [disabled]="addTabStatus()===AddTabStatus.SEARCHING">{{ 'friend.sendRequest' | transloco }}</button>
                 }
               </div>
@@ -129,7 +129,7 @@
           </div>
           <div class="pending-actions">
             @if(req.status===0){
-            <button mat-raised-button color="primary" (click)="approve($index)">{{ 'friend.approve' | transloco }}</button>
+            <button mat-flat-button color="primary" (click)="approve($index)">{{ 'friend.approve' | transloco }}</button>
             <button mat-button class="decline-btn" (click)="decline($index)">{{ 'friend.decline' | transloco }}</button>
             }@else {
             <button mat-button [disabled]="true">@if(req.status===-1){ {{ 'friend.invalidUser' | transloco }} }@else{ {{ 'friend.approved' | transloco }} }</button>

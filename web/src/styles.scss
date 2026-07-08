@@ -44,6 +44,37 @@ $dark-theme: mat.define-theme((
   @include mat.all-component-colors($dark-theme);
 }
 
+/* === Rebind Material button colors to the app's brand/danger tokens ===
+ * Angular Material's M3 theme renders `color="primary"` filled buttons in its blue-palette primary
+ * role (#343dff — an off-brand indigo, not #2196f3), and `color="warn"` renders nothing distinct
+ * because the theme above defines no error palette. Rather than fight M3 tonal palettes, rebind the
+ * emitted button component tokens — scoped to the `.mat-primary` / `.mat-warn` classes the `color`
+ * input adds — to the app's existing design-system tokens. `--mat-button-*` tokens are read only by
+ * buttons, so scoping on `.mat-primary`/`.mat-warn` can't leak into other components. Light + dark
+ * both resolve correctly because --app-danger has a [data-theme=dark] override (#ef4444); brand stays
+ * #2196f3 in both. Hierarchy stays flat (no elevation) — color carries the emphasis. */
+.mat-primary {
+  --mat-button-filled-container-color: var(--app-brand);
+  --mat-button-filled-label-text-color: #fff;
+  --mat-button-filled-state-layer-color: #fff;
+  --mat-button-text-label-text-color: var(--app-brand);
+  --mat-button-text-state-layer-color: var(--app-brand);
+  --mat-button-outlined-label-text-color: var(--app-brand);
+  --mat-button-outlined-outline-color: var(--app-brand);
+  --mat-button-outlined-state-layer-color: var(--app-brand);
+}
+
+.mat-warn {
+  --mat-button-filled-container-color: var(--app-danger);
+  --mat-button-filled-label-text-color: #fff;
+  --mat-button-filled-state-layer-color: #fff;
+  --mat-button-text-label-text-color: var(--app-danger);
+  --mat-button-text-state-layer-color: var(--app-danger);
+  --mat-button-outlined-label-text-color: var(--app-danger);
+  --mat-button-outlined-outline-color: var(--app-danger);
+  --mat-button-outlined-state-layer-color: var(--app-danger);
+}
+
 /* === Connection chip: registered <color> custom properties for Motion-driven morph. ===
  * Registering <color> makes the browser (and Motion) interpolate these as colors instead of opaque
  * strings — so the gradient stops (--g-from/--g-to) and icon color (--ic) animate smoothly, and the

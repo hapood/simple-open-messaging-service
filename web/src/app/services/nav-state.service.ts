@@ -30,17 +30,17 @@ let nextPaneId = 0;
  * deep, so browser-back naturally exits on desktop/PWA), and mobile intercepts hardware back natively
  * and calls {@link back}.
  *
- * Layered model: `chatThreadId` (base) ← `aside` (overlay 1) ← `paneStack` (overlay 2, topmost last).
- * {@link back} peels one layer: topmost pane → aside → chat → (home: returns `false`, caller exits).
+ * Layered model: `chatThreadId` (base) ← `searchOpen` ← `aside` ← `paneStack` (topmost last).
+ * {@link back} peels one layer: topmost pane → aside → search → chat → (home: returns `false`, caller exits).
  *
  * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
  * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
  * with the mobile close-slide lag — the way it used to read the routed thread id). All other readers
  * (ChatPane, thread-list, peer-profile, group-info) are unchanged.
  *
- * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel is session-state, NOT
- * mirrored — it isn't deep-linkable, and an `(aside:…)` URL segment would make the router try to match
- * an auxiliary outlet we no longer have.
+ * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel AND the in-chat search field
+ * are session-state, NOT mirrored — they aren't deep-linkable, and an `(aside:…)` URL segment would make
+ * the router try to match an auxiliary outlet we no longer have.
  */
 @Injectable({ providedIn: 'root' })
 export class NavStateMachineService {
@@ -48,6 +48,10 @@ export class NavStateMachineService {
   readonly chatThreadId = signal<number | undefined>(undefined);
   /** The open aside panel, or `undefined`. */
   readonly aside = signal<{ panel: AsidePanel } | undefined>(undefined);
+  /** Whether the in-chat search field is open in the foreground chat. A session-state nav layer (like
+   *  `aside`, NOT mirrored to the URL); {@link back} peels it before the chat so hardware-back exits
+   *  search before leaving the thread. */
+  readonly searchOpen = signal(false);
   /** Transient pane stack (dialogs + overlays). Top = last entry. */
   readonly paneStack = signal<readonly PaneEntry[]>([]);
 
@@ -72,17 +76,20 @@ export class NavStateMachineService {
   // --- chat layer ---
   /** Open a chat thread. Closing a chat-scoped aside on a thread switch mirrors the old openChat (which
    *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
-   *  Also clears the pane stack — a thread switch scopes away any open dialog/overlay. */
+   *  Also clears the pane stack and the in-chat search — a thread switch scopes away any open
+   *  dialog/overlay/search. */
   openChat(threadId: number): void {
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set(undefined);
+    this.searchOpen.set(false);
     this.chatThreadId.set(threadId);
   }
-  /** Leave the chat → home. Also closes the aside + clears the pane stack. */
+  /** Leave the chat → home. Also closes the aside + search + clears the pane stack. */
   closeChat(): void {
     this.closeAllPanes();
     this.chatThreadId.set(undefined);
     this.aside.set(undefined);
+    this.searchOpen.set(false);
   }
 
   // --- aside layer ---
@@ -91,6 +98,14 @@ export class NavStateMachineService {
   }
   closeAside(): void {
     this.aside.set(undefined);
+  }
+
+  // --- in-chat search layer ---
+  openSearch(): void {
+    this.searchOpen.set(true);
+  }
+  closeSearch(): void {
+    this.searchOpen.set(false);
   }
 
   // --- transient pane layer ---
@@ -135,6 +150,12 @@ export class NavStateMachineService {
     }
     if (this.aside() !== undefined) {
       this.aside.set(undefined);
+      return true;
+    }
+    // In-chat search is the innermost overlay (it lives in the chat header): peel it right before the
+    // chat itself, so back exits search before leaving the thread.
+    if (this.searchOpen()) {
+      this.searchOpen.set(false);
       return true;
     }
     if (this.chatThreadId() !== undefined) {

@@ -5,7 +5,7 @@
     <div class="es-sub">{{ subtitle() }}</div>
   }
   @if (ctaLabel()) {
-    <button mat-raised-button color="primary" class="es-cta" (click)="ctaClick.emit()">
+    <button mat-flat-button color="primary" class="es-cta" (click)="ctaClick.emit()">
       {{ ctaLabel() }}
     </button>
   }

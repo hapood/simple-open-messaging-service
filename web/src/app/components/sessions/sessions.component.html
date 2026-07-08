@@ -25,7 +25,7 @@
             <div class="meta">{{ 'session.expires' | transloco:{ date: fmt(s.expiresAt) } }}</div>
           </div>
           @if (s.device !== myDevice) {
-            <button mat-raised-button (click)="revoke(s.jti)">{{ 'session.revoke' | transloco }}</button>
+            <button mat-stroked-button (click)="revoke(s.jti)">{{ 'session.revoke' | transloco }}</button>
           }
         </div>
       }
