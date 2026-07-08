@@ -43,6 +43,7 @@ import {
   SendFriendRequestDto,
   ThreadIdDto,
   UserByUniqNameDto,
+  PeerTrustStatusDto,
   QueryUsersDto,
   QueryValidThreadDto,
   QueryPendingThreadDto,
@@ -612,6 +613,24 @@ export class UserController {
       where: { id: { in: dto.userIds }, isDeleted: false },
     });
     return { code: BusinessCode.OK, message: 'successful', data: list };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/peer-trust-status')
+  @ApiOperation({
+    summary:
+      'Pre-flight: is mutual trust with a peer domain already established? Drives the first-contact "connecting…" affordance on a federated handle search.',
+  })
+  async peerTrustStatus(@Body() dto: PeerTrustStatusDto): Promise<ApiResult> {
+    // Pure local allow-list lookup (no network) — tells the client whether the upcoming federated
+    // resolve will run the init handshake (untrusted → first contact → banner) or resolve fast
+    // (trusted → no banner). A known server-side fact, not a latency guess: the rare
+    // already-trusted-but-failing case (peer reset / broken key → re-handshake) surfaces as an error
+    // from the resolve itself, not here.
+    const trusted = await this.federationService.isPeerTrusted(dto.domain);
+    return { code: BusinessCode.OK, message: 'successful', data: { trusted } };
   }
 
   @UseGuards(JwtAuthGuard)

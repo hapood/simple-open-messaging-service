@@ -81,6 +81,21 @@ export class UserByUniqNameDto {
   uniqName: string;
 }
 
+/** Pre-flight trust check for a federated handle search: has mutual trust with this peer domain
+ *  already been established? Drives the client's first-contact affordance — a "Connecting to
+ *  <domain>…" banner shown only when a handshake is actually expected (the server knows whether a
+ *  FederatedPeer 'trusted' row exists), rather than guessed from request latency. */
+export class PeerTrustStatusDto {
+  @ApiProperty({
+    example: 'bbb.local',
+    description: 'Peer domain (the part after @ in a federated handle)',
+  })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(63)
+  domain: string;
+}
+
 /**
  * Update the current user's profile (nickname/bio). All fields optional; send only what changes.
  * handle (uniqName) cannot be changed here — identity changes go through a separate flow.

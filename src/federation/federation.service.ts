@@ -307,6 +307,22 @@ export class FederationService {
     });
   }
 
+  /** Whether mutual trust with a peer domain is ALREADY established — a pure local lookup of the
+   *  FederatedPeer allow-list (a row at trustLevel 'trusted'). No network, no side effects. Our own
+   *  domain always reads trusted (a localpart@<our-domain> query is a local lookup, never a handshake).
+   *
+   *  Used by the user-facing pre-flight (POST /user/peer-trust-status) so the client can tell
+   *  FIRST-CONTACT — a handshake IS expected during the upcoming resolve, so show a "Connecting to
+   *  <domain>…" affordance — from an already-trusted resolve (fast, no banner). This is a known
+   *  server-side fact, NOT a latency guess: the rare already-trusted-but-failing case (the peer reset
+   *  its server and lost the prior handshake, or rotated a broken key) re-handshakes inside the resolve
+   *  and surfaces as an error there, not here. */
+  async isPeerTrusted(domain: string): Promise<boolean> {
+    if (domain === this.config.domain) return true;
+    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    return existing?.trustLevel === 'trusted';
+  }
+
   /** Send a signed POST /api/v1/s2s/init to a peer so they auto-accept us into their allow-list. The
    *  body is minimal (`{}`); the signature (covering its content-digest) + keyId is what proves domain
    *  ownership. Throws on network/timeout/reject — the caller surfaces it. */
