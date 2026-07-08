@@ -1,6 +1,7 @@
 /**
- * 业务错误：由 request()/postPublic() 在 ApiResult.code !== 0 时抛出，
- * 携带业务码（对齐 CODE 常量）与原始 HTTP 状态。供 UI 与 query-client 统一识别。
+ * Business error: thrown by request()/postPublic() when ApiResult.code !== 0, carrying
+ * the business code (aligned with the CODE constants) and the original HTTP status.
+ * Used for unified recognition by the UI and query-client.
  */
 export class ApiError extends Error {
   code: number

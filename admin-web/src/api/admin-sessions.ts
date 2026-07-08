@@ -1,7 +1,7 @@
 import { request } from '@/api/client'
 import type { AdminSessionListResult } from '@/types/api'
 
-/** 管理员活跃会话列表（独立 AdminRefreshToken 表，join Admin username） */
+/** List of active admin sessions (independent AdminRefreshToken table; joins Admin for the username). */
 export function listAdminSessions(params: {
   skip?: number
   take?: number
@@ -10,7 +10,7 @@ export function listAdminSessions(params: {
   return request<AdminSessionListResult>('/admin/admin-sessions', params)
 }
 
-/** 吊销指定管理员会话（按 jti；其 access 15m 内仍有效——admin 无 tokenVersion） */
+/** Revoke a given admin session by jti (its access stays valid for up to 15m — admins have no tokenVersion). */
 export function revokeAdminSession(jti: string): Promise<void> {
   return request<void>(`/admin/admin-sessions/${jti}/revoke`)
 }

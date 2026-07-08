@@ -2,12 +2,15 @@ import { renewAccess } from '@/api/auth'
 import { forceLogout } from '@/auth/force-logout'
 import { getRefreshToken, setAccessToken, setRefreshToken } from '@/auth/token-store'
 
-// 单飞锚点：在飞的 refresh 共享同一个 promise，并发 401 只触发一次 renew-access
+// Single-flight anchor: an in-flight refresh is shared as one promise, so concurrent
+// 401s trigger renew-access only once.
 let inflight: Promise<boolean> | null = null
 
 /**
- * 单飞 refresh：成功 → 更新 access+refresh（后端轮换 refresh，必须回写存储）；
- * 失败（10006 重用 / 10003 无效|过期）→ forceLogout。finally 清 inflight 释放单飞。
+ * Single-flight refresh: on success → update access+refresh (the backend rotates the
+ * refresh token, so it must be written back to storage); on failure (10006 reuse /
+ * 10003 invalid|expired) → forceLogout. The finally block clears `inflight` to release
+ * the single-flight slot.
  */
 export function refreshOnce(): Promise<boolean> {
   if (inflight) return inflight

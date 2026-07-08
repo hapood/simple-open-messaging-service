@@ -11,7 +11,7 @@ import { ReuseAlertsPage } from '@/routes/reuse/reuse-alerts-page'
 import { PushPage } from '@/routes/push/push-page'
 import { NotFoundPage } from '@/routes/not-found-page'
 
-/** 根 layout：AuthProvider 必须在 RouterProvider 内，login/logout 的 useNavigate 才可用 */
+/** Root layout: AuthProvider must sit inside RouterProvider so login/logout can use useNavigate. */
 function RootLayout() {
   return (
     <AuthProvider>

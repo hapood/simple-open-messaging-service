@@ -1,6 +1,6 @@
 import { ADMIN_RT_KEY } from '@/lib/constants'
 
-// access token 仅存内存（刷新页即失，靠 refresh 重建；与 Angular C 端一致）
+// The access token lives only in memory (lost on page reload, rebuilt via refresh; mirrors the Angular C-end).
 let accessToken: string | null = null
 
 export const getAccessToken = (): string | null => accessToken

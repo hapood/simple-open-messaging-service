@@ -1,0 +1,225 @@
+{
+  "common": {
+    "appName": "Admin 控制台",
+    "loading": "加载中…",
+    "noData": "无数据",
+    "yes": "是",
+    "no": "否",
+    "cancel": "取消",
+    "search": "搜索",
+    "previous": "上一页",
+    "next": "下一页",
+    "page": "第 {{page}} / {{pages}} 页",
+    "loadFailed": "加载失败：{{message}}",
+    "operationFailed": "操作失败"
+  },
+  "nav": {
+    "users": "用户管理",
+    "sessions": "会话总览",
+    "connections": "实时连接",
+    "adminSessions": "管理员会话",
+    "bans": "封禁管理",
+    "reuse": "重用告警",
+    "push": "推送管理",
+    "logout": "登出"
+  },
+  "language": {
+    "label": "语言",
+    "zhCN": "中文",
+    "en": "English"
+  },
+  "login": {
+    "title": "Admin 登录",
+    "username": "用户名",
+    "password": "密码",
+    "submit": "登录",
+    "usernameRequired": "请输入用户名",
+    "passwordRequired": "请输入密码",
+    "failed": "登录失败"
+  },
+  "users": {
+    "title": "用户管理",
+    "searchPlaceholder": "搜索 uniqName",
+    "col": {
+      "id": "ID",
+      "uniqName": "uniqName",
+      "domain": "domain",
+      "foreigner": "外宾",
+      "status": "状态",
+      "tokenVer": "tokenVer",
+      "createdAt": "创建时间"
+    },
+    "status": {
+      "banned": "已封禁",
+      "active": "正常"
+    },
+    "action": {
+      "unban": "解禁",
+      "ban": "封禁",
+      "forceLogout": "强制下线",
+      "viewSessions": "查看会话",
+      "resetPassword": "重置密码"
+    },
+    "toast": {
+      "unbanned": "已解禁",
+      "banned": "已封禁",
+      "forceLoggedOut": "已强制下线"
+    },
+    "total": "共 {{count}} 条"
+  },
+  "bans": {
+    "title": "封禁管理",
+    "desc": "当前生效的登录封禁（IP / 账户维度，由限流滑窗产生）。",
+    "col": {
+      "type": "类型",
+      "value": "值",
+      "until": "解禁时间",
+      "remaining": "剩余"
+    },
+    "type": {
+      "ip": "IP",
+      "account": "账户"
+    },
+    "empty": "当前无封禁",
+    "unban": "解封"
+  },
+  "sessions": {
+    "title": "会话总览",
+    "searchPlaceholder": "按 IP 筛选",
+    "desc": "所有用户的活跃 refresh 会话（未吊销且未过期）。共 {{count}} 条。",
+    "purge": "一键清理",
+    "purgeTitle": "清理所有活跃会话？",
+    "purgeBody": "将吊销全部 {{count}} 条活跃会话，所有用户被强制重登（access 立即失效）。此操作不可撤销。",
+    "purgeConfirm": "确认清理",
+    "purged": "已清理全部活跃会话（{{count}} 个用户被强制重登）",
+    "purgeFailed": "清理失败",
+    "col": {
+      "user": "用户",
+      "device": "device",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "创建",
+      "expires": "过期"
+    },
+    "empty": "无活跃会话"
+  },
+  "connections": {
+    "title": "实时连接",
+    "desc": "当前在线的 SSE 实时下行连接（内存态，按用户聚合）。与「会话总览」不同：这里只看此刻挂着的长连接，不看持久的登录会话。",
+    "updatedAt": "更新于 {{time}}（每 3s 自动刷新）",
+    "totalConn": "总连接数",
+    "onlineUsers": "在线用户",
+    "col": {
+      "user": "用户",
+      "count": "连接数",
+      "since": "建连时刻",
+      "duration": "已连接"
+    },
+    "empty": "当前无在线连接"
+  },
+  "adminSessions": {
+    "title": "管理员会话",
+    "searchPlaceholder": "按 IP 筛选",
+    "desc": "管理员的活跃 refresh 会话（独立 AdminRefreshToken 表，与用户会话物理隔离）。共 {{count}} 条。吊销后该 admin 的 refresh 立即失效，但其 access 在 15m 内仍有效（admin 无 tokenVersion）。",
+    "revoke": "吊销",
+    "revoked": "已吊销该管理员会话（其 access 15m 内仍有效）",
+    "revokeFailed": "吊销失败",
+    "col": {
+      "admin": "管理员",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "创建",
+      "expires": "过期"
+    },
+    "empty": "无活跃管理员会话"
+  },
+  "reuse": {
+    "title": "重用告警",
+    "desc": "refresh token 重用事件（revokeReason=reuse，家族已连根吊销）。",
+    "col": {
+      "userId": "userId",
+      "familyId": "familyId",
+      "jti": "jti",
+      "ip": "IP",
+      "ua": "User-Agent",
+      "revokedAt": "吊销时间"
+    },
+    "empty": "无重用告警"
+  },
+  "push": {
+    "title": "推送管理",
+    "desc": "已注册的推送设备 token（FCM / Web Push）+ 测试推送 + 通道配置状态。",
+    "searchPlaceholder": "按用户名 / token / deviceId 搜索",
+    "transportLabel": "通道状态：",
+    "configured": "已配置",
+    "notConfigured": "未配置",
+    "deviceCount": "共 {{count}} 个设备",
+    "col": {
+      "platform": "平台",
+      "user": "用户",
+      "token": "Token",
+      "lastSeen": "最近活跃"
+    },
+    "test": "测试",
+    "send": "发送",
+    "empty": "无匹配的设备 token",
+    "range": "第 {{from}}-{{to}} 条 / 共 {{total}} 条",
+    "testDialogTitle": "发送测试推送",
+    "testDialogDesc": "向 {{target}} 的 {{platform}} 发送一条测试通知（设备需在后台才能收到系统通知）。",
+    "testDialogTargetUser": "用户 {{name}}",
+    "testDialogTargetDevice": "该设备",
+    "testTitleLabel": "标题",
+    "testBodyLabel": "正文（可选）",
+    "testSent": "测试推送已发送",
+    "testFailed": "发送失败：{{reason}}",
+    "testFailedUnknown": "未知原因",
+    "testDefaultTitle": "SOMS 测试推送",
+    "deleted": "已删除 {{name}} 的设备 token",
+    "platform": {
+      "ANDROID": "Android · FCM",
+      "IOS": "iOS · FCM",
+      "WEB": "Web Push"
+    }
+  },
+  "resetPassword": {
+    "title": "重置 {{name}} 的密码",
+    "newPassword": "新密码",
+    "hint": "6-20 位，允许字母数字和 .@!#$%^&*()",
+    "invalid": "6-20 位，允许字母数字和 .@!#$%^&*()",
+    "confirm": "确认重置",
+    "success": "密码已重置，该用户所有会话已吊销",
+    "failed": "重置失败"
+  },
+  "userSessions": {
+    "title": "{{name}} 的活跃会话",
+    "loadFailed": "加载失败",
+    "empty": "无活跃会话",
+    "col": {
+      "device": "device",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "创建",
+      "expires": "过期"
+    }
+  },
+  "notFound": {
+    "code": "404",
+    "desc": "页面不存在",
+    "back": "返回用户管理"
+  },
+  "errors": {
+    "unauthenticated": "未认证",
+    "parseFailed": "响应解析失败",
+    "biz": {
+      "validation": "输入有误",
+      "notFound": "未找到",
+      "alreadyExists": "已存在",
+      "unauthenticated": "请重新登录",
+      "forbidden": "你没有权限执行此操作",
+      "rateLimited": "请求过于频繁，请稍候",
+      "refreshReuse": "登录状态已变更，请重新登录",
+      "sessionRevoked": "登录会话已结束，请重新登录",
+      "internal": "出错了"
+    }
+  }
+}

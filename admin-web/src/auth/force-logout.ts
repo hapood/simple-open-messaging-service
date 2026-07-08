@@ -1,9 +1,10 @@
 import { clearTokens } from './token-store'
 
 /**
- * 强制登出：清 token + 跳登录页。
- * 用于 refresh 重用(10006)/refresh 失败等异常路径——在 fetch 层触发，
- * 不在 React 树内，故用 window.location 而非 useNavigate（整页刷新在此场景可接受）。
+ * Force logout: clear tokens + navigate to the login page.
+ * Used on abnormal paths such as refresh reuse (10006) / refresh failure — triggered
+ * from the fetch layer, outside the React tree, so it uses window.location instead of
+ * useNavigate (a full page reload is acceptable in this scenario).
  */
 export function forceLogout(): void {
   clearTokens()

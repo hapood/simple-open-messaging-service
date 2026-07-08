@@ -1,8 +1,9 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAdminSessions, useRevokeAdminSession } from '@/hooks/use-admin-sessions'
-import { ApiError } from '@/lib/api-error'
+import { formatApiError } from '@/lib/format-error'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -20,6 +21,7 @@ import { Timestamp } from '@/components/common/timestamp'
 const PAGE_SIZE = 50
 
 export function AdminSessionsPage() {
+  const { t } = useTranslation()
   const [ipSearch, setIpSearch] = useState('')
   const [page, setPage] = useState(0)
   const { data, isLoading, error } = useAdminSessions({
@@ -35,20 +37,20 @@ export function AdminSessionsPage() {
   const onRevoke = async (jti: string) => {
     try {
       await revoke.mutateAsync(jti)
-      toast.success('已吊销该管理员会话（其 access 15m 内仍有效）')
+      toast.success(t('adminSessions.revoked'))
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : '吊销失败')
+      toast.error(formatApiError(e))
     }
   }
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">管理员会话</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('adminSessions.title')}</h1>
         <div className="relative w-60">
           <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
           <Input
-            placeholder="按 IP 筛选"
+            placeholder={t('adminSessions.searchPlaceholder')}
             value={ipSearch}
             onChange={(e) => {
               setIpSearch(e.target.value)
@@ -59,18 +61,17 @@ export function AdminSessionsPage() {
         </div>
       </div>
       <p className="text-sm text-muted-foreground">
-        管理员的活跃 refresh 会话（独立 AdminRefreshToken 表，与用户会话物理隔离）。共 {total} 条。
-        吊销后该 admin 的 refresh 立即失效，但其 access 在 15m 内仍有效（admin 无 tokenVersion）。
+        {t('adminSessions.desc', { count: total })}
       </p>
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>管理员</TableHead>
-              <TableHead>User-Agent</TableHead>
-              <TableHead>IP</TableHead>
-              <TableHead>创建</TableHead>
-              <TableHead>过期</TableHead>
+              <TableHead>{t('adminSessions.col.admin')}</TableHead>
+              <TableHead>{t('adminSessions.col.ua')}</TableHead>
+              <TableHead>{t('adminSessions.col.ip')}</TableHead>
+              <TableHead>{t('adminSessions.col.created')}</TableHead>
+              <TableHead>{t('adminSessions.col.expires')}</TableHead>
               <TableHead className="w-20" />
             </TableRow>
           </TableHeader>
@@ -88,13 +89,13 @@ export function AdminSessionsPage() {
             ) : error ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-destructive">
-                  加载失败：{error.message}
+                  {t('common.loadFailed', { message: formatApiError(error) })}
                 </TableCell>
               </TableRow>
             ) : data?.list.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  无活跃管理员会话
+                  {t('adminSessions.empty')}
                 </TableCell>
               </TableRow>
             ) : (
@@ -124,7 +125,7 @@ export function AdminSessionsPage() {
                       disabled={revoke.isPending}
                       onClick={() => onRevoke(s.jti)}
                     >
-                      吊销
+                      {t('adminSessions.revoke')}
                     </Button>
                   </TableCell>
                 </TableRow>
@@ -135,18 +136,16 @@ export function AdminSessionsPage() {
       </div>
       <div className="flex items-center justify-end gap-2 text-sm text-muted-foreground">
         <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-          上一页
+          {t('common.previous')}
         </Button>
-        <span>
-          第 {page + 1} / {pageCount} 页
-        </span>
+        <span>{t('common.page', { page: page + 1, pages: pageCount })}</span>
         <Button
           variant="outline"
           size="sm"
           disabled={page + 1 >= pageCount}
           onClick={() => setPage((p) => p + 1)}
         >
-          下一页
+          {t('common.next')}
         </Button>
       </div>
     </div>

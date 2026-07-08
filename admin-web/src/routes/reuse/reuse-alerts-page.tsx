@@ -1,5 +1,7 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { useReuseAlerts } from '@/hooks/use-reuse-alerts'
+import { formatApiError } from '@/lib/format-error'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
@@ -15,6 +17,7 @@ import { Timestamp } from '@/components/common/timestamp'
 const SIZES = [50, 100, 200]
 
 export function ReuseAlertsPage() {
+  const { t } = useTranslation()
   const [take, setTake] = useState(50)
   const { data, isLoading, error } = useReuseAlerts(take)
 
@@ -22,10 +25,8 @@ export function ReuseAlertsPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-start justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">重用告警</h1>
-          <p className="text-sm text-muted-foreground">
-            refresh token 重用事件（revokeReason=reuse，家族已连根吊销）。
-          </p>
+          <h1 className="text-2xl font-semibold tracking-tight">{t('reuse.title')}</h1>
+          <p className="text-sm text-muted-foreground">{t('reuse.desc')}</p>
         </div>
         <div className="flex items-center gap-1">
           {SIZES.map((s) => (
@@ -44,12 +45,12 @@ export function ReuseAlertsPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>userId</TableHead>
-              <TableHead>familyId</TableHead>
-              <TableHead>jti</TableHead>
-              <TableHead>IP</TableHead>
-              <TableHead>User-Agent</TableHead>
-              <TableHead>吊销时间</TableHead>
+              <TableHead>{t('reuse.col.userId')}</TableHead>
+              <TableHead>{t('reuse.col.familyId')}</TableHead>
+              <TableHead>{t('reuse.col.jti')}</TableHead>
+              <TableHead>{t('reuse.col.ip')}</TableHead>
+              <TableHead>{t('reuse.col.ua')}</TableHead>
+              <TableHead>{t('reuse.col.revokedAt')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -62,13 +63,13 @@ export function ReuseAlertsPage() {
             ) : error ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-destructive">
-                  加载失败：{error.message}
+                  {t('common.loadFailed', { message: formatApiError(error) })}
                 </TableCell>
               </TableRow>
             ) : !data || data.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  无重用告警
+                  {t('reuse.empty')}
                 </TableCell>
               </TableRow>
             ) : (

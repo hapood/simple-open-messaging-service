@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { MoreHorizontal, Search } from 'lucide-react'
 import { useAdminUsers } from '@/hooks/use-admin-users'
@@ -27,12 +28,14 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Timestamp } from '@/components/common/timestamp'
+import { formatApiError } from '@/lib/format-error'
 import { SessionsDialog } from './sessions-dialog'
 import { ResetPasswordDialog } from './reset-password-dialog'
 
 const PAGE_SIZE = 20
 
 export function UsersPage() {
+  const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [debounced, setDebounced] = useState('')
   const [page, setPage] = useState(0)
@@ -40,11 +43,11 @@ export function UsersPage() {
   const [resetUser, setResetUser] = useState<User | null>(null)
 
   useEffect(() => {
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       setDebounced(search)
       setPage(0)
     }, 300)
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [search])
 
   const { data, isLoading, isFetching, error } = useAdminUsers({
@@ -66,7 +69,7 @@ export function UsersPage() {
       await m.mutateAsync(id)
       toast.success(msg)
     } catch {
-      /* 全局 mutation onError 已 toast */
+      /* Global mutation onError already shows a toast. */
     }
   }
 
@@ -76,11 +79,11 @@ export function UsersPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">用户管理</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('users.title')}</h1>
         <div className="relative w-72">
           <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
           <Input
-            placeholder="搜索 uniqName"
+            placeholder={t('users.searchPlaceholder')}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-8"
@@ -92,13 +95,13 @@ export function UsersPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-16">ID</TableHead>
-              <TableHead>uniqName</TableHead>
-              <TableHead>domain</TableHead>
-              <TableHead className="w-16">外宾</TableHead>
-              <TableHead className="w-20">状态</TableHead>
-              <TableHead className="w-28">tokenVer</TableHead>
-              <TableHead>创建时间</TableHead>
+              <TableHead className="w-16">{t('users.col.id')}</TableHead>
+              <TableHead>{t('users.col.uniqName')}</TableHead>
+              <TableHead>{t('users.col.domain')}</TableHead>
+              <TableHead className="w-16">{t('users.col.foreigner')}</TableHead>
+              <TableHead className="w-20">{t('users.col.status')}</TableHead>
+              <TableHead className="w-28">{t('users.col.tokenVer')}</TableHead>
+              <TableHead>{t('users.col.createdAt')}</TableHead>
               <TableHead className="w-10" />
             </TableRow>
           </TableHeader>
@@ -116,13 +119,13 @@ export function UsersPage() {
             ) : error ? (
               <TableRow>
                 <TableCell colSpan={8} className="py-8 text-center text-destructive">
-                  加载失败：{error.message}
+                  {t('common.loadFailed', { message: formatApiError(error) })}
                 </TableCell>
               </TableRow>
             ) : data?.list.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                  无数据
+                  {t('common.noData')}
                 </TableCell>
               </TableRow>
             ) : (
@@ -131,12 +134,12 @@ export function UsersPage() {
                   <TableCell className="font-mono text-xs text-muted-foreground">{u.id}</TableCell>
                   <TableCell className="font-medium">{u.uniqName}</TableCell>
                   <TableCell className="text-muted-foreground">{u.domain ?? '—'}</TableCell>
-                  <TableCell>{u.isForeigner ? '是' : '否'}</TableCell>
+                  <TableCell>{u.isForeigner ? t('common.yes') : t('common.no')}</TableCell>
                   <TableCell>
                     {u.isDeleted ? (
-                      <Badge variant="destructive">已封禁</Badge>
+                      <Badge variant="destructive">{t('users.status.banned')}</Badge>
                     ) : (
-                      <Badge variant="secondary">正常</Badge>
+                      <Badge variant="secondary">{t('users.status.active')}</Badge>
                     )}
                   </TableCell>
                   <TableCell className="font-mono text-xs">{u.tokenVersion}</TableCell>
@@ -153,27 +156,29 @@ export function UsersPage() {
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
                         {u.isDeleted ? (
-                          <DropdownMenuItem onClick={() => onAction(enable, u.id, '已解禁')}>
-                            解禁
+                          <DropdownMenuItem
+                            onClick={() => onAction(enable, u.id, t('users.toast.unbanned'))}
+                          >
+                            {t('users.action.unban')}
                           </DropdownMenuItem>
                         ) : (
                           <DropdownMenuItem
                             variant="destructive"
-                            onClick={() => onAction(disable, u.id, '已封禁')}
+                            onClick={() => onAction(disable, u.id, t('users.toast.banned'))}
                           >
-                            封禁
+                            {t('users.action.ban')}
                           </DropdownMenuItem>
                         )}
                         <DropdownMenuItem
-                          onClick={() => onAction(forceLogout, u.id, '已强制下线')}
+                          onClick={() => onAction(forceLogout, u.id, t('users.toast.forceLoggedOut'))}
                         >
-                          强制下线
+                          {t('users.action.forceLogout')}
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setSessionsUser(u)}>
-                          查看会话
+                          {t('users.action.viewSessions')}
                         </DropdownMenuItem>
                         <DropdownMenuItem onClick={() => setResetUser(u)}>
-                          重置密码
+                          {t('users.action.resetPassword')}
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -186,7 +191,7 @@ export function UsersPage() {
       </div>
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
-        <span>共 {total} 条</span>
+        <span>{t('users.total', { count: total })}</span>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
@@ -194,18 +199,16 @@ export function UsersPage() {
             disabled={page === 0}
             onClick={() => setPage((p) => p - 1)}
           >
-            上一页
+            {t('common.previous')}
           </Button>
-          <span>
-            第 {page + 1} / {pageCount} 页
-          </span>
+          <span>{t('common.page', { page: page + 1, pages: pageCount })}</span>
           <Button
             variant="outline"
             size="sm"
             disabled={page + 1 >= pageCount}
             onClick={() => setPage((p) => p + 1)}
           >
-            下一页
+            {t('common.next')}
           </Button>
         </div>
       </div>

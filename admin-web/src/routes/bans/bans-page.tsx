@@ -1,5 +1,7 @@
+import { useTranslation } from 'react-i18next'
 import { ShieldOff } from 'lucide-react'
 import { useBans, useUnban } from '@/hooks/use-bans'
+import { formatApiError } from '@/lib/format-error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -14,25 +16,24 @@ import {
 import { Timestamp } from '@/components/common/timestamp'
 
 export function BansPage() {
+  const { t } = useTranslation()
   const { data, isLoading, error } = useBans()
   const unban = useUnban()
 
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">封禁管理</h1>
-        <p className="text-sm text-muted-foreground">
-          当前生效的登录封禁（IP / 账户维度，由限流滑窗产生）。
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('bans.title')}</h1>
+        <p className="text-sm text-muted-foreground">{t('bans.desc')}</p>
       </div>
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-20">类型</TableHead>
-              <TableHead>值</TableHead>
-              <TableHead>解禁时间</TableHead>
-              <TableHead className="w-24">剩余</TableHead>
+              <TableHead className="w-20">{t('bans.col.type')}</TableHead>
+              <TableHead>{t('bans.col.value')}</TableHead>
+              <TableHead>{t('bans.col.until')}</TableHead>
+              <TableHead className="w-24">{t('bans.col.remaining')}</TableHead>
               <TableHead className="w-20" />
             </TableRow>
           </TableHeader>
@@ -46,14 +47,14 @@ export function BansPage() {
             ) : error ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-destructive">
-                  加载失败：{error.message}
+                  {t('common.loadFailed', { message: formatApiError(error) })}
                 </TableCell>
               </TableRow>
             ) : !data || data.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                   <ShieldOff className="mx-auto mb-2 size-5 opacity-40" />
-                  当前无封禁
+                  {t('bans.empty')}
                 </TableCell>
               </TableRow>
             ) : (
@@ -61,7 +62,7 @@ export function BansPage() {
                 <TableRow key={b.key}>
                   <TableCell>
                     <Badge variant={b.type === 'ip' ? 'default' : 'secondary'}>
-                      {b.type === 'ip' ? 'IP' : '账户'}
+                      {b.type === 'ip' ? t('bans.type.ip') : t('bans.type.account')}
                     </Badge>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{b.value}</TableCell>
@@ -80,7 +81,7 @@ export function BansPage() {
                         unban.mutate(b.type === 'ip' ? { ip: b.value } : { uniqName: b.value })
                       }
                     >
-                      解封
+                      {t('bans.unban')}
                     </Button>
                   </TableCell>
                 </TableRow>

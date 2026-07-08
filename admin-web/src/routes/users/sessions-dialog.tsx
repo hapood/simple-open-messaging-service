@@ -1,3 +1,4 @@
+import { useTranslation } from 'react-i18next'
 import {
   Dialog,
   DialogContent,
@@ -25,23 +26,24 @@ export function SessionsDialog({
   user: User | null
   onClose: () => void
 }) {
+  const { t } = useTranslation()
   const { data, isLoading, error } = useUserSessions(user?.id ?? null)
   const open = user !== null
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>{user?.uniqName} 的活跃会话</DialogTitle>
+          <DialogTitle>{t('userSessions.title', { name: user?.uniqName ?? '' })}</DialogTitle>
         </DialogHeader>
         <div className="max-h-[60vh] overflow-auto">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>device</TableHead>
-                <TableHead>User-Agent</TableHead>
-                <TableHead>IP</TableHead>
-                <TableHead>创建</TableHead>
-                <TableHead>过期</TableHead>
+                <TableHead>{t('userSessions.col.device')}</TableHead>
+                <TableHead>{t('userSessions.col.ua')}</TableHead>
+                <TableHead>{t('userSessions.col.ip')}</TableHead>
+                <TableHead>{t('userSessions.col.created')}</TableHead>
+                <TableHead>{t('userSessions.col.expires')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -54,13 +56,13 @@ export function SessionsDialog({
               ) : error ? (
                 <TableRow>
                   <TableCell colSpan={5} className="text-destructive">
-                    加载失败
+                    {t('userSessions.loadFailed')}
                   </TableCell>
                 </TableRow>
               ) : !data || data.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
-                    无活跃会话
+                    {t('userSessions.empty')}
                   </TableCell>
                 </TableRow>
               ) : (

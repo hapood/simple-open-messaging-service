@@ -1,6 +1,6 @@
 import { QueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { ApiError } from '@/lib/api-error'
+import { formatApiError } from '@/lib/format-error'
 
 export const queryClient = new QueryClient({
   defaultOptions: {
@@ -10,9 +10,10 @@ export const queryClient = new QueryClient({
       staleTime: 30_000,
     },
     mutations: {
-      // mutation 失败统一 toast（query 的错误由页面 inline 展示，避免列表加载失败弹窗太吵）
+      // Mutation failures surface a unified toast (query errors are shown inline by
+      // the page, to avoid noisy popups on list load failures).
       onError: (err) => {
-        toast.error(err instanceof ApiError ? err.message : '操作失败')
+        toast.error(formatApiError(err))
       },
     },
   },

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Loader2, Send, Smartphone, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDeletePushToken, usePushTokens, useSendPushTest } from '@/hooks/use-push'
@@ -18,27 +19,23 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import { Timestamp } from '@/components/common/timestamp'
+import { formatApiError } from '@/lib/format-error'
 
 const PAGE_SIZE = 15
 
-const PLATFORM_LABEL: Record<PushToken['platform'], string> = {
-  ANDROID: 'Android · FCM',
-  IOS: 'iOS · FCM',
-  WEB: 'Web Push',
-}
-
 export function PushPage() {
+  const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [debounced, setDebounced] = useState('')
   const [page, setPage] = useState(0)
 
   // Debounce the search input (300ms) and reset to the first page whenever it changes.
   useEffect(() => {
-    const t = setTimeout(() => {
+    const timer = setTimeout(() => {
       setDebounced(search.trim())
       setPage(0)
     }, 300)
-    return () => clearTimeout(t)
+    return () => clearTimeout(timer)
   }, [search])
 
   const { data, isLoading, error, isFetching } = usePushTokens({
@@ -53,23 +50,24 @@ export function PushPage() {
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
 
-  function openTest(t: PushToken) {
-    setTestToken(t)
-    setTitle('SOMS 测试推送')
+  function openTest(token: PushToken) {
+    setTestToken(token)
+    setTitle(t('push.testDefaultTitle'))
     setBody('')
   }
 
   async function onSubmitTest() {
     if (!testToken) return
     const r = await sendTest.mutateAsync({ id: testToken.id, title, body })
-    if (r.ok) toast.success('测试推送已发送')
-    else toast.error(`发送失败：${r.error ?? '未知原因'}`)
+    if (r.ok) toast.success(t('push.testSent'))
+    else toast.error(t('push.testFailed', { reason: r.error ?? t('push.testFailedUnknown') }))
     setTestToken(null)
   }
 
-  function onDelete(t: PushToken) {
-    del.mutate(t.id, {
-      onSuccess: () => toast.success(`已删除 ${t.user?.uniqName ?? ''} 的设备 token`),
+  function onDelete(token: PushToken) {
+    del.mutate(token.id, {
+      onSuccess: () =>
+        toast.success(t('push.deleted', { name: token.user?.uniqName ?? '' })),
     })
   }
 
@@ -83,28 +81,28 @@ export function PushPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">推送管理</h1>
-        <p className="text-sm text-muted-foreground">
-          已注册的推送设备 token（FCM / Web Push）+ 测试推送 + 通道配置状态。
-        </p>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('push.title')}</h1>
+        <p className="text-sm text-muted-foreground">{t('push.desc')}</p>
       </div>
 
       {/* transport config status + total */}
       <div className="flex flex-wrap items-center gap-2 text-sm">
-        <span className="text-muted-foreground">通道状态：</span>
+        <span className="text-muted-foreground">{t('push.transportLabel')}</span>
         <Badge variant={data?.fcmConfigured ? 'default' : 'outline'}>
-          FCM {data?.fcmConfigured ? '已配置' : '未配置'}
+          FCM {data?.fcmConfigured ? t('push.configured') : t('push.notConfigured')}
         </Badge>
         <Badge variant={data?.webPushConfigured ? 'default' : 'outline'}>
-          Web Push {data?.webPushConfigured ? '已配置' : '未配置'}
+          Web Push {data?.webPushConfigured ? t('push.configured') : t('push.notConfigured')}
         </Badge>
-        <span className="ml-auto text-muted-foreground">共 {total} 个设备</span>
+        <span className="ml-auto text-muted-foreground">
+          {t('push.deviceCount', { count: total })}
+        </span>
       </div>
 
       <Input
         value={search}
         onChange={(e) => setSearch((e.target as HTMLInputElement).value)}
-        placeholder="按用户名 / token / deviceId 搜索"
+        placeholder={t('push.searchPlaceholder')}
         className="max-w-sm"
       />
 
@@ -112,55 +110,61 @@ export function PushPage() {
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-32">平台</TableHead>
-              <TableHead>用户</TableHead>
-              <TableHead>Token</TableHead>
-              <TableHead className="w-44">最近活跃</TableHead>
+              <TableHead className="w-32">{t('push.col.platform')}</TableHead>
+              <TableHead>{t('push.col.user')}</TableHead>
+              <TableHead>{t('push.col.token')}</TableHead>
+              <TableHead className="w-44">{t('push.col.lastSeen')}</TableHead>
               <TableHead className="w-36" />
             </TableRow>
           </TableHeader>
           <TableBody>
             {isLoading ? (
               <TableRow>
-                <TableCell colSpan={5}><Skeleton className="h-5 w-full" /></TableCell>
+                <TableCell colSpan={5}>
+                  <Skeleton className="h-5 w-full" />
+                </TableCell>
               </TableRow>
             ) : error ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-destructive">
-                  加载失败：{error.message}
+                  {t('common.loadFailed', { message: formatApiError(error) })}
                 </TableCell>
               </TableRow>
             ) : list.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
                   <Smartphone className="mx-auto mb-2 size-5 opacity-40" />
-                  无匹配的设备 token
+                  {t('push.empty')}
                 </TableCell>
               </TableRow>
             ) : (
-              list.map((t) => (
-                <TableRow key={t.id}>
-                  <TableCell><Badge variant="secondary">{PLATFORM_LABEL[t.platform]}</Badge></TableCell>
+              list.map((token) => (
+                <TableRow key={token.id}>
                   <TableCell>
-                    {t.user?.uniqName ?? <span className="text-muted-foreground">#{t.userId}</span>}
+                    <Badge variant="secondary">{t(`push.platform.${token.platform}`)}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    {token.user?.uniqName ?? (
+                      <span className="text-muted-foreground">#{token.userId}</span>
+                    )}
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {shortToken(t.token)}
+                    {shortToken(token.token)}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    <Timestamp value={t.lastSeenAt} />
+                    <Timestamp value={token.lastSeenAt} />
                   </TableCell>
                   <TableCell>
                     <div className="flex justify-end gap-1">
-                      <Button variant="outline" size="sm" onClick={() => openTest(t)}>
+                      <Button variant="outline" size="sm" onClick={() => openTest(token)}>
                         <Send className="size-3.5" />
-                        测试
+                        {t('push.test')}
                       </Button>
                       <Button
                         variant="outline"
                         size="sm"
                         disabled={del.isPending}
-                        onClick={() => onDelete(t)}
+                        onClick={() => onDelete(token)}
                       >
                         <Trash2 className="size-3.5" />
                       </Button>
@@ -175,14 +179,18 @@ export function PushPage() {
 
       <div className="flex items-center gap-2 text-sm text-muted-foreground">
         <span>
-          {isFetching ? '加载中…' : total === 0 ? '无数据' : `第 ${from}-${to} 条 / 共 ${total} 条`}
+          {isFetching
+            ? t('common.loading')
+            : total === 0
+              ? t('common.noData')
+              : t('push.range', { from, to, total })}
         </span>
         <div className="ml-auto flex gap-2">
           <Button variant="outline" size="sm" disabled={!canPrev} onClick={() => setPage((p) => p - 1)}>
-            上一页
+            {t('common.previous')}
           </Button>
           <Button variant="outline" size="sm" disabled={!canNext} onClick={() => setPage((p) => p + 1)}>
-            下一页
+            {t('common.next')}
           </Button>
         </div>
       </div>
@@ -191,20 +199,23 @@ export function PushPage() {
       <Dialog open={testToken !== null} onOpenChange={(o) => !o && setTestToken(null)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>发送测试推送</DialogTitle>
+            <DialogTitle>{t('push.testDialogTitle')}</DialogTitle>
             <DialogDescription>
-              向{testToken?.user?.uniqName ? `用户 ${testToken.user.uniqName}` : '该设备'}的
-              {' '}{PLATFORM_LABEL[testToken?.platform ?? 'ANDROID']}{' '}
-              发送一条测试通知（设备需在后台才能收到系统通知）。
+              {t('push.testDialogDesc', {
+                target: testToken?.user?.uniqName
+                  ? t('push.testDialogTargetUser', { name: testToken.user.uniqName })
+                  : t('push.testDialogTargetDevice'),
+                platform: t(`push.platform.${testToken?.platform ?? 'ANDROID'}`),
+              })}
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-sm">标题</label>
+              <label className="text-sm">{t('push.testTitleLabel')}</label>
               <Input value={title} onChange={(e) => setTitle((e.target as HTMLInputElement).value)} />
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-sm">正文（可选）</label>
+              <label className="text-sm">{t('push.testBodyLabel')}</label>
               <Input
                 value={body}
                 onChange={(e) => setBody((e.target as HTMLInputElement).value)}
@@ -213,10 +224,10 @@ export function PushPage() {
             </div>
           </div>
           <DialogFooter>
-            <DialogClose render={<Button variant="outline" />}>取消</DialogClose>
+            <DialogClose render={<Button variant="outline" />}>{t('common.cancel')}</DialogClose>
             <Button onClick={onSubmitTest} disabled={sendTest.isPending || !title.trim()}>
               {sendTest.isPending && <Loader2 className="size-3.5 animate-spin" />}
-              发送
+              {t('push.send')}
             </Button>
           </DialogFooter>
         </DialogContent>

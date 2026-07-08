@@ -11,7 +11,7 @@ export function useAdminUsers(q: UsersQuery) {
   return useQuery({
     queryKey: ['admin', 'users', q],
     queryFn: () => listUsers(q),
-    // 翻页/搜索时保留旧数据防闪烁
+    // Keep previous data during paging/search to avoid flicker.
     placeholderData: (prev) => prev,
   })
 }

@@ -4,9 +4,10 @@ import { listConnections } from '@/api/connections'
 const REFRESH_MS = 3000
 
 /**
- * 在线 SSE 连接实时观测：3s 轮询。
- * 连接是内存态、秒级变化，admin 观测页用轮询足够（无需再为 admin 开一条 SSE），
- * 且 3s 不会给后端造成压力。出错时暂停轮询，避免雪崩。
+ * Live observation of online SSE connections via 3s polling.
+ * Connections are in-memory and change by the second, so polling is sufficient for the
+ * admin view (no need to open a dedicated SSE for admin), and 3s puts no pressure on
+ * the backend. Polling is paused on error to avoid thundering-herd retries.
  */
 export function useConnections() {
   return useQuery({

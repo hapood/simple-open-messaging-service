@@ -1,7 +1,7 @@
 import { request } from '@/api/client'
 import type { SessionListResult } from '@/types/api'
 
-/** 全系统活跃会话总览（跨用户，可筛 userId/ip） */
+/** System-wide active session overview (cross-user, filterable by userId/ip). */
 export function listAllSessions(params: {
   skip?: number
   take?: number
@@ -11,7 +11,7 @@ export function listAllSessions(params: {
   return request<SessionListResult>('/admin/sessions', params)
 }
 
-/** 一键清理所有活跃会话（吊销 refresh + bump tokenVersion，强制全部用户重登） */
+/** Purge all active sessions in one shot (revokes refresh + bumps tokenVersion, forcing every user to re-login). */
 export function purgeAllSessions(): Promise<{ purgedUsers: number }> {
   return request<{ purgedUsers: number }>('/admin/sessions/purge')
 }

@@ -1,8 +1,9 @@
 import { useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAllSessions, usePurgeSessions } from '@/hooks/use-sessions'
-import { ApiError } from '@/lib/api-error'
+import { formatApiError } from '@/lib/format-error'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -27,6 +28,7 @@ import { Timestamp } from '@/components/common/timestamp'
 const PAGE_SIZE = 50
 
 export function SessionsPage() {
+  const { t } = useTranslation()
   const [ipSearch, setIpSearch] = useState('')
   const [page, setPage] = useState(0)
   const [purgeOpen, setPurgeOpen] = useState(false)
@@ -43,22 +45,22 @@ export function SessionsPage() {
   const onPurge = async () => {
     try {
       const r = await purge.mutateAsync()
-      toast.success(`已清理全部活跃会话（${r.purgedUsers} 个用户被强制重登）`)
+      toast.success(t('sessions.purged', { count: r.purgedUsers }))
       setPurgeOpen(false)
     } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : '清理失败')
+      toast.error(formatApiError(e))
     }
   }
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">会话总览</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">{t('sessions.title')}</h1>
         <div className="flex items-center gap-2">
           <div className="relative w-60">
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <Input
-              placeholder="按 IP 筛选"
+              placeholder={t('sessions.searchPlaceholder')}
               value={ipSearch}
               onChange={(e) => {
                 setIpSearch(e.target.value)
@@ -68,23 +70,21 @@ export function SessionsPage() {
             />
           </div>
           <Button variant="destructive" onClick={() => setPurgeOpen(true)} disabled={total === 0}>
-            一键清理
+            {t('sessions.purge')}
           </Button>
         </div>
       </div>
-      <p className="text-sm text-muted-foreground">
-        所有用户的活跃 refresh 会话（未吊销且未过期）。共 {total} 条。
-      </p>
+      <p className="text-sm text-muted-foreground">{t('sessions.desc', { count: total })}</p>
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>用户</TableHead>
-              <TableHead>device</TableHead>
-              <TableHead>User-Agent</TableHead>
-              <TableHead>IP</TableHead>
-              <TableHead>创建</TableHead>
-              <TableHead>过期</TableHead>
+              <TableHead>{t('sessions.col.user')}</TableHead>
+              <TableHead>{t('sessions.col.device')}</TableHead>
+              <TableHead>{t('sessions.col.ua')}</TableHead>
+              <TableHead>{t('sessions.col.ip')}</TableHead>
+              <TableHead>{t('sessions.col.created')}</TableHead>
+              <TableHead>{t('sessions.col.expires')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -101,13 +101,13 @@ export function SessionsPage() {
             ) : error ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-destructive">
-                  加载失败：{error.message}
+                  {t('common.loadFailed', { message: formatApiError(error) })}
                 </TableCell>
               </TableRow>
             ) : data?.list.length === 0 ? (
               <TableRow>
                 <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  无活跃会话
+                  {t('sessions.empty')}
                 </TableCell>
               </TableRow>
             ) : (
@@ -140,35 +140,33 @@ export function SessionsPage() {
       </div>
       <div className="flex items-center justify-end gap-2 text-sm text-muted-foreground">
         <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-          上一页
+          {t('common.previous')}
         </Button>
-        <span>
-          第 {page + 1} / {pageCount} 页
-        </span>
+        <span>{t('common.page', { page: page + 1, pages: pageCount })}</span>
         <Button
           variant="outline"
           size="sm"
           disabled={page + 1 >= pageCount}
           onClick={() => setPage((p) => p + 1)}
         >
-          下一页
+          {t('common.next')}
         </Button>
       </div>
 
       <Dialog open={purgeOpen} onOpenChange={setPurgeOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>清理所有活跃会话？</DialogTitle>
+            <DialogTitle>{t('sessions.purgeTitle')}</DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            将吊销全部 {total} 条活跃会话，所有用户被强制重登（access 立即失效）。此操作不可撤销。
+            {t('sessions.purgeBody', { count: total })}
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setPurgeOpen(false)} disabled={purge.isPending}>
-              取消
+              {t('common.cancel')}
             </Button>
             <Button variant="destructive" onClick={onPurge} disabled={purge.isPending}>
-              确认清理
+              {t('sessions.purgeConfirm')}
             </Button>
           </DialogFooter>
         </DialogContent>

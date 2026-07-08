@@ -1,0 +1,225 @@
+{
+  "common": {
+    "appName": "Admin Console",
+    "loading": "Loading…",
+    "noData": "No data",
+    "yes": "Yes",
+    "no": "No",
+    "cancel": "Cancel",
+    "search": "Search",
+    "previous": "Previous",
+    "next": "Next",
+    "page": "Page {{page}} / {{pages}}",
+    "loadFailed": "Load failed: {{message}}",
+    "operationFailed": "Operation failed"
+  },
+  "nav": {
+    "users": "User Management",
+    "sessions": "Sessions",
+    "connections": "Live Connections",
+    "adminSessions": "Admin Sessions",
+    "bans": "Ban Management",
+    "reuse": "Reuse Alerts",
+    "push": "Push Management",
+    "logout": "Log Out"
+  },
+  "language": {
+    "label": "Language",
+    "zhCN": "中文",
+    "en": "English"
+  },
+  "login": {
+    "title": "Admin Login",
+    "username": "Username",
+    "password": "Password",
+    "submit": "Log In",
+    "usernameRequired": "Please enter the username",
+    "passwordRequired": "Please enter the password",
+    "failed": "Login failed"
+  },
+  "users": {
+    "title": "User Management",
+    "searchPlaceholder": "Search uniqName",
+    "col": {
+      "id": "ID",
+      "uniqName": "uniqName",
+      "domain": "domain",
+      "foreigner": "Foreign",
+      "status": "Status",
+      "tokenVer": "tokenVer",
+      "createdAt": "Created"
+    },
+    "status": {
+      "banned": "Banned",
+      "active": "Active"
+    },
+    "action": {
+      "unban": "Unban",
+      "ban": "Ban",
+      "forceLogout": "Force Logout",
+      "viewSessions": "View Sessions",
+      "resetPassword": "Reset Password"
+    },
+    "toast": {
+      "unbanned": "Unbanned",
+      "banned": "Banned",
+      "forceLoggedOut": "Force logged out"
+    },
+    "total": "{{count}} total"
+  },
+  "bans": {
+    "title": "Ban Management",
+    "desc": "Currently active login bans (IP / account, produced by the rate-limit sliding window).",
+    "col": {
+      "type": "Type",
+      "value": "Value",
+      "until": "Expires",
+      "remaining": "Remaining"
+    },
+    "type": {
+      "ip": "IP",
+      "account": "Account"
+    },
+    "empty": "No active bans",
+    "unban": "Unban"
+  },
+  "sessions": {
+    "title": "Sessions",
+    "searchPlaceholder": "Filter by IP",
+    "desc": "Active refresh sessions of all users (not revoked and not expired). {{count}} total.",
+    "purge": "Purge All",
+    "purgeTitle": "Purge all active sessions?",
+    "purgeBody": "This will revoke all {{count}} active sessions and force every user to re-login (access tokens expire immediately). This action cannot be undone.",
+    "purgeConfirm": "Confirm Purge",
+    "purged": "Purged all active sessions ({{count}} users forced to re-login)",
+    "purgeFailed": "Purge failed",
+    "col": {
+      "user": "User",
+      "device": "device",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "Created",
+      "expires": "Expires"
+    },
+    "empty": "No active sessions"
+  },
+  "connections": {
+    "title": "Live Connections",
+    "desc": "Currently online SSE real-time downlinks (in-memory, aggregated by user). Unlike Sessions: this only shows the long-lived connections held right now, not persistent login sessions.",
+    "updatedAt": "Updated at {{time}} (auto-refresh every 3s)",
+    "totalConn": "Total Connections",
+    "onlineUsers": "Online Users",
+    "col": {
+      "user": "User",
+      "count": "Connections",
+      "since": "Connected Since",
+      "duration": "Connected For"
+    },
+    "empty": "No online connections"
+  },
+  "adminSessions": {
+    "title": "Admin Sessions",
+    "searchPlaceholder": "Filter by IP",
+    "desc": "Active refresh sessions of admins (independent AdminRefreshToken table, physically isolated from user sessions). {{count}} total. After revocation the admin's refresh fails immediately, but their access token remains valid for 15 minutes (admins have no tokenVersion).",
+    "revoke": "Revoke",
+    "revoked": "Admin session revoked (its access remains valid for up to 15m)",
+    "revokeFailed": "Revoke failed",
+    "col": {
+      "admin": "Admin",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "Created",
+      "expires": "Expires"
+    },
+    "empty": "No active admin sessions"
+  },
+  "reuse": {
+    "title": "Reuse Alerts",
+    "desc": "Refresh token reuse events (revokeReason=reuse; the family has been revoked at the root).",
+    "col": {
+      "userId": "userId",
+      "familyId": "familyId",
+      "jti": "jti",
+      "ip": "IP",
+      "ua": "User-Agent",
+      "revokedAt": "Revoked At"
+    },
+    "empty": "No reuse alerts"
+  },
+  "push": {
+    "title": "Push Management",
+    "desc": "Registered push device tokens (FCM / Web Push) + test push + transport config status.",
+    "searchPlaceholder": "Search by user / token / deviceId",
+    "transportLabel": "Transport status:",
+    "configured": "configured",
+    "notConfigured": "not configured",
+    "deviceCount": "{{count}} devices",
+    "col": {
+      "platform": "Platform",
+      "user": "User",
+      "token": "Token",
+      "lastSeen": "Last Active"
+    },
+    "test": "Test",
+    "send": "Send",
+    "empty": "No matching device tokens",
+    "range": "Items {{from}}-{{to}} of {{total}}",
+    "testDialogTitle": "Send Test Push",
+    "testDialogDesc": "Send a test notification to {{target}}'s {{platform}} (the device must be in the background to receive a system notification).",
+    "testDialogTargetUser": "user {{name}}",
+    "testDialogTargetDevice": "this device",
+    "testTitleLabel": "Title",
+    "testBodyLabel": "Body (optional)",
+    "testSent": "Test push sent",
+    "testFailed": "Send failed: {{reason}}",
+    "testFailedUnknown": "unknown reason",
+    "testDefaultTitle": "SOMS Test Push",
+    "deleted": "Deleted device token for {{name}}",
+    "platform": {
+      "ANDROID": "Android · FCM",
+      "IOS": "iOS · FCM",
+      "WEB": "Web Push"
+    }
+  },
+  "resetPassword": {
+    "title": "Reset password for {{name}}",
+    "newPassword": "New Password",
+    "hint": "6-20 chars; letters, digits and .@!#$%^&*()",
+    "invalid": "6-20 chars; letters, digits and .@!#$%^&*()",
+    "confirm": "Confirm Reset",
+    "success": "Password reset; all sessions of this user have been revoked",
+    "failed": "Reset failed"
+  },
+  "userSessions": {
+    "title": "Active sessions of {{name}}",
+    "loadFailed": "Load failed",
+    "empty": "No active sessions",
+    "col": {
+      "device": "device",
+      "ua": "User-Agent",
+      "ip": "IP",
+      "created": "Created",
+      "expires": "Expires"
+    }
+  },
+  "notFound": {
+    "code": "404",
+    "desc": "Page not found",
+    "back": "Back to User Management"
+  },
+  "errors": {
+    "unauthenticated": "Unauthenticated",
+    "parseFailed": "Response parse failed",
+    "biz": {
+      "validation": "Invalid input",
+      "notFound": "Not found",
+      "alreadyExists": "Already exists",
+      "unauthenticated": "Please sign in again",
+      "forbidden": "You don't have permission to perform this action",
+      "rateLimited": "Too many requests, please wait",
+      "refreshReuse": "Session changed, please sign in again",
+      "sessionRevoked": "Session ended, please sign in again",
+      "internal": "Something went wrong"
+    }
+  }
+}

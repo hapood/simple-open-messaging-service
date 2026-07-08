@@ -5,9 +5,9 @@ import { clearTokens, getRefreshToken, setAccessToken, setRefreshToken } from '@
 
 interface AuthContextValue {
   isAuthenticated: boolean
-  /** 登录：仅存 token + bump 状态；导航由调用方（登录页）控制 */
+  /** Login: only stores tokens + bumps state; navigation is controlled by the caller (the login page). */
   login: (username: string, password: string) => Promise<void>
-  /** 登出：调后端吊销 + 清 token + 跳 /login */
+  /** Logout: calls backend revoke + clears tokens + navigates to /login. */
   logout: () => Promise<void>
 }
 
@@ -15,8 +15,9 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
-  // access token 是内存态、不驱动重渲染（透明刷新不该触发 UI）；
-  // 用 version bump 仅在登入/登出离散事件时刷新 isAuthenticated
+  // The access token is in-memory and does not drive re-rendering (a transparent
+  // refresh must not trigger UI); a version bump refreshes isAuthenticated only on
+  // the discrete login/logout events.
   const [version, setVersion] = useState(0)
   const bump = useCallback(() => setVersion((v) => v + 1), [])
 
@@ -40,7 +41,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       login,
       logout,
     }),
-    // version 仅用于在登入/登出后触发 isAuthenticated 重算
+    // `version` only exists to recompute isAuthenticated after login/logout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [version, login, logout],
   )
@@ -51,6 +52,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 // eslint-disable-next-line react-refresh/only-export-components
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)
-  if (!ctx) throw new Error('useAuth 必须在 AuthProvider 内使用')
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider')
   return ctx
 }

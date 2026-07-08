@@ -3,9 +3,9 @@ import { AdminLayout } from '@/components/layout/admin-layout'
 import { getRefreshToken } from '@/auth/token-store'
 
 /**
- * 受保护路由：无 refresh token → 重定向 /login。
- * 有 refresh 但 access 过期/失效 → 由 apiClient 在首个请求 401 时透明 refresh；
- * refresh 也失效 → forceLogout 跳 /login。
+ * Protected route: no refresh token → redirect to /login.
+ * Refresh present but access expired/invalid → the API client transparently refreshes
+ * on the first 401; if refresh also fails → forceLogout redirects to /login.
  */
 export function ProtectedRoute() {
   const rt = getRefreshToken()

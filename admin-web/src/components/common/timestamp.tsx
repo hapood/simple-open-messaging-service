@@ -1,7 +1,7 @@
 import dayjs from 'dayjs'
 import { cn } from '@/lib/utils'
 
-/** 毫秒时间戳 number → 可读时间（后端 Date 统一序列化为 ms number，非 ISO） */
+/** Format a ms-epoch number into a readable time (backend Date fields are serialized as ms numbers, not ISO). */
 export function Timestamp({
   value,
   className,
