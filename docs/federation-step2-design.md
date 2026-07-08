@@ -500,15 +500,19 @@ No quota tables are added in Step 2 v0.1 (enforcement is deferred); the endpoint
 
 ## 8. Implementation plan (ordered, verifiable)
 
-> **Progress (working tree, 2026-07-08):** items **1–6 WIRED** — the text-federation code path is
-> complete (send → `notifyOnSend` → debounced `/new-msg-map` push → inbound drainer → `/messages` pull →
-> insert + SSE), but NOT yet exercised by e2e. **7–9 PENDING** (`get_file`, receiver media localize,
-> `ping`). **10 PARTIAL** (`withTrustedPeer` is wired; the 60 s sweep **timer is not** — §4.3). **11 PENDING**
-> (`syncForeignUserIfStale` is profile-only; no message pull-on-open, no slow poll — §4.4). **12 NOT COVERED
-> for messages** — the e2e additions are profile-sync / `PEER_PROFILE_UPDATED` fan-out tests, NOT the 8
-> Step 2 message scenarios (a–h) below; the message path is wired but unproven. **The two backstops
-> (§4.3/§4.4) are the headline open work** — without them a lost push recovers only on the next user
-> action, which is exactly the Step 1 behavior this design meant to improve.
+> **Progress (DONE, 2026-07-08):** items **1–11 ALL LIVE** and the federation e2e is **16/16 green**.
+> The full pipeline ships: `originSeq` allocation (MAX+1 in the write tx, P2002 retry on the
+> `(threadId, creator, originSeq)` race), `FederationBufferService` (`domainNewMsgMap` + debounced
+> ~500 ms flush + half-eviction at the 10 k cap), `POST/GET /new-msg-map`, `GET /messages` +
+> `serveOutboundMessages`, the inbound drainer (single-flight, progress-gated re-trigger), `GET
+> /get_file` + receiver media-localize (`saveCasFromPeer` + sha256 integrity + `MediaMessage`), `GET
+> /ping`, `withTrustedPeer` + the 60 s reconnect sweep (§4.3), and pull-on-thread-open + slow poll
+> (§4.4). Item 12 (e2e) covers the 8 Step 2 message/media scenarios (a–h) alongside the 12 Step 1 /
+> profile tests — no regressions. A lost push now self-heals via sweep + pull-on-open + slow poll.
+> Bug fixed during e2e: `drainPendingPulls` spun on a persistently failing pull (now progress-gated).
+> **Open work is the §9 deferrals** (edit/delete propagation, read receipts/presence/typing, federated
+> groups = Step 3, history backfill = Step 2.5, per-peer quotas — design ready at
+> `docs/federation-quotas.md`).
 
 1. **Schema migration** — add `Message.originSeq Int?` + `@@unique([threadId, creator, originSeq])` +
    `@@index([threadId, creator, originSeq])`. Migration `20260709000000_message_origin_seq`. Apply via
