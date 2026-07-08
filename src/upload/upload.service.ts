@@ -1,8 +1,18 @@
 import { Injectable } from '@nestjs/common';
-import { existsSync, mkdirSync, writeFile, readFile, rename, mkdir } from 'fs';
+import {
+  existsSync,
+  mkdirSync,
+  writeFile,
+  readFile,
+  rename,
+  mkdir,
+  createWriteStream,
+  unlink,
+} from 'fs';
 import { basename, dirname, join } from 'path';
 import { createHash, randomBytes } from 'crypto';
 import { promisify } from 'util';
+import { finished } from 'stream/promises';
 import sharp from 'sharp';
 import type { FastifyRequest } from 'fastify';
 import {
@@ -21,8 +31,9 @@ const writeFileAsync = promisify(writeFile);
 const readFileAsync = promisify(readFile);
 const renameAsync = promisify(rename);
 const mkdirAsync = promisify(mkdir);
+const unlinkAsync = promisify(unlink);
 
-/** 允许的图片 mimetype → 扩展名（白名单 + 落盘扩展名映射）。 */
+/** Allowed image mimetype → on-disk extension (whitelist + landing-ext mapping). */
 const IMG_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
@@ -31,8 +42,9 @@ const IMG_EXT: Record<string, string> = {
 };
 
 /**
- * consumeImage 的返回：成功带 buffer/宽高；失败按原因区分（控制器据 reason 映射业务码）。
- * 体积上限由 main.ts 的 @fastify/multipart limits.fileSize 兜底 → reason 'too-large'。
+ * consumeImage return: success carries buffer + width/height; failure is discriminated by reason
+ * (the controller maps reason → business code). The size cap is backed by main.ts's
+ * @fastify/multipart limits.fileSize → reason 'too-large'.
  */
 export type ConsumedImage =
   | {
@@ -45,8 +57,9 @@ export type ConsumedImage =
   | { kind: 'rejected'; reason: 'no-file' | 'wrong-type' | 'too-large' };
 
 /**
- * consumeFile 的返回：成功带 buffer/原始文件名；失败按原因区分（控制器据 reason 映射业务码）。
- * 体积上限 MAX_FILE_BYTES 由 main.ts 的 multipart limits.fileSize（已上调）兜底 + 此处二次校验。
+ * consumeFile return: success carries buffer + original filename; failure is discriminated by
+ * reason (the controller maps reason → business code). The size cap MAX_FILE_BYTES is backed by
+ * main.ts's multipart limits.fileSize (raised) + a second check here.
  */
 export type ConsumedFile =
   | {
@@ -79,21 +92,25 @@ export type ConsumedMedia =
     };
 
 /**
- * 图片上传服务。
+ * Image / media upload service.
  *
- * 普通图片（聊天相册）：零图片库依赖——@fastify/multipart 读到 buffer + magic number 校验，
- * 宽高由前端 createImageBitmap 读后随 FormData 带上（后端不解析图片内容）。
+ * Chat images (albums): zero image-library dependency — @fastify/multipart reads into a buffer +
+ * magic-number check; width/height are read client-side via createImageBitmap and sent with the
+ * FormData (the backend never parses the image content).
  *
- * 头像管线（saveAvatars）：引入 sharp 做服务端重写——decode→按 EXIF 正向→cover 裁剪→
- * 多档 webp 重编码。重写天然剥离 EXIF/恶意 chunk（防隐私泄露与 polyglot 载荷），
- * decode 非图片即抛错，像素上限防解压炸弹；多档供前端按位置取用省带宽。
+ * Avatar pipeline (saveAvatars): sharp does a server-side rewrite — decode → EXIF-orient → cover
+ * crop → multi-size webp re-encode. The rewrite naturally strips EXIF/malicious chunks (privacy +
+ * polyglot-payload defense); a non-image decode throws; a pixel cap guards against decompression
+ * bombs; the multi-size set lets the client pick by position to save bandwidth.
  *
- * 设计：
- * - @fastify/multipart 内存模式：文件进 buffer，先做 magic number 校验再落盘。
- * - 真实性校验两道：consumeImage 看 mimetype（粗筛，buffer 前即拒）+ isImage 读文件头 magic number（防伪造）。
+ * Design:
+ * - @fastify/multipart in-memory mode: file → buffer, magic-number-checked before landing on disk.
+ * - Two authenticity checks: consumeImage checks the mimetype (coarse filter, rejects before the
+ *   buffer is materialized) + isImage reads the real file-header magic bytes (anti-forgery).
  *
- * 存储目录 process.cwd()/uploads，与 main.ts 的 @fastify/static prefix:'/uploads/' 对齐。
- * 生产换对象存储（S3/OSS/MinIO）时，仅改 save()/saveAvatars() 的写入目标 + url 生成，接口契约不变。
+ * Storage dir is process.cwd()/uploads, aligned with main.ts's @fastify/static prefix '/uploads/'.
+ * Switching to object storage (S3/OSS/MinIO) in production means changing only save()/saveAvatars()'s
+ * write target + url generation — the interface contract stays the same.
  */
 @Injectable()
 export class UploadService {
@@ -101,18 +118,12 @@ export class UploadService {
 
   constructor(private readonly mediaAsset: MediaAssetService) {}
 
-  /** 头像像素上限（防解压炸弹：小文件解压成超大画布吃内存）。 */
+  /** Avatar pixel cap (decompression-bomb defense: a tiny file expanding into a huge canvas). */
   static readonly MAX_AVATAR_PIXELS = 4000 * 4000;
   /** Image size cap (avatars + chat images). Enforced in consumeImage so the global multipart
    * ceiling can be raised for generic files (MAX_FILE_BYTES) without also raising it for images. */
   static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
-  /**
-   * 从 multipart/form-data 请求里消费单张图片：单遍遍历 parts，粗筛 mimetype 后 toBuffer。
-   * 替代 Express 时代的 multer FileInterceptor（Fastify 适配器下不可用）。
-   * 10MB 上限由 main.ts 注册插件时的 limits.fileSize 兜底——超出时 toBuffer 抛
-   * RequestFileTooLargeError，此处归一为 rejected('too-large')，避免被全局过滤器当 500。
-   */
   /**
    * Consume a single image from multipart/form-data: whitelist the image mimetype, cap at
    * MAX_IMAGE_BYTES, and surface the frontend-supplied w/h fields. Magic-number and sharp
@@ -296,8 +307,9 @@ export class UploadService {
   }
 
   /**
-   * magic number 二次校验：读真实文件头字节判定是否为声明的图片格式。
-   * consumeImage 的粗筛只看客户端声明的 mimetype（可伪造），此处不可绕过。
+   * Second-pass magic-number check: read the real file-header bytes to confirm the declared image
+   * format. consumeImage's coarse filter only looks at the client-declared mimetype (forgeable); this
+   * check cannot be bypassed.
    */
   isImage(mimetype: string, buf: Buffer): boolean {
     if (!buf || buf.length < 12) return false;
@@ -342,18 +354,28 @@ export class UploadService {
    * dangling reference to a missing file. `ext` is the trusted on-disk extension (the caller decides
    * the source: magic-byte-derived for images/video/audio, sanitized client-name-derived for files).
    */
-  private async saveCas(
+  /** The content-addressed shard path (relative + absolute) for a digest + ext:
+   *  uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>. Shared by saveCas (buffer) and
+   *  saveCasFromStream (streaming) so both land byte-identical files at the identical location. */
+  private casShardPath(
+    digest: string,
     ext: string,
-    buf: Buffer,
-  ): Promise<{ url: string; digest: string; ext: string; size: number }> {
-    const digest = createHash('sha256').update(buf).digest('hex');
+  ): { abs: string; rel: string } {
     const rel = join(
       'shards',
       digest.slice(0, 2),
       digest.slice(2, 4),
       `${digest}.${ext}`,
     );
-    const abs = join(this.uploadDir, rel);
+    return { abs: join(this.uploadDir, rel), rel };
+  }
+
+  private async saveCas(
+    ext: string,
+    buf: Buffer,
+  ): Promise<{ url: string; digest: string; ext: string; size: number }> {
+    const digest = createHash('sha256').update(buf).digest('hex');
+    const { abs, rel } = this.casShardPath(digest, ext);
     await mkdirAsync(dirname(abs), { recursive: true });
     // Atomic publish: write a unique tmp path, then rename (same filesystem → atomic). Identical
     // concurrent uploads overwrite each other harmlessly (byte-identical content).
@@ -380,10 +402,12 @@ export class UploadService {
   }
 
   /**
-   * 通用文件落盘：on-disk 文件名用 `<ts>-<randomHex>.<ext>`（ext 由 parseFileExt 从客户端原始
-   * 文件名 sanitize 出，仅 [a-z0-9]{1,16}；无安全扩展名时省略扩展名）。防碰撞/可预测/路径穿越；
-   * 返回 { url, name, size, mimeType } 作为 FILE 消息内容。展示名 name 取客户端原始文件名的安全化
-   * 结果（剥目录 + 控制符 + 长度上限）。url 形态与 save() 一致，供 parseFileContent 校验。
+   * Generic file save: the on-disk filename is `<ts>-<randomHex>.<ext>` (ext is sanitized from the
+   * client's original filename by parseFileExt, [a-z0-9]{1,16} only; omitted when there is no safe
+   * extension). Collision-safe / unpredictable / traversal-proof; returns { url, name, size, mimeType }
+   * as the FILE message content. The display `name` is the client's original filename, sanitized
+   * (strip directory + control chars + length cap). The url shape matches save() so parseFileContent
+   * validates it.
    */
   async saveFile(
     mimetype: string,
@@ -448,9 +472,71 @@ export class UploadService {
   }
 
   /**
-   * 安全化展示文件名：basename 剥离客户端传入的目录分量（防穿越）；剔除控制符与 Windows/Unix
-   * 非法字符；trim + 长度上限。空结果回退为 `<ext>` 或 `file`。仅当存在可信扩展名时才回补扩展名——
-   * 无（安全）扩展名的文件按原样存储/展示（服务侧以 application/octet-stream + attachment 下发）。
+   * Streaming CAS ingest (Step 2 §4.5): land a media asset fetched from a federated peer in resumable
+   * chunks WITHOUT buffering the whole file in memory. Consumes an ordered async iterable of byte
+   * chunks (the federation transport yields one fully-accumulated Range unit at a time, so the write is
+   * atomic per chunk — a dropped chunk is discarded upstream and re-fetched, never re-written here),
+   * writes them to a tmp file while incrementally hashing, then on completion verifies the digest ===
+   * the peer-advertised `expectedDigest` (the corruption/tamper/truncation backstop), atomically
+   * renames into the shard path, and bumps the MediaAsset refcount. Same CAS pipeline as
+   * saveCasFromPeer — byte-identical on disk to a local upload, served same-origin. Idempotent: a
+   * re-fetch of the same digest overwrites the byte-identical file + re-bumps the ref.
+   *
+   * Failure handling: a digest mismatch OR any stream error deletes the tmp file and throws —
+   * localizeMedia catches that and leaves the message inert for a later retry. The tmp file is ALWAYS
+   * cleaned up (try/finally), whether we renamed it away or not (no orphan leak on any path).
+   */
+  async saveCasFromStream(
+    ext: string,
+    chunks: AsyncIterable<Buffer>,
+    expectedDigest: string,
+  ): Promise<{ url: string; digest: string; size: number }> {
+    const { abs, rel } = this.casShardPath(expectedDigest, ext);
+    await mkdirAsync(dirname(abs), { recursive: true });
+    const tmp = `${abs}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    const hash = createHash('sha256');
+    let size = 0;
+    let renamed = false;
+    const writeStream = createWriteStream(tmp);
+    try {
+      for await (const buf of chunks) {
+        hash.update(buf);
+        size += buf.length;
+        // Respect backpressure: if the write buffer is full, wait for 'drain' before the next write
+        // so a fast producer (the network) can't outrun a slow disk and balloon memory.
+        if (!writeStream.write(buf)) {
+          await new Promise<void>((resolve, reject) => {
+            writeStream.once('drain', resolve);
+            writeStream.once('error', reject);
+          });
+        }
+      }
+      writeStream.end();
+      await finished(writeStream);
+      const digest = hash.digest('hex');
+      if (digest !== expectedDigest) {
+        // Corrupt/tampered/truncated peer bytes — drop the file, leave no asset. The caller leaves the
+        // message inert for a retry rather than rendering garbage.
+        throw new Error(
+          `CAS digest mismatch (expected ${expectedDigest}, got ${digest}) — corrupt/tampered/truncated peer bytes`,
+        );
+      }
+      await renameAsync(tmp, abs);
+      renamed = true;
+      await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+      return { url: `/uploads/${rel}`, digest, size };
+    } finally {
+      writeStream.destroy();
+      if (!renamed) await unlinkAsync(tmp).catch(() => {});
+    }
+  }
+
+  /**
+   * Sanitize a display filename: basename strips any directory component the client passed
+   * (anti-traversal); drop control chars + Windows/Unix illegal chars; trim + length cap. An empty
+   * result falls back to `<ext>` or `file`. The extension is re-appended only when a trusted one
+   * exists — files with no (safe) extension are stored/served as-is (application/octet-stream +
+   * attachment on the serving side).
    */
   private sanitizeName(raw: string, ext: string): string {
     let base = basename(raw ?? 'file');
@@ -515,9 +601,15 @@ export class UploadService {
   ): Promise<{ b64: string; w: number; h: number } | null> {
     if (!url?.startsWith('/uploads/')) return null;
     try {
-      const buf = await readFileAsync(join(this.uploadDir, url.slice('/uploads/'.length)));
+      const buf = await readFileAsync(
+        join(this.uploadDir, url.slice('/uploads/'.length)),
+      );
       const meta = await sharp(buf).metadata();
-      return { b64: buf.toString('base64'), w: meta.width ?? 0, h: meta.height ?? 0 };
+      return {
+        b64: buf.toString('base64'),
+        w: meta.width ?? 0,
+        h: meta.height ?? 0,
+      };
     } catch {
       // Missing/corrupt avatar file (operational edge case — disk wiped, manual deletion, etc.).
       // Degrade to "no avatar" on the wire rather than 500-ing the whole S2S profile response. The

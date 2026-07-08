@@ -148,7 +148,8 @@ export class FederationService {
     updatedAt: Date;
   }> {
     const u = await this.prisma.user.findUnique({ where: { id: userId } });
-    if (!u || u.isForeigner) throw new Error(`user ${userId} is not a local user`);
+    if (!u || u.isForeigner)
+      throw new Error(`user ${userId} is not a local user`);
     return u;
   }
 
@@ -160,7 +161,9 @@ export class FederationService {
     bio: string;
     updatedAt: Date;
   }): Promise<S2SProfile> {
-    const avatar = u.avatar ? await this.upload.readAvatarAsWire(u.avatar) : null;
+    const avatar = u.avatar
+      ? await this.upload.readAvatarAsWire(u.avatar)
+      : null;
     return {
       uniqName: u.uniqName,
       domain: this.config.domain,
@@ -175,7 +178,9 @@ export class FederationService {
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: address.username, domain: 'local' } },
+      where: {
+        uniqName_domain: { uniqName: address.username, domain: 'local' },
+      },
     });
     if (!u || u.isForeigner) return null;
     return this.toS2SProfile(u);
@@ -184,10 +189,14 @@ export class FederationService {
   /** Lightweight revision probe (GET /api/v1/s2s/users/:username/revision): just the profile revision,
    *  no avatar transfer. Receivers compare against the stub's remoteUpdatedAt to decide whether to
    *  re-pull the full profile. Null if not local / not found. */
-  async getLocalUserRevision(address: S2SAddress): Promise<{ updatedAt: number } | null> {
+  async getLocalUserRevision(
+    address: S2SAddress,
+  ): Promise<{ updatedAt: number } | null> {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: address.username, domain: 'local' } },
+      where: {
+        uniqName_domain: { uniqName: address.username, domain: 'local' },
+      },
       select: { updatedAt: true, isForeigner: true },
     });
     if (!u || u.isForeigner) return null;
@@ -221,7 +230,10 @@ export class FederationService {
    * profile now. Throws on peer failure so the controller surfaces FEDERATION_DELIVERY_FAILED (the
    * subsequent send would fail against the same peer anyway).
    */
-  async ensureForeignUserLocalized(userId: number, address: S2SAddress): Promise<void> {
+  async ensureForeignUserLocalized(
+    userId: number,
+    address: S2SAddress,
+  ): Promise<void> {
     const stub = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { remoteUpdatedAt: true },
@@ -234,7 +246,11 @@ export class FederationService {
   /** Sign + synchronously POST an arbitrary JSON body to a peer S2S path (`${base}${path}`). The single
    *  signed-POST entry for every outbound S2S op — friend-request / friend-approve (Step 1) AND the
    *  new-msg-map push (Step 2). Same liveness/demote wiring as getSigned. */
-  private async postSigned(path: string, body: string, peerDomain: string): Promise<void> {
+  private async postSigned(
+    path: string,
+    body: string,
+    peerDomain: string,
+  ): Promise<void> {
     const base = await this.discovery.resolveBase(peerDomain);
     await this.sendSignedPost(new URL(`${base}${path}`), body, peerDomain);
   }
@@ -245,7 +261,11 @@ export class FederationService {
    * `markDemoted` on network failure or non-success status (self-heal on next contact). Throws on any
    * non-success. Extracted so the friend-op POSTs and the Step 2 path POSTs share one transport.
    */
-  private async sendSignedPost(url: URL, body: string, peerDomain: string): Promise<void> {
+  private async sendSignedPost(
+    url: URL,
+    body: string,
+    peerDomain: string,
+  ): Promise<void> {
     const headers = this.signature.signOutbound({
       method: 'POST',
       path: url.pathname,
@@ -261,7 +281,10 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(peerDomain, `POST network/timeout: ${(e as Error).message}`);
+      await this.markDemoted(
+        peerDomain,
+        `POST network/timeout: ${(e as Error).message}`,
+      );
       throw new Error(
         `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
@@ -292,14 +315,19 @@ export class FederationService {
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(peerDomain, `GET ${path} network/timeout: ${(e as Error).message}`);
+      await this.markDemoted(
+        peerDomain,
+        `GET ${path} network/timeout: ${(e as Error).message}`,
+      );
       throw new Error(
         `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
     if (!res.ok) {
       await this.markDemoted(peerDomain, `GET ${path} HTTP ${res.status}`);
-      throw new Error(`S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`);
+      throw new Error(
+        `S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`,
+      );
     }
     await this.markContactSuccess(peerDomain);
     return (await res.json()) as T;
@@ -320,7 +348,9 @@ export class FederationService {
    * The reverse direction (their user searches ours) is covered by our inbound /init endpoint auto-accepting them.
    */
   async ensurePeerTrusted(domain: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    const existing = await this.prisma.federatedPeer.findUnique({
+      where: { domain },
+    });
     if (existing?.trustLevel === 'trusted') return; // mutual trust already established
     if (existing?.trustLevel === 'blocked') {
       // Admin intent — refuse to (re-)handshake. Surfaced as FEDERATION_PEER_BLOCKED (distinct from a
@@ -352,7 +382,9 @@ export class FederationService {
    *  and surfaces as an error there, not here. */
   async isPeerTrusted(domain: string): Promise<boolean> {
     if (domain === this.config.domain) return true;
-    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    const existing = await this.prisma.federatedPeer.findUnique({
+      where: { domain },
+    });
     return existing?.trustLevel === 'trusted';
   }
 
@@ -381,8 +413,13 @@ export class FederationService {
    *  - `blocked`         → NO-OP (do not silently re-trust an admin-blocked peer).
    *  - pending | demoted → promote to `trusted`, reset trustedAt/lastSuccessAt, clear demote fields, log `trusted`.
    *  - already `trusted` → refresh lastSuccessAt only (idempotent re-init; no event spam). */
-  async markTrusted(domain: string, opts?: { addedBy?: string }): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+  async markTrusted(
+    domain: string,
+    opts?: { addedBy?: string },
+  ): Promise<void> {
+    const existing = await this.prisma.federatedPeer.findUnique({
+      where: { domain },
+    });
     const now = new Date();
     if (!existing) {
       await this.prisma.federatedPeer.create({
@@ -402,7 +439,10 @@ export class FederationService {
     if (existing.trustLevel === 'blocked') return; // respect admin intent
     if (existing.trustLevel === 'trusted') {
       // Idempotent re-init: advance liveness, no transition, no event.
-      await this.prisma.federatedPeer.update({ where: { domain }, data: { lastSuccessAt: now } });
+      await this.prisma.federatedPeer.update({
+        where: { domain },
+        data: { lastSuccessAt: now },
+      });
       return;
     }
     // pending | demoted → (re-)establish trust.
@@ -430,13 +470,24 @@ export class FederationService {
   async markContactSuccess(domain: string): Promise<void> {
     const now = Date.now();
     const last = this.lastSuccessSentAt.get(domain);
-    if (last !== undefined && now - last < FederationService.LAST_SUCCESS_WINDOW_MS) return;
+    if (
+      last !== undefined &&
+      now - last < FederationService.LAST_SUCCESS_WINDOW_MS
+    )
+      return;
     this.lastSuccessSentAt.set(domain, now);
     try {
       await this.prisma.federatedPeer.updateMany({
         where: {
           domain,
-          OR: [{ lastSuccessAt: null }, { lastSuccessAt: { lt: new Date(now - FederationService.LAST_SUCCESS_WINDOW_MS) } }],
+          OR: [
+            { lastSuccessAt: null },
+            {
+              lastSuccessAt: {
+                lt: new Date(now - FederationService.LAST_SUCCESS_WINDOW_MS),
+              },
+            },
+          ],
         },
         data: { lastSuccessAt: new Date(now) },
       });
@@ -452,14 +503,19 @@ export class FederationService {
    *  re-fetches them). `blocked` is admin intent → no-op. Self-healing: a demoted peer re-runs the init
    *  handshake on the next resolve (ensurePeerTrusted sees non-trusted). */
   async markDemoted(domain: string, reason: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    const existing = await this.prisma.federatedPeer.findUnique({
+      where: { domain },
+    });
     if (!existing || existing.trustLevel === 'blocked') return;
     const now = new Date();
-    const transitioned = existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
+    const transitioned =
+      existing.trustLevel === 'trusted' || existing.trustLevel === 'pending';
     await this.prisma.federatedPeer.update({
       where: { domain },
       data: {
-        ...(transitioned ? { trustLevel: 'demoted', demotionCount: { increment: 1 } } : {}),
+        ...(transitioned
+          ? { trustLevel: 'demoted', demotionCount: { increment: 1 } }
+          : {}),
         demotedAt: now,
         demoteReason: reason.slice(0, 255),
       },
@@ -473,7 +529,9 @@ export class FederationService {
   /** Admin block: forbid federation with a peer (ensurePeerTrusted refuses to re-handshake; the inbound
    *  guard rejects it since trustLevel !== 'trusted'). Idempotent. Logs a `blocked` event. */
   async markBlocked(domain: string, note?: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    const existing = await this.prisma.federatedPeer.findUnique({
+      where: { domain },
+    });
     if (existing?.trustLevel === 'blocked') return;
     const now = new Date();
     await this.prisma.federatedPeer.upsert({
@@ -487,7 +545,9 @@ export class FederationService {
   /** Admin unblock: move the peer to `pending` so the next contact re-runs the init handshake to
    *  re-establish trust (it is NOT auto-re-trusted). Logs an `unblocked` event. No-op if not blocked. */
   async markUnblocked(domain: string): Promise<void> {
-    const existing = await this.prisma.federatedPeer.findUnique({ where: { domain } });
+    const existing = await this.prisma.federatedPeer.findUnique({
+      where: { domain },
+    });
     if (!existing || existing.trustLevel !== 'blocked') return;
     await this.prisma.federatedPeer.update({
       where: { domain },
@@ -498,7 +558,11 @@ export class FederationService {
 
   /** Append a lifecycle transition to the audit log. Best-effort: the peer-state mutation is the
    *  primary effect; a log failure must not break the caller's flow. */
-  private async logEvent(domain: string, type: string, reason?: string): Promise<void> {
+  private async logEvent(
+    domain: string,
+    type: string,
+    reason?: string,
+  ): Promise<void> {
     try {
       await this.prisma.federatedPeerEvent.create({
         data: { domain, type, reason: reason ? reason.slice(0, 255) : null },
@@ -509,9 +573,16 @@ export class FederationService {
   }
 
   /** Admin list: peers with their lifecycle columns, filtered by free-text domain + trust state. */
-  async listPeers(opts: { skip: number; take: number; search?: string; status?: string }) {
+  async listPeers(opts: {
+    skip: number;
+    take: number;
+    search?: string;
+    status?: string;
+  }) {
     const where = {
-      ...(opts.search ? { domain: { contains: opts.search, mode: 'insensitive' as const } } : {}),
+      ...(opts.search
+        ? { domain: { contains: opts.search, mode: 'insensitive' as const } }
+        : {}),
       ...(opts.status ? { trustLevel: opts.status } : {}),
     };
     const [list, total] = await Promise.all([
@@ -570,7 +641,11 @@ export class FederationService {
 
   /** POST a friend-request from a local user to a peer user address, carrying the sender's profile so
    *  the receiver creates the foreign stub localized. */
-  async sendFriendRequest(fromLocalUserId: number, to: S2SAddress, message = ''): Promise<void> {
+  async sendFriendRequest(
+    fromLocalUserId: number,
+    to: S2SAddress,
+    message = '',
+  ): Promise<void> {
     const from = await this.requireLocalUser(fromLocalUserId);
     const profile = await this.toS2SProfile(from);
     const payload: S2SFriendRequest = {
@@ -582,7 +657,11 @@ export class FederationService {
       message: (message ?? '').slice(0, 255),
       profile,
     };
-    await this.postSigned('/api/v1/s2s/friend-request', JSON.stringify(payload), to.domain);
+    await this.postSigned(
+      '/api/v1/s2s/friend-request',
+      JSON.stringify(payload),
+      to.domain,
+    );
   }
 
   /** POST a friend-approve from a local user (the approver) to a peer user address (the requester). Pure
@@ -590,8 +669,12 @@ export class FederationService {
    *  stub before sending the request, and any later profile change is picked up lazily by the chat-open
    *  /revision probe (syncForeignUserIfStale). Contrast friend-request, which MUST carry the sender's
    *  profile so the target can create the stub from scratch + render the request card. */
-  async sendFriendApprove(localApproverId: number, to: S2SAddress): Promise<void> {
-    const fromUniqName = (await this.requireLocalUser(localApproverId)).uniqName;
+  async sendFriendApprove(
+    localApproverId: number,
+    to: S2SAddress,
+  ): Promise<void> {
+    const fromUniqName = (await this.requireLocalUser(localApproverId))
+      .uniqName;
     const payload: S2SPayload = {
       id: ulid(),
       origin: this.config.domain,
@@ -599,7 +682,11 @@ export class FederationService {
       to: [{ username: to.username, domain: to.domain }],
       ts: Date.now(),
     };
-    await this.postSigned('/api/v1/s2s/friend-approve', JSON.stringify(payload), to.domain);
+    await this.postSigned(
+      '/api/v1/s2s/friend-approve',
+      JSON.stringify(payload),
+      to.domain,
+    );
   }
 
   // ─── Step 2: message delivery (coalesced hint map + active pull) ──────────────
@@ -610,7 +697,10 @@ export class FederationService {
    * / getSigned) already calls markDemoted on failure → self-heal on the next reconnect-sweep tick.
    * Throws FEDERATION_PEER_BLOCKED if the peer is admin-blocked. See docs/federation-step2-design.md §5.
    */
-  private async withTrustedPeer<T>(domain: string, fn: () => Promise<T>): Promise<T> {
+  private async withTrustedPeer<T>(
+    domain: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
     await this.ensurePeerTrusted(domain);
     return fn();
   }
@@ -644,7 +734,10 @@ export class FederationService {
    *  (reachability + mutual-key-validity) before the heavier re-handshake. Raw getSigned (NOT
    *  withTrustedPeer): a demoted peer is pinged directly; on failure it stays demoted for the next tick. */
   async pingPeer(domain: string): Promise<void> {
-    await this.getSigned<{ domain: string; ts: number }>('/api/v1/s2s/ping', domain);
+    await this.getSigned<{ domain: string; ts: number }>(
+      '/api/v1/s2s/ping',
+      domain,
+    );
   }
 
   /** Outbound signed GET of the peer's /new-msg-map (the one-directional fallback, §4.3) — the reconnect
@@ -657,7 +750,10 @@ export class FederationService {
     cursor: number | null;
     hasMore: boolean;
   }> {
-    return this.getSigned(`/api/v1/s2s/new-msg-map?take=1000&cursor=${cursor}`, domain);
+    return this.getSigned(
+      `/api/v1/s2s/new-msg-map?take=1000&cursor=${cursor}`,
+      domain,
+    );
   }
 
   /** Domains needing recovery (pending | demoted) — the reconnect sweep's work list. */
@@ -686,7 +782,10 @@ export class FederationService {
    * opening); one cheap GET when already current. `latestSeq=MAX` forces a full catch-up attempt —
    * pullOneConversation returns once the peer serves everything > the old cursor.
    */
-  async syncMessagesWithPeerByStubId(stubUserId: number, localUserId: number): Promise<void> {
+  async syncMessagesWithPeerByStubId(
+    stubUserId: number,
+    localUserId: number,
+  ): Promise<void> {
     const [stub, local] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: stubUserId },
@@ -698,7 +797,12 @@ export class FederationService {
       }),
     ]);
     if (!stub || !stub.isForeigner || !local || local.isForeigner) return;
-    await this.pullOneConversation(stub.domain, stub.uniqName, local.uniqName, Number.MAX_SAFE_INTEGER);
+    await this.pullOneConversation(
+      stub.domain,
+      stub.uniqName,
+      local.uniqName,
+      Number.MAX_SAFE_INTEGER,
+    );
   }
 
   /**
@@ -766,19 +870,37 @@ export class FederationService {
       select: { id: true },
     });
     if (!inThread) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'digest not in thread', HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'digest not in thread',
+        HttpStatus.NOT_FOUND,
+      );
     }
     // Resolve uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
-    const shardDir = join(process.cwd(), 'uploads', 'shards', digest.slice(0, 2), digest.slice(2, 4));
+    const shardDir = join(
+      process.cwd(),
+      'uploads',
+      'shards',
+      digest.slice(0, 2),
+      digest.slice(2, 4),
+    );
     let names: string[];
     try {
       names = await readdir(shardDir);
     } catch {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable', HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'file unavailable',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const name = names.find((f) => f.startsWith(`${digest}.`));
     if (!name) {
-      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable', HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'file unavailable',
+        HttpStatus.NOT_FOUND,
+      );
     }
     const absPath = join(shardDir, name);
     const s = await stat(absPath);
@@ -818,7 +940,9 @@ export class FederationService {
     }
     // `to` is the requester's user → on OUR side it's a foreign stub on the signer's domain.
     const toStub = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: toUsername, domain: signerDomain } },
+      where: {
+        uniqName_domain: { uniqName: toUsername, domain: signerDomain },
+      },
       select: { id: true, isForeigner: true },
     });
     if (!toStub || !toStub.isForeigner) {
@@ -832,7 +956,11 @@ export class FederationService {
     if (!friendship?.threadId) {
       // Gate 2 failed: not approved friends. The 403 is also the rejection that teaches the peer about
       // a local-only unfriend (§9.4).
-      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends', HttpStatus.FORBIDDEN);
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'not friends',
+        HttpStatus.FORBIDDEN,
+      );
     }
     return { fromId, threadId: friendship.threadId };
   }
@@ -844,7 +972,10 @@ export class FederationService {
   // the message pull below. Volatile (restart → pull-on-open is the floor). Latest-seq-wins + the
   // originSeq unique index make push/pull overlap idempotent.
 
-  private readonly pendingPulls = new Map<string, Map<string, Map<string, number>>>(); // domain→from→to→latestSeq
+  private readonly pendingPulls = new Map<
+    string,
+    Map<string, Map<string, number>>
+  >(); // domain→from→to→latestSeq
   /** Single-flight guard so only one drain runs per domain at a time (a push mid-drain just updates the map). */
   private readonly drainingPulls = new Set<string>();
 
@@ -856,7 +987,11 @@ export class FederationService {
    */
   receiveNewMsgMapPush(
     signerDomain: string,
-    entries: ReadonlyArray<{ from?: unknown; to?: unknown; latestSeq?: unknown }>,
+    entries: ReadonlyArray<{
+      from?: unknown;
+      to?: unknown;
+      latestSeq?: unknown;
+    }>,
   ): void {
     let byFrom = this.pendingPulls.get(signerDomain);
     if (!byFrom) {
@@ -899,7 +1034,12 @@ export class FederationService {
         // Pull one conversation fully (loops /messages until caught up). On success drop the hint; on
         // failure leave it + stop (the sweep retries).
         const { from, to, latestSeq } = snap[0];
-        const caughtUp = await this.pullOneConversation(domain, from, to, latestSeq);
+        const caughtUp = await this.pullOneConversation(
+          domain,
+          from,
+          to,
+          latestSeq,
+        );
         if (caughtUp) {
           this.removePendingPull(domain, from, to);
           progressed = true;
@@ -912,7 +1052,8 @@ export class FederationService {
       // Re-trigger ONLY if we made progress (so a push that arrived mid-drain gets drained). Without this
       // gate a persistently-failing hint (peer down) would spin: failed → break → re-trigger → fail again.
       // A no-progress drain leaves the hint for the reconnect sweep / the next push's own drain call.
-      if (progressed && this.snapshotPendingPulls(domain).length > 0) void this.drainPendingPulls(domain);
+      if (progressed && this.snapshotPendingPulls(domain).length > 0)
+        void this.drainPendingPulls(domain);
     }
   }
 
@@ -930,7 +1071,10 @@ export class FederationService {
       const creatorId = await this.ensureForeignUser(fromUsername, domain);
       const toLocalUserId = await this.findLocalUserId(toLocalUsername);
       if (toLocalUserId === null) return true; // local user gone → drop the hint
-      const friendship = await this.findApprovedFriendship(creatorId, toLocalUserId);
+      const friendship = await this.findApprovedFriendship(
+        creatorId,
+        toLocalUserId,
+      );
       if (!friendship?.threadId) return true; // not friends (lazy-unfriend §9.4) → drop the hint
       const threadId = friendship.threadId;
       const cur = await this.prisma.message.aggregate({
@@ -957,12 +1101,22 @@ export class FederationService {
           ),
         );
         for (const m of res.messages) {
-          const created = await this.storePulledMessage(threadId, creatorId, toLocalUserId, m);
+          const created = await this.storePulledMessage(
+            threadId,
+            creatorId,
+            toLocalUserId,
+            m,
+          );
           if (created && this.isMediaContentType(created.contentType)) {
             // Best-effort media localize: fetch each referenced digest via /get_file, store in local
             // CAS so it serves same-origin. A per-file failure leaves the message (cross-origin URL is
             // inert) for a later retry — never blocks the text pull.
-            await this.localizeMedia(created, domain, fromUsername, toLocalUsername);
+            await this.localizeMedia(
+              created,
+              domain,
+              fromUsername,
+              toLocalUsername,
+            );
           }
         }
         if (res.messages.length > 0) {
@@ -1000,7 +1154,10 @@ export class FederationService {
         },
       })
       .catch((e: unknown) => {
-        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === 'P2002'
+        ) {
           return null; // already pulled (push/pull race) — idempotent skip
         }
         throw e;
@@ -1010,15 +1167,24 @@ export class FederationService {
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
     // than what's cached (a message the local user sent after this one must not be overwritten).
     await this.prisma.messageThread.updateMany({
-      where: { id: threadId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: ts } }] },
+      where: {
+        id: threadId,
+        OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: ts } }],
+      },
       data: {
         lastMessageId: created.id,
-        lastMessagePreview: derivePreview(m.contentType as ContentType, m.content),
+        lastMessagePreview: derivePreview(
+          m.contentType as ContentType,
+          m.content,
+        ),
         lastMessageSenderId: creatorId,
         lastMessageAt: ts,
       },
     });
-    this.sse.onNewMessage(toLocalUserId, serializeBody({ threadId, ...created }));
+    this.sse.onNewMessage(
+      toLocalUserId,
+      serializeBody({ threadId, ...created }),
+    );
     return created;
   }
 
@@ -1056,14 +1222,20 @@ export class FederationService {
           select: { refs: true },
         });
         if (!(have && have.refs > 0)) {
-          const buf = await this.getSignedBinary(
-            `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromUsername)}&to=${encodeURIComponent(toLocalUsername)}`,
-            peerDomain,
+          // Stream the asset from the peer in resumable Range chunks → local CAS (no whole-file
+          // buffer, no whole-transfer timeout). saveCasFromStream verifies the digest === advertised
+          // and throws on mismatch (corrupt/tampered/truncated) — caught below, leaving the message
+          // inert for a later retry.
+          await this.upload.saveCasFromStream(
+            ext,
+            this.fetchMediaChunks(
+              peerDomain,
+              digest,
+              fromUsername,
+              toLocalUsername,
+            ),
+            digest,
           );
-          const saved = await this.upload.saveCasFromPeer(ext, buf);
-          // Integrity: the re-hashed digest MUST match the advertised one — else the peer sent
-          // corrupt/tampered bytes and we drop the file (no authz row, no render).
-          if (saved.digest !== digest) continue;
         }
         await this.prisma.mediaMessage.createMany({
           data: { messageId: msg.id, threadId: msg.threadId, digest },
@@ -1076,12 +1248,107 @@ export class FederationService {
     }
   }
 
-  /** Signed GET that returns the raw bytes (for /get_file media fetch). Parallel to getSigned (same
-   *  liveness/demote wiring) but reads the body as a Buffer instead of parsing JSON. v0.1 buffers the
-   *  whole file in memory (bounded by the upload size cap); streaming-to-disk is a future optimization. */
-  private async getSignedBinary(path: string, peerDomain: string): Promise<Buffer> {
+  /**
+   * Receiver-side resumable media fetch (Step 2 §4.5): yield a peer-hosted chat-media asset as ordered
+   * Buffer chunks via signed Range GETs to /get_file, for saveCasFromStream to stream to disk. Each
+   * yielded Buffer is ONE fully-accumulated Range unit (≤ mediaChunkBytes), so a body-read abort
+   * discards only that unit upstream and is re-requested from the SAME offset — the writer never sees a
+   * partial/duplicated slice, and resume is byte-exact. Offset advances by the peer's returned
+   * Content-Range (the server may clamp the tail, RFC 7233 §4.2), NOT by the requested window.
+   *
+   * Demote policy is STATUS-based (the fetch-throws-vs-body-abort proxy is unreliable at the header
+   * boundary): a fetch rejection or 401/403/5xx → peer unreachable/rejecting → markDemoted + throw. A
+   * 416 / other 4xx (non-auth) → throw WITHOUT demoting (offset wrong or file gone — not a trust
+   * failure). A body-read error AFTER a 2xx → retry the same unit, NO demote (peer alive; lost a
+   * stream). After mediaMaxChunkRetries consecutive failures → give up (throw; localizeMedia leaves it
+   * inert). markContactSuccess fires ONCE per digest (after the first 2xx headers). If the peer returns
+   * 200 (no Range support) the whole body is streamed once, single-shot — never re-requested forever.
+   */
+  private async *fetchMediaChunks(
+    peerDomain: string,
+    digest: string,
+    fromUsername: string,
+    toLocalUsername: string,
+  ): AsyncGenerator<Buffer> {
+    const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
+    const path = `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromUsername)}&to=${encodeURIComponent(toLocalUsername)}`;
     const url = new URL(`${base}${path}`);
+    let offset = 0;
+    let total: number | null = null;
+    let markedAlive = false;
+
+    while (total === null || offset < total) {
+      const reqEnd =
+        total === null
+          ? chunkBytes - 1
+          : Math.min(offset + chunkBytes - 1, total - 1);
+      let unit = await this.requestRangeUnit(url, peerDomain, offset, reqEnd);
+      if (!markedAlive) {
+        await this.markContactSuccess(peerDomain);
+        markedAlive = true;
+      }
+      if (unit.fallback200) {
+        // Peer ignored Range: stream the full body once and stop (no resume, no loop).
+        for await (const piece of this.webBody(unit.res)) yield piece;
+        return;
+      }
+      total = unit.total;
+      let unitLen = unit.end - unit.start + 1;
+
+      // Accumulate the unit body with retry-on-abort. A body-read error or a byte-count mismatch
+      // discards the partial buffer and re-requests the SAME range; NO demote (the peer already
+      // returned 2xx headers — it is alive, we just lost a stream).
+      let buf: Buffer = Buffer.alloc(0);
+      let retries = 0;
+      while (buf.length !== unitLen) {
+        try {
+          const pieces: Buffer[] = [];
+          for await (const piece of this.webBody(unit.res)) pieces.push(piece);
+          buf = pieces.length === 0 ? Buffer.alloc(0) : Buffer.concat(pieces);
+          if (buf.length !== unitLen) {
+            throw new Error(
+              `unit byte mismatch (got ${buf.length}, expected ${unitLen})`,
+            );
+          }
+        } catch (e) {
+          if (++retries > this.config.mediaMaxChunkRetries) {
+            throw new Error(
+              `media fetch retries exhausted at offset ${offset}: ${(e as Error).message}`,
+            );
+          }
+          unit = await this.requestRangeUnit(
+            url,
+            peerDomain,
+            offset,
+            Math.min(offset + chunkBytes - 1, total - 1),
+          );
+          unitLen = unit.end - unit.start + 1;
+          buf = Buffer.alloc(0);
+        }
+      }
+      yield buf;
+      offset += unitLen;
+    }
+  }
+
+  /** One signed Range GET to /get_file, with status-based classification (see fetchMediaChunks). Returns
+   *  the Response + the parsed Content-Range bounds, or `fallback200` when the peer served the whole
+   *  file as 200 (Range unsupported). Throws — with markDemoted for auth/transport failures — on
+   *  anything that isn't 200/206. Only url.pathname is signed (matching getSigned); the query travels
+   *  unsigned by v0.1 design (the 3-check authz is the gate). */
+  private async requestRangeUnit(
+    url: URL,
+    peerDomain: string,
+    start: number,
+    end: number,
+  ): Promise<{
+    res: Response;
+    start: number;
+    end: number;
+    total: number;
+    fallback200: boolean;
+  }> {
     const headers = this.signature.signOutbound({
       method: 'GET',
       path: url.pathname,
@@ -1092,21 +1359,61 @@ export class FederationService {
     try {
       res = await fetch(url, {
         method: 'GET',
-        headers: { ...headers },
-        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+        headers: { ...headers, range: `bytes=${start}-${end}` },
+        signal: AbortSignal.timeout(this.config.mediaChunkTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(peerDomain, `GET ${path} network/timeout: ${(e as Error).message}`);
+      await this.markDemoted(
+        peerDomain,
+        `GET get_file network/timeout: ${(e as Error).message}`,
+      );
       throw new Error(
-        `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
+        `S2S get_file from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
-    if (!res.ok) {
-      await this.markDemoted(peerDomain, `GET ${path} HTTP ${res.status}`);
-      throw new Error(`S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`);
+    if (res.status === 200)
+      return { res, start: 0, end: 0, total: 0, fallback200: true };
+    if (res.status === 206) {
+      const cr = res.headers.get('content-range') ?? '';
+      const m = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(cr);
+      if (!m) {
+        await this.markDemoted(
+          peerDomain,
+          `GET get_file 206 unparseable Content-Range: ${cr}`,
+        );
+        throw new Error(
+          `S2S get_file 206 without parseable Content-Range: ${cr}`,
+        );
+      }
+      return {
+        res,
+        start: Number(m[1]),
+        end: Number(m[2]),
+        total: Number(m[3]),
+        fallback200: false,
+      };
     }
-    await this.markContactSuccess(peerDomain);
-    return Buffer.from(await res.arrayBuffer());
+    // Auth/transport failures demote (peer unreachable / rejecting our signature); other 4xx (416/400/404)
+    // fail this digest WITHOUT demoting (range/offset issue or file gone — not a trust failure).
+    if (res.status === 401 || res.status === 403 || res.status >= 500) {
+      await this.markDemoted(peerDomain, `GET get_file HTTP ${res.status}`);
+      throw new Error(
+        `S2S get_file from ${peerDomain} rejected: HTTP ${res.status}`,
+      );
+    }
+    throw new Error(
+      `S2S get_file from ${peerDomain} HTTP ${res.status} (no demote)`,
+    );
+  }
+
+  /** Iterate a fetch Response web body as Buffer chunks. Node's global ReadableStream (undici) is
+   *  async-iterable at runtime; the cast bridges the TS lib's ReadableStream (not declared
+   *  AsyncIterable) to the for-await syntax. */
+  private async *webBody(res: Response): AsyncGenerator<Buffer> {
+    if (!res.body) return;
+    for await (const piece of res.body as unknown as AsyncIterable<Uint8Array>) {
+      yield Buffer.from(piece);
+    }
   }
 
   /** Snapshot a domain's pending pulls as a flat list (for the drain loop). */
@@ -1147,7 +1454,9 @@ export class FederationService {
   }
 
   /** Fetch only the peer user's profile revision (signed GET .../revision). Cheap staleness probe. */
-  async fetchRemoteRevision(address: S2SAddress): Promise<{ updatedAt: number }> {
+  async fetchRemoteRevision(
+    address: S2SAddress,
+  ): Promise<{ updatedAt: number }> {
     return this.getSigned<{ updatedAt: number }>(
       `/api/v1/s2s/users/${address.username}/revision`,
       address.domain,
@@ -1165,7 +1474,10 @@ export class FederationService {
    * still advance and the existing avatar is kept, so a broken avatar can't break friend-flow (and
    * advancing remoteUpdatedAt prevents a probe retry-loop on the same broken bytes).
    */
-  async localizeForeignProfile(userId: number, profile: S2SProfile): Promise<void> {
+  async localizeForeignProfile(
+    userId: number,
+    profile: S2SProfile,
+  ): Promise<void> {
     const stub = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { avatar: true, remoteUpdatedAt: true },
@@ -1190,7 +1502,12 @@ export class FederationService {
       newAvatarUrl = ''; // peer explicitly has no avatar → clear our localized copy
     }
 
-    const data: { name: string; bio: string; remoteUpdatedAt: Date; avatar?: string } = {
+    const data: {
+      name: string;
+      bio: string;
+      remoteUpdatedAt: Date;
+      avatar?: string;
+    } = {
       name: profile.displayName,
       bio: profile.bio,
       remoteUpdatedAt: new Date(profile.updatedAt),
@@ -1243,10 +1560,18 @@ export class FederationService {
   async syncForeignUserIfStale(userId: number): Promise<void> {
     const stub = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { isForeigner: true, uniqName: true, domain: true, remoteUpdatedAt: true },
+      select: {
+        isForeigner: true,
+        uniqName: true,
+        domain: true,
+        remoteUpdatedAt: true,
+      },
     });
     if (!stub || !stub.isForeigner) return;
-    const address: S2SAddress = { username: stub.uniqName, domain: stub.domain };
+    const address: S2SAddress = {
+      username: stub.uniqName,
+      domain: stub.domain,
+    };
     try {
       const rev = await this.fetchRemoteRevision(address);
       if (
