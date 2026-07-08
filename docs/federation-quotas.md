@@ -11,7 +11,7 @@
 ## 1. Why this is deferred
 
 The limit categories below (**messages / images / videos / large-files**) are all **Step 2** traffic.
-Step 1 (what ships today) only federates `friend.*` envelopes — control traffic, low volume, no media.
+Step 1 (what ships today) only federates friend ops (`friend-request` / `friend-approve`) — control traffic, low volume, no media.
 So as of today there is **nothing in those categories to count**. Building idle enforcement now would
 ship a half-feature (admin sets thresholds that gate zero traffic). The honest sequencing is:
 
@@ -76,14 +76,14 @@ maxImageBytes        Int?     // default 50 MB
 maxLargeFileBytes    Int?     // default 500 MB
 ```
 
-### 3.3 Enforcement point — inbound inbox
+### 3.3 Enforcement point — inbound friend-op
 
 Quotas gate **inbound** traffic (what this server *receives from* the peer — the abuse surface), at the
-S2S inbox, in this order:
+S2S endpoints, in this order:
 
-1. **Dedup first** (`S2SInboxSeen`). A replayed/duplicated envelope must **not** burn quota.
+1. **Dedup first** (`S2SFriendOpSeen`). A replayed/duplicated payload must **not** burn quota.
 2. **Atomic count + check.** Increment and compare in one statement to close the check-then-increment
-   race (two concurrent envelopes from the same peer would otherwise both pass):
+   race (two concurrent payloads from the same peer would otherwise both pass):
    ```sql
    INSERT INTO "FederatedPeerDailyUsage" (domain,date,category,count) VALUES ($1,$2,$3,1)
    ON CONFLICT (domain,date,category) DO UPDATE SET count = "FederatedPeerDailyUsage".count + 1
@@ -94,7 +94,7 @@ S2S inbox, in this order:
    the cap is an abuse ceiling, not a billing boundary. If exactness is wanted, wrap the increment
    in a tx and roll back on over-limit.
 3. **Size cap at ingest.** Reject an oversized item **before** storing it (do not write 600 MB then
-   refuse). For media delivered by reference (§5.1), check the declared byte size in the envelope.
+   refuse). For media delivered by reference (§5.1), check the declared byte size in the payload.
 
 ### 3.4 Errors
 
@@ -137,7 +137,7 @@ These are the questions surfaced during design. Each has a recommendation; confi
 ### 5.1 🔴 Large files cannot flow through sync federation
 A **500 MB** video over a **10 s-timeout** inline S2S POST is fundamentally broken: it times out, and
 buffering 500 MB in a `fetch` body is wasteful. Inline sync is fine for *small* media; **large files
-need a different transport**: the sender hosts the blob and the envelope carries a **reference URL**
+need a different transport**: the sender hosts the blob and the payload carries a **reference URL**
 (the receiver fetches it separately, with no 10 s cap and with resume).
 So the 500 MB limit really implies **blob-reference federation**, not a bigger POST body. This is the
 single biggest architectural dependency on the Step 2 protocol design.
@@ -154,7 +154,7 @@ per-(peer,user) sub-limits unless abuse is observed. The admin-adjustable thresh
 
 ### 5.4 Counting unit for albums
 An image-message with N photos — count as **1** or **N** toward the image cap? **Recommend per
-media-item (N)**, else a single album envelope bypasses the image cap.
+media-item (N)**, else a single album payload bypasses the image cap.
 
 ### 5.5 50 MB single-image is very generous
 A real image is rarely > 10 MB; 50 MB images are almost always pixel-bombs (which `sharp` already
@@ -179,7 +179,7 @@ Tiny, but a periodic purge (`DELETE WHERE date < today - 30`) keeps the table fl
 
 - **Local uploads** (the `/upload` pipeline + `MediaAsset` CAS) already have their own size handling
   (body limit, `sharp` for avatars, magic-byte family check). These federation size caps are
-  *additional*, applied at the S2S inbox for inbound media — distinct from the local-upload path.
+  *additional*, applied at the S2S endpoints for inbound media — distinct from the local-upload path.
 - **Trust lifecycle** (`trusted / demoted / blocked`) is orthogonal. A quota hit does **not** demote or
   block; a block does **not** depend on quota. See `docs/federation-protocol.md` §trust-lifecycle and
   the `FederatedPeerEvent` audit log.

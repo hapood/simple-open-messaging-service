@@ -8,7 +8,6 @@ interface PeerKey {
   ed25519: string; // base64 raw 32 bytes
 }
 interface WellKnownDoc {
-  inbox: string;
   software?: string;
   keys: PeerKey[];
 }
@@ -98,8 +97,8 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
     } catch (e) {
       throw new Error(`well-known ${domain}: malformed JSON (${(e as Error).message})`);
     }
-    if (!doc || typeof doc.inbox !== 'string' || !Array.isArray(doc.keys)) {
-      throw new Error(`well-known ${domain}: missing inbox/keys`);
+    if (!doc || !Array.isArray(doc.keys)) {
+      throw new Error(`well-known ${domain}: missing keys`);
     }
     return doc;
   }
@@ -122,11 +121,6 @@ export class DiscoveryService implements OnModuleInit, OnModuleDestroy {
     await this.cacheKeys(domain, doc.keys);
     const hit = doc.keys.find((k) => k.keyId === keyId);
     return hit ? Uint8Array.from(Buffer.from(hit.ed25519, 'base64')) : null;
-  }
-
-  /** Resolve the peer's inbox URL (authoritative from .well-known; SRV base only routes the fetch). */
-  async resolveInboxUrl(domain: string): Promise<string> {
-    return (await this.fetchWellKnown(domain)).inbox;
   }
 
   /** Cache all of a domain's currently-published keys (upsert + refresh fetchedAt). */

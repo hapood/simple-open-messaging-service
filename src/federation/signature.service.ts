@@ -15,7 +15,7 @@ import { KeypairService } from './keypair.service.js';
  *   - content-digest binds the body (RFC 9530) — body tamper breaks the digest check.
  *
  * Key distribution is DECOUPLED from this service: verifyWithKey takes the public key as a param.
- * The caller (InboxHandler) resolves the key via DiscoveryService.getPublicKey(domain, keyId)
+ * The caller (FriendOpHandler) resolves the key via DiscoveryService.getPublicKey(domain, keyId)
  * (fetch-on-miss + TTL cache, §5.1). This keeps SignatureService free of DiscoveryService and
  * unit-testable in isolation.
  *
@@ -27,7 +27,7 @@ const SIG_LABEL = 'sig1';
 
 export interface SignedRequest {
   method: string; // uppercase, e.g. POST
-  path: string; // absolute path WITHOUT query, e.g. /api/v1/s2s/inbox
+  path: string; // absolute path WITHOUT query, e.g. /api/v1/s2s/friend-request
   authority: string; // host[:port] — the Host/authority value
   body: string;
 }

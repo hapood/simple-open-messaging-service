@@ -252,6 +252,18 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'THREAD_META', data);
   }
 
+  /**
+   * A peer's profile (avatar/name/bio) changed — fan the FULL fresh profile to each approved P2P peer so
+   * every recipient patches its conversation-list row (and open chat header) with no extra round-trip.
+   * Emitted on local self-edits (update-profile / update-avatar) and on federated stub re-localization
+   * (the catch-up path: once any local user's probe refreshes a foreign stub, all that stub's local
+   * friends get it too — the only way federated peers benefit from the push, since there is no S2S
+   * profile-push and federation is pull-based by design).
+   */
+  onPeerProfileUpdated(userId: number, data: unknown) {
+    this.pushToUser(userId, 'PEER_PROFILE_UPDATED', data);
+  }
+
   /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop all of
    *  the user's PRIMARY connections, and close their notification-stream connection(s) too (an FGS
    *  holding a notification stream must stop on logout). */

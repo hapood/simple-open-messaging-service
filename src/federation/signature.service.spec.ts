@@ -5,7 +5,7 @@ import { SignatureService, contentDigest } from './signature.service.js';
 import type { KeypairService } from './keypair.service.js';
 
 describe('SignatureService (RFC 9421 + Ed25519)', () => {
-  const req = { method: 'POST', path: '/api/v1/s2s/inbox', authority: 'peer.com', body: '{"hi":1}' };
+  const req = { method: 'POST', path: '/api/v1/s2s/friend-request', authority: 'peer.com', body: '{"hi":1}' };
 
   function makeService() {
     const priv = ed25519.utils.randomSecretKey();

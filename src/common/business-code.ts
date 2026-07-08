@@ -13,8 +13,8 @@
  * Convention (see protocol-plan §5.2): business outcomes always return HTTP 200 + a business code;
  * only the protocol/system layer — unauthenticated(401) / not-found(404) / conflict(409) /
  * server-error(500) — retains its HTTP status code for the broad category, with body.code mapped
- * to the matching 10xxx segment. The S2S inbox is entirely protocol/system-tier
- * (auth/system/conflict), so the HTTP status drives outbox retry (2xx delivered / 4xx permanent
+ * to the matching 10xxx segment. The S2S friend-op endpoints are entirely protocol/system-tier
+ * (auth/system/conflict), so the HTTP status drives sender retry (2xx delivered / 4xx permanent
  * dead / 5xx backoff retry) and the code is for logging/detail.
  */
 export enum BusinessCode {
@@ -48,14 +48,13 @@ export enum BusinessCode {
   GROUP_FORBIDDEN = 40005, // role permission denied (cannot kick/modify/transfer this target)
   GROUP_TARGET_NOT_MEMBER = 40006, // target is not an active member of the group
 
-  // 50xxx federation (S2S) — all protocol/system-tier; HTTP status drives outbox retry, code is detail.
+  // 50xxx federation (S2S) — all protocol/system-tier; HTTP status drives sender retry, code is detail.
   FEDERATION_PEER_NOT_TRUSTED = 50001, // signer domain not in FederatedPeer trusted (401, no retry)
   FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
   FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
-  FEDERATION_DUPLICATE = 50004, // (origin, envelopeId) already applied (409 → idempotent success)
-  FEDERATION_TYPE_UNSUPPORTED = 50005, // envelope type not handled yet, e.g. message in v0.1 (422, no retry)
+  FEDERATION_DUPLICATE = 50004, // (origin, opId) already applied (409 → idempotent success)
   FEDERATION_KEY_FETCH_FAILED = 50006, // .well-known key fetch transient failure (503 → retry)
-  FEDERATION_MALFORMED = 50007, // malformed Signature-Input / envelope (401, no retry)
+  FEDERATION_MALFORMED = 50007, // malformed Signature-Input / friend-op payload (401, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
   FEDERATION_PEER_BLOCKED = 50009, // an admin blocked this peer domain — federation refused (403, no retry)
 }

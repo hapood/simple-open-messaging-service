@@ -41,6 +41,7 @@ import {
 import { RegisterDto } from '../dto/auth.dto.js';
 import {
   UserIdDto,
+  SyncPeerProfileDto,
   SendFriendRequestDto,
   ThreadIdDto,
   UserResolveDto,
@@ -122,6 +123,9 @@ export class UserController {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
     await this.userService.updateAvatar(req.user.userId, url);
+    // Fan the fresh avatar to every P2P friend so their conversation list (and open chat header)
+    // refreshes in real time. Fire-and-forget — never blocks the upload response.
+    void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     return {
       code: BusinessCode.OK,
       message: 'successful',
@@ -140,6 +144,9 @@ export class UserController {
     @Body() dto: UpdateProfileDto,
   ): Promise<ApiResult> {
     const data = await this.userService.updateProfile(req.user.userId, dto);
+    // Fan the fresh profile to every P2P friend so their conversation list (and open chat header)
+    // refreshes in real time. Fire-and-forget — never blocks the edit response.
+    void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -575,7 +582,7 @@ export class UserController {
     }
     // Federated peer → LOCAL-ONLY deletion. No S2S notification is sent: unfriending never fans out.
     // The peer discovers the severed edge lazily, via a rejection-on-send in Step 2 (the next time the
-    // peer tries to message, our inbox rejects it as "not friends"). See docs/federation-protocol.md.
+    // peer tries to message, our /messages endpoint rejects it as "not friends"). See docs/federation-protocol.md.
     return { code: BusinessCode.OK, message: 'friend removed' };
   }
 
@@ -718,17 +725,27 @@ export class UserController {
   @Post('user/sync-peer-profile')
   @ApiOperation({
     summary:
-      'Refresh a federated peer profile if stale (chat-open hook). Probes the peer /revision and re-pulls avatar/name/bio only when newer; local users are a no-op.',
+      'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. Pass sinceUpdatedAt to get a lightweight data:null short-circuit when unchanged.',
   })
   @ApiResultResponse(UserResponseDto)
-  async syncPeerProfile(@Body() dto: UserIdDto): Promise<ApiResult> {
-    // Chat-open staleness hook: probe the peer's /revision; if newer than the stub's remoteUpdatedAt,
-    // re-pull + re-localize the avatar/name/bio. Best-effort — a transient peer outage keeps the cached
-    // profile so opening the conversation never blocks. Local users are always fresh locally (no probe).
+  async syncPeerProfile(@Request() req, @Body() dto: SyncPeerProfileDto): Promise<ApiResult> {
+    // Chat-open / profile-panel-open staleness hook. Federated: probe the peer's /revision; if newer than
+    // the stub's remoteUpdatedAt, re-pull + re-localize avatar/name/bio (no-op for local users, whose own
+    // updatedAt is authoritative). Best-effort — a transient peer outage keeps the cached profile so
+    // opening the conversation never blocks. Then the lightweight short-circuit: when the caller already
+    // holds this exact revision (sinceUpdatedAt not older than the live row), return data:null so the
+    // client keeps its cache — no payload transfer, no signal update, no re-render.
     await this.federationService.syncForeignUserIfStale(dto.userId);
+    // Step 2 pull-on-open (§4.4): also catch up on THIS conversation's messages, even if every push was
+    // lost or after a process restart (the volatile hint map's restart floor). Fire-and-forget so opening
+    // the chat never blocks on a slow peer; a transient failure retries on the next open / sweep.
+    void this.federationService.syncMessagesWithPeerByStubId(dto.userId, req.user.userId);
     const data = await this.userService.findUniqueUser({ id: dto.userId });
     if (!data) {
       return { code: BusinessCode.NOT_FOUND, message: `user [${dto.userId}] not found` };
+    }
+    if (dto.sinceUpdatedAt !== undefined && data.updatedAt.getTime() <= dto.sinceUpdatedAt) {
+      return { code: BusinessCode.OK, message: 'not-modified', data: null };
     }
     return { code: BusinessCode.OK, message: 'successful', data };
   }

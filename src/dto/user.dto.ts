@@ -30,6 +30,22 @@ export class UserIdDto {
   userId: number;
 }
 
+/** Body for /user/sync-peer-profile (chat-open + profile-panel-open staleness probe). `sinceUpdatedAt`
+ *  is the caller's last-seen peer updatedAt (ms): when set and not older than the live row, the server
+ *  returns data:null so the client keeps its cache and skips the signal update + re-render. */
+export class SyncPeerProfileDto extends UserIdDto {
+  @ApiProperty({
+    required: false,
+    example: 1700000000000,
+    description:
+      "Caller's last-seen peer updatedAt (ms). When not older than the live row, the server returns data:null (no change).",
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  sinceUpdatedAt?: number;
+}
+
 /** Send a friend request, optionally with a ≤255-char note. Federated recipients are addressed by
  *  first resolving {username, domain} via /user/resolve (which mints/finds a local stub),
  *  then passing that stub's userId here — same DTO + path for local and federated. */

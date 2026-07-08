@@ -250,12 +250,23 @@ model Message {
   // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
   clientMessageId String?       @unique @db.VarChar(36)
+  // Per-(threadId, creator) monotonic sequence — the cross-server federation pull cursor (Step 2).
+  // SENDER allocates MAX+1 on insert; RECEIVER copies the sender's value verbatim on pull, so the SAME
+  // value lives on both sides (the per-server Message.id cannot cross servers — each server assigns its
+  // own). Nullable: legacy rows + never-federating threads stay NULL (Postgres treats NULLs as distinct
+  // under the unique index, so they coexist with no backfill). The compound unique index below enforces
+  // BOTH sender allocation correctness (same-user concurrent-send race → P2002 → retry) AND receiver-
+  // side idempotent dedup (a push/pull race inserts the same triple → absorbed). See
+  // docs/federation-step2-design.md §2.1.
+  originSeq       Int?
 
   mediaMessages MediaMessage[] // per-object media authz index (digest → thread)
 
+  @@unique([threadId, creator, originSeq]) // (a) sender seq allocation race AND (b) receiver pull dedup
   @@index([threadId, id]) // history pagination — the hot path
   @@index([threadId, createdAt])
   @@index([creator])
+  @@index([threadId, creator, originSeq]) // federation pull query + MAX(cursor) derivation
 }
 
 /// Content-addressed media asset (chat images / files / video / audio). One physical file per unique
@@ -426,11 +437,11 @@ model S2SKeyCache {
   @@index([domain])
 }
 
-/// Inbound dedup. At-least-once delivery requires idempotent dedup by (origin, envelopeId).
-model S2SInboxSeen {
+/// Inbound friend-op dedup. At-least-once delivery requires idempotent dedup by (origin, opId).
+model S2SFriendOpSeen {
   origin      String   @db.VarChar(63)
-  envelopeId  String   @db.VarChar(127)
+  opId        String   @db.VarChar(127)
   receivedAt  DateTime @default(now())
 
-  @@id([origin, envelopeId])
+  @@id([origin, opId])
 }

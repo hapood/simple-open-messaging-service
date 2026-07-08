@@ -12,7 +12,7 @@ import { BusinessCode } from '../common/business-code.js';
 
 /**
  * S2S trust-establishment endpoint — `POST /api/v1/s2s/init`. This is the bootstrap by which two SOMS
- * servers establish mutual trust BEFORE any inbox traffic (Gate 1 allow-list must pass before a
+ * servers establish mutual trust BEFORE any friend-op traffic (Gate 1 allow-list must pass before a
  * friend.request can be sent). It is NOT guarded by S2sSignatureGuard — it IS the trust step, so the
  * allow-list gate would be circular. Instead it verifies the requester's RFC 9421 signature directly via
  * S2sVerifyService (parse keyId → fetch the requester's public key from their .well-known, authoritative

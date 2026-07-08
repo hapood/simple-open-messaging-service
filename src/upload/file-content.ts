@@ -116,6 +116,21 @@ export function extractDigests(content: string): string[] {
   return [...out];
 }
 
+/** Same scan as extractDigests, but also captures the on-disk extension — the RECEIVER uses this to
+ *  fetch + localize each media asset via /get_file (the ext names the local CAS file so it serves
+ *  same-origin with the right mime via @fastify/static). De-duplicated by digest (a digest has one ext).
+ *  Legacy flat URLs have no digest and are ignored. */
+const SHARD_DIGEST_EXT_RE =
+  /\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.([A-Za-z0-9]{1,16})/g;
+export function extractDigestEntries(
+  content: string,
+): Array<{ digest: string; ext: string }> {
+  if (!content) return [];
+  const map = new Map<string, string>();
+  for (const m of content.matchAll(SHARD_DIGEST_EXT_RE)) map.set(m[1], m[2]);
+  return [...map.entries()].map(([digest, ext]) => ({ digest, ext }));
+}
+
 /**
  * Resolve a safe on-disk extension and a display MIME for an accepted upload. The open model
  * rejects nothing here (any type is allowed; security is at serving) — the caller rejects only on

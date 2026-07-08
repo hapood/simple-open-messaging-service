@@ -430,6 +430,24 @@ export class UploadService {
   }
 
   /**
+   * Persist a media asset fetched from a federated peer — receiver-side media localize (Step 2 §3.3 /
+   * §4.5). Same CAS pipeline as a local upload (sha256 → shard path → MediaAsset ref++), so a
+   * peer-sourced file is byte-identical on disk to a locally-uploaded one and serves same-origin via
+   * /uploads/shards/* with no new serving code. The caller passes the on-disk `ext` (from the peer's
+   * content URL) + the fetched bytes; the returned `digest` lets the caller VERIFY integrity (it must
+   * equal the digest the peer advertised — a mismatch means corrupt/tampered bytes → drop the file).
+   * Idempotent: a re-fetch of the same digest overwrites the byte-identical file + re-bumps the ref.
+   */
+  async saveCasFromPeer(
+    ext: string,
+    buf: Buffer,
+  ): Promise<{ url: string; digest: string; size: number }> {
+    const { url, digest, size } = await this.saveCas(ext, buf);
+    await this.mediaAsset.upsertAndRef(digest, BigInt(size));
+    return { url, digest, size };
+  }
+
+  /**
    * 安全化展示文件名：basename 剥离客户端传入的目录分量（防穿越）；剔除控制符与 Windows/Unix
    * 非法字符；trim + 长度上限。空结果回退为 `<ext>` 或 `file`。仅当存在可信扩展名时才回补扩展名——
    * 无（安全）扩展名的文件按原样存储/展示（服务侧以 application/octet-stream + attachment 下发）。
@@ -488,7 +506,7 @@ export class UploadService {
   /**
    * Federation outbound: read a stored avatar file back as the S2S wire shape — base64 of the source
    * bytes + the source pixel dimensions (declared, never trusted on the receiving side). Null when the
-   * user has no avatar. Used to embed the avatar inline in S2S profile responses + friend envelopes so
+   * user has no avatar. Used to embed the avatar inline in S2S profile responses + friend payloads so
    * the receiver can localize without a second round-trip (and without the receiving client fetching
    * cross-origin /uploads/* that CSP would block).
    */

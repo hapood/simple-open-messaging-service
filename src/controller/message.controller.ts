@@ -30,6 +30,7 @@ import {
   parseVideoContent,
 } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
+import { FederationBufferService } from '../federation/federation-buffer.service.js';
 import {
   SendMessageDto,
   QueryMessagesDto,
@@ -52,6 +53,7 @@ export class MessageController {
     private readonly pushService: PushService,
     private readonly notifQuery: NotificationQueryService,
     private readonly userBlockService: UserBlockService,
+    private readonly federationBuffer: FederationBufferService,
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -142,6 +144,13 @@ export class MessageController {
           .then((snapshot) => this.sseService.pushNotifSnapshot(uid, snapshot));
       }
     });
+    // Federation Step 2: if the thread has a foreign (federated) participant, mark the conversation
+    // dirty in the outbound hint buffer — a debounced /new-msg-map push tells the peer to pull. Local-
+    // only / group threads are a no-op inside notifyOnSend. Fire-and-forget (best-effort; pull-on-open
+    // is the floor). data.originSeq is always set on a fresh insert (nullable only for legacy rows).
+    if (data.originSeq != null) {
+      void this.federationBuffer.notifyOnSend(req.user.userId, dto.threadId, data.originSeq);
+    }
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 

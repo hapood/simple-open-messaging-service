@@ -14,11 +14,12 @@ import { DiscoveryService } from '../src/federation/discovery.service.js';
  * appB=bbb.local) and lets them make real signed HTTP requests to each other over loopback.
  *
  * The one trick that makes loopback work without /etc/hosts, SRV, or stubbing global fetch:
- * TestDiscoveryService maps each peer domain to the other app's `http://127.0.0.1:<port>`, and derives
- * the inbox URL from resolveBase (NOT the well-known `inbox` field, which still carries the unusable
- * `aaa.local` host). That keeps the signing `@authority` (url.host = 127.0.0.1:<port>) identical to what
- * the receiving Fastify sees in req.headers.host → signatures verify end-to-end. fetchWellKnown /
- * getPublicKey are inherited unchanged, so real keys are fetched + cached over loopback.
+ * TestDiscoveryService maps each peer domain to the other app's `http://127.0.0.1:<port>` via resolveBase.
+ * Every S2S endpoint URL (friend-request/approve, users, messages, …) is derived from that base as
+ * `${base}/api/v1/s2s/<path>`, so the unusable real-domain host (`aaa.local`) never reaches the wire.
+ * That keeps the signing `@authority` (url.host = 127.0.0.1:<port>) identical to what the receiving
+ * Fastify sees in req.headers.host → signatures verify end-to-end. fetchWellKnown / getPublicKey are
+ * inherited unchanged, so real keys are fetched + cached over loopback.
  *
  * The port map is late-bound: empty at compile time (ports unknown until listen), set after both apps
  * listen via `TestDiscoveryService.portMap = {...}`.
@@ -59,10 +60,11 @@ export async function makePng(red: number, size = 16): Promise<Buffer> {
 }
 
 /**
- * DiscoveryService override for tests: resolveBase reads the static (late-bound) portMap; resolveInboxUrl
- * is derived from resolveBase so the well-known `inbox` field (which carries the real domain host) is
- * never used for sending. Everything else (well-known fetch, key fetch-on-miss + TTL cache, proactive
- * refresh) is inherited and operates over the loopback URLs resolveBase returns.
+ * DiscoveryService override for tests: resolveBase reads the static (late-bound) portMap. Every S2S
+ * endpoint (friend-request/approve, users, messages, …) derives its URL from resolveBase as
+ * `${base}/api/v1/s2s/<path>`, so overriding resolveBase alone routes all of them over loopback.
+ * Everything else (well-known fetch, key fetch-on-miss + TTL cache, proactive refresh) is inherited
+ * and operates over the loopback URLs resolveBase returns.
  */
 export class TestDiscoveryService extends DiscoveryService {
   /** domain → `http://127.0.0.1:<port>`. Set after both apps listen. Shared across both apps' instances. */
@@ -72,10 +74,6 @@ export class TestDiscoveryService extends DiscoveryService {
     const mapped = TestDiscoveryService.portMap[domain];
     if (mapped) return mapped;
     return super.resolveBase(domain); // fallback (unused in the federation tests)
-  }
-
-  override async resolveInboxUrl(domain: string): Promise<string> {
-    return (await this.resolveBase(domain)) + '/api/v1/s2s/inbox';
   }
 }
 
@@ -117,6 +115,6 @@ export async function bootFederationApp(opts: {
 /** Truncate the federation-relevant tables (both apps share soms_test). User CASCADE clears its kin. */
 export async function truncateFederationTables(prisma: PrismaService): Promise<void> {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "User", "Friendship", "MessageThread", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "S2SInboxSeen" RESTART IDENTITY CASCADE',
+    'TRUNCATE TABLE "User", "Friendship", "MessageThread", "FederatedPeer", "FederatedPeerEvent", "S2SKeyCache", "S2SFriendOpSeen" RESTART IDENTITY CASCADE',
   );
 }

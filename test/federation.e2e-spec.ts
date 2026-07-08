@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import {
@@ -14,6 +14,7 @@ import { SignatureService } from '../src/federation/signature.service.js';
 import { FederationService } from '../src/federation/federation.service.js';
 import { UploadService } from '../src/upload/upload.service.js';
 import { UserService } from '../src/user/user.service.js';
+import { SseService } from '../src/gateway/sse.service.js';
 
 /**
  * Federation e2e — two full SOMS apps (aaa.local + bbb.local) in one process, making real signed HTTP
@@ -168,6 +169,141 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(bobStubA?.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
   });
 
+  // ─── Step 2: cross-server 1:1 messages + media ───────────────────────────────
+  // alice@appA ↔ bob@appB are now APPROVED with a P2P thread on each server. These exercise the
+  // coalesced hint-map push → active-pull pipeline: a send marks the outbound map dirty → a debounced
+  // /new-msg-map push → the peer drains pendingPulls → /messages pull → idempotent store + SSE.
+
+  /** Resolve alice's P2P thread on appA (the thread she sends into). */
+  async function alicesThreadIdOnA(): Promise<number> {
+    const fA = await appA.prisma.friendship.findFirst({
+      where: { OR: [{ userAId: bobStubIdOnA }, { userBId: bobStubIdOnA }] },
+    });
+    if (!fA?.threadId) throw new Error('alice↔bob thread missing on appA');
+    return fA.threadId;
+  }
+
+  it('Step 2: a federated message is pushed + pulled to the peer (text) + SSE-fanned', async () => {
+    const sse = appB.app.get(SseService);
+    const spy = vi.spyOn(sse, 'onNewMessage');
+    try {
+      const res = await request(appA.app.getHttpServer())
+        .post('/api/v1/send-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ threadId: await alicesThreadIdOnA(), content: 'hi from alice', contentType: 'PURE_TEXT' });
+      expect(res.status).toBe(200);
+      expect(res.body.code).toBe(BusinessCode.OK);
+      // The ~500ms debounce pushes the hint; appB drains + pulls + stores + SSE. Poll for it.
+      await vi.waitFor(
+        async () => {
+          const msg = await appB.prisma.message.findFirst({
+            where: { content: 'hi from alice', creator: aliceStubIdOnB },
+          });
+          expect(msg).not.toBeNull();
+          expect(msg!.originSeq).toBe(1); // alice's first message → originSeq 1, copied verbatim
+        },
+        { timeout: 5000 },
+      );
+      // SSE delivered the rendered message body to bob (the local recipient on appB).
+      expect(spy).toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('Step 2: pull-on-open is idempotent (a re-sync stores no duplicate)', async () => {
+    const before = await appB.prisma.message.count({ where: { creator: aliceStubIdOnB } });
+    // sync-peer-profile triggers pull-on-open (§4.4) — fire-and-forget; the originSeq unique index
+    // absorbs the re-pull as a no-op (the message is already at the cursor).
+    await request(appB.app.getHttpServer())
+      .post('/api/v1/user/sync-peer-profile')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ userId: aliceStubIdOnB });
+    // Let the async pull settle, then assert nothing duplicated.
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await appB.prisma.message.count({ where: { creator: aliceStubIdOnB } });
+    expect(after).toBe(before);
+  });
+
+  it('Step 2: pull-on-open recovers a message missing on the peer (resilience backstop)', async () => {
+    // alice sends; the push delivers it to appB (stored under alice's STUB as the creator — appB's own
+    // copy in its own thread, distinct from appA's copy in appA's thread, even though both apps share
+    // the per-fork test database).
+    await request(appA.app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ threadId: await alicesThreadIdOnA(), content: 'recover me', contentType: 'PURE_TEXT' });
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.message.findFirst({ where: { content: 'recover me', creator: aliceStubIdOnB } }),
+        ).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    // Simulate a message appB never stored (a lost push / a store that failed after the pull): wipe ONLY
+    // appB's copy — scoped by creator so appA's own copy (creator = alice's local id) survives to be
+    // re-pulled. The cursor (MAX originSeq for alice's stub on appB) drops, so pull-on-open sees the gap.
+    await appB.prisma.message.deleteMany({ where: { content: 'recover me', creator: aliceStubIdOnB } });
+    expect(
+      await appB.prisma.message.findFirst({ where: { content: 'recover me', creator: aliceStubIdOnB } }),
+    ).toBeNull();
+
+    // bob opens the thread → pull-on-open re-derives the cursor + re-fetches the gap from appA — the
+    // §4.4 backstop that makes a lost push non-fatal.
+    await request(appB.app.getHttpServer())
+      .post('/api/v1/user/sync-peer-profile')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ userId: aliceStubIdOnB });
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.message.findFirst({ where: { content: 'recover me', creator: aliceStubIdOnB } }),
+        ).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+  });
+
+  it('Step 2: a federated image localizes on the peer (media round-trip, same-origin)', async () => {
+    // alice uploads an image on appA (fixture) → a CAS url. Sent as an IMAGE message whose content
+    // embeds the url (the shape extractDigestEntries scans for the digest + ext).
+    const uploadA = appA.app.get(UploadService);
+    const { url, size } = await uploadA.save('image/png', await makePng(77));
+    const digest = /([0-9a-f]{64})\./.exec(url)![1];
+    const content = JSON.stringify({ url, w: 16, h: 16, size });
+    const res = await request(appA.app.getHttpServer())
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ threadId: await alicesThreadIdOnA(), content, contentType: 'IMAGE' });
+    expect(res.status).toBe(200);
+
+    // The message pulls, then localizeMedia fetches the digest via /get_file + stores it in appB's CAS
+    // (byte-identical → same shard path) + writes the MediaMessage authz row. Poll for both.
+    await vi.waitFor(
+      async () => {
+        const asset = await appB.prisma.mediaAsset.findUnique({ where: { digest } });
+        expect(asset).not.toBeNull();
+        expect(asset!.refs).toBeGreaterThan(0);
+        const mm = await appB.prisma.mediaMessage.findFirst({ where: { digest } });
+        expect(mm).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    // The localized file exists on appB's disk at the SAME server-relative path → renders same-origin.
+    const { stat } = await import('node:fs/promises');
+    const nodePath = await import('node:path');
+    const abs = nodePath.join(
+      process.cwd(),
+      'uploads',
+      'shards',
+      digest.slice(0, 2),
+      digest.slice(2, 4),
+      nodePath.basename(url),
+    );
+    await expect(stat(abs)).resolves.toBeDefined();
+  });
+
   it('/revision probe re-pulls a changed avatar', async () => {
     const before = await appB.prisma.user.findUnique({ where: { id: aliceStubIdOnB } });
     expect(before?.remoteUpdatedAt).not.toBeNull();
@@ -192,6 +328,98 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(after!.remoteUpdatedAt?.getTime()).toBeGreaterThanOrEqual(before!.remoteUpdatedAt!.getTime());
   });
 
+  it('sync-peer-profile short-circuits (data:null) when sinceUpdatedAt is fresh', async () => {
+    const stub = await appB.prisma.user.findUnique({
+      where: { id: aliceStubIdOnB },
+      select: { updatedAt: true },
+    });
+    expect(stub).not.toBeNull();
+    const fresh = stub!.updatedAt.getTime();
+
+    // Caller already holds this exact revision → server returns data:null (no payload, no churn).
+    const sameRev = await request(appB.app.getHttpServer())
+      .post('/api/v1/user/sync-peer-profile')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ userId: aliceStubIdOnB, sinceUpdatedAt: fresh });
+    expect(sameRev.status).toBe(200);
+    expect(sameRev.body.code).toBe(BusinessCode.OK);
+    expect(sameRev.body.data).toBeNull();
+
+    // A cursor older than the live row → full user returned with a ms updatedAt.
+    const pulled = await request(appB.app.getHttpServer())
+      .post('/api/v1/user/sync-peer-profile')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ userId: aliceStubIdOnB, sinceUpdatedAt: fresh - 1 });
+    expect(pulled.status).toBe(200);
+    expect(pulled.body.code).toBe(BusinessCode.OK);
+    expect(pulled.body.data).not.toBeNull();
+    expect(pulled.body.data.id).toBe(aliceStubIdOnB);
+    expect(pulled.body.data.updatedAt).toBe(fresh);
+  });
+
+  it('local profile edit fans PEER_PROFILE_UPDATED to every approved peer', async () => {
+    // alice (@appA) edits her name → the controller fires notifyPeersOfProfileUpdate → each approved
+    // peer receives the FULL fresh profile via SseService.onPeerProfileUpdated. alice's only approved
+    // peer on appA is bob's stub. The fan-out is fire-and-forget, so wait for it to land.
+    const sse = appA.app.get(SseService);
+    const spy = vi.spyOn(sse, 'onPeerProfileUpdated');
+    try {
+      const res = await request(appA.app.getHttpServer())
+        .post('/api/v1/user/update-profile')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ name: 'Alice Renamed' });
+      expect(res.status).toBe(200);
+      await vi.waitFor(() => {
+        expect(spy).toHaveBeenCalledWith(
+          bobStubIdOnA,
+          expect.objectContaining({ id: aliceLocalIdA, name: 'Alice Renamed' }),
+        );
+      });
+      // Pushed payload is the full profile (avatar path + ms updatedAt), not a partial patch.
+      const call = spy.mock.calls.find((c) => c[0] === bobStubIdOnA);
+      expect(call).toBeDefined();
+      const payload = call![1] as { updatedAt?: number; avatar?: string };
+      expect(typeof payload.updatedAt).toBe('number');
+      expect(payload.avatar).toMatch(/^\/uploads\//);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('federated re-localization fans PEER_PROFILE_UPDATED to the stub\'s local friends (catch-up)', async () => {
+    // bob (@appB) is the local friend of the alice stub on appB. When the stub is re-localized (alice
+    // changes her avatar on appA, then bob@appB's sync-peer-profile probes + re-localizes), the stub's
+    // local friends get the push without each probing independently — the only way federated peers
+    // benefit from the push (no S2S profile-push; federation is pull-based).
+    const bobLocal = await appB.prisma.user.findUnique({
+      where: { uniqName_domain: { uniqName: 'bob', domain: 'local' } },
+      select: { id: true },
+    });
+    expect(bobLocal).not.toBeNull();
+
+    // Stale the stub again (distinct avatar bytes → a newer revision on appA).
+    const uploadA = appA.app.get(UploadService);
+    const userSvcA = appA.app.get(UserService);
+    await userSvcA.updateAvatar(aliceLocalIdA, await uploadA.saveAvatars(await makePng(180)));
+
+    const sse = appB.app.get(SseService);
+    const spy = vi.spyOn(sse, 'onPeerProfileUpdated');
+    try {
+      await request(appB.app.getHttpServer())
+        .post('/api/v1/user/sync-peer-profile')
+        .set('Authorization', `Bearer ${tokenB}`)
+        .send({ userId: aliceStubIdOnB });
+      await vi.waitFor(() => {
+        expect(spy).toHaveBeenCalledWith(
+          bobLocal!.id,
+          expect.objectContaining({ id: aliceStubIdOnB, isForeigner: true }),
+        );
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('unfriend is local-only (no S2S fan-out; peer learns lazily)', async () => {
     const res = await request(appA.app.getHttpServer())
       .post('/api/v1/user/delete-friend')
@@ -206,14 +434,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     });
     expect(fA?.status).toBe('DELETED');
 
-    // appB is UNCHANGED — no friend.delete envelope was sent. It only learns lazily (Step 2 send-reject).
+    // appB is UNCHANGED — no S2S notification was sent. It only learns lazily (Step 2 send-reject).
     const fB = await appB.prisma.friendship.findFirst({
       where: { OR: [{ userAId: aliceStubIdOnB }, { userBId: aliceStubIdOnB }] },
     });
     expect(fB?.status).toBe('APPROVED');
   });
 
-  it('rejects an inbound envelope signed by an untrusted domain', async () => {
+  it('rejects an inbound friend-op signed by an untrusted domain', async () => {
     // evil.local: a real Ed25519 key, but never init'd → not in FederatedPeer.
     const evilPriv = ed25519.utils.randomSecretKey();
     const evilKeypair = {
@@ -223,15 +451,21 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     };
     const evilSig = new SignatureService(evilKeypair as never);
     const authority = `127.0.0.1:${appA.port}`;
-    const body = JSON.stringify({ type: 'friend.request', from: { username: 'mallory', domain: 'aaa.local-evil' }, to: [] });
+    const body = JSON.stringify({
+      id: '01TEST00000000000000000000',
+      origin: `${DOM_A}-evil`,
+      from: { username: 'mallory', domain: `${DOM_A}-evil` },
+      to: [],
+      ts: 0,
+    });
     const headers = evilSig.signOutbound({
       method: 'POST',
-      path: '/api/v1/s2s/inbox',
+      path: '/api/v1/s2s/friend-request',
       authority,
       body,
     });
 
-    const res = await fetch(`http://${authority}/api/v1/s2s/inbox`, {
+    const res = await fetch(`http://${authority}/api/v1/s2s/friend-request`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body,

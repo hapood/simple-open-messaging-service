@@ -11,7 +11,7 @@ import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 
 /**
- * Inbound S2S signature guard for the INBOX + signed GET endpoints — Gate 1 (server allow-list +
+ * Inbound S2S signature guard for the friend-op + signed GET endpoints — Gate 1 (server allow-list +
  * valid signature). Verifies the request was signed by a TRUSTED peer's CURRENT key and that the
  * asserted sender's domain matches the signer's domain (binding rule — each server vouches only for
  * its own users). The trust-establishment endpoint POST /api/v1/s2s/init does NOT use this guard (it
@@ -29,7 +29,7 @@ import { BusinessCode } from '../common/business-code.js';
  *   3. key fetch transient failure (.well-known unreachable)→ 503 FEDERATION_KEY_FETCH_FAILED (RETRY)
  *   4. keyId not in the peer's published key set            → 401 FEDERATION_BAD_SIGNATURE    (no retry)
  *   5. signature invalid / body tampered                    → 401 FEDERATION_BAD_SIGNATURE    (no retry)
- *   6. from.domain != signer.domain (envelopes only)        → 401 FEDERATION_BINDING_VIOLATION(no retry)
+ *   6. from.domain != signer.domain (bodies with `from`)     → 401 FEDERATION_BINDING_VIOLATION(no retry)
  *
  * On success, attaches `req.peer = { domain, keyId }` for the handler. Mirrors NotificationTokenGuard
  * (a plain CanActivate, not Passport-based).
@@ -63,12 +63,12 @@ export class S2sSignatureGuard implements CanActivate {
     // 3-5. Fetch the signer's key (.well-known, fetch-on-miss) + verify the signature over the raw body.
     await this.verify.fetchAndVerify(this.verify.signedRequest(req), headers, keyId, signerDomain);
 
-    // 6. Binding rule (envelopes only — a `from` field implies an envelope; GET /users has none):
-    // the asserted sender must live on the signer's domain, so a trusted peer can't forge users of
-    // another peer. `from` is a {username, domain} object — no @-joined string on the wire.
-    const fromActor = (req.body as { from?: { username?: unknown; domain?: unknown } } | undefined)?.from;
-    if (fromActor) {
-      const fromDomain = typeof fromActor.domain === 'string' ? fromActor.domain : undefined;
+    // 6. Binding rule (bodies carrying a `from` field; GETs have none): the asserted sender must live
+    // on the signer's domain, so a trusted peer can't forge users of another peer. `from` is a
+    // {username, domain} object — no @-joined string on the wire.
+    const fromAddress = (req.body as { from?: { username?: unknown; domain?: unknown } } | undefined)?.from;
+    if (fromAddress) {
+      const fromDomain = typeof fromAddress.domain === 'string' ? fromAddress.domain : undefined;
       if (!fromDomain || fromDomain !== signerDomain) {
         throw new BusinessException(
           BusinessCode.FEDERATION_BINDING_VIOLATION,

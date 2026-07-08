@@ -7,7 +7,7 @@ import { BusinessCode } from '../common/business-code.js';
 
 /**
  * Shared inbound RFC 9421 verification primitives — the keyId parse + .well-known key fetch + signature
- * verify used by BOTH the inbox guard (allow-list-gated) and the init bootstrap (which IS the trust
+ * verify used by BOTH the friend-op guard (allow-list-gated) and the init bootstrap (which IS the trust
  * establishment, so it skips the allow-list). Extracted so the two trust models share one verification
  * path instead of duplicating the signature/key-fetch logic.
  *
@@ -96,7 +96,7 @@ export class S2sVerifyService {
       throw new BusinessException(
         BusinessCode.FEDERATION_KEY_FETCH_FAILED,
         `key fetch failed for ${domain}: ${(e as Error).message}`,
-        HttpStatus.SERVICE_UNAVAILABLE, // → outbox retries
+        HttpStatus.SERVICE_UNAVAILABLE, // → sender retries
       );
     }
     if (!publicKey) {

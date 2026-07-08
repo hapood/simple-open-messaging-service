@@ -8,11 +8,19 @@ import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { serializeBody } from '../common/serialize.interceptor.js';
+import { FriendshipService } from '../friendship/friendship.service.js';
+import { SseService } from '../gateway/sse.service.js';
+import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
+import { derivePreview } from '../message/message.service.js';
+import { extractDigestEntries } from '../upload/file-content.js';
+import { readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
-/** A federated user identity on the wire: two separate fields (username + domain). The `@` separator
+/** A federated user address on the wire: two separate fields (username + domain). The `@` separator
  *  is a UI input convention ONLY — the browser splits a typed `alice@bbb.com` into these two fields
- *  before any API call; S2S envelopes + endpoints + consumer DTOs never carry an `@`-joined string. */
-export interface S2SActor {
+ *  before any API call; S2S payloads + endpoints + consumer DTOs never carry an `@`-joined string. */
+export interface S2SAddress {
   username: string;
   domain: string;
 }
@@ -32,9 +40,9 @@ export interface S2SAvatar {
 
 /**
  * A user's public profile as transmitted over S2S — the resolve endpoint (GET /api/v1/s2s/users/:username)
- * response body and the `profile` slot on friend.request / friend.approve envelopes. `updatedAt` is the
- * sender's User.updatedAt in ms (the profile revision); receivers store it as the stub's remoteUpdatedAt
- * so the lightweight /revision probe can detect staleness without re-transferring the avatar.
+ * response body and the `profile` slot on the friend-request payload. `updatedAt` is the sender's
+ * User.updatedAt in ms (the profile revision); receivers store it as the stub's remoteUpdatedAt so the
+ * lightweight /revision probe can detect staleness without re-transferring the avatar.
  */
 export interface S2SProfile {
   uniqName: string;
@@ -45,29 +53,33 @@ export interface S2SProfile {
   updatedAt: number;
 }
 
-/** The on-the-wire S2S envelope (plain JSON). See docs/federation-protocol.md §4. */
-export interface S2SEnvelope {
-  type: string;
-  durability: 'durable' | 'ephemeral';
+/** The shared signed body for every POSTed friend op (plain JSON). See docs/federation-protocol.md §4.
+ *  The `id` is an origin-assigned ULID and the idempotent-dedup key (with `origin`). There is NO `type`
+ *  field — the endpoint path (POST /friend-request | /friend-approve) IS the discriminator, exactly like
+ *  every other S2S route. Cross-server messages do NOT use this body: they travel in the GET /messages
+ *  response (docs/federation-step2-design.md §3.2). */
+export interface S2SPayload {
   id: string; // origin-assigned ULID; dedup key with origin
   origin: string;
-  from: S2SActor; // sender identity (split fields — never an @-joined string)
-  to: S2SActor[]; // recipients (split fields)
+  from: S2SAddress; // sender identity (split fields — never an @-joined string)
+  to: S2SAddress[]; // recipients (split fields)
   ts: number; // ms since epoch
-  message?: string; // friend.request note (≤255)
-  content?: unknown; // message payload (opaque; future E2EE slot)
-  /** Sender's current profile, attached to friend.request / friend.approve so the receiver localizes the
-   * stub (avatar/name/bio) from the envelope without a nested S2S call inside the inbox. */
-  profile?: S2SProfile;
+}
+
+/** POST /api/v1/s2s/friend-request body. Carries the requester's profile so the receiver creates the
+ *  foreign stub localized (avatar/name/bio) inline — no nested S2S call inside the handler. */
+export interface S2SFriendRequest extends S2SPayload {
+  message?: string; // ≤255-char note
+  profile: S2SProfile;
 }
 
 /**
- * Outbound S2S: SYNCHRONOUS inline delivery. Each send* method builds an envelope, signs it
- * (SignatureService), and POSTs it to the peer's inbox (DiscoveryService resolves the URL), all
- * inline within the caller's request. No outbox/worker — Step 1 friend-flow is low-volume and the
- * friendship ops are idempotent, so a peer that's momentarily down just fails the action and the
- * user retries (the receiver dedupes via S2SInboxSeen, so retries are safe). The async outbox +
- * worker return only if Step 2 (messages) needs durable cross-server retry.
+ * Outbound S2S: SYNCHRONOUS inline delivery. Each send* method builds a payload, signs it
+ * (SignatureService), and POSTs it to the peer's friend-op endpoint (DiscoveryService resolves the
+ * base URL), all inline within the caller's request. No outbox/worker — Step 1 friend-flow is low-volume
+ * and the friendship ops are idempotent, so a peer that's momentarily down just fails the action and the
+ * user retries (the receiver dedupes via S2SFriendOpSeen, so retries are safe). Step 2 messages do NOT
+ * add an outbox either — they use coalesced-notify + active pull (docs/federation-step2-design.md).
  *
  * Transaction note: the DB state change (e.g. Friendship PENDING) commits in its own tx BEFORE the
  * send — an HTTP POST can't live inside a DB tx. If the POST fails, local state is committed but the
@@ -77,10 +89,10 @@ export interface S2SEnvelope {
  *
  * Identity model: local users have domain="local" (isForeigner=false); federated peers are foreign
  * User stubs (domain=<peer>, isForeigner=true, unusable random hashPwd). Federation addresses always
- * use the REAL config.domain for local users' wire identities ({ username: <uniqName>, domain: <config.domain> }), never "local".
+ * use the REAL config.domain for local users' wire addresses ({ username: <uniqName>, domain: <config.domain> }), never "local".
  *
  * Avatar localization: foreign stubs carry the peer's avatar/name/bio/remoteUpdatedAt, localized from
- * the profile embedded in friend.request/friend.approve envelopes (and refreshed via fetchRemoteUser on
+ * the profile embedded in the friend-request payload (and refreshed via fetchRemoteUser on
  * approve + the chat-open staleness probe). Deletion is LOCAL-ONLY — unfriending never fans out an S2S
  * notification; the peer discovers the severed edge lazily, via a rejection-on-send in Step 2.
  */
@@ -93,10 +105,12 @@ export class FederationService {
     private readonly signature: SignatureService,
     private readonly discovery: DiscoveryService,
     private readonly upload: UploadService,
+    private readonly friendship: FriendshipService,
+    private readonly sse: SseService,
   ) {}
 
-  /** The wire identity of a LOCAL user: { username, domain } (domain = our real config.domain). */
-  localActor(uniqName: string): S2SActor {
+  /** The wire address of a LOCAL user: { username, domain } (domain = our real config.domain). */
+  localAddress(uniqName: string): S2SAddress {
     return { username: uniqName, domain: this.config.domain };
   }
 
@@ -105,16 +119,20 @@ export class FederationService {
     return this.config.domain;
   }
 
-  /** Find a LOCAL user id by username (domain="local"). Null if not found / not local. */
+  /** Find a LOCAL user id by username (domain="local"). Null if not found / not local / soft-deleted.
+   *  The isDeleted gate matters here because S2S bypasses the token system: the local /uploads/* path is
+   *  protected from admin-disabled users by tokenVersion (invalidateAllSessions bumps it on disable), but
+   *  /get_file never touches tokens — so a disabled user's media would still flow out over federation
+   *  unless we reject the soft-deleted row here. */
   async findLocalUserId(username: string): Promise<number | null> {
     const u = await this.prisma.user.findUnique({
       where: { uniqName_domain: { uniqName: username, domain: 'local' } },
     });
-    return u && !u.isForeigner ? u.id : null;
+    return u && !u.isForeigner && !u.isDeleted ? u.id : null;
   }
 
   /** Look up a local user id from a full address (must be username@<our domain>). */
-  async findLocalUserIdByAddress(address: S2SActor): Promise<number | null> {
+  async findLocalUserIdByAddress(address: S2SAddress): Promise<number | null> {
     if (address.domain !== this.config.domain) return null;
     return this.findLocalUserId(address.username);
   }
@@ -154,7 +172,7 @@ export class FederationService {
   }
 
   /** Public profile of a local user (GET /api/v1/s2s/users/:username). Null if not local / not found. */
-  async getLocalUserProfile(address: S2SActor): Promise<S2SProfile | null> {
+  async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
       where: { uniqName_domain: { uniqName: address.username, domain: 'local' } },
@@ -166,7 +184,7 @@ export class FederationService {
   /** Lightweight revision probe (GET /api/v1/s2s/users/:username/revision): just the profile revision,
    *  no avatar transfer. Receivers compare against the stub's remoteUpdatedAt to decide whether to
    *  re-pull the full profile. Null if not local / not found. */
-  async getLocalUserRevision(address: S2SActor): Promise<{ updatedAt: number } | null> {
+  async getLocalUserRevision(address: S2SAddress): Promise<{ updatedAt: number } | null> {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
       where: { uniqName_domain: { uniqName: address.username, domain: 'local' } },
@@ -203,7 +221,7 @@ export class FederationService {
    * profile now. Throws on peer failure so the controller surfaces FEDERATION_DELIVERY_FAILED (the
    * subsequent send would fail against the same peer anyway).
    */
-  async ensureForeignUserLocalized(userId: number, address: S2SActor): Promise<void> {
+  async ensureForeignUserLocalized(userId: number, address: S2SAddress): Promise<void> {
     const stub = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { remoteUpdatedAt: true },
@@ -213,16 +231,21 @@ export class FederationService {
     await this.localizeForeignProfile(userId, profile);
   }
 
+  /** Sign + synchronously POST an arbitrary JSON body to a peer S2S path (`${base}${path}`). The single
+   *  signed-POST entry for every outbound S2S op — friend-request / friend-approve (Step 1) AND the
+   *  new-msg-map push (Step 2). Same liveness/demote wiring as getSigned. */
+  private async postSigned(path: string, body: string, peerDomain: string): Promise<void> {
+    const base = await this.discovery.resolveBase(peerDomain);
+    await this.sendSignedPost(new URL(`${base}${path}`), body, peerDomain);
+  }
+
   /**
-   * Sign + synchronously POST an envelope to a peer's inbox. Throws on any non-success
-   * (4xx permanent / 5xx transient / network / timeout) — the caller surfaces it to the user, who
-   * retries. 200/202 = accepted; 409 = idempotent duplicate (already processed). No retry here — the
-   * receiver dedupes, and the user/caller drives retries.
+   * Shared signed-POST transport: sign the (method, path, authority, body) tuple, POST, and apply the
+   * trust-lifecycle wiring — `markContactSuccess` on 200/202/409 (delivered or idempotent),
+   * `markDemoted` on network failure or non-success status (self-heal on next contact). Throws on any
+   * non-success. Extracted so the friend-op POSTs and the Step 2 path POSTs share one transport.
    */
-  private async sendEnvelope(envelope: S2SEnvelope, recipientDomain: string): Promise<void> {
-    const inboxUrl = await this.discovery.resolveInboxUrl(recipientDomain);
-    const url = new URL(inboxUrl);
-    const body = JSON.stringify(envelope);
+  private async sendSignedPost(url: URL, body: string, peerDomain: string): Promise<void> {
     const headers = this.signature.signOutbound({
       method: 'POST',
       path: url.pathname,
@@ -231,24 +254,24 @@ export class FederationService {
     });
     let res: Response;
     try {
-      res = await fetch(inboxUrl, {
+      res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body,
         signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
       });
     } catch (e) {
-      await this.markDemoted(recipientDomain, `POST network/timeout: ${(e as Error).message}`);
+      await this.markDemoted(peerDomain, `POST network/timeout: ${(e as Error).message}`);
       throw new Error(
-        `S2S POST to ${recipientDomain} failed (network/timeout): ${(e as Error).message}`,
+        `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
     if (res.status === 200 || res.status === 202 || res.status === 409) {
-      await this.markContactSuccess(recipientDomain); // delivered or idempotent → advance liveness
+      await this.markContactSuccess(peerDomain); // delivered or idempotent → advance liveness
       return;
     }
-    await this.markDemoted(recipientDomain, `POST HTTP ${res.status}`);
-    throw new Error(`S2S POST to ${recipientDomain} rejected: HTTP ${res.status}`);
+    await this.markDemoted(peerDomain, `POST HTTP ${res.status}`);
+    throw new Error(`S2S POST to ${peerDomain} rejected: HTTP ${res.status}`);
   }
 
   /** GET a signed S2S endpoint (users / revision). Returns the parsed JSON. Throws on non-success. */
@@ -285,7 +308,7 @@ export class FederationService {
   // ─── trust establishment (init handshake) ────────────────────────────────────
 
   /**
-   * Ensure mutual trust with a peer domain before any resolve/inbox traffic. Idempotent: a no-op if
+   * Ensure mutual trust with a peer domain before any resolve/friend-op traffic. Idempotent: a no-op if
    * the domain is already trusted. Otherwise the mutual init handshake — our signed POST /init proves
    * we control our domain (the peer fetches OUR .well-known to verify), they auto-accept us, and we
    * trust them back so our guard accepts their inbound and our signed GETs to them succeed. Throws on
@@ -545,45 +568,569 @@ export class FederationService {
 
   // ─── friend flows (synchronous) ──────────────────────────────────────────────
 
-  /** Send a friend.request from a local user to a peer user ({username, domain}), carrying the sender's profile. */
-  async sendFriendRequest(fromLocalUserId: number, to: S2SActor, message = ''): Promise<void> {
+  /** POST a friend-request from a local user to a peer user address, carrying the sender's profile so
+   *  the receiver creates the foreign stub localized. */
+  async sendFriendRequest(fromLocalUserId: number, to: S2SAddress, message = ''): Promise<void> {
     const from = await this.requireLocalUser(fromLocalUserId);
     const profile = await this.toS2SProfile(from);
-    await this.sendEnvelope(
-      {
-        type: 'friend.request',
-        durability: 'durable',
-        id: ulid(),
-        origin: this.config.domain,
-        from: this.localActor(from.uniqName),
-        to: [{ username: to.username, domain: to.domain }],
-        ts: Date.now(),
-        message: (message ?? '').slice(0, 255),
-        profile,
-      },
-      to.domain,
+    const payload: S2SFriendRequest = {
+      id: ulid(),
+      origin: this.config.domain,
+      from: this.localAddress(from.uniqName),
+      to: [{ username: to.username, domain: to.domain }],
+      ts: Date.now(),
+      message: (message ?? '').slice(0, 255),
+      profile,
+    };
+    await this.postSigned('/api/v1/s2s/friend-request', JSON.stringify(payload), to.domain);
+  }
+
+  /** POST a friend-approve from a local user (the approver) to a peer user address (the requester). Pure
+   *  state confirmation — carries NO profile: the requester already resolved + localized the approver's
+   *  stub before sending the request, and any later profile change is picked up lazily by the chat-open
+   *  /revision probe (syncForeignUserIfStale). Contrast friend-request, which MUST carry the sender's
+   *  profile so the target can create the stub from scratch + render the request card. */
+  async sendFriendApprove(localApproverId: number, to: S2SAddress): Promise<void> {
+    const fromUniqName = (await this.requireLocalUser(localApproverId)).uniqName;
+    const payload: S2SPayload = {
+      id: ulid(),
+      origin: this.config.domain,
+      from: this.localAddress(fromUniqName),
+      to: [{ username: to.username, domain: to.domain }],
+      ts: Date.now(),
+    };
+    await this.postSigned('/api/v1/s2s/friend-approve', JSON.stringify(payload), to.domain);
+  }
+
+  // ─── Step 2: message delivery (coalesced hint map + active pull) ──────────────
+
+  /**
+   * Unified pre-flight for every Step 2 outbound op: ensure trust is current BEFORE running, so a
+   * demoted/blocked peer is caught up front (not only after a failure). The op itself (sendSignedPost
+   * / getSigned) already calls markDemoted on failure → self-heal on the next reconnect-sweep tick.
+   * Throws FEDERATION_PEER_BLOCKED if the peer is admin-blocked. See docs/federation-step2-design.md §5.
+   */
+  private async withTrustedPeer<T>(domain: string, fn: () => Promise<T>): Promise<T> {
+    await this.ensurePeerTrusted(domain);
+    return fn();
+  }
+
+  /**
+   * Push a batch of OUR outbound hint entries (dirty conversations) to the peer's /new-msg-map. The
+   * caller (FederationBufferService) deletes the pushed entries on success; on failure they stay
+   * buffered and the debounce / reconnect sweep retries. `origin` is carried explicitly and the
+   * receiver's guard binding-checks it === the signer domain. See §3.1.
+   */
+  async pushNewMsgMap(
+    domain: string,
+    entries: Array<{ from: string; to: string; latestSeq: number }>,
+    hasMore: boolean,
+  ): Promise<void> {
+    await this.withTrustedPeer(domain, () =>
+      this.postSigned(
+        '/api/v1/s2s/new-msg-map',
+        JSON.stringify({
+          origin: this.config.domain,
+          entries,
+          hasMore,
+          generatedAt: Date.now(),
+        }),
+        domain,
+      ),
     );
   }
 
-  /** Send a friend.approve from a local user (the approver) to a peer user {username, domain} (the requester). Pure
-   *  state confirmation — carries NO profile: the requester already resolved + localized the approver's
-   *  stub before sending the request, and any later profile change is picked up lazily by the chat-open
-   *  /revision probe (syncForeignUserIfStale). Contrast friend.request, which MUST carry the sender's
-   *  profile so the target can create the stub from scratch + render the request card. */
-  async sendFriendApprove(localApproverId: number, to: S2SActor): Promise<void> {
-    const fromUniqName = (await this.requireLocalUser(localApproverId)).uniqName;
-    await this.sendEnvelope(
-      {
-        type: 'friend.approve',
-        durability: 'durable',
-        id: ulid(),
-        origin: this.config.domain,
-        from: this.localActor(fromUniqName),
-        to: [{ username: to.username, domain: to.domain }],
-        ts: Date.now(),
-      },
-      to.domain,
+  /** Outbound signed ping (GET /api/v1/s2s/ping) — the reconnect sweep's cheap first probe
+   *  (reachability + mutual-key-validity) before the heavier re-handshake. Raw getSigned (NOT
+   *  withTrustedPeer): a demoted peer is pinged directly; on failure it stays demoted for the next tick. */
+  async pingPeer(domain: string): Promise<void> {
+    await this.getSigned<{ domain: string; ts: number }>('/api/v1/s2s/ping', domain);
+  }
+
+  /** Outbound signed GET of the peer's /new-msg-map (the one-directional fallback, §4.3) — the reconnect
+   *  sweep harvests the peer's outbound hints for OUR users on recovery. Paginated by cursor. */
+  async pullPeerNewMsgMap(
+    domain: string,
+    cursor: number,
+  ): Promise<{
+    entries: Array<{ from: string; to: string; latestSeq: number }>;
+    cursor: number | null;
+    hasMore: boolean;
+  }> {
+    return this.getSigned(`/api/v1/s2s/new-msg-map?take=1000&cursor=${cursor}`, domain);
+  }
+
+  /** Domains needing recovery (pending | demoted) — the reconnect sweep's work list. */
+  async listRecoverablePeerDomains(): Promise<string[]> {
+    const rows = await this.prisma.federatedPeer.findMany({
+      where: { trustLevel: { in: ['pending', 'demoted'] } },
+      select: { domain: true },
+    });
+    return rows.map((r) => r.domain);
+  }
+
+  /** Trusted peer domains — the slow poll's work list (it pulls their /new-msg-map to catch lost pushes
+   *  via the one-directional fallback, §4.4). */
+  async listTrustedPeerDomains(): Promise<string[]> {
+    const rows = await this.prisma.federatedPeer.findMany({
+      where: { trustLevel: 'trusted' },
+      select: { domain: true },
+    });
+    return rows.map((r) => r.domain);
+  }
+
+  /**
+   * Pull-on-thread-open (§4.4): drain everything available for the conversation between a local user
+   * and a foreign stub. The restart floor for the volatile hint map — opening the chat catches up even
+   * if every push was lost (or after a process restart). Fire-and-forget by the caller (never blocks
+   * opening); one cheap GET when already current. `latestSeq=MAX` forces a full catch-up attempt —
+   * pullOneConversation returns once the peer serves everything > the old cursor.
+   */
+  async syncMessagesWithPeerByStubId(stubUserId: number, localUserId: number): Promise<void> {
+    const [stub, local] = await Promise.all([
+      this.prisma.user.findUnique({
+        where: { id: stubUserId },
+        select: { uniqName: true, domain: true, isForeigner: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: localUserId },
+        select: { uniqName: true, isForeigner: true },
+      }),
+    ]);
+    if (!stub || !stub.isForeigner || !local || local.isForeigner) return;
+    await this.pullOneConversation(stub.domain, stub.uniqName, local.uniqName, Number.MAX_SAFE_INTEGER);
+  }
+
+  /**
+   * Serve the SENDER's side of a 1:1 thread for a federated pull (GET /api/v1/s2s/messages). Returns
+   * messages authored by OUR local user `from` for the peer user `to` (a foreign stub on signerDomain),
+   * with originSeq > `after`, ascending — the receiver stores them + advances its cursor. Pulls ONLY the
+   * sender's side (never the requester's own authored messages). Gate 2: the from↔to Friendship MUST be
+   * APPROVED (else 403 FORBIDDEN — also the lazy-unfriend signal of §9.4). Media digests are NOT
+   * surfaced separately: the receiver extracts them from `content` via the same extractDigests() helper
+   * the sender used, then fetches each via /get_file (§3.3). See docs/federation-step2-design.md §3.2.
+   */
+  async serveOutboundMessages(
+    fromUsername: string,
+    toUsername: string,
+    signerDomain: string,
+    after: number,
+    take: number,
+  ) {
+    const { fromId, threadId } = await this.resolveFriendshipThread(
+      fromUsername,
+      toUsername,
+      signerDomain,
     );
+    const rows = await this.prisma.message.findMany({
+      where: { threadId, creator: fromId, originSeq: { gt: after } },
+      orderBy: { originSeq: 'asc' },
+      take: take + 1,
+    });
+    const hasMore = rows.length > take;
+    const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
+      originSeq: m.originSeq ?? 0,
+      contentType: m.contentType,
+      content: m.content,
+      clientMessageId: m.clientMessageId,
+      ts: m.createdAt.getTime(),
+    }));
+    const latest = await this.prisma.message.aggregate({
+      where: { threadId, creator: fromId },
+      _max: { originSeq: true },
+    });
+    return { messages, latestSeq: latest._max.originSeq ?? 0, hasMore };
+  }
+
+  /**
+   * Resolve a chat-media file for a federated /get_file (the 3-check authz, §3.3). `from` is OUR local
+   * user (the file's owner by virtue of authoring the message); `to` is the requester's user (a foreign
+   * stub on signerDomain). Returns the on-disk absolute path + size to stream. Throws NOT_FOUND
+   * (user/thread/file missing) or FORBIDDEN (not friends). The digest → file resolution globs the shard
+   * dir (the extension isn't stored on MediaAsset — only the digest/refs); the receiver already knows
+   * the ext from the message content URL, so the S2S Content-Type is incidental (octet-stream). */
+  async resolveMediaFile(
+    fromUsername: string,
+    toUsername: string,
+    signerDomain: string,
+    digest: string,
+  ): Promise<{ absPath: string; bytes: number }> {
+    const { threadId } = await this.resolveFriendshipThread(
+      fromUsername,
+      toUsername,
+      signerDomain,
+    );
+    // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
+    const inThread = await this.prisma.mediaMessage.findFirst({
+      where: { digest, threadId },
+      select: { id: true },
+    });
+    if (!inThread) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'digest not in thread', HttpStatus.NOT_FOUND);
+    }
+    // Resolve uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
+    const shardDir = join(process.cwd(), 'uploads', 'shards', digest.slice(0, 2), digest.slice(2, 4));
+    let names: string[];
+    try {
+      names = await readdir(shardDir);
+    } catch {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable', HttpStatus.NOT_FOUND);
+    }
+    const name = names.find((f) => f.startsWith(`${digest}.`));
+    if (!name) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'file unavailable', HttpStatus.NOT_FOUND);
+    }
+    const absPath = join(shardDir, name);
+    const s = await stat(absPath);
+    return { absPath, bytes: s.size };
+  }
+
+  /** Find the APPROVED Friendship between two users (normalized either direction). Null if none / not approved. */
+  private async findApprovedFriendship(a: number, b: number) {
+    return this.prisma.friendship.findFirst({
+      where: {
+        OR: [
+          { userAId: a, userBId: b },
+          { userAId: b, userBId: a },
+        ],
+        status: 'APPROVED',
+      },
+    });
+  }
+
+  /** Shared authz prelude for every outbound S2S read (GET /messages pull + GET /get_file): proves `from`
+   *  is a live local user (non-deleted), `to` is the requester's foreign stub on signerDomain, and the
+   *  from↔to Friendship is APPROVED — returning fromId + threadId. Throws NOT_FOUND (user missing) /
+   *  FORBIDDEN (not friends); the 403 doubles as the §9.4 lazy-unfriend signal to the peer. Consolidates
+   *  the identical check-1/check-2 blocks serveOutboundMessages and resolveMediaFile used to inline. */
+  private async resolveFriendshipThread(
+    fromUsername: string,
+    toUsername: string,
+    signerDomain: string,
+  ): Promise<{ fromId: number; threadId: number }> {
+    const fromId = await this.findLocalUserId(fromUsername);
+    if (fromId === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `sender ${fromUsername} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    // `to` is the requester's user → on OUR side it's a foreign stub on the signer's domain.
+    const toStub = await this.prisma.user.findUnique({
+      where: { uniqName_domain: { uniqName: toUsername, domain: signerDomain } },
+      select: { id: true, isForeigner: true },
+    });
+    if (!toStub || !toStub.isForeigner) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `recipient ${toUsername} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const friendship = await this.findApprovedFriendship(fromId, toStub.id);
+    if (!friendship?.threadId) {
+      // Gate 2 failed: not approved friends. The 403 is also the rejection that teaches the peer about
+      // a local-only unfriend (§9.4).
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends', HttpStatus.FORBIDDEN);
+    }
+    return { fromId, threadId: friendship.threadId };
+  }
+
+  // ─── Step 2: inbound hint queue + active pull (receiver side) ─────────────────
+  //
+  // pendingPulls is the RECEIVER's work queue (the dual of the outbound domainNewMsgMap). Populated by
+  // a /new-msg-map push (POST) or by pulling the peer's map (§4.3 one-directional fallback); drained by
+  // the message pull below. Volatile (restart → pull-on-open is the floor). Latest-seq-wins + the
+  // originSeq unique index make push/pull overlap idempotent.
+
+  private readonly pendingPulls = new Map<string, Map<string, Map<string, number>>>(); // domain→from→to→latestSeq
+  /** Single-flight guard so only one drain runs per domain at a time (a push mid-drain just updates the map). */
+  private readonly drainingPulls = new Set<string>();
+
+  /**
+   * Inbound /new-msg-map push (or map-pull result) → enqueue hints + trigger the drainer. `entries[].from`
+   * is the PEER's user (a foreign stub here); `entries[].to` is OUR local user. Latest-seq-wins. Fire-and-
+   * forget drain (the push handler ACKs fast; the pull runs out of band). Idempotent. Entry shape is
+   * validated defensively (the signature covers integrity, not well-formedness).
+   */
+  receiveNewMsgMapPush(
+    signerDomain: string,
+    entries: ReadonlyArray<{ from?: unknown; to?: unknown; latestSeq?: unknown }>,
+  ): void {
+    let byFrom = this.pendingPulls.get(signerDomain);
+    if (!byFrom) {
+      byFrom = new Map();
+      this.pendingPulls.set(signerDomain, byFrom);
+    }
+    for (const e of entries) {
+      if (
+        !e ||
+        typeof e.from !== 'string' ||
+        typeof e.to !== 'string' ||
+        typeof e.latestSeq !== 'number'
+      ) {
+        continue;
+      }
+      let byTo = byFrom.get(e.from);
+      if (!byTo) {
+        byTo = new Map();
+        byFrom.set(e.from, byTo);
+      }
+      const prev = byTo.get(e.to) ?? 0;
+      if (e.latestSeq > prev) byTo.set(e.to, e.latestSeq); // latest-wins
+    }
+    void this.drainPendingPulls(signerDomain);
+  }
+
+  /**
+   * Single-flight drain: process pending pulls for a domain sequentially. A push arriving mid-drain just
+   * updates the map (the running loop re-reads it); on exit we re-trigger if new work arrived. Stops on a
+   * pull failure (peer transiently down — the reconnect sweep retries). Bounded by the conversation count.
+   */
+  async drainPendingPulls(domain: string): Promise<void> {
+    if (this.drainingPulls.has(domain)) return;
+    this.drainingPulls.add(domain);
+    let progressed = false; // did we clear ≥1 hint this drain? gates the re-trigger (anti-spin)
+    try {
+      for (;;) {
+        const snap = this.snapshotPendingPulls(domain);
+        if (snap.length === 0) break;
+        // Pull one conversation fully (loops /messages until caught up). On success drop the hint; on
+        // failure leave it + stop (the sweep retries).
+        const { from, to, latestSeq } = snap[0];
+        const caughtUp = await this.pullOneConversation(domain, from, to, latestSeq);
+        if (caughtUp) {
+          this.removePendingPull(domain, from, to);
+          progressed = true;
+        } else {
+          break;
+        }
+      }
+    } finally {
+      this.drainingPulls.delete(domain);
+      // Re-trigger ONLY if we made progress (so a push that arrived mid-drain gets drained). Without this
+      // gate a persistently-failing hint (peer down) would spin: failed → break → re-trigger → fail again.
+      // A no-progress drain leaves the hint for the reconnect sweep / the next push's own drain call.
+      if (progressed && this.snapshotPendingPulls(domain).length > 0) void this.drainPendingPulls(domain);
+    }
+  }
+
+  /**
+   * Pull one conversation from the peer until the local cursor catches up to latestSeq. Returns true if
+   * caught up OR the hint is stale/invalid (drop it); false on a transient failure (leave for the sweep).
+   */
+  private async pullOneConversation(
+    domain: string,
+    fromUsername: string,
+    toLocalUsername: string,
+    latestSeq: number,
+  ): Promise<boolean> {
+    try {
+      const creatorId = await this.ensureForeignUser(fromUsername, domain);
+      const toLocalUserId = await this.findLocalUserId(toLocalUsername);
+      if (toLocalUserId === null) return true; // local user gone → drop the hint
+      const friendship = await this.findApprovedFriendship(creatorId, toLocalUserId);
+      if (!friendship?.threadId) return true; // not friends (lazy-unfriend §9.4) → drop the hint
+      const threadId = friendship.threadId;
+      const cur = await this.prisma.message.aggregate({
+        where: { threadId, creator: creatorId },
+        _max: { originSeq: true },
+      });
+      let after = cur._max.originSeq ?? 0;
+      if (latestSeq <= after) return true; // already current
+      for (;;) {
+        const res = await this.withTrustedPeer(domain, () =>
+          this.getSigned<{
+            messages: Array<{
+              originSeq: number;
+              contentType: string;
+              content: string;
+              clientMessageId: string | null;
+              ts: number;
+            }>;
+            latestSeq: number;
+            hasMore: boolean;
+          }>(
+            `/api/v1/s2s/messages?from=${encodeURIComponent(fromUsername)}&to=${encodeURIComponent(toLocalUsername)}&after=${after}&take=50`,
+            domain,
+          ),
+        );
+        for (const m of res.messages) {
+          const created = await this.storePulledMessage(threadId, creatorId, toLocalUserId, m);
+          if (created && this.isMediaContentType(created.contentType)) {
+            // Best-effort media localize: fetch each referenced digest via /get_file, store in local
+            // CAS so it serves same-origin. A per-file failure leaves the message (cross-origin URL is
+            // inert) for a later retry — never blocks the text pull.
+            await this.localizeMedia(created, domain, fromUsername, toLocalUsername);
+          }
+        }
+        if (res.messages.length > 0) {
+          after = res.messages[res.messages.length - 1].originSeq;
+        }
+        if (!res.hasMore) return true; // peer served everything > the old cursor → caught up
+      }
+    } catch {
+      // Peer transiently down / signature failed / network — leave the hint for the reconnect sweep.
+      return false;
+    }
+  }
+
+  /**
+   * Idempotently store one pulled message (dedup by the originSeq unique index). Advances the thread's
+   * last-message cache only when newer than the current cache, and SSE-fans to the local recipient.
+   * Returns the created Message (or null for a duplicate — no SSE, no cache rewrite). The caller runs
+   * localizeMedia for media content types so the bytes land in local CAS (same-origin render).
+   */
+  private async storePulledMessage(
+    threadId: number,
+    creatorId: number,
+    toLocalUserId: number,
+    m: { originSeq: number; contentType: string; content: string; ts: number },
+  ): Promise<Message | null> {
+    const created = await this.prisma.message
+      .create({
+        data: {
+          contentType: m.contentType as ContentType,
+          content: m.content,
+          threadId,
+          creator: creatorId,
+          originSeq: m.originSeq,
+          createdAt: new Date(m.ts),
+        },
+      })
+      .catch((e: unknown) => {
+        if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
+          return null; // already pulled (push/pull race) — idempotent skip
+        }
+        throw e;
+      });
+    if (!created) return null;
+    const ts = new Date(m.ts);
+    // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
+    // than what's cached (a message the local user sent after this one must not be overwritten).
+    await this.prisma.messageThread.updateMany({
+      where: { id: threadId, OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: ts } }] },
+      data: {
+        lastMessageId: created.id,
+        lastMessagePreview: derivePreview(m.contentType as ContentType, m.content),
+        lastMessageSenderId: creatorId,
+        lastMessageAt: ts,
+      },
+    });
+    this.sse.onNewMessage(toLocalUserId, serializeBody({ threadId, ...created }));
+    return created;
+  }
+
+  /** Whether a content type carries CAS media the receiver must localize from the peer. */
+  private isMediaContentType(t: ContentType): boolean {
+    return (
+      t === ContentType.IMAGE ||
+      t === ContentType.FILE ||
+      t === ContentType.VIDEO ||
+      t === ContentType.AUDIO
+    );
+  }
+
+  /**
+   * Receiver-side media localize (§3.3 / §4.5): for each CAS digest referenced by a pulled message,
+   * fetch the bytes from the peer's /get_file and store them through the SAME CAS pipeline as a local
+   * upload (sha256 → shard path → MediaAsset ref++), then write the MediaMessage authz row so the local
+   * /uploads/shards/* gate admits the recipient. The content URL is already server-relative, so once the
+   * file is local it serves same-origin with no rewrite. Integrity-checked (the re-hash must match the
+   * advertised digest). Best-effort per file; a failure leaves the message with the peer's cross-origin
+   * URL (inert) for a later retry.
+   */
+  private async localizeMedia(
+    msg: { id: bigint; threadId: number; content: string },
+    peerDomain: string,
+    fromUsername: string,
+    toLocalUsername: string,
+  ): Promise<void> {
+    for (const { digest, ext } of extractDigestEntries(msg.content)) {
+      try {
+        // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
+        // the authz row exists and skip the network fetch.
+        const have = await this.prisma.mediaAsset.findUnique({
+          where: { digest },
+          select: { refs: true },
+        });
+        if (!(have && have.refs > 0)) {
+          const buf = await this.getSignedBinary(
+            `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromUsername)}&to=${encodeURIComponent(toLocalUsername)}`,
+            peerDomain,
+          );
+          const saved = await this.upload.saveCasFromPeer(ext, buf);
+          // Integrity: the re-hashed digest MUST match the advertised one — else the peer sent
+          // corrupt/tampered bytes and we drop the file (no authz row, no render).
+          if (saved.digest !== digest) continue;
+        }
+        await this.prisma.mediaMessage.createMany({
+          data: { messageId: msg.id, threadId: msg.threadId, digest },
+          skipDuplicates: true,
+        });
+      } catch {
+        // Best-effort per file — never block the text pull. The cross-origin URL stays inert until a
+        // later retry (pull-on-open / next push) re-runs localize.
+      }
+    }
+  }
+
+  /** Signed GET that returns the raw bytes (for /get_file media fetch). Parallel to getSigned (same
+   *  liveness/demote wiring) but reads the body as a Buffer instead of parsing JSON. v0.1 buffers the
+   *  whole file in memory (bounded by the upload size cap); streaming-to-disk is a future optimization. */
+  private async getSignedBinary(path: string, peerDomain: string): Promise<Buffer> {
+    const base = await this.discovery.resolveBase(peerDomain);
+    const url = new URL(`${base}${path}`);
+    const headers = this.signature.signOutbound({
+      method: 'GET',
+      path: url.pathname,
+      authority: url.host,
+      body: '', // GET — the content-digest covers sha256("")
+    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'GET',
+        headers: { ...headers },
+        signal: AbortSignal.timeout(this.config.callTimeoutSec * 1000),
+      });
+    } catch (e) {
+      await this.markDemoted(peerDomain, `GET ${path} network/timeout: ${(e as Error).message}`);
+      throw new Error(
+        `S2S GET ${path} from ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
+      );
+    }
+    if (!res.ok) {
+      await this.markDemoted(peerDomain, `GET ${path} HTTP ${res.status}`);
+      throw new Error(`S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`);
+    }
+    await this.markContactSuccess(peerDomain);
+    return Buffer.from(await res.arrayBuffer());
+  }
+
+  /** Snapshot a domain's pending pulls as a flat list (for the drain loop). */
+  private snapshotPendingPulls(
+    domain: string,
+  ): Array<{ from: string; to: string; latestSeq: number }> {
+    const byFrom = this.pendingPulls.get(domain);
+    if (!byFrom) return [];
+    const out: Array<{ from: string; to: string; latestSeq: number }> = [];
+    for (const [from, byTo] of byFrom) {
+      for (const [to, latestSeq] of byTo) out.push({ from, to, latestSeq });
+    }
+    return out;
+  }
+
+  /** Remove one pending-pull hint (+ compact emptied buckets). */
+  private removePendingPull(domain: string, from: string, to: string): void {
+    const byFrom = this.pendingPulls.get(domain);
+    if (!byFrom) return;
+    const byTo = byFrom.get(from);
+    if (!byTo) return;
+    byTo.delete(to);
+    if (byTo.size === 0) byFrom.delete(from);
+    if (byFrom.size === 0) this.pendingPulls.delete(domain);
   }
 
   /**
@@ -592,7 +1139,7 @@ export class FederationService {
    * the chat-open staleness re-pull (syncForeignUserIfStale). Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
-  async fetchRemoteUser(address: S2SActor): Promise<S2SProfile> {
+  async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
     return this.getSigned<S2SProfile>(
       `/api/v1/s2s/users/${address.username}`,
       address.domain,
@@ -600,7 +1147,7 @@ export class FederationService {
   }
 
   /** Fetch only the peer user's profile revision (signed GET .../revision). Cheap staleness probe. */
-  async fetchRemoteRevision(address: S2SActor): Promise<{ updatedAt: number }> {
+  async fetchRemoteRevision(address: S2SAddress): Promise<{ updatedAt: number }> {
     return this.getSigned<{ updatedAt: number }>(
       `/api/v1/s2s/users/${address.username}/revision`,
       address.domain,
@@ -613,7 +1160,7 @@ export class FederationService {
    * Localize a foreign stub from a received S2SProfile: decode + persist the avatar via the
    * shared saveAvatars pipeline, write name/avatar/bio, and stamp remoteUpdatedAt. Idempotent + gated
    * on the profile revision — skips entirely when profile.updatedAt is not newer than the stored
-   * remoteUpdatedAt (so a re-delivered envelope or a no-change re-pull does no work). Avatar decode
+   * remoteUpdatedAt (so a re-delivered payload or a no-change re-pull does no work). Avatar decode
    * failures (corrupt/oversized bytes from a compromised peer) are isolated: name/bio/remoteUpdatedAt
    * still advance and the existing avatar is kept, so a broken avatar can't break friend-flow (and
    * advancing remoteUpdatedAt prevents a probe retry-loop on the same broken bytes).
@@ -651,9 +1198,39 @@ export class FederationService {
     if (newAvatarUrl !== null) data.avatar = newAvatarUrl;
     await this.prisma.user.update({ where: { id: userId }, data });
 
+    // Catch-up push: this federated stub just changed, so fan the fresh profile to every local friend
+    // of this user — they refresh without each having to independently probe. Fire-and-forget so a slow
+    // fan-out can't block the localization path. localizeForeignProfile's own "skip if not newer" guard
+    // above means this only fires on a genuine profile change (no spam on a redelivered payload).
+    void this.notifyPeersOfProfileUpdate(userId);
+
     // The previous localized avatar files are intentionally LEFT on disk — gcOrphanedAvatars reaps
     // them once they are no longer any User/Group's current avatar (no delete racing a render, and
     // re-localization on a transient profile-fetch hiccup no longer thrashes the disk).
+  }
+
+  /**
+   * Fan a PEER_PROFILE_UPDATED push to every approved P2P peer of `userId`, carrying the FULL fresh
+   * profile so each recipient's conversation list (and open chat header) refreshes with no extra
+   * round-trip. Two callers: (a) local self-edits — UserController.updateProfile / updateAvatar; (b)
+   * the federated catch-up in localizeForeignProfile above. Best-effort: callers `void` it so a slow
+   * fan-out never blocks the triggering request, and a user with no friends / a missing row is a no-op.
+   */
+  async notifyPeersOfProfileUpdate(userId: number): Promise<void> {
+    const [user, peerIds] = await Promise.all([
+      // Full row (same shape as the thread-list peerUser via queryUsers) so the client can replace its
+      // cached peerUser wholesale — omit the self-only hasUrFriendReq + hashPwd, exactly like findUniqueUser.
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        omit: { hashPwd: true, hasUrFriendReq: true },
+      }),
+      this.friendship.getApprovedPeerUserIds(userId),
+    ]);
+    if (!user || peerIds.length === 0) return;
+    // serializeBody converts Date → ms, so `updatedAt` lands as the same ms-epoch the client already
+    // holds in peerUser.updatedAt — consistent with the thread-list + sync-peer-profile wire shape.
+    const payload = serializeBody(user);
+    peerIds.forEach((peerId) => this.sse.onPeerProfileUpdated(peerId, payload));
   }
 
   /**
@@ -669,7 +1246,7 @@ export class FederationService {
       select: { isForeigner: true, uniqName: true, domain: true, remoteUpdatedAt: true },
     });
     if (!stub || !stub.isForeigner) return;
-    const address: S2SActor = { username: stub.uniqName, domain: stub.domain };
+    const address: S2SAddress = { username: stub.uniqName, domain: stub.domain };
     try {
       const rev = await this.fetchRemoteRevision(address);
       if (

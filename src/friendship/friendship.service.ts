@@ -52,6 +52,20 @@ export class FriendshipService {
     };
   }
 
+  /** All userIds sharing an APPROVED friendship with `userId` — the P2P peer set for profile-update
+   *  fan-out. An approved friendship == an active P2P thread. Blocking does NOT unfriend, so blocked
+   *  peers are included: a profile refresh is harmless and the conversation list still shows them. */
+  async getApprovedPeerUserIds(userId: number): Promise<number[]> {
+    const rows = await this.prisma.friendship.findMany({
+      where: {
+        status: FriendshipStatus.APPROVED,
+        OR: [{ userAId: userId }, { userBId: userId }],
+      },
+      select: { userAId: true, userBId: true },
+    });
+    return rows.map((r) => (r.userAId === userId ? r.userBId : r.userAId));
+  }
+
   async makeFriendRequest(fromUserId: number, toUserId: number, message = '') {
     const reqMessage = (message ?? '').slice(0, 255); // Friendship.reqMessage is VARCHAR(255)
     return this.prisma.$transaction(async (tx) => {

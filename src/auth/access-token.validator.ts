@@ -77,9 +77,12 @@ export class AccessTokenValidator {
     }
     const u = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { tokenVersion: true },
+      select: { tokenVersion: true, isDeleted: true },
     });
-    if (!u) return -1; // user gone → matches no tver → reject
+    // user gone OR admin-disabled (soft-deleted) → sentinel that matches no issued tver → reject.
+    // Defense-in-depth: admin disable already bumps tokenVersion (invalidateAllSessions), so this is the
+    // backstop for any future disable path that forgets to bump. Cached only on the happy path below.
+    if (!u || u.isDeleted) return -1;
     if (this.redis.enabled) {
       await this.redis
         .setex(`access:tver:${userId}`, 60, String(u.tokenVersion))

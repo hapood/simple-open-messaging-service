@@ -11,8 +11,6 @@ export interface FederationConfig {
   keyPath: string;
   /** TTL for cached peer signing keys fetched from .well-known (seconds). */
   keyCacheTtlSec: number;
-  /** S2SOutboxWorker poll interval (seconds). */
-  outboxPollSec: number;
   /** Per-attempt connect timeout for outbound S2S HTTP requests (seconds). §6.4 (v4/v6 racing backstop). */
   connectTimeoutSec: number;
   /** Overall timeout for an outbound S2S HTTP call — connect + transfer + response (seconds). */
@@ -26,7 +24,6 @@ export function loadFederationConfig(): FederationConfig {
     domain: requireEnv('SOMS_DOMAIN'),
     keyPath: process.env.SOMS_S2S_KEY_PATH ?? './data/soms-s2s-key.json',
     keyCacheTtlSec: Number(process.env.SOMS_KEY_CACHE_TTL_SEC ?? 6 * 60 * 60), // 6h
-    outboxPollSec: Number(process.env.SOMS_OUTBOX_POLL_SEC ?? 5),
     connectTimeoutSec: Number(process.env.SOMS_CONNECT_TIMEOUT_SEC ?? 5),
     callTimeoutSec: Number(process.env.SOMS_CALL_TIMEOUT_SEC ?? 10),
     allowInsecureHttp: process.env.SOMS_ALLOW_INSECURE_HTTP === '1',

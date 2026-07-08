@@ -59,6 +59,10 @@ export class MessageService implements OnModuleInit {
    * index on Message.clientMessageId is the dedup authority; the pre-check avoids throwing in the
    * common serial-retry case and the P2002 branch wins the concurrent-retry race (the interactive tx
    * is poisoned by the error, so the re-fetch runs on the root client).
+   *
+   * Also allocates the per-(thread, sender) originSeq (MAX+1) inside the tx — the cross-server
+   * federation pull cursor (Step 2). A same-user concurrent-send race on the (threadId, creator,
+   * originSeq) unique index is resolved by a bounded tx retry (distinct from the clientMessageId race).
    */
   async writeMsgToThread(
     userId: number,
@@ -73,66 +77,89 @@ export class MessageService implements OnModuleInit {
       });
       if (existing !== null) return existing; // retry → return the original message
     }
-    try {
-      return await this.prisma.$transaction(async (tx) => {
-        const msg = await tx.message.create({
-          data: {
-            content,
-            contentType: type,
-            threadId,
-            creator: userId,
-            clientMessageId,
-          },
-        });
-        await tx.messageThread.update({
-          where: { id: threadId },
-          data: {
-            lastMessageId: msg.id,
-            lastMessagePreview: derivePreview(type, content),
-            lastMessageSenderId: userId,
-            lastMessageAt: msg.createdAt,
-          },
-        });
-        // Sender has implicitly "read" what they just sent; msg.id is a fresh autoincrement so it is
-        // always strictly greater than the prior watermark — a forward move, never a regression.
-        await tx.threadParticipant.update({
-          where: { userId_threadId: { userId, threadId } },
-          data: { lastReadMsgId: msg.id },
-        });
-        // Per-object media authz: record every CAS digest this message references so the /uploads/shards/*
-        // gate can authorize readers against thread membership (one indexed EXISTS). One row per distinct
-        // digest; skipDuplicates honors @@unique([messageId, digest]) for album duplicates. PURE_TEXT/
-        // INVITE reference no media; legacy-flat URLs carry no digest and are skipped by extractDigests.
-        if (
-          type === ContentType.IMAGE ||
-          type === ContentType.FILE ||
-          type === ContentType.VIDEO ||
-          type === ContentType.AUDIO
-        ) {
-          const digests = extractDigests(content);
-          if (digests.length > 0) {
-            await tx.mediaMessage.createMany({
-              data: digests.map((digest) => ({ messageId: msg.id, threadId, digest })),
-              skipDuplicates: true,
-            });
+    // The (threadId, creator, originSeq) unique index collides when two concurrent sends from the SAME
+    // user race (both read the same MAX+1 before either commits). A bounded retry resolves it: re-read
+    // MAX on a fresh tx and re-create. (Different users never contend — different creator.) This is
+    // distinct from the clientMessageId P2002 below, which is a concurrent RETRY of the same send.
+    const MAX_SEQ_RACES = 5;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.prisma.$transaction(async (tx) => {
+          // Allocate the per-(thread, sender) originSeq = MAX+1 — the cross-server federation pull
+          // cursor. NULLs (legacy rows + never-federating threads) are ignored by _max, so the first
+          // federated send starts at 1. Always assigned: local-only threads pay one cheap aggregate
+          // now and are ready if they ever federate. See docs/federation-step2-design.md §2.1.
+          const lastSeq = await tx.message.aggregate({
+            where: { threadId, creator: userId },
+            _max: { originSeq: true },
+          });
+          const originSeq = (lastSeq._max.originSeq ?? 0) + 1;
+          const msg = await tx.message.create({
+            data: {
+              content,
+              contentType: type,
+              threadId,
+              creator: userId,
+              clientMessageId,
+              originSeq,
+            },
+          });
+          await tx.messageThread.update({
+            where: { id: threadId },
+            data: {
+              lastMessageId: msg.id,
+              lastMessagePreview: derivePreview(type, content),
+              lastMessageSenderId: userId,
+              lastMessageAt: msg.createdAt,
+            },
+          });
+          // Sender has implicitly "read" what they just sent; msg.id is a fresh autoincrement so it is
+          // always strictly greater than the prior watermark — a forward move, never a regression.
+          await tx.threadParticipant.update({
+            where: { userId_threadId: { userId, threadId } },
+            data: { lastReadMsgId: msg.id },
+          });
+          // Per-object media authz: record every CAS digest this message references so the /uploads/shards/*
+          // gate can authorize readers against thread membership (one indexed EXISTS). One row per distinct
+          // digest; skipDuplicates honors @@unique([messageId, digest]) for album duplicates. PURE_TEXT/
+          // INVITE reference no media; legacy-flat URLs carry no digest and are skipped by extractDigests.
+          if (
+            type === ContentType.IMAGE ||
+            type === ContentType.FILE ||
+            type === ContentType.VIDEO ||
+            type === ContentType.AUDIO
+          ) {
+            const digests = extractDigests(content);
+            if (digests.length > 0) {
+              await tx.mediaMessage.createMany({
+                data: digests.map((digest) => ({ messageId: msg.id, threadId, digest })),
+                skipDuplicates: true,
+              });
+            }
           }
-        }
-        return msg;
-      });
-    } catch (e) {
-      if (
-        clientMessageId !== undefined &&
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === 'P2002'
-      ) {
-        // Lost the concurrent-retry race: another request inserted this clientMessageId first. Return
-        // theirs rather than surfacing the unique-violation.
-        const winner = await this.prisma.message.findUnique({
-          where: { clientMessageId },
+          return msg;
         });
-        if (winner !== null) return winner;
+      } catch (e) {
+        if (
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === 'P2002'
+        ) {
+          const target = ((e.meta?.target as string[] | undefined) ?? []);
+          // Concurrent RETRY of the same send (same clientMessageId): another request inserted it
+          // first. Return theirs rather than surfacing the unique-violation. (The interactive tx is
+          // poisoned by the error, so the re-fetch runs on the root client.)
+          if (clientMessageId !== undefined && target.includes('clientMessageId')) {
+            const winner = await this.prisma.message.findUnique({
+              where: { clientMessageId },
+            });
+            if (winner !== null) return winner;
+          }
+          // Same-user concurrent-send race on originSeq: retry the tx (re-reads MAX). Bounded to avoid
+          // an infinite loop under pathological contention.
+          if (target.includes('originSeq') && attempt < MAX_SEQ_RACES) continue;
+        }
+        throw e;
       }
-      throw e;
     }
   }
 
