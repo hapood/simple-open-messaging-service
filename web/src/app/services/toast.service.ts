@@ -33,11 +33,11 @@ export class ToastService {
     Object.assign(el.style, this.styles(kind));
     container.appendChild(el);
     // Animate in.
-    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translate(-50%, 0)'; });
+    requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateY(0)'; });
     // Auto-dismiss.
     setTimeout(() => {
       el.style.opacity = '0';
-      el.style.transform = 'translate(-50%, -8px)';
+      el.style.transform = 'translateY(-8px)';
       setTimeout(() => el.remove(), 250);
     }, 4000);
   }
@@ -76,7 +76,7 @@ export class ToastService {
       border: `1px solid ${border}`,
       boxShadow: '0 4px 16px rgba(0, 0, 0, 0.25)',
       opacity: '0',
-      transform: 'translate(-50%, -8px)',
+      transform: 'translateY(-8px)',
       transition: 'opacity 250ms ease, transform 250ms ease',
       pointerEvents: 'auto',
       whiteSpace: 'normal',

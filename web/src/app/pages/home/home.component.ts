@@ -6,19 +6,28 @@ import { WebsocketService } from '../../services/websocket.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { GroupEventService } from '../../services/group-event.service';
 import { HomeShellComponent } from '../../components/home-shell/home-shell.component';
+import { IndicatorSlotComponent } from '../../components/indicator-slot/indicator-slot.component';
+import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
+import { UpdateBannerComponent } from '../../components/update-banner/update-banner.component';
 import { RootPopupComponent } from '../../components/root-popup/root-popup.component';
 
 /**
  * Home route entry (`/`). Renders the unified responsive {@link HomeShellComponent} (which hosts the
- * chat + aside router-outlets) plus the root popup layer for the transient editor dialogs. App
- * bootstrap (profile / token / websocket) lives here because this route component is always
- * instantiated once the user is authed.
+ * chat + aside router-outlets), the top-right {@link IndicatorSlotComponent} (the single positioned anchor
+ * for every status indicator — connection chip + update banner — placed here, the outermost authed layer,
+ * so it floats over the shell's routed overlays on every mode), plus the root popup layer for the
+ * transient editor dialogs. App bootstrap (profile / token / websocket) lives here because this route
+ * component is always instantiated once the user is authed.
  */
 @Component({
   selector: 'app-home',
-  imports: [HomeShellComponent, RootPopupComponent],
+  imports: [HomeShellComponent, IndicatorSlotComponent, ConnectionBannerComponent, UpdateBannerComponent, RootPopupComponent],
   template: `
     <app-home-shell />
+    <app-indicator-slot>
+      <app-connection-banner />
+      <app-update-banner />
+    </app-indicator-slot>
     <app-root-popup />
   `,
 })

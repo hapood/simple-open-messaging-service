@@ -10,12 +10,8 @@ import { PeerProfileComponent } from '../peer-profile/peer-profile.component';
 import { GroupInfoComponent } from '../group-info/group-info.component';
 import { SettingsComponent } from '../settings/settings.component';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
-import { ConnectionBannerComponent } from '../connection-banner/connection-banner.component';
-import { UpdateBannerComponent } from '../update-banner/update-banner.component';
-import { GlobalSearchComponent } from '../global-search/global-search.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
-import { SearchService } from '../../services/search.service';
 
 const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
@@ -56,7 +52,7 @@ const overlaySlide = trigger('overlaySlide', [
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [IconRailComponent, NavDrawerComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent, ConnectionBannerComponent, UpdateBannerComponent, GlobalSearchComponent],
+  imports: [IconRailComponent, NavDrawerComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
   animations: [overlaySlide],
@@ -65,7 +61,6 @@ export class HomeShellComponent {
   private readonly layout = inject(LayoutService)
   private readonly convList = inject(ConversationListService)
   private readonly navState = inject(NavStateMachineService)
-  readonly search = inject(SearchService)
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode

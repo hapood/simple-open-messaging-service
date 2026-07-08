@@ -23,7 +23,7 @@ export class UserListComponent {
         const q = (this.filterText() ?? '').trim().toLowerCase()
         const filtered = q
             ? this.threadList().filter((t) => {
-                const name = (t.peerUser.userExtra.name ?? '').toLowerCase()
+                const name = (t.peerUser.name ?? '').toLowerCase()
                 const handle = (t.peerUser.uniqName ?? '').toLowerCase()
                 return name.includes(q) || handle.includes(q)
             })

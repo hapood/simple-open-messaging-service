@@ -7,8 +7,8 @@ import { IndicatorSlotService } from '../../services/indicator-slot.service';
 import { prefersReducedMotion, springGradient } from '../../lib/motion-utils';
 
 /**
- * "A new version is available" pill, fixed at the top-right corner — the SAME indicator slot the
- * {@link ConnectionBannerComponent} occupies. The two share the `.tonal-chip` M3 shell (tonal-fill
+ * "A new version is available" pill. NOT self-positioned: like the connection chip, it is projected into
+ * `<app-indicator-slot>` (the single top-right anchor). The two share the `.tonal-chip` M3 shell (tonal-fill
  * gradient + level-1 elevation + pill shape) and the `springGradient` Motion helper; they differ in accent
  * (brand-blue vs the chip's amber/green/red) and content (this one carries Reload + Dismiss actions).
  *
@@ -46,12 +46,9 @@ import { prefersReducedMotion, springGradient } from '../../lib/motion-utils';
   `,
   styles: [`
     :host {
-      position: fixed;
-      top: var(--conn-chip-top, 10px); /* the shared indicator slot — same corner as the connection chip */
-      right: 12px;
-      /* Below the connection chip (52) — the slot service guarantees they never show at once, so this only
-         matters during the brief handoff. */
-      z-index: 51;
+      /* No positioning here — projected into <app-indicator-slot>, the single top-right anchor (its
+         :host carries position/top/right/z-index). The slot service guarantees the chip and this banner
+         never show at once, so no per-indicator z-index is needed. */
       display: block;
       /* Brand-blue "info" palette (M3): tinted over the themed surface, auto light/dark. inherits:true on
          the @property registrations lets .banner read these without declaring them itself. */

@@ -4,8 +4,6 @@
      [class.mode-mobile]="mode() === 'mobile'"
      [class.chat-open]="chatActive()"
      [class.aside-open]="asideActive()">
-  <app-connection-banner />
-  <app-update-banner />
   @if (mode() === 'desktop') {
     <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
     <app-chat-list-pane class="list" [style.width.px]="listWidth()" (selectThread)="openChat($event)" />
@@ -42,14 +40,6 @@
       @case ('settings') { <app-settings /> }
     }
   </div>
-
-  <!-- Global-search overlay. Desktop = covers the conversation-list column (dual-pane alongside chat);
-       tablet/mobile = full-screen takeover. Gated by SearchService.searchActive; positioning is per-mode
-       in the stylesheet (.search-overlay). width binds to the resizable list column on desktop only. -->
-  @if (search.searchActive()) {
-    <app-global-search class="search-overlay"
-      [style.width.px]="mode() === 'desktop' ? listWidth() : null" />
-  }
 
   <!-- Scrim behind the aside drawer on desktop + tablet (click → close). Mobile's aside slides over a
        full-screen chat so no mask is needed there; the nav-drawer uses its own mat-sidenav backdrop. -->

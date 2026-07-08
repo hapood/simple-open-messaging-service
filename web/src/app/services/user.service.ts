@@ -111,8 +111,22 @@ export class UserService {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/by-uniq-name`, params)
   }
 
-  sendFriendRequest(params: { userId: number }) {
+  /** Pre-flight trust check for a federated handle search: has mutual trust with this peer domain been
+   *  established already? Drives the first-contact "Connecting to {domain}…" affordance — shown only
+   *  when the server reports the domain untrusted (a handshake IS expected during the resolve), never
+   *  guessed from latency. Cheap local allow-list lookup server-side (no network). */
+  peerTrustStatus(params: { domain: string }) {
+    return this.http.post<StandardResponse<{ trusted: boolean }>>(`${apiPrefix}/user/peer-trust-status`, params)
+  }
+
+  sendFriendRequest(params: { userId: number; message?: string }) {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/send-friend-request`, params)
+  }
+
+  /** Refresh a federated peer's avatar/name/bio if stale (chat-open hook). Cheap server-side /revision
+   *  probe; re-pulls + re-localizes only when the peer's profile is newer than the stub's remoteUpdatedAt. */
+  syncPeerProfile(params: { userId: number }) {
+    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/sync-peer-profile`, params)
   }
 
   queryToPending(params: {

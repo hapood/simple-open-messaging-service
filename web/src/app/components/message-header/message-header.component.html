@@ -1,11 +1,14 @@
 <div class="msg-header">
-  @if (!isDesktop()) {
+  @if (mode() === 'mobile') {
     <button class="icon-btn" (click)="goBack()" aria-label="Back">
       <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
     </button>
   }
   <div class="msg-title">
     <span class="msg-title-text" (click)="showThreadInfo()" [title]="title()">{{ title() }}</span>
+    @if (federatedDomain(); as dom) {
+      <app-federated-badge [domain]="dom"></app-federated-badge>
+    }
     @if (subtitle()) {
       <span class="msg-subtitle" (click)="showThreadInfo()" [title]="subtitle()">{{ subtitle() }}</span>
     }

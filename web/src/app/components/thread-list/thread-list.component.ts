@@ -7,6 +7,7 @@ import { UserService } from '../../services/user.service'
 import { ConversationItem, displayThreadName } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
+import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { EmptyStateComponent } from '../empty-state/empty-state.component';
 import { ChatFolder, inFolder } from '../../services/folder.service'
 import { LanguageService } from '../../services/language.service'
@@ -20,7 +21,7 @@ import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
  */
 @Component({
     selector: 'app-thread-list',
-    imports: [UserAvatarComponent, IconComponent, NgClass, EmptyStateComponent, TranslocoPipe],
+    imports: [UserAvatarComponent, IconComponent, NgClass, EmptyStateComponent, TranslocoPipe, FederatedBadgeComponent],
     templateUrl: './thread-list.component.html',
     styleUrl: './thread-list.component.scss'
 })

@@ -4,11 +4,11 @@ import { computed, effect, inject, Injectable, signal, type Type } from '@angula
 export type AsidePanel = 'profile' | 'group-info' | 'settings';
 
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
-export type PaneKind = 'dialog' | 'gallery' | 'file-detail' | 'invite-detail' | 'search';
+export type PaneKind = 'dialog' | 'gallery' | 'file-detail' | 'invite-detail';
 
 /**
  * One entry on the transient pane stack. `component`/`inputs`/`onResult` are dialog-specific (RootPopup
- * renders dialogs via `*ngComponentOutlet`); gallery/file-detail/invite-detail/search carry their payload
+ * renders dialogs via `*ngComponentOutlet`); gallery/file-detail/invite-detail carry their payload
  * in `payload` and are rendered by a host `@switch` on `kind`.
  */
 export interface PaneEntry {
@@ -48,7 +48,7 @@ export class NavStateMachineService {
   readonly chatThreadId = signal<number | undefined>(undefined);
   /** The open aside panel, or `undefined`. */
   readonly aside = signal<{ panel: AsidePanel } | undefined>(undefined);
-  /** Transient pane stack (dialogs + overlays + search). Top = last entry. */
+  /** Transient pane stack (dialogs + overlays). Top = last entry. */
   readonly paneStack = signal<readonly PaneEntry[]>([]);
 
   /** Dialog entries (derived) — RootPopup reads this (Phase 3 rewire; today RouteService.dlgList still drives it). */
@@ -72,7 +72,7 @@ export class NavStateMachineService {
   // --- chat layer ---
   /** Open a chat thread. Closing a chat-scoped aside on a thread switch mirrors the old openChat (which
    *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
-   *  Also clears the pane stack — a thread switch scopes away any open dialog/overlay/search. */
+   *  Also clears the pane stack — a thread switch scopes away any open dialog/overlay. */
   openChat(threadId: number): void {
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set(undefined);
@@ -112,7 +112,7 @@ export class NavStateMachineService {
   }
 
   /** Clear the entire pane stack (each onResult gets `undefined` = cancel). Called by openChat/closeChat
-   *  so a thread switch or going home dismisses any open dialog/overlay/search. */
+   *  so a thread switch or going home dismisses any open dialog/overlay. */
   closeAllPanes(): void {
     const stack = this.paneStack();
     if (stack.length === 0) return;

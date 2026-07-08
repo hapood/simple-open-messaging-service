@@ -1,12 +1,14 @@
-import { Component, input, signal } from '@angular/core';
-import { Subject } from 'rxjs';
+import { Component, input, signal, OnDestroy } from '@angular/core';
+import { Subject, Subscription } from 'rxjs';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
+import { displayUserName } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { MsgService } from '../../services/message.service'
 import { translateBizResult } from '../../services/biz-code'
 import { arrayToDictIndex } from '../../../utils';
@@ -17,21 +19,32 @@ enum AddTabStatus {
   INIT, EMPTY, SEARCHING, SUCCESS, ERROR
 }
 // The underlying User data is optional: the degraded "Unknown user" fallback row
-// (built when a pending/sent request's user can't be resolved) lacks userExtra,
+// (built when a pending/sent request's user can't be resolved) lacks name/avatar/bio,
 // so the avatar falls back to the initial letter. Resolved rows spread a full User.
-type PendingReq = Omit<User, 'userExtra'> & { userExtra?: User['userExtra'] }
-  & { status: number, date: string, errText: string }
+type PendingReq = Omit<User, 'name' | 'avatar' | 'bio'>
+  & Partial<Pick<User, 'name' | 'avatar' | 'bio'>>
+  & { status: number, date: string, errText: string, reqMessage?: string }
 
 @Component({
     selector: 'app-friend-requests',
     imports: [UserAvatarComponent, FormsModule,
-        MatButtonModule, IconComponent, FitDialogDirective, TranslocoPipe],
+        MatButtonModule, IconComponent, FitDialogDirective, TranslocoPipe, FederatedBadgeComponent],
     templateUrl: './friend-requests.component.html',
     styleUrl: './friend-requests.component.scss'
 })
-export class FriendRequestsComponent {
+export class FriendRequestsComponent implements OnDestroy {
   readonly fitOpts = { minHeight: 420 } as const
   readonly searchText = signal('')
+  readonly friendReqMessage = signal('')
+  /** When set, the in-flight federated resolve is a FIRST-CONTACT handshake with this peer domain. The
+   *  server's peer-trust-status pre-check reported the domain untrusted (no FederatedPeer 'trusted'
+   *  row), so the resolve WILL run the init handshake (up to the S2S call timeout) — show a small
+   *  "Connecting to <domain>…" banner with a Cancel button so the UI never appears frozen. Cleared the
+   *  instant the resolve settles. An already-trusted domain never sets this: its resolve is fast and
+   *  stays on the plain "Searching…" hint. This is a known server-side fact, not a latency guess. */
+  readonly connectingDomain = signal<string | null>(null)
+  private trustSub: Subscription | undefined
+  private searchSub: Subscription | undefined
   readonly userData = signal<User | undefined>(undefined)
   readonly errMsg = signal('')
   readonly reqRspTxt = signal('')
@@ -52,6 +65,7 @@ export class FriendRequestsComponent {
   UserAvatarType = UserAvatarType
   AddTabStatus = AddTabStatus
   AppIconType = AppIconType
+  displayUserName = displayUserName
 
   constructor(private routeService: RouteService, private userService: UserService, private msgService: MsgService, private transloco: TranslocoService) {
   }
@@ -68,74 +82,132 @@ export class FriendRequestsComponent {
     if (!curSearchText) return
     this.addTabStatus.set(AddTabStatus.SEARCHING)
     this.reqRspTxt.set('')
-    this.userService.getUserInfoByUniqName({ uniqName: curSearchText }).subscribe({
-      next: res => {
-        if (res.code === 0) {
-          if (res.data!.uniqName === this.userService.sessionProfile()!.uniqName) {
-            this.userData.set(res.data)
-            this.addTabStatus.set(AddTabStatus.SUCCESS)
-            this.canAdd.set(false)
-            this.reqRspTxt.set(this.transloco.translate('friend.error.canNotAddSelf'))
-          } else {
-            // First query the P2P thread status with this user to decide which state applies
-            // (can add / already friends / request already sent / they sent one to you), instead of
-            // always showing Send Request (avoids re-inviting an existing friend and misleading copy).
-            this.msgService.getThreadByUserId({ userId: res.data!.id }).subscribe(res2 => {
+    this.cancelInFlight()
+
+    // A federated-shaped handle (localpart@domain) MAY need the init handshake. Whether it does is a
+    // known server-side fact (a FederatedPeer 'trusted' row), NOT a latency guess — so ask the server
+    // first (peer-trust-status, a cheap local lookup). Only an untrusted domain means a first-contact
+    // handshake will run during the resolve, so only then do we surface the "Connecting to <domain>…"
+    // banner. An already-trusted domain resolves fast and stays on the plain "Searching…" hint. The
+    // rare already-trusted-but-failing case (the peer reset its server and lost the handshake, or a
+    // key/cert change forced a re-handshake) falls through to the normal searching state and surfaces as
+    // an error from the resolve itself.
+    const at = curSearchText.lastIndexOf('@')
+    const domain = at > 0 && at < curSearchText.length - 1 ? curSearchText.slice(at + 1) : null
+
+    const runResolve = () => {
+      this.searchSub = this.userService.getUserInfoByUniqName({ uniqName: curSearchText }).subscribe({
+        next: res => {
+          this.connectingDomain.set(null)
+          if (res.code === 0) {
+            if (res.data!.uniqName === this.userService.sessionProfile()!.uniqName) {
               this.userData.set(res.data)
               this.addTabStatus.set(AddTabStatus.SUCCESS)
-              if (res2.code === 30003) {
-                // THREAD_NOT_FOUND: no relationship yet — a friend request can be sent.
-                this.canAdd.set(true)
-                this.reqRspTxt.set('')
-                return
-              }
-              if (res2.code !== 0) {
-                this.canAdd.set(true)
-                this.reqRspTxt.set('')
-                return
-              }
-              switch (res2.data?.status) {
-                case 'APPROVED':
-                  this.canAdd.set(false)
-                  this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
-                  break
-                case 'PENDING':
-                  // Direction disambiguates incoming vs outgoing (the friendship is one row per pair).
-                  if (res2.data?.requesterId === this.userService.sessionProfile()!.id) {
-                    this.canAdd.set(false)
-                    this.reqRspTxt.set(this.transloco.translate('friend.error.requestAlreadySent'))
-                  } else {
-                    // They already sent you a request → guide to the Pending tab to accept, not re-send.
-                    this.canAdd.set(false)
-                    this.reqRspTxt.set(this.transloco.translate('friend.error.sentYouRequest'))
-                  }
-                  break
-                default:
-                  // BLOCKED / DELETED still allow (re)sending.
+              this.canAdd.set(false)
+              this.reqRspTxt.set(this.transloco.translate('friend.error.canNotAddSelf'))
+            } else {
+              // First query the P2P thread status with this user to decide which state applies
+              // (can add / already friends / request already sent / they sent one to you), instead of
+              // always showing Send Request (avoids re-inviting an existing friend and misleading copy).
+              this.msgService.getThreadByUserId({ userId: res.data!.id }).subscribe(res2 => {
+                this.userData.set(res.data)
+                this.addTabStatus.set(AddTabStatus.SUCCESS)
+                if (res2.code === 30003) {
+                  // THREAD_NOT_FOUND: no relationship yet — a friend request can be sent.
                   this.canAdd.set(true)
                   this.reqRspTxt.set('')
-              }
-            })
+                  return
+                }
+                if (res2.code !== 0) {
+                  this.canAdd.set(true)
+                  this.reqRspTxt.set('')
+                  return
+                }
+                switch (res2.data?.status) {
+                  case 'APPROVED':
+                    this.canAdd.set(false)
+                    this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
+                    break
+                  case 'PENDING':
+                    // Direction disambiguates incoming vs outgoing (the friendship is one row per pair).
+                    if (res2.data?.requesterId === this.userService.sessionProfile()!.id) {
+                      this.canAdd.set(false)
+                      this.reqRspTxt.set(this.transloco.translate('friend.error.requestAlreadySent'))
+                    } else {
+                      // They already sent you a request → guide to the Pending tab to accept, not re-send.
+                      this.canAdd.set(false)
+                      this.reqRspTxt.set(this.transloco.translate('friend.error.sentYouRequest'))
+                    }
+                    break
+                  default:
+                    // BLOCKED / DELETED still allow (re)sending.
+                    this.canAdd.set(true)
+                    this.reqRspTxt.set('')
+                }
+              })
+            }
+          } else {
+            this.curSearchText.set(curSearchText)
+            this.addTabStatus.set(AddTabStatus.EMPTY)
           }
-        } else {
-          this.curSearchText.set(curSearchText)
-          this.addTabStatus.set(AddTabStatus.EMPTY)
+        }, error: () => {
+          this.connectingDomain.set(null)
+          this.errMsg.set(this.transloco.translate('friend.error.unknownError'))
+          this.addTabStatus.set(AddTabStatus.ERROR)
         }
-      }, error: () => {
-        this.errMsg.set(this.transloco.translate('friend.error.unknownError'))
-        this.addTabStatus.set(AddTabStatus.ERROR)
-      }
-    })
+      })
+    }
+
+    if (domain) {
+      this.trustSub = this.userService.peerTrustStatus({ domain }).subscribe({
+        next: res => {
+          if (res.code === 0 && !res.data!.trusted) {
+            // First contact: the resolve below will run the init handshake — show the specific banner.
+            this.connectingDomain.set(domain)
+          }
+          runResolve()
+        },
+        error: () => {
+          // Pre-flight itself failed (rare) — fall through to the resolve, which surfaces its own error.
+          runResolve()
+        },
+      })
+    } else {
+      runResolve()
+    }
+  }
+
+  /** Abort any in-flight trust pre-check or resolve and drop the connecting banner. The init handshake
+   *  is idempotent, so a partial/aborted one is safe to re-run on the next search. */
+  private cancelInFlight() {
+    this.trustSub?.unsubscribe()
+    this.trustSub = undefined
+    this.searchSub?.unsubscribe()
+    this.searchSub = undefined
+    this.connectingDomain.set(null)
+  }
+
+  /** Cancel button: abort the in-flight search and reset the Add tab to its initial state. */
+  cancelSearch() {
+    this.cancelInFlight()
+    this.addTabStatus.set(AddTabStatus.INIT)
+    this.searchText.set('')
+  }
+
+  ngOnDestroy() {
+    this.cancelInFlight()
   }
 
   sendRequest() {
     this.reqRspTxt.set('')
-    this.userService.sendFriendRequest({ userId: this.userData()!.id }).subscribe({
+    const message = this.friendReqMessage().trim().slice(0, 255)
+    this.userService.sendFriendRequest({ userId: this.userData()!.id, message }).subscribe({
       next: res => {
         // Echo the backend message directly: the backend already returns status-keyed copy
         // ("friend request sent" / "you are already friends" / "you are now friends"), so the
         // client does not hardcode a "sent successfully" string.
         this.reqRspTxt.set(translateBizResult(res, this.transloco))
+        this.friendReqMessage.set('')
       }, error: () => {
         this.reqRspTxt.set(this.transloco.translate('friend.error.unknownError'))
       }
@@ -203,9 +275,9 @@ export class FriendRequestsComponent {
             const list = res.data!.map(item => {
               const userData = dict[item.peerUserId]
               if (userData) {
-                return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
+                return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.peerUserId, uniqName: this.transloco.translate('common.unknownUser'), status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, uniqName: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.pendingReqList.set(list)
@@ -242,9 +314,9 @@ export class FriendRequestsComponent {
             const list = res.data!.map(item => {
               const userData = dict[item.peerUserId]
               if (userData) {
-                return { ...userData, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
+                return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.peerUserId, uniqName: this.transloco.translate('common.unknownUser'), status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, uniqName: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.sentReqList.set(list)

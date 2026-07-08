@@ -87,7 +87,7 @@
   text-align: left;
 }
 
-// Group identity (the hero): a sized 40px group avatar + bold name + a chevron hinting the card opens a
+// Group identity (the hero): a sized 40px group avatar + bold name; the whole card is tappable into the
 // detail view.
 .invite-group {
   display: flex;
@@ -110,22 +110,10 @@
   font-weight: 600;
   color: var(--app-text);
   flex: 1 1 auto;
-  min-width: 0;              // allow shrink so the chevron never overflows on a narrow card
+  min-width: 0;              // allow shrink so an over-long name truncates inside the fixed-width card
   white-space: nowrap;       // truncate an over-long group name with an ellipsis (the detail dialog wraps it)
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.invite-chev {
-  font-size: 18px;
-  line-height: 18px; // integer px
-  color: var(--app-text-faint);
-  flex: 0 0 auto;
-  margin-left: 2px;
-  transition: color 120ms ease;
-}
-// On hover, brand the chevron — a micro-cue that the whole card is tappable.
-.invite-tappable:hover .invite-chev {
-  color: var(--app-brand);
 }
 
 // Valid / Expired status — the card surfaces ONLY the state; the concrete expiry time lives in the

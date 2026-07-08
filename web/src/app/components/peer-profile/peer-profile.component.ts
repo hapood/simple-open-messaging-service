@@ -6,7 +6,8 @@ import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-
 import { UserService } from '../../services/user.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
-import { ConversationItem } from '../../services/model';
+import { ConversationItem, displayUserName } from '../../services/model';
+import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
@@ -17,7 +18,7 @@ import { ConversationItem } from '../../services/model';
  */
 @Component({
   selector: 'app-peer-profile',
-  imports: [MatButtonModule, UserAvatarComponent, TranslocoPipe, ThreadAliasEditorComponent],
+  imports: [MatButtonModule, UserAvatarComponent, TranslocoPipe, ThreadAliasEditorComponent, FederatedBadgeComponent],
   template: `
     <div class="panel">
       <div class="msg-header">
@@ -34,14 +35,15 @@ import { ConversationItem } from '../../services/model';
       <div class="body">
         <div class="identity">
           <app-user-avatar [type]="UserAvatarType.OTHER" [name]="peer()?.uniqName ?? ''" />
-          <div class="name">{{ peer()?.uniqName }}</div>
+          <div class="name">{{ peerDisplayName() }}</div>
+          <app-federated-badge [domain]="peerDomain()"></app-federated-badge>
         </div>
 
         <app-thread-alias-editor [threadId]="threadId()!" />
 
         @if (confirmUnfriend()) {
           <div class="confirm-row">
-            <span>{{ 'profile.removeFriendConfirm' | transloco:{ name: peer()?.uniqName } }}</span>
+            <span>{{ 'profile.removeFriendConfirm' | transloco:{ name: peerDisplayName() } }}</span>
             <div class="confirm-actions">
               <button mat-stroked-button [disabled]="busy()" (click)="cancelUnfriend()">{{ 'common.cancel' | transloco }}</button>
               <button mat-raised-button color="warn" [disabled]="busy()" (click)="doUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
@@ -104,6 +106,16 @@ export class PeerProfileComponent {
     return id !== undefined ? this.convList.items().find((t) => t.threadId === id) : undefined
   })
   readonly peer = computed(() => this.userMsgTrd()?.peerUser)
+  /** Display label for the peer: bare localpart for local users, `@localpart@domain` for federated. */
+  readonly peerDisplayName = computed(() => {
+    const p = this.peer();
+    return p ? displayUserName(p) : '';
+  })
+  /** The peer's domain when federated, else null (the badge self-hides). */
+  readonly peerDomain = computed(() => {
+    const p = this.peer();
+    return p && p.isForeigner ? p.domain : null;
+  })
 
   askUnfriend() { this.confirmUnfriend.set(true) }
   cancelUnfriend() { this.confirmUnfriend.set(false) }

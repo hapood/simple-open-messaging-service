@@ -13,22 +13,11 @@
   height: 100%;
   overflow: hidden;
   background: var(--app-bg);
-  /* Single source for the app-header height — read by HomeHeaderComponent (its own height) and by the
-     connection chip's top offset. Both are DOM descendants of .shell, so the var reaches them. */
+  /* Single source for the app-header height — read by HomeHeaderComponent (its own height), a DOM
+     descendant of .shell, so the var reaches it. The indicator chip no longer reads a derived var from
+     here: indicators now live in <app-indicator-slot> at the HomeComponent layer (outside .shell) and are
+     positioned solely by IndicatorSlotComponent's :host. */
   --app-header-h: 56px;
-  /* Connection chip's distance from the viewport top. Default is a small gap: the "no visible header"
-     case — desktop has no home header, and on mobile/tablet with a chat open the home header is covered
-     by the full-screen chat overlay. Inherited by ConnectionBannerComponent (a fixed-position descendant
-     — CSS custom properties still inherit through the DOM tree regardless of layout positioning). */
-  --conn-chip-top: 10px;
-}
-
-/* Home header is visible only in tablet/mobile LIST view (nav-drawer open, no chat). There the chip
-   must clear the header line, so drop it just below — no overlap with the search button. Desktop and
-   chat-open keep the default top gap (no header visible to clear). */
-.shell.mode-mobile:not(.chat-open),
-.shell.mode-tablet:not(.chat-open) {
-  --conn-chip-top: calc(var(--app-header-h) + 6px);
 }
 
 // Both persistent slots are flex columns; the routed component fills the slot (router-outlet itself
@@ -201,33 +190,4 @@
 // legible on the bar, so no need to darken (matches the auth-brand dark-override pattern).
 :host-context([data-theme="dark"]) {
   .mode-desktop .resizer::after { color: var(--app-text-faint); }
-}
-
-// ── global-search overlay ──
-// Desktop covers the conversation-list column (a dual-pane search alongside the open chat); tablet/mobile
-// is a full-screen takeover above the chat/aside. z-index: desktop stays below the aside drawer (25) and
-// its mask (24) — it never overlaps them, only the list column; tablet/mobile rise above the chat (30)
-// and aside (40) to own the screen. The width binding on the element targets desktop only (null elsewhere).
-.search-overlay {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  z-index: 50;
-  background: var(--app-surface);
-  box-shadow: 0 0 24px rgba(0, 0, 0, 0.14);
-  overflow: hidden;
-  animation: search-overlay-in 180ms ease;
-}
-.mode-desktop .search-overlay {
-  left: 68px;        // icon-rail width
-  z-index: 10;       // covers the list column only; never overlaps chat/aside/mask
-}
-.mode-tablet .search-overlay,
-.mode-mobile .search-overlay {
-  left: 0;
-  right: 0;          // full-screen takeover on touch layouts
-}
-@keyframes search-overlay-in {
-  from { opacity: 0; transform: translateX(8px); }
-  to { opacity: 1; transform: translateX(0); }
 }

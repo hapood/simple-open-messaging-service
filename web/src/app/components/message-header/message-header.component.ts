@@ -3,7 +3,8 @@ import { OverlayModule } from '@angular/cdk/overlay';
 import { TranslocoModule } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { ChatActionMenuComponent, ChatMenuEntry } from '../chat-action-menu/chat-action-menu.component';
-import { ConversationItem } from '../../services/model';
+import { ConversationItem, displayUserName } from '../../services/model';
+import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { LayoutService } from '../../services/layout.service';
 import { MsgService } from '../../services/message.service';
 import { UserService } from '../../services/user.service';
@@ -28,7 +29,7 @@ import { NavStateMachineService } from '../../services/nav-state.service';
  */
 @Component({
   selector: 'app-message-header',
-  imports: [IconComponent, ChatActionMenuComponent, OverlayModule, TranslocoModule],
+  imports: [IconComponent, ChatActionMenuComponent, OverlayModule, TranslocoModule, FederatedBadgeComponent],
   templateUrl: './message-header.component.html',
   styleUrl: './message-header.component.scss',
 })
@@ -49,15 +50,23 @@ export class MessageHeaderComponent {
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
 
-  /** desktop renders the chat inline (no overlay to leave), so the back arrow is mobile-only. */
-  protected readonly isDesktop = this.layout.isDesktop;
+  /** The back arrow exists only to leave the mobile full-screen chat overlay. Tablet and desktop both
+   *  render the chat inline alongside the conversation list (chat-slot is `static`), so there is no
+   *  overlay to leave — it is mobile-only. */
+  protected readonly mode = this.layout.mode;
 
   readonly title = computed(() => {
     const trd = this.userMsgTrd();
     if (!trd) return '';
     // A per-user alias (备注) overrides the real name in the caller's header.
     if (trd.alias) return trd.alias;
-    return trd.type === 'P2P' ? trd.peerUser.uniqName : trd.group.name;
+    return trd.type === 'P2P' ? displayUserName(trd.peerUser) : trd.group.name;
+  });
+
+  /** The peer's domain when the open conversation is a federated P2P peer, else null (self-hides the badge). */
+  readonly federatedDomain = computed(() => {
+    const trd = this.userMsgTrd();
+    return trd?.type === 'P2P' && trd.peerUser.isForeigner ? trd.peerUser.domain : null;
   });
 
   /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).
@@ -65,7 +74,7 @@ export class MessageHeaderComponent {
   readonly subtitle = computed(() => {
     const trd = this.userMsgTrd();
     if (!trd) return '';
-    return trd.type === 'P2P' ? (trd.peerUser.userExtra?.bio ?? '') : (trd.group.description ?? '');
+    return trd.type === 'P2P' ? (trd.peerUser.bio ?? '') : (trd.group.description ?? '');
   });
 
   /** Whether the action menu overlay is open. */

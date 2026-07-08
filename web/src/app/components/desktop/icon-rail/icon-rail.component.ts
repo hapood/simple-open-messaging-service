@@ -3,14 +3,13 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../../icon/icon.component';
 import { RouteService, PopupType } from '../../../services/route.service';
-import { SearchService } from '../../../services/search.service';
 import { UserService } from '../../../services/user.service';
 import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
 import { NavStateMachineService } from '../../../services/nav-state.service';
 
 /**
- * Telegram-style left rail: account avatar + navigation actions (search / friend
+ * Telegram-style left rail: account avatar + navigation actions (friend
  * requests / new group / folders) at the top, and the system controls (settings /
  * theme) pinned to the bottom — mirroring Telegram's drawer footer (Settings +
  * night-mode toggle in the bottom corner). Replaces the mobile home-header
@@ -27,11 +26,7 @@ import { NavStateMachineService } from '../../../services/nav-state.service';
         <button class="rail-btn avatar" (click)="editProfile()"
           [title]="'nav.editProfileAria' | transloco" [attr.aria-label]="'nav.editProfileAria' | transloco">
           <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.uniqName || 'SOMS'"
-            [src]="sessionProfile()?.userExtra?.avatar" />
-        </button>
-        <button class="rail-btn" (click)="search.open()"
-          [title]="'nav.search' | transloco" [attr.aria-label]="'nav.search' | transloco">
-          <app-icon [type]="AppIconType.SEARCH" [style]="{ width: '24px', height: '24px' }"></app-icon>
+            [src]="sessionProfile()?.avatar" />
         </button>
         <button class="rail-btn" (click)="friendRequests()"
           [title]="'nav.friendRequests' | transloco" [attr.aria-label]="'nav.friendRequests' | transloco">
@@ -41,7 +36,7 @@ import { NavStateMachineService } from '../../../services/nav-state.service';
             <line x1="19" y1="8" x2="19" y2="14"/>
             <line x1="22" y1="11" x2="16" y2="11"/>
           </svg>
-          @if (sessionProfile()?.userNotiBox?.hasUrFriendReq) {
+          @if (sessionProfile()?.hasUrFriendReq) {
             <span class="friend-badge" [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"></span>
           }
         </button>
@@ -123,7 +118,6 @@ export class IconRailComponent {
   readonly onThreadListChanged = input<(() => void) | undefined>(undefined)
 
   private readonly routeService = inject(RouteService);
-  readonly search = inject(SearchService);
   private readonly userService = inject(UserService);
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);

@@ -157,23 +157,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/search/global": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Global cross-conversation search (messages by text/file-name + conversations/contacts by display name) */
-        post: operations["MessageController_searchGlobal"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1397,6 +1380,11 @@ export interface components {
              */
             status: "PENDING" | "APPROVED" | "BLOCKED" | "DELETED";
             /**
+             * @description The PENDING request note/reason the requester sent (≤255 chars). Absent on non-PENDING rows.
+             * @example Hi from the conference
+             */
+            reqMessage?: string;
+            /**
              * @description The P2P MessageThread id (set once APPROVED)
              * @example 12
              */
@@ -1490,28 +1478,6 @@ export interface components {
              */
             lastId?: string;
         };
-        GlobalSearchDto: {
-            /**
-             * @description Search keyword (substring, case-insensitive across all active conversations)
-             * @example hello
-             */
-            keyword: string;
-            /**
-             * @description Max message hits to return (1-50). Default 20.
-             * @example 20
-             */
-            messageTake?: number;
-            /**
-             * @description Max conversation/contact hits to return (1-50). Default 20.
-             * @example 20
-             */
-            threadTake?: number;
-            /**
-             * @description Cursor (BigInt→string): return message hits with id < lastMsgId (descending). Omit for the first page.
-             * @example 9007199254740993
-             */
-            lastMsgId?: string;
-        };
         LoginDto: {
             /**
              * @description Login unique name
@@ -1577,30 +1543,6 @@ export interface components {
              */
             accessJti?: string;
         };
-        UserExtraResponseDto: {
-            /**
-             * @description Display name
-             * @example Alice
-             */
-            name: string;
-            /**
-             * @description Avatar URL
-             * @example https://.../a.png
-             */
-            avatar: string;
-            /**
-             * @description Bio (about)
-             * @example Hey there! I am using SOMS.
-             */
-            bio: string;
-        };
-        UserNotiBoxResponseDto: {
-            /**
-             * @description Whether there are unread friend requests
-             * @example false
-             */
-            hasUrFriendReq: boolean;
-        };
         UserResponseDto: {
             /** @example 1 */
             id: number;
@@ -1609,6 +1551,21 @@ export interface components {
              * @example alice
              */
             uniqName: string;
+            /**
+             * @description Display name
+             * @example Alice
+             */
+            name: string;
+            /**
+             * @description Avatar URL
+             * @example https://.../a.webp
+             */
+            avatar: string;
+            /**
+             * @description Bio (about)
+             * @example Hey there! I am using SOMS.
+             */
+            bio: string;
             /**
              * @description Whether an external user
              * @example false
@@ -1631,10 +1588,11 @@ export interface components {
             updatedAt: number;
             /** @example false */
             isDeleted: boolean;
-            /** @description User extra info */
-            userExtra: components["schemas"]["UserExtraResponseDto"];
-            /** @description Notification box */
-            userNotiBox: components["schemas"]["UserNotiBoxResponseDto"];
+            /**
+             * @description Unread friend-request badge (self only)
+             * @example false
+             */
+            hasUrFriendReq?: boolean;
         };
         UpdateProfileDto: {
             /**
@@ -2361,27 +2319,6 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SearchMessagesDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    MessageController_searchGlobal: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["GlobalSearchDto"];
             };
         };
         responses: {

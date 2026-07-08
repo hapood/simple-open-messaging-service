@@ -2,7 +2,7 @@
   <div class="thread-item" (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
       <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
-        [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
+        [src]="thread.peerUser.avatar"></app-user-avatar>
       @if (thread.selected === true) {
         <span class="check" aria-hidden="true">
           <app-icon [type]="AppIconType.CHECK" [style]="{ width: '13px', height: '13px' }"></app-icon>
@@ -10,7 +10,7 @@
       }
     </div>
     <div class="thread-info">
-      <div class="thread-name">{{ thread.peerUser.userExtra.name || thread.peerUser.uniqName }}</div>
+      <div class="thread-name">{{ thread.peerUser.name || thread.peerUser.uniqName }}</div>
       <div class="thread-handle">{{ '@' + thread.peerUser.uniqName }}</div>
     </div>
   </div>

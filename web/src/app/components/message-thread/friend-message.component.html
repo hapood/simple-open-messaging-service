@@ -92,7 +92,9 @@
       }
     </div>
 
-    <app-sticky-date-overlay [label]="stickyDate()" />
+    <!-- The floating date pill yields to the search bar: while search is open it would collide with the
+         search row, so suppress it (null label hides the overlay entirely). -->
+    <app-sticky-date-overlay [label]="searchOpen() ? null : stickyDate()" />
 
     @if (blockedPeer()) {
       <div class="msg-blocked-banner" (click)="unblockPeer()">

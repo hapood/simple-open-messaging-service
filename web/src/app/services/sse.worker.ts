@@ -83,7 +83,7 @@ let sleepResolver: (() => void) | undefined;
 
 let tokenSeq = 0;
 let tokenReqId: string | undefined;
-let tokenResolve: ((token: string | null) => void) | undefined;
+let tokenResolve: ((token: string | undefined) => void) | undefined;
 
 /** Post a message to the main thread. */
 function post(msg: ToMain): void {
@@ -91,11 +91,11 @@ function post(msg: ToMain): void {
 }
 
 /** Ask the main thread for a token (`need-token` = current, `renew-token` = fresh) and await the
- *  matching `{token, reqId}` / `{token-failed, reqId}` reply. Resolves null on failure / stop. */
-function requestToken(kind: 'need-token' | 'renew-token'): Promise<string | null> {
+ *  matching `{token, reqId}` / `{token-failed, reqId}` reply. Resolves undefined on failure / stop. */
+function requestToken(kind: 'need-token' | 'renew-token'): Promise<string | undefined> {
   // The `run` loop is serial, so at most one token request is ever outstanding — no need to queue.
   const reqId = String(++tokenSeq);
-  return new Promise<string | null>((resolve) => {
+  return new Promise<string | undefined>((resolve) => {
     tokenReqId = reqId;
     tokenResolve = resolve;
     post({ type: kind, reqId });
@@ -329,7 +329,7 @@ sw.addEventListener('message', (e: MessageEvent) => {
       // Resolve any in-flight token wait so its Promise doesn't leak; the reply is dropped by main
       // anyway after terminate().
       if (tokenResolve) {
-        tokenResolve(null);
+        tokenResolve(undefined);
         tokenResolve = undefined;
         tokenReqId = undefined;
       }
@@ -359,7 +359,7 @@ sw.addEventListener('message', (e: MessageEvent) => {
         const r = tokenResolve;
         tokenResolve = undefined;
         tokenReqId = undefined;
-        r(null);
+        r(undefined);
       }
       break;
   }

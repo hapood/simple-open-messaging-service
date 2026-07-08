@@ -24,10 +24,6 @@
   font-size: 14px;
   color: var(--app-text);
   background: var(--app-bg);
-  // Float the demoed connection chip just below the 48px header (mirrors the home shell's
-  // --app-header-h + 6px offset), so it clears the in-header theme toggle. Inherited by the
-  // fixed-position <app-connection-banner> :host. Shell-only var; touches no measured row height.
-  --conn-chip-top: 54px;
 }
 
 // ---------- Scrolling stage ----------
@@ -49,17 +45,17 @@
   background-repeat: repeat;
 }
 
-// The demoed indicator-slot occupants (connection chip + update banner) anchor to the stage's relative
-// context (absolute), not the viewport (fixed) — so they track the chat column, mirroring how the indicators
-// relate to the message thread rather than browser chrome. Production keeps each component's own
-// :host{position:fixed} (they must float over the mobile full-screen chat overlay); this override is
-// playground-only. Specificity .pg .pg-stage app-* (0,2,1) beats each emulated :host rule, so ONLY position
-// is overridden — top (via --conn-chip-top), right and z-index still come from :host and now resolve against
-// .pg-stage. The two never share the corner at once (IndicatorSlotService priority), so the identical
-// top/right is by design.
-.pg .pg-stage app-connection-banner,
-.pg .pg-stage app-update-banner {
+// The playground's indicator slot anchors to the stage's relative context (absolute), not the viewport
+// (fixed) — so the indicators track the chat column, mirroring how they relate to the message thread rather
+// than browser chrome. The indicators themselves carry NO positioning (byte-for-byte identical to their
+// production instances); only the slot's position is overridden here. Specificity .pg .pg-stage
+// app-indicator-slot (0,2,1) beats the slot component's emulated :host (0,1,0), so position (fixed→absolute)
+// and top (62→54, clearing the 48px pg-header + 6px gap) flip; right (12px) and z-index (52) still come from
+// :host and now resolve against .pg-stage. The slot service guarantees the chip and update banner never show
+// at once, so the single shared corner is by design.
+.pg .pg-stage app-indicator-slot {
   position: absolute;
+  top: 54px;
 }
 
 // ---------- Top header (chat header + theme toggle) ----------
@@ -102,13 +98,15 @@
   transition: background 0.12s, color 0.12s;
   &:hover { background: var(--app-hover); color: var(--app-text); }
 }
-// Theme-toggle icon (moon in light, sun in dark) is branched in the template via the global ThemeService's
-// effective() — the playground no longer carries its own [data-theme] attribute or theme signal, so there is
-// nothing for a CSS attribute selector to key off here.
-// Optical balance: both SVGs render at 20px in the same flex-centered button, but the rayed sun is symmetric
-// about the viewBox center and fills the box, whereas the Feather crescent's visual mass sits low-left and
-// spans only ~75% of the box — so uncorrected the icon shifts and shrinks when toggling. Recenter the moon
-// onto the sun's optical center and match its weight so the two states land on the same point.
+// Theme-toggle glyph is branched in the template on ThemeService.mode() — three states (system=contrast,
+// light=sun, dark=moon), so 'system' gets its own affordance like the icon rail / nav drawer / auth toolbar.
+// The playground carries no [data-theme] attribute or local theme signal, so there is nothing for a CSS
+// attribute selector to key off here.
+// Optical balance: all three SVGs render at 20px in the same flex-centered button. The rayed sun and the
+// r=9 contrast circle are both symmetric about the viewBox center and fill the box, whereas the Feather
+// crescent's visual mass sits low-left and spans only ~75% of the box — so uncorrected the icon shifts and
+// shrinks when toggling. Recenter the moon onto the sun/contrast optical center and match its weight so
+// every state lands on the same point.
 .pg-theme-moon {
   transform: translate(1px, -1px) scale(1.08);
   transform-box: fill-box;

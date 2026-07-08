@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Message, QueryMessageLogParams, StandardResponse, Friendship, GlobalSearchResult } from './model'
+import { Message, QueryMessageLogParams, StandardResponse, Friendship } from './model'
 import { apiPrefix } from './constants';
 
 @Injectable({
@@ -83,20 +83,6 @@ export class MsgService {
   searchMessages(params: { threadId: number, keyword: string, take: number, lastId?: string }) {
     return this.http.post<StandardResponse<{ id: string, createdAt: number }[]>>(
       `${apiPrefix}/search-messages`,
-      params,
-    )
-  }
-
-  /**
-   * Global cross-conversation search. Returns two wings — conversations/contacts matched by display
-   * name, and messages matched by PURE_TEXT body or FILE attachment name (with a server-built
-   * snippet + the hydrated thread/sender display info). `lastMsgId` is the BigInt→string cursor for
-   * the next page of message hits (id descending). The caller closes search + opens the thread on a
-   * hit (a message hit also jumps the kernel to the matched id — see SearchService).
-   */
-  globalSearch(params: { keyword: string, messageTake?: number, threadTake?: number, lastMsgId?: string }) {
-    return this.http.post<StandardResponse<GlobalSearchResult>>(
-      `${apiPrefix}/search/global`,
       params,
     )
   }

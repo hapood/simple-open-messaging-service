@@ -30,13 +30,23 @@
   padding: 0 4px;
 }
 
+// align-self:flex-start defeats the column's default align-items:stretch — otherwise a short name
+// ("Mom") stretches the box across the whole .msg-title column (~260px), making the entire header
+// middle one phantom hover-dim + click target. max-width:100% then caps a long name at the column
+// edge so text-overflow:ellipsis still fires (the cap is what makes offsetWidth < scrollWidth).
 .msg-title-text {
   cursor: pointer;
+  color: var(--app-text);
+  // Bold primary name + faint subtitle (see .msg-subtitle) establishes the header's name/desc hierarchy —
+  // mirrors the playground header's treatment (bold name on top, weaker descriptor beneath).
   font-size: 16px;
+  font-weight: 600;
   line-height: 20px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  align-self: flex-start;
+  max-width: 100%;
   &:hover { opacity: 0.8; }
 }
 
@@ -46,10 +56,14 @@
   cursor: pointer;
   font-size: 12px;
   line-height: 16px;
-  color: var(--app-text-muted);
+  // --app-text-faint (one tier below --app-text-muted) keeps the descriptor clearly secondary to the
+  // bold name above — the same faint tier the playground header uses for its sub-line.
+  color: var(--app-text-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  align-self: flex-start; // same stretch-defeat + cap as .msg-title-text (see above)
+  max-width: 100%;
   margin-top: 2px;
   &:hover { opacity: 0.8; }
 }

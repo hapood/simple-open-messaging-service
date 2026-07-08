@@ -31,7 +31,16 @@ export type ConversationItem = Omit<
  */
 export function displayThreadName(t: ConversationItem): string {
   if (t.alias) return t.alias
-  return t.type === 'P2P' ? t.peerUser.uniqName : t.group.name
+  return t.type === 'P2P' ? displayUserName(t.peerUser) : t.group.name
+}
+
+/**
+ * A user's display name — the bare localpart/uniqName (e.g. "bob"). For federated peers the DOMAIN is
+ * shown separately via <app-federated-badge> (globe + domain) next to the name, so the name stays clean
+ * and the server identity is a distinct, scannable chip. Single source for the name text.
+ */
+export function displayUserName(u: { uniqName: string }): string {
+  return u.uniqName
 }
 
 /** A P2P relationship row (thread/by-user-id returns this). */
@@ -57,34 +66,4 @@ export interface StandardResponse<T = unknown> {
   data?: T
   /** Only paginated endpoints (query-messages) return this: whether an earlier page exists. */
   hasMore?: boolean
-}
-
-/** One message hit from POST /search/global. The snippet is server-built (keyword-centered excerpt for
- *  PURE_TEXT, attachment name for FILE); createdAt is a ms timestamp (the serializer turns Date→number). */
-export interface GlobalSearchMessageHit {
-  id: string
-  threadId: number
-  snippet: string
-  contentType: string
-  createdAt: number
-  creatorName: string
-  threadDisplayName: string
-  threadAvatar: string
-  threadType: MessageThreadType
-}
-
-/** One conversation/contact hit from POST /search/global. `name` is already the display name (alias
- *  precedence over the real group/peer name), matching the conversation list. */
-export interface GlobalSearchThreadHit {
-  threadId: number
-  type: MessageThreadType
-  name: string
-  avatar: string
-  lastMessageAt: number | null
-}
-
-export interface GlobalSearchResult {
-  threads: GlobalSearchThreadHit[]
-  messages: GlobalSearchMessageHit[]
-  hasMoreMessages: boolean
 }

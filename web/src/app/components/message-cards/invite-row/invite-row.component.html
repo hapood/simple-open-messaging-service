@@ -25,7 +25,6 @@
         <div class="invite-group">
           <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName" [src]="invite().groupAvatar"></app-user-avatar>
           <span class="invite-name">{{ invite().groupName }}</span>
-          <span class="invite-chev" aria-hidden="true">›</span>
         </div>
         <div class="invite-status" [class.invite-status--expired]="status() === 1">
           <span class="invite-status-dot" aria-hidden="true"></span>

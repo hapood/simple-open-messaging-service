@@ -45,8 +45,8 @@ export class EditProfileComponent {
 
   constructor() {
     const p = this.sessionProfile()
-    this.name.set(p?.userExtra?.name ?? '')
-    this.bio.set(p?.userExtra?.bio ?? '')
+    this.name.set(p?.name ?? '')
+    this.bio.set(p?.bio ?? '')
 
     // Name validation: non-empty (trimmed) and ≤30. Mirrors register.component.ts's effect-based validation.
     effect(() => {
@@ -68,8 +68,8 @@ export class EditProfileComponent {
   readonly canSave = computed(() => {
     const p = this.sessionProfile()
     if (!p) return false
-    const nameChanged = this.name().trim() !== (p.userExtra?.name ?? '')
-    const bioChanged = this.bio() !== (p.userExtra?.bio ?? '')
+    const nameChanged = this.name().trim() !== (p.name ?? '')
+    const bioChanged = this.bio() !== (p.bio ?? '')
     return this.isNameValid() && !this.saving() && !this.uploading() && (nameChanged || bioChanged)
   })
 

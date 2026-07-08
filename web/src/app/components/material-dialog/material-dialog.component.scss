@@ -12,7 +12,14 @@
   top: 0;
   width: 100vw;
   height: 100vh;
-  overflow: auto;
+  // The backdrop is a fixed full-screen layer that must NEVER scroll: real scrolling lives one layer
+  // down — the desktop card's own max-height:80vh + overflow:auto, and the mobile sheet's inner .body.
+  // overflow:auto here made .material-modal a scroll container, and since Blink/WebKit count a child's
+  // transform toward the parent's scrollable overflow, the mobile enter animation (translateY(100%) → 0)
+  // pushed the off-screen sheet to ~200vh and flickered a vertical scrollbar on PC for the duration of
+  // the slide. overflow:hidden clips that transient overflow so no scrollbar appears (mobile browsers
+  // hide the gutter anyway; desktop/PC resized to pad-width was where it showed).
+  overflow: hidden;
   background-color: rgba(0, 0, 0, 0.25);
   // The overlay element stays mounted (isShow only toggles a class), so the
   // backdrop fades in/out with the dialog instead of the old display:none swap

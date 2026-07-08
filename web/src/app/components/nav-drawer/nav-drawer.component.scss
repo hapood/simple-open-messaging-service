@@ -47,6 +47,18 @@
   box-shadow: var(--app-shadow-drawer);
 }
 
+/* Material projects <ng-content> into .mat-drawer-inner-container (a plain block with
+   height:100%/overflow:auto), so .nav-drawer's flex column above never reaches the header/
+   menu/footer — they sit inside the inner container as normal block flow. That left
+   .drawer-menu's flex:1 inert and the footer resting right under the menu instead of pinning
+   to the bottom. Make the inner container the real flex column (it owns the three regions
+   directly and already has height:100%); now .drawer-menu expands and .drawer-footer pins. */
+.nav-drawer ::ng-deep .mat-drawer-inner-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .drawer-header {
   flex: 0 0 auto;
   padding: 20px 16px 16px;

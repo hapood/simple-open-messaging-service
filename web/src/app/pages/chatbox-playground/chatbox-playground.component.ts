@@ -15,6 +15,7 @@ import { GalleryViewerService } from '../../components/gallery-viewer/gallery-vi
 import { FileDetailService } from '../../components/file-detail-viewer/file-detail-viewer.service';
 import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
 import { UpdateBannerComponent } from '../../components/update-banner/update-banner.component';
+import { IndicatorSlotComponent } from '../../components/indicator-slot/indicator-slot.component';
 import type { ConnectionState } from '../../services/websocket.service';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../../components/message-cards/chat-item';
 import { MockItemSource, MockUserService } from './http-item-source.mock';
@@ -50,7 +51,7 @@ const CB_DEFAULTS: Required<CbConfig> = { edge: 1000, mountItem: 50, thresholdFl
  */
 @Component({
   selector: 'app-chatbox-playground',
-  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, ConnectionBannerComponent, UpdateBannerComponent],
+  imports: [FormsModule, UserAvatarComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, ConnectionBannerComponent, UpdateBannerComponent, IndicatorSlotComponent],
   templateUrl: './chatbox-playground.component.html',
   styleUrl: './chatbox-playground.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,

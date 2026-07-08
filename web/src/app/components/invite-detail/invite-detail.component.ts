@@ -69,7 +69,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
     const fid = this.invite().fromUserId;
     if (fid == null) return '';
     const item = this.convList.items().find((t) => t.type === 'P2P' && t.peerUser?.id === fid);
-    return item?.peerUser?.userExtra?.name ?? '';
+    return item?.peerUser?.name ?? '';
   });
 
   /** Already a member? The group thread is present in the conversation list (resolved by group id). */

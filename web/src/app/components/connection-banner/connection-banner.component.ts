@@ -21,9 +21,9 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
 };
 
 /**
- * Compact connection-status chip, fixed at the top-right corner of the viewport, sitting *below* the
- * app header (the shell's `--conn-chip-top` var offsets it by `--app-header-h` while the home header
- * is visible, so it never overlaps the search button).
+ * Compact connection-status chip. NOT self-positioned: it is projected into `<app-indicator-slot>`,
+ * the single top-right anchor that clears the 56px header (see IndicatorSlotComponent). One position for
+ * every indicator — this component only owns its own appearance and behavior.
  *
  * The whole reason this exists: a silent SSE disconnect must not read as "messages just stopped arriving".
  * So the chip announces itself on the one transition that matters — `open → reconnecting` — by briefly
@@ -63,7 +63,6 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
               type="button"
               [class.expanded]="expanded()"
               [class.recovering]="s === 'recovered'"
-              [class.spinning]="s === 'connecting' || s === 'reconnecting'"
               [attr.data-state]="s"
               [style.--spin-dur]="spinDur() + 'ms'"
               [attr.aria-label]="ariaLabel()"
@@ -97,13 +96,9 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
   `,
   styles: [`
     :host {
-      position: fixed;
-      top: var(--conn-chip-top, 10px);
-      right: 12px;
-      /* Above the shell's slot layers (mobile aside-slot 40 / chat-slot 30 / tablet aside-slot 20) so it
-         stays visible over the mobile full-screen chat overlay, AND above the update banner (51); below
-         modal/popover stacks. NOT a blind 9999. */
-      z-index: 52;
+      /* No positioning here — this component is projected into <app-indicator-slot>, the single
+         top-right anchor (its :host carries the position/top/right/z-index). This :host only owns
+         the palette; layout is the slot's job. */
       display: block;
       /* Palette source-of-truth: theme-aware concrete colors resolved from --app-* tokens. The --c-* vars
          are registered <color> (see styles.scss), so these compute to concrete rgb() that Motion reads. */
@@ -134,21 +129,18 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
       gap: 0; /* collapsed: 0 gap ⇒ icon(36) + text(0) + padding(0) = exactly the 36px circle */
       cursor: pointer;
       overflow: hidden;
-      /* The shimmer (background-position drift) needs a >100% background-size; the gradient itself, the
-         elevation, the pill shape, and currentColor all come from the shared .tonal-chip shell. */
-      background-size: 220% 220%;
-      background-position: 0% 0%;
+      /* The gradient fill, elevation, pill shape, and currentColor all come from the shared .tonal-chip
+         shell (the gradient fills the chip at its natural size). Deliberately NO background-position
+         shimmer: animating a 2-stop gradient's position sweeps its tonal midpoint diagonally across the
+         chip — a moving line that read as a drifting crosshair (the dropped conn-shimmer). The gradient
+         stays static during the spin state; Motion morphs it on state changes, and the revolving .arc
+         carries the loading motion. */
       /* gap + padding transition alongside the text's width → the dot↔pill morph is continuous. Easing is
          the M3 standard curve. (gradient + color are OWNED by Motion's spring, excluded to avoid fighting it.) */
       transition:
         gap 0.30s cubic-bezier(0.2, 0, 0, 1),
         padding 0.30s cubic-bezier(0.2, 0, 0, 1),
         box-shadow 0.20s cubic-bezier(0.2, 0, 0, 1);
-    }
-    /* Continuous gradient drift while a spin state is active (the "gradient animation"). Paused otherwise
-       (offline/recovered stay still). Non-box visual values (exempt from the integer-px rule). */
-    .chip.spinning {
-      animation: conn-shimmer 2.6s linear infinite;
     }
     /* M3 state layer: a currentColor overlay atop the fill surfaces the interactive affordance on
        hover/focus/press. pointer-events:none so the click still hits the button. */
@@ -234,7 +226,16 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
        which icon is shown. CSS owns this (and the transition into it); Motion owns only the gradient morph. */
     .chip[data-state="connecting"]   .spin,
     .chip[data-state="reconnecting"] .spin { opacity: 1; }
-    .chip[data-state="recovered"]    .check { opacity: 1; stroke-dashoffset: 0; }
+    .chip[data-state="recovered"]    .check {
+      opacity: 1;
+      stroke-dashoffset: 0;
+      /* Delay the draw-on until the spinner has faded out (.spin's 0.28s opacity transition) AND the
+         pill↔circle collapse finishes (the 0.30s gap/padding transition) — otherwise the outgoing arc and
+         the incoming check overlap into crossing lines mid-recover, and the check strokes across the
+         still-resizing chip. Same gate the 'closed' glyph uses below (transition-delay: 0.30s). Leaving
+         'recovered' is a chip unmount, so this delay only shapes the draw-on direction. */
+      transition-delay: 0.30s;
+    }
     /* The offline glyph draws on AFTER the pill→circle collapse (transition-delay = the collapse duration).
        Without the delay, the slash strokes across the still-resizing chip — a bright diagonal "flash" from
        bottom-right to top-left mid-collapse. Delaying only the draw-on (set here, in the active-state rule)
@@ -271,7 +272,6 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
     .chip.recovering {
       animation: conn-recover 1.4s cubic-bezier(0.2, 0, 0, 1) forwards;
     }
-    @keyframes conn-shimmer { to { background-position: 200% 200%; } }
     @keyframes conn-spin    { to { transform: rotate(360deg); } }
     @keyframes conn-arc {
       0%, 100% { stroke-dasharray: 18 82; }
@@ -285,7 +285,6 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
     }
     @media (prefers-reduced-motion: reduce) {
       .chip            { transition: none; }
-      .chip.spinning,
       .spin,
       .arc             { animation: none; }
       /* Static, fully-visible arc so the indicator is recognizable without motion. */

@@ -11,7 +11,13 @@
         </div>
       </div>
       <button type="button" class="pg-icon-btn pg-theme-toggle" (click)="cycleTheme()" aria-label="Toggle theme">
-        @if (theme.effective() === 'dark') {
+        <!-- Three-state glyph mirrors the icon rail / nav drawer / auth toolbar: it shows the CURRENT mode
+             (system=contrast, light=sun, dark=moon), branched on theme.mode() so 'system' gets its own
+             affordance — the old effective() branch could only ever paint sun/moon, hiding the system state. -->
+        @if (theme.mode() === 'system') {
+          <svg class="pg-theme-contrast" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" /><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none" /></svg>
+        } @else if (theme.mode() === 'light') {
           <svg class="pg-theme-sun" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41" /></svg>
         } @else {
@@ -101,13 +107,15 @@
     <!-- Telegram 式粘性日期浮层：在 .pg-stage 内、.pg-viewport 外（兄弟）——
          不在滚动容器内故不随文档流滚、也不参与虚拟滚动回收；组件据滚动位置实时更新文本。 -->
     <app-sticky-date-overlay [label]="stickyDate()" />
-    <!-- Demo: the restyled Material connection chip. `demoState` overrides the live service so the panel's
-         "Connection chip" group can drive every state (fixed top-right; --conn-chip-top is set on .pg). -->
-    <app-connection-banner [demoState]="connStatus()" />
-    <!-- Demo: the "new version available" pill. Shares the top-right indicator slot with the connection chip
-         (it defers while the chip is showing, then surfaces). `demoAvailable` overrides the live UpdateService
-         (the SW is disabled in dev); Dismiss emits demoDismiss → clears the playground signal. -->
-    <app-update-banner [demoAvailable]="updateDemo()" (demoDismiss)="setUpdateDemo(false)" />
+    <!-- Demo indicators use the SAME slot architecture as production: a single <app-indicator-slot> anchor,
+         with the indicators themselves carrying no positioning. The playground overrides the SLOT's position
+         to absolute within .pg-stage (see the stylesheet) so it tracks the chat column; the two indicators
+         are byte-for-byte identical to their production instances. `demoState` / `demoAvailable` override the
+         live services so the panel can drive every state; Dismiss emits demoDismiss → clears the signal. -->
+    <app-indicator-slot>
+      <app-connection-banner [demoState]="connStatus()" />
+      <app-update-banner [demoAvailable]="updateDemo()" (demoDismiss)="setUpdateDemo(false)" />
+    </app-indicator-slot>
     @if (toast()) {
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }

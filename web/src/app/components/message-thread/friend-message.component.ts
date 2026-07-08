@@ -68,7 +68,6 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
 })
 export class MessageThreadComponent implements OnDestroy {
   readonly threadId = input<number>();
-  readonly startMsgId = input<string>();
   readonly userMsgTrd = input<ConversationItem>();
 
   /** Emits the threadId once the kernel finishes `init()` on a thread open / re-init — the A/B buffer host
@@ -96,8 +95,12 @@ export class MessageThreadComponent implements OnDestroy {
   private scroller?: ScrollerApi<ChatItemData>;
   private source?: HttpItemSource;
   private currentTrdId: number | null = null;
-  /** The id this thread was initialized/jumped to (dedup: prevents the init anchor from being re-jumped). */
-  private lastJumpId: string | number | null = null;
+  /** True only once `initScroller`'s async `init()` has settled (set in its `.finally`, cleared at init
+   *  start + in `teardown`). Distinct from `currentTrdId === trd.id` (which is set synchronously at init
+   *  START): a pane mid-init has the right `currentTrdId` but is NOT yet ready. {@link reset} uses this to
+   *  tell a WARM resident (init done → emit `ready` now, no re-fetch) from a COLD one (idled via
+   *  `teardownKernel` → reinit). */
+  private kernelReady = false;
 
   readonly atBottom = signal(true);
   readonly stickyDate = signal<string | null>(null);
@@ -139,15 +142,6 @@ export class MessageThreadComponent implements OnDestroy {
       this.initScroller(vp.nativeElement, ct.nativeElement, trd);
       this.currentTrdId = trd.id;
     });
-    // A startMsgId change within an open thread (e.g. clicking a search result) → jump to it (re-seed if unmounted).
-    effect(() => {
-      const startId = this.startMsgId();
-      const trd = this.userMsgTrd();
-      if (!trd || startId === undefined || this.currentTrdId !== trd.id) return;
-      if (startId === this.lastJumpId) return; // already the init anchor / already jumped
-      this.lastJumpId = startId;
-      this.scroller?.scrollToIndex(startId, 'center', true);
-    });
     // Immunity frame drain: when a route-transition freeze ends, apply any viewport resize the kernel
     // deferred so the message list re-pins to the post-animation viewport exactly once.
     effect(() => {
@@ -157,8 +151,6 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private initScroller(viewport: HTMLDivElement, content: HTMLDivElement, trd: ConversationItem): void {
-    const startId = this.startMsgId() ?? null; // open at this message if provided (re-anchor)
-    this.lastJumpId = startId;
     this.source = new HttpItemSource(
       trd, this.userService.sessionProfile()?.id ?? 0, this.msgService, this.userService, this.wsService,
       // SSE live path is SIGNAL-ONLY: onSseEvent filters by threadId and fires onSignal — the body is not
@@ -184,17 +176,19 @@ export class MessageThreadComponent implements OnDestroy {
     });
     this.initialLoading.set(true);
     this.skeletonVisible.set(false);
+    this.kernelReady = false;
     clearTimeout(this.skeletonTimer);
     // Delay-gate: reveal the skeleton only if the first batch is still in flight past SKELETON_DELAY. A fast
     // fetch resolves first → skeletonVisible stays false → no flash, content just appears.
     this.skeletonTimer = setTimeout(() => {
       if (this.initialLoading()) this.skeletonVisible.set(true);
     }, MessageThreadComponent.SKELETON_DELAY);
-    void this.scroller.init(startId !== null ? { startMsgId: startId, anchor: 'center', highlight: true } : undefined)
+    void this.scroller.init()
       .finally(() => {
         clearTimeout(this.skeletonTimer);
         this.initialLoading.set(false);
         this.skeletonVisible.set(false);
+        this.kernelReady = true;
         this.ready.emit(trd.threadId);
       });
   }
@@ -461,6 +455,11 @@ export class MessageThreadComponent implements OnDestroy {
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;
+    this.kernelReady = false;
+    // The in-chat search bar is transient UI state scoped to a kernel session; a pane that is reset (re-init
+    // on thread switch) or idled (teardownKernel demote-to-background) must drop back to the default closed
+    // state so a re-opened thread doesn't inherit a stale open search bar.
+    this.searchOpen.set(false);
     this.pendingOptimistic = [];
     this.pendingFiles.clear();
     for (const u of this.blobUrls) URL.revokeObjectURL(u);
@@ -469,10 +468,53 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Tear down the kernel + source but keep the COMPONENT instance alive. The A/B buffer host demotes a pane
    *  to background and idles its kernel here (bounding memory + SSE to one warm pane). Resets `currentTrdId`
-   *  so a subsequent input — even the same thread — re-initializes via the constructor effect; idempotent. */
+   *  so the pane is COLD — a subsequent re-selection of this thread drives {@link reset} to re-initialize
+   *  via {@link reinit}; idempotent. */
   teardownKernel(): void {
     this.teardown();
     this.currentTrdId = null;
+  }
+
+  /** Force an in-place re-init for the current bound thread (teardown + rebuild), emitting `ready` when the
+   *  fresh kernel settles. The constructor init effect does NOT re-fire here (its deps — viewport/content/
+   *  userMsgTrd — are unchanged), so this is the sole re-init path when the data beneath a pane changes
+   *  (clear-history) or when a resident pane is cold ({@link reset}). */
+  private reinit(): void {
+    const vp = this.viewportRef()?.nativeElement;
+    const ct = this.contentRef()?.nativeElement;
+    const trd = this.userMsgTrd();
+    if (!vp || !ct || !trd) return;
+    this.teardown();
+    this.currentTrdId = null;
+    this.initScroller(vp, ct, trd);
+    this.currentTrdId = trd.id;
+  }
+
+  /** Whether the kernel is live for the currently-bound thread (init settled AND not since idled). The A/B
+   *  host's fg-resident branch reads this so it only re-inits a genuinely COLD pane (re-open after a close)
+   *  and skips a spurious reset on an already-warm one — which matters because every `promote()` flips
+   *  `fgSlot` and re-triggers the coordinator, so without this guard a warm pane would be reset on every
+   *  switch. A plain method (not a signal): a synchronous snapshot read, intentionally untracked. */
+  isWarm(): boolean {
+    const trd = this.userMsgTrd();
+    return !!trd && this.kernelReady && this.currentTrdId === trd.id;
+  }
+
+  /** Ensure this pane is initialized for its CURRENT bound thread, emitting `ready` when so. The A/B host
+   *  calls this when re-selecting a thread already bound to a (possibly idled) pane: the input-keyed init
+   *  effect cannot re-fire on an unchanged ConversationItem, so without this nudge `ready` would never emit
+   *  and the switch would strand. WARM (kernel already settled for this thread) → `ready` now, preserving
+   *  the instant fast-flip-back the A/B buffer exists for (no re-fetch); COLD (idled via teardownKernel, or
+   *  mid-init) → {@link reinit} → `ready`. The warm emit is deferred to a microtask so it lands outside the
+   *  host's coordinator effect run, mirroring the async `ready` of a cold reinit. */
+  reset(): void {
+    const trd = this.userMsgTrd();
+    if (!trd) return;
+    if (this.kernelReady && this.currentTrdId === trd.id) {
+      queueMicrotask(() => this.ready.emit(trd.threadId));
+      return;
+    }
+    this.reinit();
   }
 
   // ---------- chat header MORE-menu integration ----------
@@ -483,19 +525,11 @@ export class MessageThreadComponent implements OnDestroy {
     this.scroller?.scrollToIndex(id, 'center', true);
   }
 
-  /** Clear-history landed on the server: tear down + re-init so the now-empty view (filtered by the
-   *  caller's clearedAt watermark) reloads from scratch. Same shape as teardownKernel but re-inits on the
-   *  same item; the constructor effect does NOT re-fire (its deps — viewport/content/userMsgTrd — are
-   *  unchanged), so this is the sole re-init path here. */
+  /** Clear-history landed on the server: the now-empty view (filtered by the caller's clearedAt watermark)
+   *  must reload from scratch. Data changed beneath a possibly-warm pane, so force a re-init regardless of
+   *  warmth ({@link reinit}, not {@link reset}). */
   onHistoryCleared(): void {
-    const vp = this.viewportRef()?.nativeElement;
-    const ct = this.contentRef()?.nativeElement;
-    const trd = this.userMsgTrd();
-    if (!vp || !ct || !trd) return;
-    this.teardown();
-    this.currentTrdId = null;
-    this.initScroller(vp, ct, trd);
-    this.currentTrdId = trd.id;
+    this.reinit();
   }
 
   /** Unblock the P2P peer from the blocked banner (mirrors the header menu's unblock path). */

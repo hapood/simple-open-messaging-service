@@ -33,7 +33,6 @@
     "folders": "Folders",
     "logout": "Log out",
     "settings": "Settings",
-    "search": "Search",
     "themeAria": "Theme: {{label}}",
     "languageAria": "Language: {{label}}",
     "theme": {
@@ -44,17 +43,7 @@
   },
   "home": {
     "openMenuAria": "Open menu",
-    "searchAria": "Search",
     "resizerTitle": "Drag to resize; double-click to reset"
-  },
-  "globalSearch": {
-    "placeholder": "Search messages, chats and contacts",
-    "back": "Back",
-    "clear": "Clear",
-    "groupThreads": "Chats and contacts",
-    "groupMessages": "Messages",
-    "noResults": "No results",
-    "moreMessages": "More messages available — refine your search to see them"
   },
   "auth": {
     "loginTitle": "Login to SOMS",
@@ -140,12 +129,14 @@
   },
   "friend": {
     "title": "Add Friends",
-    "searchPlaceholder": "Search by username",
+    "searchPlaceholder": "Username or handle@domain",
     "findTitle": "Find your friends",
-    "findSub": "Search by username to send a request.",
+    "findSub": "Search by username or handle@domain to send a request.",
     "noUserTitle": "No user found",
     "noUserSub": "We couldn't find \"{{q}}\".",
     "sendRequest": "Send Request",
+    "reasonPh": "Add a note (optional)",
+    "connecting": "Connecting to {{domain}}…",
     "noPendingTitle": "No pending requests",
     "noPendingSub": "Friend requests you receive will appear here.",
     "noSentTitle": "No sent requests",

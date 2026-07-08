@@ -29,11 +29,14 @@
             @if (thread.type === 'P2P') {
               <div class="thread-avatar">
                 <app-user-avatar [type]="UserAvatarType.OTHER" [name]="displayName(thread)"
-                  [src]="thread.peerUser.userExtra.avatar"></app-user-avatar>
+                  [src]="thread.peerUser.avatar"></app-user-avatar>
               </div>
               <div class="thread-info">
                 <div class="thread-row">
                   <span class="thread-name">{{ displayName(thread) }}</span>
+                  @if (thread.peerUser.isForeigner) {
+                    <app-federated-badge [domain]="thread.peerUser.domain"></app-federated-badge>
+                  }
                   @if (thread.muted) {
                     <span class="thread-muted" [title]="'threadList.muted' | transloco">
                       <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>

@@ -33,7 +33,6 @@
     "folders": "分组",
     "logout": "退出登录",
     "settings": "设置",
-    "search": "搜索",
     "themeAria": "主题：{{label}}",
     "languageAria": "语言：{{label}}",
     "theme": {
@@ -44,17 +43,7 @@
   },
   "home": {
     "openMenuAria": "打开菜单",
-    "searchAria": "搜索",
     "resizerTitle": "拖动以调整大小；双击恢复默认"
-  },
-  "globalSearch": {
-    "placeholder": "搜索消息、聊天和联系人",
-    "back": "返回",
-    "clear": "清除",
-    "groupThreads": "聊天和联系人",
-    "groupMessages": "消息",
-    "noResults": "无搜索结果",
-    "moreMessages": "还有更多消息，请缩小范围以查看"
   },
   "auth": {
     "loginTitle": "登录 SOMS",
@@ -140,12 +129,14 @@
   },
   "friend": {
     "title": "添加好友",
-    "searchPlaceholder": "按用户名搜索",
+    "searchPlaceholder": "用户名 或 用户名@域名",
     "findTitle": "查找你的好友",
-    "findSub": "按用户名搜索以发送请求。",
+    "findSub": "按用户名或 用户名@域名 搜索以发送请求。",
     "noUserTitle": "未找到用户",
     "noUserSub": "找不到“{{q}}”。",
     "sendRequest": "发送请求",
+    "reasonPh": "添加备注（可选）",
+    "connecting": "正在连接 {{domain}}…",
     "noPendingTitle": "暂无待处理请求",
     "noPendingSub": "你收到的好友请求会显示在这里。",
     "noSentTitle": "暂无已发送请求",

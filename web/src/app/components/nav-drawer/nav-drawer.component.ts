@@ -5,7 +5,6 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { RouteService, PopupType } from '../../services/route.service';
 import { UserService } from '../../services/user.service';
-import { SearchService } from '../../services/search.service';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
@@ -36,7 +35,6 @@ export class NavDrawerComponent {
   private readonly sidenav = viewChild(MatSidenav)
   private readonly routeService = inject(RouteService)
   readonly userService = inject(UserService)
-  private readonly searchService = inject(SearchService)
   private readonly themeService = inject(ThemeService)
   private readonly languageService = inject(LanguageService)
   private readonly transloco = inject(TranslocoService)
@@ -79,11 +77,6 @@ export class NavDrawerComponent {
   }
 
   // Each menu action first closes the drawer, then triggers its popup/navigation (logic migrated from the old home-header.clickMenu).
-  search() {
-    this.close()
-    this.searchService.open()
-  }
-
   friendRequests() {
     this.close()
     this.routeService.popupDlg(PopupType.FRIEND_REQUESTS)

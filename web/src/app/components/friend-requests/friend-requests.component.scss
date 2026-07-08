@@ -237,6 +237,51 @@ $danger: var(--app-danger);
       color: $primary;
     }
   }
+
+  .reason-input {
+    width: 100%;
+    margin-top: 8px;
+    padding: 8px 12px;
+    border: 1px solid $border;
+    border-radius: var(--app-radius-md);
+    background: var(--app-surface);
+    color: var(--app-text);
+    font-size: 14px;
+    line-height: 20px;
+    font-family: inherit;
+    box-sizing: border-box;
+    resize: vertical;
+
+    &::placeholder {
+      color: var(--app-text-faint);
+    }
+
+    &:focus {
+      outline: none;
+      border-color: $primary;
+    }
+  }
+
+  .connecting-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: var(--app-radius-md);
+    background: var(--app-surface-elevated);
+    color: var(--app-text);
+
+    .connecting-text {
+      flex: 1;
+      min-width: 0;
+      font-size: 13px;
+      line-height: 18px;
+    }
+
+    .connecting-cancel {
+      flex: none;
+    }
+  }
 }
 
 /* pending list */
@@ -273,6 +318,15 @@ $danger: var(--app-danger);
         font-size: 12px;
         color: $muted;
         margin-top: 2px;
+      }
+
+      .pending-reason {
+        font-size: 13px;
+        line-height: 18px;
+        color: $muted;
+        margin-top: 2px;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
     }
 

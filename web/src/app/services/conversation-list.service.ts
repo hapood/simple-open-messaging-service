@@ -3,7 +3,7 @@ import { filter } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
-import { ConversationItem } from './model';
+import { ConversationItem, User } from './model';
 import { toFriendlyHttpError } from './http-error';
 
 /**
@@ -218,6 +218,27 @@ export class ConversationListService {
         },
       });
     }
+    // Federated P2P peer: lazily refresh its avatar/name/bio if the peer's profile changed since the
+    // stub was localized. Fire-and-forget (chat-open is never blocked); the server /revision probe is
+    // cheap and re-pulls only when newer. The returned User flows into the item → header/avatar refresh.
+    if (item && item.type === 'P2P' && item.peerUser.isForeigner) {
+      this.userService.syncPeerProfile({ userId: item.peerUser.id }).subscribe({
+        next: (res) => {
+          if (res.code === 0 && res.data) this.updatePeerUser(threadId, res.data);
+        },
+        error: () => {
+          /* best-effort — keep the cached profile on a transient peer outage */
+        },
+      });
+    }
+  }
+
+  /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups / absent
+   *  items. The message header + avatar read peerUser via computed, so they refresh automatically. */
+  updatePeerUser(threadId: number, user: User): void {
+    this._items.update((list) =>
+      list.map((t) => (t.threadId === threadId && t.type === 'P2P' ? { ...t, peerUser: user } : t)),
+    );
   }
 
   /** Clear the open thread (chat-pane unmounted / mobile popup closed). */

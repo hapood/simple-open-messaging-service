@@ -1,8 +1,7 @@
-import { Component, computed, effect, inject, ElementRef, OnDestroy, signal, viewChild } from '@angular/core';
+import { Component, computed, effect, inject, ElementRef, OnDestroy, signal, untracked, viewChild } from '@angular/core';
 import { MessageThreadComponent } from '../../message-thread/friend-message.component';
 import { ChatEmptyComponent } from '../../chat-empty/chat-empty.component';
 import { ConversationListService } from '../../../services/conversation-list.service';
-import { SearchService } from '../../../services/search.service';
 import { NavStateMachineService } from '../../../services/nav-state.service';
 import { prefersReducedMotion } from '../../../lib/motion-utils';
 import type { ConversationItem } from '../../../services/model';
@@ -27,8 +26,12 @@ type SlotKey = 'A' | 'B';
  *
  * A switch never races a kernel init: the target thread is bound to the BACKGROUND instance, whose own
  * constructor effect runs `teardown() + initScroller()` (reset) while hidden; when its kernel emits `ready`,
- * the pane is promoted to foreground and the old foreground's kernel is idled (`teardownKernel`) after the
- * cross-fade — bounding memory + SSE to one warm pane.
+ * the pane is promoted to foreground and the old foreground's kernel is IDLED (`teardownKernel`: teardown +
+ * reset `currentTrdId`; the COMPONENT STAYS MOUNTED — panes are never destroyed on a switch, only reset)
+ * after the cross-fade — bounding memory + SSE to one warm pane. Re-selecting a thread already bound to a
+ * (possibly idled) pane cannot rely on that input-keyed init effect (its `userMsgTrd` is unchanged, so it
+ * won't re-fire), so the coordinator drives the pane's `reset()` explicitly: warm → `ready` now (instant
+ * fast-flip-back); cold → reinit → `ready`.
  *
  * VISUALS ARE PURE CSS, not imperative WAAPI. The foreground slot is a signal (`fgSlot`) flipped
  * SYNCHRONOUSLY in `promote()`; each layer wears `.pane-fg` or defaults to background, and CSS `transition`
@@ -52,13 +55,13 @@ type SlotKey = 'A' | 'B';
       <div class="pane-layer" [class.pane-fg]="fgSlot() === 'A'" #layerA>
         @if (itemA(); as trd) {
           <app-message-thread #threadA [threadId]="trd.threadId" [userMsgTrd]="trd"
-            [startMsgId]="startMsgId()" (ready)="onReady('A', $event)" />
+            (ready)="onReady('A', $event)" />
         }
       </div>
       <div class="pane-layer" [class.pane-fg]="fgSlot() === 'B'" #layerB>
         @if (itemB(); as trd) {
           <app-message-thread #threadB [threadId]="trd.threadId" [userMsgTrd]="trd"
-            [startMsgId]="startMsgId()" (ready)="onReady('B', $event)" />
+            (ready)="onReady('B', $event)" />
         }
       </div>
       @if (!active()) {
@@ -143,18 +146,6 @@ export class ChatPaneComponent implements OnDestroy {
   readonly openThreadId = this.convList.openThreadId;
   readonly active = computed(() => this.openThreadId() !== undefined);
 
-  private readonly search = inject(SearchService);
-  /** A search-hit message id to center the kernel on — but only when the open thread IS that hit's
-   *  thread, so a stale value from a prior hit on another thread is masked out. Bound to both panes'
-   *  <app-message-thread [startMsgId]>: init passes it to kernel openAround, a same-thread change to
-   *  scrollToIndex. Cleared after the jump (onReady for a switch, a timer for same-thread) so
-   *  re-opening the thread from the list doesn't re-jump to an old hit. */
-  readonly startMsgId = computed(() => {
-    const p = this.search.pendingJump();
-    const tid = this.openThreadId();
-    return p && tid === p.threadId ? p.msgId : undefined;
-  });
-
   /** Each slot holds the threadId its pane is bound to (undefined → empty, no kernel). The LIVE
    *  ConversationItem is DERIVED from the conv list by that id, so per-user state (mute/pin/block/clear)
    *  updated via applyThreadMeta flows into the bound MessageThreadComponent without a re-switch — the
@@ -176,8 +167,11 @@ export class ChatPaneComponent implements OnDestroy {
   /** Foreground pane's item — gates the first-load spinner overlay. */
   readonly fgItem = computed(() => (this.fgSlot() === 'A' ? this.itemA() : this.itemB()));
 
-  private readonly threadA = viewChild('threadA', { read: MessageThreadComponent });
-  private readonly threadB = viewChild('threadB', { read: MessageThreadComponent });
+  // No `{ read: MessageThreadComponent }` — for a component element the default read already yields the
+  // component instance (the explicit `read` is redundant), and omitting it lets tests stub `app-message-thread`
+  // with a lighter stand-in (the strict `read` would return undefined for a non-matching type).
+  private readonly threadA = viewChild<MessageThreadComponent>('threadA');
+  private readonly threadB = viewChild<MessageThreadComponent>('threadB');
   private readonly layerA = viewChild('layerA', { read: ElementRef<HTMLElement> });
   private readonly layerB = viewChild('layerB', { read: ElementRef<HTMLElement> });
 
@@ -205,8 +199,10 @@ export class ChatPaneComponent implements OnDestroy {
       const fgTid = fgKey === 'A' ? this.slotA() : this.slotB();
 
       if (target === undefined) {
-        // CLOSE: cancel any in-flight swap and idle the foreground kernel. The pane-empty overlay (gated on
-        // !active()) covers the torn-down pane.
+        // CLOSE: cancel any in-flight swap and IDLE the foreground kernel (teardown + reset currentTrdId),
+        // keeping the component mounted. The pane-empty overlay (gated on !active()) covers it. On mobile
+        // this runs AFTER the leave-slide (onSlideDone → convList.close), so the pane keeps its content
+        // through the slide; on desktop there is no slide.
         this.clearPending();
         this.clearTeardown();
         (fgKey === 'A' ? this.threadA() : this.threadB())?.teardownKernel();
@@ -214,10 +210,34 @@ export class ChatPaneComponent implements OnDestroy {
         return;
       }
       if (fgTid === target) {
-        // Already showing the target: a prior click's in-flight background swap is now stale. Cancel it so
-        // its (possibly slow or hung) init cannot later promote a thread the user already moved away from
-        // (and so its hung-fetch fallback timer can't fire on it).
+        // Foreground already bound to target. Two cases, told apart by the pane's warmth: (a) the common
+        // one — the pane just became foreground via promote, or the user re-clicked the open thread — it is
+        // WARM, so there is nothing to do; (b) the pane is COLD (a close idled its kernel, then the same
+        // thread was re-opened) — drive `reset()` to re-initialize in place. Without the warmth guard, every
+        // promote (which flips fgSlot and re-triggers this effect) would spuriously reset an already-warm
+        // foreground pane on every switch. The pane stays foreground in both cases.
+        const fg = fgKey === 'A' ? this.threadA() : this.threadB();
         this.clearPending();
+        if (fg && !fg.isWarm()) {
+          this.armPending(target, fgKey);
+          fg.reset();
+        }
+        return;
+      }
+
+      const bgKey: SlotKey = fgKey === 'A' ? 'B' : 'A';
+      // Is the target already bound to the BACKGROUND pane? Read UNTRACKED: the fresh-bind `slot.set` below
+      // writes the bg slot, and if this read tracked it, the effect would re-run, hit this branch on the
+      // next pass, and double-drive `reset()` on a pane whose init effect is already firing.
+      const bgTid = untracked(bgKey === 'A' ? () => this.slotA() : () => this.slotB());
+      if (bgTid === target) {
+        // Background resident (warm mid-dissolve, or cold after the post-promote idle): the slot already
+        // holds target, so a `slot.set` would be a signal no-op and the pane's input-keyed init effect
+        // would NOT re-fire — `ready` would never emit and the switch would strand. Drive `reset()`
+        // explicitly (warm → ready now, preserving the instant fast-flip-back; cold → reinit → ready); the
+        // emitted `ready` (onReady) promotes it with the cross-fade.
+        this.armPending(target, bgKey);
+        (bgKey === 'A' ? this.threadA() : this.threadB())?.reset();
         return;
       }
 
@@ -235,26 +255,13 @@ export class ChatPaneComponent implements OnDestroy {
       }
       this.loadAttemptedFor = target;
 
-      // Hand the target to the BACKGROUND pane — its MessageThreadComponent effect tears down + re-inits
-      // (reset) while hidden; we await `ready` (onReady) before promoting it. The slot stores the threadId;
-      // itemA/itemB derive the live ConversationItem from the conv list.
-      const bgKey: SlotKey = fgKey === 'A' ? 'B' : 'A';
+      // Fresh bind: assign target to the background slot. The slot value (and thus the bound
+      // ConversationItem) changes, so the always-mounted pane's input-keyed init effect re-fires — it tears
+      // down + re-inits (reset) while hidden, then emits `ready` (onReady) → promote. The slot stores the
+      // threadId; itemA/itemB derive the live ConversationItem from the conv list, so per-user meta
+      // (mute/pin/block/clear) flows in without a re-switch.
       this.armPending(target, bgKey);
       (bgKey === 'A' ? this.slotA : this.slotB).set(target);
-    });
-
-    // Same-thread search jump (no pane switch): MessageThread's startMsgId effect runs scrollToIndex,
-    // which — unlike a switch — does not route through onReady. Clear the pending jump on a timer so it
-    // can't linger and re-fire when the user later re-opens this thread from the list. Cross-thread
-    // jumps are cleared in onReady (the switch path); this timer only covers the already-on-thread case
-    // (and is harmless when onReady already cleared it — consumeJump is idempotent).
-    effect(() => {
-      const p = this.search.pendingJump();
-      if (!p) return;
-      const fgTid = this.fgSlot() === 'A' ? this.slotA() : this.slotB();
-      if (fgTid === p.threadId) {
-        setTimeout(() => this.search.consumeJump(), 800);
-      }
     });
   }
 
@@ -263,12 +270,6 @@ export class ChatPaneComponent implements OnDestroy {
     const p = this.pending;
     if (!p || p.bgKey !== key || p.targetId !== tid) return;
     this.promote(key);
-    // A cross-thread search jump lands here: the bg pane's init already read startMsgId and ran
-    // openAround, so it's safe to clear the pending hit. Microtask deferral keeps the value visible
-    // through the current change-detection pass before it's cleared.
-    if (this.search.pendingJump()?.threadId === tid) {
-      queueMicrotask(() => this.search.consumeJump());
-    }
   }
 
   ngOnDestroy(): void {
@@ -341,9 +342,13 @@ export class ChatPaneComponent implements OnDestroy {
     }
   }
 
-  /** Idle a backgrounded slot's kernel after the cross-fade. Idempotent: re-armed per promote, and the
-   *  callback only tears down the slot if it is STILL background by the time it fires (a later promote may
-   *  have re-foregrounded it). Binds memory + SSE to one warm pane without ever idling the live foreground. */
+  /** Idle a backgrounded slot's kernel after the cross-fade. Once the outgoing pane has fully dissolved,
+   *  call `teardownKernel()` on it (teardown + reset `currentTrdId`): the COMPONENT STAYS MOUNTED, only its
+   *  kernel + SSE are released, bounding memory + SSE to the one warm foreground pane. The slot keeps its
+   *  threadId (so the pane re-binds instantly on a later re-selection via `reset()`); only `currentTrdId`
+   *  is cleared, which is what marks the kernel cold. Idempotent: re-armed per promote, and the callback
+   *  only idles the slot if it is STILL background by the time it fires (a later promote — including the
+   *  warm-resident fast-flip-back — may have re-foregrounded it). */
   private scheduleKernelTeardown(slot: SlotKey): void {
     this.clearTeardown();
     this.teardownTimer = setTimeout(() => {
