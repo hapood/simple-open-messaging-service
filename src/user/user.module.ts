@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { UserService } from './user.service.js';
-import { PrismaService } from '../prisma.service.js';
 import { JwtModule } from '@nestjs/jwt';
 import { jwtConstants } from '../auth/constants.js';
 
@@ -10,7 +9,7 @@ import { jwtConstants } from '../auth/constants.js';
       secret: jwtConstants.accessSecret,
     }),
   ],
-  providers: [UserService, PrismaService],
+  providers: [UserService],
   exports: [UserService],
 })
 export class UserModule {}

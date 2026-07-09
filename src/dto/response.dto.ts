@@ -9,7 +9,9 @@ import {
 /**
  * Response entity DTOs (for OpenAPI response schemas). Field types reflect the on-the-wire serialized
  * result, uniformly applied by the global SerializeInterceptor (see src/common/serialize.interceptor.ts):
- * Date → millisecond timestamp (number); BigInt (e.g. Message.id, UserMessageThread.lastRead) → string.
+ * Date → millisecond timestamp (number); BigInt (e.g. an admin RefreshToken.id) → string. NOTE: Message.id
+ * (BigInt global surrogate PK) is a cross-conversation throughput side-channel and is NEVER serialized —
+ * messages carry only the per-thread Int `seq`. See MessageService.stripMessageId / the query `omit`s.
  *
  * Note on class definition order: a class referenced via @ApiProperty({ type: X }) must be declared
  * before the class that references it (property decorators are evaluated at class-declaration time; ES
@@ -70,10 +72,12 @@ export class UserResponseDto {
 
 export class MessageResponseDto {
   @ApiProperty({
-    example: '9007199254740993',
-    description: 'Message id (BigInt→string)',
+    example: 42,
+    description:
+      'Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread ' +
+      '(NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.',
   })
-  id: string;
+  seq: number;
 
   @ApiProperty({ enum: ContentType, description: 'Content type' })
   contentType: ContentType;
@@ -121,7 +125,10 @@ export class GroupResponseDto {
   })
   avatar: string;
 
-  @ApiProperty({ example: 'Frontend team sync', description: 'Group description / intro' })
+  @ApiProperty({
+    example: 'Frontend team sync',
+    description: 'Group description / intro',
+  })
   description: string;
 
   @ApiProperty({ example: 12, description: 'Group message thread id' })
@@ -157,10 +164,11 @@ export class ConversationItemDto {
   type: MessageThreadType;
 
   @ApiProperty({
-    example: '9007199254740993',
-    description: 'Last-read message id (BigInt→string, nullable)',
+    example: 42,
+    nullable: true,
+    description: 'Last-read message seq (nullable)',
   })
-  lastReadMsgId?: string;
+  lastReadSeq?: number;
 
   @ApiProperty({
     enum: GroupRole,
@@ -172,7 +180,7 @@ export class ConversationItemDto {
   @ApiProperty({
     example: 3,
     description:
-      'Unread message count for the caller (messages newer than their lastReadMsgId). 0 when caught up.',
+      'Unread message count for the caller (messages newer than their lastReadSeq). 0 when caught up.',
   })
   unreadCount: number;
 
@@ -187,7 +195,8 @@ export class ConversationItemDto {
   @ApiProperty({
     example: 1_700_000_000_000,
     nullable: true,
-    description: 'When the last message was sent (ms timestamp). Null on empty threads.',
+    description:
+      'When the last message was sent (ms timestamp). Null on empty threads.',
   })
   lastMessageAt?: number | null;
 
@@ -215,7 +224,8 @@ export class ConversationItemDto {
 
   @ApiProperty({
     example: false,
-    description: 'Whether the caller has pinned this conversation to the top of their list.',
+    description:
+      'Whether the caller has pinned this conversation to the top of their list.',
   })
   pinned: boolean;
 
@@ -248,7 +258,7 @@ export class ConversationItemDto {
     example: 'Alice (work)',
     nullable: true,
     description:
-      'Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER\'s chat header + list. Null when not set (real name used).',
+      "Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).",
   })
   alias?: string | null;
 
@@ -297,7 +307,8 @@ export class FriendshipDto {
   @ApiProperty({
     required: false,
     example: 'Hi from the conference',
-    description: 'The PENDING request note/reason the requester sent (≤255 chars). Absent on non-PENDING rows.',
+    description:
+      'The PENDING request note/reason the requester sent (≤255 chars). Absent on non-PENDING rows.',
   })
   reqMessage?: string;
 
@@ -365,9 +376,15 @@ export class GroupMemberDto {
   @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })
   role: GroupRole;
 
-  @ApiProperty({ example: 1_700_000_000_000, description: 'Joined at (ms timestamp)' })
+  @ApiProperty({
+    example: 1_700_000_000_000,
+    description: 'Joined at (ms timestamp)',
+  })
   joinedAt: number;
 
-  @ApiProperty({ example: false, description: 'Whether this member is the group owner' })
+  @ApiProperty({
+    example: false,
+    description: 'Whether this member is the group owner',
+  })
   isOwner: boolean;
 }

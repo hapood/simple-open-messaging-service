@@ -373,15 +373,14 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    */
   private devIdLabel(d: ChatMsgData): string {
     if (d.contentType === 'IMAGE' && d.images) {
-      const ids = [...new Set(d.images.map(i => i.msgId).filter((x): x is string => !!x))];
+      const ids = [...new Set(d.images.map(i => i.msgId).filter((x): x is number => typeof x === 'number'))];
       if (ids.length > 1) {
-        const nums = ids.map(Number);
-        if (nums.every(n => !Number.isNaN(n))) { nums.sort((a, b) => a - b); return `[${nums[0]}-${nums[nums.length - 1]}]`; }
-        return `[${ids[0]}..${ids[ids.length - 1]}]`;
+        ids.sort((a, b) => a - b);
+        return `[${ids[0]}-${ids[ids.length - 1]}]`;
       }
-      if (ids.length === 1) return ids[0];
+      if (ids.length === 1) return String(ids[0]);
     }
-    return shortId(d.msgId);
+    return String(d.msgId);
   }
 
   /** balance diagnostics → console.debug (debug mode + only when there is mount/unmount activity + throttled, to avoid flooding when idle). */
@@ -475,69 +474,72 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /**
-   * Jump to a message id (mock 'id-N'): if mounted, position directly; if not, the kernel re-seeds the window around
-   * that id then positions. anchor='center' centers it (best-effort: clamps to top/bottom near the newest/oldest) +
-   * a highlight flash. If the id doesn't exist the source returns empty → the kernel no-ops silently.
+   * Jump to a message seq: if mounted, position directly; if not, the kernel re-seeds the window around that seq then
+   * positions. anchor='center' centers it (best-effort: clamps to top/bottom near the newest/oldest) + a highlight flash.
+   * If the seq doesn't exist the source returns empty → the kernel no-ops silently.
    */
   jumpToId(v: string): void {
     const scroller = this.scroller;
     const input = this.jumpInput()?.nativeElement;
     const s = (v ?? '').trim();
     if (!s || !scroller) return;
-    if (!/^-?\d+$/.test(s)) { this.showToast('Jump supports id numbers only'); return; }
+    if (!/^-?\d+$/.test(s)) { this.showToast('Jump supports seq numbers only'); return; }
     const n = parseInt(s, 10);
-    if (n < 0) { this.showToast('id must be non-negative'); return; }
-    scroller.scrollToIndex(`id-${n}`, 'center', true);
+    if (n < 0) { this.showToast('seq must be non-negative'); return; }
+    scroller.scrollToIndex(n, 'center', true);
     if (input) input.value = '';
   }
 
   /**
-   * Insert a new message after a mounted msgId (mock 'id-N'): if mounted, the kernel insertAfter runs (no balance
-   * triggered — only scroll-height compensation); if not mounted, the kernel ignores it (returns false) → toast. The
-   * inserted item alternates creator self/other to exercise the successor's group-rebuild. Unlike appendLive, this is a
-   * viewport-level insert that never enters the source (transient); once it scrolls out and is trimmed it's gone, by design.
+   * Insert a new message after a mounted seq: if mounted, the kernel insertAfter runs (no balance triggered — only
+   * scroll-height compensation); if not mounted, the kernel ignores it (returns false) → toast. The inserted item
+   * alternates creator self/other to exercise the successor's group-rebuild. Unlike appendLive, this is a viewport-level
+   * insert that never enters the source (transient); once it scrolls out and is trimmed it's gone, by design.
    */
   insertAfterId(v: string): void {
     const scroller = this.scroller;
     const input = this.insertInput()?.nativeElement;
     const s = (v ?? '').trim();
     if (!s || !scroller) return;
-    if (!/^-?\d+$/.test(s)) { this.showToast('Insert supports id numbers only'); return; }
+    if (!/^-?\d+$/.test(s)) { this.showToast('Insert supports seq numbers only'); return; }
     const n = parseInt(s, 10);
-    if (n < 0) { this.showToast('id must be non-negative'); return; }
-    const afterId = `id-${n}`;
+    if (n < 0) { this.showToast('seq must be non-negative'); return; }
     const item = this.makeInsertItem();
-    const ok = this.insertMsg('FAKE_MSG', afterId, item);
+    const ok = this.insertMsg('FAKE_MSG', n, item);
     if (input) input.value = '';
-    this.showToast(ok ? `Inserted ${item.id} (after ${afterId})` : `${afterId} not mounted, insert ignored`);
+    this.showToast(ok ? `Inserted ${item.id} (after ${n})` : `${n} not mounted, insert ignored`);
   }
 
   /**
-   * Remove mounted message(s) by id — one id or a comma/whitespace-separated list. Accepts a plain history seq
-   * (`450` -> `id-450`) or a literal id (`pending-3`, `insert-0`, `id-450`); a fake/pending/real id or any album-member
-   * id all resolve to the same entry. Plays a cb-leave exit animation (balance paused while it runs); not-mounted ids
-   * are ignored. Toasts the count removed.
+   * Remove mounted message(s) by seq — one seq or a comma/whitespace-separated list of seq numbers (history seq, or a
+   * negative placeholder seq for a fake/optimistic/mock item). A fake/pending/real id or any album-member id all resolve
+   * to the same entry. Plays a cb-leave exit animation (balance paused while it runs); not-mounted ids are ignored.
+   * Toasts the count removed.
    */
   removeById(v: string): void {
     const scroller = this.scroller;
     const input = this.removeInput()?.nativeElement;
     const parts = (v ?? '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
     if (parts.length === 0 || !scroller) return;
-    const ids = parts.map(p => (/^\d+$/.test(p) ? `id-${p}` : p)); // plain number -> history 'id-N'; else literal id
+    const ids = parts.map(p => parseInt(p, 10)).filter(n => Number.isInteger(n));
+    if (ids.length === 0) return;
     const removed = scroller.removeItem(ids);
     if (input) input.value = '';
     this.showToast(removed > 0 ? `Removed ${removed} item(s)` : 'Not mounted, ignored');
   }
 
   /** Build a mock debug-insert message (creator alternates 1=me/isSelf / 2=Alice; name/isSelf filled directly since
-   *  insertAfter bypasses source.shape). kind:'fake' tags it in the dev badge; no status (debug inserts are not "sent"). */
+   *  insertAfter bypasses source.shape). kind:'fake' tags it in the dev badge; no status (debug inserts are not "sent").
+   *  id/msgId = a synthetic negative seq (from -200001 down) — stable, unique, never collides with a server seq or the
+   *  optimistic (-1..)/mock (-100001..) placeholder ranges. */
   private makeInsertItem(): CbItem<ChatItemData> {
     const now = new Date();
     const seq = this.insertSeq++;
     const creator = seq % 2 === 0 ? 1 : 2;
+    const id = -200_001 - seq;
     const data: ChatMsgData = {
       type: 'msg',
-      msgId: `insert-${seq}`,
+      msgId: id,
       creator,
       isSelf: creator === 1,
       name: creator === 1 ? 'Me' : 'Alice',
@@ -549,7 +551,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       createdAtMs: now.getTime(),
       kind: 'fake',
     };
-    return { id: data.msgId, data };
+    return { id, data };
   }
 
   private showToast(msg: string): void {
@@ -637,10 +639,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     }
   }
 
-  /** The id to anchor a newest-end insert after: the current tail (a prior fake/pending, or the real newest). '' if empty. */
-  private tailAnchorId(): string {
+  /** The id to anchor a newest-end insert after: the current tail (a prior fake/pending, or the real newest). -1 if empty
+   *  (the kernel's insertAfter ignores afterId when the window is empty, so the sentinel never reaches indexOfId). */
+  private tailAnchorId(): number {
     const id = this.scroller?.getInfo().newestId ?? null;
-    return id != null ? String(id) : '';
+    return id != null ? id : -1;
   }
 
   /** Optimistic sends queued while the newer end was trimmed; drained in onScroll once noNewer is reported. */
@@ -670,12 +673,12 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
    * PENDING_POST_MSG additionally registers with the source pending area, ensures the newest end is mounted, and schedules
    * a mock confirm; FAKE_MSG is a pure viewport insert (the "insert message" debug action).
    */
-  private insertMsg(type: 'PENDING_POST_MSG' | 'FAKE_MSG', afterId: string, item: CbItem<ChatItemData>): boolean {
+  private insertMsg(type: 'PENDING_POST_MSG' | 'FAKE_MSG', afterId: number, item: CbItem<ChatItemData>): boolean {
     const scroller = this.scroller;
     if (!scroller) return false;
-    // afterId is '' on the first send into an empty thread (tailAnchorId() = '' when nothing is mounted); the kernel's
-    // insertAfter treats an empty window as "insert as the sole entry", so do NOT bail on an empty id here. FAKE_MSG
-    // always carries a real id — insertAfterId guards empty input before calling — so this only relaxes PENDING_POST_MSG.
+    // afterId is -1 on the first send into an empty thread (tailAnchorId() = -1 when nothing is mounted); the kernel's
+    // insertAfter treats an empty window as "insert as the sole entry", so do NOT bail on a -1 here. FAKE_MSG always
+    // carries a real seq — insertAfterId guards empty input before calling — so this only relaxes PENDING_POST_MSG.
     if (type === 'PENDING_POST_MSG') {
       // Register with the source pending area so the confirm echo (appendLive with a matching id) reconciles it.
       this.source?.addPending(item);
@@ -783,37 +786,43 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   }
 
   /** Build a fully-shaped optimistic self message (creator 1, name 'Me', status 'sending', kind 'pending'). Generates a
-   *  client idempotency UUID (clientMessageId) that doubles as the bubble's tracking id until the server confirms —
-   *  mirrors production SendMessageDto.clientMessageId. insertAfter bypasses source.shape, so name/isSelf are filled
-   *  directly (mirrors MockItemSource.shape for creator 1). */
+   *  client idempotency UUID (clientMessageId) — the correlation key between the in-flight bubble and the server-confirmed
+   *  real (the kernel reconciles by THIS, not id). id/msgId = a synthetic NEGATIVE placeholder (msgId is a number now,
+   *  so the bubble cannot carry the clientMessageId as its id); negative ids never collide with server-assigned seqs
+   *  (always positive). insertAfter bypasses source.shape, so name/isSelf are filled directly (mirrors MockItemSource.shape
+   *  for creator 1). Any album cell's msgId is stamped to the same placeholder so the dev-badge range stays self-consistent. */
   private makeOptimisticItem(text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, file: FileInfo | null = null, rich = false): CbItem<ChatItemData> {
     const now = new Date();
     const clientMessageId = newClientMessageId();
+    const placeholderId = this.nextOptimisticId--;
+    const stampedImages = images?.map(im => ({ ...im, msgId: placeholderId })) ?? null;
     const data: ChatMsgData = {
       type: 'msg',
-      msgId: clientMessageId, // no server id yet — the client tracks the bubble by its clientMessageId (truncated in the dev badge)
+      msgId: placeholderId,
       creator: 1,
       isSelf: true,
       name: 'Me',
       text,
       rich,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images, file, createdAtMs: now.getTime(),
+      contentType, images: stampedImages, file, createdAtMs: now.getTime(),
       status: 'sending',
       kind: 'pending',
     };
-    return { id: clientMessageId, data, clientMessageId };
+    return { id: placeholderId, data, clientMessageId };
   }
+  /** Next synthetic id for an in-flight optimistic send (decrements from -1 so it never collides with a server seq). */
+  private nextOptimisticId = -1;
 
   /** Build a mock received/sent ChatMsgData wrapped as a CbItem. The id is allocated from the source's autoincrement
-   *  counter — the same path a confirmed self-send takes (`source.allocateMsgId()` → `id-N`), mirroring a server-assigned
-   *  Message.id — so incoming messages carry a real id, not a synthetic placeholder. The `mock-N`/`recv-N` form is a
-   *  fallback only for the impossible case where the source is unbound while the scroller is live. appendLive caches it. */
+   *  counter — the same path a confirmed self-send takes (`source.allocateMsgId()` → the next seq), mirroring a
+   *  server-assigned Message.seq — so incoming messages carry a real id, not a synthetic placeholder. A negative
+   *  placeholder is a fallback only for the impossible case where the source is unbound while the scroller is live. */
   private makeMockItem(text: string, isSelf: boolean, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, file: FileInfo | null = null): CbItem<ChatItemData> {
     const now = new Date();
     const data: ChatMsgData = {
       type: 'msg',
-      msgId: this.source?.allocateMsgId() ?? `${isSelf ? 'mock' : 'recv'}-${this.sendSeq++}`,
+      msgId: this.source?.allocateMsgId() ?? this.nextMockId--,
       creator: isSelf ? 1 : 2,
       isSelf: false, name: '',  // placeholder: source.appendLive's shape fills name from profiles by creator (mirrors production toMsgData)
       text,
@@ -822,8 +831,11 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     };
     return { id: data.msgId, data };
   }
-  private sendSeq = 0;
-  /** Insert-message sequence counter (msgId = `insert-N`; stable and unique, never collides with the source's id-N / mock-N / recv-N). */
+  /** Fallback synthetic seq for mock items when the source is unbound (impossible in normal flow). Decrements from -100001
+   *  to stay clear of the optimistic placeholder range (-1..) and never collide with a positive server seq. */
+  private nextMockId = -100_001;
+  /** Insert-message sequence counter (each debug insert gets a synthetic negative id; never collides with a server seq
+   *  or the optimistic/mock placeholder ranges). */
   private insertSeq = 0;
   /** In-flight mock confirm timers (cleared on teardown so no settle fires after destroy). */
   private readonly confirmTimers: ReturnType<typeof setTimeout>[] = [];
@@ -849,12 +861,6 @@ const MOCK_MEMBERS: ChatMember[] = [
  *  playground stays on the same always-spec-compliant path as production. */
 function newClientMessageId(): string {
   return uuid();
-}
-
-/** Truncate a clientMessageId UUID to its first 8 hex chars for the dev badge (a full 36-char uuid would dominate the
- *  row). Non-uuid ids (id-N, recv-N, insert-N, …) pass through unchanged, so the uuid→real-msgId transition is visible. */
-function shortId(id: string): string {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(id) ? id.slice(0, 8) : id;
 }
 
 /** Read images locally into AlbumImage (dataURL + real dimensions; falls back to 400×300 on read failure). */

@@ -17,7 +17,7 @@ export interface AlbumMedia {
   name?: string;
   /** Owning original msg id (differs across cells in a merged album); layout ignores it, used only
    *  for the dev badge showing the aggregation range `[min-max]`. */
-  msgId?: string;
+  msgId?: number;
 }
 
 /** Legacy alias — gallery-viewer and older call sites still reference AlbumImage. */
@@ -45,7 +45,7 @@ export interface FileInfo {
 export interface ChatMsgData {
   type: 'msg';
   /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
-  msgId: string;
+  msgId: number;
   /** Sender userId (classifyGroupFlags keys group-start off this). */
   creator: number;
   /** = creator === current user's userId. */

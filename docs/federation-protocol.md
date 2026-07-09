@@ -102,6 +102,8 @@ address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" 
 
 `account` is the peer's `account`; `domain` is the peer server. The friend-op payloads' `from`/`to` carry these as objects (`{account, domain}`), and the resolve endpoint is `/users/:account`. The `@` separator is a **UI input aid ONLY** — a user types `alice@soms.io` in the search box, the client splits it into the two fields before any API call, and no `@`-joined string ever crosses the wire or appears in a backend definition. (SOMS local `account`s never contain `@`, so the client split is unambiguous.)
 
+> **Account grammar is specified separately** in [`docs/account-naming.md`](./account-naming.md) — the single source of truth for the `account` charset, the `!` group sigil, dot rules, and case handling. There are two account classes: **users** (letters + `.`) and **groups** (`!`-prefixed opaque ids), distinguished by grammar. A group address on the wire is `{ account: "!01hz...", domain: "soms.io" }`.
+
 > **Reserved for Step 2/3** (not shipped): a federated **thread** id (origin-domain + local id, for cross-server **groups**) and an origin-assigned **message** ULID. Step 1 has neither — each server owns its own local 1:1 thread, and messages are local until Step 2.
 
 ### 3.2 Discovery — layered

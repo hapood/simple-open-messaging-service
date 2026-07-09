@@ -54,13 +54,13 @@ export interface HttpItemSourceLiveOpts {
 
 export class HttpItemSource implements CbSource<ChatItemData> {
   /** DB cursors (oldest/newest loaded msgId). */
-  private oldestMsgId: string | null = null;
-  private newestMsgId: string | null = null;
+  private oldestMsgId: number | null = null;
+  private newestMsgId: number | null = null;
   private noOlder = false;
   private noNewer = true; // anchor is the latest; always true (SSE pushes one way only)
 
   private readonly profiles = new Map<number, { name: string; isSelf: boolean }>();
-  private readonly knownMsgIds = new Set<string>();
+  private readonly knownMsgIds = new Set<number>();
   /** In-flight optimistic sends, held separately from the reloadable sequence (mirrors MockItemSource.pending).
    *  Each entry's id === its clientMessageId. On confirm (a real whose clientMessageId matches) the entry is
    *  dropped by reconcilePending inside init/getNewer, and the kernel's reconcileOptimistic removes the mounted
@@ -95,7 +95,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *    global edges).
    * Returns ascending raw messages; the global oldest/newest carry a boundary flag.
    */
-  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
+  async init(anchorId: number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
     if (anchorId === -1) {
       // Cap at MAX_PAGE (backend @Max(50)); the kernel top-ups the rest via getOlder. hasMore is
       // authoritative (backend take+1 method), so it alone drives noOlder — the old `list.length < olderCount`
@@ -130,8 +130,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     const olderTake = Math.min(olderCount, MAX_PAGE);
     const newerTake = Math.min(newerCount, MAX_PAGE);
     const [olderRes, newerRes] = await Promise.all([
-      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 0, take: olderTake, lastId: String(anchorId), orderBy: 'desc' })),
-      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: newerTake, lastId: String(anchorId), orderBy: 'asc' })),
+      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' })),
+      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' })),
     ]);
     if (olderRes.code !== 0 || !olderRes.data || olderRes.data.length === 0) return []; // target msgId not found
     const older = [...olderRes.data].reverse(); // desc → ascending: [older..anchorId] (includes anchorId)
@@ -169,11 +169,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   /** Fetch `count` messages older than cursorId (desc, then reversed to ascending). out[0] is tagged
    *  'oldest' when the DB floor is reached. */
-  async getOlder(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getOlder(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const take = Math.min(count, MAX_PAGE);
     const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastId: String(cursorId), orderBy: 'desc' }),
+      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastSeq: cursorId, orderBy: 'desc' }),
     );
     if (res.code !== 0 || !res.data || res.data.length === 0) { this.noOlder = true; return []; }
     const list = [...res.data].reverse(); // desc → ascending
@@ -192,10 +192,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  kernel's loadNewer already guards `if (!force && this.noNewer) return 0` before calling, so no noNewer
    *  guard is needed here — and none COULD be, since a signal must be able to pull past "at newest" (that is
    *  the whole point: a NEW_MESSAGE arrived, so there IS newer data even though noNewer was true). */
-  async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getNewer(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
     const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastId: String(cursorId), orderBy: 'asc' }),
+      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastSeq: cursorId, orderBy: 'asc' }),
     );
     if (res.code !== 0 || !res.data || res.data.length === 0) { this.noNewer = true; return []; }
     const list = [...res.data]; // already ascending (old → new)
@@ -283,7 +283,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private rawToItems(msgs: Message[]): CbItem<ChatItemData>[] {
     const out: CbItem<ChatItemData>[] = [];
     for (const m of msgs) {
-      const id = String(m.id);
+      const id = m.seq;
       if (this.knownMsgIds.has(id)) continue; // IO dedup (guard against SSE/pagination duplicates)
       this.knownMsgIds.add(id);
       // Each IMAGE/VIDEO/AUDIO message → a single-element media array (carrying its own msgId); consecutive
@@ -314,7 +314,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private toMsgData(m: Message, images: AlbumImage[] | null, file: FileInfo | null): ChatMsgData {
     const p = this.profiles.get(m.creator);
     return {
-      type: 'msg', msgId: String(m.id), creator: m.creator,
+      type: 'msg', msgId: m.seq, creator: m.creator,
       isSelf: p?.isSelf ?? m.creator === this.myUserId,
       name: p?.name ?? '', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
       contentType: m.contentType, images, file, createdAtMs: m.createdAt,
@@ -420,12 +420,12 @@ function parseFileContent(content: string): FileInfo | null {
 
 /** id of the first message in the range (the source returns only messages, so the head is the first
  *  message; the guard is defensive and for TS narrowing). */
-function firstMsgId(items: CbItem<ChatItemData>[]): string | null {
+function firstMsgId(items: CbItem<ChatItemData>[]): number | null {
   const first = items[0];
   return first && first.data.type === 'msg' ? first.data.msgId : null;
 }
 /** id of the last message in the range. */
-function lastMsgId(items: CbItem<ChatItemData>[]): string | null {
+function lastMsgId(items: CbItem<ChatItemData>[]): number | null {
   const last = items[items.length - 1];
   return last && last.data.type === 'msg' ? last.data.msgId : null;
 }

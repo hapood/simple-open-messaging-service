@@ -44,7 +44,7 @@ export class FileRowComponent {
   readonly isFailed = computed(
     () => this.data().isSelf && this.data().status === 'failed',
   );
-  readonly retry = output<string>();
+  readonly retry = output<number>();
   /** Click the card → open the file-detail overlay (full name + Download). */
   readonly openFile = output<void>();
 

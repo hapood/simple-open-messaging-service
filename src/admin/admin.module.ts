@@ -8,7 +8,6 @@ import { AdminAuthService } from './admin-auth.service.js';
 import { AdminJwtStrategy } from './admin.jwt.strategy.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { MediaAssetGcService } from './media-asset-gc.service.js';
-import { PrismaService } from '../prisma.service.js';
 import { jwtConstants } from '../auth/constants.js';
 import { AuthModule } from '../auth/auth.module.js';
 import { UserManageModule } from '../user-manage/user-manage.module.js';
@@ -30,7 +29,7 @@ import { UploadModule } from '../upload/upload.module.js';
     UploadModule,
   ],
   controllers: [AdminController, AdminFederationController, MediaAssetGcController],
-  providers: [AdminAuthService, AdminJwtStrategy, AdminAuthGuard, MediaAssetGcService, PrismaService],
+  providers: [AdminAuthService, AdminJwtStrategy, AdminAuthGuard, MediaAssetGcService],
   exports: [AdminAuthService],
 })
 export class AdminModule {}

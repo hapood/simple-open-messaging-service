@@ -40,8 +40,8 @@ export class MessageHeaderComponent {
   /** The current thread's id, fed to the embedded search field. Derived from userMsgTrd. */
   readonly threadId = computed(() => this.userMsgTrd()?.threadId ?? 0);
 
-  /** Emits a message id to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
-  readonly searchJump = output<string>();
+  /** Emits a message seq to center the kernel on (the parent owns the kernel + calls scrollToIndex). */
+  readonly searchJump = output<number>();
   /** Emitted after clear-history succeeds (parent resets the kernel against the now-empty view). */
   readonly historyCleared = output<void>();
 

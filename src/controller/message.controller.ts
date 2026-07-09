@@ -111,9 +111,8 @@ export class MessageController {
     const msgData = serializeBody({ threadId: dto.threadId, ...data });
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     // Participants now carry `muted` so the notification channels (push + notif-snapshot) can honor mute.
-    const participants = await this.participantService.getActiveParticipantUserIds(
-      dto.threadId,
-    );
+    const participants =
+      await this.participantService.getActiveParticipantUserIds(dto.threadId);
     // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push,
     // no notif snapshot — the blocked user is invisible to the blocker's message stream).
     const blockers = await this.userBlockService.blockersOf(req.user.userId);
@@ -149,7 +148,11 @@ export class MessageController {
     // only / group threads are a no-op inside notifyOnSend. Fire-and-forget (best-effort; pull-on-open
     // is the floor). data.originSeq is always set on a fresh insert (nullable only for legacy rows).
     if (data.originSeq != null) {
-      void this.federationBuffer.notifyOnSend(req.user.userId, dto.threadId, data.originSeq);
+      void this.federationBuffer.notifyOnSend(
+        req.user.userId,
+        dto.threadId,
+        data.originSeq,
+      );
     }
     return { code: BusinessCode.OK, message: 'successful', data };
   }
@@ -159,7 +162,9 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('query-messages')
-  @ApiOperation({ summary: 'Query conversation history messages (cursor pagination)' })
+  @ApiOperation({
+    summary: 'Query conversation history messages (cursor pagination)',
+  })
   @ApiResultResponse(MessageResponseDto, true)
   async queryMessages(
     @Request() req,
@@ -173,10 +178,13 @@ export class MessageController {
     const newParams: Prisma.MessageFindManyArgs = {
       skip: dto.skip,
       take: dto.take + 1,
-      orderBy: { id: dto.orderBy },
+      orderBy: { seq: dto.orderBy },
     };
-    if (dto.lastId) {
-      newParams.cursor = { id: BigInt(dto.lastId) };
+    if (dto.lastSeq) {
+      // seq is unique only within a thread, so the keyset cursor uses the compound (threadId, seq) unique.
+      newParams.cursor = {
+        threadId_seq: { threadId: dto.threadId, seq: Number(dto.lastSeq) },
+      };
     }
     // Per-viewer filters: clearedAt hides the caller's "clear history" tail (P2P + GROUP), and on P2P
     // threads a blocked peer's messages are hidden (group threads leave blocked members visible —
@@ -202,7 +210,10 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/by-user-id')
-  @ApiOperation({ summary: 'Look up the P2P relationship by peer userId (friend status / thread)' })
+  @ApiOperation({
+    summary:
+      'Look up the P2P relationship by peer userId (friend status / thread)',
+  })
   @ApiResultResponse(FriendshipDto)
   async getThreadByUserId(
     @Request() req,
@@ -239,23 +250,25 @@ export class MessageController {
     // participant row is on req.threadAccess.participant.
     // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
     // (prevents pointing the cursor at a message from another conversation). Without one, mark all
-    // current messages read by using the thread's denormalized lastMessageId. The numeric-string
+    // current messages read by using the thread's denormalized lastMessageSeq. The numeric-string
     // shape of lastReadMessageId is enforced by MarkReadDto's @Matches.
-    let cursor: bigint;
-    if (dto.lastReadMessageId !== undefined) {
-      const msg = await this.messageService.findMessageById(
-        BigInt(dto.lastReadMessageId),
+    let cursor: number;
+    if (dto.lastReadSeq !== undefined) {
+      const msg = await this.messageService.findMessageBySeq(
+        dto.threadId,
+        Number(dto.lastReadSeq),
       );
-      if (msg === null || msg.threadId !== dto.threadId) {
+      // findMessageBySeq is scoped by (threadId, seq), so null means no such message in THIS thread.
+      if (msg === null) {
         return {
           code: BusinessCode.NOT_FOUND,
           message: `no such message in thread [${dto.threadId}]`,
         };
       }
-      cursor = msg.id;
+      cursor = msg.seq;
     } else {
       const thread = await this.messageService.findThread(dto.threadId);
-      const last = thread?.lastMessageId ?? null;
+      const last = thread?.lastMessageSeq ?? null;
       if (last === null) {
         // Empty thread — nothing to mark read.
         return { code: BusinessCode.OK, message: 'successful' };
@@ -274,7 +287,7 @@ export class MessageController {
       // for an idempotent/stale mark-read (cursor already ≥ this id).
       this.sseService.onReadCursor(
         req.user.userId,
-        serializeBody({ threadId: dto.threadId, lastReadMsgId: cursor }),
+        serializeBody({ threadId: dto.threadId, lastReadSeq: cursor }),
       );
     }
     return { code: BusinessCode.OK, message: 'successful' };
@@ -286,13 +299,24 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-muted')
-  @ApiOperation({ summary: 'Mute / unmute a conversation (suppresses notifications, not delivery)' })
+  @ApiOperation({
+    summary:
+      'Mute / unmute a conversation (suppresses notifications, not delivery)',
+  })
   async setMuted(@Request() req, @Body() dto: SetMutedDto): Promise<ApiResult> {
-    await this.participantService.setMuted(req.user.userId, dto.threadId, dto.muted);
+    await this.participantService.setMuted(
+      req.user.userId,
+      dto.threadId,
+      dto.muted,
+    );
     // Sync the caller's other online devices so their list row swaps the mute icon live (no reload).
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({ event: 'THREAD_META', threadId: dto.threadId, muted: dto.muted }),
+      serializeBody({
+        event: 'THREAD_META',
+        threadId: dto.threadId,
+        muted: dto.muted,
+      }),
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }
@@ -303,8 +327,13 @@ export class MessageController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-pinned')
-  @ApiOperation({ summary: 'Pin / unpin a conversation (pinned-first ordering)' })
-  async setPinned(@Request() req, @Body() dto: SetPinnedDto): Promise<ApiResult> {
+  @ApiOperation({
+    summary: 'Pin / unpin a conversation (pinned-first ordering)',
+  })
+  async setPinned(
+    @Request() req,
+    @Body() dto: SetPinnedDto,
+  ): Promise<ApiResult> {
     const updated = await this.participantService.setPinned(
       req.user.userId,
       dto.threadId,
@@ -331,16 +360,24 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('thread/clear-history')
   @ApiOperation({
-    summary: 'Clear chat history for me (hides all messages up to now; peer copy untouched)',
+    summary:
+      'Clear chat history for me (hides all messages up to now; peer copy untouched)',
   })
-  async clearHistory(@Request() req, @Body() dto: ClearHistoryDto): Promise<ApiResult> {
+  async clearHistory(
+    @Request() req,
+    @Body() dto: ClearHistoryDto,
+  ): Promise<ApiResult> {
     const updated = await this.participantService.clearHistory(
       req.user.userId,
       dto.threadId,
     );
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({ event: 'THREAD_META', threadId: dto.threadId, clearedAt: updated.clearedAt }),
+      serializeBody({
+        event: 'THREAD_META',
+        threadId: dto.threadId,
+        clearedAt: updated.clearedAt,
+      }),
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }
@@ -352,7 +389,8 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-alias')
   @ApiOperation({
-    summary: 'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
+    summary:
+      'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
   })
   async setAlias(@Request() req, @Body() dto: SetAliasDto): Promise<ApiResult> {
     const updated = await this.participantService.setAlias(
@@ -363,7 +401,11 @@ export class MessageController {
     // Carry the resolved alias (null when cleared) so other devices flip their header/list title live.
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({ event: 'THREAD_META', threadId: dto.threadId, alias: updated.alias }),
+      serializeBody({
+        event: 'THREAD_META',
+        threadId: dto.threadId,
+        alias: updated.alias,
+      }),
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }
@@ -375,7 +417,8 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('search-messages')
   @ApiOperation({
-    summary: 'Search a conversation by substring (returns lightweight match ids for kernel jump)',
+    summary:
+      'Search a conversation by substring (returns lightweight match ids for kernel jump)',
   })
   async searchMessages(@Body() dto: SearchMessagesDto): Promise<ApiResult> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants). The match
@@ -383,12 +426,12 @@ export class MessageController {
     // source by the send fan-out, and clearedAt only affects the user's own view — search returns the
     // raw id matches; the client jumps the kernel, which loads each via query-messages (re-applying
     // clearedAt/block). take+1 hasMore trick.
-    const lastId = dto.lastId !== undefined ? BigInt(dto.lastId) : undefined;
+    const lastSeq = dto.lastSeq !== undefined ? Number(dto.lastSeq) : undefined;
     const rows = await this.messageService.searchMessages(
       dto.threadId,
       dto.keyword,
       dto.take,
-      lastId,
+      lastSeq,
     );
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;

@@ -40,8 +40,22 @@ async function authorizeDigest(
   await prisma.threadParticipant.create({
     data: { userId, threadId: thread.id },
   });
+  // Allocate the per-thread seq the same way writeMsgToThread does (curSeq atomic increment), so the
+  // direct create mirrors a real send. originSeq == seq for a locally-authored message.
+  const { curSeq: seq } = await prisma.messageThread.update({
+    where: { id: thread.id },
+    data: { curSeq: { increment: 1 } },
+    select: { curSeq: true },
+  });
   const msg = await prisma.message.create({
-    data: { contentType: 'IMAGE', content: '', threadId: thread.id, creator: userId },
+    data: {
+      contentType: 'IMAGE',
+      content: '',
+      threadId: thread.id,
+      creator: userId,
+      seq,
+      originSeq: seq,
+    },
   });
   await prisma.mediaMessage.create({
     data: { messageId: msg.id, threadId: thread.id, digest },
@@ -54,7 +68,6 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
   let token: string;
   let token2: string;
   let userAId: number;
-  let userBId: number;
   let avatarPng: Buffer;
   let authzPng: Buffer;
   let port: number;
@@ -97,8 +110,6 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
       .send({ account: 'fastify2', password: 'Pass1234' });
     token2 = login2.body.data.access_token;
     userAId = (await prisma.user.findFirst({ where: { account: 'fastify' } }))!
-      .id;
-    userBId = (await prisma.user.findFirst({ where: { account: 'fastify2' } }))!
       .id;
     // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written
     // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).

@@ -26,10 +26,11 @@ function conv(threadId: number): ConversationItem {
     lastMessagePreview: null, lastMessageAt: null } as unknown as ConversationItem;
 }
 
-/** A minimal Message row (BigInt ids are strings on the wire). */
-function row(id: string, creator: number, clientMessageId?: string): Message {
+/** A minimal Message row. The item id HttpItemSource produces is the numeric `seq` (the old BigInt wire `id`
+ *  field is gone — Message.seq is now the seq cursor rawToItems reads). */
+function row(seq: number, creator: number, clientMessageId?: string): Message {
   return {
-    id, contentType: 'PURE_TEXT', content: 'hi', threadId: 42, creator,
+    seq, contentType: 'PURE_TEXT', content: 'hi', threadId: 42, creator,
     createdAt: 1700000000000, updatedAt: 1700000000000, isDeleted: false,
     ...(clientMessageId !== undefined ? { clientMessageId } : {}),
   } as unknown as Message;
@@ -63,12 +64,12 @@ describe('HttpItemSource (signal-only SSE contract)', () => {
     const { ws, signals } = setup({ code: 0, message: 'ok', data: [], hasMore: false });
 
     ws.eventSubject.next({ event: 'PING', status: 0, message: '' });              // not NEW_MESSAGE → ignored
-    ws.eventSubject.next(sseFrame(row('100', 2), 99));                            // different thread → ignored
+    ws.eventSubject.next(sseFrame(row(100, 2), 99));                              // different thread → ignored
     ws.eventSubject.next({ event: 'NEW_MESSAGE', status: 1, message: 'err' });    // non-zero status → ignored
 
     expect(signals.calls.count()).toBe(0);
 
-    ws.eventSubject.next(sseFrame(row('100', 2), 42));                            // THIS thread → signal
+    ws.eventSubject.next(sseFrame(row(100, 2), 42));                              // THIS thread → signal
     expect(signals.calls.count()).toBe(1);
   });
 
@@ -77,10 +78,10 @@ describe('HttpItemSource (signal-only SSE contract)', () => {
     // loadNewer falls back to init(-1). The SSE echo fired onSignal (no id pre-registered), so init's
     // rawToItems registers the id NOW and returns the real — the bubble reconciles instead of sticking "sending".
     const cid = 'b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b';
-    const echo = row('100', 1, cid);
+    const echo = row(100, 1, cid);
     const { src, ws, signals } = setup({ code: 0, message: 'ok', data: [echo], hasMore: false });
 
-    src.addPending({ id: cid, data: { type: 'msg', msgId: cid, creator: 1, isSelf: true, name: 'Me',
+    src.addPending({ id: -1, data: { type: 'msg', msgId: -1, creator: 1, isSelf: true, name: 'Me',
       text: 'hi', time: '09:00', contentType: 'PURE_TEXT', images: null, file: null, createdAtMs: 0,
       status: 'sending', kind: 'pending' } as never, clientMessageId: cid });
     expect(src.getPending().length).toBe(1);
@@ -91,7 +92,7 @@ describe('HttpItemSource (signal-only SSE contract)', () => {
 
     const items = await src.init(-1, 50, 0);    // kernel pulls from DB (the all-optimistic fallback)
     expect(items.length).toBe(1);
-    expect(items[0].id).toBe('100');
+    expect(items[0].id).toBe(100);
     expect(items[0].clientMessageId).toBe(cid); // preserved so the kernel pairs it with the optimistic bubble
     expect(items[0].boundary).toBe('both');      // sole item spanning both edges of an empty thread
     expect(src.getPending().length).toBe(0);     // reconcilePending dropped the confirmed optimistic
@@ -102,19 +103,19 @@ describe('HttpItemSource (signal-only SSE contract)', () => {
     // kernel's loadNewer(forced) calls getNewer, which must query the DB despite noNewer (a signal MEANS new
     // data exists). The redundant noNewer guard was removed — the kernel's loadNewer guards it for the scroll
     // case; for the forced/signal case getNewer always queries.
-    const reply = row('200', 2);
+    const reply = row(200, 2);
     const { src, ws } = setup({ code: 0, message: 'ok', data: [reply], hasMore: false });
 
     ws.eventSubject.next(sseFrame(reply, 42));   // reply arrives → onSignal (kernel will pull)
 
-    const items = await src.getNewer('100', 50); // kernel: newer-than-mounted cursor '100'
+    const items = await src.getNewer(100, 50); // kernel: newer-than-mounted cursor 100
     expect(items.length).toBe(1);
-    expect(items[0].id).toBe('200');
+    expect(items[0].id).toBe(200);
     expect(items[0].boundary).toBe('newest');    // reached the DB ceiling (hasMore false)
   });
 
   it('pushLive is a no-op (signal-only path caches nothing; satisfies the CbSource interface)', () => {
     const { src } = setup({ code: 0, message: 'ok', data: [], hasMore: false });
-    expect(() => src.pushLive([{ id: 'x', data: {} as never }])).not.toThrow();
+    expect(() => src.pushLive([{ id: -1, data: {} as never }])).not.toThrow();
   });
 });

@@ -34,7 +34,9 @@ export default tseslint.config(
       // 设 caughtErrors:'none' 还原 v7 行为，避免迁移在既有代码上引入新报错。
       '@typescript-eslint/no-unused-vars': [
         'error',
-        { caughtErrors: 'none' },
+        // ignoreRestSiblings enables the idiomatic field-omit pattern `const { id, ...rest } = obj`
+        // (used to strip the internal Message.id — a throughput side-channel — from responses).
+        { caughtErrors: 'none', ignoreRestSiblings: true },
       ],
       // 注：@typescript-eslint/interface-name-prefix 在 v8 已移除，原 'off' 无需保留。
     },

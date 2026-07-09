@@ -27,7 +27,7 @@
  * [init anchor] init(anchorId, olderCount, newerCount):
  *  - `-1` = global newest (anchor = newest; newerCount ignored; out[last] is always 'newest'; first screen lays
  *    out from newest toward older).
- *  - other (string|number) = a real msgId: **bidirectional fetch** — olderCount older items (including anchorId)
+ *  - other (number) = a real msgId: **bidirectional fetch** — olderCount older items (including anchorId)
  *    + newerCount newer items, returned as an ascending window centered on anchorId (used by jump-to-message /
  *    open-conversation-from-notification). Global oldest/newest are still marked by boundary.
  *
@@ -65,16 +65,16 @@ export interface CbSource<T = unknown> {
   /**
    * Initialize / re-anchor: load olderCount older + newerCount newer items around anchorId.
    *  - anchorId: `-1` = global newest (newerCount ignored, out[last] always 'newest');
-   *    other (string|number) = real msgId → bidirectional fetch (olderCount including anchorId + newerCount newer).
+   *    other (number) = real msgId → bidirectional fetch (olderCount including anchorId + newerCount newer).
    * Returns raw msg items (ascending: old→new; CbItem.id = msgId; global oldest/newest carry boundary).
    * The kernel's init() uses -1 for the first screen; scrollToIndex(id)/init({startMsgId}) uses a real msgId.
    */
-  init(anchorId: string | number, olderCount: number, newerCount: number, opts?: CbSourceInitOpts): Promise<CbItem<T>[]>;
+  init(anchorId: number, olderCount: number, newerCount: number, opts?: CbSourceInitOpts): Promise<CbItem<T>[]>;
   /**
    * Fetch `count` items **older** than cursorId (ascending; excludes cursor). Reaching the sequence start →
    * out[0] (oldest) carries boundary:'oldest'.
    */
-  getOlder(cursorId: string | number, count: number): Promise<CbItem<T>[]>;
+  getOlder(cursorId: number, count: number): Promise<CbItem<T>[]>;
   /**
    * Fetch `count` items **newer** than cursorId (ascending; excludes cursor). Reaching the sequence end →
    * out[last] (newest) carries boundary:'newest'.
@@ -83,7 +83,7 @@ export interface CbSource<T = unknown> {
    * effect, reconciles pending: any pending entry whose clientMessageId matches a returned real is deleted
    * (the confirm arrived). Optimistic sends are mounted separately at the newest edge via {@link getPending}.
    */
-  getNewer(cursorId: string | number, count: number): Promise<CbItem<T>[]>;
+  getNewer(cursorId: number, count: number): Promise<CbItem<T>[]>;
   /**
    * Return the source's in-flight optimistic sends (the `pending` array) — the backing store that lets the kernel
    * (re)mount optimistic sends at the global newest edge. The kernel calls this once it has reached the newest (a

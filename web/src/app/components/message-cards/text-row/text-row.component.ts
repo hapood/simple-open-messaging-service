@@ -41,6 +41,7 @@ export class TextRowComponent {
   readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
   /** Whether this row shows the failed retry affordance (drives the click binding + a11y on the status span). */
   readonly isFailed = computed(() => this.data().isSelf && this.data().status === 'failed');
-  /** Emitted (with the msgId) when the user clicks the failed retry glyph; the parent re-sends. */
-  readonly retry = output<string>();
+  /** Emitted (with the numeric msgId) when the user clicks the failed retry glyph; the parent re-sends by
+   *  clientMessageId (the emitted value is a click signal — createMsgCbElement maps it to item.clientMessageId). */
+  readonly retry = output<number>();
 }

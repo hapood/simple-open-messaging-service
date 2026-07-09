@@ -346,7 +346,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * recompute group-head/date (same lightweight rebuild as the ghost reveal); entries further down keep the same prev
    * and need no rebuild. The new entry is marked transient (not a source cursor).
    */
-  insertAfter(afterId: string | number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean {
+  insertAfter(afterId: number, item: CbItem<T>, opts?: { optimistic?: boolean }): boolean {
     if (!this.steady) return false;
     // Empty window: there is no anchor to insert "after", so the item becomes the sole entry (prev=null). This is the
     // first-message-in-an-empty-thread path — afterId is irrelevant there (and typically '' / the optimistic's own id,
@@ -392,7 +392,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * height still counted, until then — so the height model stays exact). No `animating>0` guard: removes run concurrently
    * with each other and with inserts; only balance is gated by animating. Returns the count scheduled for removal.
    */
-  removeItem(ids: string | number | (string | number)[]): number {
+  removeItem(ids: number | (number)[]): number {
     if (!this.steady) return 0;
     const list = Array.isArray(ids) ? ids : [ids];
     const targets: Entry<T>[] = [];
@@ -524,7 +524,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.emit();
   }
 
-  scrollToIndex(id: string | number, anchor: 'top' | 'center' | 'bottom' = 'center', highlight = false): void {
+  scrollToIndex(id: number, anchor: 'top' | 'center' | 'bottom' = 'center', highlight = false): void {
     if (this.destroyed) return;
     const idx = this.indexOfId(id);
     if (ngDevMode) console.log('[JUMP] scrollToIndex id=', id, 'alreadyMounted idx=', idx);
@@ -545,7 +545,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * anchor needs enough content on both sides for a "true center"; fillAround grows the window to threshold (best-effort
    * near boundaries, where clamp concedes).
    */
-  private async openAround(id: string | number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
+  private async openAround(id: number, anchor: 'top' | 'center' | 'bottom', highlight: boolean): Promise<void> {
     const g = ++this.gen;
     if (ngDevMode) console.log('[JUMP] openAround start id=', id, 'gen=', g, 'vh=', this.vh, 'threshold=', this.threshold);
     this.resetWindowState();
@@ -584,7 +584,7 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
    * The viewport is not yet positioned (scrollTop=0), so loading does not compensate/trim. Plan A does not compensate
    * scrollTop anyway. gen guard drops batches overtaken by a newer jump.
    */
-  private async fillAround(targetId: string | number, g: number): Promise<void> {
+  private async fillAround(targetId: number, g: number): Promise<void> {
     const halfTh = this.threshold / 2;
     let upIter = 0;
     while (this.aboveTarget(targetId) < halfTh && !this.noOlder && this.mounted.length > 0) {
@@ -613,13 +613,13 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   /** Total height of all mounted entries above targetId (= topOf(targetIdx)). If the target is not in the window,
    *  treat everything as above. */
-  private aboveTarget(targetId: string | number): number {
+  private aboveTarget(targetId: number): number {
     const idx = this.indexOfId(targetId);
     return idx < 0 ? this.totalH() : this.topOf(idx);
   }
   /** Total height of all mounted entries below targetId (excluding the target itself). If the target is not in the
    *  window → 0. */
-  private belowTarget(targetId: string | number): number {
+  private belowTarget(targetId: number): number {
     const idx = this.indexOfId(targetId);
     if (idx < 0) return 0;
     this.flushPrefix();
@@ -1535,14 +1535,13 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
 
   /** Whether an item represents the given msgId — matches CbItem.id OR any member in CbItem.ids
    *  (so a jump to a non-head album member still resolves to its album item). */
-  private itemHasId(item: CbItem<T>, id: string | number): boolean {
-    const key = String(id);
-    if (String(item.id) === key) return true;
+  private itemHasId(item: CbItem<T>, id: number): boolean {
+    if (item.id === id) return true;
     const ids = item.ids;
-    return ids !== undefined && ids.some(x => String(x) === key);
+    return ids !== undefined && ids.includes(id);
   }
 
-  private indexOfId(id: string | number): number {
+  private indexOfId(id: number): number {
     return this.mounted.findIndex(e => this.itemHasId(e.item, id));
   }
 
@@ -1557,14 +1556,14 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** Oldest mounted item id that is a real source member — skips transient/optimistic (insertAfter inserts / in-flight
    *  pending), whose ids are not source cursors. Used by loadOlder so a transient/optimistic reaching mounted[0] after
    *  a trim does not make getOlder return [] and falsely lock noOlder. Callers guarantee mounted is non-empty. */
-  private olderCursorId(): string | number {
+  private olderCursorId(): number {
     for (const e of this.mounted) if (!e.transient && !e.optimistic && !e.leaving) return e.item.id;
     return this.mounted[0].item.id; // unreachable in practice (the insert/remove target is always a real neighbor)
   }
 
   /** Newest mounted item id that is a real source member — skips transient/optimistic and leaving entries. Symmetric
    *  to olderCursorId. */
-  private newerCursorId(): string | number {
+  private newerCursorId(): number {
     for (let i = this.mounted.length - 1; i >= 0; i--) if (!this.mounted[i].transient && !this.mounted[i].optimistic && !this.mounted[i].leaving) return this.mounted[i].item.id;
     return this.mounted[this.mounted.length - 1].item.id;
   }

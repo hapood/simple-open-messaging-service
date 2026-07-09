@@ -253,7 +253,7 @@ export class UserController {
         id: p.id,
         threadId: p.threadId,
         type: p.thread.type,
-        lastReadMsgId: p.lastReadMsgId ?? undefined,
+        lastReadSeq: p.lastReadSeq ?? undefined,
         role: p.role ?? undefined,
         unreadCount: unread.get(p.threadId) ?? 0,
         lastMessagePreview: p.thread.lastMessagePreview ?? null,
@@ -274,7 +274,7 @@ export class UserController {
         id: number;
         threadId: number;
         type: MessageThreadType;
-        lastReadMsgId: bigint | undefined;
+        lastReadSeq: number | undefined;
         role: GroupRole | undefined;
         unreadCount: number;
         lastMessagePreview: string | null;
@@ -782,7 +782,7 @@ export class UserController {
       id: p.id,
       threadId: p.threadId,
       type: p.thread.type,
-      lastReadMsgId: p.lastReadMsgId ?? undefined,
+      lastReadSeq: p.lastReadSeq ?? undefined,
       role: p.role ?? undefined,
       unreadCount: unread.get(p.threadId) ?? 0,
       lastMessagePreview: p.thread.lastMessagePreview ?? null,
@@ -797,7 +797,7 @@ export class UserController {
       id: number;
       threadId: number;
       type: MessageThreadType;
-      lastReadMsgId: bigint | undefined;
+      lastReadSeq: number | undefined;
       role: GroupRole | undefined;
       unreadCount: number;
       lastMessagePreview: string | null;

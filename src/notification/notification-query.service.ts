@@ -110,7 +110,7 @@ export class NotificationQueryService {
           ? (peerNameByThread.get(p.threadId) ?? 'Unknown')
           : (groupNameByThread.get(p.threadId) ?? 'Unknown'),
       unreadCount: unread.get(p.threadId) ?? 0,
-      latestMessageId: p.thread.lastMessageId?.toString() ?? null,
+      latestMessageId: p.thread.lastMessageSeq?.toString() ?? null,
     }));
   }
 }

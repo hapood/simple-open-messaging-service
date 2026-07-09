@@ -48,8 +48,8 @@ const MAX_PAGE = 50;
  *
  * [Logical sequence] `sequence() = [...full, ...live]` ascending (oldest → newest): full = buildItems history,
  *  live = WS new messages from appendLive. cursorId (msgId) is located via findIndex in this sequence.
- *  - `full[k].id = 'id-k'` (buildItems generation index; stable and addressable).
- *  - A live item's id = the caller-supplied msgId (playground 'mock-N'/'recv-N').
+ *  - `full[k].id = k` (buildItems generation index, a numeric seq; stable and addressable).
+ *  - A live item's id = the caller-supplied msgId (playground allocateMsgId() autoincrement).
  *
  * [Cursors] getOlder(cursorId, count) takes `count` items BEFORE the cursor (older); getNewer takes AFTER (newer).
  *  Reaching the sequence start (oldest) → out[0] is tagged 'oldest'; reaching the end (newest) → out[last] 'newest'.
@@ -66,9 +66,9 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *  the entry is removed from here — the real (with its fresh server msgId) is cached into `live` and reconciled
    *  onto the optimistic bubble by the kernel via the shared clientMessageId. */
   private readonly pending: CbItem<ChatItemData>[] = [];
-  /** Next server-assigned msgId (autoincrement, mirroring production `Message.id`). Seeded to `total` so the first
-   *  send becomes `id-${total}`, continuing past buildItems history (`id-0..id-${total-1}`) without collision.
-   *  {@link allocateMsgId} is the mock "server write" that mints the real id for a confirmed optimistic send. */
+  /** Next server-assigned msgId (autoincrement, mirroring production `Message.seq`). Seeded to `total` so the first
+   *  send becomes `total`, continuing past buildItems history (`0..total-1`) without collision.
+   *  {@link allocateMsgId} is the mock "server write" that mints the real seq for a confirmed optimistic send. */
   private nextMsgId: number;
   /** Simulated IO latency (ms); the playground adjusts it live (0/200/1s/5s) to test slow-loading behavior. */
   latency: number;
@@ -84,7 +84,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     this.latency = latency;
     this.userService = userService;
     this.userId = userId;
-    this.nextMsgId = total; // first send → id-${total}, continuing the autoincrement past history
+    this.nextMsgId = total; // first send → total, continuing the autoincrement past history
   }
 
   /**
@@ -95,7 +95,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
    *    slice, merge ascending (mirrors HttpItemSource's bidirectional fetch); older reaching the sequence start →
    *    out[0] tagged 'oldest'; newer reaching the end → out[last] tagged 'newest'.
    */
-  async init(anchorId: string | number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
+  async init(anchorId: number, olderCount: number, newerCount: number, _opts?: CbSourceInitOpts): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
     if (anchorId === -1) {
@@ -119,7 +119,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
       return items;
     }
     // Real msgId: bidirectional slice (older includes anchorId = olderCount items; newer = newerCount items)
-    const idx = seq.findIndex(it => String(it.id) === String(anchorId));
+    const idx = seq.findIndex(it => it.id === anchorId);
     if (idx < 0) return [];
     const olderTake = Math.min(olderCount, MAX_PAGE);
     const newerTake = Math.min(newerCount, MAX_PAGE);
@@ -143,10 +143,10 @@ export class MockItemSource implements CbSource<ChatItemData> {
   }
 
   /** Fetch `count` items older than cursorId (ascending; excludes the cursor). Reaching the sequence start → out[0] tagged 'oldest'. */
-  async getOlder(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getOlder(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
-    const idx = seq.findIndex(it => String(it.id) === String(cursorId));
+    const idx = seq.findIndex(it => it.id === cursorId);
     if (idx < 0) return [];
     const take = Math.min(count, MAX_PAGE);
     const start = Math.max(0, idx - take);
@@ -164,10 +164,10 @@ export class MockItemSource implements CbSource<ChatItemData> {
    * effect, reconciles pending: any pending entry whose clientMessageId matches a returned real is dropped (the
    * confirm arrived). Tags the last returned item 'newest' when the real batch reached the sequence end.
    */
-  async getNewer(cursorId: string | number, count: number): Promise<CbItem<ChatItemData>[]> {
+  async getNewer(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
     await this.wait();
     const seq = this.sequence();
-    const idx = seq.findIndex(it => String(it.id) === String(cursorId));
+    const idx = seq.findIndex(it => it.id === cursorId);
     if (idx < 0) return [];
     const take = Math.min(count, MAX_PAGE);
     const end = Math.min(seq.length, idx + 1 + take);
@@ -243,9 +243,9 @@ export class MockItemSource implements CbSource<ChatItemData> {
   }
 
   /** Allocate the next server msgId for a confirmed optimistic send (mock autoincrement, mirroring production
-   *  `Message.id`). The playground's confirmPending calls this to mint the real id that replaces the optimistic's
-   *  clientMessageId-as-id. */
-  allocateMsgId(): string { return `id-${this.nextMsgId++}`; }
+   *  `Message.seq`). The playground's confirmPending calls this to mint the real seq that replaces the optimistic's
+   *  synthetic negative placeholder id. */
+  allocateMsgId(): number { return this.nextMsgId++; }
 
   /** Whether any optimistic message is still awaiting confirmation (used to gate simulated replies so the demo's
    *  chronological order stays clean while an insert is in flight). */
@@ -358,7 +358,8 @@ const RATIOS: ReadonlyArray<[number, number]> = [
  *  + mergeItems merge; no longer "one msg with many images").
  * Cross-day: a new day every `step` msgs (only the createdAtMs is spread across days; the date separator is derived by
  *  the front-end createItem, not produced here).
- * Random sender switching; naturally random heights (text length / album size differ). item.id === data.msgId (id-N), stable and addressable.
+ * Random sender switching; naturally random heights (text length / album size differ). item.id === data.msgId (the
+ *  generation index, a numeric seq), stable and addressable — mirrors production Message.seq (a number autoincrement).
  */
 function buildItems(count: number): CbItem<ChatItemData>[] {
   const rand = mulberry32(count * 2654435761); // seed = count (scrambled by the Knuth multiplier)
@@ -395,7 +396,7 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
         msgSinceDay++;
         const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
         const [rw, rh] = RATIOS[Math.floor(rand() * RATIOS.length)];
-        const id = `id-${items.length}`;
+        const id = items.length;
         const imgs: AlbumImage[] = [{ kind: 'image', src: placeholderImage(imgSeed++, rw, rh), w: rw * 100, h: rh * 100, size: 200_000 + Math.floor(rand() * 2_800_000), msgId: id }];
         items.push({ id, data: makeSeedMsg(creator, '', 'IMAGE', imgs, date, id) });
       }
@@ -406,14 +407,14 @@ function buildItems(count: number): CbItem<ChatItemData>[] {
       const date = new Date(startMs + day * 86_400_000 + minutes * 60_000);
       let text = PHRASES[(items.length * 7) % PHRASES.length];
       if (rand() < 0.3) text = `${PHRASES[(items.length * 7) % PHRASES.length]}. ${PHRASES[(items.length * 7 + 3) % PHRASES.length]}`;
-      const id = `id-${items.length}`;
+      const id = items.length;
       items.push({ id, data: makeSeedMsg(creator, text, 'PURE_TEXT', null, date, id) });
     }
   }
   return items;
 }
 
-function makeSeedMsg(creator: number, text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, date: Date, id: string): ChatMsgData {
+function makeSeedMsg(creator: number, text: string, contentType: ChatMsgData['contentType'], images: AlbumImage[] | null, date: Date, id: number): ChatMsgData {
   // Raw msg: carries no name/isSelf (placeholder); MockItemSource.shape fills them from `profiles` by creator — mirrors production toMsgData.
   return {
     type: 'msg',

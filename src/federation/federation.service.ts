@@ -11,8 +11,13 @@ import { BusinessCode } from '../common/business-code.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { ContentType, Message, MessageThreadType, Prisma } from '../prisma/generated/client.js';
-import { derivePreview } from '../message/message.service.js';
+import {
+  ContentType,
+  Message,
+  MessageThreadType,
+  Prisma,
+} from '../prisma/generated/client.js';
+import { derivePreview, stripMessageId } from '../message/message.service.js';
 import { extractDigestEntries } from '../upload/file-content.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -689,8 +694,7 @@ export class FederationService {
     localApproverId: number,
     to: S2SAddress,
   ): Promise<void> {
-    const fromAccount = (await this.requireLocalUser(localApproverId))
-      .account;
+    const fromAccount = (await this.requireLocalUser(localApproverId)).account;
     const payload: S2SPayload = {
       id: ulid(),
       origin: this.config.domain,
@@ -1092,7 +1096,7 @@ export class FederationService {
     // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
     const inThread = await this.prisma.mediaMessage.findFirst({
       where: { digest, threadId },
-      select: { id: true },
+      select: { messageId: true },
     });
     if (!inThread) {
       throw new BusinessException(
@@ -1371,24 +1375,36 @@ export class FederationService {
     // is what the chatbox displays and what orders the conversation list. The protocol never trusts the
     // peer's clock for display; arrival time is locally monotonic and clock-skew-immune.
     const originTime = new Date(m.ts);
-    const created = await this.prisma.message
-      .create({
-        data: {
-          contentType: m.contentType as ContentType,
-          content: m.content,
-          threadId,
-          creator: creatorId,
-          originSeq: m.originSeq,
-          originServerTime: originTime,
-          // createdAt defaults to now() → the local arrival time
-        },
+    // Allocate the RECEIVER's own per-thread seq from curSeq (same atomic path as a local send) and copy
+    // the peer's originSeq verbatim — the dedup key + the value the receiver tracks as its pull cursor.
+    // Wrapped in a tx so a P2002 dup-pull (same (threadId, creator, originSeq)) rolls the curSeq increment
+    // back too (no seq gap from a deduped re-pull).
+    const created = await this.prisma
+      .$transaction(async (tx) => {
+        const { curSeq: seq } = await tx.messageThread.update({
+          where: { id: threadId },
+          data: { curSeq: { increment: 1 } },
+          select: { curSeq: true },
+        });
+        return tx.message.create({
+          data: {
+            contentType: m.contentType as ContentType,
+            content: m.content,
+            threadId,
+            creator: creatorId,
+            seq,
+            originSeq: m.originSeq,
+            originServerTime: originTime,
+            // createdAt defaults to now() → the local arrival time
+          },
+        });
       })
       .catch((e: unknown) => {
         if (
           e instanceof Prisma.PrismaClientKnownRequestError &&
           e.code === 'P2002'
         ) {
-          return null; // already pulled (push/pull race) — idempotent skip
+          return null; // already pulled (push/pull race) — idempotent skip (tx rolled back → no seq gap)
         }
         throw e;
       });
@@ -1403,7 +1419,7 @@ export class FederationService {
         OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: arrival } }],
       },
       data: {
-        lastMessageId: created.id,
+        lastMessageSeq: created.seq,
         lastMessagePreview: derivePreview(
           m.contentType as ContentType,
           m.content,
@@ -1412,9 +1428,10 @@ export class FederationService {
         lastMessageAt: arrival,
       },
     });
+    // SSE carries the PUBLIC shape only — strip the internal BigInt id (a throughput side-channel).
     this.sse.onNewMessage(
       toLocalUserId,
-      serializeBody({ threadId, ...created }),
+      serializeBody({ threadId, ...stripMessageId(created) }),
     );
     return created;
   }

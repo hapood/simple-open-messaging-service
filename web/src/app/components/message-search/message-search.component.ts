@@ -8,9 +8,9 @@ import { MsgService } from '../../services/message.service';
  * In-chat search field, rendered INSIDE the chat header when "Search" is picked from the action menu —
  * it replaces the title row in-place (same --msg-header-h height), so it adds no height and never
  * collides with the floating date pill. Debounced input drives a server-side substring search
- * (PURE_TEXT only); the lightweight {id} matches are stored ascending (oldest-first) and the prev/next
+ * (PURE_TEXT only); the lightweight {seq} matches are stored ascending (oldest-first) and the prev/next
  * arrows jump the parent kernel to each via `jumpTo`. The parent owns the kernel + calls
- * scrollToIndex(id, 'center', true) — the kernel flashes the row.
+ * scrollToIndex(seq, 'center', true) — the kernel flashes the row.
  *
  * Loads the first page (50 newest matches). The counter shows `i / n+` when more pages exist (the `+`
  * marks an unbounded tail); paging deeper is deferred — search is a secondary surface and the common
@@ -104,15 +104,15 @@ import { MsgService } from '../../services/message.service';
 export class MessageSearchComponent {
   readonly AppIconType = AppIconType;
   readonly threadId = input.required<number>();
-  /** Emits a message id to center the kernel on (the parent calls scrollToIndex). */
-  readonly jumpTo = output<string>();
+  /** Emits a message seq to center the kernel on (the parent calls scrollToIndex). */
+  readonly jumpTo = output<number>();
   readonly close = output<void>();
 
   private readonly msgService = inject(MsgService);
 
   keyword = '';
-  /** Match ids ascending (oldest-first) for natural prev/next navigation. */
-  private matches: string[] = [];
+  /** Match seqs ascending (oldest-first) for natural prev/next navigation. */
+  private matches: number[] = [];
   /** Current match index into `matches` (-1 = none). */
   private idx = -1;
   readonly position = signal(0); // 1-based for display
@@ -161,7 +161,7 @@ export class MessageSearchComponent {
         return;
       }
       // Server returns newest-first (id desc); reverse to ascending for oldest-first navigation.
-      this.matches = data.map((d) => d.id).reverse();
+      this.matches = data.map((d) => d.seq).reverse();
       this.hasMore.set(!!res.hasMore);
       this.matchCount.set(this.matches.length);
       // Land on the NEWEST match first (the last ascending index), WhatsApp-style.

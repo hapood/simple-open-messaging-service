@@ -8,7 +8,6 @@ import {
   IsOptional,
   IsString,
   IsUUID,
-  Matches,
   Max,
   MaxLength,
   Min,
@@ -88,12 +87,13 @@ export class QueryMessagesDto {
 
   @ApiProperty({
     required: false,
-    example: '9007199254740993',
-    description: 'Cursor (BigInt→string, optional)',
+    example: 42,
+    description: 'Cursor row seq (keyset pagination, optional). Omit for the first page.',
   })
   @IsOptional()
-  @IsString()
-  lastId?: string;
+  @Type(() => Number)
+  @IsInt()
+  lastSeq?: number;
 
   @ApiProperty({
     enum: ['desc', 'asc'],
@@ -105,8 +105,8 @@ export class QueryMessagesDto {
 }
 
 /**
- * Mark a conversation read up to a given message. Omit lastReadMessageId to mark ALL current messages
- * read (uses the thread's denormalized lastMessageId). The id is BigInt → carried as a string on the wire.
+ * Mark a conversation read up to a given message. Omit lastReadSeq to mark ALL current messages
+ * read (uses the thread's denormalized lastMessageSeq).
  */
 export class MarkReadDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
@@ -117,14 +117,14 @@ export class MarkReadDto {
 
   @ApiProperty({
     required: false,
-    example: '9007199254740993',
+    example: 42,
     description:
-      'Mark read up to (and including) this message id (BigInt→string). Omit to mark all current messages read.',
+      'Mark read up to (and including) this message seq. Omit to mark all current messages read.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^\d+$/, { message: 'lastReadMessageId must be a numeric string' })
-  lastReadMessageId?: string;
+  @Type(() => Number)
+  @IsInt()
+  lastReadSeq?: number;
 }
 
 /** Toggle mute for a conversation (the caller's ThreadParticipant row). */
@@ -214,11 +214,11 @@ export class SearchMessagesDto {
 
   @ApiProperty({
     required: false,
-    example: '9007199254740993',
-    description: 'Cursor (BigInt→string): return matches with id < lastId (descending). Omit for the first page.',
+    example: 42,
+    description: 'Cursor: return matches with seq < lastSeq (descending). Omit for the first page.',
   })
   @IsOptional()
-  @IsString()
-  @Matches(/^\d+$/, { message: 'lastId must be a numeric string' })
-  lastId?: string;
+  @Type(() => Number)
+  @IsInt()
+  lastSeq?: number;
 }

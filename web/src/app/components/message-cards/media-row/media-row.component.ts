@@ -42,7 +42,7 @@ export class MediaRowComponent {
   readonly statusTick = computed(() => this.data().isSelf && !!this.data().status);
   readonly isSending = computed(() => this.data().isSelf && this.data().status === 'sending');
   readonly isFailed = computed(() => this.data().isSelf && this.data().status === 'failed');
-  readonly retry = output<string>();
+  readonly retry = output<number>();
   readonly openImage = output<{ images: AlbumImage[]; index: number }>();
 
   constructor(private readonly thresholdSvc: MediaSizeThresholdService) {}

@@ -10,7 +10,6 @@ import { FriendOpHandler } from './friend-op.handler.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sInitController } from './s2s-init.controller.js';
 import { WellKnownController } from './well-known.controller.js';
-import { PrismaService } from '../prisma.service.js';
 import { FriendshipModule } from '../friendship/friendship.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
@@ -20,7 +19,7 @@ import { UploadModule } from '../upload/upload.module.js';
  * AdminController in Phase E). FriendOpHandler needs FriendshipService (FriendshipModule) + SseService
  * (GatewayModule), so those are imported here. UploadModule provides the avatar wire helpers
  * (readAvatarAsWire / saveAvatarFromWire) used by FederationService (outbound profile + inbound
- * localization). PrismaService is provided here (not @Global).
+ * localization). PrismaService is provided globally by PrismaModule (src/prisma.module.ts).
  *
  * Two S2S controllers share the `s2s` prefix: S2sController (friend-op + signed GETs, allow-list-gated via
  * S2sSignatureGuard) and S2sInitController (POST /s2s/init — the trust-establishment bootstrap, NOT
@@ -39,7 +38,6 @@ import { UploadModule } from '../upload/upload.module.js';
     FederationBufferService,
     FederationReconnectService,
     FriendOpHandler,
-    PrismaService,
   ],
   exports: [KeypairService, SignatureService, DiscoveryService, FederationService, FederationBufferService],
 })

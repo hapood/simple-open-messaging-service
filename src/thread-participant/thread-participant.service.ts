@@ -74,7 +74,7 @@ export class ThreadParticipantService {
    * Per-user "clear chat history": stamp clearedAt = now. query-messages then hides rows older than this
    * watermark FOR THIS USER ONLY — the peer's copy is untouched (WhatsApp "clear for me"). Stamping
    * (not deleting) keeps the Message rows intact for the peer and for any future un-clear, and keeps
-   * lastReadMsgId untouched so the unread badge doesn't regress.
+   * lastReadSeq untouched so the unread badge doesn't regress.
    */
   clearHistory(userId: number, threadId: number) {
     return this.prisma.threadParticipant.update({
@@ -155,15 +155,15 @@ export class ThreadParticipantService {
   async advanceReadCursor(
     userId: number,
     threadId: number,
-    lastReadMsgId: bigint,
+    lastReadSeq: number,
   ): Promise<boolean> {
     const result = await this.prisma.threadParticipant.updateMany({
       where: {
         userId,
         threadId,
-        OR: [{ lastReadMsgId: null }, { lastReadMsgId: { lt: lastReadMsgId } }],
+        OR: [{ lastReadSeq: null }, { lastReadSeq: { lt: lastReadSeq } }],
       },
-      data: { lastReadMsgId },
+      data: { lastReadSeq },
     });
     return result.count > 0;
   }

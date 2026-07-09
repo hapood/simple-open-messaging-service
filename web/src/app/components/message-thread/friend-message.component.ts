@@ -258,7 +258,7 @@ export class MessageThreadComponent implements OnDestroy {
       const cid = this.newClientMessageId();
       const dims = await readImageDims(f);
       const dataURL = await readFileAsDataURL(f);
-      const images: AlbumImage[] = [{ kind: 'image', src: dataURL, w: dims.w, h: dims.h, size: f.size, msgId: cid }];
+      const images: AlbumImage[] = [{ kind: 'image', src: dataURL, w: dims.w, h: dims.h, size: f.size }];
       const item = this.makeOptimisticItem(cid, '', 'IMAGE', images, null);
       this.pendingFiles.set(cid, { file: f, kind: 'image' });
       this.dispatchPending(item);
@@ -302,7 +302,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.blobUrls.add(url);
     const images: AlbumImage[] = [{
       kind: 'video', src: url, w: meta.w, h: meta.h,
-      size: f.size, duration: meta.duration, name: f.name, msgId: cid,
+      size: f.size, duration: meta.duration, name: f.name,
     }];
     const item = this.makeOptimisticItem(cid, '', 'VIDEO', images, null);
     this.pendingFiles.set(cid, { file: f, kind: 'video' });
@@ -318,7 +318,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.blobUrls.add(url);
     const images: AlbumImage[] = [{
       kind: 'audio', src: url, w: 280, h: 120, // placeholder aspect (audio is a gray cell + ▶)
-      size: f.size, duration: meta.duration, name: f.name, msgId: cid,
+      size: f.size, duration: meta.duration, name: f.name,
     }];
     const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
     this.pendingFiles.set(cid, { file: f, kind: 'audio' });
@@ -474,11 +474,11 @@ export class MessageThreadComponent implements OnDestroy {
 
   /** Register the optimistic item with the source pending area + mount it after the tail (insertAfter, optimistic)
    *  + pin to reveal it. No confirm timer — confirmation is the SSE echo.
-   *  NB: do NOT bail on an empty `afterId`. The FIRST send into an EMPTY thread has tailAnchorId()==='' (nothing is
+   *  NB: do NOT bail on an empty `afterId`. The FIRST send into an EMPTY thread has tailAnchorId()===-1 (nothing is
    *  mounted → newestId is null); the kernel's insertAfter treats an empty window as "insert as the sole entry", so
    *  bailing here would silently swallow the first message of a fresh conversation — no pending bubble ever appears.
    *  (Mirrors the playground insertMsg, whose comment calls out this exact case.) */
-  private insertMsg(afterId: string, item: CbItem<ChatItemData>): boolean {
+  private insertMsg(afterId: number, item: CbItem<ChatItemData>): boolean {
     const scroller = this.scroller;
     const source = this.source;
     if (!scroller || !source) return false;
@@ -488,14 +488,18 @@ export class MessageThreadComponent implements OnDestroy {
     return ok;
   }
 
-  /** The id to anchor a newest-end insert after: the current tail (a prior pending, or the real newest). '' if empty. */
-  private tailAnchorId(): string {
+  /** The id to anchor a newest-end insert after: the current tail (a prior pending, or the real newest). -1 if empty
+   *  (the kernel's insertAfter ignores afterId when the window is empty, so the sentinel never reaches indexOfId). */
+  private tailAnchorId(): number {
     const id = this.scroller?.getInfo().newestId ?? null;
-    return id != null ? String(id) : '';
+    return id != null ? id : -1;
   }
 
-  /** Build a fully-shaped optimistic self message. id = clientMessageId (no server id yet); the client tracks the
-   *  bubble by clientMessageId until the server echo arrives and reconciles it. status:'sending', kind:'pending'. */
+  /** Build a fully-shaped optimistic self message. id/msgId = a synthetic NEGATIVE placeholder (msgId is a number
+   *  now, so the in-flight bubble cannot carry the clientMessageId as its id); the client tracks the bubble by the
+   *  separate clientMessageId (the kernel's reconcile key) until the server echo arrives. Negative ids never collide
+   *  with server-assigned seqs (always positive). status:'sending', kind:'pending'. Any album cell's msgId is stamped
+   *  to the same placeholder so the dev-badge range stays self-consistent before the real lands. */
   private makeOptimisticItem(
     clientMessageId: string,
     text: string,
@@ -505,20 +509,25 @@ export class MessageThreadComponent implements OnDestroy {
   ): CbItem<ChatItemData> {
     const profile = this.userService.sessionProfile();
     const now = new Date();
+    const placeholderId = this.nextOptimisticId--;
+    const stampedImages = images?.map(im => ({ ...im, msgId: placeholderId })) ?? null;
     const data: ChatMsgData = {
       type: 'msg',
-      msgId: clientMessageId,
+      msgId: placeholderId,
       creator: profile?.id ?? 0,
       isSelf: true,
       name: profile?.name ?? 'Me',
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images, file, createdAtMs: now.getTime(),
+      contentType, images: stampedImages, file, createdAtMs: now.getTime(),
       status: 'sending',
       kind: 'pending',
     };
-    return { id: clientMessageId, data, clientMessageId };
+    return { id: placeholderId, data, clientMessageId };
   }
+
+  /** Next synthetic id for an in-flight optimistic send (decrements from -1 so it never collides with a server seq). */
+  private nextOptimisticId = -1;
 
   private newClientMessageId(): string {
     // Always a spec-compliant UUID — the backend validates clientMessageId as a UUID. lib/uuid falls back to
@@ -604,9 +613,9 @@ export class MessageThreadComponent implements OnDestroy {
 
   // ---------- chat header MORE-menu integration ----------
 
-  /** Jump the kernel to a search match id (from the search bar's prev/next). The kernel re-seeds around
-   *  an unmounted id and flashes the row via the existing highlight path. */
-  onSearchJump(id: string): void {
+  /** Jump the kernel to a search match seq (from the search bar's prev/next). The kernel re-seeds around
+   *  an unmounted seq and flashes the row via the existing highlight path. */
+  onSearchJump(id: number): void {
     this.scroller?.scrollToIndex(id, 'center', true);
   }
 

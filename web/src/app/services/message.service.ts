@@ -102,10 +102,10 @@ export class MsgService {
   /**
    * Substring search over a conversation's text history. Returns lightweight {id, createdAt} matches
    * (no bodies) keyset-paginated by id desc — the client jumps the kernel to each id and renders the
-   * bubble via the normal query path on demand. `lastId` is the BigInt→string cursor for the next page.
+   * bubble via the normal query path on demand. `lastSeq` is the seq cursor for the next page.
    */
-  searchMessages(params: { threadId: number, keyword: string, take: number, lastId?: string }) {
-    return this.http.post<StandardResponse<{ id: string, createdAt: number }[]>>(
+  searchMessages(params: { threadId: number, keyword: string, take: number, lastSeq?: number }) {
+    return this.http.post<StandardResponse<{ seq: number, createdAt: number }[]>>(
       `${apiPrefix}/search-messages`,
       params,
     )

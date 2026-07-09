@@ -76,7 +76,7 @@ export function createMsgCbElement(
   isGroupStart: boolean,
   showDate: boolean,
   envInjector: EnvironmentInjector,
-  onRetry?: (msgId: string) => void,
+  onRetry?: (clientMessageId: string) => void,
   onOpenImage?: (images: AlbumImage[], index: number) => void,
   onOpenFile?: (data: ChatMsgData) => void,
 ): CbElement<ChatItemData> {
@@ -119,8 +119,13 @@ export function createMsgCbElement(
   // on one entry — wrapDestroy chains them LIFO into a single destroy().
   const wrapDestroy = (extra: () => void): void => { const base = el.destroy; el.destroy = () => { extra(); base(); }; };
   if (onRetry) {
-    const inst = ref.instance as { retry?: { subscribe: (fn: (id: string) => void) => { unsubscribe(): void } } };
-    const sub = inst.retry?.subscribe(id => onRetry(id));
+    // The row's retry output is a click SIGNAL only (its emitted value is the numeric msgId, which for a failed
+    // optimistic bubble is a placeholder — not the correlation key). The kernel reconciles retries by the stable
+    // clientMessageId on the CbItem (retryPending matches on it), so map the click to item.clientMessageId, which
+    // is stable across the failed→sending in-place morph.
+    const inst = ref.instance as { retry?: { subscribe: (fn: (id: number) => void) => { unsubscribe(): void } } };
+    const cid = item.clientMessageId;
+    const sub = inst.retry?.subscribe(() => { if (cid !== undefined) onRetry(cid); });
     if (sub) wrapDestroy(() => sub.unsubscribe());
   }
   if (onOpenImage) {

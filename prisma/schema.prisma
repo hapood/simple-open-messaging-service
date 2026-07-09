@@ -210,6 +210,12 @@ model MessageThread {
   updatedAt DateTime          @updatedAt
   isDeleted Boolean           @default(false)
 
+  // Per-thread last-allocated Message.seq (-1 = no messages yet; first message → 0). The atomic counter
+  // backing seq allocation: `UPDATE SET curSeq = curSeq + 1 RETURNING curSeq` inside the message-create
+  // tx serializes per-thread sends (a brief wait, never an error) and keeps curSeq == MAX(seq) by
+  // construction, so it doubles as the authoritative "latest seq" without a separate aggregate.
+  curSeq Int @default(-1)
+
   // Denormalized "last message" read-cache for the conversation list (the hottest read path).
   // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
   // the same tx as the Message insert); the source of truth — Message.seq / creator / createdAt — keeps
@@ -248,7 +254,19 @@ enum ContentType {
 }
 
 model Message {
-  seq             Int           @id @default(autoincrement())
+  // INTERNAL global surrogate PK. NEVER exposed to clients or federation: a global autoincrement is a
+  // cross-conversation throughput side-channel (deltas between two messages in thread T reveal server-wide
+  // volume, including threads the observer is not in). It exists only as the storage identity + the
+  // MediaMessage FK target. All external surfaces (HTTP/SSE/federation) carry `seq`, never `id` — the
+  // response layer omits it (see MessageService.queryMessages / writeMsgToThread return shaping).
+  id              BigInt        @id @default(autoincrement())
+  // Per-thread monotonic sequence (0-INDEXED: first message in a thread is seq 0). Allocated atomically
+  // from MessageThread.curSeq (UPDATE curSeq = curSeq + 1 RETURNING) inside the message-create tx, so it
+  // is gapless modulo rollback/delete and needs no retry loop. This is the EXTERNAL ordering key + the
+  // frontend's message identity (keyset cursor, read watermark) — its deltas reveal only THIS thread's
+  // volume. Each server assigns its OWN per-thread seq; a receiver re-seqs every pulled message into its
+  // local space (see originSeq for the cross-server value). See docs/federation-s2s-api.md.
+  seq             Int
   contentType     ContentType
   content         String
   threadId        Int
@@ -262,15 +280,13 @@ model Message {
   // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
   clientMessageId String?       @unique @db.VarChar(36)
-  // Per-(threadId, creator) monotonic sequence — the cross-server federation pull cursor (Step 2).
-  // 0-INDEXED: the first message in a (thread, sender) is seq 0, then 1, 2, … ; "no messages yet" is
-  // represented as -1 (the cursor sits before seq 0). SENDER allocates (MAX ?? -1) + 1 on insert;
-  // RECEIVER copies the sender's value verbatim on pull, so the SAME value lives on both sides (the
-  // per-server Message.seq cannot cross servers — each server assigns its own). Nullable: legacy rows +
-  // never-federating threads stay NULL (Postgres treats NULLs as distinct under the unique index, so
-  // they coexist with no backfill). The compound unique index below enforces BOTH sender allocation
-  // correctness (same-user concurrent-send race → P2002 → retry) AND receiver-side idempotent dedup (a
-  // push/pull race inserts the same triple → absorbed). See docs/federation-step2-design.md §2.1.
+  // The ORIGINATING server's per-thread seq for this message — the cross-server federation value. On the
+  // origin (a locally-authored message) it equals `seq`; a RECEIVER copies it verbatim from the pulled
+  // payload (so the SAME value lives on both sides) while allocating its own local `seq`. This is the
+  // federation dedup key + per-(thread, sender) pull cursor: the receiver tracks MAX(originSeq) per
+  // (thread, creator) and pulls originSeq > cursor — no cross-server sequence-space consistency is
+  // required (each side keeps its own seq; the peer's is stored here). Nullable: legacy rows only;
+  // every post-migration row is populated (== seq locally, copied remotely).
   originSeq       Int?
   // The SENDER server's allocation time, copied verbatim from the pulled payload's `ts`. The receiver's
   // own `createdAt` (local now() at pull time) is the ARRIVAL time — what the chatbox displays and what
@@ -281,8 +297,8 @@ model Message {
 
   mediaMessages MediaMessage[] // per-object media authz index (digest → thread)
 
+  @@unique([threadId, seq])              // per-thread seq identity: allocation authority + keyset cursor (also the hot pagination index)
   @@unique([threadId, creator, originSeq]) // (a) sender seq allocation race AND (b) receiver pull dedup
-  @@index([threadId, seq]) // history pagination — the hot path
   @@index([threadId, createdAt])
   @@index([creator])
   @@index([threadId, creator, originSeq]) // federation pull query + MAX(cursor) derivation
@@ -314,20 +330,23 @@ model MediaAsset {
 // this digest?" with one indexed EXISTS over this table joined to ThreadParticipant. Written atomically
 // at send time for every IMAGE/FILE/VIDEO/AUDIO message (one row per distinct digest a message references).
 // threadId is denormalized from Message so the gate skips a JOIN to Message. Never returned in API responses.
+// Per-object media authorization index. The /uploads/shards/* gate answers "is this user allowed to read
+// this digest?" with one indexed EXISTS over this table joined to ThreadParticipant. 1:1 with a
+// media-bearing Message: ONE message carries exactly ONE image/file/video/audio (albums are a FRONTEND
+// grouping of consecutive single-image messages, never one message with many), so the Message PK IS this
+// row's identity — messageId is the sole @id (no surrogate, no digest in the PK). Written at send time;
+// threadId is denormalized from Message so the gate skips a JOIN. Never returned in API responses.
 model MediaMessage {
-  messageSeq Int
-  threadId   Int // denormalized from Message (avoids a JOIN to Message on the hot gate path)
+  messageId BigInt  @id // == Message.id; the row's sole identity (1:1 with a media-bearing message)
+  threadId   Int // denormalized from Message (the /uploads gate skips a JOIN to Message)
   digest     String   @db.VarChar(64) // sha256 hex; the CAS url stem — matches MediaAsset.digest
   createdAt  DateTime @default(now())
 
-  message Message       @relation(fields: [messageSeq], references: [seq])
+  message Message       @relation(fields: [messageId], references: [id])
   thread  MessageThread @relation(fields: [threadId], references: [id])
 
-  @@id([messageSeq, digest]) // composite PK — a (message, digest) pair IS the identity; no surrogate id
-  @@index([digest]) // hot gate path: WHERE digest = $D
-  @@index([messageSeq]) // future message-delete cleanup: WHERE messageSeq = $M
+  @@index([digest]) // hot gate path: WHERE digest = $D (the @id index covers messageId lookups)
   @@index([threadId])
-}
 }
 
 enum NotifyType {

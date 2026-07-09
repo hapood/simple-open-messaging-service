@@ -27,7 +27,7 @@ export class MediaAccessService {
           ThreadParticipant: { some: { userId, leftAt: null } },
         },
       },
-      select: { id: true },
+      select: { messageId: true },
     });
     return row !== null;
   }

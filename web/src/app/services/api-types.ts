@@ -1514,6 +1514,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/s2s/thread/invite": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postThreadInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/s2s/users/{account}": {
         parameters: {
             query?: never;
@@ -1570,6 +1586,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_getMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/messages/before": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getMessagesBefore"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1651,10 +1683,10 @@ export interface components {
         };
         MessageResponseDto: {
             /**
-             * @description Message id (BigInt→string)
-             * @example 9007199254740993
+             * @description Message seq (the local monotonic ordering key + identity)
+             * @example 42
              */
-            id: string;
+            seq: number;
             /**
              * @description Content type
              * @enum {string}
@@ -1726,10 +1758,10 @@ export interface components {
              */
             take: number;
             /**
-             * @description Cursor (BigInt→string, optional)
-             * @example 9007199254740993
+             * @description Cursor row seq (keyset pagination, optional). Omit for the first page.
+             * @example 42
              */
-            lastId?: string;
+            lastSeq?: number;
             /**
              * @description Sort direction
              * @example desc
@@ -1789,10 +1821,10 @@ export interface components {
              */
             threadId: number;
             /**
-             * @description Mark read up to (and including) this message id (BigInt→string). Omit to mark all current messages read.
-             * @example 9007199254740993
+             * @description Mark read up to (and including) this message seq. Omit to mark all current messages read.
+             * @example 42
              */
-            lastReadMessageId?: string;
+            lastReadSeq?: number;
         };
         SetMutedDto: {
             /**
@@ -1854,10 +1886,10 @@ export interface components {
              */
             take: number;
             /**
-             * @description Cursor (BigInt→string): return matches with id < lastId (descending). Omit for the first page.
-             * @example 9007199254740993
+             * @description Cursor: return matches with seq < lastSeq (descending). Omit for the first page.
+             * @example 42
              */
-            lastId?: string;
+            lastSeq?: number;
         };
         LoginDto: {
             /**
@@ -2037,17 +2069,17 @@ export interface components {
              */
             type: "P2P" | "GROUP";
             /**
-             * @description Last-read message id (BigInt→string, nullable)
-             * @example 9007199254740993
+             * @description Last-read message seq (nullable)
+             * @example 42
              */
-            lastReadMsgId: string;
+            lastReadSeq: number | null;
             /**
              * @description Member role for GROUP conversations; null for P2P
              * @enum {string|null}
              */
             role: "OWNER" | "ADMIN" | "MEMBER" | null;
             /**
-             * @description Unread message count for the caller (messages newer than their lastReadMsgId). 0 when caught up.
+             * @description Unread message count for the caller (messages newer than their lastReadSeq). 0 when caught up.
              * @example 3
              */
             unreadCount: number;
@@ -4448,6 +4480,23 @@ export interface operations {
             };
         };
     };
+    S2sController_postThreadInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     S2sController_getUserProfile: {
         parameters: {
             query?: never;
@@ -4528,7 +4577,29 @@ export interface operations {
             query: {
                 from: string;
                 to: string;
-                after: string;
+                afterSeq: string;
+                take: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getMessagesBefore: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                beforeSeq: string;
                 take: string;
             };
             header?: never;

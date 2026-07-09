@@ -9,7 +9,6 @@ import { AccessTokenValidator } from './access-token.validator.js';
 import { JwtModule } from '@nestjs/jwt';
 import { jwtConstants } from './constants.js';
 import { UserService } from '../user/user.service.js';
-import { PrismaService } from '../prisma.service.js';
 import { ThrottleGuard } from './throttle.guard.js';
 import { NotificationTokenService } from './notification-token.service.js';
 import { NotificationTokenGuard } from './notification-token.guard.js';
@@ -27,7 +26,6 @@ import { NotificationTokenGuard } from './notification-token.guard.js';
     AuthService,
     LocalStrategy,
     UserService,
-    PrismaService,
     JwtStrategy,
     AccessTokenValidator,
     ThrottleGuard,
