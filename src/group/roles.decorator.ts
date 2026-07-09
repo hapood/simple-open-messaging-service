@@ -5,10 +5,10 @@ import { GroupRole } from '../prisma/generated/client.js';
 export const ROLES_KEY = 'group:roles';
 
 /**
- * Restrict a group route to the given roles. Requires GroupAccessGuard to have run first — it
- * loads the caller's ThreadParticipant and attaches it to `req.groupAccess`. RolesGuard then
+ * Restrict a group route to the given roles. Requires ThreadAccessGuard to have run first — it
+ * loads the caller's ThreadParticipant and attaches it to `req.threadAccess`. RolesGuard then
  * checks `participant.role` against this set.
  *
- * Usage: `@UseGuards(JwtAuthGuard, GroupAccessGuard, RolesGuard)` + `@Roles(GroupRole.OWNER)`.
+ * Usage: `@UseGuards(JwtAuthGuard, ThreadAccessGuard, RolesGuard)` + `@Roles(GroupRole.OWNER)`.
  */
 export const Roles = (...roles: GroupRole[]) => SetMetadata(ROLES_KEY, roles);

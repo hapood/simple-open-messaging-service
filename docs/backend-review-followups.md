@@ -68,12 +68,23 @@ the message/search keyset paths.
 errors behave differently.
 **Fix:** document the asymmetry or align the shapes.
 
-### `Notify` has no indexes
-`Notify` (`prisma/schema.prisma`) has zero indexes — no `userId`, no `createdAt`. Safe today only because
-the model is append-only and the friend-request badge is the inline `User.hasUrFriendReq` column, so
-`Notify` is never queried. Any future "notification list" query (`WHERE userId ORDER BY createdAt`) is a
-seq scan.
-**Fix:** add `@@index([userId, createdAt])` preemptively (with a matching migration).
+### Invite model — GC sweep + GROUP follow-up (2026-07-09 invite redesign)
+Friend-add was rebuilt on a unified `Invite` table (`kind` FRIEND/GROUP); the `Friendship` and `Notify`
+tables were dropped (the friend-request unread badge stays as the inline `User.hasUrFriendReq`, now driven
+directly by `InviteService`). Two deferred items:
+
+- **Invite expiry GC sweep (TODO, low priority).** Today expiry is validated at accept time only; a
+  PENDING row past `expiresAt` stays PENDING (kept as history). The table stays small because duplicates
+  overwrite in place (partial unique indexes `invite_friend_pending_uq` / `invite_group_pending_uq` on
+  `(from,to)` / `(to,thread)`), so cleanup is low-priority. **TODO:** a periodic sweep
+  `UPDATE "Invite" SET status='EXPIRED' WHERE status='PENDING' AND "expiresAt" < now()` + recompute
+  `hasUrFriendReq`, as part of the larger garbage-collection feature (pattern: `FederationReconnectService`
+  hosted worker). No row is ever hard-deleted.
+- **GROUP live-flow switchover (TODO).** Group invites still use the legacy JWT-token-in-message mechanism
+  (`group.controller.writeInvites` → `groupService.generateInviteToken` + `ContentType.INVITE`); the table
+  is GROUP-ready (`InviteKind.GROUP` + the `(to,thread)` overwrite index). Migrate when the frontend group
+  display is built — card carries inviter + group name/avatar + invite id; validity fetched on dlg-open
+  via a new `/invite/detail { inviteId }`; only owner/admin may invite.
 
 ## P3 — hygiene & minor
 

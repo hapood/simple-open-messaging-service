@@ -45,15 +45,16 @@ export function displayUserName(u: { name?: string | null }): string {
   return u.name ?? ''
 }
 
-/** A P2P relationship row (thread/by-user-id returns this). */
-export type Friendship = S['FriendshipDto']
-/** A pending-list row — the backend additionally attaches the peer's userId for client profile lookup. */
-export type FriendshipWithPeer = S['FriendshipDto'] & { peerUserId: number }
+/** An invite row (friend-add / group-invite). /invite/incoming + /invite/outgoing return these; the
+ *  inviter + recipient profiles are embedded (fromUser / toUser), so no separate profile lookup is
+ *  needed. `expiresAt` (ms) lets the client render an "expired" prompt when it has passed. */
+export type Invite = S['InviteDto']
+/** Live invite state returned by /invite/detail (group-invite dialog). */
+export type InviteDetail = S['InviteDetailDto']
 
 export type QueryMessageLogParams = S['QueryMessagesDto']
 export type QueryUserThreadParams = S['QueryValidThreadDto']
 export type MessageThreadType = S['ConversationItemDto']['type']
-export type FriendshipStatus = S['FriendshipDto']['status']
 
 // Envelope generic (the generated ApiResult.data is unknown and cannot replace this)
 export interface StandardResponse<T = unknown> {

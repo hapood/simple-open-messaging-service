@@ -8,7 +8,8 @@ export const RESOURCE_ID_KEY = 'access:resourceIdField';
 
 /**
  * Declare the body field carrying the resource id an access guard authorizes against. Read by
- * `ThreadAccessGuard` / `GroupAccessGuard` via Reflector.
+ * `ThreadAccessGuard` via Reflector (group routes reuse it — their `groupId` body field carries a
+ * threadId now that groups are `!`-User threads).
  *
  * The field is typed as `keyof Dto`, so renaming it is a compile error at every route that declares
  * it — never a silent runtime drift from a string the guard itself guessed (the original motivation:

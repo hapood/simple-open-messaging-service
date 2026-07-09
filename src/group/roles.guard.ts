@@ -12,11 +12,11 @@ import { BusinessCode } from '../common/business-code.js';
 
 /**
  * Role gate for group routes decorated with @Roles(...). Reads the caller's role from
- * `req.groupAccess.participant` (populated by GroupAccessGuard) and rejects with
- * GROUP_FORBIDDEN when it is absent or not in the allowed set. Runs strictly AFTER
- * GroupAccessGuard in the guard chain.
+ * `req.threadAccess.participant` (populated by ThreadAccessGuard — GroupAccessGuard is folded into
+ * it now that groups are `!`-User threads) and rejects with GROUP_FORBIDDEN when it is absent or
+ * not in the allowed set. Runs strictly AFTER ThreadAccessGuard in the guard chain.
  *
- * Must be combined as: `@UseGuards(JwtAuthGuard, GroupAccessGuard, RolesGuard)` + `@Roles(...)`.
+ * Must be combined as: `@UseGuards(JwtAuthGuard, ThreadAccessGuard, RolesGuard)` + `@Roles(...)`.
  */
 @Injectable()
 export class RolesGuard implements CanActivate {
@@ -27,11 +27,11 @@ export class RolesGuard implements CanActivate {
       ROLES_KEY,
       [ctx.getHandler(), ctx.getClass()],
     );
-    // No @Roles metadata → this route only needs membership (GroupAccessGuard already enforced it).
+    // No @Roles metadata → this route only needs membership (ThreadAccessGuard already enforced it).
     if (!required || required.length === 0) return true;
 
     const req = ctx.switchToHttp().getRequest<FastifyRequest>();
-    const role = req.groupAccess?.participant?.role;
+    const role = req.threadAccess?.participant?.role;
     if (role === undefined || role === null || !required.includes(role)) {
       throw new BusinessException(
         BusinessCode.GROUP_FORBIDDEN,

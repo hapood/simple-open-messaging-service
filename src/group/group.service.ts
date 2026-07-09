@@ -1,16 +1,13 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import {
   GroupRole,
   MessageThreadType,
   Prisma,
 } from '../prisma/generated/client.js';
-import jsonwebtoken from 'jsonwebtoken';
-import { requireEnv } from '../common/env.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-
-const secret = requireEnv('GROUP_INVITE_SECRET');
+import { mintGroupAccount, isP2002 } from '../common/account.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
 function roleRank(role: GroupRole | null): number {
@@ -33,15 +30,16 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  * Group lifecycle: creation, invite-token mint/verify, joining, and the membership/role mutations
  * (leave/kick/transfer/set-role/update).
  *
- * Membership is no longer stored ad-hoc here — ThreadParticipant is the single source of truth.
- * createNewGroup/joinGroup write ThreadParticipant rows (OWNER for the creator, MEMBER for joiners);
- * roster lookups and SSE fan-out go through ThreadParticipantService. Initial members at creation
- * are INVITED (a GROUP_INVITE in their P2P thread), not directly added — they join via group/join.
+ * A group IS a `!`-sigil User row (account="!"+ULID, isGroup=true) carrying name/avatar/bio; the Group
+ * table is abolished (docs/account-naming.md). The group↔thread link is MessageThread.groupUserId, and
+ * the owner is derived from ThreadParticipant.role=OWNER (no ownerId column). All group-management
+ * operations now key on threadId (the stable handle, also used for messaging); the wire still calls it
+ * `groupId` for frontend compatibility, but the value IS the threadId.
  *
- * Authorization is split: GroupAccessGuard + RolesGuard decide the OPERATOR's membership and role
- * (throwing BusinessException → HTTP 200 + domain code). The methods below then validate the
- * TARGET-specific invariants (target is an active member, role-hierarchy for kick, no
- * self-transfer, etc.) and mutate. Controllers emit SSE after a successful return.
+ * Membership is stored on ThreadParticipant (single source of truth). createNewGroup/joinGroup write
+ * ThreadParticipant rows (OWNER for the creator, MEMBER for joiners). Authorization is split:
+ * ThreadAccessGuard + RolesGuard decide the OPERATOR's membership and role (throwing BusinessException →
+ * HTTP 200 + domain code); the methods below validate TARGET-specific invariants and mutate.
  */
 @Injectable()
 export class GroupService implements OnModuleInit {
@@ -49,60 +47,43 @@ export class GroupService implements OnModuleInit {
 
   async onModuleInit() {}
 
-  findUniqeGroup(params: Prisma.GroupWhereUniqueInput) {
-    return this.prisma.group.findUnique({ where: params });
+  /** Load a GROUP thread + its `!`-User (name/avatar/bio) by threadId. Returns null if missing. The read
+   *  path replacing the old queryGroups/findUniqeGroup (which hit the Group table). */
+  findGroupByThreadId(threadId: number) {
+    return this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      include: { groupUser: true },
+    });
   }
 
-  queryGroups(params: Prisma.GroupFindManyArgs) {
-    return this.prisma.group.findMany(params);
-  }
-
-  generateInviteToken(params: {
-    toUserId: number;
-    expiryDate: number;
-    groupId: number;
-  }) {
-    return jsonwebtoken.sign(
-      {
-        sub: params.toUserId,
-        exp: Math.floor(params.expiryDate / 1000),
-        gid: params.groupId,
+  /** Batch-load the `!`-User (name/avatar/bio) for each of the given GROUP threads, keyed by threadId.
+   *  Replaces the old queryGroups hydration that hit the Group table. Threads with no groupUser (P2P,
+   *  or malformed) are omitted. Returns Map<threadId, {id,name,avatar,bio}>. */
+  async resolveGroupUsersByThreadIds(
+    threadIds: number[],
+  ): Promise<Map<number, { id: number; name: string; avatar: string; bio: string }>> {
+    if (threadIds.length === 0) return new Map();
+    const threads = await this.prisma.messageThread.findMany({
+      where: { id: { in: threadIds } },
+      select: {
+        id: true,
+        groupUser: { select: { id: true, name: true, avatar: true, bio: true } },
       },
-      secret,
-    );
-  }
-
-  /**
-   * 校验邀请 token：验签 + 过期检查。
-   * - status 0：有效，返回 payload
-   * - status 1：签名无效 / 格式错误
-   * - status 2：已过期
-   */
-  decodeInviteToken(
-    token: string,
-  ):
-    | { status: 0; data: { sub: number; exp: number; gid: number } }
-    | { status: 1; message: string }
-    | { status: 2; message: string } {
-    try {
-      const payload = jsonwebtoken.verify(token, secret) as unknown as {
-        sub: number;
-        exp: number;
-        gid: number;
-      };
-      return { status: 0, data: payload };
-    } catch (e) {
-      return e.name === 'TokenExpiredError'
-        ? { status: 2, message: 'invite expired' }
-        : { status: 1, message: 'invalid invite' };
+    });
+    const m = new Map<number, { id: number; name: string; avatar: string; bio: string }>();
+    for (const t of threads) {
+      if (t.groupUser) m.set(t.id, t.groupUser);
     }
+    return m;
   }
 
+
   /**
-   * Create a group shell: GROUP thread + Group metadata + the owner as an OWNER participant. No
-   * other members are added here — the controller writes GROUP_INVITE messages into each invited
-   * friend's P2P thread (via writeInvites); they become members only on group/join. Returns the
-   * group; the controller fans out GROUP_MEMBER_JOINED as invitees accept.
+   * Create a group: mint the `!`-User identity (name/avatar/bio) + the GROUP thread linked via
+   * groupUserId + the owner as an OWNER participant. No other members here — the controller writes
+   * GROUP_INVITE messages into each invited friend's P2P thread; they join via group/join. Wrapped in a
+   * regenerate-on-P2002 loop (docs/account-naming.md §3.3): a same-ms ULID collision at the
+   * account-domain unique index is probabilistically impossible, but the loop is a real safety net.
    */
   async createNewGroup(params: {
     name: string;
@@ -110,68 +91,45 @@ export class GroupService implements OnModuleInit {
     avatar?: string;
     owner: number;
   }) {
-    return this.prisma.$transaction(async (prisma) => {
-      const trdData = await prisma.messageThread.create({
-        data: { type: MessageThreadType.GROUP },
-      });
-      const grpData = await prisma.group.create({
-        data: {
-          name: params.name,
-          description: params.description ?? '',
-          avatar: params.avatar ?? '',
-          ownerId: params.owner,
-          threadId: trdData.id,
-        },
-      });
-      await prisma.threadParticipant.create({
-        data: {
-          userId: params.owner,
-          threadId: grpData.threadId,
-          role: GroupRole.OWNER,
-        },
-      });
-      return grpData;
-    });
-  }
-
-  /**
-   * Join a group by adding the user as a MEMBER participant on the group's thread.
-   * - 'ok': newly joined.
-   * - 'already-member': the row pre-existed (re-activates it if the user had previously left).
-   * Idempotent by construction — never throws P2002 on duplicate join.
-   */
-  async joinGroup(params: {
-    groupId: number;
-    userId: number;
-  }): Promise<{ status: 'ok' | 'already-member' }> {
-    return this.prisma.$transaction(async (prisma) => {
-      const group = await prisma.group.findUnique({
-        where: { id: params.groupId },
-      });
-      const existing = await prisma.threadParticipant.findUnique({
-        where: {
-          userId_threadId: { userId: params.userId, threadId: group.threadId },
-        },
-      });
-      if (existing !== null) {
-        // Re-activate a previously-left member; otherwise this is an idempotent re-join.
-        if (existing.leftAt !== null) {
-          await prisma.threadParticipant.update({
-            where: { id: existing.id },
-            data: { leftAt: null, role: GroupRole.MEMBER },
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const account = mintGroupAccount();
+      try {
+        return await this.prisma.$transaction(async (prisma) => {
+          const groupUser = await prisma.user.create({
+            data: {
+              account,
+              domain: 'local',
+              isForeigner: false,
+              isGroup: true,
+              hashPwd: '', // empty — !-group-users never log in (validateUser rejects isGroup before verify)
+              name: params.name,
+              avatar: params.avatar ?? '',
+              bio: params.description ?? '',
+            },
           });
-        }
-        return { status: 'already-member' };
+          const thread = await prisma.messageThread.create({
+            data: { type: MessageThreadType.GROUP, groupUserId: groupUser.id },
+          });
+          await prisma.threadParticipant.create({
+            data: {
+              userId: params.owner,
+              threadId: thread.id,
+              role: GroupRole.OWNER,
+            },
+          });
+          return {
+            id: groupUser.id,
+            threadId: thread.id,
+            name: groupUser.name,
+            avatar: groupUser.avatar,
+            bio: groupUser.bio,
+          };
+        });
+      } catch (e) {
+        if (!isP2002(e)) throw e; // regenerate a fresh ULID, never append a counter
       }
-      await prisma.threadParticipant.create({
-        data: {
-          userId: params.userId,
-          threadId: group.threadId,
-          role: GroupRole.MEMBER,
-        },
-      });
-      return { status: 'ok' };
-    });
+    }
+    throw new Error('group account collision after 3 attempts (probabilistically impossible)');
   }
 
   /**
@@ -253,11 +211,11 @@ export class GroupService implements OnModuleInit {
 
   /**
    * Transfer ownership to an active member: demote the caller to MEMBER, promote the target to
-   * OWNER, and move the denormalized Group.ownerId pointer — all in one transaction so the group
-   * is never ownerless. The controller emits GROUP_ROLE_CHANGED for both affected users.
+   * OWNER — all in one transaction so the group is never ownerless. The owner is now derived from
+   * ThreadParticipant.role=OWNER (the old Group.ownerId denormalized pointer is gone), so the
+   * role-swaps alone are sufficient. The controller emits GROUP_ROLE_CHANGED for both users.
    */
   async transferOwnership(params: {
-    groupId: number;
     threadId: number;
     fromUserId: number;
     toUserId: number;
@@ -301,10 +259,6 @@ export class GroupService implements OnModuleInit {
       await tx.threadParticipant.update({
         where: { id: target.id },
         data: { role: GroupRole.OWNER },
-      });
-      await tx.group.update({
-        where: { id: params.groupId },
-        data: { ownerId: params.toUserId },
       });
     });
   }
@@ -357,20 +311,29 @@ export class GroupService implements OnModuleInit {
     });
   }
 
-  /** Update a group's name / description / avatar (only provided fields are written). */
+  /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).
+   *  description maps to User.bio. */
   async updateGroup(params: {
-    groupId: number;
+    threadId: number;
     name?: string;
     description?: string;
     avatar?: string;
   }) {
-    const data: Prisma.GroupUpdateInput = {};
-    if (params.name !== undefined) data.name = params.name;
-    if (params.description !== undefined) data.description = params.description;
-    if (params.avatar !== undefined) data.avatar = params.avatar;
-    return this.prisma.group.update({
-      where: { id: params.groupId },
-      data,
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: params.threadId },
+      select: { groupUserId: true },
     });
+    if (!trd || !trd.groupUserId) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        'group thread not found',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const data: Prisma.UserUpdateInput = {};
+    if (params.name !== undefined) data.name = params.name;
+    if (params.description !== undefined) data.bio = params.description;
+    if (params.avatar !== undefined) data.avatar = params.avatar;
+    return this.prisma.user.update({ where: { id: trd.groupUserId }, data });
   }
 }

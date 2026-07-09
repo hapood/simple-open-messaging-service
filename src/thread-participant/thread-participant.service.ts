@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import { Prisma } from '../prisma/generated/client.js';
+import { MessageThreadType, Prisma } from '../prisma/generated/client.js';
 
 /**
  * ThreadParticipant data layer.
@@ -139,6 +139,75 @@ export class ThreadParticipantService {
   /** Add a member to a conversation (used by group create/join). */
   createParticipant(data: Prisma.ThreadParticipantCreateInput) {
     return this.prisma.threadParticipant.create({ data });
+  }
+
+  /**
+   * The id of the ACTIVE P2P thread two users share, or null. With the Friendship table gone, "are A
+   * and B friends" is exactly "do they share an active (leftAt IS NULL on BOTH sides) P2P thread".
+   *
+   * Critical: BOTH participant rows must be active. `deleteFriend` soft-leaves both rows (leftAt=now)
+   * but keeps the thread, and re-friending mints a NEW thread — so two P2P threads can exist between a
+   * pair (the stale soft-left one + the new active one). Filtering leftAt:null on both sides selects
+   * only the live edge. This is the S2S message/file serving authz gate after unfriend.
+   */
+  async findP2PThreadBetween(userX: number, userY: number): Promise<number | null> {
+    const mine = await this.prisma.threadParticipant.findMany({
+      where: { userId: userX, leftAt: null, thread: { type: MessageThreadType.P2P } },
+      select: { threadId: true },
+    });
+    if (mine.length === 0) return null;
+    const peer = await this.prisma.threadParticipant.findFirst({
+      where: {
+        userId: userY,
+        leftAt: null,
+        threadId: { in: mine.map((m) => m.threadId) },
+      },
+      select: { threadId: true },
+    });
+    return peer?.threadId ?? null;
+  }
+
+  /**
+   * End a P2P friendship: soft-leave BOTH active participants of the thread (leftAt=now). The thread
+   * row + participants are kept (history); findP2PThreadBetween now returns null for the pair, and
+   * re-friending mints a fresh thread. The unfriend is LOCAL-ONLY — no S2S notification (the peer
+   * discovers the severed edge lazily via a 403 on its next pull, per the federation protocol).
+   */
+  async softLeaveP2PBoth(threadId: number): Promise<void> {
+    await this.prisma.threadParticipant.updateMany({
+      where: { threadId, leftAt: null },
+      data: { leftAt: new Date() },
+    });
+  }
+
+  /** Whether two users currently share an active P2P thread (i.e. are friends). */
+  async areFriends(userX: number, userY: number): Promise<boolean> {
+    return (await this.findP2PThreadBetween(userX, userY)) !== null;
+  }
+
+  /**
+   * All userIds sharing an ACTIVE P2P thread with `userId` — the friend set, now derived from thread
+   * membership (replaces FriendshipService.getApprovedPeerUserIds). Used by profile-update fan-out.
+   * Blocking does NOT unfriend (block lives in UserBlock, independent of thread membership), so
+   * blocked peers are still returned — a profile refresh is harmless and the conversation list still
+   * shows them, mirroring the previous behavior.
+   */
+  async getActiveP2PPeerUserIds(userId: number): Promise<number[]> {
+    const mine = await this.prisma.threadParticipant.findMany({
+      where: { userId, leftAt: null, thread: { type: MessageThreadType.P2P } },
+      select: { threadId: true },
+    });
+    if (mine.length === 0) return [];
+    const peers = await this.prisma.threadParticipant.findMany({
+      where: {
+        threadId: { in: mine.map((m) => m.threadId) },
+        leftAt: null,
+        userId: { not: userId },
+      },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+    return peers.map((p) => p.userId);
   }
 
   /**

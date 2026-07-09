@@ -7,6 +7,7 @@ import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
 import { RedisService } from '../redis/redis.service.js';
 import { jwtConstants } from './constants.js';
+import { normalizeAccount } from '../common/account.js';
 
 const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Clean up expired records once per day
 
@@ -49,9 +50,11 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     password: string,
   ) {
     const user = await this.userService.findUniqueUserForAuth({
-      account_domain: { account, domain: 'local' },
+      account_domain: { account: normalizeAccount(account), domain: 'local' },
     });
-    if (user === null) {
+    if (user === null || user.isGroup) {
+      // A `!`-group-User is not a login principal: reject as invalid credentials (non-leaking — same
+      // outcome as a wrong password, and skips argon2.verify on its unusable empty hashPwd).
       return undefined;
     }
     const match = await argon2.verify(user.hashPwd, password);

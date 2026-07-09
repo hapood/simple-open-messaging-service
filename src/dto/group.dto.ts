@@ -90,12 +90,6 @@ export class InviteGroupDto {
   groupId: number;
 }
 
-export class JoinGroupDto {
-  @ApiProperty({ example: 'invite-token', description: 'Invitation token' })
-  @IsString()
-  token: string;
-}
-
 /** Shared by group/info, group/members, group/leave — any group route keyed only by groupId. */
 export class GroupIdDto {
   @ApiProperty({ example: 12, description: 'Group id' })

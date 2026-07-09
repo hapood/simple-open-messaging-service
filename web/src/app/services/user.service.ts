@@ -2,7 +2,7 @@ import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, Subscription } from 'rxjs';
 import { apiPrefix } from './constants';
-import { User, QueryUserThreadParams, ConversationItem, MessageThreadType, FriendshipWithPeer, StandardResponse } from './model'
+import { User, QueryUserThreadParams, ConversationItem, MessageThreadType, Invite, InviteDetail, StandardResponse } from './model'
 
 export type { User } from './model'
 
@@ -129,8 +129,10 @@ export class UserService {
     return this.http.post<StandardResponse<{ trusted: boolean }>>(`${apiPrefix}/user/peer-trust-status`, params)
   }
 
-  sendFriendRequest(params: { userId: number; message?: string }) {
-    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/send-friend-request`, params)
+  /** Send a friend invite. Federated targets are delivered via S2S automatically. On auto-accept (the
+   *  target already invited me back, local-only) data carries threadId instead of inviteId. */
+  sendFriendInvite(params: { toUserId: number; note?: string }) {
+    return this.http.post<StandardResponse<{ inviteId?: string; threadId?: number }>>(`${apiPrefix}/invite/friend`, params)
   }
 
   /** Refresh a peer's avatar/name/bio if stale (chat-open + profile-panel-open hook). Federated: cheap
@@ -141,43 +143,49 @@ export class UserService {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/sync-peer-profile`, params)
   }
 
-  queryToPending(params: {
-    take: number, beforeDate: number
-  }) {
-    return this.http.post<StandardResponse<FriendshipWithPeer[]>>(`${apiPrefix}/user/query-thread/to-pending`, params)
+  /** Incoming pending friend invites (no params — backend hardcodes last-7-days, ≤200, friends filtered
+   *  out). The inviter profile is embedded on each row (fromUser). */
+  listIncomingInvites() {
+    return this.http.post<StandardResponse<Invite[]>>(`${apiPrefix}/invite/incoming`, {})
   }
 
-  queryFromPending(params: {
-    take: number, beforeDate: number
-  }) {
-    return this.http.post<StandardResponse<FriendshipWithPeer[]>>(`${apiPrefix}/user/query-thread/from-pending`, params)
+  /** My outgoing pending friend invites (same parameterless shape as incoming). */
+  listOutgoingInvites() {
+    return this.http.post<StandardResponse<Invite[]>>(`${apiPrefix}/invite/outgoing`, {})
   }
 
-  approveFriendRequest(params: { userId: number }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/user/approve-friend-request`, params)
+  /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */
+  acceptInvite(params: { inviteId: string }) {
+    return this.http.post<StandardResponse<{ threadId?: number }>>(`${apiPrefix}/invite/accept`, params)
   }
 
-  declineFriendRequest(params: { userId: number }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/user/decline-friend-request`, params)
+  /** Reject an incoming invite by id. */
+  rejectInvite(params: { inviteId: string }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/invite/reject`, params)
   }
 
-  cancelFriendRequest(params: { userId: number }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/user/cancel-friend-request`, params)
+  /** Revoke my own outgoing invite by id. */
+  revokeInvite(params: { inviteId: string }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/invite/revoke`, params)
+  }
+
+  /** Live invite state for the group-invite dialog (validity / already-joined / group identity). */
+  getInviteDetail(params: { inviteId: string }) {
+    return this.http.post<StandardResponse<InviteDetail>>(`${apiPrefix}/invite/detail`, params)
   }
 
   /**
-   * Unfriend — end an approved P2P friendship (mutual: the shared thread is deleted for both sides).
+   * Unfriend — end an approved P2P friendship (mutual: the shared thread is soft-left for both sides).
    * On success the caller should drop the thread from the conversation list (removeThread) and close
-   * the open chat/profile. Distinct from decline/cancel, which act on a still-pending request.
+   * the open chat/profile. Distinct from reject/revoke, which act on a still-pending invite.
    */
   deleteFriend(params: { userId: number }) {
     return this.http.post<StandardResponse>(`${apiPrefix}/user/delete-friend`, params)
   }
 
-  /** Clear the friend-request unread marker (the user has viewed the friend-requests panel; writing it
-   *  back dismisses the badge). */
-  markFriendReqRead() {
-    return this.http.post<StandardResponse>(`${apiPrefix}/notify/mark-friend-req-read`, {})
+  /** Clear the friend-invite unread badge (the user has viewed the friend-requests panel). */
+  markInvitesRead() {
+    return this.http.post<StandardResponse>(`${apiPrefix}/invite/mark-read`, {})
   }
 
   getThreadInfo(params: { threadId: number }) {

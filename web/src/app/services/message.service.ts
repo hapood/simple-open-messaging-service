@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Message, QueryMessageLogParams, StandardResponse, Friendship } from './model'
+import { Message, QueryMessageLogParams, StandardResponse } from './model'
 import { apiPrefix } from './constants';
 
 @Injectable({
@@ -73,9 +73,9 @@ export class MsgService {
     return this.http.post<StandardResponse<Message[]>>(`${apiPrefix}/query-messages`, params)
   }
 
-  /** Resolve the P2P relationship (status + threadId) with a peer user. */
+  /** Resolve the P2P thread with a peer user — returns { threadId } when friends, THREAD_NOT_FOUND otherwise. */
   getThreadByUserId(params: { userId: number }) {
-    return this.http.post<StandardResponse<Friendship>>(`${apiPrefix}/thread/by-user-id`, params)
+    return this.http.post<StandardResponse<{ threadId: number }>>(`${apiPrefix}/thread/by-user-id`, params)
   }
 
   /** Mute / unmute a conversation (suppresses notifications, not delivery). */

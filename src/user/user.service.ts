@@ -1,6 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { User, Prisma } from '../prisma/generated/client.js';
+import { normalizeAccount } from '../common/account.js';
 
 @Injectable()
 export class UserService implements OnModuleInit {
@@ -74,6 +75,7 @@ export class UserService implements OnModuleInit {
     const where: Prisma.UserWhereInput = {
       isDeleted: false,
       isForeigner: false,
+      isGroup: false,
       OR: [
         { account: { contains: q, mode: 'insensitive' } },
         { name: { contains: q, mode: 'insensitive' } },
@@ -93,16 +95,17 @@ export class UserService implements OnModuleInit {
   }
 
   addUser(params: { account: string; name: string; hashPwd: string }) {
+    const account = normalizeAccount(params.account); // case-insensitive (docs/account-naming.md §4)
     return this.prisma.$transaction(async (prisma) => {
       const user = await prisma.user.findUnique({
-        where: { account_domain: { account: params.account, domain: 'local' } },
+        where: { account_domain: { account, domain: 'local' } },
       });
       if (user !== null) {
         return { status: 2 };
       }
       const newUser = await prisma.user.create({
         data: {
-          account: params.account,
+          account,
           isForeigner: false,
           hashPwd: params.hashPwd,
           // Display name is now a required registration input (no longer defaulted to account).

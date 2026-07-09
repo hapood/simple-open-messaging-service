@@ -16,7 +16,6 @@
     <button
       type="button"
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }} invite invite-tappable"
-      [class.invite-expired]="status() === 1"
       (click)="openDetail()"
     >
       <span class="invite-watermark" aria-hidden="true"></span>
@@ -29,9 +28,12 @@
       </div>
     </button>
     <div class="invite-meta">
-      <span class="invite-status" [class.invite-status--expired]="status() === 1">
-        <span class="invite-status-dot" aria-hidden="true"></span>
-        {{ status() === 1 ? ('chat.inviteStatusExpired' | transloco) : ('chat.inviteStatusValid' | transloco) }}
+      <span class="invite-domain">
+        @if (invite().groupIsLocal) {
+          {{ 'chat.localServer' | transloco }}
+        } @else if (invite().groupDomain) {
+          <app-federated-badge [domain]="invite().groupDomain!" />
+        }
       </span>
       <span class="invite-meta-time">{{ data().time }}</span>
     </div>

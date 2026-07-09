@@ -105,8 +105,8 @@ export class AdminController {
   @ApiOperation({ summary: 'User list (paginated + searchable)' })
   async listUsers(@Body() dto: AdminListUsersDto): Promise<ApiResult> {
     const where = dto.search
-      ? { account: { contains: dto.search, mode: 'insensitive' as const } }
-      : undefined;
+      ? { isGroup: false, account: { contains: dto.search, mode: 'insensitive' as const } }
+      : { isGroup: false };
     const [list, total] = await Promise.all([
       this.userManageService.getUserList({
         where,

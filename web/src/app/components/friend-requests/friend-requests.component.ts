@@ -6,24 +6,32 @@ import { RouteService } from '../../services/route.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 import { FormsModule } from '@angular/forms';
 import { UserService, User } from '../../services/user.service';
-import { displayUserName } from '../../services/model';
+import { displayUserName, Invite } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { MsgService } from '../../services/message.service'
 import { translateBizResult } from '../../services/biz-code'
-import { arrayToDictIndex } from '../../../utils';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 import dayjs from 'dayjs';
 
 enum AddTabStatus {
   INIT, EMPTY, SEARCHING, SUCCESS, ERROR
 }
-// The underlying User data is optional: the degraded "Unknown user" fallback row
-// (built when a pending/sent request's user can't be resolved) lacks name/avatar/bio,
-// so the avatar falls back to the initial letter. Resolved rows spread a full User.
-type PendingReq = Omit<User, 'name' | 'avatar' | 'bio'>
-  & Partial<Pick<User, 'name' | 'avatar' | 'bio'>>
-  & { status: number, date: string, errText: string, reqMessage?: string }
+// A pending invite row in the Pending / Sent tabs. `id` is the invite's BigInt id (string) — the
+// accept/reject/revoke payload. The peer profile (name/avatar/domain/…) is embedded on the invite
+// (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
+type PendingReq = {
+  id: string
+  name?: string
+  avatar?: string
+  account?: string
+  isForeigner?: boolean
+  domain?: string
+  reqMessage?: string
+  status: number  // 0 pending, 1 accepted (optimistic "added"), -1 invalid
+  date: string
+  errText: string
+}
 
 @Component({
     selector: 'app-friend-requests',
@@ -178,43 +186,18 @@ export class FriendRequestsComponent implements OnDestroy {
       this.reqRspTxt.set(this.transloco.translate('friend.error.canNotAddSelf'))
       return
     }
-    // First query the P2P thread status with this user to decide which state applies
-    // (can add / already friends / request already sent / they sent one to you), instead of
-    // always showing Send Request (avoids re-inviting an existing friend and misleading copy).
+    // A friend relationship == a shared P2P thread. getThreadByUserId returns it (code 0) when friends,
+    // THREAD_NOT_FOUND (30003) otherwise. The pending-direction hints are gone (the invite model
+    // overwrites a re-invite, so re-sending is idempotent) — friends → already-friends; else → can invite.
     this.msgService.getThreadByUserId({ userId: user.id }).subscribe(res2 => {
       this.userData.set(user)
       this.addTabStatus.set(AddTabStatus.SUCCESS)
-      if (res2.code === 30003) {
-        // THREAD_NOT_FOUND: no relationship yet — a friend request can be sent.
+      if (res2.code === 0) {
+        this.canAdd.set(false)
+        this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
+      } else {
         this.canAdd.set(true)
         this.reqRspTxt.set('')
-        return
-      }
-      if (res2.code !== 0) {
-        this.canAdd.set(true)
-        this.reqRspTxt.set('')
-        return
-      }
-      switch (res2.data?.status) {
-        case 'APPROVED':
-          this.canAdd.set(false)
-          this.reqRspTxt.set(this.transloco.translate('friend.error.alreadyFriends'))
-          break
-        case 'PENDING':
-          // Direction disambiguates incoming vs outgoing (the friendship is one row per pair).
-          if (res2.data?.requesterId === this.userService.sessionProfile()!.id) {
-            this.canAdd.set(false)
-            this.reqRspTxt.set(this.transloco.translate('friend.error.requestAlreadySent'))
-          } else {
-            // They already sent you a request → guide to the Pending tab to accept, not re-send.
-            this.canAdd.set(false)
-            this.reqRspTxt.set(this.transloco.translate('friend.error.sentYouRequest'))
-          }
-          break
-        default:
-          // BLOCKED / DELETED still allow (re)sending.
-          this.canAdd.set(true)
-          this.reqRspTxt.set('')
       }
     })
   }
@@ -249,8 +232,8 @@ export class FriendRequestsComponent implements OnDestroy {
 
   sendRequest() {
     this.reqRspTxt.set('')
-    const message = this.friendReqMessage().trim().slice(0, 255)
-    this.userService.sendFriendRequest({ userId: this.userData()!.id, message }).subscribe({
+    const note = this.friendReqMessage().trim().slice(0, 255)
+    this.userService.sendFriendInvite({ toUserId: this.userData()!.id, note }).subscribe({
       next: res => {
         // Echo the backend message directly: the backend already returns status-keyed copy
         // ("friend request sent" / "you are already friends" / "you are now friends"), so the
@@ -265,9 +248,11 @@ export class FriendRequestsComponent implements OnDestroy {
 
   approve(index: number) {
     const req = this.pendingReqList()[index]
-    this.userService.approveFriendRequest({ userId: req.id }).subscribe(res => {
+    this.userService.acceptInvite({ inviteId: req.id }).subscribe(res => {
       const reqList = this.pendingReqList()
       if (res.code === 0) {
+        // Optimistic "added": keep the row showing 已添加 (status 1). Not persisted — next panel open
+        // re-queries and the backend filters out the now-friend, so it disappears on its own.
         this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 1, errText: '' }]).concat(reqList.slice(index + 1)))
       } else {
         this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 0, errText: translateBizResult(res, this.transloco) }]).concat(reqList.slice(index + 1)))
@@ -278,13 +263,12 @@ export class FriendRequestsComponent implements OnDestroy {
 
   decline(index: number) {
     const req = this.pendingReqList()[index]
-    this.userService.declineFriendRequest({ userId: req.id }).subscribe(res => {
+    this.userService.rejectInvite({ inviteId: req.id }).subscribe(res => {
       if (res.code === 0) {
-        // Decline succeeded: the request row is soft-deleted (DELETED); remove it from the pending
-        // list (filter by id to avoid index drift).
+        // Rejected: remove from the pending list (filter by id to avoid index drift).
         this.pendingReqList.set(this.pendingReqList().filter(r => r.id !== req.id))
       } else {
-        // Failed: keep it in the list and tag the error copy (errText always renders in the template).
+        // Failed: keep it and tag the error copy (errText always renders in the template).
         this.pendingReqList.set(this.pendingReqList().map(r => r.id === req.id ? { ...r, errText: translateBizResult(res, this.transloco) } : r))
       }
     })
@@ -292,99 +276,77 @@ export class FriendRequestsComponent implements OnDestroy {
 
   cancelSent(index: number) {
     const req = this.sentReqList()[index]
-    this.userService.cancelFriendRequest({ userId: req.id }).subscribe(res => {
+    this.userService.revokeInvite({ inviteId: req.id }).subscribe(res => {
       if (res.code === 0) {
-        // Cancel succeeded: our request row is set to DELETED; remove it from the sent list
-        // (filter by id to avoid index drift).
+        // Revoked: remove from the sent list (filter by id to avoid index drift).
         this.sentReqList.set(this.sentReqList().filter(r => r.id !== req.id))
       } else {
-        // Failed: keep it in the list and tag the error copy.
+        // Failed: keep it and tag the error copy.
         this.sentReqList.set(this.sentReqList().map(r => r.id === req.id ? { ...r, errText: translateBizResult(res, this.transloco) } : r))
       }
     })
   }
 
+  /** Incoming invite → pending-row (the peer is the inviter, fromUser). */
+  private inviteToPending(inv: Invite): PendingReq {
+    return this.toPendingReq(inv, inv.fromUser)
+  }
+
+  /** Outgoing invite → sent-row (the peer is the recipient, toUser). */
+  private inviteToSent(inv: Invite): PendingReq {
+    return this.toPendingReq(inv, inv.toUser)
+  }
+
+  private toPendingReq(inv: Invite, peer: Invite['fromUser']): PendingReq {
+    return {
+      id: inv.id,
+      name: peer.name,
+      avatar: peer.avatar,
+      account: peer.account,
+      isForeigner: peer.isForeigner,
+      domain: peer.domain,
+      reqMessage: inv.note,
+      status: 0,
+      date: dayjs(inv.createdAt).format('YYYY-MM-DD HH:mm:ss'),
+      errText: '',
+    }
+  }
+
   ngOnInit() {
-    this.userService.queryToPending({ take: 20, beforeDate: new Date().getTime() }).subscribe({
+    // Parameterless: backend hardcodes last-7-days / ≤200 / FRIEND / PENDING, and filters out peers
+    // who are already friends. The inviter profile is embedded (fromUser), so no queryUserInfo round-trip.
+    this.userService.listIncomingInvites().subscribe({
       next: (res) => {
         if (res.code !== 0) {
           this.toPendingErrTxt.set(this.transloco.translate('friend.error.unknownError'))
-          this.pendingLoading.set(false)
-          return
+        } else {
+          this.pendingReqList.set(res.data!.map(inv => this.inviteToPending(inv)))
         }
-        const userIds = res.data!.map(item => item.peerUserId)
-        this.userService.queryUserInfo({ userIds }).subscribe({
-          next: (res2) => {
-            if (res2.code !== 0) {
-              this.toPendingErrTxt.set(this.transloco.translate('friend.error.unknownError'))
-              this.pendingLoading.set(false)
-              return
-            }
-            const dict = arrayToDictIndex(res2.data!, 'id')
-            const list = res.data!.map(item => {
-              const userData = dict[item.peerUserId]
-              if (userData) {
-                return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
-              } else {
-                return { id: item.peerUserId, account: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
-              }
-            })
-            this.pendingReqList.set(list)
-            this.pendingLoading.set(false)
-          },
-          error: () => {
-            this.toPendingErrTxt.set(this.transloco.translate('friend.error.unknownError'))
-            this.pendingLoading.set(false)
-          },
-        })
+        this.pendingLoading.set(false)
       },
-      error: (err) => {
+      error: () => {
         this.toPendingErrTxt.set(this.transloco.translate('friend.error.unknownError'))
         this.pendingLoading.set(false)
       },
     })
 
-    this.userService.queryFromPending({ take: 20, beforeDate: new Date().getTime() }).subscribe({
+    this.userService.listOutgoingInvites().subscribe({
       next: (res) => {
         if (res.code !== 0) {
           this.sentErrTxt.set(this.transloco.translate('friend.error.unknownError'))
-          this.sentLoading.set(false)
-          return
+        } else {
+          this.sentReqList.set(res.data!.map(inv => this.inviteToSent(inv)))
         }
-        const userIds = res.data!.map(item => item.peerUserId)
-        this.userService.queryUserInfo({ userIds }).subscribe({
-          next: (res2) => {
-            if (res2.code !== 0) {
-              this.sentErrTxt.set(this.transloco.translate('friend.error.unknownError'))
-              this.sentLoading.set(false)
-              return
-            }
-            const dict = arrayToDictIndex(res2.data!, 'id')
-            const list = res.data!.map(item => {
-              const userData = dict[item.peerUserId]
-              if (userData) {
-                return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
-              } else {
-                return { id: item.peerUserId, account: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
-              }
-            })
-            this.sentReqList.set(list)
-            this.sentLoading.set(false)
-          },
-          error: () => {
-            this.sentErrTxt.set(this.transloco.translate('friend.error.unknownError'))
-            this.sentLoading.set(false)
-          },
-        })
+        this.sentLoading.set(false)
       },
-      error: (err) => {
+      error: () => {
         this.sentErrTxt.set(this.transloco.translate('friend.error.unknownError'))
         this.sentLoading.set(false)
       },
     })
 
-    // Opening the panel counts as "seen" → clear the friend-request unread badge (the backend writes
-    // hasUrFriendReq=false, then we refresh the local profile).
-    this.userService.markFriendReqRead().subscribe(() => this.userService.updateSessionProfile())
+    // Opening the panel counts as "seen" → clear the friend-invite unread badge (hasUrFriendReq=false,
+    // then refresh the local profile).
+    this.userService.markInvitesRead().subscribe(() => this.userService.updateSessionProfile())
   }
 }

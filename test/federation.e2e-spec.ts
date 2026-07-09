@@ -132,9 +132,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
   it('friend.request carries the profile and localizes the avatar on the receiver', async () => {
     const res = await request(appA.app.getHttpServer())
-      .post('/api/v1/user/send-friend-request')
+      .post('/api/v1/invite/friend')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ userId: bobStubIdOnA, message: 'hi from aaa' });
+      .send({ toUserId: bobStubIdOnA, note: 'hi from aaa' });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
 
@@ -147,35 +147,48 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(aliceStubB!.avatar).toMatch(/^\/uploads\/.+-(512)\.webp$/);
     aliceStubIdOnB = aliceStubB!.id;
 
-    // appB has a PENDING friendship, requester = alice's stub.
-    const friendshipB = await appB.prisma.friendship.findFirst({
-      where: { OR: [{ userAId: aliceStubIdOnB }, { userBId: aliceStubIdOnB }] },
+    // appB has a PENDING FRIEND Invite from alice's stub (the S2S delivery created it + armed the badge).
+    const inviteB = await appB.prisma.invite.findFirst({
+      where: { kind: 'FRIEND', status: 'PENDING', fromUserId: aliceStubIdOnB },
     });
-    expect(friendshipB?.status).toBe('PENDING');
-    expect(friendshipB?.requesterId).toBe(aliceStubIdOnB);
+    expect(inviteB).not.toBeNull();
+    expect(inviteB!.toUserId).not.toBe(aliceStubIdOnB); // addressed to bob (local), not the stub
   });
 
   it('friend.approve (no profile) creates the P2P thread on both servers', async () => {
+    // appB accepts the inbound invite from alice's stub by its id.
+    const inv = await appB.prisma.invite.findFirst({
+      where: { kind: 'FRIEND', status: 'PENDING', fromUserId: aliceStubIdOnB },
+    });
+    expect(inv).not.toBeNull();
     const res = await request(appB.app.getHttpServer())
-      .post('/api/v1/user/approve-friend-request')
+      .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB });
+      .send({ inviteId: inv!.id.toString() });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
 
-    // appB (approver side): APPROVED + a thread.
-    const fB = await appB.prisma.friendship.findFirst({
-      where: { OR: [{ userAId: aliceStubIdOnB }, { userBId: aliceStubIdOnB }] },
+    // appB (approver side): invite ACCEPTED + an active P2P thread with alice's stub.
+    const invB = await appB.prisma.invite.findFirst({
+      where: { kind: 'FRIEND', fromUserId: aliceStubIdOnB },
     });
-    expect(fB?.status).toBe('APPROVED');
-    expect(fB?.threadId).not.toBeNull();
+    expect(invB?.status).toBe('ACCEPTED');
+    const threadB = await appB.prisma.threadParticipant.findFirst({
+      where: { userId: aliceStubIdOnB, leftAt: null, thread: { type: 'P2P' } },
+      select: { threadId: true },
+    });
+    expect(threadB).not.toBeNull();
 
-    // appA (requester side): received friend.approve → its own P2P thread + APPROVED.
-    const fA = await appA.prisma.friendship.findFirst({
-      where: { OR: [{ userAId: bobStubIdOnA }, { userBId: bobStubIdOnA }] },
+    // appA (requester side): received friend.approve → its own P2P thread + outgoing invite ACCEPTED.
+    const invA = await appA.prisma.invite.findFirst({
+      where: { kind: 'FRIEND', fromUserId: aliceLocalIdA, toUserId: bobStubIdOnA },
     });
-    expect(fA?.status).toBe('APPROVED');
-    expect(fA?.threadId).not.toBeNull();
+    expect(invA?.status).toBe('ACCEPTED');
+    const threadA = await appA.prisma.threadParticipant.findFirst({
+      where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
+      select: { threadId: true },
+    });
+    expect(threadA).not.toBeNull();
 
     // appA's stub of bob also has a localized avatar (pulled at resolve time, pre-request).
     const bobStubA = await appA.prisma.user.findUnique({
@@ -189,13 +202,15 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   // coalesced hint-map push → active-pull pipeline: a send marks the outbound map dirty → a debounced
   // /new-msg-map push → the peer drains pendingPulls → /messages pull → idempotent store + SSE.
 
-  /** Resolve alice's P2P thread on appA (the thread she sends into). */
+  /** Resolve alice's P2P thread on appA (the thread she sends into). A friend relationship == a
+   *  shared active P2P thread, so look it up via the bob stub's active participant row. */
   async function alicesThreadIdOnA(): Promise<number> {
-    const fA = await appA.prisma.friendship.findFirst({
-      where: { OR: [{ userAId: bobStubIdOnA }, { userBId: bobStubIdOnA }] },
+    const p = await appA.prisma.threadParticipant.findFirst({
+      where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
+      select: { threadId: true },
     });
-    if (!fA?.threadId) throw new Error('alice↔bob thread missing on appA');
-    return fA.threadId;
+    if (!p?.threadId) throw new Error('alice↔bob thread missing on appA');
+    return p.threadId;
   }
 
   it('Step 2: a federated message is pushed + pulled to the peer (text) + SSE-fanned', async () => {
@@ -673,17 +688,20 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
 
-    // appA tore it down.
-    const fA = await appA.prisma.friendship.findFirst({
-      where: { OR: [{ userAId: bobStubIdOnA }, { userBId: bobStubIdOnA }] },
+    // appA tore it down — the P2P thread is soft-left (no active thread between alice and bob's stub).
+    const threadA = await appA.prisma.threadParticipant.findFirst({
+      where: { userId: bobStubIdOnA, leftAt: null, thread: { type: 'P2P' } },
+      select: { threadId: true },
     });
-    expect(fA?.status).toBe('DELETED');
+    expect(threadA).toBeNull();
 
-    // appB is UNCHANGED — no S2S notification was sent. It only learns lazily (Step 2 send-reject).
-    const fB = await appB.prisma.friendship.findFirst({
-      where: { OR: [{ userAId: aliceStubIdOnB }, { userBId: aliceStubIdOnB }] },
+    // appB is UNCHANGED — no S2S notification was sent. The active P2P thread still stands; appB only
+    // learns lazily about the severance (Step 2 send-reject, resolveFriendshipThread → 403).
+    const threadB = await appB.prisma.threadParticipant.findFirst({
+      where: { userId: aliceStubIdOnB, leftAt: null, thread: { type: 'P2P' } },
+      select: { threadId: true },
     });
-    expect(fB?.status).toBe('APPROVED');
+    expect(threadB).not.toBeNull();
   });
 
   it('rejects an inbound friend-op signed by an untrusted domain', async () => {

@@ -46,23 +46,6 @@ export class SyncPeerProfileDto extends UserIdDto {
   sinceUpdatedAt?: number;
 }
 
-/** Send a friend request, optionally with a ≤255-char note. Federated recipients are addressed by
- *  first resolving {account, domain} via /user/resolve (which mints/finds a local stub),
- *  then passing that stub's userId here — same DTO + path for local and federated. */
-export class SendFriendRequestDto {
-  @ApiProperty({ example: 1, description: 'User id (local user OR federated stub id)' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  userId: number;
-
-  @ApiProperty({ required: false, example: 'Hi from the conference', description: 'Friend-request note (≤255 chars)' })
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  message?: string;
-}
-
 /** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
  *  unfriend and applies to strangers. The message path drops fan-out to the blocker and filters
  *  query-messages so the blocker never sees the blocked user's messages. */
@@ -217,32 +200,3 @@ export class QueryValidThreadDto {
   type?: MessageThreadType;
 }
 
-export class QueryPendingThreadDto {
-  @ApiProperty({
-    example: 1_700_000_000_000,
-    description: 'Millisecond timestamp: fetch pending items before this time',
-  })
-  @Type(() => Number)
-  @IsInt()
-  beforeDate: number;
-
-  @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  @Max(50, { message: 'take must be at most 50' })
-  take: number;
-
-  // Frontend queryToPending sends only { take, beforeDate } with no skip (relies on Prisma skip:undefined = no pagination).
-  // Hence optional; when provided it is still validated as a non-negative integer.
-  @ApiProperty({
-    required: false,
-    example: 0,
-    description: 'Number of records to skip (optional)',
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(0)
-  skip?: number;
-}

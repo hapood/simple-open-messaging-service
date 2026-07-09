@@ -4,8 +4,8 @@ import { ThreadAccessGuard } from './thread-access.guard.js';
 
 @Module({
   // ThreadAccessGuard injects ThreadParticipantService to resolve the caller's membership; export it
-  // so MessageController (declared in AppModule) can @UseGuards it — same shape as GroupModule
-  // exporting GroupAccessGuard for GroupController.
+  // so MessageController and GroupController (both declared in AppModule) can @UseGuards it — group
+  // routes reuse it now that groups are `!`-User threads.
   providers: [ThreadParticipantService, ThreadAccessGuard],
   exports: [ThreadParticipantService, ThreadAccessGuard],
 })

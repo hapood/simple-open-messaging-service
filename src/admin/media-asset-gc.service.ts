@@ -112,15 +112,14 @@ export class MediaAssetGcService {
   async gcOrphanedAvatars(): Promise<{ sweptFiles: number }> {
     // Live `<base>` set from the two avatar columns. parseAvatarBase strips the size + path, so all 5
     // sizes of one logical avatar collapse to one key.
-    const [users, groups] = await Promise.all([
-      this.prisma.user.findMany({
-        where: { NOT: { avatar: '' } },
-        select: { avatar: true },
-      }),
-      this.prisma.group.findMany({ select: { avatar: true } }),
-    ]);
+    // Group avatars live on the `!`-User rows now (Group table abolished), so this single User query
+    // covers both people and group avatars.
+    const users = await this.prisma.user.findMany({
+      where: { NOT: { avatar: '' } },
+      select: { avatar: true },
+    });
     const live = new Set<string>();
-    for (const r of [...users, ...groups]) {
+    for (const r of users) {
       const base = parseAvatarBase(r.avatar);
       if (base) live.add(base);
     }

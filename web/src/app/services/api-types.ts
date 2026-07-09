@@ -47,7 +47,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Look up the P2P relationship by peer userId (friend status / thread) */
+        /** Look up the P2P thread by peer userId (friends only) */
         post: operations["MessageController_getThreadByUserId"];
         delete?: never;
         options?: never;
@@ -379,108 +379,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/user/query-thread/to-pending": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** List pending (incoming) friend requests */
-        post: operations["UserController_queryPendingThread"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/query-thread/from-pending": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** List my outgoing pending friend requests */
-        post: operations["UserController_queryFromPendingThread"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/send-friend-request": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Send a friend request (optional ≤255 note; federated recipients go via S2S automatically) */
-        post: operations["UserController_sendFriendRequest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/approve-friend-request": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Accept a friend request */
-        post: operations["UserController_acceptFriendRequest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/decline-friend-request": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Decline a friend request */
-        post: operations["UserController_declineFriendRequest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/user/cancel-friend-request": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Cancel my outgoing friend request */
-        post: operations["UserController_cancelFriendRequest"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/user/delete-friend": {
         parameters: {
             query?: never;
@@ -668,23 +566,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/group/join": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Join a group by invite token */
-        post: operations["GroupController_joinGroup"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/v1/group/info": {
         parameters: {
             query?: never;
@@ -804,7 +685,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/notify/mark-friend-req-read": {
+    "/api/v1/invite/friend": {
         parameters: {
             query?: never;
             header?: never;
@@ -813,8 +694,127 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Clear the unread friend-request badge (the user viewed the friend-request panel) */
-        post: operations["NotifyController_markFriendReqRead"];
+        /** Send a friend invite (federated targets delivered via S2S automatically) */
+        post: operations["InviteController_sendFriendInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept an invite by id (friend → P2P thread; group → join as MEMBER) */
+        post: operations["InviteController_acceptInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject an incoming invite */
+        post: operations["InviteController_rejectInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Revoke my own outgoing invite */
+        post: operations["InviteController_revokeInvite"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/incoming": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List incoming pending friend invites (last 7 days, ≤200, friends filtered out) */
+        post: operations["InviteController_listIncoming"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/outgoing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List my outgoing pending friend invites (last 7 days, ≤200, friends filtered out) */
+        post: operations["InviteController_listOutgoing"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Live invite state for the group-invite dialog (validity / already-joined) */
+        post: operations["InviteController_getInviteDetail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/invite/mark-read": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Clear the friend-request unread badge */
+        post: operations["InviteController_markRead"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1683,7 +1683,7 @@ export interface components {
         };
         MessageResponseDto: {
             /**
-             * @description Message seq (the local monotonic ordering key + identity)
+             * @description Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread (NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.
              * @example 42
              */
             seq: number;
@@ -1768,44 +1768,6 @@ export interface components {
              * @enum {string}
              */
             orderBy: "desc" | "asc";
-        };
-        FriendshipDto: {
-            /** @example 1 */
-            id: number;
-            /**
-             * @description One side of the pair (min userId)
-             * @example 2
-             */
-            userAId: number;
-            /**
-             * @description Other side of the pair (max userId)
-             * @example 3
-             */
-            userBId: number;
-            /**
-             * @description The user who initiated the request
-             * @example 2
-             */
-            requesterId: number;
-            /**
-             * @description PENDING | APPROVED | BLOCKED | DELETED
-             * @enum {string}
-             */
-            status: "PENDING" | "APPROVED" | "BLOCKED" | "DELETED";
-            /**
-             * @description The PENDING request note/reason the requester sent (≤255 chars). Absent on non-PENDING rows.
-             * @example Hi from the conference
-             */
-            reqMessage?: string;
-            /**
-             * @description The P2P MessageThread id (set once APPROVED)
-             * @example 12
-             */
-            threadId?: number;
-            /** @example 1700000000000 */
-            createdAt: number;
-            /** @example 1700000000000 */
-            updatedAt: number;
         };
         UserIdDto: {
             /**
@@ -2160,35 +2122,6 @@ export interface components {
              */
             type?: "P2P" | "GROUP";
         };
-        QueryPendingThreadDto: {
-            /**
-             * @description Millisecond timestamp: fetch pending items before this time
-             * @example 1700000000000
-             */
-            beforeDate: number;
-            /**
-             * @description Number of records to take (1-50)
-             * @example 20
-             */
-            take: number;
-            /**
-             * @description Number of records to skip (optional)
-             * @example 0
-             */
-            skip?: number;
-        };
-        SendFriendRequestDto: {
-            /**
-             * @description User id (local user OR federated stub id)
-             * @example 1
-             */
-            userId: number;
-            /**
-             * @description Friend-request note (≤255 chars)
-             * @example Hi from the conference
-             */
-            message?: string;
-        };
         BlockDto: {
             /**
              * @description User id to block / unblock
@@ -2269,7 +2202,7 @@ export interface components {
         };
         RegisterDto: {
             /**
-             * @description Login unique name: 3-31 chars [a-zA-Z0-9_], must start with a letter
+             * @description Login unique name: 3-31 chars, letters [a-z] and dots only, case-insensitive
              * @example alice
              */
             account: string;
@@ -2349,13 +2282,6 @@ export interface components {
              * @example 12
              */
             groupId: number;
-        };
-        JoinGroupDto: {
-            /**
-             * @description Invitation token
-             * @example invite-token
-             */
-            token: string;
         };
         GroupMemberDto: {
             /** @example 7 */
@@ -2461,6 +2387,67 @@ export interface components {
              * @example Frontend team sync
              */
             description?: string;
+        };
+        SendFriendInviteDto: {
+            /**
+             * @description Target user id (local user OR federated stub id)
+             * @example 1
+             */
+            toUserId: number;
+            /**
+             * @description Invite note (≤255 chars)
+             * @example Hi from the conference
+             */
+            note?: string;
+        };
+        InviteIdDto: {
+            /**
+             * @description Invite id (stringified BigInt)
+             * @example 123456789
+             */
+            inviteId: string;
+        };
+        InviteUserDto: {
+            id: number;
+            account: string;
+            name: string;
+            avatar: string;
+            domain: string;
+            isForeigner: boolean;
+        };
+        InviteDto: {
+            id: string;
+            /** @enum {string} */
+            kind: "FRIEND" | "GROUP";
+            fromUser: components["schemas"]["InviteUserDto"];
+            toUser: components["schemas"]["InviteUserDto"];
+            threadId?: number;
+            note: string;
+            /** @enum {string} */
+            status: "PENDING" | "ACCEPTED" | "REJECTED" | "REVOKED" | "EXPIRED";
+            /** @description Expiry (ms epoch). expiresAt < Date.now() → expired. */
+            expiresAt: number;
+            createdAt: number;
+        };
+        InviteDetailDto: {
+            id: string;
+            /** @enum {string} */
+            kind: "FRIEND" | "GROUP";
+            /** @enum {string} */
+            status: "PENDING" | "ACCEPTED" | "REJECTED" | "REVOKED" | "EXPIRED";
+            /** @description Expiry (ms epoch). */
+            expiresAt: number;
+            note: string;
+            threadId?: number;
+            groupName: string;
+            groupAvatar: string;
+            /** @description The group's home domain (our domain for a local group). */
+            groupDomain: string;
+            /** @description True iff the group is homed on THIS server (rendered as a "Local server" label; otherwise a globe + domain badge). */
+            groupIsLocal: boolean;
+            /** @description Is the caller already an active member of the target group? */
+            alreadyJoined: boolean;
+            fromUser: components["schemas"]["InviteUserDto"];
         };
         RegisterDeviceDto: {
             /**
@@ -2703,11 +2690,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["FriendshipDto"];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -3127,140 +3110,6 @@ export interface operations {
             };
         };
     };
-    UserController_queryPendingThread: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QueryPendingThreadDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["FriendshipDto"][];
-                    };
-                };
-            };
-        };
-    };
-    UserController_queryFromPendingThread: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["QueryPendingThreadDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["FriendshipDto"][];
-                    };
-                };
-            };
-        };
-    };
-    UserController_sendFriendRequest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SendFriendRequestDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UserController_acceptFriendRequest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserIdDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UserController_declineFriendRequest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserIdDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    UserController_cancelFriendRequest: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UserIdDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     UserController_deleteFriend: {
         parameters: {
             query?: never;
@@ -3512,27 +3361,6 @@ export interface operations {
             };
         };
     };
-    GroupController_joinGroup: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["JoinGroupDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     GroupController_getGroupInfo: {
         parameters: {
             query?: never;
@@ -3684,7 +3512,158 @@ export interface operations {
             };
         };
     };
-    NotifyController_markFriendReqRead: {
+    InviteController_sendFriendInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendFriendInviteDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    InviteController_acceptInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    InviteController_rejectInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    InviteController_revokeInvite: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    InviteController_listIncoming: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["InviteDto"][];
+                    };
+                };
+            };
+        };
+    };
+    InviteController_listOutgoing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["InviteDto"][];
+                    };
+                };
+            };
+        };
+    };
+    InviteController_getInviteDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["InviteIdDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["InviteDetailDto"];
+                    };
+                };
+            };
+        };
+    };
+    InviteController_markRead: {
         parameters: {
             query?: never;
             header?: never;

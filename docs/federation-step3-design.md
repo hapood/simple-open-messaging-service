@@ -38,11 +38,17 @@ timestamp is the **local arrival** time, not the origin's send time.
    roster state deserves its own typed, signed, idempotent, membership-gated path, consistent with how
    `friend-request` / `friend-approve` are dedicated split endpoints (`federation-protocol.md` §4.1).
 
-2. **Roster authority = the origin; owner transfer is local-only.** Only the origin server emits
-   roster ops (`join`/`leave`/`kick`/`role`) for its group. Owner transfer is **forbidden to a
-   federated member** — the owner may transfer only to another local user on the origin server.
-   Consequence: **the origin domain is invariant for a group's lifetime**, which removes the re-homing
-   problem entirely (there is no "move the canonical thread to another server" operation).
+2. **Roster authority = the origin; a group never crosses its origin-domain boundary.** Only the
+   origin server emits roster ops (`join`/`leave`/`kick`/`role`) for its group. Two consequences, both
+   deliberate and both **domain boundaries the group never crosses**:
+   - **No re-homing — the group is bound to its origin domain for life.** The canonical roster +
+     message authority is the origin server for the group's entire lifetime. There is **no operation to
+     move the canonical thread to another server**; `originDomain` is invariant, which removes the
+     re-homing problem entirely.
+   - **Ownership does not cross domains — owner transfer is local-only.** The owner (admin) may
+     transfer only to another user on the **same origin server**; transferring ownership to a member on
+     a *different* domain is **forbidden** (backend rejects, UI hides the option). This is what keeps
+     `originDomain` invariant — there is no wire op that could move ownership across servers.
 
 3. **Message transport = identical to Step 2 P2P, origin-hub topology.** Push signal (`new-msg-map`)
    + active pull (`GET /messages`), per-sender `originSeq`. The topology is a **hub, not a mesh**: a

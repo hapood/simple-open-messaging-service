@@ -223,6 +223,9 @@
     "join": "加入",
     "expired": "已过期",
     "failedToJoin": "加入失败",
+    "inviteInvalid": "群邀请已失效",
+    "alreadyJoined": "已加入",
+    "localServer": "本服务器",
     "preview": {
       "photo": "[图片]",
       "invite": "[群邀请]",

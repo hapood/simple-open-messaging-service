@@ -48,10 +48,6 @@ export class GroupService {
     )
   }
 
-  joinGroup(params: { token: string }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/group/join`, params)
-  }
-
   getMembers(params: { groupId: number }) {
     return this.http.post<StandardResponse<GroupMember[]>>(`${apiPrefix}/group/members`, params)
   }

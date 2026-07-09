@@ -14,7 +14,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
-import { FriendshipDto, MessageResponseDto } from '../dto/response.dto.js';
+import { MessageResponseDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
@@ -23,7 +23,6 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
-import { FriendshipService } from '../friendship/friendship.service.js';
 import {
   parseAudioContent,
   parseFileContent,
@@ -49,7 +48,6 @@ export class MessageController {
     private readonly messageService: MessageService,
     private readonly sseService: SseService,
     private readonly participantService: ThreadParticipantService,
-    private readonly friendshipService: FriendshipService,
     private readonly pushService: PushService,
     private readonly notifQuery: NotificationQueryService,
     private readonly userBlockService: UserBlockService,
@@ -211,29 +209,26 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('thread/by-user-id')
   @ApiOperation({
-    summary:
-      'Look up the P2P relationship by peer userId (friend status / thread)',
+    summary: 'Look up the P2P thread by peer userId (friends only)',
   })
-  @ApiResultResponse(FriendshipDto)
   async getThreadByUserId(
     @Request() req,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
-    const { friendship, isFriend } = await this.friendshipService.getFriendship(
+    // A friend relationship == an active P2P thread shared by both. No thread → THREAD_NOT_FOUND,
+    // deliberately non-leaking (a caller cannot probe a pending invite or prior relationship), the
+    // same policy ThreadAccessGuard enforces.
+    const threadId = await this.participantService.findP2PThreadBetween(
       req.user.userId,
       dto.userId,
     );
-    // Only an APPROVED friendship carries a usable P2P thread. Pending / DELETED / no-relationship
-    // all collapse to THREAD_NOT_FOUND — deliberately non-leaking, so a caller cannot probe whether
-    // a pending request or prior relationship with an arbitrary user exists (nor its direction).
-    // Matches ThreadAccessGuard's non-leak policy.
-    if (!isFriend || !friendship?.threadId) {
+    if (threadId === null) {
       return {
         code: BusinessCode.THREAD_NOT_FOUND,
         message: `no relationship with user [${dto.userId}]`,
       };
     }
-    return { code: BusinessCode.OK, message: 'successful', data: friendship };
+    return { code: BusinessCode.OK, message: 'successful', data: { threadId } };
   }
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)

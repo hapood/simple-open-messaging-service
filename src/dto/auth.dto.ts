@@ -5,7 +5,9 @@ import {
   IsString,
   Matches,
 } from 'class-validator';
+import { Transform } from 'class-transformer';
 import { IsDisplayName } from '../common/validators.js';
+import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 
 /**
  * Auth request DTOs. Validation rules are ported 1:1 from the original inline controller checks to avoid
@@ -16,6 +18,7 @@ import { IsDisplayName } from '../common/validators.js';
 /** Login input. Credentials are verified by LocalStrategy; @Body goes through the global ValidationPipe whitelist. The body holds only server-consumed fields — client-side concerns like "remember me" are out of contract. */
 export class LoginDto {
   @ApiProperty({ example: 'alice', description: 'Login unique name' })
+  @Transform(({ value }) => normalizeAccount(value))
   @IsString()
   @IsNotEmpty()
   account: string;
@@ -41,16 +44,16 @@ export class LoginDto {
  * returning 200 + code:2.
  */
 export class RegisterDto {
-  // 3-31 chars, [a-zA-Z0-9_], must start with a letter (Telegram-style handle). The leading-letter +
-  // alnum+underscore charset keeps handles URL/address-safe for the account@domain federation identity;
-  // the DB column is VarChar(31), so 31 is the hard ceiling. Existing users keep their handles — this
-  // only gates NEW registrations.
+  // Account grammar: letters + `.` only, case-insensitive (docs/account-naming.md §3.1). The Transform
+  // lowercases on input (Postgres @@unique is case-sensitive — the /i flag alone is insufficient), then
+  // @Matches enforces the grammar. The DB column is VarChar(31), so 31 is the hard ceiling.
   @ApiProperty({
     example: 'alice',
-    description: 'Login unique name: 3-31 chars [a-zA-Z0-9_], must start with a letter',
+    description: 'Login unique name: 3-31 chars, letters [a-z] and dots only, case-insensitive',
   })
-  @Matches(/^[a-zA-Z][a-zA-Z0-9_]{2,30}$/, {
-    message: 'account must be 3-31 chars ([a-zA-Z0-9_]) and start with a letter',
+  @Transform(({ value }) => normalizeAccount(value))
+  @Matches(USER_ACCOUNT_RE, {
+    message: 'account must be 3-31 chars, letters [a-z] and dots only (no leading/trailing/consecutive dots)',
   })
   account: string;
 

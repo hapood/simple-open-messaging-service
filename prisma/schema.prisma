@@ -21,6 +21,7 @@ model User {
   avatar             String              @default("") // avatar path /uploads/... (folded from UserExtra.avatar)
   bio                String              @default("") @db.VarChar(255) // (folded from UserExtra.bio)
   isForeigner        Boolean
+  isGroup            Boolean             @default(false) // true iff a "!"-sigil group identity row (not a person); grammar-enforced sigil, kept consistent with a CHECK constraint (account LIKE '!%') = isGroup. See docs/account-naming.md.
   // Domain: "local" for users homed on THIS server, <peer-domain> for federated stubs. Non-null +
   // the @@unique([account, domain]) below enforce both local-user and stub uniqueness (a standalone
   // account @unique would block a foreign stub sharing an account with a local user). The federated
@@ -38,10 +39,10 @@ model User {
   // peer value triggers a re-pull + re-localize. Null for local users (their own updatedAt is authoritative)
   // and for stubs not yet localized. See docs/federation-protocol.md (avatar federation).
   remoteUpdatedAt    DateTime?
-  Group              Group[]
+  groupThreads       MessageThread[]     @relation("GroupUser") // back-relation for MessageThread.groupUserId (the GROUP threads whose identity "!"-User is this row; empty for humans)
   threadParticipants ThreadParticipant[]
-  friendshipsAsA     Friendship[]        @relation("FriendA")
-  friendshipsAsB     Friendship[]        @relation("FriendB")
+  invitesFrom        Invite[]            @relation("InviteFrom") // invites THIS user sent
+  invitesTo          Invite[]            @relation("InviteTo") // invites addressed to THIS user
   messages           Message[]           @relation("AuthoredMessages")
   refreshTokens      RefreshToken[]
   pushTokens         PushToken[]
@@ -107,18 +108,9 @@ model NotificationToken {
   @@index([userId])
 }
 
-model Group {
-  id          Int           @id @default(autoincrement())
-  name        String
-  description String        @default("")
-  ownerId     Int
-  owner       User          @relation(fields: [ownerId], references: [id])
-  avatar      String
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
-  threadId   Int
-  threadItem MessageThread @relation(fields: [threadId], references: [id])
-}
+// Group model ABOLISHED (2026-07): a group is now a User row with account="!"+ULID (isGroup=true)
+// carrying name/avatar/bio; the group<->thread link is MessageThread.groupUserId; the owner is derived
+// from ThreadParticipant.role=OWNER (Group.ownerId was a denormalized duplicate). See docs/account-naming.md.
 
 enum MessageThreadType {
   P2P
@@ -132,12 +124,20 @@ enum GroupRole {
   MEMBER
 }
 
-/// P2P relationship / friend-request state. Replaces the old UserMessageThreadStatus overload.
-enum FriendshipStatus {
+/// Kind of an Invite row. The Invite table is the single home for both friend-add and group-invite.
+enum InviteKind {
+  FRIEND
+  GROUP
+}
+
+/// Lifecycle of an Invite row. PENDING → one of the terminals; rows are NEVER hard-deleted (kept as
+/// history; a future GC sweep will flip stale PENDING → EXPIRED, deferred for now).
+enum InviteStatus {
   PENDING
-  APPROVED
-  BLOCKED
-  DELETED
+  ACCEPTED
+  REJECTED
+  REVOKED
+  EXPIRED
 }
 
 /// One row per (user, conversation) — the single source of truth for who is in a thread and their per-user
@@ -167,24 +167,38 @@ model ThreadParticipant {
   @@index([userId, pinned]) // pinned-first conversation list per user
 }
 
-/// P2P relationship / friend-request state machine — exactly ONE row per unordered user pair (userAId < userBId).
-/// Replaces the old two-half-edge UserMessageThread rows; direction is carried by requesterId.
-model Friendship {
-  id          Int              @id @default(autoincrement())
-  userAId     Int // normalized: min(a, b)
-  userBId     Int // normalized: max(a, b)
-  userA       User             @relation("FriendA", fields: [userAId], references: [id])
-  userB       User             @relation("FriendB", fields: [userBId], references: [id])
-  requesterId Int // who initiated (direction without two rows)
-  status      FriendshipStatus @default(PENDING)
-  reqMessage  String           @default("") @db.VarChar(255) // friend-request note/reason (≤255; local + federated; matches lastMessagePreview/bio convention)
-  threadId    Int? // the P2P MessageThread, created on APPROVED
-  thread      MessageThread?   @relation(fields: [threadId], references: [id])
-  createdAt   DateTime         @default(now())
-  updatedAt   DateTime         @updatedAt
+/// A friend-add or group-invite request — the single home for invites of all kinds ("方法一致").
+/// kind=FRIEND: one user asking another to be friends (threadId null; the P2P thread is minted on
+/// accept). kind=GROUP: a member inviting a friend into a group thread (threadId = target group).
+/// Delivered to `toUserId` and accepted by sending the invite id back as a payload.
+///
+/// Duplicate = new overwrites old (upsert-on-P2002, keyed by the migration's partial unique indexes):
+/// FRIEND dedupes on (from, to); GROUP dedupes on (to, thread) regardless of inviter — so a second
+/// admin inviting the same friend to the same group refreshes the existing PENDING row in place.
+/// Expiry (7d) is validated at accept time; rows are never hard-deleted. `origin`/`originId` carry the
+/// minting server for cross-server delivery dedup (local invites use our domain + a ULID).
+model Invite {
+  id          BigInt       @id @default(autoincrement())
+  kind        InviteKind
+  fromUserId  Int // inviter (a local user; for an inbound federated invite, the foreign stub)
+  toUserId    Int // recipient / decision-maker (a local user on THIS server)
+  threadId    Int? // GROUP: target group thread; FRIEND: null (P2P thread created on accept)
+  note        String       @default("") @db.VarChar(255) // invite message / reason (≤255)
+  status      InviteStatus @default(PENDING)
+  expiresAt   DateTime // 7d; validated at accept time (background sweep deferred)
+  origin      String       @db.VarChar(63) // minting server domain (our domain for local invites)
+  originId    String       @db.VarChar(127) // minting-server id; (origin, originId) = delivery dedup
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
-  @@unique([userAId, userBId])
-  @@index([userBId]) // with userAId covers "friendships involving a user"
+  fromUser User           @relation("InviteFrom", fields: [fromUserId], references: [id])
+  toUser   User           @relation("InviteTo", fields: [toUserId], references: [id])
+  thread   MessageThread? @relation(fields: [threadId], references: [id])
+
+  @@unique([origin, originId]) // local + cross-server delivery dedup (idempotent create)
+  @@index([toUserId, status, kind]) // incoming list (friend-pending panel)
+  @@index([fromUserId, status, kind]) // outgoing list
+  @@index([kind, threadId, toUserId, status]) // GROUP dedup + roster queries
 }
 
 /// One-way block independent of the Friendship state machine. Blocking survives an unfriend (and applies
@@ -237,11 +251,17 @@ model MessageThread {
   // federatedThreadId is NULL.
   originDomain      String? @db.VarChar(255)
 
+  // The "!"-sigil User row that CARRIES this GROUP conversation's name/avatar/bio (the Group table is
+  // abolished: a group IS a User row with account="!"+ULID, isGroup=true). Non-null iff type=GROUP;
+  // null for P2P. onDelete: Cascade (deleting the group-user deletes the thread). See docs/account-naming.md.
+  groupUserId       Int?
+  groupUser         User?               @relation("GroupUser", fields: [groupUserId], references: [id], onDelete: Cascade)
   ThreadParticipant ThreadParticipant[]
-  Friendship        Friendship[]
+  invites           Invite[]
   Message           Message[]
-  Group             Group[]
   MediaMessage      MediaMessage[] // per-object media authz index (digest → thread)
+
+  @@index([groupUserId])
 }
 
 enum ContentType {
@@ -347,19 +367,6 @@ model MediaMessage {
 
   @@index([digest]) // hot gate path: WHERE digest = $D (the @id index covers messageId lookups)
   @@index([threadId])
-}
-
-enum NotifyType {
-  FRIEND_REQUEST
-}
-
-model Notify {
-  id        BigInt     @id @default(autoincrement())
-  userId    Int
-  type      NotifyType
-  content   Json
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
 }
 
 /// Refresh token persisted to DB (replaces an earlier in-memory map): survives restart, multi-device, revocable.

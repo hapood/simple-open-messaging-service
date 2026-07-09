@@ -12,10 +12,9 @@ import { GroupController } from './controller/group.controller.js';
 import { UploadModule } from './upload/upload.module.js';
 import { RedisModule } from './redis/redis.module.js';
 import { AdminModule } from './admin/admin.module.js';
-import { NotifyModule } from './notify/notify.module.js';
-import { NotifyController } from './controller/notify.controller.js';
 import { ThreadParticipantModule } from './thread-participant/thread-participant.module.js';
-import { FriendshipModule } from './friendship/friendship.module.js';
+import { InviteModule } from './invite/invite.module.js';
+import { InviteController } from './controller/invite.controller.js';
 import { PushModule } from './push/push.module.js';
 import { UserBlockModule } from './user-block/user-block.module.js';
 import { FederationModule } from './federation/federation.module.js';
@@ -39,9 +38,8 @@ import { NotificationQueryService } from './notification/notification-query.serv
     GroupModule,
     UploadModule,
     AdminModule,
-    NotifyModule,
     ThreadParticipantModule,
-    FriendshipModule,
+    InviteModule,
     PushModule,
     UserBlockModule,
     FederationModule,
@@ -52,7 +50,7 @@ import { NotificationQueryService } from './notification/notification-query.serv
     AuthController,
     UserController,
     GroupController,
-    NotifyController,
+    InviteController,
     DeviceController,
     NotificationController,
   ],

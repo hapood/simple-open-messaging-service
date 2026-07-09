@@ -169,14 +169,44 @@ display := account + "@" + domain           // UI input aid only; client splits 
 - Because `@` is forbidden in `account` (§5), splitting `account@domain` on `@` is always unambiguous
   for both users and groups.
 
-## 7. Data reset — no migration
+## 7. Identity immutability — an account is never renamed
+
+An account is **set exactly once, at creation**, and is **never mutated afterward** — not by the user,
+not by an admin, not by any internal path. There is no rename / change-account operation in SOMS.
+
+- **Users:** the `account` is fixed at registration (`RegisterDto` → `addUser`). The self-service
+  profile endpoint (`updateProfile`) updates only the display `name` and `bio` — **never** `account`.
+- **Groups:** the `!`-sigil account is minted once by the group-creation flow (§3.2 / §3.3) and is fixed
+  for the group's lifetime. (A group's human-readable `Group.name` MAY change; its identity account
+  MAY NOT — the un-spoofable sigil, §2.1.)
+- **Federated stubs:** a remote `User` stub's `account` is copied from the peer's profile at resolve
+  time and is likewise immutable — a peer cannot retcon a stub's account after the fact.
+
+**Why immutability is load-bearing (a federation identity property).** The `account` is the identity
+token in the wire address `{ account, domain }` (`federation-protocol.md` §3.1). It is referenced by
+friendships, thread membership, messages (`creator`), signed S2S payloads (`from` / `to`), and —
+crucially — by the **remote `User` stubs every peer server stores**, keyed conceptually on
+`{ account, domain }`. If `alice` could rename to `alice2`:
+
+1. every peer's stub for `alice@<domain>` would orphan — a `resolve` / friend-op / message-pull for the
+   old account would 404, silently severing the relationship; and
+2. the old `account` slot would free up, so a **different person could re-register `alice`** and inherit
+   every still-cached remote stub — a silent impersonation of the original user.
+
+Renaming is therefore **forbidden at the identity layer, not merely unimplemented**. This pairs with the
+deferred **identity-portability** non-goal (`federation-protocol.md` §10: `user@domain` is bound to its
+server — the `domain` half is equally immutable) to make the **entire federated address immutable**: a
+user is `{ account, domain }` for life, on both halves. (§4 case-normalization is a write-time transform
+applied once at creation, not a later mutation.)
+
+## 8. Data reset — no migration
 
 The previous v0.1 registration regex was `^[a-zA-Z][a-zA-Z0-9_]{2,30}$` (it allowed digits and
 underscore). Rather than grandfather or migrate non-compliant handles, **all tables are reset** (full
 drop/recreate) when this spec ships — there is no migration step and no legacy account data to
 preserve. The new grammar (§3.1 / §3.2) is the only grammar from a clean database.
 
-## 8. Related / supersedes
+## 9. Related / supersedes
 
 - Supersedes the `thr_<rand>@<origin-domain>` **federated thread-id** form for groups described in
   `docs/federation-step3-design.md`. Canonical group identity is now the `!`-sigil account (§3.2);

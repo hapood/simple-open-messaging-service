@@ -10,16 +10,19 @@ import { FriendOpHandler } from './friend-op.handler.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sInitController } from './s2s-init.controller.js';
 import { WellKnownController } from './well-known.controller.js';
-import { FriendshipModule } from '../friendship/friendship.module.js';
+import { InviteModule } from '../invite/invite.module.js';
+import { ThreadParticipantModule } from '../thread-participant/thread-participant.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
+import { MessageModule } from '../message/message.module.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController in Phase D,
- * AdminController in Phase E). FriendOpHandler needs FriendshipService (FriendshipModule) + SseService
- * (GatewayModule), so those are imported here. UploadModule provides the avatar wire helpers
- * (readAvatarAsWire / saveAvatarFromWire) used by FederationService (outbound profile + inbound
- * localization). PrismaService is provided globally by PrismaModule (src/prisma.module.ts).
+ * AdminController in Phase E). FriendOpHandler needs InviteService (InviteModule) + SseService
+ * (GatewayModule); FederationService needs ThreadParticipantService (relationship reads — the friend
+ * gate + message-serving authz, now that the Friendship table is gone). UploadModule provides the
+ * avatar wire helpers (readAvatarAsWire / saveAvatarFromWire) used by FederationService. PrismaService
+ * is provided globally by PrismaModule (src/prisma.module.ts).
  *
  * Two S2S controllers share the `s2s` prefix: S2sController (friend-op + signed GETs, allow-list-gated via
  * S2sSignatureGuard) and S2sInitController (POST /s2s/init — the trust-establishment bootstrap, NOT
@@ -27,7 +30,7 @@ import { UploadModule } from '../upload/upload.module.js';
  */
 @Global()
 @Module({
-  imports: [FriendshipModule, GatewayModule, UploadModule],
+  imports: [InviteModule, ThreadParticipantModule, GatewayModule, UploadModule, MessageModule],
   controllers: [WellKnownController, S2sController, S2sInitController],
   providers: [
     KeypairService,

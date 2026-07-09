@@ -15,19 +15,18 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
-import dayjs from 'dayjs';
 import { GroupService } from '../group/group.service.js';
-import { GroupAccessGuard } from '../group/group-access.guard.js';
+import { InviteService } from '../invite/invite.service.js';
+import { FederationService } from '../federation/federation.service.js';
+import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
 import { Roles } from '../group/roles.decorator.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { FriendshipService } from '../friendship/friendship.service.js';
 import { SseService, GROUP_SSE } from '../gateway/sse.service.js';
 import {
   CreateGroupDto,
   InviteGroupDto,
-  JoinGroupDto,
   GroupIdDto,
   KickGroupDto,
   TransferGroupDto,
@@ -54,18 +53,19 @@ export class GroupController {
     private readonly messageService: MessageService,
     private readonly groupService: GroupService,
     private readonly participantService: ThreadParticipantService,
-    private readonly friendshipService: FriendshipService,
+    private readonly inviteService: InviteService,
     private readonly sseService: SseService,
+    private readonly federationService: FederationService,
   ) {}
 
   /**
    * Fan a group-lifecycle event to every active member of the thread, plus any extra users (e.g.
-   * a kicked member who just ceased to be active). Each payload carries groupId+threadId so the
-   * client can route it without a follow-up lookup.
+   * a kicked member who just ceased to be active). The payload carries groupId+threadId (BOTH equal
+   * the threadId now that groups are `!`-User threads and Group.id is gone) so the client can route
+   * it without a follow-up lookup.
    */
   private async fanoutGroup(
     threadId: number,
-    groupId: number,
     eventName: (typeof GROUP_SSE)[keyof typeof GROUP_SSE],
     payload: Record<string, unknown>,
     extraUserIds: number[] = [],
@@ -75,7 +75,7 @@ export class GroupController {
       ...members.map((m) => m.userId),
       ...extraUserIds,
     ]);
-    const data = { groupId, threadId, ...payload };
+    const data = { groupId: threadId, threadId, ...payload };
     ids.forEach((uid) => this.sseService.onGroupEvent(uid, eventName, data));
   }
 
@@ -102,59 +102,65 @@ export class GroupController {
     // still succeeds for the owner and the rest.
     const { invited, skipped } = await this.writeInvites(
       owner,
-      grp,
+      { threadId: grp.threadId, name: grp.name, avatar: grp.avatar, domain: this.federationService.ourDomain, isLocal: true },
       dto.inviteUserIds ?? [],
     );
+    // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: { threadId: grp.threadId, groupId: grp.id, invited, skipped },
+      data: { threadId: grp.threadId, groupId: grp.threadId, invited, skipped },
     };
   }
 
   /**
-   * Write one GROUP_INVITE message into each target's P2P thread with the inviter, minting a 3-day
-   * invite token per user. Shared by group/create (inviter = the new owner) and group/invite. A
-   * target is SKIPPED (not fatal) if they are not a friend, have no P2P thread, or the write throws.
-   * Returns the split so each caller can surface it.
+   * Write one GROUP_INVITE card message into each target's P2P thread, minting an Invite row
+   * (kind=GROUP, 7-day expiry) per friend and embedding its id. Shared by group/create (inviter = the
+   * new owner) and group/invite. A target is SKIPPED (not fatal) if they are not a friend, have no P2P
+   * thread, or the write throws. Returns the split so each caller can surface it.
+   *
+   * The card renders instantly from the message (inviter + group name/avatar + invite id); validity
+   * (pending / expired / already-joined) is fetched on click via /invite/detail, and joining goes
+   * through /invite/accept — no JWT token anymore. The Invite id stays stable across re-invites
+   * (createGroupInvite overwrites in place), so a previously-delivered card still resolves.
    */
   private async writeInvites(
     inviter: number,
-    group: { id: number; name: string; avatar: string },
+    group: { threadId: number; name: string; avatar: string; domain: string; isLocal: boolean },
     userIds: number[],
   ): Promise<{ invited: number[]; skipped: { userId: number; reason: string }[] }> {
-    // One token expiry window shared across the batch — every invite from this action expires
-    // together (3 days, as before).
-    const expiryDate = dayjs().add(3, 'day').valueOf();
     // Dedup defensively (the DTO layer already coerced types); order preserved.
     const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
     const skipped: { userId: number; reason: string }[] = [];
     for (const userId of deduped) {
-      // Require friendship + an established P2P thread to carry the invite message.
-      const { friendship, isFriend } = await this.friendshipService.getFriendship(inviter, userId);
-      if (!isFriend || !friendship?.threadId) {
+      // Require an established P2P thread (i.e. an active friendship) to carry the invite card.
+      const p2pThreadId = await this.participantService.findP2PThreadBetween(inviter, userId);
+      if (p2pThreadId === null) {
         skipped.push({ userId, reason: 'not a friend or no conversation' });
         continue;
       }
       try {
+        // Mint the Invite row (id stable across re-invites), then embed its id in the card message.
+        const inviteId = await this.inviteService.createGroupInvite(inviter, group.threadId, userId);
         await this.messageService.writeMsgToThread(
           inviter,
-          friendship.threadId,
+          p2pThreadId,
           JSON.stringify({
             type: 'GROUP_INVITE',
             fromUserId: inviter,
             // groupId + groupAvatar let the invitee's card render group identity and offer an
             // "Open group" follow-through after joining (groupName already carried the name).
-            groupId: group.id,
+            groupId: group.threadId,
             groupName: group.name,
             groupAvatar: group.avatar,
-            expiryDate,
-            token: this.groupService.generateInviteToken({
-              toUserId: userId,
-              groupId: group.id,
-              expiryDate,
-            }),
+            // The group's home domain — needed for federation (a cross-server join routes to the
+            // origin server). For a local group this is our domain; a federated mirror carries the
+            // peer domain (the !-User.domain, never the "local" sentinel). groupIsLocal lets the card
+            // render a "Local server" label vs a globe+domain badge without the client knowing its own domain.
+            groupDomain: group.domain,
+            groupIsLocal: group.isLocal,
+            inviteId,
           }),
           ContentType.INVITE,
         );
@@ -169,7 +175,7 @@ export class GroupController {
     return { invited, skipped };
   }
 
-  @UseGuards(JwtAuthGuard, GroupAccessGuard)
+  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<InviteGroupDto>('groupId')
@@ -179,11 +185,19 @@ export class GroupController {
     @Request() req,
     @Body() dto: InviteGroupDto,
   ): Promise<ApiResult> {
-    const group = req.groupAccess!.group;
+    const threadId = req.threadAccess!.threadId;
     const inviter = req.user.userId;
-    // Inviter membership is enforced by GroupAccessGuard; writeInvites handles friendship/P2P-thread
-    // checks and per-user skip-on-failure, returning the {invited, skipped} split.
-    const { invited, skipped } = await this.writeInvites(inviter, group, dto.userIds);
+    // Load the group's `!`-User for name/avatar to embed in the invite cards.
+    const trd = await this.groupService.findGroupByThreadId(threadId);
+    const gu = trd?.groupUser;
+    // The group's home: local (our domain) vs a federated mirror (the peer domain on the !-User).
+    const isLocal = !gu?.domain || gu.domain === 'local';
+    const domain = isLocal ? this.federationService.ourDomain : (gu?.domain ?? this.federationService.ourDomain);
+    const { invited, skipped } = await this.writeInvites(
+      inviter,
+      { threadId, name: gu?.name ?? '', avatar: gu?.avatar ?? '', domain, isLocal },
+      dto.userIds,
+    );
     return {
       code: BusinessCode.OK,
       message: 'successful',
@@ -191,60 +205,7 @@ export class GroupController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('group/join')
-  @ApiOperation({ summary: 'Join a group by invite token' })
-  async joinGroup(
-    @Request() req,
-    @Body() dto: JoinGroupDto,
-  ): Promise<ApiResult> {
-    const res = this.groupService.decodeInviteToken(dto.token);
-    switch (res.status) {
-      case 0: {
-        // Invite-token identity check: the caller must be the token's intended recipient.
-        if (res.data.sub !== req.user.userId) {
-          return {
-            code: BusinessCode.GROUP_INVALID_TOKEN,
-            message: 'invite is not for you',
-          };
-        }
-        const r = await this.groupService.joinGroup({
-          groupId: res.data.gid,
-          userId: req.user.userId,
-        });
-        // Resolve the group once — its threadId is needed both to fan out the join event and to tell
-        // the just-joined client which thread to open (returned in the response data).
-        const group = await this.groupService.findUniqeGroup({ id: res.data.gid });
-        if (r.status === 'ok' && group) {
-          await this.fanoutGroup(
-            group.threadId,
-            group.id,
-            GROUP_SSE.GROUP_MEMBER_JOINED,
-            { userId: req.user.userId, role: GroupRole.MEMBER },
-          );
-        }
-        return {
-          code: BusinessCode.OK,
-          message: r.status === 'ok' ? 'successful' : 'already a member',
-          data: { threadId: group?.threadId },
-        };
-      }
-      case 2:
-        return {
-          code: BusinessCode.GROUP_INVALID_TOKEN,
-          message: 'invite expired',
-        };
-      default:
-        return {
-          code: BusinessCode.GROUP_INVALID_TOKEN,
-          message: 'invalid invite',
-        };
-    }
-  }
-
-  @UseGuards(JwtAuthGuard, GroupAccessGuard)
+  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
@@ -252,15 +213,33 @@ export class GroupController {
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
   async getGroupInfo(@Request() req): Promise<ApiResult> {
-    // Membership already enforced by GroupAccessGuard; group is attached.
+    // Membership already enforced by ThreadAccessGuard. Build GroupResponseDto from the `!`-User +
+    // the owner (derived from the OWNER participant; Group.ownerId is gone).
+    const threadId = req.threadAccess!.threadId;
+    const trd = await this.groupService.findGroupByThreadId(threadId);
+    const gu = trd?.groupUser;
+    if (!trd || !gu) {
+      return { code: BusinessCode.NOT_FOUND, message: 'group not found' };
+    }
+    const roster = await this.participantService.getRoster(threadId);
+    const owner = roster.find((r) => r.role === GroupRole.OWNER);
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: req.groupAccess!.group,
+      data: {
+        id: threadId,
+        name: gu.name,
+        ownerId: owner?.userId ?? 0,
+        avatar: gu.avatar,
+        description: gu.bio,
+        threadId,
+        createdAt: trd.createdAt.getTime(),
+        updatedAt: trd.updatedAt.getTime(),
+      },
     };
   }
 
-  @UseGuards(JwtAuthGuard, GroupAccessGuard)
+  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
@@ -268,8 +247,8 @@ export class GroupController {
   @ApiOperation({ summary: 'Group roster with roles (members only)' })
   @ApiResultResponse(GroupMemberDto, true)
   async getMembers(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
-    const { group } = req.groupAccess!;
-    const rows = await this.participantService.getRoster(group.threadId);
+    const threadId = req.threadAccess!.threadId;
+    const rows = await this.participantService.getRoster(threadId);
     const data = rows.map((r) => ({
       userId: r.userId,
       account: r.user.account,
@@ -277,7 +256,7 @@ export class GroupController {
       avatar: r.user.avatar,
       role: r.role,
       joinedAt: r.joinedAt,
-      isOwner: group.ownerId === r.userId,
+      isOwner: r.role === GroupRole.OWNER,
     }));
     // Owner first, then admins, then members; within a role, by join time.
     data.sort(
@@ -293,7 +272,7 @@ export class GroupController {
     };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
   @Throttle(20, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -301,23 +280,21 @@ export class GroupController {
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
   async leaveGroup(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
-    const { group, participant } = req.groupAccess!;
-    const { remainingMemberIds } = await this.groupService.leaveGroup({
+    const threadId = req.threadAccess!.threadId;
+    const { participant } = req.threadAccess!;
+    await this.groupService.leaveGroup({
       userId: req.user.userId,
-      threadId: group.threadId,
+      threadId,
       role: participant.role,
     });
-    remainingMemberIds.forEach((uid) =>
-      this.sseService.onGroupEvent(uid, GROUP_SSE.GROUP_MEMBER_LEFT, {
-        groupId: group.id,
-        threadId: group.threadId,
-        userId: req.user.userId,
-      }),
-    );
+    // Fans to all still-active members (= remaining after the soft-leave); the leaver is excluded.
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_MEMBER_LEFT, {
+      userId: req.user.userId,
+    });
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
@@ -329,15 +306,15 @@ export class GroupController {
     @Request() req,
     @Body() dto: KickGroupDto,
   ): Promise<ApiResult> {
-    const { group, participant } = req.groupAccess!;
+    const threadId = req.threadAccess!.threadId;
+    const { participant } = req.threadAccess!;
     await this.groupService.kickMember({
-      threadId: group.threadId,
+      threadId,
       operatorRole: participant.role as GroupRole,
       targetUserId: dto.userId,
     });
     await this.fanoutGroup(
-      group.threadId,
-      group.id,
+      threadId,
       GROUP_SSE.GROUP_MEMBER_KICKED,
       { userId: dto.userId, byUserId: req.user.userId },
       [dto.userId], // the kicked user may no longer be "active" after the soft-leave
@@ -345,7 +322,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
@@ -357,20 +334,19 @@ export class GroupController {
     @Request() req,
     @Body() dto: TransferGroupDto,
   ): Promise<ApiResult> {
-    const { group } = req.groupAccess!;
+    const threadId = req.threadAccess!.threadId;
     await this.groupService.transferOwnership({
-      groupId: group.id,
-      threadId: group.threadId,
+      threadId,
       fromUserId: req.user.userId,
       toUserId: dto.toUserId,
     });
     // Two role changes: old owner → MEMBER, new owner → OWNER.
-    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_ROLE_CHANGED, {
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROLE_CHANGED, {
       userId: req.user.userId,
       role: GroupRole.MEMBER,
       byUserId: req.user.userId,
     });
-    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_ROLE_CHANGED, {
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROLE_CHANGED, {
       userId: dto.toUserId,
       role: GroupRole.OWNER,
       byUserId: req.user.userId,
@@ -378,7 +354,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
@@ -390,14 +366,14 @@ export class GroupController {
     @Request() req,
     @Body() dto: SetRoleGroupDto,
   ): Promise<ApiResult> {
-    const { group } = req.groupAccess!;
+    const threadId = req.threadAccess!.threadId;
     await this.groupService.setRole({
-      threadId: group.threadId,
+      threadId,
       targetUserId: dto.userId,
       role: dto.role,
       operatorUserId: req.user.userId,
     });
-    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_ROLE_CHANGED, {
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROLE_CHANGED, {
       userId: dto.userId,
       role: dto.role,
       byUserId: req.user.userId,
@@ -405,7 +381,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, GroupAccessGuard, RolesGuard)
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
@@ -417,16 +393,17 @@ export class GroupController {
     @Request() req,
     @Body() dto: UpdateGroupDto,
   ): Promise<ApiResult> {
-    const { group } = req.groupAccess!;
+    const threadId = req.threadAccess!.threadId;
     const updated = await this.groupService.updateGroup({
-      groupId: group.id,
+      threadId,
       name: dto.name,
       description: dto.description,
       avatar: dto.avatar,
     });
-    await this.fanoutGroup(group.threadId, group.id, GROUP_SSE.GROUP_UPDATED, {
+    // updated is the `!`-User row; description lives in User.bio.
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {
       name: updated.name,
-      description: updated.description,
+      description: updated.bio,
       avatar: updated.avatar,
     });
     return { code: BusinessCode.OK, message: 'successful' };

@@ -223,6 +223,9 @@
     "join": "Join",
     "expired": "Expired",
     "failedToJoin": "Failed to join",
+    "inviteInvalid": "Invite no longer valid",
+    "alreadyJoined": "Already a member",
+    "localServer": "Local server",
     "preview": {
       "photo": "[Photo]",
       "invite": "[Group invite]",

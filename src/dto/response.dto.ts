@@ -1,7 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   ContentType,
-  FriendshipStatus,
   GroupRole,
   MessageThreadType,
 } from '../prisma/generated/client.js';
@@ -275,56 +274,6 @@ export class ConversationItemDto {
   group?: GroupResponseDto;
 }
 
-/**
- * A P2P relationship / friend request. One row per unordered user pair; direction is carried by
- * requesterId. Returned by the friend-request endpoints and by thread/by-user-id.
- */
-export class FriendshipDto {
-  @ApiProperty({ example: 1 })
-  id: number;
-
-  @ApiProperty({ example: 2, description: 'One side of the pair (min userId)' })
-  userAId: number;
-
-  @ApiProperty({
-    example: 3,
-    description: 'Other side of the pair (max userId)',
-  })
-  userBId: number;
-
-  @ApiProperty({
-    example: 2,
-    description: 'The user who initiated the request',
-  })
-  requesterId: number;
-
-  @ApiProperty({
-    enum: FriendshipStatus,
-    description: 'PENDING | APPROVED | BLOCKED | DELETED',
-  })
-  status: FriendshipStatus;
-
-  @ApiProperty({
-    required: false,
-    example: 'Hi from the conference',
-    description:
-      'The PENDING request note/reason the requester sent (≤255 chars). Absent on non-PENDING rows.',
-  })
-  reqMessage?: string;
-
-  @ApiProperty({
-    example: 12,
-    required: false,
-    description: 'The P2P MessageThread id (set once APPROVED)',
-  })
-  threadId?: number;
-
-  @ApiProperty({ example: 1_700_000_000_000 })
-  createdAt: number;
-
-  @ApiProperty({ example: 1_700_000_000_000 })
-  updatedAt: number;
-}
 
 /**
  * One entry of the create/invite `skipped` list — a friend who could not be invited (not a friend,

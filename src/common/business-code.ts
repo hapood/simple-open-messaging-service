@@ -31,10 +31,13 @@ export enum BusinessCode {
   SESSION_REVOKED = 10007, // session revoked (all-device logout / password change / single-device kick)
   INTERNAL = 10999, // server error
 
-  // 20xxx friend & conversation state machine
-  FRIEND_SELF = 20001, // cannot friend yourself
-  FRIEND_UNKNOWN_STATE = 20002, // friend state machine unknown state
-  FRIEND_NO_INCOMING = 20003, // no pending friend request
+  // 20xxx friend / invite state
+  FRIEND_SELF = 20001, // cannot invite / friend yourself
+  FRIEND_INVALID_TARGET = 20004, // cannot befriend this target (e.g. a `!`-group account)
+  INVITE_NOT_FOUND = 20010, // invite does not exist or is no longer pending
+  INVITE_EXPIRED = 20011, // invite is past its expiresAt
+  INVITE_NOT_YOURS = 20012, // invite belongs to another user (not your decision / not your outgoing)
+  INVITE_ALREADY_HANDLED = 20013, // invite already accepted / rejected / revoked
 
   // 30xxx message domain
   MESSAGE_EMPTY = 30001, // message has no content

@@ -95,12 +95,10 @@ export class NotificationQueryService {
     const groupThreadIds = withUnread
       .filter((p) => p.thread.type === 'GROUP')
       .map((p) => p.threadId);
-    const groups =
-      groupThreadIds.length > 0
-        ? await this.groupService.queryGroups({ where: { threadId: { in: groupThreadIds } } })
-        : [];
+    const groupByThread =
+      await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
     const groupNameByThread = new Map<number, string>();
-    groups.forEach((g) => groupNameByThread.set(g.threadId, g.name));
+    groupByThread.forEach((gu, threadId) => groupNameByThread.set(threadId, gu.name));
 
     return withUnread.map((p) => ({
       threadId: p.threadId,

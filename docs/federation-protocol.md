@@ -104,6 +104,14 @@ address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" 
 
 > **Account grammar is specified separately** in [`docs/account-naming.md`](./account-naming.md) — the single source of truth for the `account` charset, the `!` group sigil, dot rules, and case handling. There are two account classes: **users** (letters + `.`) and **groups** (`!`-prefixed opaque ids), distinguished by grammar. A group address on the wire is `{ account: "!01hz...", domain: "soms.io" }`.
 
+> **The federated address is immutable — both halves, for life.** Neither field of `{ account, domain }`
+> ever changes after creation. The `account` half is set once at registration / group-create and is
+> **never renamed** ([`docs/account-naming.md`](./account-naming.md) §7 — renaming is forbidden at the
+> identity layer, not merely unimplemented: it would orphan every peer's remote stub and free the old
+> account for re-registration / impersonation). The `domain` half is fixed because `user@domain` is
+> bound to its server in v0.1 (identity portability is a deferred non-goal, §10). A user is therefore
+> `{ account, domain }` for life; there is **no rename and no re-homing operation on the wire.**
+
 > **Reserved for Step 2/3** (not shipped): a federated **thread** id (origin-domain + local id, for cross-server **groups**) and an origin-assigned **message** ULID. Step 1 has neither — each server owns its own local 1:1 thread, and messages are local until Step 2.
 
 ### 3.2 Discovery — layered
@@ -460,6 +468,15 @@ Federation is purely additive — appended after the existing local push.
 ### 9.3 Cross-server group invite — Future (Step 3)
 
 Group invites remain friend-gated: **the inviter and invitee must already be friends across servers** (consistent with local SOMS, where groups invite friends). A `thread.invite` addressed to the new participant triggers backfill (§8) on their server so they see prior history. Once a member, their access grant is thread membership — pairwise friendship with every other member is **not** required (matches local group semantics).
+
+> **Group identity is bound to its origin domain for life, and ownership cannot cross domains.** A
+> federated group's canonical roster + message authority is its **origin** server (the owner's home
+> server) for the group's entire lifetime — there is **no operation to move the canonical thread to
+> another server** (no re-homing; `originDomain` is invariant). Owner (admin) transfer is
+> **local-only**: the owner may hand ownership only to another user on the **same origin server**;
+> transferring ownership to a member on a *different* domain is **forbidden** (rejected by the backend,
+> hidden in the UI), so the origin domain never changes. Authoritative detail in
+> [`docs/federation-step3-design.md`](./federation-step3-design.md) §2 (Decision 2) and §7.6.
 
 ### 9.4 Unfriend
 

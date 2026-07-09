@@ -4,6 +4,7 @@ import argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
 import { jwtConstants } from '../auth/constants.js';
+import { normalizeAccount } from '../common/account.js';
 
 /**
  * Admin auth service: mirrors AuthService's family-based + reuse-detection algorithm. Identity (account + password)
@@ -28,9 +29,9 @@ export class AdminAuthService {
    *  The Admin table no longer holds account/password. */
   async login(account: string, password: string, ip?: string) {
     const user = await this.prisma.user.findUnique({
-      where: { account_domain: { account, domain: 'local' } },
+      where: { account_domain: { account: normalizeAccount(account), domain: 'local' } },
     });
-    if (!user || user.isDeleted) return undefined;
+    if (!user || user.isDeleted || user.isGroup) return undefined;
     const admin = await this.prisma.admin.findUnique({ where: { userId: user.id } });
     if (!admin || !admin.enabled) return undefined;
     if (!(await argon2.verify(user.hashPwd, password))) return undefined;
