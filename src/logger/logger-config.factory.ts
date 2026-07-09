@@ -57,6 +57,12 @@ export function buildLoggerParams(): Params {
             remoteAddress: r.ip,
             userId: r.user?.userId,
             adminId: r.user?.adminId,
+            // DIAGNOSTIC (temporary): is `req` the raw IncomingMessage or the FastifyRequest wrapper?
+            __diag: {
+              hasRaw: !!(req as unknown as { raw?: unknown }).raw,
+              hasSocket: !!(req as unknown as { socket?: unknown }).socket,
+              ctor: (req as unknown as { constructor?: { name?: string } }).constructor?.name,
+            },
           };
         },
         res: (res) => ({ statusCode: res.statusCode }),

@@ -149,9 +149,15 @@ See Part II §D2 for SRV record format and configuration.
 
 ## 4. Wire format (payload)
 
-Every POSTed friend op is a plain-JSON body signed via RFC 9421. There is **no `type` field** — the
-endpoint path (`POST /friend-request` | `POST /friend-approve`) is the discriminator, exactly like every
-other S2S route (`/users/:account`, `/messages`, …). The shared base body is:
+> **Step 3 Phase A unification (2026-07-09):** add-friend and add-group now share ONE endpoint —
+> `/s2s/invite` (deliver, `kind` FRIEND|GROUP) + `/s2s/invite-accept`. The earlier
+> `/s2s/friend-request` + `/s2s/friend-approve` + `/s2s/thread/invite` are removed. The `kind` field on
+> `S2SInvite` is the discriminator (FRIEND carries `profile`; GROUP carries the group identity + a
+> revision). See `docs/federation-s2s-api.md` for the canonical shapes. The friend-flow narrative below
+> (§4.1) still describes the FRIEND semantics; read "POST /s2s/invite {kind:FRIEND}" for the old
+> `/friend-request` and "POST /s2s/invite-accept {kind:FRIEND}" for `/friend-approve`.
+
+Every POSTed friend op is a plain-JSON body signed via RFC 9421. The shared base body is:
 
 ```json
 {
@@ -580,20 +586,23 @@ model S2SFriendOpSeen {
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/s2s/init` | Trust-establishment bootstrap (auto-accept; NOT allow-list-gated — §D7) |
-| `POST` | `/api/v1/s2s/friend-request` | Receive a friend-request payload from a trusted peer (allow-list-gated) |
-| `POST` | `/api/v1/s2s/friend-approve` | Receive a friend-approve payload from a trusted peer (allow-list-gated) |
-| `GET` | `/api/v1/s2s/users/:account` | A local user's public profile (avatar inline as base64 — §10.1) |
-| `GET` | `/api/v1/s2s/users/:account/revision` | Lightweight profile-revision probe (staleness check, no avatar) |
+| `POST` | `/api/v1/s2s/invite` | **Unified** invite (friend OR group, `kind`-discriminated) from a trusted peer (allow-list-gated) |
+| `POST` | `/api/v1/s2s/invite-accept` | The peer accepted an invite (friend→P2P thread; group→origin records the join) |
+| `GET` | `/api/v1/s2s/thread/roster` | The origin serves the canonical roster (lazy meta-pull on chat-open) |
+| `GET` | `/api/v1/s2s/users/:account` | A local user's public profile (avatar inline as base64 — §10.1). A group is a `!`-User, so this also serves a group's identity |
+| `GET` | `/api/v1/s2s/users/:account/revision` | Lightweight profile-revision probe (staleness check, no avatar). For a group `!`-User this is the meta revision |
 | `GET` | `/.well-known/soms` | Publish server keys + endpoints |
 
-> Backfill `GET /api/v1/s2s/threads/:id/messages` is **Step 2/3** (no shared thread id yet) — see §8.
+> The earlier `/s2s/friend-request` + `/s2s/friend-approve` + `/s2s/thread/invite` + `/s2s/thread/member`
+> are removed (unified into `/s2s/invite` + `/s2s/invite-accept`; roster propagation is lazy pull, not
+> push fanout). See `docs/federation-s2s-api.md`.
 
 ### Services (NestJS)
 
-- `FederationService` — owns **all** peer-lifecycle state transitions (`markTrusted`/`markContactSuccess`/`markDemoted`/`markBlocked`/`markUnblocked`) AND the sync outbound path: builds + signs + POSTs friend-op payloads inline (`postSigned`/`getSigned`), advances `lastSuccessAt` on success, demotes on failure. Admin reads (`listPeers`/`peerEvents`) and the consumer pre-flight (`isPeerTrusted`) live here too.
-- `S2sVerifyService` — shared keyId-parse + `.well-known` key fetch + RFC 9421 signature verify (used by both the init endpoint and the friend-op guard).
-- `S2sSignatureGuard` — the friend-op allow-list gate: rejects `trustLevel !== 'trusted'`, then verifies the signature (fetches key on `keyId`-miss, §5.1).
-- `FriendOpHandler` — purely-inbound: dedupes via `S2SFriendOpSeen`, applies `friend-request` / `friend-approve`, localizes embedded profiles.
+- `FederationService` — owns **all** peer-lifecycle state transitions AND the sync outbound path: builds + signs + POSTs payloads inline (`postSigned`/`getSigned`), advances `lastSuccessAt` on success, demotes on failure. Step 3 Phase A: the unified invite handlers (`handleInvite`/`handleInviteAccept` — friend + group) + the lazy roster meta-pull (`syncGroupMetaIfStale` + `serveGroupRoster`) live here. Admin reads (`listPeers`/`peerEvents`) + the consumer pre-flight (`isPeerTrusted`) too.
+- `S2sVerifyService` — shared keyId-parse + `.well-known` key fetch + RFC 9421 signature verify (used by both the init endpoint and the S2S guard).
+- `S2sSignatureGuard` — the S2S allow-list gate: rejects `trustLevel !== 'trusted'`, then verifies the signature (fetches key on `keyId`-miss, §5.1).
+- *(The standalone `FriendOpHandler` was folded into `FederationService.handleInvite`/`handleInviteAccept` when the S2S surface was unified.)*
 - `SignatureService` — Ed25519 sign/verify; RFC 9421 `Signature-Input`/`Signature` construction (DKIM-model, §5.1).
 - `DiscoveryService` — SRV + `.well-known/soms` resolution + caching.
 

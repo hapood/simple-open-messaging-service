@@ -1,9 +1,13 @@
 # SOMS Federation — Step 3 Design (cross-server groups)
 
-> **Status:** designed, **not built.** Builds directly on Step 2 (`docs/federation-step2-design.md`),
-> whose cross-server 1:1 message transport (per-sender `originSeq` cursor + light-notify push +
-> active pull + per-object media authz) is reused **verbatim**. This doc supersedes the 3-line sketch
-> at `federation-protocol.md` §9.3.
+> **Status:** **Phase A BUILT** (2026-07-09): the unified S2S invite (`/s2s/invite` +
+> `/s2s/invite-accept`, friend + group share one endpoint — see `docs/federation-s2s-api.md`),
+> cross-server group **invite + join** (origin records the joiner), and the lazy **roster meta-pull**
+> (chat-open probe, reusing the Step-2 profile-sync path + `GET /s2s/thread/roster`). **Phase B
+> (deferred):** cross-server group **messaging** (generalize `messages`/`new-msg-map`/`get_file` with a
+> `thread` param + roster gate + origin-hub signal + join backfill) — which also makes the federated
+> group-invite chat card **visible** — and the **leave** flow (new-msg-map discovery). Builds directly
+> on Step 2 (`docs/federation-step2-design.md`), whose 1:1 transport is reused verbatim.
 >
 > **Scope:** cross-server **GROUP** threads — a group whose owner lives on server A and whose members
 > span servers A, B, C … . Owner is created on A (the **origin**); members on other servers hold local
@@ -403,32 +407,47 @@ identical branch (the origin serves any member's media; a member serves its own 
 
 ---
 
-## 10. Implementation plan (ordered, verifiable)
+## 10. Implementation status
 
-1. **Schema + migration.** Add `MessageThread.federatedThreadId @unique`, `MessageThread.originDomain`,
-   `Message.originServerTime` (all nullable). Apply per manual discipline; `prisma generate`.
-2. **Timing/identity refactor (touches Step 2 too).** `storePulledMessage`: `createdAt = new Date()`
-   (arrival), `originServerTime = new Date(m.ts)`; last-message cache uses arrival. Drop
-   `clientMessageId` from `serveOutboundMessages` payload. Verify 1:1 e2e still green + a pulled
-   message now displays receiver-local time.
-3. **Origin create.** `group/create` on the origin mints `federatedThreadId`, sets `originDomain`,
-   stores it on its own thread. Local invites unchanged.
-4. **`thread/invite` + mirror lifecycle.** Endpoint + receiver: idempotent mirror find-or-create,
-   owner stub, `GROUP_INVITE` card. Unit test: invite twice → one mirror thread.
-5. **`thread/member` roster ops + origin authority.** Endpoint, op-id idempotency, `signer ==
-   originDomain` gate, fan-out to member-servers. Local `group/join`/`leave`/`kick`/`role` relay to
-   origin then fan. Owner-transfer-to-foreign rejected.
-6. **Generalize `messages` / `new-msg-map` / `get_file`** to the `thread` param + roster gate (§6.1,
-   §8). Keep 1:1 path bit-identical behind the `federatedThreadId IS NULL` branch.
-7. **Send + signal loop (hub).** `notifyOnSend` signals the **origin** on a member send (member→origin
-   pull); the origin re-signals the other members after it stores the message (origin→member pull).
-   Per-(thread, sender) pull on both legs.
-8. **Backfill on join.** Per-sender `after=0` pull **from the origin** (§7.4) — single source.
-9. **Roster resync backstop** (§7.7) — origin-served roster reconcile on open.
-10. **e2e (two-server federation harness, per the `aaa`/`bbb.local` pattern).** Create group on `aaa`
-    with owner + a `bbb` member; send both directions; backfill on a third member's join; leave/kick;
-    verify arrival-time display, `originServerTime` stored not shown, `clientMessageId` absent from the
-    wire, no UUID column, origin invariant under local owner transfer.
+**Phase A — BUILT (2026-07-09):**
+1. **Schema** ✅ — `MessageThread.federatedThreadId @unique`, `originDomain`, `Message.originServerTime`
+   already exist (added during Step 2). No new columns for Phase A.
+2. **Unified S2S invite** ✅ — `/s2s/friend-request` + `/s2s/friend-approve` + `/s2s/thread/invite`
+   collapsed into ONE `/s2s/invite` (deliver, `kind` FRIEND|GROUP) + `/s2s/invite-accept`
+   (FRIEND→P2P thread accept-wins; GROUP→origin records the joiner). `friend-op.handler.ts` deleted;
+   handlers folded into `FederationService.handleInvite`/`handleInviteAccept`.
+3. **Origin create (lazy)** ✅ — `ensureOriginFederatedId` mints `federatedThreadId` + sets
+   `originDomain` at the first cross-server invite (the local group becomes the origin).
+4. **Group invite + mirror lifecycle** ✅ — `writeInvites` branches on `isForeigner` → `sendInvite(
+   GROUP)`; `handleGroupInvite` (receiver) creates the mirror + an incoming Invite + stores the OWNER,
+   revision-gated avatar, NO card (the chat card is Phase B visibility).
+5. **Roster meta-pull (lazy, NOT push fanout)** ✅ — `GroupService.bumpGroupMeta` bumps the group
+   `!-User.updatedAt` (the meta revision) on every roster mutation + on accept-join; `GET /s2s/thread/
+   roster` serves the origin roster; `syncGroupMetaIfStale` (the `group/sync-meta` chat-open hook)
+   probes the revision and, if stale, re-pulls identity (**reuses the Step-2 profile-sync path:
+   `fetchRemoteUser` + `localizeForeignProfile`**) + the roster, reconciles foreign members via the raw
+   mutators (`upsertMember`/`softLeaveMember`), + fans `GROUP_UPDATED` SSE. (The earlier push
+   `thread/member` fanout was built then removed as the wrong design.)
+6. **Origin-authority invariant** ✅ — `transferOwnership` rejects a cross-server target (owner stays on
+   the origin). Mirror-side kick/role are not explicitly guarded — the roster reconcile reverts any
+   mirror-local mutation to match the origin, so a guard is redundant.
+
+**Phase B — DEFERRED (cross-server group messaging + visibility + leave):**
+7. **Timing/identity refactor** — `storePulledMessage`: arrival `createdAt` vs stored `originServerTime`;
+   drop `clientMessageId` from the served payload.
+8. **Generalize `messages` / `new-msg-map` / `get_file`** to the `thread` param + roster gate (§6.1,
+   §8). Keep the 1:1 path bit-identical behind the `federatedThreadId IS NULL` branch.
+9. **Send + signal loop (hub)** — `notifyOnSend` signals the origin on a member send; the origin
+   re-signals the other members after it stores the message. Per-(thread, sender) pull on both legs.
+10. **Backfill on join** — per-sender `after=0` pull from the origin (§7.4).
+11. **Group-invite chat card visibility** — the federated GROUP_INVITE card is written by the SENDER
+    (into its P2P mirror) + delivered to the receiver via the Step-2 message pull (Phase A leaves the
+    Invite + mirror working but the invitee sees no card until this lands).
+12. **Leave** — a member leaving a mirror signals via `new-msg-map`; the origin discovers it on its next
+    pull (the leaver's server returns "not friends" → the origin dissolves the membership).
+13. **e2e** — two-server harness: create group on `aaa` with a `bbb` member; send both directions;
+    backfill on a third member's join; leave/kick; verify arrival-time display, `originServerTime`
+    stored not shown, origin invariant under local owner transfer.
 
 ---
 
