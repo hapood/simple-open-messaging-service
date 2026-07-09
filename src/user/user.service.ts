@@ -61,7 +61,7 @@ export class UserService implements OnModuleInit {
     });
   }
 
-  /** Local user discovery: case-insensitive substring match on uniqName OR name. Local, non-deleted
+  /** Local user discovery: case-insensitive substring match on account OR name. Local, non-deleted
    *  users only (isForeigner:false) — federated stubs are not discoverable here. Returns { list, total }
    *  for pagination. The caller (POST /user/search) caps `take` as an abuse guardrail. */
   async searchUsers(
@@ -75,7 +75,7 @@ export class UserService implements OnModuleInit {
       isDeleted: false,
       isForeigner: false,
       OR: [
-        { uniqName: { contains: q, mode: 'insensitive' } },
+        { account: { contains: q, mode: 'insensitive' } },
         { name: { contains: q, mode: 'insensitive' } },
       ],
     };
@@ -92,27 +92,27 @@ export class UserService implements OnModuleInit {
     return { list, total };
   }
 
-  addUser(params: { uniqName: string; name: string; hashPwd: string }) {
+  addUser(params: { account: string; name: string; hashPwd: string }) {
     return this.prisma.$transaction(async (prisma) => {
       const user = await prisma.user.findUnique({
-        where: { uniqName_domain: { uniqName: params.uniqName, domain: 'local' } },
+        where: { account_domain: { account: params.account, domain: 'local' } },
       });
       if (user !== null) {
         return { status: 2 };
       }
       const newUser = await prisma.user.create({
         data: {
-          uniqName: params.uniqName,
+          account: params.account,
           isForeigner: false,
           hashPwd: params.hashPwd,
-          // Display name is now a required registration input (no longer defaulted to uniqName).
+          // Display name is now a required registration input (no longer defaulted to account).
           name: params.name,
           avatar: '',
         },
       });
       return {
         status: 0,
-        data: { id: newUser.id, uniqName: newUser.uniqName },
+        data: { id: newUser.id, account: newUser.account },
       };
     });
   }

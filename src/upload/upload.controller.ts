@@ -31,7 +31,7 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload')
-  @ApiOperation({ summary: '上传图片（返回 url + 前端传入的宽高）' })
+  @ApiOperation({ summary: 'Upload an image (returns url + width/height provided by the client)' })
   @ApiConsumes('multipart/form-data')
   async upload(@Request() req: FastifyRequest): Promise<ApiResult> {
     const img = await this.uploadService.consumeImage(req);
@@ -109,7 +109,7 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/file')
-  @ApiOperation({ summary: '上传通用文件（返回 url/name/size/mimeType）' })
+  @ApiOperation({ summary: 'Upload a generic file (returns url/name/size/mimeType)' })
   @ApiConsumes('multipart/form-data')
   async uploadFile(@Request() req: FastifyRequest): Promise<ApiResult> {
     const f = await this.uploadService.consumeFile(req);
@@ -144,7 +144,7 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/video')
-  @ApiOperation({ summary: '上传视频（magic-byte 校验，宽高时长前端探测）' })
+  @ApiOperation({ summary: 'Upload a video (magic-byte validated; width/height/duration probed client-side)' })
   @ApiConsumes('multipart/form-data')
   async uploadVideo(@Request() req: FastifyRequest): Promise<ApiResult> {
     const v = await this.uploadService.consumeVideo(req);
@@ -168,7 +168,7 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/audio')
-  @ApiOperation({ summary: '上传音频（magic-byte 校验，时长前端探测）' })
+  @ApiOperation({ summary: 'Upload audio (magic-byte validated; duration probed client-side)' })
   @ApiConsumes('multipart/form-data')
   async uploadAudio(@Request() req: FastifyRequest): Promise<ApiResult> {
     const a = await this.uploadService.consumeAudio(req);

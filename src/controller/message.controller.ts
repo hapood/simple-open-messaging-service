@@ -352,7 +352,7 @@ export class MessageController {
   @HttpCode(HttpStatus.OK)
   @Post('thread/set-alias')
   @ApiOperation({
-    summary: 'Set a per-user alias/remark (备注) for a conversation (overrides the displayed name for the caller)',
+    summary: 'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
   })
   async setAlias(@Request() req, @Body() dto: SetAliasDto): Promise<ApiResult> {
     const updated = await this.participantService.setAlias(

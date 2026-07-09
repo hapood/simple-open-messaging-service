@@ -83,22 +83,22 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     );
     await request(app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'fastify', name: 'Fastify', password: 'Pass1234' });
+      .send({ account: 'fastify', name: 'Fastify', password: 'Pass1234' });
     const login = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ uniqName: 'fastify', password: 'Pass1234' });
+      .send({ account: 'fastify', password: 'Pass1234' });
     token = login.body.data.access_token;
     // Second local user for the per-object media-authz tests (the non-member).
     await request(app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'fastify2', name: 'Fastify2', password: 'Pass1234' });
+      .send({ account: 'fastify2', name: 'Fastify2', password: 'Pass1234' });
     const login2 = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ uniqName: 'fastify2', password: 'Pass1234' });
+      .send({ account: 'fastify2', password: 'Pass1234' });
     token2 = login2.body.data.access_token;
-    userAId = (await prisma.user.findFirst({ where: { uniqName: 'fastify' } }))!
+    userAId = (await prisma.user.findFirst({ where: { account: 'fastify' } }))!
       .id;
-    userBId = (await prisma.user.findFirst({ where: { uniqName: 'fastify2' } }))!
+    userBId = (await prisma.user.findFirst({ where: { account: 'fastify2' } }))!
       .id;
     // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written
     // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).

@@ -162,7 +162,7 @@ export class ClearHistoryDto {
   threadId: number;
 }
 
-/** Set a per-user alias/remark (备注) for a conversation — a nickname that overrides the peer's handle
+/** Set a per-user alias/remark for a conversation — a nickname that overrides the peer's handle
  *  (P2P) or the group's name (GROUP) in the CALLER's chat header + conversation list. Per-user only.
  *  An empty/whitespace string clears it (back to the real name). */
 export class SetAliasDto {

@@ -1,7 +1,24 @@
-<div class="thread-list">
+<div class="thread-list" [attr.aria-busy]="status() === LoadStatus.LOADING">
   @switch (status()) {
     @case (LoadStatus.LOADING) {
-      <app-empty-state [title]="'common.loading' | transloco" />
+      @if (skeletonVisible()) {
+        <div class="tl-skeleton" aria-hidden="true">
+          @for (row of skeletonRows; track $index) {
+            <div class="tl-sk-item">
+              <span class="tl-sk-avatar"></span>
+              <div class="tl-sk-info">
+                <div class="tl-sk-line">
+                  <span class="tl-sk-bar tl-sk-name" [style.width.%]="row.name"></span>
+                  <span class="tl-sk-bar tl-sk-time"></span>
+                </div>
+                <div class="tl-sk-line">
+                  <span class="tl-sk-bar tl-sk-msg" [style.width.%]="row.msg"></span>
+                </div>
+              </div>
+            </div>
+          }
+        </div>
+      }
     }
     @case (LoadStatus.ERROR) {
       <app-empty-state tone="error" [title]="errorMsg()" [subtitle]="'threadList.couldNotLoad' | transloco"

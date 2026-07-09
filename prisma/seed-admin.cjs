@@ -1,10 +1,11 @@
 /**
- * 首次种子 admin 账户：node prisma/seed-admin.cjs
- * 读 ADMIN_BOOTSTRAP_PASSWORD 环境变量，argon2 哈希后 upsert username=admin。
- * 仅首次初始化用（update:{} 已存在则不动）；生产应改密或删除本脚本。
+ * Seed the initial admin account: node prisma/seed-admin.cjs
+ * Reads ADMIN_BOOTSTRAP_PASSWORD, argon2-hashes it, and upserts a local User (account=admin) plus a linked
+ * Admin profile. First-time init only (update:{} leaves existing rows untouched); in production, change the
+ * password or remove this script.
  */
 require('dotenv').config();
-// Prisma 7 生成 .ts（运行时需编译），CJS require 指向 dist（先 npm run build）
+// Prisma 7 generates .ts (must compile before runtime); the CJS require targets dist (run npm run build first).
 const { PrismaClient } = require('../dist/src/prisma/generated/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
 const argon2 = require('argon2');
@@ -12,21 +13,27 @@ const argon2 = require('argon2');
 (async () => {
   const pwd = process.env.ADMIN_BOOTSTRAP_PASSWORD;
   if (!pwd) {
-    console.error('需要 ADMIN_BOOTSTRAP_PASSWORD 环境变量（见 .env）');
+    console.error('ADMIN_BOOTSTRAP_PASSWORD env var required (see .env)');
     process.exit(1);
   }
-  // Prisma 7：driver adapter 必填（与 PrismaService 一致）
+  // Prisma 7: a driver adapter is required (matches PrismaService).
   const prisma = new PrismaClient({
     adapter: new PrismaPg({ connectionString: process.env.DATABASE_URL }),
   });
   try {
     const hash = await argon2.hash(pwd);
-    const admin = await prisma.admin.upsert({
-      where: { username: 'admin' },
+    // Identity lives on User (single account namespace); the Admin row is just the linked profile.
+    const user = await prisma.user.upsert({
+      where: { account_domain: { account: 'admin', domain: 'local' } },
       update: {},
-      create: { username: 'admin', hashPwd: hash, enabled: true },
+      create: { account: 'admin', hashPwd: hash, name: 'admin', isForeigner: false, domain: 'local' },
     });
-    console.log('admin 已种子: username=admin id=' + admin.id);
+    const admin = await prisma.admin.upsert({
+      where: { userId: user.id },
+      update: {},
+      create: { userId: user.id, enabled: true },
+    });
+    console.log('admin seeded: account=admin userId=' + user.id + ' adminId=' + admin.id);
   } finally {
     await prisma.$disconnect();
   }

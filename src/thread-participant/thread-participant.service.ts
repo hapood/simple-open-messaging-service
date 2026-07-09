@@ -84,7 +84,7 @@ export class ThreadParticipantService {
   }
 
   /** Set a per-user alias/remark for a conversation. An empty/whitespace string CLEARS it (null) so the
-   *  real name shows again. The alias overrides peer.uniqName (P2P) / group.name (GROUP) in the caller's
+   *  real name shows again. The alias overrides peer.account (P2P) / group.name (GROUP) in the caller's
    *  view only. */
   setAlias(userId: number, threadId: number, alias: string | undefined) {
     const trimmed = alias?.trim();

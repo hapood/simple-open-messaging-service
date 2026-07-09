@@ -1,149 +1,53 @@
 <div class="panel">
-  <div class="msg-header">
-    <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
-      <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
-    </button>
-    <span class="title">{{ 'settings.title' | transloco }}</span>
-    <span></span>
-  </div>
+  <!-- ROOT: category list -->
+  <div class="view" [class.dimmed]="!!activeCategory()">
+    <div class="msg-header">
+      <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
+        <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+      </button>
+      <span class="title">{{ 'settings.title' | transloco }}</span>
+      <span></span>
+    </div>
 
-  <div class="body">
-    <!-- Appearance -->
-    <section class="settings-group">
-      <h3 class="group-title">{{ 'settings.appearance' | transloco }}</h3>
-      <div class="settings-card">
-        <mat-list>
-          <mat-list-item>
-            <span matListItemTitle>{{ 'settings.theme' | transloco }}</span>
-            <!-- Trailing controls belong in the [matListItemMeta] slot (→ .mdc-list-item__end), not in
-                 unscoped content: unscoped nodes land inside .mdc-list-item__content, which is a
-                 white-space:nowrap; overflow:hidden; flex:1 text box. The 3-way toggle group is wide
-                 enough to be clipped/skewed there and overlap the title; the meta slot parks it cleanly
-                 at the row's trailing edge. -->
-            <mat-button-toggle-group
-              matListItemMeta
-              class="theme-toggle"
-              [value]="theme.mode()"
-              hideSingleSelectionIndicator
-              (change)="onThemeChange($event)">
-              <mat-button-toggle value="system" [attr.aria-label]="'settings.themeSystem' | transloco">
-                {{ 'settings.themeSystem' | transloco }}
-              </mat-button-toggle>
-              <mat-button-toggle value="light" [attr.aria-label]="'settings.themeLight' | transloco">
-                {{ 'settings.themeLight' | transloco }}
-              </mat-button-toggle>
-              <mat-button-toggle value="dark" [attr.aria-label]="'settings.themeDark' | transloco">
-                {{ 'settings.themeDark' | transloco }}
-              </mat-button-toggle>
-            </mat-button-toggle-group>
-          </mat-list-item>
-        </mat-list>
-      </div>
-    </section>
-
-    <!-- Media -->
-    <section class="settings-group">
-      <h3 class="group-title">Media</h3>
-      <div class="settings-card">
-        <mat-list>
-          <mat-list-item>
-            <span matListItemTitle>Image load threshold</span>
-            <span matListItemLine class="hint">Larger images show a tap-to-load placeholder.</span>
-            <mat-select [value]="mediaSize.kb()" (selectionChange)="onThresholdChange($event)">
-              @for (kb of mediaThresholdOptions; track kb) {
-                <mat-option [value]="kb">{{ thresholdLabel(kb) }}</mat-option>
-              }
-            </mat-select>
-          </mat-list-item>
-        </mat-list>
-      </div>
-    </section>
-
-    <!-- Language -->
-    <section class="settings-group">
-      <h3 class="group-title">{{ 'settings.language' | transloco }}</h3>
-      <div class="settings-card">
-        <mat-list>
-          <mat-list-item>
-            <span matListItemTitle>{{ 'settings.languageRow' | transloco }}</span>
-            <mat-select [value]="language.lang()" (selectionChange)="onLangChange($event)">
-              @for (l of language.availableLangs; track l) {
-                <mat-option [value]="l">{{ languageLabel(l) }}</mat-option>
-              }
-            </mat-select>
-          </mat-list-item>
-        </mat-list>
-      </div>
-    </section>
-
-    <!-- Push (Android only): FCM status + foreground service + periodic poll -->
-    @if (showPush) {
+    <div class="body">
       <section class="settings-group">
-        <h3 class="group-title">{{ 'settings.push' | transloco }}</h3>
         <div class="settings-card">
           <mat-list>
-            <!-- FCM status (read-only) + manual "check now" -->
-            <mat-list-item>
-              <span matListItemTitle>{{ 'settings.fcm' | transloco }}</span>
-              <span matListItemLine class="hint">{{ fcmLastCheckLabel() }}</span>
-              <span class="status-pill" [class.active]="fcmActive()">{{ fcmStatusLabel() }}</span>
-              <button mat-button type="button" class="check-btn" (click)="requestFcmCheck()"
-                [disabled]="checking()">
-                {{ (checking() ? 'settings.fcmChecking' : 'settings.fcmCheckButton') | transloco }}
-              </button>
-            </mat-list-item>
-
-            <!-- Foreground service (real-time keep-alive) -->
-            <mat-list-item>
-              <span matListItemTitle>{{ 'settings.keepAliveFgs' | transloco }}</span>
-              <span matListItemLine class="hint">{{ 'settings.keepAliveFgsDesc' | transloco }}</span>
-              @if (fcmActive()) {
-                <span matListItemLine class="hint hint-accent">{{ 'settings.fgsHintFcmActive' | transloco }}</span>
-              }
-              <mat-slide-toggle
-                [checked]="bgSync.fgsEnabled()"
-                [attr.aria-label]="'settings.keepAliveFgs' | transloco"
-                (change)="onFgsChange($event)">
-              </mat-slide-toggle>
-            </mat-list-item>
-
-            <!-- Periodic poll (~6h) + next scheduled time -->
-            <mat-list-item>
-              <span matListItemTitle>{{ 'settings.keepAlivePoll' | transloco }}</span>
-              <span matListItemLine class="hint">{{ 'settings.keepAlivePollDesc' | transloco }}</span>
-              @if (bgSync.enabled() && nextPullLabel()) {
-                <span matListItemLine class="hint">
-                  {{ 'settings.nextPullLabel' | transloco }}: {{ 'settings.nextPullApprox' | transloco:{ time: nextPullLabel() } }}
-                </span>
-              }
-              <mat-slide-toggle
-                [checked]="bgSync.enabled()"
-                [attr.aria-label]="'settings.keepAlivePoll' | transloco"
-                (change)="onPollChange($event)">
-              </mat-slide-toggle>
-            </mat-list-item>
+            @for (c of visibleCategories(); track c.id) {
+              <mat-list-item (click)="openCategory(c)" [attr.aria-label]="c.titleKey | transloco">
+                <app-icon
+                  matListItemAvatar
+                  class="lead"
+                  [type]="c.icon"
+                  [style]="{ width: '24px', height: '24px' }"></app-icon>
+                <span matListItemTitle>{{ c.titleKey | transloco }}</span>
+                <span matListItemLine class="hint">{{ c.summary() }}</span>
+                <app-icon
+                  matListItemMeta
+                  class="chev"
+                  [type]="AppIconType.CHEVRON_RIGHT"
+                  [style]="{ width: '20px', height: '20px' }"></app-icon>
+              </mat-list-item>
+            }
           </mat-list>
         </div>
       </section>
-    }
-
-    <!-- About -->
-    <section class="settings-group">
-      <h3 class="group-title">{{ 'settings.about' | transloco }}</h3>
-      <div class="settings-card">
-        <mat-list>
-          <mat-list-item>
-            <span matListItemTitle>{{ 'settings.version' | transloco }}</span>
-            <span class="meta">{{ appVersion }}</span>
-          </mat-list-item>
-          @if (showBackend) {
-            <mat-list-item>
-              <span matListItemTitle>{{ 'settings.backend' | transloco }}</span>
-              <span class="meta">{{ backendLabel() || ('settings.notConnected' | transloco) }}</span>
-            </mat-list-item>
-          }
-        </mat-list>
-      </div>
-    </section>
+    </div>
   </div>
+
+  <!-- SUB-PAGE: slides over the root. The category's body-only component is rendered here. -->
+  @if (activeCategory(); as cat) {
+    <div class="view view-sub" [@pageSlide]>
+      <div class="msg-header">
+        <button class="icon-btn" type="button" (click)="goBack()" [attr.aria-label]="'common.back' | transloco">
+          <app-icon [type]="AppIconType.BACK" [style]="{ width: '32px', height: '32px' }"></app-icon>
+        </button>
+        <span class="title">{{ cat.titleKey | transloco }}</span>
+        <span></span>
+      </div>
+      <div class="body">
+        <ng-container *ngComponentOutlet="cat.component"></ng-container>
+      </div>
+    </div>
+  }
 </div>

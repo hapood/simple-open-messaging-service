@@ -11,17 +11,17 @@ import { BusinessCode } from '../common/business-code.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { FriendshipService } from '../friendship/friendship.service.js';
 import { SseService } from '../gateway/sse.service.js';
-import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
+import { ContentType, Message, MessageThreadType, Prisma } from '../prisma/generated/client.js';
 import { derivePreview } from '../message/message.service.js';
 import { extractDigestEntries } from '../upload/file-content.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
-/** A federated user address on the wire: two separate fields (username + domain). The `@` separator
+/** A federated user address on the wire: two separate fields (account + domain). The `@` separator
  *  is a UI input convention ONLY — the browser splits a typed `alice@bbb.com` into these two fields
  *  before any API call; S2S payloads + endpoints + consumer DTOs never carry an `@`-joined string. */
 export interface S2SAddress {
-  username: string;
+  account: string;
   domain: string;
 }
 
@@ -39,13 +39,13 @@ export interface S2SAvatar {
 }
 
 /**
- * A user's public profile as transmitted over S2S — the resolve endpoint (GET /api/v1/s2s/users/:username)
+ * A user's public profile as transmitted over S2S — the resolve endpoint (GET /api/v1/s2s/users/:account)
  * response body and the `profile` slot on the friend-request payload. `updatedAt` is the sender's
  * User.updatedAt in ms (the profile revision); receivers store it as the stub's remoteUpdatedAt so the
  * lightweight /revision probe can detect staleness without re-transferring the avatar.
  */
 export interface S2SProfile {
-  uniqName: string;
+  account: string;
   domain: string;
   displayName: string;
   avatar: S2SAvatar | null;
@@ -73,6 +73,22 @@ export interface S2SFriendRequest extends S2SPayload {
   profile: S2SProfile;
 }
 
+/** POST /api/v1/s2s/thread/invite body (Step 3). The origin invites a cross-server friend to a group.
+ *  `by` is the inviter (foreign stub on the receiver); the friend gate is `by`↔`to` APPROVED. `thread` is
+ *  the federated id minted at the origin; the receiver find-or-creates a mirror keyed by it (@unique →
+ *  idempotent). `owner` is the group owner stub (== `by` for an origin-create invite). */
+export interface S2SThreadInvite {
+  id: string; // origin-assigned ULID; dedup key with origin (reuses S2SFriendOpSeen)
+  origin: string; // the origin server's domain (== signer, == thread's @suffix)
+  thread: string; // federatedThreadId "thr_<rand>@<origin-domain>"
+  name: string; // group display name
+  avatar: S2SAvatar | null; // inline base64 (federation avatar v0.1); null OK
+  owner: S2SAddress; // group owner → foreign stub; Group.ownerId on the mirror
+  by: S2SAddress; // inviter → foreign stub; friend-gated against `to`
+  to: S2SAddress; // invitee → OUR local user
+  ts: number;
+}
+
 /**
  * Outbound S2S: SYNCHRONOUS inline delivery. Each send* method builds a payload, signs it
  * (SignatureService), and POSTs it to the peer's friend-op endpoint (DiscoveryService resolves the
@@ -89,7 +105,7 @@ export interface S2SFriendRequest extends S2SPayload {
  *
  * Identity model: local users have domain="local" (isForeigner=false); federated peers are foreign
  * User stubs (domain=<peer>, isForeigner=true, unusable random hashPwd). Federation addresses always
- * use the REAL config.domain for local users' wire addresses ({ username: <uniqName>, domain: <config.domain> }), never "local".
+ * use the REAL config.domain for local users' wire addresses ({ account: <account>, domain: <config.domain> }), never "local".
  *
  * Avatar localization: foreign stubs carry the peer's avatar/name/bio/remoteUpdatedAt, localized from
  * the profile embedded in the friend-request payload (and refreshed via fetchRemoteUser on
@@ -109,9 +125,9 @@ export class FederationService {
     private readonly sse: SseService,
   ) {}
 
-  /** The wire address of a LOCAL user: { username, domain } (domain = our real config.domain). */
-  localAddress(uniqName: string): S2SAddress {
-    return { username: uniqName, domain: this.config.domain };
+  /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
+  localAddress(account: string): S2SAddress {
+    return { account: account, domain: this.config.domain };
   }
 
   /** This server's domain (config.domain) — for address-domain comparison in controllers. */
@@ -119,29 +135,29 @@ export class FederationService {
     return this.config.domain;
   }
 
-  /** Find a LOCAL user id by username (domain="local"). Null if not found / not local / soft-deleted.
+  /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
    *  The isDeleted gate matters here because S2S bypasses the token system: the local /uploads/* path is
    *  protected from admin-disabled users by tokenVersion (invalidateAllSessions bumps it on disable), but
    *  /get_file never touches tokens — so a disabled user's media would still flow out over federation
    *  unless we reject the soft-deleted row here. */
-  async findLocalUserId(username: string): Promise<number | null> {
+  async findLocalUserId(account: string): Promise<number | null> {
     const u = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: username, domain: 'local' } },
+      where: { account_domain: { account: account, domain: 'local' } },
     });
     return u && !u.isForeigner && !u.isDeleted ? u.id : null;
   }
 
-  /** Look up a local user id from a full address (must be username@<our domain>). */
+  /** Look up a local user id from a full address (must be account@<our domain>). */
   async findLocalUserIdByAddress(address: S2SAddress): Promise<number | null> {
     if (address.domain !== this.config.domain) return null;
-    return this.findLocalUserId(address.username);
+    return this.findLocalUserId(address.account);
   }
 
   /** Load a local user (full row) by id; throw if missing or not local. The single source for the
-   *  `from` address + outbound profile builders, replacing the old localUniqName() helper. */
+   *  `from` address + outbound profile builders, replacing the old localAccount() helper. */
   private async requireLocalUser(userId: number): Promise<{
     id: number;
-    uniqName: string;
+    account: string;
     name: string;
     avatar: string;
     bio: string;
@@ -155,7 +171,7 @@ export class FederationService {
 
   /** Build the S2SProfile wire shape from a loaded local user (reads the avatar file → base64). */
   private async toS2SProfile(u: {
-    uniqName: string;
+    account: string;
     name: string;
     avatar: string;
     bio: string;
@@ -165,7 +181,7 @@ export class FederationService {
       ? await this.upload.readAvatarAsWire(u.avatar)
       : null;
     return {
-      uniqName: u.uniqName,
+      account: u.account,
       domain: this.config.domain,
       displayName: u.name,
       avatar,
@@ -174,19 +190,19 @@ export class FederationService {
     };
   }
 
-  /** Public profile of a local user (GET /api/v1/s2s/users/:username). Null if not local / not found. */
+  /** Public profile of a local user (GET /api/v1/s2s/users/:account). Null if not local / not found. */
   async getLocalUserProfile(address: S2SAddress): Promise<S2SProfile | null> {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
       where: {
-        uniqName_domain: { uniqName: address.username, domain: 'local' },
+        account_domain: { account: address.account, domain: 'local' },
       },
     });
     if (!u || u.isForeigner) return null;
     return this.toS2SProfile(u);
   }
 
-  /** Lightweight revision probe (GET /api/v1/s2s/users/:username/revision): just the profile revision,
+  /** Lightweight revision probe (GET /api/v1/s2s/users/:account/revision): just the profile revision,
    *  no avatar transfer. Receivers compare against the stub's remoteUpdatedAt to decide whether to
    *  re-pull the full profile. Null if not local / not found. */
   async getLocalUserRevision(
@@ -195,7 +211,7 @@ export class FederationService {
     if (address.domain !== this.config.domain) return null;
     const u = await this.prisma.user.findUnique({
       where: {
-        uniqName_domain: { uniqName: address.username, domain: 'local' },
+        account_domain: { account: address.account, domain: 'local' },
       },
       select: { updatedAt: true, isForeigner: true },
     });
@@ -203,19 +219,19 @@ export class FederationService {
     return { updatedAt: u.updatedAt.getTime() };
   }
 
-  /** Find or create a foreign User stub for username@<peer-domain>. Stubs never authenticate. */
-  async ensureForeignUser(username: string, domain: string): Promise<number> {
+  /** Find or create a foreign User stub for account@<peer-domain>. Stubs never authenticate. */
+  async ensureForeignUser(account: string, domain: string): Promise<number> {
     const existing = await this.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: username, domain } },
+      where: { account_domain: { account: account, domain } },
     });
     if (existing) return existing.id;
     const created = await this.prisma.user.create({
       data: {
-        uniqName: username,
+        account: account,
         domain,
         isForeigner: true,
         hashPwd: randomUUID(), // unusable — stubs never log in
-        name: username,
+        name: account,
         avatar: '',
         bio: '',
       },
@@ -226,7 +242,7 @@ export class FederationService {
   /**
    * Resolve-on-demand safety net for send-friend-request: ensure a foreign stub has been localized
    * (profile pulled) at least once. No-op if already localized (remoteUpdatedAt set). If the caller
-   * addresses a foreign user by id without a prior resolve (so the stub is a bare username), pull the
+   * addresses a foreign user by id without a prior resolve (so the stub is a bare account), pull the
    * profile now. Throws on peer failure so the controller surfaces FEDERATION_DELIVERY_FAILED (the
    * subsequent send would fail against the same peer anyway).
    */
@@ -344,7 +360,7 @@ export class FederationService {
    * FEDERATION_DELIVERY_FAILED so the user retries. No dangling trust: we add them to our allow-list
    * only AFTER their /init accepts us.
    *
-   * Triggered on-demand by the federated resolve path (a local user searching username@<untrusted-domain>).
+   * Triggered on-demand by the federated resolve path (a local user searching account@<untrusted-domain>).
    * The reverse direction (their user searches ours) is covered by our inbound /init endpoint auto-accepting them.
    */
   async ensurePeerTrusted(domain: string): Promise<void> {
@@ -372,7 +388,7 @@ export class FederationService {
 
   /** Whether mutual trust with a peer domain is ALREADY established — a pure local lookup of the
    *  FederatedPeer allow-list (a row at trustLevel 'trusted'). No network, no side effects. Our own
-   *  domain always reads trusted (a username@<our-domain> query is a local lookup, never a handshake).
+   *  domain always reads trusted (a account@<our-domain> query is a local lookup, never a handshake).
    *
    *  Used by the user-facing pre-flight (POST /user/peer-trust-status) so the client can tell
    *  FIRST-CONTACT — a handshake IS expected during the upcoming resolve, so show a "Connecting to
@@ -651,8 +667,8 @@ export class FederationService {
     const payload: S2SFriendRequest = {
       id: ulid(),
       origin: this.config.domain,
-      from: this.localAddress(from.uniqName),
-      to: [{ username: to.username, domain: to.domain }],
+      from: this.localAddress(from.account),
+      to: [{ account: to.account, domain: to.domain }],
       ts: Date.now(),
       message: (message ?? '').slice(0, 255),
       profile,
@@ -673,13 +689,13 @@ export class FederationService {
     localApproverId: number,
     to: S2SAddress,
   ): Promise<void> {
-    const fromUniqName = (await this.requireLocalUser(localApproverId))
-      .uniqName;
+    const fromAccount = (await this.requireLocalUser(localApproverId))
+      .account;
     const payload: S2SPayload = {
       id: ulid(),
       origin: this.config.domain,
-      from: this.localAddress(fromUniqName),
-      to: [{ username: to.username, domain: to.domain }],
+      from: this.localAddress(fromAccount),
+      to: [{ account: to.account, domain: to.domain }],
       ts: Date.now(),
     };
     await this.postSigned(
@@ -687,6 +703,175 @@ export class FederationService {
       JSON.stringify(payload),
       to.domain,
     );
+  }
+
+  // ─── Step 3: cross-server group threads (origin-hub) ────────────────────────
+
+  /** Mint a cross-server canonical thread id: thr_<rand>@<our-domain>. */
+  private mintFederatedThreadId(): string {
+    return `thr_${randomUUID()}@${this.config.domain}`;
+  }
+
+  /** Ensure an origin group thread carries its federated id + originDomain (lazy mint at the first
+   *  cross-server invite — group.create itself is federation-agnostic). Idempotent. Returns the id. */
+  async ensureOriginFederatedId(threadId: number): Promise<string> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { federatedThreadId: true },
+    });
+    if (!trd) throw new Error(`thread ${threadId} not found`);
+    if (trd.federatedThreadId) return trd.federatedThreadId;
+    const fedId = this.mintFederatedThreadId();
+    await this.prisma.messageThread.update({
+      where: { id: threadId },
+      data: { federatedThreadId: fedId, originDomain: this.config.domain },
+    });
+    return fedId;
+  }
+
+  /** Outbound POST /s2s/thread/invite: a local user (the origin owner) invites a cross-server friend to
+   *  a group. Lazy-mints the origin federatedId. Friend-gated on the receiver (by↔to APPROVED). */
+  async sendThreadInvite(params: {
+    threadId: number;
+    name: string;
+    avatar: S2SAvatar | null;
+    byLocalUserId: number; // the inviter (== owner for an origin-create invite)
+    to: S2SAddress; // the cross-server invitee
+  }): Promise<void> {
+    const fedId = await this.ensureOriginFederatedId(params.threadId);
+    const by = await this.requireLocalUser(params.byLocalUserId);
+    const addr = this.localAddress(by.account);
+    const payload: S2SThreadInvite = {
+      id: ulid(),
+      origin: this.config.domain,
+      thread: fedId,
+      name: params.name.slice(0, 255),
+      avatar: params.avatar,
+      owner: addr, // slice 1: inviter == owner (origin-create invite)
+      by: addr,
+      to: { account: params.to.account, domain: params.to.domain },
+      ts: Date.now(),
+    };
+    await this.postSigned(
+      '/api/v1/s2s/thread/invite',
+      JSON.stringify(payload),
+      params.to.domain,
+    );
+  }
+
+  /** Inbound POST /s2s/thread/invite: a peer invites one of OUR local users to a cross-server group.
+   *  Friend-gated (by↔to APPROVED). Idempotent: mirror find-or-create by federatedThreadId (@unique).
+   *  Ensures the owner stub + mirror Group. Surfaces the invite via NOTIFY; the formal GROUP_INVITE card
+   *  + accept→register→fan-out is wired in a later slice. */
+  async handleThreadInvite(body: S2SThreadInvite): Promise<void> {
+    if (await this.isOpSeen(body.origin, body.id)) return;
+    const by = this.requireS2SAddress(body.by); // inviter → foreign stub
+    const to = this.requireS2SAddress(body.to); // local invitee
+    const owner = this.requireS2SAddress(body.owner); // group owner → foreign stub
+    const byStubId = await this.ensureForeignUser(by.account, by.domain);
+    const localId = await this.findLocalUserIdByAddress(to);
+    if (localId === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `local user ${to.account} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    // Friend gate (the abuse barrier — same as friend-request): inviter ↔ invitee APPROVED.
+    if (!(await this.findApprovedFriendship(byStubId, localId))) {
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'not friends',
+        HttpStatus.FORBIDDEN,
+      );
+    }
+    const ownerStubId =
+      owner.account === by.account && owner.domain === by.domain
+        ? byStubId
+        : await this.ensureForeignUser(owner.account, owner.domain);
+    await this.findOrCreateMirrorThread({
+      federatedThreadId: body.thread,
+      originDomain: body.origin,
+      name: body.name,
+      ownerStubId,
+    });
+    // Surface the invite to the local invitee (formal GROUP_INVITE card + accept flow: later slice).
+    this.sse.onNotify(
+      localId,
+      serializeBody({
+        event: 'NOTIFY',
+        type: 'GROUP_INVITE',
+        thread: body.thread,
+        name: body.name,
+        byUserId: byStubId,
+      }),
+    );
+  }
+
+  /** Idempotent mirror-thread find-or-create keyed by federatedThreadId (@unique → one mirror per
+   *  federated thread, even across multiple invited local users). Creates the mirror MessageThread +
+   *  Group (owner = the foreign owner's stub). Avatar localization is deferred to a later slice. */
+  private async findOrCreateMirrorThread(params: {
+    federatedThreadId: string;
+    originDomain: string;
+    name: string;
+    ownerStubId: number;
+  }): Promise<number> {
+    const existing = await this.prisma.messageThread.findUnique({
+      where: { federatedThreadId: params.federatedThreadId },
+      select: { id: true },
+    });
+    if (existing) return existing.id;
+    const trd = await this.prisma.messageThread.create({
+      data: {
+        type: MessageThreadType.GROUP,
+        federatedThreadId: params.federatedThreadId,
+        originDomain: params.originDomain,
+      },
+    });
+    await this.prisma.group.create({
+      data: {
+        name: params.name,
+        ownerId: params.ownerStubId,
+        avatar: '',
+        threadId: trd.id,
+      },
+    });
+    return trd.id;
+  }
+
+  /** True if (origin, opId) already applied. Reuses S2SFriendOpSeen as the generic op-seen table (the
+   *  name is historical — it is just an (origin, opId) dedup index). Race-safe (P2002 = concurrent dup). */
+  private async isOpSeen(origin: string, opId: string): Promise<boolean> {
+    const existing = await this.prisma.s2SFriendOpSeen.findUnique({
+      where: { origin_opId: { origin, opId } },
+    });
+    if (existing) return true;
+    try {
+      await this.prisma.s2SFriendOpSeen.create({ data: { origin, opId } });
+      return false;
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        return true;
+      }
+      throw e;
+    }
+  }
+
+  /** Validate a wire address has non-empty account + domain (defense against malformed peer input; the
+   *  S2sSignatureGuard already bound signer==origin). */
+  private requireS2SAddress(a: S2SAddress): S2SAddress {
+    if (!a || !a.account || !a.domain) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        `malformed address ${JSON.stringify(a)}`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    return a;
   }
 
   // ─── Step 2: message delivery (coalesced hint map + active pull) ──────────────
@@ -789,18 +974,18 @@ export class FederationService {
     const [stub, local] = await Promise.all([
       this.prisma.user.findUnique({
         where: { id: stubUserId },
-        select: { uniqName: true, domain: true, isForeigner: true },
+        select: { account: true, domain: true, isForeigner: true },
       }),
       this.prisma.user.findUnique({
         where: { id: localUserId },
-        select: { uniqName: true, isForeigner: true },
+        select: { account: true, isForeigner: true },
       }),
     ]);
     if (!stub || !stub.isForeigner || !local || local.isForeigner) return;
     await this.pullOneConversation(
       stub.domain,
-      stub.uniqName,
-      local.uniqName,
+      stub.account,
+      local.account,
       Number.MAX_SAFE_INTEGER,
     );
   }
@@ -815,15 +1000,15 @@ export class FederationService {
    * the sender used, then fetches each via /get_file (§3.3). See docs/federation-step2-design.md §3.2.
    */
   async serveOutboundMessages(
-    fromUsername: string,
-    toUsername: string,
+    fromAccount: string,
+    toAccount: string,
     signerDomain: string,
     after: number,
     take: number,
   ) {
     const { fromId, threadId } = await this.resolveFriendshipThread(
-      fromUsername,
-      toUsername,
+      fromAccount,
+      toAccount,
       signerDomain,
     );
     const rows = await this.prisma.message.findMany({
@@ -836,14 +1021,54 @@ export class FederationService {
       originSeq: m.originSeq ?? 0,
       contentType: m.contentType,
       content: m.content,
-      clientMessageId: m.clientMessageId,
       ts: m.createdAt.getTime(),
     }));
     const latest = await this.prisma.message.aggregate({
       where: { threadId, creator: fromId },
       _max: { originSeq: true },
     });
-    return { messages, latestSeq: latest._max.originSeq ?? 0, hasMore };
+    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore }; // 0-indexed: empty → -1
+  }
+
+  /** GET /api/v1/s2s/messages/before — the BACKWARD twin of serveOutboundMessages (reserved for external
+   *  federation implementations; SOMS's own transport is forward-only). Returns messages with
+   *  `seq < beforeSeq` (or, when `beforeSeq < 0`, the latest `take` with no upper bound), ordered so the
+   *  batch is OLDEST-FIRST (descending query + reverse) for direct prepend. Same friendship gate + 0-indexed seq space. */
+  async serveOutboundMessagesBefore(
+    fromAccount: string,
+    toAccount: string,
+    signerDomain: string,
+    beforeSeq: number,
+    take: number,
+  ) {
+    const { fromId, threadId } = await this.resolveFriendshipThread(
+      fromAccount,
+      toAccount,
+      signerDomain,
+    );
+    const rows = await this.prisma.message.findMany({
+      where: {
+        threadId,
+        creator: fromId,
+        ...(beforeSeq >= 0 ? { originSeq: { lt: beforeSeq } } : {}),
+      },
+      orderBy: { originSeq: 'desc' },
+      take: take + 1,
+    });
+    const hasMore = rows.length > take;
+    // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
+    const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
+    const messages = batch.map((m) => ({
+      originSeq: m.originSeq ?? 0,
+      contentType: m.contentType,
+      content: m.content,
+      ts: m.createdAt.getTime(),
+    }));
+    const latest = await this.prisma.message.aggregate({
+      where: { threadId, creator: fromId },
+      _max: { originSeq: true },
+    });
+    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
   }
 
   /**
@@ -854,14 +1079,14 @@ export class FederationService {
    * dir (the extension isn't stored on MediaAsset — only the digest/refs); the receiver already knows
    * the ext from the message content URL, so the S2S Content-Type is incidental (octet-stream). */
   async resolveMediaFile(
-    fromUsername: string,
-    toUsername: string,
+    fromAccount: string,
+    toAccount: string,
     signerDomain: string,
     digest: string,
   ): Promise<{ absPath: string; bytes: number }> {
     const { threadId } = await this.resolveFriendshipThread(
-      fromUsername,
-      toUsername,
+      fromAccount,
+      toAccount,
       signerDomain,
     );
     // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
@@ -926,29 +1151,29 @@ export class FederationService {
    *  FORBIDDEN (not friends); the 403 doubles as the §9.4 lazy-unfriend signal to the peer. Consolidates
    *  the identical check-1/check-2 blocks serveOutboundMessages and resolveMediaFile used to inline. */
   private async resolveFriendshipThread(
-    fromUsername: string,
-    toUsername: string,
+    fromAccount: string,
+    toAccount: string,
     signerDomain: string,
   ): Promise<{ fromId: number; threadId: number }> {
-    const fromId = await this.findLocalUserId(fromUsername);
+    const fromId = await this.findLocalUserId(fromAccount);
     if (fromId === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `sender ${fromUsername} not found`,
+        `sender ${fromAccount} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
     // `to` is the requester's user → on OUR side it's a foreign stub on the signer's domain.
     const toStub = await this.prisma.user.findUnique({
       where: {
-        uniqName_domain: { uniqName: toUsername, domain: signerDomain },
+        account_domain: { account: toAccount, domain: signerDomain },
       },
       select: { id: true, isForeigner: true },
     });
     if (!toStub || !toStub.isForeigner) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `recipient ${toUsername} not found`,
+        `recipient ${toAccount} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -1012,7 +1237,7 @@ export class FederationService {
         byTo = new Map();
         byFrom.set(e.from, byTo);
       }
-      const prev = byTo.get(e.to) ?? 0;
+      const prev = byTo.get(e.to) ?? -1; // 0-indexed: empty → -1 (a real seq 0 must beat it)
       if (e.latestSeq > prev) byTo.set(e.to, e.latestSeq); // latest-wins
     }
     void this.drainPendingPulls(signerDomain);
@@ -1063,13 +1288,13 @@ export class FederationService {
    */
   private async pullOneConversation(
     domain: string,
-    fromUsername: string,
-    toLocalUsername: string,
+    fromAccount: string,
+    toLocalAccount: string,
     latestSeq: number,
   ): Promise<boolean> {
     try {
-      const creatorId = await this.ensureForeignUser(fromUsername, domain);
-      const toLocalUserId = await this.findLocalUserId(toLocalUsername);
+      const creatorId = await this.ensureForeignUser(fromAccount, domain);
+      const toLocalUserId = await this.findLocalUserId(toLocalAccount);
       if (toLocalUserId === null) return true; // local user gone → drop the hint
       const friendship = await this.findApprovedFriendship(
         creatorId,
@@ -1081,7 +1306,7 @@ export class FederationService {
         where: { threadId, creator: creatorId },
         _max: { originSeq: true },
       });
-      let after = cur._max.originSeq ?? 0;
+      let after = cur._max.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1 (before seq 0)
       if (latestSeq <= after) return true; // already current
       for (;;) {
         const res = await this.withTrustedPeer(domain, () =>
@@ -1090,13 +1315,12 @@ export class FederationService {
               originSeq: number;
               contentType: string;
               content: string;
-              clientMessageId: string | null;
               ts: number;
             }>;
             latestSeq: number;
             hasMore: boolean;
           }>(
-            `/api/v1/s2s/messages?from=${encodeURIComponent(fromUsername)}&to=${encodeURIComponent(toLocalUsername)}&after=${after}&take=50`,
+            `/api/v1/s2s/messages?from=${encodeURIComponent(fromAccount)}&to=${encodeURIComponent(toLocalAccount)}&afterSeq=${after}&take=50`,
             domain,
           ),
         );
@@ -1114,8 +1338,8 @@ export class FederationService {
             await this.localizeMedia(
               created,
               domain,
-              fromUsername,
-              toLocalUsername,
+              fromAccount,
+              toLocalAccount,
             );
           }
         }
@@ -1142,6 +1366,11 @@ export class FederationService {
     toLocalUserId: number,
     m: { originSeq: number; contentType: string; content: string; ts: number },
   ): Promise<Message | null> {
+    // The sender server's allocation time (payload `ts`) is stored as originServerTime (future use,
+    // never displayed). The receiver's own createdAt defaults to now() — the local ARRIVAL time, which
+    // is what the chatbox displays and what orders the conversation list. The protocol never trusts the
+    // peer's clock for display; arrival time is locally monotonic and clock-skew-immune.
+    const originTime = new Date(m.ts);
     const created = await this.prisma.message
       .create({
         data: {
@@ -1150,7 +1379,8 @@ export class FederationService {
           threadId,
           creator: creatorId,
           originSeq: m.originSeq,
-          createdAt: new Date(m.ts),
+          originServerTime: originTime,
+          // createdAt defaults to now() → the local arrival time
         },
       })
       .catch((e: unknown) => {
@@ -1163,13 +1393,14 @@ export class FederationService {
         throw e;
       });
     if (!created) return null;
-    const ts = new Date(m.ts);
+    const arrival = created.createdAt;
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
-    // than what's cached (a message the local user sent after this one must not be overwritten).
+    // than what's cached (a message the local user sent after this one must not be overwritten). Ordered
+    // by ARRIVAL time (what the user sees), not the origin server time.
     await this.prisma.messageThread.updateMany({
       where: {
         id: threadId,
-        OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: ts } }],
+        OR: [{ lastMessageAt: null }, { lastMessageAt: { lt: arrival } }],
       },
       data: {
         lastMessageId: created.id,
@@ -1178,7 +1409,7 @@ export class FederationService {
           m.content,
         ),
         lastMessageSenderId: creatorId,
-        lastMessageAt: ts,
+        lastMessageAt: arrival,
       },
     });
     this.sse.onNewMessage(
@@ -1210,8 +1441,8 @@ export class FederationService {
   private async localizeMedia(
     msg: { id: bigint; threadId: number; content: string },
     peerDomain: string,
-    fromUsername: string,
-    toLocalUsername: string,
+    fromAccount: string,
+    toLocalAccount: string,
   ): Promise<void> {
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
@@ -1231,8 +1462,8 @@ export class FederationService {
             this.fetchMediaChunks(
               peerDomain,
               digest,
-              fromUsername,
-              toLocalUsername,
+              fromAccount,
+              toLocalAccount,
             ),
             digest,
           );
@@ -1267,12 +1498,12 @@ export class FederationService {
   private async *fetchMediaChunks(
     peerDomain: string,
     digest: string,
-    fromUsername: string,
-    toLocalUsername: string,
+    fromAccount: string,
+    toLocalAccount: string,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
-    const path = `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromUsername)}&to=${encodeURIComponent(toLocalUsername)}`;
+    const path = `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromAccount)}&to=${encodeURIComponent(toLocalAccount)}`;
     const url = new URL(`${base}${path}`);
     let offset = 0;
     let total: number | null = null;
@@ -1441,14 +1672,14 @@ export class FederationService {
   }
 
   /**
-   * Fetch a peer user's public profile (signed GET /api/v1/s2s/users/:username). Used by federated
+   * Fetch a peer user's public profile (signed GET /api/v1/s2s/users/:account). Used by federated
    * resolve (the add-friend card), ensureForeignUserLocalized (send-friend-request safety net), and
    * the chat-open staleness re-pull (syncForeignUserIfStale). Throws on any non-success (the caller
    * surfaces FEDERATION_DELIVERY_FAILED → user retries / inits).
    */
   async fetchRemoteUser(address: S2SAddress): Promise<S2SProfile> {
     return this.getSigned<S2SProfile>(
-      `/api/v1/s2s/users/${address.username}`,
+      `/api/v1/s2s/users/${address.account}`,
       address.domain,
     );
   }
@@ -1458,7 +1689,7 @@ export class FederationService {
     address: S2SAddress,
   ): Promise<{ updatedAt: number }> {
     return this.getSigned<{ updatedAt: number }>(
-      `/api/v1/s2s/users/${address.username}/revision`,
+      `/api/v1/s2s/users/${address.account}/revision`,
       address.domain,
     );
   }
@@ -1562,14 +1793,14 @@ export class FederationService {
       where: { id: userId },
       select: {
         isForeigner: true,
-        uniqName: true,
+        account: true,
         domain: true,
         remoteUpdatedAt: true,
       },
     });
     if (!stub || !stub.isForeigner) return;
     const address: S2SAddress = {
-      username: stub.uniqName,
+      account: stub.account,
       domain: stub.domain,
     };
     try {

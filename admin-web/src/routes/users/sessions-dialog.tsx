@@ -33,7 +33,7 @@ export function SessionsDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
-          <DialogTitle>{t('userSessions.title', { name: user?.uniqName ?? '' })}</DialogTitle>
+          <DialogTitle>{t('userSessions.title', { name: user?.account ?? '' })}</DialogTitle>
         </DialogHeader>
         <div className="max-h-[60vh] overflow-auto">
           <Table>

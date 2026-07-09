@@ -78,7 +78,7 @@ export function BansPage() {
                       size="sm"
                       disabled={unban.isPending}
                       onClick={() =>
-                        unban.mutate(b.type === 'ip' ? { ip: b.value } : { uniqName: b.value })
+                        unban.mutate(b.type === 'ip' ? { ip: b.value } : { account: b.value })
                       }
                     >
                       {t('bans.unban')}

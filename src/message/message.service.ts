@@ -85,15 +85,16 @@ export class MessageService implements OnModuleInit {
     for (let attempt = 0; ; attempt++) {
       try {
         return await this.prisma.$transaction(async (tx) => {
-          // Allocate the per-(thread, sender) originSeq = MAX+1 — the cross-server federation pull
-          // cursor. NULLs (legacy rows + never-federating threads) are ignored by _max, so the first
-          // federated send starts at 1. Always assigned: local-only threads pay one cheap aggregate
-          // now and are ready if they ever federate. See docs/federation-step2-design.md §2.1.
+          // Allocate the per-(thread, sender) originSeq = (MAX ?? -1) + 1 — the cross-server federation
+          // pull cursor. 0-INDEXED: the first federated send in a (thread, sender) is seq 0, then 1, 2, …
+          // NULLs (legacy rows + never-federating threads) are ignored by _max, so an empty (thread,
+          // sender) yields -1 → first send = 0. Always assigned: local-only threads pay one cheap
+          // aggregate now and are ready if they ever federate. See docs/federation-step2-design.md §2.1.
           const lastSeq = await tx.message.aggregate({
             where: { threadId, creator: userId },
             _max: { originSeq: true },
           });
-          const originSeq = (lastSeq._max.originSeq ?? 0) + 1;
+          const originSeq = (lastSeq._max.originSeq ?? -1) + 1;
           const msg = await tx.message.create({
             data: {
               content,

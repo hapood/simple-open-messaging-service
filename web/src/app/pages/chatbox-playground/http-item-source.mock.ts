@@ -16,8 +16,8 @@ import type { StandardResponse, User } from '../../services/model';
 
 /** Mock user table (id → User). Mirrors the production backend user table; MockItemSource.ensureProfiles looks up by creator here. */
 const MOCK_USERS: ReadonlyMap<number, User> = new Map([
-  [1, { id: 1, uniqName: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
-  [2, { id: 2, uniqName: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
+  [1, { id: 1, account: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
+  [2, { id: 2, account: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as User],
 ]);
 
 /**
@@ -267,7 +267,7 @@ export class MockItemSource implements CbSource<ChatItemData> {
     if (missing.size === 0) return;
     const res = await firstValueFrom(this.userService.queryUserInfo({ userIds: [...missing] }));
     if (res.code === 0 && res.data) {
-      for (const u of res.data) this.profiles.set(u.id, { name: u.uniqName, isSelf: u.id === this.userId });
+      for (const u of res.data) this.profiles.set(u.id, { name: u.account, isSelf: u.id === this.userId });
     }
   }
 

@@ -49,13 +49,13 @@ export class FederationBufferService implements OnModuleDestroy {
     try {
       const participants = await this.prisma.threadParticipant.findMany({
         where: { threadId, leftAt: null },
-        include: { user: { select: { uniqName: true, domain: true, isForeigner: true } } },
+        include: { user: { select: { account: true, domain: true, isForeigner: true } } },
       });
       const sender = participants.find((p) => p.userId === senderUserId);
       if (!sender) return;
       for (const p of participants) {
         if (p.userId === senderUserId || !p.user.isForeigner) continue;
-        this.markDirty(p.user.domain, sender.user.uniqName, p.user.uniqName, originSeq);
+        this.markDirty(p.user.domain, sender.user.account, p.user.account, originSeq);
       }
     } catch (e) {
       // Never break the send path — a transient DB error just skips this notify (pull-on-open covers it).

@@ -14,21 +14,21 @@ GET {{host}}/docs
 POST {{host}}/user/register
 Content-Type: application/json
 
-{"uniqName": "test"}
+{"account": "test"}
 
 
 ### 2. register 新用户 → 期望 HTTP 200 / code 0
 POST {{host}}/user/register
 Content-Type: application/json
 
-{"uniqName": "demo_1234", "password": "123456"}
+{"account": "demo_1234", "password": "123456"}
 
 
 ### 3. register 重复 → 期望 HTTP 200 / code 10002（ALREADY_EXISTS）
 POST {{host}}/user/register
 Content-Type: application/json
 
-{"uniqName": "demo_1234", "password": "123456"}
+{"account": "demo_1234", "password": "123456"}
 
 
 ### 4. login 错密码 → 期望 HTTP 200 / code 10003（UNAUTHENTICATED）
@@ -36,7 +36,7 @@ POST {{host}}/auth/login
 Authorization: public
 Content-Type: application/json
 
-{"uniqName": "no_such_user", "password": "wrongpwd"}
+{"account": "no_such_user", "password": "wrongpwd"}
 
 
 ### 5. 无 token 访问受保护路由 → 期望 HTTP 401 / code 10003（JwtAuthGuard，HTTP 码保留）
@@ -56,7 +56,7 @@ POST {{host}}/auth/login
 Authorization: public
 Content-Type: application/json
 
-{"uniqName": "demo_1234", "password": "123456"}
+{"account": "demo_1234", "password": "123456"}
 
 
 ### 7. by-uniq-name 不存在 → 期望 HTTP 200 / code 10001（NOT_FOUND）
@@ -64,7 +64,7 @@ POST {{host}}/user/by-uniq-name
 Authorization: Bearer {{token}}
 Content-Type: application/json
 
-{"uniqName": "no_such_user"}
+{"account": "no_such_user"}
 
 
 ### 8. send-friend-request 自己 → 期望 HTTP 200 / code 20001（FRIEND_SELF）

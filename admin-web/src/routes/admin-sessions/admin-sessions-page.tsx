@@ -102,7 +102,7 @@ export function AdminSessionsPage() {
               data?.list.map((s) => (
                 <TableRow key={s.jti}>
                   <TableCell className="font-medium">
-                    <Badge variant="outline">{s.admin?.username ?? '#' + s.adminId}</Badge>
+                    <Badge variant="outline">{s.admin?.account ?? '#' + s.adminId}</Badge>
                   </TableCell>
                   <TableCell
                     className="max-w-[280px] truncate text-xs text-muted-foreground"

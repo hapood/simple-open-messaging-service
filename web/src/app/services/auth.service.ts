@@ -74,7 +74,7 @@ export class AuthService {
     return this.acTkSub.value
   }
 
-  login(params: { uniqName: string, password: string, isKeep: boolean }) {
+  login(params: { account: string, password: string, isKeep: boolean }) {
     // isKeep is the frontend's "keep me logged in" storage policy (whether the refresh token lives in
     // localStorage or sessionStorage). The backend does not consume it, so it is stripped from the
     // request body; it is still used after success to decide where to persist the token.

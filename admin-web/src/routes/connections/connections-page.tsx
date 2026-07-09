@@ -101,7 +101,7 @@ export function ConnectionsPage() {
               clients.map((c) => (
                 <TableRow key={c.userId}>
                   <TableCell className="font-medium">
-                    {c.uniqName ?? '#' + c.userId}
+                    {c.account ?? '#' + c.userId}
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary" className="tabular-nums">

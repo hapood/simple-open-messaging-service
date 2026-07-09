@@ -8,7 +8,7 @@ export function useBans() {
 export function useUnban() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload: { ip?: string; uniqName?: string }) => unban(payload),
+    mutationFn: (payload: { ip?: string; account?: string }) => unban(payload),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['admin', 'bans'] }),
   })
 }

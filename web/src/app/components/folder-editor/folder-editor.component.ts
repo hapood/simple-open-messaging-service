@@ -89,7 +89,7 @@ export class FolderEditorComponent implements OnInit {
   }
 
   threadLabel(t: ConversationItem): string {
-    return t.type === 'P2P' ? (t.peerUser?.uniqName ?? '') : (t.group?.name ?? '')
+    return t.type === 'P2P' ? (t.peerUser?.account ?? '') : (t.group?.name ?? '')
   }
 
   beginCreate() {

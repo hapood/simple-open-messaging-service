@@ -6,41 +6,41 @@ import { AuthService } from './auth.service.js';
 
 export interface LoginAuthInfo {
   status: number;
-  uniqName: string;
+  account: string;
   userId?: number;
   bannedUntil?: number;
 }
 
 /**
- * 登录暴力破解防护：滑动窗口 + 双维度（IP / 账户）渐进式封禁。
+ * Login brute-force protection: sliding window + dual-dimension (IP / account) progressive banning.
  *
- * 相对原「累计计数 + 仅按 IP」的改进：
- *  - 滑动窗口：只统计 WINDOW_MS 内的失败次数，旧的自动失忆，避免正常用户偶尔输错的累计误封；
- *  - 双维度：按 IP 防分布式扫描、按账户(uniqName)防针对单号的密码暴破（原仅按 IP 防不住后者）；
- *  - 取真实 IP：配合 main.ts 的 FastifyAdapter trustProxy，反代/隧道下 req.ip 为真实客户端 IP。
+ * Improvements over the original "cumulative count + IP-only" approach:
+ *  - Sliding window: only counts failures within WINDOW_MS; older ones auto-age-out, avoiding false bans from a legitimate user's occasional typos accumulating;
+ *  - Dual dimension: by IP defends against distributed scanning, by account defends against password brute-force targeting a single account (the original IP-only approach could not stop the latter);
+ *  - Real client IP: combined with the FastifyAdapter trustProxy in main.ts, req.ip is the real client IP behind reverse proxies/tunnels.
  *
- * 仍属进程内内存（单实例）；下列项留待 P3（见 protocol-plan）：
- *  - 多实例共享存储（Redis）；
- *  - 分层响应（CAPTCHA / 增加延迟 / 通知账户所有者）；
- *  - 封禁时长温和化与阈值精调；
- *  - 封禁可观测（结构化日志 / 告警）。
+ * Still in-process memory (single instance); the following are deferred to P3 (see protocol-plan):
+ *  - Multi-instance shared storage (Redis);
+ *  - Tiered responses (CAPTCHA / added delay / notify the account owner);
+ *  - Softening ban durations and fine-tuning thresholds;
+ *  - Ban observability (structured logs / alerting).
  */
 
-/** 滑动窗口：统计窗口内的失败次数，窗口外的自动失效。 */
-const WINDOW_MS = 15 * 60 * 1000; // 15 分钟
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // 每 5 分钟回收过期条目，防内存膨胀
+/** Sliding window: counts failures within the window; those outside the window auto-expire. */
+const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Reclaim expired entries every 5 minutes to prevent memory bloat
 
 interface Step {
-  count: number; // 窗口内失败次数阈值（>count 触发）
-  banMs: number; // 触发后封禁时长
+  count: number; // Failure-count threshold within the window (triggers when >count)
+  banMs: number; // Ban duration once triggered
 }
 interface Dimension {
   prefix: string;
-  steps: readonly Step[]; // 升序，命中的最高档生效
+  steps: readonly Step[]; // Ascending; the highest matched tier takes effect
 }
 
-// 按 IP 阈值宽松（NAT 下多人共享一个公网 IP）；按账户阈值严格（防针对单号的密码暴破）。
-// 阶梯沿用原渐进式档位（30min / 3h / 24h），仅计数基础由「累计」改为「窗口内」。
+// IP thresholds are lenient (multiple users may share one public IP under NAT); account thresholds are strict (to defend against password brute-force targeting a single account).
+// The tiered steps reuse the original progressive tiers (30min / 3h / 24h); only the counting basis changed from "cumulative" to "within-window".
 const RULES: Record<'ip' | 'user', Dimension> = {
   ip: {
     prefix: 'ip',
@@ -65,15 +65,15 @@ export class LocalStrategy
   extends PassportStrategy(Strategy)
   implements OnModuleDestroy
 {
-  // key(prefix:value) -> 窗口内失败时间戳列表
+  // key(prefix:value) -> list of failure timestamps within the window
   private readonly _failLog = new Map<string, number[]>();
-  // key -> 封禁截止时间(ms)
+  // key -> ban deadline (ms)
   private readonly _banned = new Map<string, number>();
   private readonly _timer: NodeJS.Timeout;
 
   constructor(private authService: AuthService) {
     super({
-      usernameField: 'uniqName',
+      usernameField: 'account',
       passwordField: 'password',
       passReqToCallback: true,
     });
@@ -86,43 +86,43 @@ export class LocalStrategy
 
   async validate(
     req: FastifyRequest,
-    uniqName: string,
+    account: string,
     password: string,
   ): Promise<LoginAuthInfo> {
     // FastifyRequest exposes `.ip` (honors the adapter's trustProxy); `.socket` does not exist
     // on it, so the raw Node socket is the fallback.
     const ip = req.ip ?? req.raw?.socket?.remoteAddress ?? 'unknown';
 
-    // 任一维度仍在封禁期 → 直接拒（顺带返回剩余封禁时间供前端提示）
-    const bannedUntil = this.activeBanUntil(ip, uniqName);
+    // If either dimension is still in its ban window -> reject outright (also return the remaining ban time for the client to display)
+    const bannedUntil = this.activeBanUntil(ip, account);
     if (bannedUntil !== undefined) {
-      return { status: 1, uniqName, bannedUntil };
+      return { status: 1, account, bannedUntil };
     }
 
-    const user = await this.authService.validateUser(uniqName, password);
+    const user = await this.authService.validateUser(account, password);
     if (user === undefined) {
-      // 失败：两个维度各记一笔，按窗口内计数定阶梯封禁，取两者中较晚的截止时间
+      // Failure: record one count in each dimension, determine the tiered ban by the within-window count, and take the later of the two deadlines
       const ipBan = this.registerFailure(RULES.ip.prefix, ip, RULES.ip.steps);
       const userBan = this.registerFailure(
         RULES.user.prefix,
-        uniqName,
+        account,
         RULES.user.steps,
       );
       const until = maxDefined(ipBan, userBan);
       return {
         status: 1,
-        uniqName,
+        account,
         ...(until !== undefined ? { bannedUntil: until } : {}),
       };
     }
 
-    // 成功：清除该账户的失败记录（滑动窗口本会过期，即时清除体验更好）。
-    // 不清 IP 维度——NAT 下该 IP 可能还有他人正在被计数。
-    this._failLog.delete(`${RULES.user.prefix}:${uniqName}`);
-    return { status: 0, uniqName, userId: user.id };
+    // Success: clear this account's failure log (the sliding window would expire it anyway, but clearing immediately is a better UX).
+    // Do not clear the IP dimension — under NAT, that IP may have other people still being counted.
+    this._failLog.delete(`${RULES.user.prefix}:${account}`);
+    return { status: 0, account, userId: user.id };
   }
 
-  /** 记一次失败，返回若触发封禁的截止时间(否则 undefined)。 */
+  /** Record one failure; return the ban deadline if a ban is triggered (otherwise undefined). */
   private registerFailure(
     prefix: string,
     value: string,
@@ -136,7 +136,7 @@ export class LocalStrategy
     fresh.push(now);
     this._failLog.set(key, fresh);
 
-    // 取命中的最高档（steps 升序）
+    // Take the highest matched tier (steps are ascending)
     let ban: number | undefined;
     for (const s of steps) {
       if (fresh.length > s.count) ban = now + s.banMs;
@@ -145,13 +145,13 @@ export class LocalStrategy
     return ban;
   }
 
-  /** 返回当前仍在封禁期的最晚截止时间(无则 undefined)，顺带回收过期封禁。 */
-  private activeBanUntil(ip: string, uniqName: string): number | undefined {
+  /** Return the latest deadline among bans still in effect (or undefined), reclaiming expired bans along the way. */
+  private activeBanUntil(ip: string, account: string): number | undefined {
     const now = Date.now();
     let max: number | undefined;
     for (const key of [
       `${RULES.ip.prefix}:${ip}`,
-      `${RULES.user.prefix}:${uniqName}`,
+      `${RULES.user.prefix}:${account}`,
     ]) {
       const until = this._banned.get(key);
       if (until === undefined) continue;
@@ -164,7 +164,7 @@ export class LocalStrategy
     return max;
   }
 
-  /** 列当前未过期封禁（admin 看板用）。 */
+  /** List currently non-expired bans (for the admin dashboard). */
   listBans(): Array<{
     key: string;
     type: string;
@@ -195,15 +195,15 @@ export class LocalStrategy
     return out;
   }
 
-  /** 解封（admin 用）：清指定 IP 和/或账户的封禁 + 失败记录。 */
-  clearBan(opts: { ip?: string; uniqName?: string }) {
+  /** Unban (admin use): clear bans + failure logs for a specified IP and/or account. */
+  clearBan(opts: { ip?: string; account?: string }) {
     if (opts.ip) {
       this._banned.delete(`${RULES.ip.prefix}:${opts.ip}`);
       this._failLog.delete(`${RULES.ip.prefix}:${opts.ip}`);
     }
-    if (opts.uniqName) {
-      this._banned.delete(`${RULES.user.prefix}:${opts.uniqName}`);
-      this._failLog.delete(`${RULES.user.prefix}:${opts.uniqName}`);
+    if (opts.account) {
+      this._banned.delete(`${RULES.user.prefix}:${opts.account}`);
+      this._failLog.delete(`${RULES.user.prefix}:${opts.account}`);
     }
   }
 

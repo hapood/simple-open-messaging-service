@@ -40,7 +40,7 @@ export class FriendOpHandler {
     if (await this.isDuplicate(body.origin, body.id)) return;
     const from = this.requireAddress(body.from); // the remote requester → foreign stub
     const to = this.requireAddress(body.to[0]); // the local target
-    const foreignId = await this.federation.ensureForeignUser(from.username, from.domain);
+    const foreignId = await this.federation.ensureForeignUser(from.account, from.domain);
     if (body.profile) {
       await this.federation.localizeForeignProfile(foreignId, body.profile);
     }
@@ -48,7 +48,7 @@ export class FriendOpHandler {
     if (localId === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `local user ${body.to[0].username} not found`,
+        `local user ${body.to[0].account} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -70,12 +70,12 @@ export class FriendOpHandler {
     if (await this.isDuplicate(body.origin, body.id)) return;
     const from = this.requireAddress(body.from); // the remote approver → foreign stub
     const to = this.requireAddress(body.to[0]); // the local requester
-    const foreignId = await this.federation.ensureForeignUser(from.username, from.domain);
+    const foreignId = await this.federation.ensureForeignUser(from.account, from.domain);
     const localId = await this.federation.findLocalUserIdByAddress(to);
     if (localId === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `local user ${body.to[0].username} not found`,
+        `local user ${body.to[0].account} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -105,10 +105,10 @@ export class FriendOpHandler {
     }
   }
 
-  /** Validate a wire address has non-empty username + domain (defense against malformed peer input).
+  /** Validate a wire address has non-empty account + domain (defense against malformed peer input).
    *  The S2sSignatureGuard already bound from.domain==signer; this just guards the shape. */
   private requireAddress(a: S2SAddress): S2SAddress {
-    if (!a || !a.username || !a.domain) {
+    if (!a || !a.account || !a.domain) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         `malformed address ${JSON.stringify(a)}`,

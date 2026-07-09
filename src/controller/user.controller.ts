@@ -137,7 +137,7 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
-  @ApiOperation({ summary: 'Update the current user display name / bio (username is immutable)' })
+  @ApiOperation({ summary: 'Update the current user display name / bio (account is immutable)' })
   @ApiResultResponse(UserResponseDto)
   async updateProfile(
     @Request() req,
@@ -405,15 +405,15 @@ export class UserController {
       if (res.status === 0 || res.status === 2 || res.status === 3) {
         try {
           // Resolve-on-demand: if the foreign stub was addressed by id without a prior resolve (so it's
-          // a bare username with no avatar/name), pull + localize the profile first. No-op when the
+          // a bare account with no avatar/name), pull + localize the profile first. No-op when the
           // resolve endpoint already localized it. The send would fail against the same peer anyway.
           await this.federationService.ensureForeignUserLocalized(friend.id, {
-            username: friend.uniqName,
+            account: friend.account,
             domain: friend.domain,
           });
           await this.federationService.sendFriendRequest(
             req.user.userId,
-            { username: friend.uniqName, domain: friend.domain },
+            { account: friend.account, domain: friend.domain },
             message,
           );
         } catch (e) {
@@ -485,7 +485,7 @@ export class UserController {
       // other tabs/devices get the live NOTIFY.
       try {
         await this.federationService.sendFriendApprove(req.user.userId, {
-          username: requester.uniqName,
+          account: requester.account,
           domain: requester.domain,
         });
       } catch (e) {
@@ -646,11 +646,11 @@ export class UserController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
-  @ApiOperation({ summary: 'Resolve a user by {username, domain} (local lookup, or federated via S2S)' })
+  @ApiOperation({ summary: 'Resolve a user by {account, domain} (local lookup, or federated via S2S)' })
   @ApiResultResponse(UserResponseDto)
   async resolveUser(@Body() dto: UserResolveDto): Promise<ApiResult> {
-    const { username, domain } = dto;
-    // Federated (username + a peer domain != ours) → establish mutual trust (init handshake, if not
+    const { account, domain } = dto;
+    // Federated (account + a peer domain != ours) → establish mutual trust (init handshake, if not
     // already trusted), fetch the peer's profile (avatar inline as base64), find-or-create a stub, and
     // localize it (persist the avatar via saveAvatars + write name/bio), so the caller can address the
     // user by id in subsequent friend ops (same as a local lookup).
@@ -672,22 +672,22 @@ export class UserController {
       }
       let profile: S2SProfile;
       try {
-        profile = await this.federationService.fetchRemoteUser({ username, domain });
+        profile = await this.federationService.fetchRemoteUser({ account, domain });
       } catch (e) {
         return {
           code: BusinessCode.FEDERATION_DELIVERY_FAILED,
           message: `could not reach ${domain}: ${(e as Error).message}`,
         };
       }
-      const foreignId = await this.federationService.ensureForeignUser(username, domain);
+      const foreignId = await this.federationService.ensureForeignUser(account, domain);
       await this.federationService.localizeForeignProfile(foreignId, profile);
       // Return the localized stub (avatar is now a /uploads/* URL, not the wire base64).
       const data = await this.userService.findUniqueUser({ id: foreignId });
       return { code: BusinessCode.OK, message: 'successful', data };
     }
-    // Local: no domain, or a domain equal to ours → look up by username.
+    // Local: no domain, or a domain equal to ours → look up by account.
     const user = await this.userService.findUniqueUser({
-      uniqName_domain: { uniqName: username, domain: 'local' },
+      account_domain: { account: account, domain: 'local' },
       isDeleted: false,
     });
     if (user !== null) {
@@ -695,7 +695,7 @@ export class UserController {
     }
     return {
       code: BusinessCode.NOT_FOUND,
-      message: `can not find user [${username}]`,
+      message: `can not find user [${account}]`,
     };
   }
 
@@ -704,12 +704,12 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/search')
   @ApiOperation({
-    summary: 'Fuzzy local user discovery by uniqName OR display name (local users only)',
+    summary: 'Fuzzy local user discovery by account OR display name (local users only)',
   })
   async searchUsers(@Body() dto: UserSearchDto): Promise<ApiResult> {
     // Discovery endpoint — the two abuse guardrails are the DTO's @MinLength(2) on q and the hard
     // take cap here (a client must never page through the whole user table). Federated users are not
-    // discoverable: resolve those by exact username + domain via /user/resolve. Only local,
+    // discoverable: resolve those by exact account + domain via /user/resolve. Only local,
     // non-deleted accounts are returned.
     const take = Math.min(dto.take ?? 20, 20);
     const data = await this.userService.searchUsers(dto.q.trim(), {
@@ -849,18 +849,18 @@ export class UserController {
   @Post('user/register')
   @ApiOperation({ summary: 'Register a new user' })
   async registerLocal(@Body() dto: RegisterDto): Promise<ApiResult> {
-    /* Format validation (regex) for uniqName/password has moved into RegisterDto's @Matches → failures
-       go through ValidationPipe → 200/10000. Business validation (uniqName duplicate) stays in the
+    /* Format validation (regex) for account/password has moved into RegisterDto's @Matches → failures
+       go through ValidationPipe → 200/10000. Business validation (account duplicate) stays in the
        service → 200 + ALREADY_EXISTS. */
     const res = await this.userService.addUser({
-      uniqName: dto.uniqName,
+      account: dto.account,
       name: dto.name,
       hashPwd: await this.authService.hashStr(dto.password),
     });
     if (res.status === 2) {
       return {
         code: BusinessCode.ALREADY_EXISTS,
-        message: `User ${dto.uniqName} already exists`,
+        message: `User ${dto.account} already exists`,
       };
     } else {
       return {

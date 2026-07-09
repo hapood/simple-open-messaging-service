@@ -14,8 +14,8 @@ import { AuthService } from '../../services/auth.service';
 export class RegisterPageComponent {
   constructor(private routeService: RouteService, private authService: AuthService) {
   }
-  onSuccess({ uniqName, password }: { uniqName: string, password: string }) {
-    this.authService.login({ uniqName, password, isKeep: true }).subscribe(() => {
+  onSuccess({ account, password }: { account: string, password: string }) {
+    this.authService.login({ account, password, isKeep: true }).subscribe(() => {
       this.routeService.redirect(RoutePage.HOME)
     })
   }

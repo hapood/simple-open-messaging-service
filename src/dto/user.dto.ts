@@ -47,7 +47,7 @@ export class SyncPeerProfileDto extends UserIdDto {
 }
 
 /** Send a friend request, optionally with a ≤255-char note. Federated recipients are addressed by
- *  first resolving {username, domain} via /user/resolve (which mints/finds a local stub),
+ *  first resolving {account, domain} via /user/resolve (which mints/finds a local stub),
  *  then passing that stub's userId here — same DTO + path for local and federated. */
 export class SendFriendRequestDto {
   @ApiProperty({ example: 1, description: 'User id (local user OR federated stub id)' })
@@ -86,15 +86,15 @@ export class ThreadIdDto {
   threadId: number;
 }
 
-/** Resolve a user to address in friend ops. `username` alone = local lookup; `username` + `domain` =
+/** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
  *  federated (runs the init handshake + signed profile GET + stub localization). The `@` separator is a
  *  UI input aid ONLY — the client splits a typed `alice@bbb.com` into these two fields; the API never
  *  carries an @-joined string. */
 export class UserResolveDto {
-  @ApiProperty({ example: 'alice', description: "Username (a local uniqName, or the peer user's username)" })
+  @ApiProperty({ example: 'alice', description: "Account (a local account, or the peer user's account)" })
   @IsString()
   @IsNotEmpty()
-  username: string;
+  account: string;
 
   @ApiProperty({ required: false, example: 'bbb.com', description: 'Peer domain. Omitted/empty = local lookup.' })
   @IsOptional()
@@ -103,11 +103,11 @@ export class UserResolveDto {
   domain?: string;
 }
 
-/** Local user discovery (fuzzy). Matches uniqName OR display name case-insensitively; min 2 chars so a
+/** Local user discovery (fuzzy). Matches account OR display name case-insensitively; min 2 chars so a
  *  single keystroke can't enumerate the user base. take is clamped server-side (see POST /user/search).
- *  Federated users are NOT discoverable here — resolve those by exact username + domain via UserResolveDto. */
+ *  Federated users are NOT discoverable here — resolve those by exact account + domain via UserResolveDto. */
 export class UserSearchDto {
-  @ApiProperty({ example: 'ali', description: 'Search query (≥2 chars; matches uniqName OR display name)' })
+  @ApiProperty({ example: 'ali', description: 'Search query (≥2 chars; matches account OR display name)' })
   @IsString()
   @IsNotEmpty()
   @MinLength(2, { message: 'q must be at least 2 chars' })
@@ -145,7 +145,7 @@ export class PeerTrustStatusDto {
 
 /**
  * Update the current user's profile (nickname/bio). All fields optional; send only what changes.
- * username (uniqName) cannot be changed here — identity changes go through a separate flow.
+ * account (account) cannot be changed here — identity changes go through a separate flow.
  */
 export class UpdateProfileDto {
   @ApiProperty({

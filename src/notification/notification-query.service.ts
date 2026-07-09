@@ -72,7 +72,7 @@ export class NotificationQueryService {
       return tb - ta || a.threadId - b.threadId;
     });
 
-    // Resolve P2P display names (the peer's User.name, falling back to uniqName).
+    // Resolve P2P display names (the peer's User.name, falling back to account).
     const p2pThreadIds = withUnread
       .filter((p) => p.thread.type === 'P2P')
       .map((p) => p.threadId);

@@ -23,48 +23,50 @@ export interface AlbumMedia {
 /** Legacy alias — gallery-viewer and older call sites still reference AlbumImage. */
 export type AlbumImage = AlbumMedia;
 
-/** FILE 消息附件：服务端 POST /upload/file 返回的 { url, name, size, mimeType }（存于 Message.content 的 JSON）。 */
+/** FILE message attachment: { url, name, size, mimeType } returned by the server's POST /upload/file (stored as JSON inside Message.content). */
 export interface FileInfo {
-  /** 服务端相对 URL（/uploads/<name>），FileRow 的下载锚点 href。 */
+  /** Server-relative URL (/uploads/<name>); the FileRow download anchor's href. */
   url: string;
-  /** 安全化后的展示文件名。 */
+  /** Sanitized display file name. */
   name: string;
-  /** 字节数（卡片渲染为可读大小）。 */
+  /** Size in bytes (rendered as a human-readable size by the card). */
   size: number;
-  /** 校验过的 mimetype（决定文件类型图标）。 */
+  /** Validated mimetype (drives the file-type icon). */
   mimeType: string;
 }
 
 /**
- * 已解析、可渲染的消息数据。HttpItemSource 把后端 Message 翻成它。
+ * Parsed, render-ready message data. HttpItemSource translates a backend Message into this.
  *
- * 不含 isShowHead/isGroupStart——分组标在 createItem 渲染时按上一条算
- *（classifyGroupFlags），这样 append 新消息时旧末条高度不变、零 reflow。
+ * Deliberately omits isShowHead/isGroupStart — grouping flags are computed at createItem render
+ * time against the previous message (classifyGroupFlags), so appending a new message never
+ * changes the old tail item's height (zero reflow).
  */
 export interface ChatMsgData {
   type: 'msg';
-  /** = Message.id（虚拟滚动 track key + WS/分页去重）。 */
+  /** = Message.id (virtual-scroll track key + WS/pagination dedup). */
   msgId: string;
-  /** 发送者 userId（classifyGroupFlags 按它判组首）。 */
+  /** Sender userId (classifyGroupFlags keys group-start off this). */
   creator: number;
-  /** = creator === 当前用户 userId。 */
+  /** = creator === current user's userId. */
   isSelf: boolean;
-  /** 发送者显示名（profile.uniqName；self 也填，模板按 showName 决定显不显）。 */
+  /** Sender display name (profile.account; filled for self too — template decides via showName). */
   name: string;
-  /** PURE_TEXT 正文 / INVITE 的 JSON 原文 / 未支持类型兜底文本。 */
+  /** PURE_TEXT body / INVITE JSON source / fallback text for unsupported types. */
   text: string;
-  /** PURE_TEXT 是否为富文本 HTML（来自 Tiptap 编辑器：含 <strong>/<em>/<code>/@mention chip）。
-   *  true=用 [innerHTML] 渲染（Angular 自动 sanitize）；缺省/false=纯文本 {{}} 渲染（自动转义）。
-   *  这样区分既能展示编辑器的富文本/原子 @chip，又让含 `<` 的历史/收到的纯文本安全转义不破。 */
+  /** Whether the PURE_TEXT body is rich-text HTML (from the Tiptap editor: <strong>/<em>/<code>/@mention chip).
+   *  true = render via [innerHTML] (Angular sanitizes automatically); default/false = plain-text {{}} render
+   *  (auto-escaped). This split both surfaces the editor's rich text / atomic @chips AND keeps historical /
+   *  received plain text containing `<` safely escaped without breaking layout. */
   rich?: boolean;
-  /** HH:mm（日期上下文交 date 分隔行）。 */
+  /** HH:mm (the date context is handled by the date separator row). */
   time: string;
   contentType: 'PURE_TEXT' | 'INVITE' | 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO';
   /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
   images: AlbumMedia[] | null;
-  /** FILE：附件元信息（url/name/size/mimeType）。null=非文件。 */
+  /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */
   file: FileInfo | null;
-  /** 原始毫秒（日期分隔判定）。 */
+  /** Raw epoch milliseconds (drives date-separator decisions). */
   createdAtMs: number;
   /** Delivery state for self-sent messages, rendered as a status tick (sending=animated spinner ring, sent=check,
    *  failed=retry glyph — click on the row's retry output re-sends). Absent on received messages (no tick). The kernel
@@ -77,7 +79,8 @@ export interface ChatMsgData {
 }
 
 /**
- * 虚拟滚动 item 数据。date 分隔不再是一种数据类型——source 只返回真实消息（ChatMsgData），
- * date 由 createItem 工厂挂载时按相邻消息跨日判定派生（见 date-format.ts）。保留 ChatItemData 别名以稳接口。
+ * Virtual-scroll item data. The date separator is no longer a data type — the source returns only real
+ * messages (ChatMsgData); date separators are derived at createItem mount time by detecting day boundaries
+ * between adjacent messages (see date-format.ts). The ChatItemData alias is kept for interface stability.
  */
 export type ChatItemData = ChatMsgData;

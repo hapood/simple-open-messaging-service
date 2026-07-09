@@ -51,7 +51,7 @@
     "registerTitle": "创建你的账号",
     "registerSub": "只需几秒即可加入 SOMS",
     "brandTagline": "开放聊天，简单即时。",
-    "username": "用户名",
+    "account": "账户名",
     "displayName": "显示名称",
     "password": "密码",
     "passwordAgain": "再次输入密码",
@@ -63,7 +63,7 @@
     "register": "注册",
     "hidePassword": "隐藏密码",
     "showPassword": "显示密码",
-    "uniqNameHint": "3-31 个字符：字母、数字、下划线，须以字母开头",
+    "accountHint": "3-31 个字符：字母、数字、下划线，须以字母开头",
     "displayNameHint": "1 到 30 个字符",
     "passwordHint": "6 到 20 个字母、数字或符号",
     "passwordMismatch": "两次输入的密码不一致，请重新输入",
@@ -83,8 +83,8 @@
     "namePlaceholder": "你的昵称",
     "bio": "个人简介",
     "bioPlaceholder": "介绍一下你自己",
-    "username": "用户名",
-    "usernameReadonly": "不可更改",
+    "account": "账户名",
+    "accountReadonly": "不可更改",
     "manageSessions": "管理登录会话",
     "changeAvatarAria": "更换头像",
     "nameEmpty": "昵称不能为空",
@@ -132,9 +132,9 @@
   },
   "friend": {
     "title": "添加好友",
-    "searchPlaceholder": "用户名 或 用户名@域名",
+    "searchPlaceholder": "账户名 或 账户名@域名",
     "findTitle": "查找你的好友",
-    "findSub": "按用户名或 用户名@域名 搜索以发送请求。",
+    "findSub": "按账户名或 账户名@域名 搜索以发送请求。",
     "noUserTitle": "未找到用户",
     "noUserSub": "找不到“{{q}}”。",
     "sendRequest": "发送请求",
@@ -387,6 +387,10 @@
     "about": "关于",
     "version": "版本",
     "backend": "服务器",
-    "notConnected": "未配置"
+    "notConnected": "未配置",
+    "media": "媒体",
+    "mediaThreshold": "图片加载阈值",
+    "mediaThresholdHint": "较大的图片显示点击加载占位符。",
+    "noLimit": "不限制"
   }
 }

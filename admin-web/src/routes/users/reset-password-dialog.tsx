@@ -67,7 +67,7 @@ export function ResetPasswordDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>{t('resetPassword.title', { name: user?.uniqName ?? '' })}</DialogTitle>
+          <DialogTitle>{t('resetPassword.title', { name: user?.account ?? '' })}</DialogTitle>
         </DialogHeader>
         <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4 py-2">
           <div className="flex flex-col gap-2">

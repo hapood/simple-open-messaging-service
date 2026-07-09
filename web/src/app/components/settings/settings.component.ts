@@ -1,134 +1,90 @@
-import { Component, computed, inject, signal } from '@angular/core';
-import { NavStateMachineService } from '../../services/nav-state.service';
+import { Component, computed, inject } from '@angular/core';
+import { NgComponentOutlet } from '@angular/common';
+import { trigger, transition, style, animate } from '@angular/animations';
 import { MatListModule } from '@angular/material/list';
-import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
-import { MatButtonToggleModule, MatButtonToggleChange } from '@angular/material/button-toggle';
-import { MatSelectModule, MatSelectChange } from '@angular/material/select';
-import { MatButtonModule } from '@angular/material/button';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import dayjs from 'dayjs';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { ThemeService, ThemeMode } from '../../services/theme.service';
-import { LanguageService, AppLang } from '../../services/language.service';
+import { NavStateMachineService } from '../../services/nav-state.service';
+import { ThemeService } from '../../services/theme.service';
+import { LanguageService } from '../../services/language.service';
+import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
-import { MediaSizeThresholdService, MEDIA_THRESHOLD_OPTIONS_KB } from '../../services/media-size-threshold.service';
-import { isAndroid, isTauri, apiOrigin, apiOriginIsLocalhost } from '../../services/runtime';
-import { appVersion } from '../../version';
+import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId } from './settings-categories';
+
+/** Drill-in slide for the sub-page, matching `overlaySlide`'s motion language in HomeShell (the same
+ *  enter/leave curves) so the Settings sub-page glides consistently with the rest of the app's overlays.
+ *  Fires on the sub-page view's enter (`@if`) and leave. */
+const pageSlide = trigger('pageSlide', [
+  transition(':enter', [
+    style({ transform: 'translate3d(100%, 0, 0)' }),
+    animate('300ms cubic-bezier(0.32, 0.72, 0, 1)', style({ transform: 'translate3d(0, 0, 0)' })),
+  ]),
+  transition(':leave', [
+    animate('200ms cubic-bezier(0.4, 0, 1, 1)', style({ transform: 'translate3d(100%, 0, 0)' })),
+  ]),
+]);
 
 /**
- * The Settings page — rendered in the `aside` auxiliary outlet, exactly like `profile` / `group-info`.
- * Owns no state of its own: each control binds to the service that owns its preference (Theme /
- * Language / BackgroundSync), so a toggle here and a quick-cycle button elsewhere stay in sync.
+ * The MOBILE Settings surface — a two-tier Material settings UI rendered in the `aside` slot (category
+ * list → drill into a category sub-page that slides over the root).
  *
- * Sections:
- *  - Appearance: full 3-way theme picker (the only place `system` mode is exposed in the UI).
- *  - Language: dropdown bound to LanguageService (scales as languages are added).
- *  - Push (Android only): FCM status readout + "check now" + the foreground-service toggle + the
- *    6-hour WorkManager poll toggle with its next scheduled time.
- *  - About: app version + configured backend origin (Tauri).
+ * The ROOT view is a category list (leading icon + title + current-value summary + chevron). Tapping a
+ * category calls {@link NavStateMachineService.pushAside} with `{ category }`, stacking a new aside entry;
+ * the SUB-PAGE view then slides over the root (`[@pageSlide]`) and renders the category's body-only
+ * component via `*ngComponentOutlet`. The single back button → `nav.back()` pops the sub-page, or — at
+ * root depth — closes the aside. Hardware-back follows the same path (it also calls `back()`).
+ *
+ * Desktop/tablet do NOT use this component — there settings opens as a wide two-column DIALOG instead
+ * (see {@link SettingsDialogComponent}); the two share the category registry ({@link buildSettingsCategories})
+ * and the body-only sub-page components, differing only in interaction (drill-in vs flat) and shell.
  */
 @Component({
   selector: 'app-settings',
-  imports: [
-    MatListModule,
-    MatSlideToggleModule,
-    MatButtonToggleModule,
-    MatSelectModule,
-    MatButtonModule,
-    TranslocoPipe,
-    IconComponent,
-  ],
+  imports: [MatListModule, TranslocoPipe, IconComponent, NgComponentOutlet],
   templateUrl: './settings.component.html',
   styleUrl: './settings.component.scss',
+  animations: [pageSlide],
 })
 export class SettingsComponent {
   readonly AppIconType = AppIconType;
-  readonly appVersion = appVersion;
 
   private readonly nav = inject(NavStateMachineService);
   private readonly transloco = inject(TranslocoService);
-  readonly theme = inject(ThemeService);
-  readonly language = inject(LanguageService);
-  readonly bgSync = inject(BackgroundSyncService);
-  readonly mediaSize = inject(MediaSizeThresholdService);
-  /** Image load threshold options (KB; 0 = unlimited). */
-  readonly mediaThresholdOptions = MEDIA_THRESHOLD_OPTIONS_KB;
+  private readonly theme = inject(ThemeService);
+  private readonly language = inject(LanguageService);
+  private readonly mediaSize = inject(MediaSizeThresholdService);
+  private readonly bgSync = inject(BackgroundSyncService);
 
-  /** The Push section (FCM + FGS + poll) exists only in the Tauri Android shell. */
-  readonly showPush = isTauri() && isAndroid();
-  /** The Backend row is only meaningful under Tauri (where the origin is configurable). */
-  readonly showBackend = isTauri();
-  /** Human-readable backend origin, or null when still on the localhost default. */
-  readonly backendLabel = computed(() => {
-    void this.language.lang(); // re-evaluate on language switch (notConnected label)
-    return apiOrigin && !apiOriginIsLocalhost() ? apiOrigin : null;
+  /** The shared category registry (built once; the same array drives the desktop/tablet dialog too). */
+  readonly categories = buildSettingsCategories({
+    theme: this.theme,
+    language: this.language,
+    mediaSize: this.mediaSize,
+    bgSync: this.bgSync,
+    transloco: this.transloco,
   });
 
-  /** True while a manual FCM check is in flight (the "Check" button shows a checking state). */
-  readonly checking = signal(false);
+  /** Visible categories, in display order. */
+  readonly visibleCategories = computed(() =>
+    this.categories
+      .filter((c) => c.visible())
+      .sort((a, b) => a.order - b.order),
+  );
 
-  /** True when FCM is active on this device — drives the "FGS not needed" hint on the FGS row. */
-  readonly fcmActive = computed(() => this.bgSync.fcmStatus().hasToken);
-  readonly fcmStatusLabel = computed(() => {
-    void this.language.lang();
-    return this.transloco.translate(this.fcmActive() ? 'settings.fcmActive' : 'settings.fcmUnavailable');
-  });
-  readonly fcmLastCheckLabel = computed(() => {
-    void this.language.lang();
-    const ms = this.bgSync.fcmStatus().lastCheck;
-    if (!ms) return this.transloco.translate('settings.fcmNever');
-    return this.transloco.translate('settings.fcmLastCheck', { time: dayjs(ms).format('MM-DD HH:mm') });
+  /** The active category, derived from the topmost aside entry's `params.category` (null at root). */
+  readonly activeCategory = computed<SettingsCategory | null>(() => {
+    const id = this.nav.asideTop()?.params?.['category'] as SettingsCategoryId | undefined;
+    return id ? (this.categories.find((c) => c.id === id) ?? null) : null;
   });
 
-  /** Next WorkManager pull time, formatted (≈ prefix in the template). Empty when not scheduled. */
-  readonly nextPullLabel = computed(() => {
-    void this.bgSync.enabled(); // re-evaluate when the poll toggle flips
-    const t = this.bgSync.nextPullTime();
-    return t > 0 ? dayjs(t).format('HH:mm') : '';
-  });
-
-  /** Native-script label for a language id (`'English'` / `'简体中文'`) — self-identifies. */
-  languageLabel(l: AppLang): string {
-    return this.language.langLabelOf(l);
+  /** Drill into a category: push a new aside entry (the sub-page slides over the root). */
+  openCategory(c: SettingsCategory): void {
+    this.nav.pushAside('settings', { category: c.id });
   }
 
-  onThemeChange(e: MatButtonToggleChange): void {
-    this.theme.setMode(e.value as ThemeMode);
-  }
-
-  onLangChange(e: MatSelectChange): void {
-    this.language.setLang(e.value as AppLang);
-  }
-
-  onThresholdChange(e: MatSelectChange): void {
-    this.mediaSize.setKb(Number(e.value));
-  }
-
-  /** Display label for a threshold option: "512 KB" / "1 MB" / "2 MB" / "No limit". */
-  thresholdLabel(kb: number): string {
-    if (kb <= 0) return 'No limit';
-    if (kb >= 1024) return `${kb / 1024} MB`;
-    return `${kb} KB`;
-  }
-
-  onPollChange(e: MatSlideToggleChange): void {
-    this.bgSync.setEnabled(e.checked);
-  }
-
-  onFgsChange(e: MatSlideToggleChange): void {
-    this.bgSync.setFgsEnabled(e.checked);
-  }
-
-  /** Manual FCM availability check — force a token fetch + show a checking state until it settles. */
-  requestFcmCheck(): void {
-    this.checking.set(true);
-    this.bgSync.requestFcmCheck();
-    // Match BackgroundSyncService's re-read delay; the token fetch + emit lands around then.
-    window.setTimeout(() => this.checking.set(false), 2700);
-  }
-
-  /** Close the aside panel. Clears the aside signal so back can't re-open it. */
+  /** Back: pops the sub-page (→ root list) or, at root depth, closes the aside. Same path hardware-back
+   *  takes. */
   goBack(): void {
-    this.nav.closeAside();
+    this.nav.back();
   }
 }

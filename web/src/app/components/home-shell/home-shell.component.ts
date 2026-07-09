@@ -70,9 +70,10 @@ export class HomeShellComponent {
 
   /** Chat/aside "open" classes position the mobile overlays (and toggle the desktop drawer mask). */
   readonly chatActive = computed(() => this.navState.chatThreadId() !== undefined)
-  readonly asideActive = computed(() => this.navState.aside() !== undefined)
-  /** The aside panel kind (template @switch), or undefined when no aside is open. */
-  readonly asidePanel = computed<AsidePanel | undefined>(() => this.navState.aside()?.panel)
+  readonly asideActive = computed(() => this.navState.aside().length > 0)
+  /** The aside panel kind (template @switch), or undefined when no aside is open. Drawn from the topmost
+   *  aside stack entry — drilling into a sub-page keeps the same `panel`, only the entry's `params` change. */
+  readonly asidePanel = computed<AsidePanel | undefined>(() => this.navState.asideTop()?.panel)
 
   /** Drives [@overlaySlide] on the chat-slot: only mobile animates (closed↔open); desktop/tablet stay
    *  `static` so the inline flex column is never transformed. */

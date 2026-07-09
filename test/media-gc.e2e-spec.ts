@@ -95,9 +95,9 @@ describe('Media asset garbage collection (Phase 5)', () => {
     const orphanUrl = await upload.saveAvatars(png);
     // `liveUrl` is the CURRENT avatar of a user → live; `orphanUrl` references nothing → expired.
     await prisma.user.upsert({
-      where: { uniqName_domain: { uniqName: 'avatar-gc-live', domain: 'local' } },
+      where: { account_domain: { account: 'avatar-gc-live', domain: 'local' } },
       create: {
-        uniqName: 'avatar-gc-live',
+        account: 'avatar-gc-live',
         domain: 'local',
         hashPwd: 'x',
         name: 'live',
@@ -119,7 +119,7 @@ describe('Media asset garbage collection (Phase 5)', () => {
     // Cleanup the live user so repeated runs / forks stay deterministic.
     await prisma.user
       .delete({
-        where: { uniqName_domain: { uniqName: 'avatar-gc-live', domain: 'local' } },
+        where: { account_domain: { account: 'avatar-gc-live', domain: 'local' } },
       })
       .catch(() => {});
   });

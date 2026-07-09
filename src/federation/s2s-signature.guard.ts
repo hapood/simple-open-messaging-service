@@ -65,8 +65,8 @@ export class S2sSignatureGuard implements CanActivate {
 
     // 6. Binding rule (bodies carrying a `from` field; GETs have none): the asserted sender must live
     // on the signer's domain, so a trusted peer can't forge users of another peer. `from` is a
-    // {username, domain} object — no @-joined string on the wire.
-    const fromAddress = (req.body as { from?: { username?: unknown; domain?: unknown } } | undefined)?.from;
+    // {account, domain} object — no @-joined string on the wire.
+    const fromAddress = (req.body as { from?: { account?: unknown; domain?: unknown } } | undefined)?.from;
     if (fromAddress) {
       const fromDomain = typeof fromAddress.domain === 'string' ? fromAddress.domain : undefined;
       if (!fromDomain || fromDomain !== signerDomain) {

@@ -122,7 +122,7 @@ interface ApiResult<T = any> {
 
 ### 登录流程（Local 策略）
 
-1. `POST /auth/login`（body: `uniqName`, `password`）→ `LocalAuthGuard` → `LocalStrategy.validate()`。
+1. `POST /auth/login`（body: `account`, `password`）→ `LocalAuthGuard` → `LocalStrategy.validate()`。
 2. **IP 封禁检查**：查内存 `_ipBlackDict[ip]`，未解封则直接拒绝。
 3. `AuthService.validateUser()`：查用户后用 `argon2.verify` 校验密码。
 4. **失败计数与封禁**（[src/auth/local.strategy.ts](../src/auth/local.strategy.ts)）：累计失败 `>3` 封禁 30 分钟、`>6` 封禁 3 小时、`>9` 封禁 24 小时；每 24 小时清理超过 2 天的记录。

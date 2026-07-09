@@ -9,11 +9,11 @@
 
   <div class="input-line">
     <mat-form-field class="field" appearance="fill">
-      <mat-label>{{ 'auth.username' | transloco }}</mat-label>
-      <input matInput name="uniqName" autocomplete="username" autofocus
-        [ngModel]="uniqName()" (ngModelChange)="onUniqNameInput($event)">
+      <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+      <input matInput name="account" autocomplete="username" autofocus
+        [ngModel]="account()" (ngModelChange)="onAccountInput($event)">
     </mat-form-field>
-    <div class="hint">{{uniqNameHint()}}</div>
+    <div class="hint">{{accountHint()}}</div>
   </div>
 
   <div class="input-line">

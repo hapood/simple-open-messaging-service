@@ -60,8 +60,9 @@ export class AuthController {
   @UseGuards(LocalAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
-  @ApiOperation({ summary: '登录（凭据换 access/refresh token）' })
-  // login 凭据由 LocalStrategy 校验；@Body DTO 仅取 device，并经全局 ValidationPipe 白名单。
+  @ApiOperation({ summary: 'Login (exchange credentials for an access/refresh token pair)' })
+  // Login credentials are verified by LocalStrategy; the @Body DTO only consumes `device`, and is
+  // whitelisted through the global ValidationPipe.
   @ApiBody({ type: LoginDto })
   async login(
     @Request() req,
@@ -95,7 +96,7 @@ export class AuthController {
       } else {
         return {
           code: BusinessCode.UNAUTHENTICATED,
-          message: 'error username/password',
+          message: 'error account/password',
         };
       }
     }
@@ -105,7 +106,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-access')
   @ApiOperation({
-    summary: '用 refresh token 轮换出新的 access + refresh（检测重用即全家族吊销）',
+    summary: 'Rotate a fresh access + refresh token pair from the refresh token (reuse detection revokes the entire family)',
   })
   async renewaccessTokens(
     @Body() dto: RefreshTokenDto,
@@ -125,8 +126,9 @@ export class AuthController {
         data: { access_token: access, refresh_token: refresh },
       };
     } catch (e) {
-      // rotateRefreshToken 失败抛 reason 字符串：reuse → 家族已连根吊销，前端须强制重登；
-      // invalid/expired → 普通 401。任一失败都清掉 media cookie（旧 token 已不可用）。
+      // rotateRefreshToken throws a reason string on failure: reuse → the whole family is revoked
+      // root-and-branch and the client must force a re-login; invalid/expired → a plain 401. Either
+      // failure also clears the media cookie (the old token is no longer usable).
       this.clearMediaCookie(reply);
       if (e === 'reuse') {
         return {
@@ -142,7 +144,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-refresh')
   @ApiOperation({
-    summary: '用 refresh token 轮换出新的 access + refresh（与 renew-access 同义，保留兼容）',
+    summary: 'Rotate a fresh access + refresh token pair from the refresh token (synonym of renew-access, kept for compatibility)',
   })
   async renewRefreshTokens(
     @Body() dto: RefreshTokenDto,
@@ -178,12 +180,13 @@ export class AuthController {
   @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
-  @ApiOperation({ summary: '登出（吊销 refresh；accessJti 可选，即时把当前 access 入黑名单）' })
+  @ApiOperation({ summary: 'Logout (revoke the refresh token; accessJti optional — immediately blacklists the current access token)' })
   async logout(
     @Body() dto: LogoutDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
-    // 前端发 'public' 头 + body，无需 JWT 鉴权，以 refresh token 持有证明吊销。
+    // The client sends a 'public' header + body; no JWT auth needed — possession of the refresh
+    // token authorizes the revocation.
     await this.authService.logout(dto.refreshToken);
     if (dto.accessJti) {
       await this.authService.blacklistAccessJti(dto.accessJti);
@@ -196,7 +199,7 @@ export class AuthController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout-all')
-  @ApiOperation({ summary: '全设备登出（吊销所有会话 + bump tokenVersion）' })
+  @ApiOperation({ summary: 'Logout all devices (revoke every session + bump tokenVersion)' })
   async logoutAll(
     @Request() req,
     @Res({ passthrough: true }) reply: FastifyReply,
@@ -211,7 +214,7 @@ export class AuthController {
   @Throttle(10, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/change-password')
-  @ApiOperation({ summary: '修改密码（吊销所有其他会话，当前设备重发 token）' })
+  @ApiOperation({ summary: 'Change password (revoke all other sessions; reissue tokens for the current device)' })
   async changePassword(
     @Request() req,
     @Body() dto: ChangePasswordDto,
@@ -239,7 +242,7 @@ export class AuthController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/sessions')
-  @ApiOperation({ summary: '列当前用户活跃会话' })
+  @ApiOperation({ summary: "List the current user's active sessions" })
   async sessions(@Request() req): Promise<ApiResult> {
     return {
       code: BusinessCode.OK,
@@ -252,7 +255,7 @@ export class AuthController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/revoke-session')
-  @ApiOperation({ summary: '吊销单个会话（按 jti + 属当前用户）' })
+  @ApiOperation({ summary: 'Revoke a single session (by jti, belonging to the current user)' })
   async revokeSession(
     @Request() req,
     @Body() dto: RevokeSessionDto,

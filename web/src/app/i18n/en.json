@@ -51,7 +51,7 @@
     "registerTitle": "Create your account",
     "registerSub": "Join SOMS in just a few seconds",
     "brandTagline": "Open chat. Simple and instant.",
-    "username": "Username",
+    "account": "Account",
     "displayName": "Display Name",
     "password": "Password",
     "passwordAgain": "Password Again",
@@ -63,7 +63,7 @@
     "register": "Register",
     "hidePassword": "Hide password",
     "showPassword": "Show password",
-    "uniqNameHint": "3-31 chars: letters, digits, underscore; start with a letter",
+    "accountHint": "3-31 chars: letters, digits, underscore; start with a letter",
     "displayNameHint": "1 to 30 characters",
     "passwordHint": "6 to 20 letters/numbers/symbols",
     "passwordMismatch": "Two entered passwords do not match, make sure to re-enter",
@@ -83,8 +83,8 @@
     "namePlaceholder": "Your name",
     "bio": "Bio",
     "bioPlaceholder": "Say something about yourself",
-    "username": "Username",
-    "usernameReadonly": "Cannot be changed",
+    "account": "Account",
+    "accountReadonly": "Cannot be changed",
     "manageSessions": "Manage sessions",
     "changeAvatarAria": "Change avatar",
     "nameEmpty": "Name cannot be empty",
@@ -132,9 +132,9 @@
   },
   "friend": {
     "title": "Add Friends",
-    "searchPlaceholder": "Username or username@domain",
+    "searchPlaceholder": "Account or account@domain",
     "findTitle": "Find your friends",
-    "findSub": "Search by username or username@domain to send a request.",
+    "findSub": "Search by account or account@domain to send a request.",
     "noUserTitle": "No user found",
     "noUserSub": "We couldn't find \"{{q}}\".",
     "sendRequest": "Send Request",
@@ -387,6 +387,10 @@
     "about": "About",
     "version": "Version",
     "backend": "Backend",
-    "notConnected": "Not configured"
+    "notConnected": "Not configured",
+    "media": "Media",
+    "mediaThreshold": "Image load threshold",
+    "mediaThresholdHint": "Larger images show a tap-to-load placeholder.",
+    "noLimit": "No limit"
   }
 }

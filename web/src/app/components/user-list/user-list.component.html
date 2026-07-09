@@ -1,7 +1,7 @@
 <div>@for (thread of dispThreadList(); track thread.id) {
   <div class="thread-item" (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
-      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.uniqName"
+      <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.account"
         [src]="thread.peerUser.avatar"></app-user-avatar>
       @if (thread.selected === true) {
         <span class="check" aria-hidden="true">

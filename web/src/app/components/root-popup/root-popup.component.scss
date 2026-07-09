@@ -19,3 +19,10 @@
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.18);
   overflow: auto;
 }
+
+// Wide variant: a two-column dialog (e.g. Settings) needs more room than the default 480px single-column
+// card. Only widens the desktop centered card; tablet/mobile are full-screen sheets (no .desktop class).
+.popup-com-wrapper.desktop.wide {
+  width: 720px;
+  max-width: 94vw;
+}

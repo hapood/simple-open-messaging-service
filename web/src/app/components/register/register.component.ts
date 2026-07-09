@@ -17,41 +17,41 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
     styleUrl: './register.component.scss'
 })
 export class RegisterComponent {
-  @Output() onSuccess = new EventEmitter<{ uniqName: string, password: string }>();
+  @Output() onSuccess = new EventEmitter<{ account: string, password: string }>();
 
   readonly AppIcon = AppIconType;
   private readonly transloco = inject(TranslocoService);
 
-  uniqName = signal('');
+  account = signal('');
   name = signal('');
   password = signal('');
   password2 = signal('');
-  uniqNameHint = signal('');
+  accountHint = signal('');
   nameHint = signal('');
   passwordHint = signal('');
-  isUniqNameVld = signal(false);
+  isAccountVld = signal(false);
   isNameVld = signal(false);
   isPwdVld = signal(false);
   resp = signal('');
   showPassword = signal(false)
   isReging = signal(false)
   isRegBtnDisabled = computed(() => {
-    return this.isSuccess() || this.isReging() || this.isUniqNameVld() === false || this.isNameVld() === false || this.isPwdVld() === false
+    return this.isSuccess() || this.isReging() || this.isAccountVld() === false || this.isNameVld() === false || this.isPwdVld() === false
   })
   isSuccess = signal(false)
   // Telegram-style handle: starts with a letter, then 2-30 more of [a-zA-Z0-9_] (3-31 total). Matches
-  // the backend RegisterDto rule; alnum + underscore keeps the handle URL/address-safe for username@domain.
-  private _uniqNameRegex = /^[a-zA-Z][a-zA-Z0-9_]{2,30}$/
+  // the backend RegisterDto rule; alnum + underscore keeps the handle URL/address-safe for account@domain.
+  private _accountRegex = /^[a-zA-Z][a-zA-Z0-9_]{2,30}$/
   private _passwordRegx: RegExp = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/;
   constructor(private userService: UserService, private routeService: RouteService) {
     effect(() => {
-      const uniqname = this.uniqName()
-      if (!this._uniqNameRegex.test(uniqname)) {
-        this.isUniqNameVld.set(false)
-        this.uniqNameHint.set(this.transloco.translate('auth.uniqNameHint'))
+      const account = this.account()
+      if (!this._accountRegex.test(account)) {
+        this.isAccountVld.set(false)
+        this.accountHint.set(this.transloco.translate('auth.accountHint'))
       } else {
-        this.isUniqNameVld.set(true)
-        this.uniqNameHint.set('')
+        this.isAccountVld.set(true)
+        this.accountHint.set('')
       }
     })
     effect(() => {
@@ -82,8 +82,8 @@ export class RegisterComponent {
     this.showPassword.update(v => !v)
   }
 
-  onUniqNameInput(v: string) {
-    this.uniqName.set(v)
+  onAccountInput(v: string) {
+    this.account.set(v)
     this.clearError()
   }
 
@@ -112,17 +112,17 @@ export class RegisterComponent {
     if (this.isReging()) {
       return
     }
-    const uniqName = this.uniqName(), password = this.password()
+    const account = this.account(), password = this.password()
     if (this.password2() !== password) {
       this.resp.set(this.transloco.translate('auth.passwordMismatch'))
       return
     }
     this.isReging.set(true)
-    this.userService.register({ uniqName, name: this.name().trim(), password })
+    this.userService.register({ account, name: this.name().trim(), password })
       .subscribe({
         next: (res) => {
           if (res.code === 0) {
-            this.onSuccess.emit({ uniqName, password })
+            this.onSuccess.emit({ account, password })
             this.isReging.set(false)
             this.isSuccess.set(true)
           } else {

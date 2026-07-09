@@ -114,7 +114,7 @@ export function SessionsPage() {
               data?.list.map((s) => (
                 <TableRow key={s.jti}>
                   <TableCell className="font-medium">
-                    {s.user?.uniqName ?? '#' + s.userId}
+                    {s.user?.account ?? '#' + s.userId}
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">{s.device ?? '—'}</Badge>

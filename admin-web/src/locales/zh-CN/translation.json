@@ -31,19 +31,19 @@
   },
   "login": {
     "title": "Admin 登录",
-    "username": "用户名",
+    "account": "账户名",
     "password": "密码",
     "submit": "登录",
-    "usernameRequired": "请输入用户名",
+    "accountRequired": "请输入账户名",
     "passwordRequired": "请输入密码",
     "failed": "登录失败"
   },
   "users": {
     "title": "用户管理",
-    "searchPlaceholder": "搜索 uniqName",
+    "searchPlaceholder": "搜索 账户名",
     "col": {
       "id": "ID",
-      "uniqName": "uniqName",
+      "account": "账户名",
       "domain": "domain",
       "foreigner": "外宾",
       "status": "状态",
@@ -150,7 +150,7 @@
   "push": {
     "title": "推送管理",
     "desc": "已注册的推送设备 token（FCM / Web Push）+ 测试推送 + 通道配置状态。",
-    "searchPlaceholder": "按用户名 / token / deviceId 搜索",
+    "searchPlaceholder": "按账户名 / token / deviceId 搜索",
     "transportLabel": "通道状态：",
     "configured": "已配置",
     "notConfigured": "未配置",

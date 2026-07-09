@@ -27,9 +27,10 @@
        [@overlaySlide]="chatSlotState()"
        (@overlaySlide.start)="onSlideStart($event)"
        (@overlaySlide.done)="onSlideDone($event, 'chat')"><app-chat-pane /></div>
-  <!-- aside panel (peer-profile / group-info / settings): rendered by @switch on nav.aside().panel — NO
-       named router-outlet. Slides in from the right on mobile (over the chat); desktop side panel and
-       tablet absolute overlay stay `static`. -->
+  <!-- aside panel (peer-profile / group-info / settings): rendered by @switch on the topmost aside
+       entry's panel (asideTop().panel — the aside is a stack, so drilling into a sub-page keeps the same
+       panel and only changes the entry's params). NO named router-outlet. Slides in from the right on
+       mobile (over the chat); desktop side panel and tablet absolute overlay stay `static`. -->
   <div class="aside-slot"
        [@overlaySlide]="asideSlotState()"
        (@overlaySlide.start)="onSlideStart($event)"

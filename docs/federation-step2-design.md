@@ -87,9 +87,13 @@ const last = await tx.message.aggregate({
   where: { threadId, creator: userId },
   _max: { originSeq: true },
 });
-const nextSeq = (last._max.originSeq ?? 0) + 1;
+const nextSeq = (last._max.originSeq ?? -1) + 1; // 0-indexed: empty (thread, sender) → first send = seq 0
 const msg = await tx.message.create({ data: { /* ...existing... */, originSeq: nextSeq } });
 ```
+`originSeq` is **0-indexed** (first message in a (thread, sender) = seq 0; `-1` = empty / before seq 0),
+int32 (≤ 2³¹−1 ≪ 2⁵³ → JSON number, never a string). The forward cursor is `afterSeq` (`seq > afterSeq`,
+default `-1` = from seq 0); the backward twin `/messages/before` uses `beforeSeq` (`seq < beforeSeq`,
+default `-1` = from latest) — reserved for external federation implementations (SOMS is forward-only).
 The `@@unique([threadId, creator, originSeq])` catches the rare same-user concurrent-insert race (two
 devices sending at once) as a `P2002` → the caller retries the transaction (the existing
 `clientMessageId` pre-check already absorbs the common retried-send case; this handles the
@@ -158,7 +162,7 @@ identity directly. Every body that carries `origin` validates `origin === signer
 > unchanged from Step 1. Message delivery uses the two `new-msg-map` routes above — not the friend-op
 > endpoints.
 
-Identity on every route is the split `{username, domain}` pair — **no `@`-joined string** (the `@`
+Identity on every route is the split `{account, domain}` pair — **no `@`-joined string** (the `@`
 is a UI input aid only, per `federation-protocol.md` §3.1).
 
 ### 3.1 `new-msg-map` (the coalesced hint: push + pull)
@@ -183,7 +187,7 @@ POST /api/v1/s2s/new-msg-map
 - `origin` (REQUIRED) — our domain, **binding-checked `=== signer.domain`** (missing/mismatch →
   `401`). It is carried explicitly (not just implied by the signature) so a malformed/spoofed body is
   rejected outright; the signer domain remains the authoritative fallback.
-- `from` / `to` — **usernames only** (domains implicit: `from` is one of OUR local users, `to` is one
+- `from` / `to` — **accounts only** (domains implicit: `from` is one of OUR local users, `to` is one
   of the recipient server's users). Lean wire.
 - `hasMore` — more batches follow this flush (peer may throttle; the sender deletes each acked batch
   then sends the next).
@@ -213,8 +217,8 @@ the `/messages` endpoint.
 ### 3.2 `GET /api/v1/s2s/messages` (the authoritative pull)
 
 The receiver pulls the **sender's side only** — never its own authored messages. Query:
-- `from=<username>` — the sender, a **local** user on the serving (sender's) server.
-- `to=<username>` — the requester's user (a foreign stub here); identifies the friend pair + thread.
+- `from=<account>` — the sender, a **local** user on the serving (sender's) server.
+- `to=<account>` — the requester's user (a foreign stub here); identifies the friend pair + thread.
 - `after=<originSeq>` — the receiver's cursor (`MAX(originSeq)` it already has); `0`/omitted = from
   the start (history backfill — Step 2.5 uses the same endpoint).
 - `take=<N>` — batch size, default `50`, capped (the quota hook, §6).
@@ -306,8 +310,8 @@ a different job). Used by:
   its `lastSuccessAt` refreshed, so the admin "is this peer up?" reads honestly instead of going stale
   between conversations.
 
-> The zero-new-code alternative (reuse `GET /api/v1/s2s/users/:username/revision` as the probe) is
-> rejected: it's semantically a profile probe and requires fabricating a `username`. A dedicated ping
+> The zero-new-code alternative (reuse `GET /api/v1/s2s/users/:account/revision` as the probe) is
+> rejected: it's semantically a profile probe and requires fabricating a `account`. A dedicated ping
 > is ~15 lines and decouples liveness from every other concern.
 
 ---

@@ -67,7 +67,7 @@ export function PushPage() {
   function onDelete(token: PushToken) {
     del.mutate(token.id, {
       onSuccess: () =>
-        toast.success(t('push.deleted', { name: token.user?.uniqName ?? '' })),
+        toast.success(t('push.deleted', { name: token.user?.account ?? '' })),
     })
   }
 
@@ -144,7 +144,7 @@ export function PushPage() {
                     <Badge variant="secondary">{t(`push.platform.${token.platform}`)}</Badge>
                   </TableCell>
                   <TableCell>
-                    {token.user?.uniqName ?? (
+                    {token.user?.account ?? (
                       <span className="text-muted-foreground">#{token.userId}</span>
                     )}
                   </TableCell>
@@ -202,8 +202,8 @@ export function PushPage() {
             <DialogTitle>{t('push.testDialogTitle')}</DialogTitle>
             <DialogDescription>
               {t('push.testDialogDesc', {
-                target: testToken?.user?.uniqName
-                  ? t('push.testDialogTargetUser', { name: testToken.user.uniqName })
+                target: testToken?.user?.account
+                  ? t('push.testDialogTargetUser', { name: testToken.user.account })
                   : t('push.testDialogTargetDevice'),
                 platform: t(`push.platform.${testToken?.platform ?? 'ANDROID'}`),
               })}

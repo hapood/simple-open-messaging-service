@@ -14,7 +14,7 @@ export interface TokenPair {
 // User row (backend no longer exposes hashPwd; Date fields are serialized to ms-epoch numbers by the global interceptor)
 export interface User {
   id: number
-  uniqName: string
+  account: string
   isForeigner: boolean
   domain: string | null
   createdAt: number
@@ -40,7 +40,7 @@ export interface Session {
   expiresAt: number
 }
 
-// System-wide active session overview entry (POST /admin/sessions; joins user for the username)
+// System-wide active session overview entry (POST /admin/sessions; joins user for the account)
 export interface SessionListItem {
   userId: number
   jti: string
@@ -49,7 +49,7 @@ export interface SessionListItem {
   ip: string | null
   createdAt: number
   expiresAt: number
-  user: { id: number; uniqName: string } | null
+  user: { id: number; account: string } | null
 }
 
 export interface SessionListResult {
@@ -57,7 +57,7 @@ export interface SessionListResult {
   total: number
 }
 
-// Admin active session entry (POST /admin/admin-sessions; joins Admin for the username; no device field)
+// Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
 export interface AdminSessionListItem {
   adminId: number
   jti: string
@@ -65,7 +65,7 @@ export interface AdminSessionListItem {
   ip: string | null
   createdAt: number
   expiresAt: number
-  admin: { id: number; username: string } | null
+  admin: { id: number; account: string } | null
 }
 
 export interface AdminSessionListResult {
@@ -95,7 +95,7 @@ export interface ReuseAlert {
 // Online SSE connection (POST /admin/connections, aggregated by user; since = that user's earliest connect time in ms)
 export interface ConnectionClient {
   userId: number
-  uniqName: string | null
+  account: string | null
   connections: number
   since: number
 }
@@ -114,7 +114,7 @@ export interface PushToken {
   deviceId: string | null
   createdAt: number
   lastSeenAt: number
-  user: { id: number; uniqName: string } | null
+  user: { id: number; account: string } | null
 }
 
 export interface PushTokenListResult {

@@ -71,7 +71,7 @@ export class MessageHeaderComponent {
   readonly title = computed(() => {
     const trd = this.userMsgTrd();
     if (!trd) return '';
-    // A per-user alias (备注) overrides the real name in the caller's header.
+    // A per-user alias (remark) overrides the real name in the caller's header.
     if (trd.alias) return trd.alias;
     return trd.type === 'P2P' ? displayUserName(trd.peerUser) : trd.group.name;
   });
@@ -109,7 +109,7 @@ export class MessageHeaderComponent {
     const isP2P = trd.type === 'P2P';
     const list: ChatMenuEntry[] = [
       // Label mirrors the panel title it opens: "Contact info" for P2P, "Group Info" for groups — so
-      // the menu item and the弹窗 (aside panel) header read the same (chat.menuViewInfo / group.title).
+      // the menu item and the popup (aside panel) header read the same (chat.menuViewInfo / group.title).
       { kind: 'action', key: 'viewInfo', labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title', icon: AppIconType.EYE },
       { kind: 'action', key: 'search', labelKey: 'chat.menuSearch', icon: AppIconType.SEARCH },
       { kind: 'divider' },
@@ -352,7 +352,7 @@ export class MessageHeaderComponent {
     const trd = this.userMsgTrd();
     if (!trd) return;
     const seg = trd.type === 'GROUP' ? 'group-info' : 'profile';
-    if (this.nav.aside()?.panel === seg) {
+    if (this.nav.asideTop()?.panel === seg) {
       this.nav.closeAside();
       return;
     }

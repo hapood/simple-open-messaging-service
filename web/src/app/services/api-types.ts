@@ -132,7 +132,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Set a per-user alias/remark (备注) for a conversation (overrides the displayed name for the caller) */
+        /** Set a per-user alias/remark for a conversation (overrides the displayed name for the caller) */
         post: operations["MessageController_setAlias"];
         delete?: never;
         options?: never;
@@ -166,7 +166,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 登录（凭据换 access/refresh token） */
+        /** Login (exchange credentials for an access/refresh token pair) */
         post: operations["AuthController_login"];
         delete?: never;
         options?: never;
@@ -183,7 +183,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 用 refresh token 轮换出新的 access + refresh（检测重用即全家族吊销） */
+        /** Rotate a fresh access + refresh token pair from the refresh token (reuse detection revokes the entire family) */
         post: operations["AuthController_renewaccessTokens"];
         delete?: never;
         options?: never;
@@ -200,7 +200,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 用 refresh token 轮换出新的 access + refresh（与 renew-access 同义，保留兼容） */
+        /** Rotate a fresh access + refresh token pair from the refresh token (synonym of renew-access, kept for compatibility) */
         post: operations["AuthController_renewRefreshTokens"];
         delete?: never;
         options?: never;
@@ -217,7 +217,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 登出（吊销 refresh；accessJti 可选，即时把当前 access 入黑名单） */
+        /** Logout (revoke the refresh token; accessJti optional — immediately blacklists the current access token) */
         post: operations["AuthController_logout"];
         delete?: never;
         options?: never;
@@ -234,7 +234,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 全设备登出（吊销所有会话 + bump tokenVersion） */
+        /** Logout all devices (revoke every session + bump tokenVersion) */
         post: operations["AuthController_logoutAll"];
         delete?: never;
         options?: never;
@@ -251,7 +251,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 修改密码（吊销所有其他会话，当前设备重发 token） */
+        /** Change password (revoke all other sessions; reissue tokens for the current device) */
         post: operations["AuthController_changePassword"];
         delete?: never;
         options?: never;
@@ -268,7 +268,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 列当前用户活跃会话 */
+        /** List the current user's active sessions */
         post: operations["AuthController_sessions"];
         delete?: never;
         options?: never;
@@ -285,7 +285,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 吊销单个会话（按 jti + 属当前用户） */
+        /** Revoke a single session (by jti, belonging to the current user) */
         post: operations["AuthController_revokeSession"];
         delete?: never;
         options?: never;
@@ -354,7 +354,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Update the current user display name / bio (username is immutable) */
+        /** Update the current user display name / bio (account is immutable) */
         post: operations["UserController_updateProfile"];
         delete?: never;
         options?: never;
@@ -558,7 +558,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Resolve a user by {username, domain} (local lookup, or federated via S2S) */
+        /** Resolve a user by {account, domain} (local lookup, or federated via S2S) */
         post: operations["UserController_resolveUser"];
         delete?: never;
         options?: never;
@@ -575,7 +575,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Fuzzy local user discovery by uniqName OR display name (local users only) */
+        /** Fuzzy local user discovery by account OR display name (local users only) */
         post: operations["UserController_searchUsers"];
         delete?: never;
         options?: never;
@@ -813,7 +813,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 清除好友请求未读标记（用户已查看好友请求面板） */
+        /** Clear the unread friend-request badge (the user viewed the friend-request panel) */
         post: operations["NotifyController_markFriendReqRead"];
         delete?: never;
         options?: never;
@@ -931,7 +931,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 上传图片（返回 url + 前端传入的宽高） */
+        /** Upload an image (returns url + width/height provided by the client) */
         post: operations["UploadController_upload"];
         delete?: never;
         options?: never;
@@ -965,7 +965,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 上传通用文件（返回 url/name/size/mimeType） */
+        /** Upload a generic file (returns url/name/size/mimeType) */
         post: operations["UploadController_uploadFile"];
         delete?: never;
         options?: never;
@@ -982,7 +982,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 上传视频（magic-byte 校验，宽高时长前端探测） */
+        /** Upload a video (magic-byte validated; width/height/duration probed client-side) */
         post: operations["UploadController_uploadVideo"];
         delete?: never;
         options?: never;
@@ -999,7 +999,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 上传音频（magic-byte 校验，时长前端探测） */
+        /** Upload audio (magic-byte validated; duration probed client-side) */
         post: operations["UploadController_uploadAudio"];
         delete?: never;
         options?: never;
@@ -1016,7 +1016,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 管理员登录（独立 admin JWT + 家族化 refresh） */
+        /** Admin login (separate admin JWT + family-based refresh) */
         post: operations["AdminController_login"];
         delete?: never;
         options?: never;
@@ -1033,7 +1033,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 管理员 refresh 轮换（家族化 + 重用检测） */
+        /** Admin refresh rotation (family-based + reuse detection) */
         post: operations["AdminController_renewAccess"];
         delete?: never;
         options?: never;
@@ -1050,7 +1050,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 管理员登出 */
+        /** Admin logout */
         post: operations["AdminController_logout"];
         delete?: never;
         options?: never;
@@ -1067,7 +1067,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 用户列表（分页 + 搜索） */
+        /** User list (paginated + searchable) */
         post: operations["AdminController_listUsers"];
         delete?: never;
         options?: never;
@@ -1084,7 +1084,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 推送设备 token 列表（分页 + 搜索）+ FCM/Web Push 配置状态 */
+        /** Push device-token list (paginated + searchable) + FCM/Web Push config status */
         post: operations["AdminController_listPushTokens"];
         delete?: never;
         options?: never;
@@ -1101,7 +1101,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 删除（注销）一个推送设备 token */
+        /** Delete (revoke) a push device token */
         post: operations["AdminController_deletePushToken"];
         delete?: never;
         options?: never;
@@ -1118,7 +1118,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 向指定设备 token 发送测试推送（FCM / Web Push） */
+        /** Send a test push to a given device token (FCM / Web Push) */
         post: operations["AdminController_sendPushTest"];
         delete?: never;
         options?: never;
@@ -1135,7 +1135,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 封禁用户（软删除 + 强制下线） */
+        /** Disable a user (soft-delete + force logout) */
         post: operations["AdminController_disableUser"];
         delete?: never;
         options?: never;
@@ -1152,7 +1152,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 解禁用户 */
+        /** Enable a user */
         post: operations["AdminController_enableUser"];
         delete?: never;
         options?: never;
@@ -1169,7 +1169,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 强制下线（吊销该用户所有会话） */
+        /** Force logout (revoke all of the user's sessions) */
         post: operations["AdminController_forceLogout"];
         delete?: never;
         options?: never;
@@ -1186,7 +1186,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 查指定用户活跃会话 */
+        /** View a given user's active sessions */
         post: operations["AdminController_userSessions"];
         delete?: never;
         options?: never;
@@ -1203,7 +1203,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 重置用户密码（吊销所有会话） */
+        /** Reset a user's password (revokes all sessions) */
         post: operations["AdminController_resetPassword"];
         delete?: never;
         options?: never;
@@ -1220,7 +1220,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 列当前登录封禁（IP/账户） */
+        /** List active login bans (IP / account) */
         post: operations["AdminController_listBans"];
         delete?: never;
         options?: never;
@@ -1237,7 +1237,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 解封（IP 和/或账户） */
+        /** Unban (IP and/or account) */
         post: operations["AdminController_unban"];
         delete?: never;
         options?: never;
@@ -1254,7 +1254,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** refresh token 重用告警（revokeReason=reuse） */
+        /** Refresh-token reuse alerts (revokeReason=reuse) */
         post: operations["AdminController_reuseAlerts"];
         delete?: never;
         options?: never;
@@ -1271,7 +1271,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 全系统活跃会话总览（跨用户，可筛 userId/ip） */
+        /** System-wide active session overview (cross-user; filter by userId/ip) */
         post: operations["AdminController_listAllSessions"];
         delete?: never;
         options?: never;
@@ -1288,7 +1288,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 一键清理所有活跃会话（强制全部用户重登，access 立即失效） */
+        /** Purge all active sessions in one shot (forces every user to re-login; access tokens expire immediately) */
         post: operations["AdminController_purgeAllSessions"];
         delete?: never;
         options?: never;
@@ -1305,7 +1305,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 当前在线 SSE 连接总览（按用户聚合） */
+        /** Online SSE connection overview (aggregated per user) */
         post: operations["AdminController_listConnections"];
         delete?: never;
         options?: never;
@@ -1322,7 +1322,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 管理员活跃会话列表（join Admin 出 username） */
+        /** Admin active session list (joins Admin → linked user account) */
         post: operations["AdminController_listAdminSessions"];
         delete?: never;
         options?: never;
@@ -1339,7 +1339,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** 吊销指定管理员会话（按 jti；其 access 15m 内仍有效） */
+        /** Revoke a given admin session (by jti; its access token stays valid for up to 15m) */
         post: operations["AdminController_revokeAdminSession"];
         delete?: never;
         options?: never;
@@ -1482,7 +1482,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/inbox": {
+    "/api/v1/s2s/friend-request": {
         parameters: {
             query?: never;
             header?: never;
@@ -1491,14 +1491,30 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["S2sController_postInbox"];
+        post: operations["S2sController_postFriendRequest"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/users/{username}": {
+    "/api/v1/s2s/friend-approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["S2sController_postFriendApprove"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/users/{account}": {
         parameters: {
             query?: never;
             header?: never;
@@ -1514,7 +1530,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/users/{username}/revision": {
+    "/api/v1/s2s/users/{account}/revision": {
         parameters: {
             query?: never;
             header?: never;
@@ -1570,6 +1586,22 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_ping"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/get_file": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getFile"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1832,7 +1864,7 @@ export interface components {
              * @description Login unique name
              * @example alice
              */
-            uniqName: string;
+            account: string;
             /**
              * @description Password
              * @example P@ssw0rd
@@ -1899,7 +1931,7 @@ export interface components {
              * @description Login unique name
              * @example alice
              */
-            uniqName: string;
+            account: string;
             /**
              * @description Display name
              * @example Alice
@@ -2065,7 +2097,7 @@ export interface components {
              */
             blocked?: boolean;
             /**
-             * @description Per-user alias/remark (备注). Overrides peer.uniqName (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).
+             * @description Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER's chat header + list. Null when not set (real name used).
              * @example Alice (work)
              */
             alias?: string | null;
@@ -2157,10 +2189,10 @@ export interface components {
         };
         UserResolveDto: {
             /**
-             * @description Username (a local uniqName, or the peer user's username)
+             * @description Account (a local account, or the peer user's account)
              * @example alice
              */
-            username: string;
+            account: string;
             /**
              * @description Peer domain. Omitted/empty = local lookup.
              * @example bbb.com
@@ -2169,7 +2201,7 @@ export interface components {
         };
         UserSearchDto: {
             /**
-             * @description Search query (≥2 chars; matches uniqName OR display name)
+             * @description Search query (≥2 chars; matches account OR display name)
              * @example ali
              */
             q: string;
@@ -2208,7 +2240,7 @@ export interface components {
              * @description Login unique name: 3-31 chars [a-zA-Z0-9_], must start with a letter
              * @example alice
              */
-            uniqName: string;
+            account: string;
             /**
              * @description Display name (1-30 chars; unicode/emoji allowed)
              * @example Alice
@@ -2300,7 +2332,7 @@ export interface components {
              * @description Login unique name
              * @example alice
              */
-            uniqName: string;
+            account: string;
             /**
              * @description Display name
              * @example Alice
@@ -2418,10 +2450,10 @@ export interface components {
         };
         AdminLoginDto: {
             /**
-             * @description Admin username
+             * @description Admin account
              * @example admin
              */
-            username: string;
+            account: string;
             /**
              * @description Password
              * @example P@ssw0rd
@@ -2447,7 +2479,7 @@ export interface components {
              */
             take?: number;
             /**
-             * @description Fuzzy search by uniqName/display name (optional)
+             * @description Fuzzy search by account/display name (optional)
              * @example alice
              */
             search?: string;
@@ -2464,7 +2496,7 @@ export interface components {
              */
             take?: number;
             /**
-             * @description Fuzzy search uniqName/token/deviceId (optional)
+             * @description Fuzzy search account/token/deviceId (optional)
              * @example alice
              */
             search?: string;
@@ -2500,10 +2532,10 @@ export interface components {
              */
             ip?: string;
             /**
-             * @description Banned account uniqName (optional)
+             * @description Banned account account (optional)
              * @example alice
              */
-            uniqName?: string;
+            account?: string;
         };
         AdminListSessionsDto: {
             /**
@@ -4382,7 +4414,24 @@ export interface operations {
             };
         };
     };
-    S2sController_postInbox: {
+    S2sController_postFriendRequest: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_postFriendApprove: {
         parameters: {
             query?: never;
             header?: never;
@@ -4404,7 +4453,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                username: string;
+                account: string;
             };
             cookie?: never;
         };
@@ -4423,7 +4472,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                username: string;
+                account: string;
             };
             cookie?: never;
         };
@@ -4499,6 +4548,27 @@ export interface operations {
     S2sController_ping: {
         parameters: {
             query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getFile: {
+        parameters: {
+            query: {
+                digest: string;
+                from: string;
+                to: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;

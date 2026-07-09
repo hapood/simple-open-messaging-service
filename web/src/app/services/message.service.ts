@@ -9,19 +9,19 @@ import { apiPrefix } from './constants';
 export class MsgService {
   constructor(private http: HttpClient) { }
 
-  addUser(params: { uniqName: string, password: string }) {
+  addUser(params: { account: string, password: string }) {
     return this.http.post(`${apiPrefix}/add-user`, params)
   }
 
-  addFriend(uniqName: string) {
-    return this.http.post(`${apiPrefix}/add-friend`, { uniqName })
+  addFriend(account: string) {
+    return this.http.post(`${apiPrefix}/add-friend`, { account })
   }
 
   sendMessage(params: { threadId: number, content: string, contentType?: string, clientMessageId?: string }) {
     return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
   }
 
-  /** 上传图片（multipart：file + 宽高），返回 {url,w,h}。wh 由前端 createImageBitmap 读后带上。 */
+  /** Upload an image (multipart: file + width/height), returns {url,w,h}. w/h are read client-side via createImageBitmap and sent along. */
   uploadMedia(file: File, w: number, h: number) {
     const fd = new FormData()
     fd.append('file', file)
@@ -31,9 +31,10 @@ export class MsgService {
   }
 
   /**
-   * 上传通用文件（multipart：file），返回服务端生成的 {url,name,size,mimeType}，原样作为 FILE 消息内容。
-   * observe:'events' + reportProgress 让调用方能渲染上传进度（HttpProgressEvent）；final 响应体在最后一个
-   * HttpResponse 事件里。POST /upload/file 的 mimetype 白名单与体积上限由后端 enforce。
+   * Upload a generic file (multipart: file), returns the server-generated {url,name,size,mimeType}, used verbatim
+   * as the FILE message content. observe:'events' + reportProgress let callers render upload progress
+   * (HttpProgressEvent); the final response body arrives in the last HttpResponse event. The mimetype allowlist
+   * and size cap for POST /upload/file are enforced by the backend.
    */
   uploadFile(file: File) {
     const fd = new FormData()
@@ -92,7 +93,7 @@ export class MsgService {
     return this.http.post<StandardResponse>(`${apiPrefix}/thread/clear-history`, params)
   }
 
-  /** Set a per-user alias/remark (备注) for a conversation — overrides the displayed name for the caller.
+  /** Set a per-user alias/remark for a conversation — overrides the displayed name for the caller.
    *  An empty string clears it. */
   setAlias(params: { threadId: number, alias?: string }) {
     return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-alias`, params)

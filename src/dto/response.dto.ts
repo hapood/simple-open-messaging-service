@@ -21,7 +21,7 @@ export class UserResponseDto {
   id: number;
 
   @ApiProperty({ example: 'alice', description: 'Login unique name' })
-  uniqName: string;
+  account: string;
 
   @ApiProperty({ example: 'Alice', description: 'Display name' })
   name: string;
@@ -248,7 +248,7 @@ export class ConversationItemDto {
     example: 'Alice (work)',
     nullable: true,
     description:
-      'Per-user alias/remark (备注). Overrides peer.uniqName (P2P) / group.name (GROUP) in the CALLER\'s chat header + list. Null when not set (real name used).',
+      'Per-user alias/remark. Overrides peer.account (P2P) / group.name (GROUP) in the CALLER\'s chat header + list. Null when not set (real name used).',
   })
   alias?: string | null;
 
@@ -354,7 +354,7 @@ export class GroupMemberDto {
   userId: number;
 
   @ApiProperty({ example: 'alice', description: 'Login unique name' })
-  uniqName: string;
+  account: string;
 
   @ApiProperty({ example: 'Alice', description: 'Display name' })
   name: string;

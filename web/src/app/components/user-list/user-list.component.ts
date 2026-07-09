@@ -25,7 +25,7 @@ export class UserListComponent {
         const filtered = q
             ? this.threadList().filter((t) => {
                 const name = (t.peerUser.name ?? '').toLowerCase()
-                const handle = (t.peerUser.uniqName ?? '').toLowerCase()
+                const handle = (t.peerUser.account ?? '').toLowerCase()
                 return name.includes(q) || handle.includes(q)
             })
             : this.threadList()

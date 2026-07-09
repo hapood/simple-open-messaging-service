@@ -6,7 +6,7 @@ import { clearTokens, getRefreshToken, setAccessToken, setRefreshToken } from '@
 interface AuthContextValue {
   isAuthenticated: boolean
   /** Login: only stores tokens + bumps state; navigation is controlled by the caller (the login page). */
-  login: (username: string, password: string) => Promise<void>
+  login: (account: string, password: string) => Promise<void>
   /** Logout: calls backend revoke + clears tokens + navigates to /login. */
   logout: () => Promise<void>
 }
@@ -21,8 +21,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [version, setVersion] = useState(0)
   const bump = useCallback(() => setVersion((v) => v + 1), [])
 
-  const login = useCallback(async (username: string, password: string) => {
-    const data = await adminLogin(username, password)
+  const login = useCallback(async (account: string, password: string) => {
+    const data = await adminLogin(account, password)
     setAccessToken(data.access_token)
     setRefreshToken(data.refresh_token)
     bump()

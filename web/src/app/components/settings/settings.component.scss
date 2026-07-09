@@ -1,6 +1,9 @@
-// Settings page — M3 list-in-card layout. Mirrors the PeerProfile panel shell (.msg-header +
-// scrollable .body) and groups each preference category as an M3 "category label" + a rounded
-// surface card wrapping a mat-list. All vertical metrics are integer px (project rule).
+@use './_settings-shared.scss' as s;
+@include s.settings-groups;
+
+// Settings surface — M3 two-tier (root category list + sliding sub-page). The shell (.msg-header +
+// scrollable .body) is shared by both views; the sub-page is an opaque absolute overlay that slides in
+// via [@pageSlide]. All vertical metrics are integer px (project rule).
 
 :host {
   display: block;
@@ -9,10 +12,35 @@
 }
 
 .panel {
+  // Anchor for the .view-sub absolute overlay.
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
+}
+
+.view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  // The root recedes under the sliding sub-page (subtle parallax + dim); one curve for both directions.
+  transition: transform 200ms cubic-bezier(0.4, 0, 1, 1), opacity 200ms cubic-bezier(0.4, 0, 1, 1);
+}
+
+.view.dimmed {
+  transform: translateX(-8%);
+  opacity: 0.5;
+}
+
+// Sub-page slides over the root (absolute, opaque). [@pageSlide] drives enter/leave; transitions here are
+// not used (the animation owns the motion).
+.view-sub {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: var(--app-surface);
 }
 
 .msg-header {
@@ -61,86 +89,16 @@
   padding: 20px 16px 32px;
 }
 
-.settings-group {
+// Leading category glyph (brand-tinted) sits in the MDC list-item avatar/__start slot so it aligns in its
+// own column beside the two-line title+summary. Keep it a compact flex box (not an avatar circle).
+.lead {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-// M3 category label — small, muted, slightly tracked. Plain text (not uppercase) to match the
-// app's typographic register (section titles elsewhere use this weight/size, not caps).
-.group-title {
-  margin: 0;
-  padding: 0 8px;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 20px;
-  color: var(--app-text-muted);
-}
-
-.settings-card {
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: var(--app-radius-lg);
-  overflow: hidden;
-}
-
-// Let the Material list fill the card; collapse the list's own outer padding so rows run edge-to-edge
-// and the card border draws the outline. The MDC list-item surface inherits from the Material theme
-// (light/dark via mat.all-component-colors in styles.scss).
-.settings-card .mat-mdc-list {
-  padding: 0;
-}
-
-// Trailing control / value sits in the MDC list-item __end slot; keep values muted and non-wrapping.
-.meta {
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--app-text-muted);
-  text-align: right;
-  max-width: 60%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.hint {
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--app-text-muted);
-}
-
-// Accent hint — the "FCM active, FGS not needed" nudge under the foreground-service toggle.
-.hint-accent {
+  align-items: center;
+  justify-content: center;
   color: var(--app-brand);
 }
 
-// FCM status pill — green when a token was obtained (FCM available), muted otherwise.
-.status-pill {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: var(--app-radius-pill);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-  background: var(--app-bg-muted);
-  border: 1px solid var(--app-border);
-  &.active {
-    color: var(--app-success);
-    background: var(--app-success-soft);
-    border-color: transparent;
-  }
-}
-
-// Compact the Material text button in the FCM row so the trailing cluster stays tidy.
-.check-btn {
-  --mdc-text-button-label-text-size: 13px;
-  min-height: 32px;
-}
-
-// The 3-way theme toggle sits in the list-item's trailing [matListItemMeta] slot (.mdc-list-item__end),
-// which is not an overflow-hidden context — keep it from compressing so its segmented borders stay crisp
-// on narrow widths.
-.theme-toggle {
-  flex-shrink: 0;
+// Trailing drill-in chevron.
+.chev {
+  color: var(--app-text-faint);
 }

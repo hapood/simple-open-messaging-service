@@ -47,8 +47,8 @@ describe('HttpItemSource (signal-only SSE contract)', () => {
       queryMessageLog: jasmine.createSpy('queryMessageLog').and.returnValue(of(dbResult)),
     } as unknown as MsgService;
     const users: User[] = [
-      { id: 1, uniqName: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as unknown as User,
-      { id: 2, uniqName: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as unknown as User,
+      { id: 1, account: 'Me', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as unknown as User,
+      { id: 2, account: 'Alice', isForeigner: false, createdAt: 0, updatedAt: 0, isDeleted: false } as unknown as User,
     ];
     const userService = {
       queryUserInfo: jasmine.createSpy('queryUserInfo').and.returnValue(of<StandardResponse<User[]>>({ code: 0, message: 'ok', data: users })),

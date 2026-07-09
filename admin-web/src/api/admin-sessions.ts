@@ -1,7 +1,7 @@
 import { request } from '@/api/client'
 import type { AdminSessionListResult } from '@/types/api'
 
-/** List of active admin sessions (independent AdminRefreshToken table; joins Admin for the username). */
+/** List of active admin sessions (independent AdminRefreshToken table; joins Admin for the account). */
 export function listAdminSessions(params: {
   skip?: number
   take?: number

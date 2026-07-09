@@ -15,7 +15,7 @@ export interface GrpCreateInfo {
 /** One row of a group roster (group/members). Mirrors the backend GroupMemberDto. */
 export interface GroupMember {
   userId: number
-  uniqName: string
+  account: string
   name: string
   avatar: string
   /** OWNER | ADMIN | MEMBER */

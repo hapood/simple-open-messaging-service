@@ -65,8 +65,8 @@ interface StandardResponse<T = any> {
 
 ### POST `/auth/login` — 登录
 
-- **鉴权**：Local（body 提供 `uniqName` + `password`）
-- **请求体**：`{ uniqName: string, password: string, device?: string }`（`device` 为前端生成的设备标识，用于多端会话区分）
+- **鉴权**：Local（body 提供 `account` + `password`）
+- **请求体**：`{ account: string, password: string, device?: string }`（`device` 为前端生成的设备标识，用于多端会话区分）
 - **响应 `data`**（code=0）：`{ access_token: string, refresh_token: string }`
 - **错误**：凭据错 `code:10003`；IP 封禁 `code:10005`，`data.bannedUntil` 为解封时间戳
 - **限流**：同 IP 累计失败 >3 次封禁 30 分钟、>6 次封禁 3 小时、>9 次封禁 24 小时
@@ -130,12 +130,12 @@ interface StandardResponse<T = any> {
 ### POST `/user/register` — 注册
 
 - **鉴权**：无
-- **请求体**：`{ uniqName: string, password: string }`
+- **请求体**：`{ account: string, password: string }`
 - **校验规则**：
-  - `uniqName`：`^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$`（1–20 字符，至少含 3 个字母）
+  - `account`：`^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$`（1–20 字符，至少含 3 个字母）
   - `password`：6–20 字符，允许字母数字与 `.@!#$%^&*()`
-- **响应 `data`**：`{ id: number, uniqName: string }`
-- **行为**：事务中创建 `User` + `UserExtra`（name 默认 = uniqName）+ `userNotiBox`；`isForeigner=false`，`domain=null`。
+- **响应 `data`**：`{ id: number, account: string }`
+- **行为**：事务中创建 `User` + `UserExtra`（name 默认 = account）+ `userNotiBox`；`isForeigner=false`，`domain=null`。
 
 ### POST `/user/my-profile` — 当前用户资料
 
@@ -154,7 +154,7 @@ interface StandardResponse<T = any> {
 ### POST `/user/update-profile` — 更新昵称 / 简介
 
 - **鉴权**：JWT
-- **请求体**：`{ name?: string, bio?: string }`（`uniqName`/handle 不可改；`bio` ≤ 120 字符）
+- **请求体**：`{ name?: string, bio?: string }`（`account`/handle 不可改；`bio` ≤ 120 字符）
 - **响应 `data`**：更新后的用户信息（不含密码哈希）
 
 ### POST `/user/query-thread/valid` — 有效会话列表
@@ -210,10 +210,10 @@ interface StandardResponse<T = any> {
 - **请求体**：`{ userIds: number[] }`（最多 100 个，`@ArrayMaxSize(100)`）
 - **响应 `data`**：用户信息数组（`isDeleted=false`）
 
-### POST `/user/by-uniq-name` — 按用户名查询
+### POST `/user/by-uniq-name` — 按账户名查询
 
 - **鉴权**：JWT
-- **请求体**：`{ uniqName: string }`
+- **请求体**：`{ account: string }`
 - **响应 `data`**：单个用户信息；不存在 `code:10001`
 
 ### POST `/user/thread-info` — 会话线程详情
@@ -314,14 +314,19 @@ interface StandardResponse<T = any> {
 
 > 控制器：[src/admin/admin.controller.ts](../src/admin/admin.controller.ts) · 服务：[src/admin/admin-auth.service.ts](../src/admin/admin-auth.service.ts)
 
-Admin 使用**独立的 JWT 体系**（独立 `adminSecret` + `scope: 'admin'` claim，`AdminAuthGuard` 守卫），与用户体系物理隔离。除 `admin/login` / `admin/renew-access` 外，所有 admin 接口都要求 `Authorization: Bearer <admin_access_token>`。
+Admin auth uses a **separate JWT system** (its own `adminSecret` + `scope: 'admin'` claim, guarded by
+`AdminAuthGuard`) — admin sessions/tokens stay physically isolated from user sessions. Identity,
+however, is shared: an admin is a **linked profile** on a `User` row (`Admin.userId → User.id`); the
+account name and password live on the `User`, and `/admin/login` verifies `User.hashPwd` then issues
+an admin session. One account namespace → a user and an admin can never share an account. All admin
+endpoints except `admin/login` / `admin/renew-access` require `Authorization: Bearer <admin_access_token>`.
 
 ### 鉴权
 
 #### POST `/admin/login` — 管理员登录
 
 - **鉴权**：无
-- **请求体**：`{ username: string, password: string }`
+- **请求体**：`{ account: string, password: string }`
 - **响应 `data`**（code=0）：`{ access_token: string, refresh_token: string }`；同时更新 `Admin.lastLoginAt` / `lastLoginIp`
 - **错误**：凭据错 / 账户禁用 → `code:10003` message=`invalid credentials`
 
@@ -342,7 +347,7 @@ Admin 使用**独立的 JWT 体系**（独立 `adminSecret` + `scope: 'admin'` c
 
 #### POST `/admin/users` — 用户列表
 
-- **请求体**：`{ skip?: number, take?: number, search?: string }`（`search` 对 `uniqName` 不分大小写模糊匹配）
+- **请求体**：`{ skip?: number, take?: number, search?: string }`（`search` 对 `account` 不分大小写模糊匹配）
 - **响应 `data`**：`{ list: User[], total: number }`（按 `createdAt desc`，已剔除 `hashPwd`）
 
 #### POST `/admin/users/:id/disable` — 封禁用户
@@ -376,7 +381,7 @@ Admin 使用**独立的 JWT 体系**（独立 `adminSecret` + `scope: 'admin'` c
 
 #### POST `/admin/bans/unban` — 解封
 
-- **请求体**：`{ ip?: string, uniqName?: string }`（至少传一个）
+- **请求体**：`{ ip?: string, account?: string }`（至少传一个）
 
 ### 审计
 
@@ -388,7 +393,7 @@ Admin 使用**独立的 JWT 体系**（独立 `adminSecret` + `scope: 'admin'` c
 #### POST `/admin/sessions` — 全系统活跃用户会话总览
 
 - **请求体**：`{ skip?: number, take?: number, userId?: number, ip?: string }`（`ip` 模糊匹配）
-- **响应 `data`**：`{ list, total }`，每条含 `userId` / `jti` / `device` / `userAgent` / `ip` / `createdAt` / `expiresAt` / `user{id,uniqName}`（仅未吊销且未过期）
+- **响应 `data`**：`{ list, total }`，每条含 `userId` / `jti` / `device` / `userAgent` / `ip` / `createdAt` / `expiresAt` / `user{id,account}`（仅未吊销且未过期）
 
 > 该总览只查用户会话表 `RefreshToken`；管理员自身的活跃会话在独立的 `AdminRefreshToken` 表，不在此列。
 

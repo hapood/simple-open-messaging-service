@@ -5,8 +5,8 @@
  *   1. alice @ bbb.local  → an APPROVED P2P conversation (appears in the thread list, globe + "bbb.local").
  *   2. carol @ ccc.local  → an INCOMING PENDING friend request (appears in the Pending tab, with a note).
  *
- * Idempotent: upserts by uniqName+domain and the friendship pair, so re-running just refreshes state.
- * Targets the user named by SOMS_SEED_USER (uniqName), defaulting to the first local user; prints whom
+ * Idempotent: upserts by account+domain and the friendship pair, so re-running just refreshes state.
+ * Targets the user named by SOMS_SEED_USER (account), defaulting to the first local user; prints whom
  * it seeded for so you know which account to open to see them. Remove with scripts/unseed-fed-test-friends.ts.
  *
  *   npx tsx scripts/seed-fed-test-friends.ts
@@ -23,11 +23,11 @@ const TEST_DOMAIN_FRIEND = 'bbb.local';
 const TEST_DOMAIN_PENDING = 'ccc.local';
 
 async function main() {
-  // Resolve "me": the explicit SOMS_SEED_USER uniqName, else the first local non-deleted user.
+  // Resolve "me": the explicit SOMS_SEED_USER account, else the first local non-deleted user.
   let me;
   if (process.env.SOMS_SEED_USER) {
     me = await prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: process.env.SOMS_SEED_USER, domain: 'local' } },
+      where: { account_domain: { account: process.env.SOMS_SEED_USER, domain: 'local' } },
     });
     if (!me || me.isForeigner) throw new Error(`SOMS_SEED_USER=${process.env.SOMS_SEED_USER} is not a local user`);
   } else {
@@ -37,9 +37,9 @@ async function main() {
 
   // ── 1. APPROVED federated friend (alice @ bbb.local) → thread list ──────────────────────────
   const alice = await prisma.user.upsert({
-    where: { uniqName_domain: { uniqName: 'alice', domain: TEST_DOMAIN_FRIEND } },
+    where: { account_domain: { account: 'alice', domain: TEST_DOMAIN_FRIEND } },
     create: {
-      uniqName: 'alice',
+      account: 'alice',
       domain: TEST_DOMAIN_FRIEND,
       isForeigner: true,
       hashPwd: cryptoRandom(),
@@ -72,9 +72,9 @@ async function main() {
 
   // ── 2. PENDING federated friend (carol @ ccc.local) → Pending tab (carol is the requester) ──
   const carol = await prisma.user.upsert({
-    where: { uniqName_domain: { uniqName: 'carol', domain: TEST_DOMAIN_PENDING } },
+    where: { account_domain: { account: 'carol', domain: TEST_DOMAIN_PENDING } },
     create: {
-      uniqName: 'carol',
+      account: 'carol',
       domain: TEST_DOMAIN_PENDING,
       isForeigner: true,
       hashPwd: cryptoRandom(),
@@ -97,7 +97,7 @@ async function main() {
     update: { status: 'PENDING', requesterId: carol.id, reqMessage: 'Hi! Federated test request — ignore/remove me' },
   });
 
-  console.log(`\nSeeded federated test friends for: ${me.uniqName} (id=${me.id}, domain=local).`);
+  console.log(`\nSeeded federated test friends for: ${me.account} (id=${me.id}, domain=local).`);
   console.log('  • thread list : alice @ bbb.local  (APPROVED P2P)');
   console.log('  • pending tab : carol @ ccc.local  (incoming PENDING request)');
   console.log('Log in as that user to see the globe + domain badges. Remove with:');

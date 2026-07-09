@@ -8,6 +8,7 @@ import { FolderEditorComponent } from '../components/folder-editor/folder-editor
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { SessionsComponent } from '../components/sessions/sessions.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
+import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
 import { AppIconType } from '../components/icon/model';
 import { NavStateMachineService } from './nav-state.service';
 
@@ -69,6 +70,8 @@ export interface PopupResult {
 export interface DlgInfo {
   component: Type<unknown>,
   inputs?: Record<string, unknown>
+  /** Render the desktop centered card wider than 480px (two-column Settings dialog). */
+  wide?: boolean
 }
 
 /**
@@ -92,7 +95,11 @@ export class RouteService {
   /** The dialog stack as {@link DlgInfo}s — RootPopup renders this via @for + *ngComponentOutlet. Derived
    *  from the nav state machine's dialog pane entries. */
   readonly dlgList = computed<DlgInfo[]>(() =>
-    this.nav.dialogs().map((p) => ({ component: p.component as Type<unknown>, inputs: p.inputs })),
+    this.nav.dialogs().map((p) => ({
+      component: p.component as Type<unknown>,
+      inputs: p.inputs,
+      wide: p.wide,
+    })),
   );
 
   getPageRoute(page: RoutePage, params?: any) {
@@ -144,6 +151,18 @@ export class RouteService {
       onResult: onResult as ((result: unknown) => void) | undefined,
     })
     return { id }
+  }
+
+  /**
+   * Open Settings as a wide two-column dialog (desktop/tablet). Mobile does NOT use this — it opens the
+   * aside surface ({@link NavStateMachineService.openAside}) instead; the branch lives in the entry points
+   * (icon-rail / nav-drawer). Pushed as a `wide` dialog pane so RootPopup renders a wider centered card on
+   * desktop (the default 480px is too narrow for two columns) and a full-screen sheet on tablet. Back /
+   * hardware-back peels it in one step (no drill-in layers in flat mode).
+   */
+  openSettingsDialog(): DlgRef {
+    const id = this.nav.pushPane({ kind: 'dialog', component: SettingsDialogComponent, wide: true });
+    return { id };
   }
 
   /**

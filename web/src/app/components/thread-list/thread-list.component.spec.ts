@@ -10,13 +10,15 @@ import { RouteService } from '../../services/route.service';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
 
 /**
- * thread-list 状态机防回归：重点覆盖原 `throw new Error(res.message)` 写在 RxJS
- * `next` 回调里被吞掉的 bug（接口 code!==0 / 网络失败时列表会永久卡空白）。
+ * thread-list state-machine regression guard: focuses on the original bug where
+ * `throw new Error(res.message)` written inside an RxJS `next` callback was swallowed
+ * (on a non-zero API code / network failure the list would stick on a blank screen forever).
  *
- * 策略：手动触发 ngOnInit() + flush 列表接口，只断言 signal 状态——不 detectChanges，
- * 避开 EmptyState/UserAvatar 等子组件渲染与 Material 动画依赖。
+ * Strategy: manually trigger ngOnInit() + flush the list endpoint, asserting only signal state —
+ * no detectChanges, to avoid pulling in child-component rendering (EmptyState/UserAvatar) and
+ * Material animation dependencies.
  */
-describe('ThreadListComponent 状态机', () => {
+describe('ThreadListComponent state machine', () => {
   let fixture: ComponentFixture<ThreadListComponent>;
   let comp: ThreadListComponent;
   let httpMock: HttpTestingController;
@@ -31,7 +33,7 @@ describe('ThreadListComponent 状态机', () => {
         provideZonelessChangeDetection(),
         provideTransloco({
           config: {
-            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
+            availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: 'Simplified Chinese' }],
             defaultLang: 'en',
             reRenderOnLangChange: true,
           },
@@ -51,7 +53,7 @@ describe('ThreadListComponent 状态机', () => {
 
   afterEach(() => httpMock.verify());
 
-  /** 触发 ngOnInit（未首次 CD 时不会自动跑）并 flush 列表接口响应 */
+  /** Trigger ngOnInit (won't auto-run before the first CD) and flush the list endpoint response. */
   function flushList(res: { code: number; message?: string; data?: unknown[] }) {
     comp.ngOnInit();
     const req = httpMock.expectOne(r => r.url.endsWith('/user/query-thread/valid'));
@@ -59,18 +61,18 @@ describe('ThreadListComponent 状态机', () => {
     return req;
   }
 
-  it('code===0 空列表 → 加载完成，列表为空，无搜索词时不判搜索空', () => {
+  it('code===0 empty list → load complete, list empty, no search-empty state when no search term', () => {
     flushList({ code: 0, data: [] });
     expect(comp.items()).toEqual([]);
     expect(comp.isSearchEmpty()).toBe(false);
   });
 
-  it('code!==0 → 进入 ERROR 且不抛错（修复原 throw 被吞 bug）', () => {
-    expect(() => flushList({ code: 1, message: '后端拒绝' })).not.toThrow();
-    expect(comp.errorMsg()).toBe('后端拒绝');
+  it('code!==0 → enter ERROR without throwing (fixes the swallowed-throw bug)', () => {
+    expect(() => flushList({ code: 1, message: 'backend rejected' })).not.toThrow();
+    expect(comp.errorMsg()).toBe('backend rejected');
   });
 
-  it('HTTP 失败 → 进入 ERROR（原代码完全未覆盖网络错误路径）', () => {
+  it('HTTP failure → enter ERROR (original code never covered the network-error path)', () => {
     comp.ngOnInit();
     const req = httpMock.expectOne(r => r.url.endsWith('/user/query-thread/valid'));
     req.flush('network down', { status: 500, statusText: 'Server Error' });
@@ -79,22 +81,22 @@ describe('ThreadListComponent 状态机', () => {
     expect(comp.errorMsg()).toBe(TestBed.inject(TranslocoService).translate('errors.networkError'));
   });
 
-  it('有搜索词且无匹配 → isSearchEmpty 为 true（搜索无结果态）', () => {
-    flushList({ code: 0, data: [{ id: 1, type: 'P2P', peerUser: { uniqName: 'alice' } }] });
-    fixture.componentRef.setInput('searchText', '不存在的人');
+  it('search term with no match → isSearchEmpty is true (search-no-results state)', () => {
+    flushList({ code: 0, data: [{ id: 1, type: 'P2P', peerUser: { account: 'alice' } }] });
+    fixture.componentRef.setInput('searchText', 'nonexistent user');
     expect(comp.isSearchEmpty()).toBe(true);
   });
 
-  it('重试：ERROR 后再 genThreadList 会先清空 errorMsg 再重新请求', () => {
+  it('retry: genThreadList after ERROR clears errorMsg before re-requesting', () => {
     flushList({ code: 1, message: 'x' });
     expect(comp.errorMsg()).toBe('x');
     comp.genThreadList();
-    expect(comp.errorMsg()).toBe(''); // 已重置回 LOADING
+    expect(comp.errorMsg()).toBe(''); // reset back to LOADING
     httpMock.expectOne(r => r.url.endsWith('/user/query-thread/valid')).flush({ code: 0, data: [] });
     expect(comp.items()).toEqual([]);
   });
 
-  it('真空态 CTA：openFriendRequests → 调用 routeService.popupDlg', () => {
+  it('empty-state CTA: openFriendRequests → calls routeService.popupDlg', () => {
     comp.openFriendRequests();
     expect(popupSpy).toHaveBeenCalled();
   });

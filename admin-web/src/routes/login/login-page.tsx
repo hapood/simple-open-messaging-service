@@ -22,7 +22,7 @@ export function LoginPage() {
   const schema = useMemo(
     () =>
       z.object({
-        username: z.string().min(1, t('login.usernameRequired')),
+        account: z.string().min(1, t('login.accountRequired')),
         password: z.string().min(1, t('login.passwordRequired')),
       }),
     [t],
@@ -33,12 +33,12 @@ export function LoginPage() {
     register,
     handleSubmit,
     formState: { errors },
-  } = useForm<FormValues>({ defaultValues: { username: 'admin', password: '' } })
+  } = useForm<FormValues>({ defaultValues: { account: 'admin', password: '' } })
 
   const onSubmit = async (v: FormValues) => {
     setSubmitting(true)
     try {
-      await login(v.username, v.password)
+      await login(v.account, v.password)
       navigate('/users', { replace: true })
     } catch (e) {
       toast.error(formatApiError(e))
@@ -56,10 +56,10 @@ export function LoginPage() {
         <CardContent>
           <form onSubmit={handleSubmit(onSubmit)} className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
-              <Label htmlFor="username">{t('login.username')}</Label>
-              <Input id="username" autoComplete="username" {...register('username')} />
-              {errors.username && (
-                <p className="text-xs text-destructive">{errors.username.message}</p>
+              <Label htmlFor="account">{t('login.account')}</Label>
+              <Input id="account" autoComplete="username" {...register('account')} />
+              {errors.account && (
+                <p className="text-xs text-destructive">{errors.account.message}</p>
               )}
             </div>
             <div className="flex flex-col gap-2">

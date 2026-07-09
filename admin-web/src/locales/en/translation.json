@@ -31,19 +31,19 @@
   },
   "login": {
     "title": "Admin Login",
-    "username": "Username",
+    "account": "Account",
     "password": "Password",
     "submit": "Log In",
-    "usernameRequired": "Please enter the username",
+    "accountRequired": "Please enter the account",
     "passwordRequired": "Please enter the password",
     "failed": "Login failed"
   },
   "users": {
     "title": "User Management",
-    "searchPlaceholder": "Search uniqName",
+    "searchPlaceholder": "Search account",
     "col": {
       "id": "ID",
-      "uniqName": "uniqName",
+      "account": "account",
       "domain": "domain",
       "foreigner": "Foreign",
       "status": "Status",

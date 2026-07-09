@@ -1,0 +1,83 @@
+// Shared primitives for the Settings surface — the root category list AND each category sub-page render
+// the same M3 "category label + rounded surface card wrapping a mat-list" structure, so the rules live
+// here once and each settings component `@use`s it (Angular keeps the `@include`d classes scoped per
+// component; the `--app-*` tokens are global). All vertical metrics are integer px (project rule).
+
+/// Emits the group/card/label/value rules into the including component's scope.
+@mixin settings-groups {
+  .settings-group {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  // M3 category label — small, muted, slightly tracked. Plain text (not uppercase) to match the app's
+  // typographic register (section titles elsewhere use this weight/size, not caps).
+  .group-title {
+    margin: 0;
+    padding: 0 8px;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 20px;
+    color: var(--app-text-muted);
+  }
+
+  .settings-card {
+    background: var(--app-surface);
+    border: 1px solid var(--app-border);
+    border-radius: var(--app-radius-lg);
+    overflow: hidden;
+  }
+
+  // Let the Material list fill the card; collapse the list's own outer padding so rows run edge-to-edge
+  // and the card border draws the outline. The MDC list-item surface inherits from the Material theme.
+  .settings-card .mat-mdc-list {
+    padding: 0;
+  }
+
+  // Trailing value sits in the MDC list-item __end slot; keep values muted and non-wrapping.
+  .meta {
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--app-text-muted);
+    text-align: right;
+    max-width: 60%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .hint {
+    font-size: 13px;
+    line-height: 20px;
+    color: var(--app-text-muted);
+  }
+
+  // Accent hint — the "FCM active, FGS not needed" nudge under the foreground-service toggle.
+  .hint-accent {
+    color: var(--app-brand);
+  }
+
+  // FCM status pill — green when a token was obtained (FCM available), muted otherwise.
+  .status-pill {
+    flex: 0 0 auto;
+    padding: 2px 8px;
+    border-radius: var(--app-radius-pill);
+    font-size: 12px;
+    line-height: 18px;
+    color: var(--app-text-muted);
+    background: var(--app-bg-muted);
+    border: 1px solid var(--app-border);
+    &.active {
+      color: var(--app-success);
+      background: var(--app-success-soft);
+      border-color: transparent;
+    }
+  }
+
+  // Compact the Material text button in the FCM row so the trailing cluster stays tidy.
+  .check-btn {
+    --mdc-text-button-label-text-size: 13px;
+    min-height: 32px;
+  }
+}

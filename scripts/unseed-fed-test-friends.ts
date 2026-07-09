@@ -16,7 +16,7 @@ const TEST_DOMAINS = ['bbb.local', 'ccc.local'];
 async function main() {
   // The P2P threads owned by these test stubs (via their participants) — delete those threads.
   const stubs = await prisma.user.findMany({
-    where: { domain: { in: TEST_DOMAINS }, uniqName: { in: ['alice', 'carol'] } },
+    where: { domain: { in: TEST_DOMAINS }, account: { in: ['alice', 'carol'] } },
     select: { id: true },
   });
   const threadIds = stubs.length
@@ -39,7 +39,7 @@ async function main() {
   }
   // The stubs themselves.
   const deleted = await prisma.user.deleteMany({
-    where: { domain: { in: TEST_DOMAINS }, uniqName: { in: ['alice', 'carol'] } },
+    where: { domain: { in: TEST_DOMAINS }, account: { in: ['alice', 'carol'] } },
   });
   console.log(`\nRemoved ${deleted.count} federated test stub(s) (+ their threads/friendships).\n`);
 }

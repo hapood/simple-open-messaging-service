@@ -15,15 +15,15 @@ datasource db {
 
 model User {
   id                 Int                 @id @default(autoincrement())
-  uniqName           String              @db.VarChar(31)
+  account            String              @db.VarChar(31)
   hashPwd            String              @db.VarChar(127)
   name               String              // display name (folded from UserExtra.name)
   avatar             String              @default("") // avatar path /uploads/... (folded from UserExtra.avatar)
   bio                String              @default("") @db.VarChar(255) // (folded from UserExtra.bio)
   isForeigner        Boolean
   // Domain: "local" for users homed on THIS server, <peer-domain> for federated stubs. Non-null +
-  // the @@unique([uniqName, domain]) below enforce both local-user and stub uniqueness (a standalone
-  // uniqName @unique would block a foreign stub sharing a username with a local user). The federated
+  // the @@unique([account, domain]) below enforce both local-user and stub uniqueness (a standalone
+  // account @unique would block a foreign stub sharing an account with a local user). The federated
   // address/display use the real config.domain at runtime; "local" is an internal sentinel only
   // (MessageThread itself carries no federation columns in Step 1 — each server owns its own thread).
   domain             String              @default("local") @db.VarChar(63)
@@ -48,8 +48,9 @@ model User {
   notificationTokens NotificationToken[]
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
   userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
+  admins             Admin[] // linked admin profile (absent for normal users; an admin's identity IS this User row — name + password live here, the Admin row holds only admin-specific state)
 
-  @@unique([uniqName, domain])
+  @@unique([account, domain])
 }
 
 // UserExtra and userNotiBox (former 1:1 profile/badge tables) folded into User as inline columns
@@ -148,7 +149,7 @@ model ThreadParticipant {
   user          User          @relation(fields: [userId], references: [id])
   threadId      Int
   thread        MessageThread @relation(fields: [threadId], references: [id])
-  lastReadMsgId BigInt? // read watermark; unread = count(Message where threadId=T and id > lastReadMsgId)
+  lastReadSeq Int? // read watermark; unread = count(Message where threadId=T and seq > lastReadSeq)
   role          GroupRole? // OWNER/ADMIN/MEMBER for GROUP; null for P2P (no default — set explicitly on group create/join)
   joinedAt      DateTime      @default(now())
   muted         Boolean       @default(false)
@@ -211,13 +212,24 @@ model MessageThread {
 
   // Denormalized "last message" read-cache for the conversation list (the hottest read path).
   // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
-  // the same tx as the Message insert); the source of truth — Message.id / creator / createdAt — keeps
-  // its FKs. Nullable: empty threads (no messages yet) stay NULL. lastMessageId is the BigInt cursor
-  // (not the unread watermark, which is per-participant on ThreadParticipant.lastReadMsgId).
-  lastMessageId       BigInt?
+  // the same tx as the Message insert); the source of truth — Message.seq / creator / createdAt — keeps
+  // its FKs. Nullable: empty threads (no messages yet) stay NULL. lastMessageSeq is the Int cursor
+  // (not the unread watermark, which is per-participant on ThreadParticipant.lastReadSeq).
+  lastMessageSeq      Int?
   lastMessagePreview  String?   @db.VarChar(255)
   lastMessageSenderId Int?
   lastMessageAt       DateTime?
+
+  // ── Federation Step 3 (cross-server groups) ──────────────────────────────────────────────────────
+  // The cross-server canonical id of a federated GROUP, minted at the origin on create:
+  //   "thr_<rand>@<origin-domain>"   (origin-domain == the owner's config.domain). NULL for purely-local
+  // threads (all P2P, local-only groups). @unique enforces ONE local mirror per federated thread — a
+  // second cross-server invite to a different local user reuses the same mirror.
+  federatedThreadId String? @unique
+  // The origin server's domain, denormalized from the id's @suffix for fast "is this mine / who owns it"
+  // queries and the roster-op / serving-leg signer check (docs/federation-step3-design.md §8). NULL iff
+  // federatedThreadId is NULL.
+  originDomain      String? @db.VarChar(255)
 
   ThreadParticipant ThreadParticipant[]
   Friendship        Friendship[]
@@ -236,7 +248,7 @@ enum ContentType {
 }
 
 model Message {
-  id              BigInt        @id @default(autoincrement())
+  seq             Int           @id @default(autoincrement())
   contentType     ContentType
   content         String
   threadId        Int
@@ -251,19 +263,26 @@ model Message {
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
   clientMessageId String?       @unique @db.VarChar(36)
   // Per-(threadId, creator) monotonic sequence — the cross-server federation pull cursor (Step 2).
-  // SENDER allocates MAX+1 on insert; RECEIVER copies the sender's value verbatim on pull, so the SAME
-  // value lives on both sides (the per-server Message.id cannot cross servers — each server assigns its
-  // own). Nullable: legacy rows + never-federating threads stay NULL (Postgres treats NULLs as distinct
-  // under the unique index, so they coexist with no backfill). The compound unique index below enforces
-  // BOTH sender allocation correctness (same-user concurrent-send race → P2002 → retry) AND receiver-
-  // side idempotent dedup (a push/pull race inserts the same triple → absorbed). See
-  // docs/federation-step2-design.md §2.1.
+  // 0-INDEXED: the first message in a (thread, sender) is seq 0, then 1, 2, … ; "no messages yet" is
+  // represented as -1 (the cursor sits before seq 0). SENDER allocates (MAX ?? -1) + 1 on insert;
+  // RECEIVER copies the sender's value verbatim on pull, so the SAME value lives on both sides (the
+  // per-server Message.seq cannot cross servers — each server assigns its own). Nullable: legacy rows +
+  // never-federating threads stay NULL (Postgres treats NULLs as distinct under the unique index, so
+  // they coexist with no backfill). The compound unique index below enforces BOTH sender allocation
+  // correctness (same-user concurrent-send race → P2002 → retry) AND receiver-side idempotent dedup (a
+  // push/pull race inserts the same triple → absorbed). See docs/federation-step2-design.md §2.1.
   originSeq       Int?
+  // The SENDER server's allocation time, copied verbatim from the pulled payload's `ts`. The receiver's
+  // own `createdAt` (local now() at pull time) is the ARRIVAL time — what the chatbox displays and what
+  // orders the conversation list. This column is the origin-faithful time, stored for future use
+  // (quota day-bucketing, audit, optional origin-faithful ordering) and NEVER displayed. Nullable: null
+  // for locally-authored messages (their own createdAt IS the origin time) and for pre-Step-2 legacy rows.
+  originServerTime DateTime?
 
   mediaMessages MediaMessage[] // per-object media authz index (digest → thread)
 
   @@unique([threadId, creator, originSeq]) // (a) sender seq allocation race AND (b) receiver pull dedup
-  @@index([threadId, id]) // history pagination — the hot path
+  @@index([threadId, seq]) // history pagination — the hot path
   @@index([threadId, createdAt])
   @@index([creator])
   @@index([threadId, creator, originSeq]) // federation pull query + MAX(cursor) derivation
@@ -296,19 +315,19 @@ model MediaAsset {
 // at send time for every IMAGE/FILE/VIDEO/AUDIO message (one row per distinct digest a message references).
 // threadId is denormalized from Message so the gate skips a JOIN to Message. Never returned in API responses.
 model MediaMessage {
-  id        BigInt   @id @default(autoincrement())
-  messageId BigInt
-  threadId  Int // denormalized from Message (avoids a JOIN to Message on the hot gate path)
-  digest    String   @db.VarChar(64) // sha256 hex; the CAS url stem — matches MediaAsset.digest
-  createdAt DateTime @default(now())
+  messageSeq Int
+  threadId   Int // denormalized from Message (avoids a JOIN to Message on the hot gate path)
+  digest     String   @db.VarChar(64) // sha256 hex; the CAS url stem — matches MediaAsset.digest
+  createdAt  DateTime @default(now())
 
-  message Message       @relation(fields: [messageId], references: [id])
+  message Message       @relation(fields: [messageSeq], references: [seq])
   thread  MessageThread @relation(fields: [threadId], references: [id])
 
-  @@unique([messageId, digest]) // one row per (message, digest); album-duplicate safe
+  @@id([messageSeq, digest]) // composite PK — a (message, digest) pair IS the identity; no surrogate id
   @@index([digest]) // hot gate path: WHERE digest = $D
-  @@index([messageId]) // future message-delete cleanup: WHERE messageId = $M
+  @@index([messageSeq]) // future message-delete cleanup: WHERE messageSeq = $M
   @@index([threadId])
+}
 }
 
 enum NotifyType {
@@ -344,19 +363,21 @@ model RefreshToken {
   @@index([familyId])
 }
 
-/// Admin account (independent of the chat User: breach isolation + no privilege-escalation path + stricter security policy).
+/// Admin profile, LINKED to a User (single account namespace — no user/admin name collision possible).
+/// Identity (account name + password) lives on the linked User; this row holds only admin-specific state
+/// (enabled flag, last login, admin refresh-tokens). Admin login authenticates the linked User's password,
+/// then issues an admin session. Admin auth stays physically isolated from user auth (separate
+/// AdminRefreshToken + adminSecret + scope:'admin') — breach isolation is preserved.
 model Admin {
   id            Int                 @id @default(autoincrement())
-  username      String              @unique @db.VarChar(31)
-  hashPwd       String              @db.VarChar(127)
+  userId        Int                 @unique
+  user          User                @relation(fields: [userId], references: [id])
   enabled       Boolean             @default(true)
   lastLoginIp   String?             @db.VarChar(64)
   lastLoginAt   DateTime?
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   refreshTokens AdminRefreshToken[]
-
-  @@index([username])
 }
 
 /// Admin refresh token (family-based + reuse detection, mirrors RefreshToken; a separate instance avoids mixing with user sessions).
@@ -396,7 +417,7 @@ model AdminRefreshToken {
 model FederatedPeer {
   domain       String    @id @db.VarChar(63) // e.g. other.com
   trustLevel   String    @default("pending") @db.VarChar(15) // pending | trusted | demoted | blocked
-  addedBy      String?   @db.VarChar(31) // admin username who set the state, or null = auto-accepted via init
+  addedBy      String?   @db.VarChar(31) // admin account name who set the state, or null = auto-accepted via init
   createdAt    DateTime  @default(now()) // first discovered
   trustedAt    DateTime? // start of the current trust epoch (init ok); reset on re-trust after a demote
   lastSuccessAt DateTime? // last successful signed S2S op (liveness signal); advanced on every GET/POST ok

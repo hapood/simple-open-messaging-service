@@ -8,6 +8,7 @@ import { UserService } from '../../services/user.service';
 import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
+import { LayoutService } from '../../services/layout.service';
 
 /**
  * Left navigation drawer — a shell-level overlay (host is position:fixed; see the SCSS), NOT a
@@ -39,6 +40,7 @@ export class NavDrawerComponent {
   private readonly languageService = inject(LanguageService)
   private readonly transloco = inject(TranslocoService)
   private readonly nav = inject(NavStateMachineService)
+  private readonly layout = inject(LayoutService)
 
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -95,9 +97,11 @@ export class NavDrawerComponent {
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
   }
 
-  /** Open the Settings page in the aside slot (same surface profile / group-info use). */
+  /** Open Settings: the aside (drill-in) on mobile, or a wide two-column dialog on tablet. The drawer
+   *  closes first either way. Desktop opens the same dialog from the icon-rail. */
   settings() {
     this.close()
-    this.nav.openAside('settings')
+    if (this.layout.mode() === 'mobile') this.nav.openAside('settings')
+    else this.routeService.openSettingsDialog()
   }
 }

@@ -6,8 +6,9 @@ import { PrismaService } from '../prisma.service.js';
 import { jwtConstants } from '../auth/constants.js';
 
 /**
- * Admin 鉴权服务：镜像 AuthService 的家族化 + 重用检测算法，但操作独立的 Admin/AdminRefreshToken 表，
- * 签名用独立的 adminSecret + claim 带 scope:'admin'（与用户体系物理隔离，互不通用）。
+ * Admin auth service: mirrors AuthService's family-based + reuse-detection algorithm. Identity (account + password)
+ * lives on the linked User; this service operates on the separate Admin/AdminRefreshToken tables and signs tokens with
+ * a separate adminSecret carrying scope:'admin' (physically isolated from user auth — the two never interoperate).
  */
 type AdminVerifyResult =
   | { ok: true; adminId: number; familyId: string; jti: string }
@@ -22,16 +23,17 @@ export class AdminAuthService {
     private jwtService: JwtService,
   ) {}
 
-  /** admin 登录：验账密 → 签 access + refresh（新家族），记 lastLogin。失败返回 undefined。 */
-  async login(username: string, password: string, ip?: string) {
-    const admin = await this.prisma.admin.findUnique({ where: { username } });
-    if (
-      !admin ||
-      !admin.enabled ||
-      !(await argon2.verify(admin.hashPwd, password))
-    ) {
-      return undefined;
-    }
+  /** Admin login: identity is on the linked User (single account namespace) → verify User.hashPwd → require an
+   *  enabled Admin profile → sign access + refresh (new family), record lastLogin. Returns undefined on failure.
+   *  The Admin table no longer holds account/password. */
+  async login(account: string, password: string, ip?: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { account_domain: { account, domain: 'local' } },
+    });
+    if (!user || user.isDeleted) return undefined;
+    const admin = await this.prisma.admin.findUnique({ where: { userId: user.id } });
+    if (!admin || !admin.enabled) return undefined;
+    if (!(await argon2.verify(user.hashPwd, password))) return undefined;
     await this.prisma.admin.update({
       where: { id: admin.id },
       data: { lastLoginAt: new Date(), lastLoginIp: ip ?? null },

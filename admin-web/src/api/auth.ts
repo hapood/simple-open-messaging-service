@@ -22,8 +22,8 @@ async function postPublic<T>(path: string, body: unknown): Promise<T> {
 }
 
 /** Admin login (public). */
-export function adminLogin(username: string, password: string): Promise<TokenPair> {
-  return postPublic<TokenPair>('/admin/login', { username, password })
+export function adminLogin(account: string, password: string): Promise<TokenPair> {
+  return postPublic<TokenPair>('/admin/login', { account, password })
 }
 
 /**

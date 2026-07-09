@@ -25,8 +25,8 @@ export class UserService {
     })
   }
 
-  register(params: { uniqName: string, name: string, password: string }) {
-    return this.http.post<{ code: number, message: string, data?: { id: number, uniqName: string } }>(`${apiPrefix}/user/register`,
+  register(params: { account: string, name: string, password: string }) {
+    return this.http.post<{ code: number, message: string, data?: { id: number, account: string } }>(`${apiPrefix}/user/register`,
       params)
   }
 
@@ -107,16 +107,16 @@ export class UserService {
     return this.http.post<StandardResponse<User[]>>(`${apiPrefix}/user/query`, params)
   }
 
-  /** Resolve a user to address in friend ops. `username` alone = local lookup; `username` + `domain` =
+  /** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
    *  federated. The `@` separator is a UI input aid only — the caller (friend-requests search) splits a
    *  typed `alice@bbb.com` into these two fields; the API never carries an @-joined string. */
-  resolveUser(params: { username: string; domain?: string }) {
+  resolveUser(params: { account: string; domain?: string }) {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/resolve`, params)
   }
 
-  /** Local user discovery (fuzzy over uniqName OR display name, case-insensitive). Returns up to 20
+  /** Local user discovery (fuzzy over account OR display name, case-insensitive). Returns up to 20
    *  LOCAL matches (server excludes federated stubs + soft-deleted; min query length 2). Federated
-   *  users are NOT discoverable here — resolve those by exact username + domain via resolveUser. */
+   *  users are NOT discoverable here — resolve those by exact account + domain via resolveUser. */
   searchUsers(params: { q: string; skip?: number; take?: number }) {
     return this.http.post<StandardResponse<{ list: User[]; total: number }>>(`${apiPrefix}/user/search`, params)
   }

@@ -59,10 +59,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Seed alice @ appA.
     await request(appA.app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'alice', name: 'Alice', password: 'Pass1234' });
+      .send({ account: 'alice', name: 'Alice', password: 'Pass1234' });
     const loginA = await request(appA.app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ uniqName: 'alice', password: 'Pass1234' });
+      .send({ account: 'alice', password: 'Pass1234' });
     tokenA = loginA.body.data.access_token;
     const aProfile = await request(appA.app.getHttpServer())
       .post('/api/v1/user/my-profile')
@@ -72,10 +72,10 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // Seed bob @ appB.
     await request(appB.app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'bob', name: 'Bob', password: 'Pass1234' });
+      .send({ account: 'bob', name: 'Bob', password: 'Pass1234' });
     const loginB = await request(appB.app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ uniqName: 'bob', password: 'Pass1234' });
+      .send({ account: 'bob', password: 'Pass1234' });
     tokenB = loginB.body.data.access_token;
     const bProfile = await request(appB.app.getHttpServer())
       .post('/api/v1/user/my-profile')
@@ -111,7 +111,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.app.getHttpServer())
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ username: 'bob', domain: DOM_B });
+      .send({ account: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
     expect(res.body.data.isForeigner).toBe(true);
@@ -140,7 +140,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // appB created a stub of alice with a localized avatar (saved through saveAvatars → /uploads/).
     const aliceStubB = await appB.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: 'alice', domain: DOM_A } },
+      where: { account_domain: { account: 'alice', domain: DOM_A } },
     });
     expect(aliceStubB).not.toBeNull();
     expect(aliceStubB!.isForeigner).toBe(true);
@@ -219,7 +219,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
             where: { content: 'hi from alice', creator: aliceStubIdOnB },
           });
           expect(msg).not.toBeNull();
-          expect(msg!.originSeq).toBe(1); // alice's first message → originSeq 1, copied verbatim
+          expect(msg!.originSeq).toBe(0); // alice's first message → originSeq 0 (0-indexed), copied verbatim
         },
         { timeout: 5000 },
       );
@@ -634,7 +634,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // local friends get the push without each probing independently — the only way federated peers
     // benefit from the push (no S2S profile-push; federation is pull-based).
     const bobLocal = await appB.prisma.user.findUnique({
-      where: { uniqName_domain: { uniqName: 'bob', domain: 'local' } },
+      where: { account_domain: { account: 'bob', domain: 'local' } },
       select: { id: true },
     });
     expect(bobLocal).not.toBeNull();
@@ -700,7 +700,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const body = JSON.stringify({
       id: '01TEST00000000000000000000',
       origin: `${DOM_A}-evil`,
-      from: { username: 'mallory', domain: `${DOM_A}-evil` },
+      from: { account: 'mallory', domain: `${DOM_A}-evil` },
       to: [],
       ts: 0,
     });
@@ -747,7 +747,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.app.getHttpServer())
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ username: 'bob', domain: DOM_B });
+      .send({ account: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.FEDERATION_DELIVERY_FAILED);
 
@@ -781,7 +781,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.app.getHttpServer())
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ username: 'bob', domain: DOM_B });
+      .send({ account: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
 
@@ -816,7 +816,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const res = await request(appA.app.getHttpServer())
       .post('/api/v1/user/resolve')
       .set('Authorization', `Bearer ${tokenA}`)
-      .send({ username: 'bob', domain: DOM_B });
+      .send({ account: 'bob', domain: DOM_B });
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.FEDERATION_PEER_BLOCKED);
 

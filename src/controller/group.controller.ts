@@ -272,7 +272,7 @@ export class GroupController {
     const rows = await this.participantService.getRoster(group.threadId);
     const data = rows.map((r) => ({
       userId: r.userId,
-      uniqName: r.user.uniqName,
+      account: r.user.account,
       name: r.user.name,
       avatar: r.user.avatar,
       role: r.role,

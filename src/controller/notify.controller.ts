@@ -26,7 +26,7 @@ export class NotifyController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('notify/mark-friend-req-read')
-  @ApiOperation({ summary: '清除好友请求未读标记（用户已查看好友请求面板）' })
+  @ApiOperation({ summary: 'Clear the unread friend-request badge (the user viewed the friend-request panel)' })
   async markFriendReqRead(@Request() req): Promise<ApiResult> {
     await this.notifyService.markFriendReqRead(req.user.userId);
     return { code: BusinessCode.OK, message: 'successful' };

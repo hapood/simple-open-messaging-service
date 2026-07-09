@@ -24,7 +24,7 @@ export class LoginComponent {
   readonly AppIcon = AppIconType;
   private readonly transloco = inject(TranslocoService);
 
-  uniqName = signal('');
+  account = signal('');
   password = signal('');
   resp = signal('');
   showPassword = signal(false)
@@ -32,7 +32,7 @@ export class LoginComponent {
   isLoging = signal(false)
   isSuccess = signal(false)
   isLoginBtnDisabled = computed(() => {
-    return this.isSuccess() || this.isLoging() || this.uniqName() === '' || this.password() === ''
+    return this.isSuccess() || this.isLoging() || this.account() === '' || this.password() === ''
   })
 
   constructor(private authService: AuthService, private routeService: RouteService) {
@@ -43,8 +43,8 @@ export class LoginComponent {
     this.showPassword.update(v => !v)
   }
 
-  onUniqNameInput(v: string) {
-    this.uniqName.set(v)
+  onAccountInput(v: string) {
+    this.account.set(v)
     this.clearError()
   }
 
@@ -65,7 +65,7 @@ export class LoginComponent {
     }
     this.isLoging.set(true)
     this.authService.login({
-      uniqName: this.uniqName(),
+      account: this.account(),
       password: this.password(), isKeep: this.isKeepLogin()
     })
       .subscribe({

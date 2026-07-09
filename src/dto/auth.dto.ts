@@ -18,7 +18,7 @@ export class LoginDto {
   @ApiProperty({ example: 'alice', description: 'Login unique name' })
   @IsString()
   @IsNotEmpty()
-  uniqName: string;
+  account: string;
 
   @ApiProperty({ example: 'P@ssw0rd', description: 'Password' })
   @IsString()
@@ -37,12 +37,12 @@ export class LoginDto {
 
 /**
  * Registration input. Format validation (regex) lives here → failure flows through ValidationPipe → 400
- * (per the P0 ValidationPipe acceptance). Business validation (uniqName collision) stays in the service,
+ * (per the P0 ValidationPipe acceptance). Business validation (account collision) stays in the service,
  * returning 200 + code:2.
  */
 export class RegisterDto {
   // 3-31 chars, [a-zA-Z0-9_], must start with a letter (Telegram-style handle). The leading-letter +
-  // alnum+underscore charset keeps handles URL/address-safe for the username@domain federation identity;
+  // alnum+underscore charset keeps handles URL/address-safe for the account@domain federation identity;
   // the DB column is VarChar(31), so 31 is the hard ceiling. Existing users keep their handles — this
   // only gates NEW registrations.
   @ApiProperty({
@@ -50,9 +50,9 @@ export class RegisterDto {
     description: 'Login unique name: 3-31 chars [a-zA-Z0-9_], must start with a letter',
   })
   @Matches(/^[a-zA-Z][a-zA-Z0-9_]{2,30}$/, {
-    message: 'uniqName must be 3-31 chars ([a-zA-Z0-9_]) and start with a letter',
+    message: 'account must be 3-31 chars ([a-zA-Z0-9_]) and start with a letter',
   })
-  uniqName: string;
+  account: string;
 
   // Display name is the primary identity shown everywhere (lists, headers, avatars). Lenient on charset
   // — any visible unicode incl. CJK/emoji — but required + length-capped (see IsDisplayName).

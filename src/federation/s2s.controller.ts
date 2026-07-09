@@ -18,6 +18,7 @@ import {
   FederationService,
   type S2SPayload,
   type S2SFriendRequest,
+  type S2SThreadInvite,
   type S2SAddress,
 } from './federation.service.js';
 import { FederationBufferService } from './federation-buffer.service.js';
@@ -30,8 +31,8 @@ import { BusinessCode } from '../common/business-code.js';
  *
  * - POST /api/v1/s2s/friend-request — receive a friend-request payload (FriendOpHandler dedupes + applies).
  * - POST /api/v1/s2s/friend-approve — receive a friend-approve payload.
- * - GET  /api/v1/s2s/users/:username — return a local user's public profile (avatar inline as base64).
- * - GET  /api/v1/s2s/users/:username/revision — lightweight profile-revision probe (no avatar transfer)
+ * - GET  /api/v1/s2s/users/:account — return a local user's public profile (avatar inline as base64).
+ * - GET  /api/v1/s2s/users/:account/revision — lightweight profile-revision probe (no avatar transfer)
  *   so a peer can detect a stale stub before paying for the full profile re-pull.
  *
  * NOTE: there is no friend.delete endpoint — unfriending is LOCAL-ONLY. The severed edge is discovered
@@ -64,30 +65,41 @@ export class S2sController {
     return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 
-  @Get('users/:username')
-  async getUserProfile(@Param('username') username: string) {
-    // The endpoint serves OUR users only, so the domain is implicitly ours. The username is the sole
+  /** POST /api/v1/s2s/thread/invite — Step 3. A peer (the origin) invites one of OUR local users to a
+   *  cross-server group. Friend-gated + idempotent mirror find-or-create, inside FederationService. */
+  @Post('thread/invite')
+  @HttpCode(HttpStatus.OK)
+  async postThreadInvite(
+    @Req() req: FastifyRequest,
+  ): Promise<{ code: number; message: string; data: null }> {
+    await this.federation.handleThreadInvite(req.body as S2SThreadInvite);
+    return { code: BusinessCode.OK, message: 'ok', data: null };
+  }
+
+  @Get('users/:account')
+  async getUserProfile(@Param('account') account: string) {
+    // The endpoint serves OUR users only, so the domain is implicitly ours. The account is the sole
     // path segment — no `@`-joined address on the wire (the `@` is a UI input aid, split client-side).
-    const address: S2SAddress = { username, domain: this.federation.ourDomain };
+    const address: S2SAddress = { account, domain: this.federation.ourDomain };
     const profile = await this.federation.getLocalUserProfile(address);
     if (!profile) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `user ${username} not found`,
+        `user ${account} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
     return profile;
   }
 
-  @Get('users/:username/revision')
-  async getUserRevision(@Param('username') username: string) {
-    const address: S2SAddress = { username, domain: this.federation.ourDomain };
+  @Get('users/:account/revision')
+  async getUserRevision(@Param('account') account: string) {
+    const address: S2SAddress = { account, domain: this.federation.ourDomain };
     const rev = await this.federation.getLocalUserRevision(address);
     if (!rev) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `user ${username} not found`,
+        `user ${account} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -121,25 +133,73 @@ export class S2sController {
   @Get('messages')
   async getMessages(
     @Req() req: FastifyRequest,
-    @Query('from') fromUsername?: string,
-    @Query('to') toUsername?: string,
-    @Query('after') afterParam?: string,
+    @Query('from') fromAccount?: string,
+    @Query('to') toAccount?: string,
+    @Query('afterSeq') afterSeqParam?: string,
     @Query('take') takeParam?: string,
   ) {
-    if (!fromUsername || !toUsername) {
+    if (!fromAccount || !toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'missing from/to query param',
         HttpStatus.BAD_REQUEST,
       );
     }
-    const after = Number(afterParam ?? '0') || 0;
+    // 0-indexed seq: default afterSeq = -1 so a backfill (`>` -1) returns from seq 0. An explicit value
+    // is the caller's last-seen seq (e.g. 0 → `>` 0 skips seq 0).
+    const after = Number(afterSeqParam ?? '-1');
+    if (Number.isNaN(after)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'afterSeq must be an integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     const take = Math.min(Number(takeParam ?? '50') || 50, 50);
     return this.federation.serveOutboundMessages(
-      fromUsername,
-      toUsername,
+      fromAccount,
+      toAccount,
       this.signerDomain(req),
       after,
+      take,
+    );
+  }
+
+  /** GET /api/v1/s2s/messages/before — the BACKWARD twin of /messages (reserved for external/other
+   *  federation implementations; SOMS's own transport is forward-only). `beforeSeq` is an exclusive
+   *  upper bound (`seq < beforeSeq`); `< 0` (default) means no upper bound → the latest `take` messages.
+   *  Returns the batch OLDEST-FIRST (descending query, reversed) so a caller prepends it directly; the
+   *  next-older page uses `messages[0].originSeq` as the new `beforeSeq`. Same friendship gate. */
+  @Get('messages/before')
+  async getMessagesBefore(
+    @Req() req: FastifyRequest,
+    @Query('from') fromAccount?: string,
+    @Query('to') toAccount?: string,
+    @Query('beforeSeq') beforeSeqParam?: string,
+    @Query('take') takeParam?: string,
+  ) {
+    if (!fromAccount || !toAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing from/to query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    // 0-indexed seq: default beforeSeq = -1 → no upper bound (the latest take messages).
+    const beforeSeq = Number(beforeSeqParam ?? '-1');
+    if (Number.isNaN(beforeSeq)) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'beforeSeq must be an integer',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const take = Math.min(Number(takeParam ?? '50') || 50, 50);
+    return this.federation.serveOutboundMessagesBefore(
+      fromAccount,
+      toAccount,
+      this.signerDomain(req),
+      beforeSeq,
       take,
     );
   }
@@ -201,10 +261,10 @@ export class S2sController {
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply,
     @Query('digest') digest?: string,
-    @Query('from') fromUsername?: string,
-    @Query('to') toUsername?: string,
+    @Query('from') fromAccount?: string,
+    @Query('to') toAccount?: string,
   ) {
-    if (!digest || !fromUsername || !toUsername) {
+    if (!digest || !fromAccount || !toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
         'missing digest/from/to query param',
@@ -212,8 +272,8 @@ export class S2sController {
       );
     }
     const { absPath, bytes } = await this.federation.resolveMediaFile(
-      fromUsername,
-      toUsername,
+      fromAccount,
+      toAccount,
       this.signerDomain(req),
       digest,
     );

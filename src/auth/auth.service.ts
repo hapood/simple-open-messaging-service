@@ -8,12 +8,12 @@ import { PrismaService } from '../prisma.service.js';
 import { RedisService } from '../redis/redis.service.js';
 import { jwtConstants } from './constants.js';
 
-const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // 每日清理一次过期记录
+const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Clean up expired records once per day
 
-/** refresh token 签发/轮换选项：familyId 省略→铸造新家族（登录），传入→继承（轮换）。 */
+/** Refresh token issue/rotation options: omit familyId -> mint a new family (login); pass it -> inherit (rotation). */
 type RefreshOpts = { familyId?: string; device?: string; userAgent?: string; ip?: string };
 
-/** verifyRefreshToken 判别结果：区分重用(reuse)以触发前端强制重登，区别于普通失效。 */
+/** verifyRefreshToken outcome: distinguishes reuse (to force re-login on the client) from ordinary invalidity. */
 type VerifyResult =
   | { ok: true; userId: number; familyId: string; jti: string }
   | { ok: false; reason: 'invalid' | 'expired' | 'reuse' };
@@ -31,7 +31,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   ) {}
 
   async onModuleInit() {
-    // 定时清理已过期的 refresh token 记录（替代原内存清理，修其 key 错配 bug）
+    // Periodically clean up expired refresh token records (replaces the original in-memory cleanup, fixing its key-mismatch bug)
     this._cleanupTimer = setInterval(
       () => this.cleanupExpiredRefreshTokens(),
       REFRESH_CLEANUP_INTERVAL_MS,
@@ -45,11 +45,11 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   async validateUser(
-    uniqName: string,
+    account: string,
     password: string,
   ) {
     const user = await this.userService.findUniqueUserForAuth({
-      uniqName_domain: { uniqName, domain: 'local' },
+      account_domain: { account, domain: 'local' },
     });
     if (user === null) {
       return undefined;
@@ -77,9 +77,9 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 签发 refresh token：用 refreshSecret 签 JWT（14d）并入库（存 sha256 哈希 + jti + familyId）。
-   * - opts.familyId 省略 → 铸造新家族（登录）；传入 → 继承（轮换，维持重用检测链）。
-   * - jti 保证同秒多签互不冲突；familyId 是重用检测锚点（重放已吊销 token→全家族失效）。
+   * Issue a refresh token: sign a JWT with refreshSecret (14d) and persist it (storing sha256 hash + jti + familyId).
+   * - Omit opts.familyId -> mint a new family (login); pass it -> inherit (rotation, preserving the reuse-detection chain).
+   * - jti ensures multiple signatures issued within the same second do not collide; familyId is the reuse-detection anchor (replaying a revoked token -> entire family revoked).
    */
   async getRefreshToken(userId: number, opts: RefreshOpts = {}): Promise<string> {
     const familyId = opts.familyId ?? randomUUID();
@@ -104,10 +104,10 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 校验 refresh token：先验 JWT 签名/过期，再查 DB 记录。
-   * - JWT 有效但 DB 记录已吊销 → 重用（token 链已泄露）→ 全家族连根吊销 + 返回 reason:'reuse'。
-   * - 旧 token（migration 前签发，JWT 无 fam claim 但 DB 行已回填 familyId/jti）仍可用，
-   *   下次轮换即升级为新格式 token。
+   * Verify a refresh token: first validate the JWT signature/expiry, then look up the DB record.
+   * - JWT valid but DB record already revoked -> reuse (token chain leaked) -> revoke the entire family and return reason:'reuse'.
+   * - Legacy tokens (issued before the migration; JWT lacks a fam claim but the DB row already has familyId/jti backfilled) still work,
+   *   and the next rotation upgrades them to the new token format.
    */
   async verifyRefreshToken(refreshToken: string): Promise<VerifyResult> {
     try {
@@ -142,11 +142,11 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 轮换 refresh token：校验 → 原子 claim（翻 revokedAt）→ 签发新 access+refresh（继承 familyId）。
-   * - 并发 race：两调用方同时轮换同一 token，updateMany where revokedAt:null 只有一个 count===1，
-   *   失败方 count===0 视为重用 → 全家族吊销（"合法用户与攻击者同用旧 token → 同归于尽"）。
-   * - verifyRefreshToken 已对"已吊销"做 reuse 检测；此处 claim 兜底 verify 之后的并发窗口。
-   * 失败抛 reason 字符串（'invalid'|'expired'|'reuse'），调用方据此映射业务码。
+   * Rotate a refresh token: verify -> atomic claim (flip revokedAt) -> issue new access+refresh (inheriting familyId).
+   * - Concurrency race: if two callers rotate the same token simultaneously, only one updateMany where revokedAt:null gets count===1;
+   *   the loser gets count===0 and is treated as reuse -> revoke the entire family ("legitimate user and attacker sharing the old token -> mutual destruction").
+   * - verifyRefreshToken already detects reuse for revoked records; this claim backstops the concurrency window after verify.
+   * On failure throws a reason string ('invalid'|'expired'|'reuse'); the caller maps it to a business code.
    */
   async rotateRefreshToken(
     refreshToken: string,
@@ -174,7 +174,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return { access: await this.getAccessToken(v.userId), refresh, userId: v.userId };
   }
 
-  /** 连根吊销整个家族（重用检测触发）：所有未吊销成员一并失效。 */
+  /** Revoke an entire family at the root (triggered by reuse detection): all non-revoked members are invalidated. */
   async revokeFamily(familyId: string, reason: string) {
     await this.prisma.refreshToken.updateMany({
       where: { familyId, revokedAt: null },
@@ -182,7 +182,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  /** 吊销单个 refresh token（logout 用；幂等：不存在或已吊销则无操作）。 */
+  /** Revoke a single refresh token (used by logout; idempotent: no-op if it does not exist or is already revoked). */
   async revokeRefreshToken(refreshToken: string) {
     await this.prisma.refreshToken.updateMany({
       where: { tokenHash: hashToken(refreshToken), revokedAt: null },
@@ -191,9 +191,9 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 签发 access token：claim 带 {sub, jti, tver}。
-   * - jti：该 token 唯一 id；单 token 吊销时入 Redis 黑名单（TTL=剩余寿命）。
-   * - tver：签发时的 User.tokenVersion，JwtStrategy 校验与当前一致；bump tver 即令所有 access 失效。
+   * Issue an access token: the claim carries {sub, jti, tver}.
+   * - jti: unique id of this token; when revoking a single token it is added to a Redis blacklist (TTL = remaining lifetime).
+   * - tver: the User.tokenVersion at issue time, which JwtStrategy verifies matches the current value; bumping tver invalidates all access tokens.
    */
   async getAccessToken(userId: number): Promise<string> {
     const user = await this.prisma.user.findUnique({
@@ -206,15 +206,15 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  /** 单个 access token 即时吊销（登出单设备）：jti 入黑名单，TTL 默认取 access 剩余寿命。 */
+  /** Immediately revoke a single access token (log out a single device): add its jti to the blacklist, TTL defaults to the access token's remaining lifetime. */
   async blacklistAccessJti(jti: string, ttlSec: number = jwtConstants.accessTtlSec) {
     if (!this.redis.enabled) return;
     await this.redis.setex(`access:jti:${jti}`, ttlSec, '1').catch(() => {});
   }
 
   /**
-   * 全设备登出 / 改密 / 强制下线：吊销所有 refresh + tokenVersion++（令所有 access 失效）。
-   * 清 Redis 的 tokenVersion 缓存让新版本即时生效；发事件让在线 WS 客户端 FORCE_LOGOUT。
+   * Log out all devices / change password / force offline: revoke all refresh tokens and increment tokenVersion (invalidating all access tokens).
+   * Clear the Redis tokenVersion cache so the new version takes effect immediately; emit an event so online WS clients FORCE_LOGOUT.
    */
   async invalidateAllSessions(userId: number, reason: string): Promise<number> {
     await this.prisma.refreshToken.updateMany({
@@ -237,7 +237,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return user.tokenVersion;
   }
 
-  /** 改密：验旧密 → 换 hash → invalidateAllSessions → 返回新登录对（当前设备重登）。 */
+  /** Change password: verify the old password -> swap the hash -> invalidateAllSessions -> return a fresh login pair (re-login on the current device). */
   async changePassword(
     userId: number,
     oldPassword: string,
@@ -265,7 +265,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** 列活跃 refresh 会话（未吊销未过期），按创建时间倒序。 */
+  /** List active refresh sessions (not revoked, not expired), ordered by creation time descending. */
   async listActiveSessions(userId: number) {
     return this.prisma.refreshToken.findMany({
       where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
@@ -274,7 +274,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  /** 吊销指定 refresh（按 jti + 属该 userId）+ 可选吊销其 access（黑名单）。 */
+  /** Revoke a specific refresh token (by jti + owned by this userId) + optionally revoke its access token (blacklist). */
   async revokeSession(userId: number, refreshJti: string, accessJti?: string) {
     await this.prisma.refreshToken.updateMany({
       where: { jti: refreshJti, userId, revokedAt: null },

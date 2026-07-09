@@ -32,8 +32,9 @@ import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
 
 /**
- * Admin 控制台鉴权端点（Phase A）：login / renew-access / logout。
- * 管理端点（用户/force-logout/sessions/bans/reuse 等）在 Phase B 加，统一挂 AdminAuthGuard + admin/ 前缀。
+ * Admin console auth endpoints (Phase A): login / renew-access / logout.
+ * Management endpoints (users / force-logout / sessions / bans / reuse, etc.) are added in Phase B,
+ * all guarded by AdminAuthGuard under the admin/ prefix.
  */
 @ApiTags('admin')
 @Controller()
@@ -50,20 +51,20 @@ export class AdminController {
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/login')
-  @ApiOperation({ summary: '管理员登录（独立 admin JWT + 家族化 refresh）' })
+  @ApiOperation({ summary: 'Admin login (separate admin JWT + family-based refresh)' })
   async login(
     @Body() dto: AdminLoginDto,
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
   ): Promise<ApiResult> {
-    const r = await this.adminAuthService.login(dto.username, dto.password, ip);
+    const r = await this.adminAuthService.login(dto.account, dto.password, ip);
     if (r) return { code: BusinessCode.OK, message: 'success', data: r };
     return { code: BusinessCode.UNAUTHENTICATED, message: 'invalid credentials' };
   }
 
   @HttpCode(HttpStatus.OK)
   @Post('admin/renew-access')
-  @ApiOperation({ summary: '管理员 refresh 轮换（家族化 + 重用检测）' })
+  @ApiOperation({ summary: 'Admin refresh rotation (family-based + reuse detection)' })
   async renewAccess(
     @Body() dto: AdminRefreshDto,
     @Headers('user-agent') userAgent: string,
@@ -90,21 +91,21 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/logout')
-  @ApiOperation({ summary: '管理员登出' })
+  @ApiOperation({ summary: 'Admin logout' })
   async logout(@Body() dto: AdminRefreshDto): Promise<ApiResult> {
     await this.adminAuthService.revokeAdminRefreshToken(dto.refreshToken);
     return { code: BusinessCode.OK, message: 'success' };
   }
 
-  // ===== 用户管理 =====
+  // ===== User management =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users')
-  @ApiOperation({ summary: '用户列表（分页 + 搜索）' })
+  @ApiOperation({ summary: 'User list (paginated + searchable)' })
   async listUsers(@Body() dto: AdminListUsersDto): Promise<ApiResult> {
     const where = dto.search
-      ? { uniqName: { contains: dto.search, mode: 'insensitive' as const } }
+      ? { account: { contains: dto.search, mode: 'insensitive' as const } }
       : undefined;
     const [list, total] = await Promise.all([
       this.userManageService.getUserList({
@@ -118,12 +119,12 @@ export class AdminController {
     return { code: BusinessCode.OK, message: 'success', data: { list, total } };
   }
 
-  // ===== 推送管理（FCM / device tokens） =====
+  // ===== Push management (FCM / device tokens) =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/tokens')
-  @ApiOperation({ summary: '推送设备 token 列表（分页 + 搜索）+ FCM/Web Push 配置状态' })
+  @ApiOperation({ summary: 'Push device-token list (paginated + searchable) + FCM/Web Push config status' })
   async listPushTokens(@Body() dto: AdminListPushTokensDto): Promise<ApiResult> {
     const { list, total } = await this.pushService.listTokens({
       skip: dto.skip ?? 0,
@@ -145,7 +146,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/tokens/:id/delete')
-  @ApiOperation({ summary: '删除（注销）一个推送设备 token' })
+  @ApiOperation({ summary: 'Delete (revoke) a push device token' })
   async deletePushToken(@Param('id') id: string): Promise<ApiResult> {
     await this.pushService.deleteTokenById(Number(id));
     return { code: BusinessCode.OK, message: 'success' };
@@ -154,7 +155,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/push/test')
-  @ApiOperation({ summary: '向指定设备 token 发送测试推送（FCM / Web Push）' })
+  @ApiOperation({ summary: 'Send a test push to a given device token (FCM / Web Push)' })
   async sendPushTest(@Body() dto: AdminPushTestDto): Promise<ApiResult> {
     // The push may legitimately fail (transport unconfigured, dead token) — surface that as a normal
     // result (code OK + data.ok=false) rather than an API error, so the admin sees the reason.
@@ -169,7 +170,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/disable')
-  @ApiOperation({ summary: '封禁用户（软删除 + 强制下线）' })
+  @ApiOperation({ summary: 'Disable a user (soft-delete + force logout)' })
   async disableUser(@Param('id') id: string): Promise<ApiResult> {
     await this.prisma.user.update({ where: { id: Number(id) }, data: { isDeleted: true } });
     await this.authService.invalidateAllSessions(Number(id), 'admin_disabled');
@@ -179,7 +180,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/enable')
-  @ApiOperation({ summary: '解禁用户' })
+  @ApiOperation({ summary: 'Enable a user' })
   async enableUser(@Param('id') id: string): Promise<ApiResult> {
     await this.prisma.user.update({ where: { id: Number(id) }, data: { isDeleted: false } });
     return { code: BusinessCode.OK, message: 'success' };
@@ -188,7 +189,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/force-logout')
-  @ApiOperation({ summary: '强制下线（吊销该用户所有会话）' })
+  @ApiOperation({ summary: "Force logout (revoke all of the user's sessions)" })
   async forceLogout(@Param('id') id: string): Promise<ApiResult> {
     await this.authService.invalidateAllSessions(Number(id), 'admin_force_logout');
     return { code: BusinessCode.OK, message: 'success' };
@@ -197,7 +198,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/sessions')
-  @ApiOperation({ summary: '查指定用户活跃会话' })
+  @ApiOperation({ summary: "View a given user's active sessions" })
   async userSessions(@Param('id') id: string): Promise<ApiResult> {
     return {
       code: BusinessCode.OK,
@@ -209,7 +210,7 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/users/:id/reset-password')
-  @ApiOperation({ summary: '重置用户密码（吊销所有会话）' })
+  @ApiOperation({ summary: "Reset a user's password (revokes all sessions)" })
   async resetPassword(
     @Param('id') id: string,
     @Body() dto: AdminResetPasswordDto,
@@ -220,12 +221,12 @@ export class AdminController {
     return { code: BusinessCode.OK, message: 'success' };
   }
 
-  // ===== 封禁管理 =====
+  // ===== Ban management =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans')
-  @ApiOperation({ summary: '列当前登录封禁（IP/账户）' })
+  @ApiOperation({ summary: 'List active login bans (IP / account)' })
   async listBans(): Promise<ApiResult> {
     return { code: BusinessCode.OK, message: 'success', data: this.localStrategy.listBans() };
   }
@@ -233,18 +234,18 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans/unban')
-  @ApiOperation({ summary: '解封（IP 和/或账户）' })
+  @ApiOperation({ summary: 'Unban (IP and/or account)' })
   async unban(@Body() dto: AdminUnbanDto): Promise<ApiResult> {
-    this.localStrategy.clearBan({ ip: dto.ip, uniqName: dto.uniqName });
+    this.localStrategy.clearBan({ ip: dto.ip, account: dto.account });
     return { code: BusinessCode.OK, message: 'success' };
   }
 
-  // ===== reuse 审计 =====
+  // ===== Reuse audit =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/reuse-alerts')
-  @ApiOperation({ summary: 'refresh token 重用告警（revokeReason=reuse）' })
+  @ApiOperation({ summary: 'Refresh-token reuse alerts (revokeReason=reuse)' })
   async reuseAlerts(@Body() dto: { take?: number }): Promise<ApiResult> {
     const rows = await this.prisma.refreshToken.findMany({
       where: { revokeReason: 'reuse' },
@@ -262,12 +263,12 @@ export class AdminController {
     return { code: BusinessCode.OK, message: 'success', data: rows };
   }
 
-  // ===== 全系统活跃会话总览 =====
+  // ===== System-wide active session overview =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/sessions')
-  @ApiOperation({ summary: '全系统活跃会话总览（跨用户，可筛 userId/ip）' })
+  @ApiOperation({ summary: 'System-wide active session overview (cross-user; filter by userId/ip)' })
   async listAllSessions(@Body() dto: AdminListSessionsDto): Promise<ApiResult> {
     const where = {
       revokedAt: null,
@@ -289,7 +290,7 @@ export class AdminController {
           ip: true,
           createdAt: true,
           expiresAt: true,
-          user: { select: { id: true, uniqName: true } },
+          user: { select: { id: true, account: true } },
         },
       }),
       this.prisma.refreshToken.count({ where }),
@@ -300,9 +301,9 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/sessions/purge')
-  @ApiOperation({ summary: '一键清理所有活跃会话（强制全部用户重登，access 立即失效）' })
+  @ApiOperation({ summary: 'Purge all active sessions in one shot (forces every user to re-login; access tokens expire immediately)' })
   async purgeAllSessions(): Promise<ApiResult> {
-    // 找所有有活跃会话的用户，逐个 invalidateAllSessions（bump tokenVersion + 吊销 refresh）
+    // Find every user with an active session and invalidateAllSessions for each (bump tokenVersion + revoke refresh).
     const active = await this.prisma.refreshToken.findMany({
       where: { revokedAt: null, expiresAt: { gt: new Date() } },
       select: { userId: true },
@@ -318,23 +319,23 @@ export class AdminController {
     };
   }
 
-  // ===== 实时连接观测（SSE 在线流，内存态，只读）=====
+  // ===== Live connection observability (SSE online stream, in-memory, read-only) =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/connections')
-  @ApiOperation({ summary: '当前在线 SSE 连接总览（按用户聚合）' })
+  @ApiOperation({ summary: 'Online SSE connection overview (aggregated per user)' })
   async listConnections(): Promise<ApiResult> {
     const snap = this.sseService.snapshot();
     if (snap.clients.length === 0) {
       return { code: BusinessCode.OK, message: 'success', data: snap };
     }
-    // 一次性补全用户名，避免 N+1
+    // Backfill account names in one batch to avoid N+1.
     const users = await this.prisma.user.findMany({
       where: { id: { in: snap.clients.map((c) => c.userId) } },
-      select: { id: true, uniqName: true },
+      select: { id: true, account: true },
     });
-    const nameMap = new Map(users.map((u) => [u.id, u.uniqName]));
+    const nameMap = new Map(users.map((u) => [u.id, u.account]));
     return {
       code: BusinessCode.OK,
       message: 'success',
@@ -343,25 +344,25 @@ export class AdminController {
         uniqueUsers: snap.uniqueUsers,
         clients: snap.clients.map((c) => ({
           ...c,
-          uniqName: nameMap.get(c.userId) ?? null,
+          account: nameMap.get(c.userId) ?? null,
         })),
       },
     };
   }
 
-  // ===== 管理员会话（独立 AdminRefreshToken 表）=====
+  // ===== Admin sessions (separate AdminRefreshToken table) =====
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/admin-sessions')
-  @ApiOperation({ summary: '管理员活跃会话列表（join Admin 出 username）' })
+  @ApiOperation({ summary: 'Admin active session list (joins Admin → linked user account)' })
   async listAdminSessions(@Body() dto: AdminListSessionsDto): Promise<ApiResult> {
     const where = {
       revokedAt: null,
       expiresAt: { gt: new Date() },
       ...(dto.ip ? { ip: { contains: dto.ip } } : {}),
     };
-    const [list, total] = await Promise.all([
+    const [rows, total] = await Promise.all([
       this.prisma.adminRefreshToken.findMany({
         where,
         skip: dto.skip ?? 0,
@@ -374,18 +375,20 @@ export class AdminController {
           ip: true,
           createdAt: true,
           expiresAt: true,
-          admin: { select: { id: true, username: true } },
+          admin: { select: { id: true, user: { select: { account: true } } } },
         },
       }),
       this.prisma.adminRefreshToken.count({ where }),
     ]);
+    // Flatten admin.user.account → admin.account so the response shape matches the user-session shape.
+    const list = rows.map((r) => ({ ...r, admin: { id: r.admin.id, account: r.admin.user.account } }));
     return { code: BusinessCode.OK, message: 'success', data: { list, total } };
   }
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/admin-sessions/:jti/revoke')
-  @ApiOperation({ summary: '吊销指定管理员会话（按 jti；其 access 15m 内仍有效）' })
+  @ApiOperation({ summary: 'Revoke a given admin session (by jti; its access token stays valid for up to 15m)' })
   async revokeAdminSession(@Param('jti') jti: string): Promise<ApiResult> {
     await this.prisma.adminRefreshToken.updateMany({
       where: { jti, revokedAt: null },

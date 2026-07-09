@@ -51,14 +51,14 @@ describe('Auth e2e (register -> login -> guarded)', () => {
     // 1. register (argon2.hash + Prisma)
     const reg = await request(app.getHttpServer())
       .post('/api/v1/user/register')
-      .send({ uniqName: 'e2etest', name: 'E2E Test', password: 'Pass1234' });
+      .send({ account: 'e2etest', name: 'E2E Test', password: 'Pass1234' });
     expect(reg.status).toBe(200);
     expect(reg.body.code).toBe(0);
 
     // 2. login (argon2.verify + JwtService) -> access token
     const login = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
-      .send({ uniqName: 'e2etest', password: 'Pass1234' });
+      .send({ account: 'e2etest', password: 'Pass1234' });
     expect(login.status).toBe(200);
     expect(login.body.code).toBe(0);
     const accessToken = login.body.data.access_token;

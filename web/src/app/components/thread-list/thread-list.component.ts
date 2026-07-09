@@ -1,4 +1,4 @@
-import { Component, input, signal, computed, EventEmitter, Output, inject, OnInit, ElementRef, effect } from '@angular/core';
+import { Component, input, signal, computed, EventEmitter, Output, inject, OnInit, OnDestroy, ElementRef, effect } from '@angular/core';
 import { NgClass } from '@angular/common';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service'
@@ -25,7 +25,7 @@ import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
     templateUrl: './thread-list.component.html',
     styleUrl: './thread-list.component.scss'
 })
-export class ThreadListComponent implements OnInit {
+export class ThreadListComponent implements OnInit, OnDestroy {
   readonly UserAvatarType = UserAvatarType
   /** exposes the icon enum to the template (mute indicator on muted threads). */
   readonly AppIconType = AppIconType
@@ -43,6 +43,13 @@ export class ThreadListComponent implements OnInit {
   /** Last-known row rects — the "before" snapshot the next top-insert FLIPs against. Refreshed on
    *  every render that doesn't itself animate, so a later insert measures against current positions. */
   private prevRects = new Map<string, DOMRect>()
+
+  /** Delay-gated shimmer skeleton (mirrors MessageThreadComponent). The rows stay hidden until an
+   *  initial/retry load outlasts SKELETON_DELAY, so a fast load renders real rows directly with zero
+   *  flash — only a genuinely slow load reveals the skeleton. */
+  readonly skeletonVisible = signal(false)
+  private skeletonTimer?: ReturnType<typeof setTimeout>
+  private static readonly SKELETON_DELAY = 300
 
   constructor() {
     // FLIP list animation: re-runs whenever the shared list mutates (read items() reactively). The
@@ -65,6 +72,22 @@ export class ThreadListComponent implements OnInit {
         }
       })
     })
+
+    // Delay-gated skeleton reveal. Watching status() (not a specific call site) gates regardless of
+    // who re-entered LOADING — the shared store can reload from anywhere (retry, friend-approve, …).
+    // On entering LOADING we arm the timer; on leaving it we cancel and hide. The timer's status()
+    // read is outside the reactive context (async), so it doesn't track and can't loop the effect.
+    effect(() => {
+      const loading = this.status() === ConversationLoadStatus.LOADING
+      clearTimeout(this.skeletonTimer)
+      if (loading) {
+        this.skeletonTimer = setTimeout(() => {
+          if (this.status() === ConversationLoadStatus.LOADING) this.skeletonVisible.set(true)
+        }, ThreadListComponent.SKELETON_DELAY)
+      } else {
+        this.skeletonVisible.set(false)
+      }
+    })
   }
 
   readonly items = this.convList.items
@@ -73,6 +96,21 @@ export class ThreadListComponent implements OnInit {
   readonly openThreadId = this.convList.openThreadId
   /** exposes the enum to the template's @switch */
   readonly LoadStatus: typeof ConversationLoadStatus = ConversationLoadStatus
+
+  /** Per-row width config (percent of the info column) for the loading skeleton. Gentle variation
+   *  across the name and message bars avoids a rigid barcode rhythm; values are purely cosmetic. */
+  readonly skeletonRows = [
+    { name: 42, msg: 68 },
+    { name: 55, msg: 55 },
+    { name: 38, msg: 72 },
+    { name: 60, msg: 45 },
+    { name: 48, msg: 62 },
+    { name: 52, msg: 58 },
+    { name: 45, msg: 50 },
+    { name: 58, msg: 66 },
+    { name: 44, msg: 60 },
+    { name: 50, msg: 56 },
+  ] as const
 
   /** view model after applying the folder + search filters. */
   readonly filteredThreadList = computed(() => {
@@ -154,5 +192,9 @@ export class ThreadListComponent implements OnInit {
   ngOnInit() {
     // Load only if we don't already have data (the store is shared across layout switches).
     if (this.status() === ConversationLoadStatus.LOADING && this.items().length === 0) this.convList.load()
+  }
+
+  ngOnDestroy() {
+    clearTimeout(this.skeletonTimer)
   }
 }

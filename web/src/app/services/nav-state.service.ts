@@ -3,6 +3,15 @@ import { computed, effect, inject, Injectable, signal, type Type } from '@angula
 /** The aside auxiliary panel kinds (the old `(aside:...)` outlet segments, now signal-driven). */
 export type AsidePanel = 'profile' | 'group-info' | 'settings';
 
+/** One entry on the aside navigation stack. The aside is now a STACK so a panel can drill into
+ *  sub-pages (e.g. Settings root → a category page → a sub-category). `params` carries per-entry
+ *  context the rendered component reads (e.g. `{ category: 'notifications' }` for Settings). */
+export interface AsideEntry {
+  readonly id: number;
+  readonly panel: AsidePanel;
+  readonly params?: Record<string, unknown>;
+}
+
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
 export type PaneKind = 'dialog' | 'gallery' | 'file-detail' | 'invite-detail';
 
@@ -19,9 +28,13 @@ export interface PaneEntry {
   readonly payload?: Record<string, unknown>;
   /** Delivered the close result (dialog) or `undefined` (back/cancel). */
   readonly onResult?: (result: unknown) => void;
+  /** Dialog-only: render the desktop centered card wider than the default 480px (e.g. a two-column
+   *  Settings dialog). Ignored on tablet/mobile (full-screen sheet). */
+  readonly wide?: boolean;
 }
 
 let nextPaneId = 0;
+let nextAsideId = 0;
 
 /**
  * The single source of truth for app view state — replaces the Angular Router + the sentinel system for
@@ -30,8 +43,9 @@ let nextPaneId = 0;
  * deep, so browser-back naturally exits on desktop/PWA), and mobile intercepts hardware back natively
  * and calls {@link back}.
  *
- * Layered model: `chatThreadId` (base) ← `searchOpen` ← `aside` ← `paneStack` (topmost last).
- * {@link back} peels one layer: topmost pane → aside → search → chat → (home: returns `false`, caller exits).
+ * Layered model: `chatThreadId` (base) ← `searchOpen` ← `aside` (a stack) ← `paneStack` (topmost last).
+ * {@link back} peels one layer: topmost pane → one aside entry → search → chat → (home: returns `false`,
+ * caller exits). The aside being a stack means a panel can drill into sub-pages and back pops one level.
  *
  * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
  * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
@@ -46,8 +60,15 @@ let nextPaneId = 0;
 export class NavStateMachineService {
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
-  /** The open aside panel, or `undefined`. */
-  readonly aside = signal<{ panel: AsidePanel } | undefined>(undefined);
+  /** The aside navigation stack. Empty = closed; one entry = a panel at root depth; more = drilled-in
+   *  sub-pages (top = last entry). Renderers read the TOP entry's `panel` (and `params`). */
+  readonly aside = signal<readonly AsideEntry[]>([]);
+  /** The topmost aside entry, or `undefined` when the aside is closed. The single thing renderers +
+   *  components read (panel kind + drill-in params). */
+  readonly asideTop = computed(() => {
+    const s = this.aside();
+    return s.length ? s[s.length - 1] : undefined;
+  });
   /** Whether the in-chat search field is open in the foreground chat. A session-state nav layer (like
    *  `aside`, NOT mirrored to the URL); {@link back} peels it before the chat so hardware-back exits
    *  search before leaving the thread. */
@@ -80,7 +101,7 @@ export class NavStateMachineService {
    *  dialog/overlay/search. */
   openChat(threadId: number): void {
     this.closeAllPanes();
-    if (this.chatThreadId() !== threadId) this.aside.set(undefined);
+    if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
     this.chatThreadId.set(threadId);
   }
@@ -88,16 +109,25 @@ export class NavStateMachineService {
   closeChat(): void {
     this.closeAllPanes();
     this.chatThreadId.set(undefined);
-    this.aside.set(undefined);
+    this.aside.set([]);
     this.searchOpen.set(false);
   }
 
   // --- aside layer ---
+  /** Open a panel at ROOT depth, replacing any current aside (preserves the old single-panel
+   *  semantics: opening profile while settings is open swaps it, doesn't stack). */
   openAside(panel: AsidePanel): void {
-    this.aside.set({ panel });
+    this.aside.set([{ id: nextAsideId++, panel }]);
   }
+  /** Drill one level deeper within the current aside (sub-page). Appends to the stack so {@link back}
+   *  peels it one level at a time. Used by Settings category rows (and later, sibling panel drill-in). */
+  pushAside(panel: AsidePanel, params?: Record<string, unknown>): void {
+    this.aside.update((s) => [...s, { id: nextAsideId++, panel, params }]);
+  }
+  /** Close the entire aside (clears every stacked entry). Bound to the desktop/tablet scrim click and
+   *  to the close affordances of panels that have no drill-in. */
   closeAside(): void {
-    this.aside.set(undefined);
+    this.aside.set([]);
   }
 
   // --- in-chat search layer ---
@@ -148,8 +178,10 @@ export class NavStateMachineService {
       removed.onResult?.(undefined);
       return true;
     }
-    if (this.aside() !== undefined) {
-      this.aside.set(undefined);
+    if (this.aside().length > 0) {
+      // Peel one aside entry: a drilled-in sub-page returns to its parent; the root entry popping
+      // empties the stack and closes the aside entirely.
+      this.aside.update((s) => s.slice(0, -1));
       return true;
     }
     // In-chat search is the innermost overlay (it lives in the chat header): peel it right before the

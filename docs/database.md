@@ -50,7 +50,7 @@ SOMS 使用 PostgreSQL，通过 Prisma 7（Rust-free 客户端 + `@prisma/adapte
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | Int (PK, 自增) | 用户 ID |
-| `uniqName` | VarChar(31), unique | 登录用户名 |
+| `account` | VarChar(31), unique | 登录账户名 |
 | `hashPwd` | VarChar(127) | argon2 密码哈希 |
 | `isForeigner` | Boolean | 是否外部（跨域）用户 |
 | `domain` | VarChar(63)? | 所属域 |
@@ -59,14 +59,14 @@ SOMS 使用 PostgreSQL，通过 Prisma 7（Rust-free 客户端 + `@prisma/adapte
 | `userExtraId` | Int (unique, FK→UserExtra) | 1:1 档案 |
 | `userNotiBoxId` | Int (unique, FK→userNotiBox) | 1:1 通知盒 |
 
-联合唯一：`(uniqName, domain)` —— 同一域内用户名唯一，支持跨域隔离。
+联合唯一：`(account, domain)` —— 同一域内账户名唯一，支持跨域隔离。
 
 ### UserExtra — 用户档案
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | Int (PK) | |
-| `name` | String | 昵称（注册时默认 = uniqName） |
+| `name` | String | 昵称（注册时默认 = account） |
 | `avatar` | String | 头像（URL 或标识，初始为空串） |
 | `createdAt` / `updatedAt` | DateTime | |
 
@@ -185,7 +185,7 @@ enum NotifyType {
 
 | 表 | 约束 | 含义 |
 | --- | --- | --- |
-| `User` | `(uniqName, domain)` | 同域用户名唯一 |
+| `User` | `(account, domain)` | 同域账户名唯一 |
 | `GroupMember` | `(groupId, userId)` | 同一用户在同一群组唯一 |
 | `UserMessageThread` | `(userId, toObjType, toObjId)` | 一个用户对同一目标只有一条记录 |
 | `UserMessageThread` | `(userId, threadId)` | 一个用户在同一会话中只有一条记录 |

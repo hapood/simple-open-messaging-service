@@ -88,20 +88,20 @@ export class FriendRequestsComponent implements OnDestroy {
     this.cancelInFlight()
     this.localResults.set([])
 
-    // Branch on shape: a federated address (username@domain) resolves EXACTLY (you can't enumerate a
+    // Branch on shape: a federated address (account@domain) resolves EXACTLY (you can't enumerate a
     // remote user table — only resolve a known handle via S2S); anything else is LOCAL fuzzy discovery
-    // (POST /user/search, matches uniqName OR display name). The first-contact handshake banner only
+    // (POST /user/search, matches account OR display name). The first-contact handshake banner only
     // applies to the federated path.
-    // The `@` is a UI input aid ONLY — split the typed `username@domain` into two fields here, at the
-    // input boundary, so the API never carries an @-joined string. A bare username (no `@`) is a local
+    // The `@` is a UI input aid ONLY — split the typed `account@domain` into two fields here, at the
+    // input boundary, so the API never carries an @-joined string. A bare account (no `@`) is a local
     // lookup (domain omitted).
     const at = curSearchText.lastIndexOf('@')
     const domain = at > 0 && at < curSearchText.length - 1 ? curSearchText.slice(at + 1) : null
-    const username = at > 0 ? curSearchText.slice(0, at) : curSearchText
+    const account = at > 0 ? curSearchText.slice(0, at) : curSearchText
 
     // Federated: exact resolve → establish trust (if needed) → fetch peer profile → single card.
     const runResolve = () => {
-      this.searchSub = this.userService.resolveUser({ username, ...(domain ? { domain } : {}) }).subscribe({
+      this.searchSub = this.userService.resolveUser({ account, ...(domain ? { domain } : {}) }).subscribe({
         next: res => {
           this.connectingDomain.set(null)
           if (res.code === 0) {
@@ -326,7 +326,7 @@ export class FriendRequestsComponent implements OnDestroy {
               if (userData) {
                 return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.peerUserId, uniqName: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, account: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.pendingReqList.set(list)
@@ -365,7 +365,7 @@ export class FriendRequestsComponent implements OnDestroy {
               if (userData) {
                 return { ...userData, reqMessage: item.reqMessage, status: 0, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' }
               } else {
-                return { id: item.peerUserId, uniqName: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
+                return { id: item.peerUserId, account: '', name: this.transloco.translate('common.unknownUser'), reqMessage: item.reqMessage, status: -1, date: dayjs(item.updatedAt).format('YYYY-MM-DD HH:mm:ss'), errText: '' } as PendingReq
               }
             })
             this.sentReqList.set(list)

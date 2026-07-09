@@ -215,8 +215,8 @@ export class PushService {
     return this.webPushEnabled;
   }
 
-  /** Admin: paginated device-token list with the owning user's id + uniqName, optional fuzzy search
-   *  over uniqName / token / deviceId. Newest lastSeen first. */
+  /** Admin: paginated device-token list with the owning user's id + account, optional fuzzy search
+   *  over account / token / deviceId. Newest lastSeen first. */
   async listTokens(opts: { skip: number; take: number; search?: string }): Promise<{
     list: Array<{
       id: number;
@@ -226,7 +226,7 @@ export class PushService {
       deviceId: string | null;
       createdAt: Date;
       lastSeenAt: Date;
-      user: { id: number; uniqName: string } | null;
+      user: { id: number; account: string } | null;
     }>;
     total: number;
   }> {
@@ -234,7 +234,7 @@ export class PushService {
     const where = search
       ? {
           OR: [
-            { user: { uniqName: { contains: search, mode: 'insensitive' as const } } },
+            { user: { account: { contains: search, mode: 'insensitive' as const } } },
             { token: { contains: search } },
             { deviceId: { contains: search } },
           ],
@@ -246,7 +246,7 @@ export class PushService {
         orderBy: { lastSeenAt: 'desc' },
         skip: opts.skip,
         take: opts.take,
-        include: { user: { select: { id: true, uniqName: true } } },
+        include: { user: { select: { id: true, account: true } } },
       }),
       this.prisma.pushToken.count({ where }),
     ]);

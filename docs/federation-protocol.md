@@ -80,8 +80,8 @@ The complexity that sank Matrix (global consistency / DAG) and the complexity Mo
 
 | Concept | Description |
 | --- | --- |
-| **User address** | Identity = a `{username, domain}` pair (e.g. `{username:"alice", domain:"soms.io"}`). The `alice@soms.io` form is a **UI input aid only** — the client splits it before any API call (§3.1). DNS-discoverable by `domain`. |
-| **User stub** | A remote user is represented locally as a `User` row with `domain = <peer-domain>` (local users carry the `"local"` sentinel — never exposed; display uses the real `config.domain`). `@@unique([uniqName, domain)]` enforces both local and stub uniqueness (a local "bob" does not block "bob@bbb.com"). Friendship and thread participation reference these stubs like any local user. |
+| **User address** | Identity = a `{account, domain}` pair (e.g. `{account:"alice", domain:"soms.io"}`). The `alice@soms.io` form is a **UI input aid only** — the client splits it before any API call (§3.1). DNS-discoverable by `domain`. |
+| **User stub** | A remote user is represented locally as a `User` row with `domain = <peer-domain>` (local users carry the `"local"` sentinel — never exposed; display uses the real `config.domain`). `@@unique([account, domain)]` enforces both local and stub uniqueness (a local "bob" does not block "bob@bbb.com"). Friendship and thread participation reference these stubs like any local user. |
 | **Friend edge** | A bidirectional friendship between two users (`Friendship`, one normalized row per pair + `requesterId` for direction). **The access primitive:** no 1:1 thread exists between two users without one. Replicated on both servers via the `friend-request` / `friend-approve` endpoints; carries an optional ≤255-char `reqMessage`. |
 | **Thread (Step 1)** | A bounded conversation. In Step 1, **each server owns its own local 1:1 `MessageThread`** for a federated pair on approve — there is **no shared federated thread id** (the `thr_<rand>@<origin-domain>` form returns only for federated **groups**, Step 3). 1:1 messages (Step 2) route by `from`/`to` → `Friendship` → the local thread. |
 | **Trust lifecycle** | `FederatedPeer.trustLevel`: `pending → trusted → demoted → trusted…` (+ `blocked` = admin intent). A trusted peer whose signed op fails is immediately demoted and re-handshakes on next contact (self-healing). Append-only `FederatedPeerEvent` records every transition (§5.2). |
@@ -94,13 +94,13 @@ The complexity that sank Matrix (global consistency / DAG) and the complexity Mo
 
 ### 3.1 Federated identifiers
 
-A user address is a **pair of fields — `username` + `domain`** — never an `@`-joined string on the wire:
+A user address is a **pair of fields — `account` + `domain`** — never an `@`-joined string on the wire:
 
 ```
-address := { username, domain }    // e.g. { username: "alice", domain: "soms.io" }
+address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" }
 ```
 
-`username` is the peer's `uniqName`; `domain` is the peer server. The friend-op payloads' `from`/`to` carry these as objects (`{username, domain}`), and the resolve endpoint is `/users/:username`. The `@` separator is a **UI input aid ONLY** — a user types `alice@soms.io` in the search box, the client splits it into the two fields before any API call, and no `@`-joined string ever crosses the wire or appears in a backend definition. (SOMS local `uniqName`s never contain `@`, so the client split is unambiguous.)
+`account` is the peer's `account`; `domain` is the peer server. The friend-op payloads' `from`/`to` carry these as objects (`{account, domain}`), and the resolve endpoint is `/users/:account`. The `@` separator is a **UI input aid ONLY** — a user types `alice@soms.io` in the search box, the client splits it into the two fields before any API call, and no `@`-joined string ever crosses the wire or appears in a backend definition. (SOMS local `account`s never contain `@`, so the client split is unambiguous.)
 
 > **Reserved for Step 2/3** (not shipped): a federated **thread** id (origin-domain + local id, for cross-server **groups**) and an origin-assigned **message** ULID. Step 1 has neither — each server owns its own local 1:1 thread, and messages are local until Step 2.
 
@@ -125,7 +125,7 @@ Content-Type: application/json
 }
 ```
 
-S2S endpoint paths (`friend-request`, `friend-approve`, `users/:username`, `messages`, …) are **not** published here — peers derive them from the resolved base URL as `${base}/api/v1/s2s/<path>` (the same way the Step 2 pull routes are resolved). `keys` is a **JWKS-style list** (one entry per currently-published signing key, identified by `keyId`); multiple entries coexist during key rotation (§5.1). Verifiers **fetch a peer's key on `keyId`-miss** and cache it with a TTL — they do **not** pin keys (§5.1 explains why fetch-over-HTTPS beats both pinning and DNS-distribution).
+S2S endpoint paths (`friend-request`, `friend-approve`, `users/:account`, `messages`, …) are **not** published here — peers derive them from the resolved base URL as `${base}/api/v1/s2s/<path>` (the same way the Step 2 pull routes are resolved). `keys` is a **JWKS-style list** (one entry per currently-published signing key, identified by `keyId`); multiple entries coexist during key rotation (§5.1). Verifiers **fetch a peer's key on `keyId`-miss** and cache it with a TTL — they do **not** pin keys (§5.1 explains why fetch-over-HTTPS beats both pinning and DNS-distribution).
 
 ### 3.3 Why SRV, not TXT, for host:port
 
@@ -141,14 +141,14 @@ See Part II §D2 for SRV record format and configuration.
 
 Every POSTed friend op is a plain-JSON body signed via RFC 9421. There is **no `type` field** — the
 endpoint path (`POST /friend-request` | `POST /friend-approve`) is the discriminator, exactly like every
-other S2S route (`/users/:username`, `/messages`, …). The shared base body is:
+other S2S route (`/users/:account`, `/messages`, …). The shared base body is:
 
 ```json
 {
   "id": "01J8X3KF7Q9P2R...",
   "origin": "soms.io",
-  "from": { "username": "alice", "domain": "soms.io" },
-  "to": [{ "username": "bob", "domain": "other.com" }],
+  "from": { "account": "alice", "domain": "soms.io" },
+  "to": [{ "account": "bob", "domain": "other.com" }],
   "ts": 1719500000000
 }
 ```
@@ -158,26 +158,26 @@ inline (no nested fetch); `friend-approve` is the bare base (pure state confirma
 
 ```json
 // POST /api/v1/s2s/friend-request
-{ "id": "...", "origin": "soms.io", "from": { "username": "alice", "domain": "soms.io" },
-  "to": [{ "username": "bob", "domain": "other.com" }], "ts": 1719500000000,
+{ "id": "...", "origin": "soms.io", "from": { "account": "alice", "domain": "soms.io" },
+  "to": [{ "account": "bob", "domain": "other.com" }], "ts": 1719500000000,
   "message": "hi",
-  "profile": { "uniqName": "alice", "domain": "soms.io", "displayName": "Alice",
+  "profile": { "account": "alice", "domain": "soms.io", "displayName": "Alice",
                "avatar": { "b64": "...", "w": 512, "h": 512 }, "bio": "", "updatedAt": 1719500000000 } }
 
 // POST /api/v1/s2s/friend-approve
-{ "id": "...", "origin": "other.com", "from": { "username": "bob", "domain": "other.com" },
-  "to": [{ "username": "alice", "domain": "soms.io" }], "ts": 1719500000000 }
+{ "id": "...", "origin": "other.com", "from": { "account": "bob", "domain": "other.com" },
+  "to": [{ "account": "alice", "domain": "soms.io" }], "ts": 1719500000000 }
 ```
 
 | Field | Required | Notes |
 | --- | --- | --- |
 | `id` | yes | Origin-assigned ULID. Globally unique, time-sortable. Immutable. The idempotent-dedup key (with `origin`) via `S2SFriendOpSeen`. |
 | `origin` | yes | Origin server domain. |
-| `from` | yes | Sender address: `{ username, domain }` (split fields — never an `@`-joined string). |
-| `to` | yes | Recipient addresses: `[{ username, domain }, ...]`. The recipient server resolves which are local. |
+| `from` | yes | Sender address: `{ account, domain }` (split fields — never an `@`-joined string). |
+| `to` | yes | Recipient addresses: `[{ account, domain }, ...]`. The recipient server resolves which are local. |
 | `ts` | yes | Origin timestamp, ms since epoch. |
 | `message` | `friend-request` only | ≤255-char note/reason. Human-readable accompanying text. |
-| `profile` | `friend-request` only | The sender's public profile (`{ uniqName, domain, displayName, avatar, bio, updatedAt }`) embedded so the receiver creates the stub localized, inline (avatar is `{ b64, w, h }` per §10.1, or null). `updatedAt` is stored as the stub's `remoteUpdatedAt` for the staleness probe. `friend-approve` does NOT carry a profile — it's a pure state confirmation (§4.1). |
+| `profile` | `friend-request` only | The sender's public profile (`{ account, domain, displayName, avatar, bio, updatedAt }`) embedded so the receiver creates the stub localized, inline (avatar is `{ b64, w, h }` per §10.1, or null). `updatedAt` is stored as the stub's `remoteUpdatedAt` for the staleness probe. `friend-approve` does NOT carry a profile — it's a pure state confirmation (§4.1). |
 
 > **No `message` payload type.** Step 2 cross-server messages do **not** travel as a POSTed payload — they
 > travel in the response of a signed `GET /api/v1/s2s/messages` (active pull), gated by friendship +
@@ -420,13 +420,13 @@ Alice@soms.io wants to chat with Bob@other.com.
 
 0. (first contact only) soms.io POST /api/v1/s2s/init → other.com: mutual trust established (§D7).
 1. Alice's client → soms.io: "add friend bob@other.com"      (existing friend-request flow)
-2. soms.io resolves {username:"bob", domain:"other.com"} (GET /api/v1/s2s/users/:username → stub on soms.io), then
+2. soms.io resolves {account:"bob", domain:"other.com"} (GET /api/v1/s2s/users/:account → stub on soms.io), then
    soms.io → other.com POST /api/v1/s2s/friend-request:
-     { id, origin:"soms.io", from:{username:"alice",domain:"soms.io"}, to:[{username:"bob",domain:"other.com"}], ts, message, profile:{...} }
+     { id, origin:"soms.io", from:{account:"alice",domain:"soms.io"}, to:[{account:"bob",domain:"other.com"}], ts, message, profile:{...} }
 3. other.com verifies Bob exists; surfaces friend request to Bob (existing FRIEND_REQUEST SSE).
 4. Bob approves.
 5. other.com → soms.io POST /api/v1/s2s/friend-approve:
-     { id, origin:"other.com", from:{username:"bob",domain:"other.com"}, to:[{username:"alice",domain:"soms.io"}], ts }
+     { id, origin:"other.com", from:{account:"bob",domain:"other.com"}, to:[{account:"alice",domain:"soms.io"}], ts }
 6. BOTH servers materialize the friend edge (Friendship APPROVED, Alice↔Bob stub) locally.
 7. EACH server creates its OWN local 1:1 MessageThread for the pair on approve, and pushes
    NEW_THREAD to its own user. There is NO thread.invite and NO shared federated thread id.
@@ -487,7 +487,7 @@ SOMS semantics; only new delivery is blocked.)
 model User {
   // ... existing fields
   domain       String   @default("local") @db.VarChar(63)   // "local" | <peer-domain>
-  @@unique([uniqName, domain])
+  @@unique([account, domain])
 }
 
 // MessageThread is UNCHANGED — Step 1 drops origin/federatedId. Each server owns its own local
@@ -563,8 +563,8 @@ model S2SFriendOpSeen {
 | `POST` | `/api/v1/s2s/init` | Trust-establishment bootstrap (auto-accept; NOT allow-list-gated — §D7) |
 | `POST` | `/api/v1/s2s/friend-request` | Receive a friend-request payload from a trusted peer (allow-list-gated) |
 | `POST` | `/api/v1/s2s/friend-approve` | Receive a friend-approve payload from a trusted peer (allow-list-gated) |
-| `GET` | `/api/v1/s2s/users/:username` | A local user's public profile (avatar inline as base64 — §10.1) |
-| `GET` | `/api/v1/s2s/users/:username/revision` | Lightweight profile-revision probe (staleness check, no avatar) |
+| `GET` | `/api/v1/s2s/users/:account` | A local user's public profile (avatar inline as base64 — §10.1) |
+| `GET` | `/api/v1/s2s/users/:account/revision` | Lightweight profile-revision probe (staleness check, no avatar) |
 | `GET` | `/.well-known/soms` | Publish server keys + endpoints |
 
 > Backfill `GET /api/v1/s2s/threads/:id/messages` is **Step 2/3** (no shared thread id yet) — see §8.
@@ -582,12 +582,12 @@ model S2SFriendOpSeen {
 
 A user's avatar crosses servers **inline as base64**, never by cross-origin URL (CSP blocks the receiving client from fetching the peer's `/uploads/*`, and a URL would leak the peer's media-token path). The wire shape is `{ b64, w, h }` — base64 of the source image bytes plus the source pixel dimensions (the receiver does **not** assume square). It rides in two places:
 
-- the S2S profile response `GET /api/v1/s2s/users/:username` (the resolve endpoint), and
+- the S2S profile response `GET /api/v1/s2s/users/:account` (the resolve endpoint), and
 - the `profile` slot on the friend-request payload (§4.1), so the receiver creates/refreshes the stub localized, with no second round-trip and no nested S2S call inside the handler. (`friend-approve` carries no profile — §4.1.)
 
 **Recommended transmission size is 512×512 webp** (~40 KB → ~55 KB base64) — the largest size a local upload stores. The receiver runs the bytes back through the standard avatar pipeline (`saveAvatars` center-crops to the 32/64/128/256/512 set), so a federated avatar is byte-identical on disk to a locally-uploaded one and is served **same-origin** via the existing `/uploads/*` path + media-token cookie. Non-square sources are center-cropped to the largest square; smaller than 512 risks upscaling blur; larger wastes wire for a low-frequency, idempotent fetch. The declared `w`/`h` get a cheap pre-validation, but `sharp`'s own metadata read is the authoritative pixel-bomb check (a compromised peer can't lie past it). The global Fastify `bodyLimit` (1 MiB) accommodates the payload with headroom.
 
-**Staleness** — the receiver stores the profile's `updatedAt` as the stub's `remoteUpdatedAt`. On chat-open, a lightweight probe `GET /api/v1/s2s/users/:username/revision` returns just `{ updatedAt }` (no avatar transfer); if newer than `remoteUpdatedAt`, the server re-pulls the full profile + re-localizes (best-effort — a transient peer outage keeps the cached profile). `localizeForeignProfile` is idempotent and gated on the revision, so re-delivered payloads and no-change re-pulls do no work; a corrupt/oversized avatar is isolated (name/bio/remoteUpdatedAt still advance, the existing avatar is kept) so a broken avatar can't break friend-flow. Local users are always fresh locally (no probe).
+**Staleness** — the receiver stores the profile's `updatedAt` as the stub's `remoteUpdatedAt`. On chat-open, a lightweight probe `GET /api/v1/s2s/users/:account/revision` returns just `{ updatedAt }` (no avatar transfer); if newer than `remoteUpdatedAt`, the server re-pulls the full profile + re-localizes (best-effort — a transient peer outage keeps the cached profile). `localizeForeignProfile` is idempotent and gated on the revision, so re-delivered payloads and no-change re-pulls do no work; a corrupt/oversized avatar is isolated (name/bio/remoteUpdatedAt still advance, the existing avatar is kept) so a broken avatar can't break friend-flow. Local users are always fresh locally (no probe).
 
 **No approve-time refresh** — `friend.approve` carries no profile and triggers no re-pull on either side. The requester's stub of the approver was created at resolve time; any profile drift (across the request→approve window or later) is caught uniformly by the chat-open probe. This keeps `approve` a pure state-confirmation and avoids a redundant avatar transfer + a nested S2S call inside the handler.
 
@@ -633,7 +633,7 @@ This part takes you from zero to a federating SOMS node. Every decision here is 
 3. **A SOMS instance** reachable on some host:port (reverse-proxied on 443, or direct on a custom port).
 4. **Accurate system clock (NTP).** Run `systemd-timesyncd` / `chrony` / `ntpd`, enabled at boot. RFC 9421 signatures carry a `created` timestamp and TLS certs have validity windows, so clock skew breaks both (§5.1). NTP's ms-level accuracy is sufficient; the protocol is tolerant beyond that (replays absorbed by dedup, ordering tolerates skew).
 
-Your federation identity is `<your-username>@<your-domain>` (email form — no leading `@`; `<your-username>` is your SOMS `uniqName`). The domain in every address below is the domain whose DNS zone you control.
+Your federation identity is `<your-account>@<your-domain>` (email form — no leading `@`; `<your-account>` is your SOMS `account`). The domain in every address below is the domain whose DNS zone you control.
 
 ## D2. DNS setup
 

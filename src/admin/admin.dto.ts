@@ -4,10 +4,10 @@ import { Type } from 'class-transformer';
 
 /** Admin login input. */
 export class AdminLoginDto {
-  @ApiProperty({ example: 'admin', description: 'Admin username' })
+  @ApiProperty({ example: 'admin', description: 'Admin account' })
   @IsString()
   @IsNotEmpty()
-  username: string;
+  account: string;
 
   @ApiProperty({ example: 'P@ssw0rd', description: 'Password' })
   @IsString()
@@ -37,7 +37,7 @@ export class AdminListUsersDto {
   @IsNumber()
   take?: number;
 
-  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search by uniqName/display name (optional)' })
+  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search by account/display name (optional)' })
   @IsOptional()
   @IsString()
   search?: string;
@@ -62,13 +62,13 @@ export class AdminUnbanDto {
   @IsOptional()
   ip?: string;
 
-  @ApiProperty({ required: false, example: 'alice', description: 'Banned account uniqName (optional)' })
+  @ApiProperty({ required: false, example: 'alice', description: 'Banned account account (optional)' })
   @IsString()
   @IsOptional()
-  uniqName?: string;
+  account?: string;
 }
 
-/** Push-token list input (pagination + search over uniqName/token/deviceId). */
+/** Push-token list input (pagination + search over account/token/deviceId). */
 export class AdminListPushTokensDto {
   @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
   @IsOptional()
@@ -82,7 +82,7 @@ export class AdminListPushTokensDto {
   @IsNumber()
   take?: number;
 
-  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search uniqName/token/deviceId (optional)' })
+  @ApiProperty({ required: false, example: 'alice', description: 'Fuzzy search account/token/deviceId (optional)' })
   @IsOptional()
   @IsString()
   search?: string;

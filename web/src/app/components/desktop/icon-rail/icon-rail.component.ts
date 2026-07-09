@@ -6,7 +6,6 @@ import { RouteService, PopupType } from '../../../services/route.service';
 import { UserService } from '../../../services/user.service';
 import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
-import { NavStateMachineService } from '../../../services/nav-state.service';
 
 /**
  * Telegram-style left rail: account avatar + navigation actions (friend
@@ -122,7 +121,6 @@ export class IconRailComponent {
   private readonly themeService = inject(ThemeService);
   private readonly languageService = inject(LanguageService);
   private readonly transloco = inject(TranslocoService);
-  private readonly nav = inject(NavStateMachineService);
   /** Current logged-in profile (used for the SELF avatar's initial). */
   readonly sessionProfile = this.userService.sessionProfile
 
@@ -158,8 +156,9 @@ export class IconRailComponent {
     this.routeService.popupDlg(PopupType.FOLDER_EDITOR)
   }
 
-  /** Open the Settings page in the aside slot (same surface profile / group-info use). */
+  /** Open Settings as a wide two-column dialog. icon-rail is desktop-only, so this is always the dialog
+   *  surface (mobile uses the aside via the nav-drawer entry). */
   settings(): void {
-    this.nav.openAside('settings')
+    this.routeService.openSettingsDialog()
   }
 }

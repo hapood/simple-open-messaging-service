@@ -114,13 +114,13 @@ describe('HTTP/2 over TLS', () => {
       port,
       'POST',
       '/api/v1/user/register',
-      JSON.stringify({ uniqName: 'h2user', name: 'H2 User', password: 'Pass1234' }),
+      JSON.stringify({ account: 'h2user', name: 'H2 User', password: 'Pass1234' }),
     );
     const login = await h2Request(
       port,
       'POST',
       '/api/v1/auth/login',
-      JSON.stringify({ uniqName: 'h2user', password: 'Pass1234' }),
+      JSON.stringify({ account: 'h2user', password: 'Pass1234' }),
     );
     token = JSON.parse(login.body).data.access_token;
   }, 30000);
@@ -140,7 +140,7 @@ describe('HTTP/2 over TLS', () => {
       port,
       'POST',
       '/api/v1/user/register',
-      JSON.stringify({ uniqName: 'h2post', name: 'H2 Post', password: 'Pass1234' }),
+      JSON.stringify({ account: 'h2post', name: 'H2 Post', password: 'Pass1234' }),
     );
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body).code).toBe(0);

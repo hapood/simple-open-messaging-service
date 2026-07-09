@@ -96,7 +96,7 @@ export function UsersPage() {
           <TableHeader>
             <TableRow>
               <TableHead className="w-16">{t('users.col.id')}</TableHead>
-              <TableHead>{t('users.col.uniqName')}</TableHead>
+              <TableHead>{t('users.col.account')}</TableHead>
               <TableHead>{t('users.col.domain')}</TableHead>
               <TableHead className="w-16">{t('users.col.foreigner')}</TableHead>
               <TableHead className="w-20">{t('users.col.status')}</TableHead>
@@ -132,7 +132,7 @@ export function UsersPage() {
               data?.list.map((u) => (
                 <TableRow key={u.id}>
                   <TableCell className="font-mono text-xs text-muted-foreground">{u.id}</TableCell>
-                  <TableCell className="font-medium">{u.uniqName}</TableCell>
+                  <TableCell className="font-medium">{u.account}</TableCell>
                   <TableCell className="text-muted-foreground">{u.domain ?? '—'}</TableCell>
                   <TableCell>{u.isForeigner ? t('common.yes') : t('common.no')}</TableCell>
                   <TableCell>
