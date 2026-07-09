@@ -252,11 +252,19 @@ export class GroupService implements OnModuleInit {
             threadId: params.threadId,
           },
         },
+        include: { user: { select: { isForeigner: true } } },
       });
       if (target === null || target.leftAt !== null) {
         throw new BusinessException(
           BusinessCode.GROUP_TARGET_NOT_MEMBER,
           'target is not an active member',
+        );
+      }
+      // Ownership can't cross servers — the owner must stay on the origin (the roster authority).
+      if (target.user.isForeigner) {
+        throw new BusinessException(
+          BusinessCode.GROUP_FORBIDDEN,
+          'cannot transfer ownership to a member on another server',
         );
       }
       if (target.role === GroupRole.OWNER) {
