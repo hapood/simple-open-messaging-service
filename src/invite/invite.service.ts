@@ -11,6 +11,7 @@ import { mintUlid } from '../common/account.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -26,7 +27,12 @@ export type CreateFriendInviteResult =
 
 export type AcceptInviteResult =
   | { kind: 'FRIEND'; threadId: number; fromUserId: number }
-  | { kind: 'GROUP'; threadId: number };
+  | {
+      kind: 'GROUP';
+      threadId: number;
+      federatedThreadId: string | null; // non-null ⇒ a cross-server group mirror
+      originDomain: string | null; // the group's home domain (origin-propagation target)
+    };
 
 /** Fields selected for the embedded inviter/recipient profile on list queries (never hashPwd /
  *  hasUrFriendReq — those are sensitive). */
@@ -56,7 +62,10 @@ const USER_SELECT = {
 export class InviteService {
   private readonly config = loadFederationConfig();
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly participantService: ThreadParticipantService,
+  ) {}
 
   /**
    * Create (or refresh) a friend invite from→to. Local-only mutual auto-accept: when allowed and the
@@ -326,12 +335,23 @@ export class InviteService {
           'group invite has no target thread',
         );
       }
-      await this.upsertGroupMemberInTx(tx, byUserId, invite.threadId);
+      await this.participantService.upsertMemberInTx(tx, byUserId, invite.threadId, GroupRole.MEMBER);
       await tx.invite.update({
         where: { id },
         data: { status: InviteStatus.ACCEPTED },
       });
-      return { kind: 'GROUP', threadId: invite.threadId };
+      // The group's federation fields: non-null federatedThreadId ⇒ a cross-server mirror; the controller
+      // uses originDomain to propagate the join to the origin (roster fanout).
+      const thread = await tx.messageThread.findUnique({
+        where: { id: invite.threadId },
+        select: { federatedThreadId: true, originDomain: true },
+      });
+      return {
+        kind: 'GROUP',
+        threadId: invite.threadId,
+        federatedThreadId: thread?.federatedThreadId ?? null,
+        originDomain: thread?.originDomain ?? null,
+      };
     });
   }
 
@@ -555,30 +575,6 @@ export class InviteService {
       ],
     });
     return thread.id;
-  }
-
-  /** Add a group member, or reactivate a previously-left row (idempotent if already active). */
-  private async upsertGroupMemberInTx(
-    tx: Prisma.TransactionClient,
-    userId: number,
-    threadId: number,
-  ): Promise<void> {
-    const existing = await tx.threadParticipant.findUnique({
-      where: { userId_threadId: { userId, threadId } },
-    });
-    if (existing === null) {
-      await tx.threadParticipant.create({
-        data: { userId, threadId, role: GroupRole.MEMBER },
-      });
-      return;
-    }
-    if (existing.leftAt !== null) {
-      await tx.threadParticipant.update({
-        where: { id: existing.id },
-        data: { leftAt: null, role: GroupRole.MEMBER },
-      });
-    }
-    // already an active member → idempotent no-op
   }
 
   private parseInviteId(s: string): bigint {

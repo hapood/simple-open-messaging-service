@@ -14,6 +14,7 @@ import { InviteService } from '../invite/invite.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import {
   ContentType,
+  GroupRole,
   Message,
   MessageThreadType,
   Prisma,
@@ -22,6 +23,9 @@ import { derivePreview, stripMessageId, MessageService } from '../message/messag
 import { extractDigestEntries } from '../upload/file-content.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+
+/** Friend/group invite TTL (mirrors InviteService) — used for inbound friend invites. */
+const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** A federated user address on the wire: two separate fields (account + domain). The `@` separator
  *  is a UI input convention ONLY — the browser splits a typed `alice@bbb.com` into these two fields
@@ -59,40 +63,47 @@ export interface S2SProfile {
   updatedAt: number;
 }
 
-/** The shared signed body for every POSTed friend op (plain JSON). See docs/federation-protocol.md §4.
- *  The `id` is an origin-assigned ULID and the idempotent-dedup key (with `origin`). There is NO `type`
- *  field — the endpoint path (POST /friend-request | /friend-approve) IS the discriminator, exactly like
- *  every other S2S route. Cross-server messages do NOT use this body: they travel in the GET /messages
+/** Shared envelope for a posted S2S op (plain JSON, RFC 9421 signed). `id` is an origin-assigned ULID —
+ *  the idempotent-dedup key with `origin`. The discriminator is a FIELD on the concrete payload
+ *  (`kind` / `op`), NOT the path: add-friend and add-group share `/s2s/invite`, mirroring the unified
+ *  local Invite model. Cross-server MESSAGES do not use these bodies — they travel in the GET /messages
  *  response (docs/federation-step2-design.md §3.2). */
-export interface S2SPayload {
+interface S2SOpsBase {
   id: string; // origin-assigned ULID; dedup key with origin
-  origin: string;
-  from: S2SAddress; // sender identity (split fields — never an @-joined string)
-  to: S2SAddress[]; // recipients (split fields)
+  origin: string; // sending server's domain (== signer)
   ts: number; // ms since epoch
 }
 
-/** POST /api/v1/s2s/friend-request body. Carries the requester's profile so the receiver creates the
- *  foreign stub localized (avatar/name/bio) inline — no nested S2S call inside the handler. */
-export interface S2SFriendRequest extends S2SPayload {
-  message?: string; // ≤255-char note
-  profile: S2SProfile;
+/** POST /api/v1/s2s/invite — deliver an invite (friend-add OR group-invite), unified. `kind`
+ *  discriminates. FRIEND carries the sender's profile (stub localization); GROUP carries the group
+ *  identity + a revision (the origin `!`-User.updatedAt) so the receiver's mirror update is
+ *  revision-gated (no avatar re-localization when unchanged). The friend gate is `from`↔`to`. */
+export interface S2SInvite extends S2SOpsBase {
+  kind: 'FRIEND' | 'GROUP';
+  from: S2SAddress; // inviter (local on the sender; foreign stub on the receiver)
+  to: S2SAddress; // invitee (local on the receiver)
+  note?: string; // ≤255-char invite message
+  // FRIEND only — sender profile so the receiver creates the stub localized inline:
+  profile?: S2SProfile;
+  // GROUP only:
+  thread?: string; // federatedThreadId "thr_<rand>@<origin-domain>"
+  groupName?: string;
+  groupAvatar?: S2SAvatar | null;
+  groupRevision?: number; // origin group !-User.updatedAt (ms); gates the mirror avatar/name update
+  owner?: S2SAddress; // group owner → foreign stub on the mirror (== from for an origin-create invite)
 }
 
-/** POST /api/v1/s2s/thread/invite body (Step 3). The origin invites a cross-server friend to a group.
- *  `by` is the inviter (foreign stub on the receiver); the friend gate is `by`↔`to` APPROVED. `thread` is
- *  the federated id minted at the origin; the receiver find-or-creates a mirror keyed by it (@unique →
- *  idempotent). `owner` is the group owner stub (== `by` for an origin-create invite). */
-export interface S2SThreadInvite {
-  id: string; // origin-assigned ULID; dedup key with origin (reuses S2SFriendOpSeen)
-  origin: string; // the origin server's domain (== signer, == thread's @suffix)
-  thread: string; // federatedThreadId "thr_<rand>@<origin-domain>"
-  name: string; // group display name
-  avatar: S2SAvatar | null; // inline base64 (federation avatar v0.1); null OK
-  owner: S2SAddress; // group owner → foreign stub; Group.ownerId on the mirror
-  by: S2SAddress; // inviter → foreign stub; friend-gated against `to`
-  to: S2SAddress; // invitee → OUR local user
-  ts: number;
+/** POST /api/v1/s2s/invite-accept — the recipient accepted an invite. FRIEND → the inviter's server
+ *  creates the P2P thread (accept-wins); GROUP → the group ORIGIN adds the accepter to its roster +
+ *  fans out a thread/member join. `inviteOriginId` correlates the sender's outgoing Invite. */
+export interface S2SInviteAccept extends S2SOpsBase {
+  kind: 'FRIEND' | 'GROUP';
+  accepter: S2SAddress; // the user who accepted (local on the sender of THIS op)
+  inviteOriginId?: string; // optional: the original invite's ULID (correlates the outgoing Invite)
+  // FRIEND only — target = the inviter's domain:
+  by?: S2SAddress;
+  // GROUP only — target = the group ORIGIN domain:
+  thread?: string; // federatedThreadId
 }
 
 /**
@@ -662,54 +673,77 @@ export class FederationService {
     }
   }
 
-  // ─── friend flows (synchronous) ──────────────────────────────────────────────
+  // ─── invite flows (synchronous, unified friend + group) ─────────────────────
 
-  /** POST a friend-request from a local user to a peer user address, carrying the sender's profile so
-   *  the receiver creates the foreign stub localized. */
-  async sendFriendRequest(
-    fromLocalUserId: number,
-    to: S2SAddress,
-    message = '',
-  ): Promise<void> {
-    const from = await this.requireLocalUser(fromLocalUserId);
-    const profile = await this.toS2SProfile(from);
-    const payload: S2SFriendRequest = {
+  /** POST /api/v1/s2s/invite — deliver an invite (friend-add OR group-invite). The local Invite model
+   *  holds both kinds in one table; the S2S layer mirrors that with one endpoint + a `kind` field.
+   *  Federated delivery is synchronous + idempotent (the receiver dedupes via Invite (origin, originId)
+   *  + S2SFriendOpSeen). For GROUP, the LOCAL group thread is lazily promoted to a federated origin
+   *  (ensureOriginFederatedId mints the federatedThreadId). */
+  async sendInvite(params: {
+    kind: 'FRIEND' | 'GROUP';
+    fromLocalUserId: number;
+    to: S2SAddress;
+    note?: string;
+    // GROUP only — caller supplies the group identity, a wire avatar, + the revision (origin
+    // !-User.updatedAt) so the receiver's mirror update is revision-gated:
+    threadId?: number;
+    groupName?: string;
+    groupAvatarUrl?: string; // LOCAL avatar path (/uploads/...) → converted to inline S2SAvatar here
+    groupRevision?: number;
+    owner?: S2SAddress;
+  }): Promise<void> {
+    const from = await this.requireLocalUser(params.fromLocalUserId);
+    const payload: S2SInvite = {
       id: mintUlid(),
       origin: this.config.domain,
+      kind: params.kind,
       from: this.localAddress(from.account),
-      to: [{ account: to.account, domain: to.domain }],
+      to: { account: params.to.account, domain: params.to.domain },
       ts: Date.now(),
-      message: (message ?? '').slice(0, 255),
-      profile,
+      note: (params.note ?? '').slice(0, 255),
     };
-    await this.postSigned(
-      '/api/v1/s2s/friend-request',
-      JSON.stringify(payload),
-      to.domain,
-    );
+    if (params.kind === 'FRIEND') {
+      payload.profile = await this.toS2SProfile(from);
+    } else {
+      payload.thread = await this.ensureOriginFederatedId(params.threadId!);
+      payload.groupName = params.groupName?.slice(0, 255);
+      payload.groupAvatar = params.groupAvatarUrl
+        ? await this.upload.readAvatarAsWire(params.groupAvatarUrl)
+        : null;
+      payload.groupRevision = params.groupRevision ?? Date.now();
+      payload.owner = params.owner ?? payload.from;
+    }
+    await this.postSigned('/api/v1/s2s/invite', JSON.stringify(payload), params.to.domain);
   }
 
-  /** POST a friend-approve from a local user (the approver) to a peer user address (the requester). Pure
-   *  state confirmation — carries NO profile: the requester already resolved + localized the approver's
-   *  stub before sending the request, and any later profile change is picked up lazily by the chat-open
-   *  /revision probe (syncForeignUserIfStale). Contrast friend-request, which MUST carry the sender's
-   *  profile so the target can create the stub from scratch + render the request card. */
-  async sendFriendApprove(
-    localApproverId: number,
-    to: S2SAddress,
-  ): Promise<void> {
-    const fromAccount = (await this.requireLocalUser(localApproverId)).account;
-    const payload: S2SPayload = {
+  /** POST /api/v1/s2s/invite-accept — notify the other side that a local user accepted an invite. FRIEND
+   *  → the inviter's server creates the P2P thread (accept-wins); GROUP → the group ORIGIN adds the
+   *  accepter to its roster + fans out a thread/member join. `targetDomain` is the inviter's domain
+   *  (FRIEND) or the group origin (GROUP); `inviteOriginId` correlates the sender's outgoing Invite. */
+  async sendInviteAccept(params: {
+    kind: 'FRIEND' | 'GROUP';
+    fromLocalUserId: number; // the accepter (local)
+    targetDomain: string;
+    inviteOriginId?: string;
+    by?: S2SAddress; // FRIEND: the original inviter
+    thread?: string; // GROUP: federatedThreadId
+  }): Promise<void> {
+    const accepter = await this.requireLocalUser(params.fromLocalUserId);
+    const payload: S2SInviteAccept = {
       id: mintUlid(),
       origin: this.config.domain,
-      from: this.localAddress(fromAccount),
-      to: [{ account: to.account, domain: to.domain }],
+      kind: params.kind,
+      accepter: this.localAddress(accepter.account),
+      inviteOriginId: params.inviteOriginId,
       ts: Date.now(),
     };
+    if (params.kind === 'FRIEND') payload.by = params.by;
+    else payload.thread = params.thread;
     await this.postSigned(
-      '/api/v1/s2s/friend-approve',
+      '/api/v1/s2s/invite-accept',
       JSON.stringify(payload),
-      to.domain,
+      params.targetDomain,
     );
   }
 
@@ -737,47 +771,21 @@ export class FederationService {
     return fedId;
   }
 
-  /** Outbound POST /s2s/thread/invite: a local user (the origin owner) invites a cross-server friend to
-   *  a group. Lazy-mints the origin federatedId. Friend-gated on the receiver (by↔to APPROVED). */
-  async sendThreadInvite(params: {
-    threadId: number;
-    name: string;
-    avatar: S2SAvatar | null;
-    byLocalUserId: number; // the inviter (== owner for an origin-create invite)
-    to: S2SAddress; // the cross-server invitee
-  }): Promise<void> {
-    const fedId = await this.ensureOriginFederatedId(params.threadId);
-    const by = await this.requireLocalUser(params.byLocalUserId);
-    const addr = this.localAddress(by.account);
-    const payload: S2SThreadInvite = {
-      id: mintUlid(),
-      origin: this.config.domain,
-      thread: fedId,
-      name: params.name.slice(0, 255),
-      avatar: params.avatar,
-      owner: addr, // slice 1: inviter == owner (origin-create invite)
-      by: addr,
-      to: { account: params.to.account, domain: params.to.domain },
-      ts: Date.now(),
-    };
-    await this.postSigned(
-      '/api/v1/s2s/thread/invite',
-      JSON.stringify(payload),
-      params.to.domain,
-    );
+  /** Inbound POST /s2s/invite — receive an invite (friend OR group), unified. Dispatches on `kind`.
+   *  Dedup via S2SFriendOpSeen + the Invite (origin, originId) unique. */
+  async handleInvite(body: S2SInvite): Promise<void> {
+    if (await this.isOpSeen(body.origin, body.id)) return;
+    if (body.kind === 'GROUP') return this.handleGroupInvite(body);
+    return this.handleFriendInvite(body);
   }
 
-  /** Inbound POST /s2s/thread/invite: a peer invites one of OUR local users to a cross-server group.
-   *  Friend-gated (by↔to share an active P2P thread). Idempotent: mirror find-or-create by
-   *  federatedThreadId (@unique) + Invite dedup via (origin, originId). Localizes the group avatar,
-   *  mints the inbound Invite row, and writes a GROUP_INVITE card into the inviter↔invitee P2P thread —
-   *  the SAME JSON shape as a local invite (groupDomain = the peer origin, groupIsLocal = false), so the
-   *  frontend parses it identically. Accepting goes through /invite/accept like a local invite. */
-  async handleThreadInvite(body: S2SThreadInvite): Promise<void> {
-    if (await this.isOpSeen(body.origin, body.id)) return;
-    const by = this.requireS2SAddress(body.by); // inviter → foreign stub
-    const to = this.requireS2SAddress(body.to); // local invitee
-    const owner = this.requireS2SAddress(body.owner); // group owner → foreign stub
+  /** FRIEND: the sender's profile localizes the foreign stub; an incoming FRIEND Invite arms the badge
+   *  + a live FRIEND_REQUEST NOTIFY. (was friend-op handleRequest) */
+  private async handleFriendInvite(body: S2SInvite): Promise<void> {
+    const from = this.requireS2SAddress(body.from);
+    const to = this.requireS2SAddress(body.to);
+    const foreignId = await this.ensureForeignUser(from.account, from.domain);
+    if (body.profile) await this.localizeForeignProfile(foreignId, body.profile);
     const localId = await this.findLocalUserIdByAddress(to);
     if (localId === null) {
       throw new BusinessException(
@@ -786,9 +794,36 @@ export class FederationService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // The inviter's stub must already exist: a passing friend gate means they're already federated
-    // friends, so the stub was created when they befriended. LOOK IT UP (don't ensure/create) — a
-    // missing stub means they aren't friends, so we FORBIDDEN without orphaning a created stub.
+    const inviteId = await this.invite.receiveInboundFriendInvite({
+      fromUserId: foreignId,
+      toUserId: localId,
+      note: body.note ?? '',
+      origin: body.origin,
+      originId: body.id,
+      expiresAt: new Date(Date.now() + INVITE_TTL_MS),
+    });
+    this.sse.onNotify(
+      localId,
+      serializeBody({ event: 'NOTIFY', type: 'FRIEND_REQUEST', fromUserId: foreignId, inviteId }),
+    );
+  }
+
+  /** GROUP: friend-gate → find-or-create mirror (stores the OWNER participant) → REVISION-GATED avatar/
+   *  name refresh → incoming GROUP Invite + a GROUP_INVITE card (same shape as a local invite). */
+  private async handleGroupInvite(body: S2SInvite): Promise<void> {
+    const by = this.requireS2SAddress(body.from);
+    const to = this.requireS2SAddress(body.to);
+    const owner = body.owner ? this.requireS2SAddress(body.owner) : by;
+    const localId = await this.findLocalUserIdByAddress(to);
+    if (localId === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `local user ${to.account} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    // The inviter's stub must already exist (a passing friend gate ⇒ they're already friends ⇒ the stub
+    // was created when they befriended). LOOK IT UP (don't ensure/create) — missing ⇒ not friends.
     const byStub = await this.prisma.user.findUnique({
       where: { account_domain: { account: normalizeAccount(by.account), domain: by.domain } },
     });
@@ -796,8 +831,6 @@ export class FederationService {
       throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends', HttpStatus.FORBIDDEN);
     }
     const byStubId = byStub.id;
-    // Friend gate (the abuse barrier) + the P2P thread that will carry the card — one lookup. Null ⇒ not
-    // friends ⇒ FORBIDDEN.
     const p2pThreadId = await this.participantService.findP2PThreadBetween(byStubId, localId);
     if (p2pThreadId === null) {
       throw new BusinessException(BusinessCode.FORBIDDEN, 'not friends', HttpStatus.FORBIDDEN);
@@ -807,52 +840,105 @@ export class FederationService {
         ? byStubId
         : await this.ensureForeignUser(owner.account, owner.domain);
     const mirrorThreadId = await this.findOrCreateMirrorThread({
-      federatedThreadId: body.thread,
+      federatedThreadId: body.thread!,
       originDomain: body.origin,
-      name: body.name,
+      name: body.groupName ?? '',
       ownerStubId,
     });
-    // Localize the inline group avatar (base64 → /uploads) and keep the mirror group-user's name fresh.
-    const avatarUrl = body.avatar ? await this.upload.saveAvatarFromWire(body.avatar) : '';
+    // Revision-gated avatar/name refresh: skip when the peer's revision is not newer than the mirror's
+    // remoteUpdatedAt (no avatar re-localization / orphan files on an unchanged group).
     const mirror = await this.prisma.messageThread.findUnique({
       where: { id: mirrorThreadId },
       select: { groupUserId: true },
     });
-    if (mirror?.groupUserId) {
+    const gu =
+      mirror?.groupUserId != null
+        ? await this.prisma.user.findUnique({
+            where: { id: mirror.groupUserId },
+            select: { remoteUpdatedAt: true, avatar: true },
+          })
+        : null;
+    const rev = body.groupRevision ?? 0;
+    const stale = gu == null || gu.remoteUpdatedAt == null || gu.remoteUpdatedAt.getTime() < rev;
+    let avatarUrl = gu?.avatar ?? '';
+    if (stale && mirror?.groupUserId != null) {
+      avatarUrl = body.groupAvatar ? await this.upload.saveAvatarFromWire(body.groupAvatar) : avatarUrl;
       await this.prisma.user.update({
         where: { id: mirror.groupUserId },
-        data: { name: body.name.slice(0, 255), ...(avatarUrl ? { avatar: avatarUrl } : {}) },
+        data: {
+          name: (body.groupName ?? '').slice(0, 255),
+          avatar: avatarUrl,
+          remoteUpdatedAt: new Date(rev),
+        },
       });
     }
-    // Mint the inbound Invite (peer origin/originId for dedup) + write the GROUP_INVITE card into the
-    // P2P thread — same JSON shape as a local invite, so the frontend parses it identically.
-    const inviteId = await this.invite.createGroupInvite(byStubId, mirrorThreadId, localId, '', {
+    // Mint the inbound Invite. NO card write — the card is the SENDER's responsibility (written into the
+    // sender's P2P mirror), delivered to this server via the Step-2 message pull in Phase B. Phase A
+    // ships the machinery (Invite + mirror + accept + roster fanout); the invitee's visible card arrives
+    // with Phase-B messaging.
+    await this.invite.createGroupInvite(byStubId, mirrorThreadId, localId, body.note ?? '', {
       origin: body.origin,
       originId: body.id,
     });
-    await this.message.writeMsgToThread(
-      byStubId,
-      p2pThreadId,
-      JSON.stringify({
-        type: 'GROUP_INVITE',
-        fromUserId: byStubId,
-        groupId: mirrorThreadId,
-        groupName: body.name,
-        groupAvatar: avatarUrl,
-        groupDomain: body.origin,
-        groupIsLocal: false,
-        inviteId,
-      }),
-      ContentType.INVITE,
+  }
+
+  /** Inbound POST /s2s/invite-accept — the other side accepted an invite. FRIEND → create THIS server's
+   *  P2P thread (accept-wins); GROUP → we are the ORIGIN: add the accepter to our roster + fan out a
+   *  thread/member join so the roster is consistent on every member-server. */
+  async handleInviteAccept(body: S2SInviteAccept): Promise<void> {
+    if (await this.isOpSeen(body.origin, body.id)) return;
+    if (body.kind === 'GROUP') return this.handleGroupAccept(body);
+    return this.handleFriendAccept(body);
+  }
+
+  /** FRIEND accept (was friend-op handleApprove): the foreign approver accepted our local user's invite.
+   *  Accept-wins: form the P2P thread if not already friends. */
+  private async handleFriendAccept(body: S2SInviteAccept): Promise<void> {
+    const from = this.requireS2SAddress(body.accepter); // the approver → foreign stub here
+    const to = body.by ? this.requireS2SAddress(body.by) : null; // the local requester
+    const foreignId = await this.ensureForeignUser(from.account, from.domain);
+    const localId = to ? await this.findLocalUserIdByAddress(to) : null;
+    if (localId === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `local requester not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    await this.invite.applyInboundFriendApprove(localId, foreignId);
+    this.sse.onNotify(
+      localId,
+      serializeBody({ event: 'NOTIFY', type: 'FRIEND_APPROVED', byUserId: foreignId }),
     );
   }
 
+  /** GROUP accept — WE are the group ORIGIN. Add the accepter to OUR roster (the origin group thread),
+   *  then fan out a thread/member join to every member-server. (Accept-wins: idempotent if already a
+   *  member.) */
+  private async handleGroupAccept(body: S2SInviteAccept): Promise<void> {
+    // WE are the group ORIGIN: record the accepter on the canonical roster. Other member-servers learn
+    // of the join LAZILY via the group-meta freshness probe on chat-open (the roster is PULLED like a
+    // profile, not pushed) — see the roster-mutation design in the plan.
+    const accepter = this.requireS2SAddress(body.accepter);
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { federatedThreadId: body.thread },
+      select: { id: true },
+    });
+    if (trd == null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `group ${body.thread} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const accepterStubId = await this.ensureForeignUser(accepter.account, accepter.domain);
+    await this.participantService.upsertMember(trd.id, accepterStubId, GroupRole.MEMBER);
+  }
+
   /** Idempotent mirror-thread find-or-create keyed by federatedThreadId (@unique → one mirror per
-   *  federated thread, even across multiple invited local users). PLACEHOLDER: the federation Step-3
-   *  group redesign is a follow-on plan — for now a mirror group is a `!`-User foreign stub (carries
-   *  name/avatar/bio) + the GROUP thread linked via groupUserId. The owner is NOT stored (it derives
-   *  from ThreadParticipant.role=OWNER when members are added in the later slice); ownerStubId is
-   *  therefore accepted but unused here. Avatar localization is deferred. */
+   *  federated thread, even across multiple invited local users). A mirror is a `!`-User foreign stub
+   *  (carries name/avatar/bio) + the GROUP thread; the origin OWNER is recorded as a ThreadParticipant
+   *  {role:OWNER} so the mirror knows the owner. */
   private async findOrCreateMirrorThread(params: {
     federatedThreadId: string;
     originDomain: string;
@@ -883,6 +969,11 @@ export class FederationService {
         originDomain: params.originDomain,
         groupUserId: groupUser.id,
       },
+    });
+    // Record the origin owner on the mirror (roster authority is the origin; the owner never crosses
+    // domains, but the mirror must know who the owner is for display + Phase-B authority checks).
+    await this.prisma.threadParticipant.create({
+      data: { userId: params.ownerStubId, threadId: trd.id, role: GroupRole.OWNER },
     });
     return trd.id;
   }

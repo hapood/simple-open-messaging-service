@@ -704,7 +704,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(threadB).not.toBeNull();
   });
 
-  it('rejects an inbound friend-op signed by an untrusted domain', async () => {
+  it('rejects an inbound invite signed by an untrusted domain', async () => {
     // evil.local: a real Ed25519 key, but never init'd → not in FederatedPeer.
     const evilPriv = ed25519.utils.randomSecretKey();
     const evilKeypair = {
@@ -718,18 +718,19 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const body = JSON.stringify({
       id: '01TEST00000000000000000000',
       origin: `${DOM_A}-evil`,
+      kind: 'FRIEND',
       from: { account: 'mallory', domain: `${DOM_A}-evil` },
-      to: [],
+      to: { account: 'x', domain: `${DOM_A}-evil` },
       ts: 0,
     });
     const headers = evilSig.signOutbound({
       method: 'POST',
-      path: '/api/v1/s2s/friend-request',
+      path: '/api/v1/s2s/invite',
       authority,
       body,
     });
 
-    const res = await fetch(`http://${authority}/api/v1/s2s/friend-request`, {
+    const res = await fetch(`http://${authority}/api/v1/s2s/invite`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', ...headers },
       body,

@@ -6,7 +6,6 @@ import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
 import { FederationBufferService } from './federation-buffer.service.js';
 import { FederationReconnectService } from './federation-reconnect.service.js';
-import { FriendOpHandler } from './friend-op.handler.js';
 import { S2sController } from './s2s.controller.js';
 import { S2sInitController } from './s2s-init.controller.js';
 import { WellKnownController } from './well-known.controller.js';
@@ -17,16 +16,15 @@ import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
 
 /**
- * Federation (S2S). @Global so its services inject across modules (UserController in Phase D,
- * AdminController in Phase E). FriendOpHandler needs InviteService (InviteModule) + SseService
- * (GatewayModule); FederationService needs ThreadParticipantService (relationship reads — the friend
- * gate + message-serving authz, now that the Friendship table is gone). UploadModule provides the
- * avatar wire helpers (readAvatarAsWire / saveAvatarFromWire) used by FederationService. PrismaService
- * is provided globally by PrismaModule (src/prisma.module.ts).
+ * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
+ * FederationService needs InviteService (InviteModule, unified invite deliver/accept), MessageService
+ * (MessageModule, card write on outbound group invite), ThreadParticipantService (relationship reads +
+ * raw roster mutators), SseService (GatewayModule), + UploadModule (avatar wire helpers). PrismaService
+ * is provided globally by PrismaModule.
  *
- * Two S2S controllers share the `s2s` prefix: S2sController (friend-op + signed GETs, allow-list-gated via
- * S2sSignatureGuard) and S2sInitController (POST /s2s/init — the trust-establishment bootstrap, NOT
- * allow-list-gated since it IS the trust step; it verifies via S2sVerifyService directly).
+ * Two S2S controllers share the `s2s` prefix: S2sController (unified invite + roster + signed GETs,
+ * allow-list-gated via S2sSignatureGuard) and S2sInitController (POST /s2s/init — the trust bootstrap,
+ * NOT allow-list-gated since it IS the trust step; verifies via S2sVerifyService directly).
  */
 @Global()
 @Module({
@@ -40,7 +38,6 @@ import { MessageModule } from '../message/message.module.js';
     FederationService,
     FederationBufferService,
     FederationReconnectService,
-    FriendOpHandler,
   ],
   exports: [KeypairService, SignatureService, DiscoveryService, FederationService, FederationBufferService],
 })

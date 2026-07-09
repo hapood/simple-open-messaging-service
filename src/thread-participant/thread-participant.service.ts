@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
-import { MessageThreadType, Prisma } from '../prisma/generated/client.js';
+import { GroupRole, MessageThreadType, Prisma } from '../prisma/generated/client.js';
 
 /**
  * ThreadParticipant data layer.
@@ -177,6 +177,56 @@ export class ThreadParticipantService {
     await this.prisma.threadParticipant.updateMany({
       where: { threadId, leftAt: null },
       data: { leftAt: new Date() },
+    });
+  }
+
+  // ─── raw roster mutators (federation inbound) ─────────────────────────────────
+  // These bypass the local authority checks: the ORIGIN already authorized the op (signer ==
+  // originDomain), so a mirror applies it verbatim. Used by FederationService handleGroupAccept (origin
+  // adds the accepter) + handleThreadMember (mirror applies a join/leave/kick/role fanout).
+
+  /** Add a member, or reactivate + re-role a previously-left row. Idempotent if already active at that
+   *  role. Takes a tx-or-client so a caller's transaction (e.g. InviteService.acceptInvite) can include
+   *  the member add atomically — the single implementation shared with the non-tx callers. */
+  async upsertMemberInTx(
+    tx: Prisma.TransactionClient,
+    threadId: number,
+    userId: number,
+    role: GroupRole,
+  ): Promise<void> {
+    const existing = await tx.threadParticipant.findUnique({
+      where: { userId_threadId: { userId, threadId } },
+    });
+    if (existing === null) {
+      await tx.threadParticipant.create({ data: { userId, threadId, role } });
+      return;
+    }
+    if (existing.leftAt !== null || existing.role !== role) {
+      await tx.threadParticipant.update({
+        where: { id: existing.id },
+        data: { leftAt: null, role },
+      });
+    }
+  }
+
+  /** Non-tx convenience wrapper around {@link upsertMemberInTx} (uses the shared pool client). */
+  upsertMember(threadId: number, userId: number, role: GroupRole): Promise<void> {
+    return this.upsertMemberInTx(this.prisma, threadId, userId, role);
+  }
+
+  /** Soft-leave a single member (set leftAt). No-op if already left / not a member. */
+  async softLeaveMember(threadId: number, userId: number): Promise<void> {
+    await this.prisma.threadParticipant.updateMany({
+      where: { threadId, userId, leftAt: null },
+      data: { leftAt: new Date() },
+    });
+  }
+
+  /** Set a member's role (raw — the origin authorized it). */
+  async setMemberRole(threadId: number, userId: number, role: GroupRole): Promise<void> {
+    await this.prisma.threadParticipant.updateMany({
+      where: { threadId, userId },
+      data: { role },
     });
   }
 

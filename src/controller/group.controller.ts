@@ -18,6 +18,7 @@ import { serializeBody } from '../common/serialize.interceptor.js';
 import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { UserService } from '../user/user.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
@@ -56,6 +57,7 @@ export class GroupController {
     private readonly inviteService: InviteService,
     private readonly sseService: SseService,
     private readonly federationService: FederationService,
+    private readonly userService: UserService,
   ) {}
 
   /**
@@ -102,7 +104,7 @@ export class GroupController {
     // still succeeds for the owner and the rest.
     const { invited, skipped } = await this.writeInvites(
       owner,
-      { threadId: grp.threadId, name: grp.name, avatar: grp.avatar, domain: this.federationService.ourDomain, isLocal: true },
+      { threadId: grp.threadId, groupUserId: grp.id, name: grp.name, avatar: grp.avatar, updatedAt: Date.now() },
       dto.inviteUserIds ?? [],
     );
     // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
@@ -114,62 +116,71 @@ export class GroupController {
   }
 
   /**
-   * Write one GROUP_INVITE card message into each target's P2P thread, minting an Invite row
-   * (kind=GROUP, 7-day expiry) per friend and embedding its id. Shared by group/create (inviter = the
-   * new owner) and group/invite. A target is SKIPPED (not fatal) if they are not a friend, have no P2P
-   * thread, or the write throws. Returns the split so each caller can surface it.
-   *
-   * The card renders instantly from the message (inviter + group name/avatar + invite id); validity
-   * (pending / expired / already-joined) is fetched on click via /invite/detail, and joining goes
-   * through /invite/accept — no JWT token anymore. The Invite id stays stable across re-invites
-   * (createGroupInvite overwrites in place), so a previously-delivered card still resolves.
+   * Invite friends into a group. LOCAL friends get an Invite row + a minimal GROUP_INVITE card in the P2P
+   * thread (the frontend fetches the group identity by groupUserId). FEDERATED friends get a cross-server
+   * invite (sendInvite GROUP) — the peer's handleGroupInvite creates the mirror + an incoming Invite
+   * (visible in Phase B messaging); no local card. The Invite id is stable across re-invites
+   * (createGroupInvite overwrites in place). A target is SKIPPED (not fatal) on a write/send failure.
    */
   private async writeInvites(
     inviter: number,
-    group: { threadId: number; name: string; avatar: string; domain: string; isLocal: boolean },
+    group: { threadId: number; groupUserId: number; name: string; avatar: string; updatedAt: number },
     userIds: number[],
   ): Promise<{ invited: number[]; skipped: { userId: number; reason: string }[] }> {
-    // Dedup defensively (the DTO layer already coerced types); order preserved.
     const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
     const skipped: { userId: number; reason: string }[] = [];
+    // Batch-load the targets' federation identity to branch local vs federated.
+    const targets = deduped.length ? await this.userService.queryUsers({ where: { id: { in: deduped } } }) : [];
+    const byId = new Map(targets.map((u) => [u.id, u]));
     for (const userId of deduped) {
-      // Require an established P2P thread (i.e. an active friendship) to carry the invite card.
-      const p2pThreadId = await this.participantService.findP2PThreadBetween(inviter, userId);
-      if (p2pThreadId === null) {
-        skipped.push({ userId, reason: 'not a friend or no conversation' });
+      const target = byId.get(userId);
+      if (!target) {
+        skipped.push({ userId, reason: 'user not found' });
         continue;
       }
-      try {
-        // Mint the Invite row (id stable across re-invites), then embed its id in the card message.
-        const inviteId = await this.inviteService.createGroupInvite(inviter, group.threadId, userId);
-        await this.messageService.writeMsgToThread(
-          inviter,
-          p2pThreadId,
-          JSON.stringify({
-            type: 'GROUP_INVITE',
-            fromUserId: inviter,
-            // groupId + groupAvatar let the invitee's card render group identity and offer an
-            // "Open group" follow-through after joining (groupName already carried the name).
-            groupId: group.threadId,
+      if (target.isForeigner) {
+        // Federated friend → cross-server invite. The peer's handleGroupInvite creates the mirror + an
+        // incoming Invite (visibility = Phase B). No local card; the friend gate runs on the peer.
+        try {
+          await this.federationService.sendInvite({
+            kind: 'GROUP',
+            fromLocalUserId: inviter,
+            to: { account: target.account, domain: target.domain },
+            threadId: group.threadId,
             groupName: group.name,
-            groupAvatar: group.avatar,
-            // The group's home domain — needed for federation (a cross-server join routes to the
-            // origin server). For a local group this is our domain; a federated mirror carries the
-            // peer domain (the !-User.domain, never the "local" sentinel). groupIsLocal lets the card
-            // render a "Local server" label vs a globe+domain badge without the client knowing its own domain.
-            groupDomain: group.domain,
-            groupIsLocal: group.isLocal,
-            inviteId,
-          }),
-          ContentType.INVITE,
-        );
-        invited.push(userId);
-      } catch (e) {
-        skipped.push({
-          userId,
-          reason: `invite write failed: ${(e as Error)?.message ?? String(e)}`,
-        });
+            groupAvatarUrl: group.avatar || undefined,
+            groupRevision: group.updatedAt,
+          });
+          invited.push(userId);
+        } catch (e) {
+          skipped.push({
+            userId,
+            reason: `federated invite failed: ${(e as Error)?.message ?? String(e)}`,
+          });
+        }
+      } else {
+        // Local friend → local Invite + a minimal card (the frontend fetches identity by groupUserId).
+        const p2pThreadId = await this.participantService.findP2PThreadBetween(inviter, userId);
+        if (p2pThreadId === null) {
+          skipped.push({ userId, reason: 'not a friend or no conversation' });
+          continue;
+        }
+        try {
+          const inviteId = await this.inviteService.createGroupInvite(inviter, group.threadId, userId);
+          await this.messageService.writeMsgToThread(
+            inviter,
+            p2pThreadId,
+            JSON.stringify({ type: 'GROUP_INVITE', fromUserId: inviter, groupUserId: group.groupUserId, inviteId }),
+            ContentType.INVITE,
+          );
+          invited.push(userId);
+        } catch (e) {
+          skipped.push({
+            userId,
+            reason: `invite write failed: ${(e as Error)?.message ?? String(e)}`,
+          });
+        }
       }
     }
     return { invited, skipped };
@@ -190,12 +201,15 @@ export class GroupController {
     // Load the group's `!`-User for name/avatar to embed in the invite cards.
     const trd = await this.groupService.findGroupByThreadId(threadId);
     const gu = trd?.groupUser;
-    // The group's home: local (our domain) vs a federated mirror (the peer domain on the !-User).
-    const isLocal = !gu?.domain || gu.domain === 'local';
-    const domain = isLocal ? this.federationService.ourDomain : (gu?.domain ?? this.federationService.ourDomain);
     const { invited, skipped } = await this.writeInvites(
       inviter,
-      { threadId, name: gu?.name ?? '', avatar: gu?.avatar ?? '', domain, isLocal },
+      {
+        threadId,
+        groupUserId: gu?.id ?? 0,
+        name: gu?.name ?? '',
+        avatar: gu?.avatar ?? '',
+        updatedAt: gu?.updatedAt?.getTime() ?? Date.now(),
+      },
       dto.userIds,
     );
     return {

@@ -13,12 +13,10 @@ import {
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { createReadStream } from 'node:fs';
 import { S2sSignatureGuard } from './s2s-signature.guard.js';
-import { FriendOpHandler } from './friend-op.handler.js';
 import {
   FederationService,
-  type S2SPayload,
-  type S2SFriendRequest,
-  type S2SThreadInvite,
+  type S2SInvite,
+  type S2SInviteAccept,
   type S2SAddress,
 } from './federation.service.js';
 import { FederationBufferService } from './federation-buffer.service.js';
@@ -29,50 +27,37 @@ import { BusinessCode } from '../common/business-code.js';
  * S2S endpoints (signature-guarded, allow-list gated). The guard verifies the RFC 9421 signature +
  * FederatedPeer trust + from.domain==signer binding + captures req.rawBody, then sets req.peer.
  *
- * - POST /api/v1/s2s/friend-request — receive a friend-request payload (FriendOpHandler dedupes + applies).
- * - POST /api/v1/s2s/friend-approve — receive a friend-approve payload.
+ * - POST /api/v1/s2s/invite — receive an invite (friend OR group, unified); FederationService.handleInvite.
+ * - POST /api/v1/s2s/invite-accept — the peer accepted an invite (friend→P2P thread; group→origin records the join).
  * - GET  /api/v1/s2s/users/:account — return a local user's public profile (avatar inline as base64).
- * - GET  /api/v1/s2s/users/:account/revision — lightweight profile-revision probe (no avatar transfer)
- *   so a peer can detect a stale stub before paying for the full profile re-pull.
+ * - GET  /api/v1/s2s/users/:account/revision — lightweight profile-revision probe (no avatar transfer).
  *
- * NOTE: there is no friend.delete endpoint — unfriending is LOCAL-ONLY. The severed edge is discovered
- * lazily via rejection-on-send in Step 2 (see docs/federation-protocol.md).
+ * NOTE: there is no unfriend/member-delete endpoint — those are LOCAL-ONLY. A severed edge / left member
+ * is discovered lazily via rejection-on-send in Step 2 (see docs/federation-protocol.md).
  */
 @Controller('s2s')
 @UseGuards(S2sSignatureGuard)
 export class S2sController {
   constructor(
-    private readonly friendOp: FriendOpHandler,
     private readonly federation: FederationService,
     private readonly federationBuffer: FederationBufferService,
   ) {}
 
-  @Post('friend-request')
+  @Post('invite')
   @HttpCode(HttpStatus.OK)
-  async postFriendRequest(
+  async postInvite(
     @Req() req: FastifyRequest,
   ): Promise<{ code: number; message: string; data: null }> {
-    await this.friendOp.handleRequest(req.body as S2SFriendRequest);
+    await this.federation.handleInvite(req.body as S2SInvite);
     return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 
-  @Post('friend-approve')
+  @Post('invite-accept')
   @HttpCode(HttpStatus.OK)
-  async postFriendApprove(
+  async postInviteAccept(
     @Req() req: FastifyRequest,
   ): Promise<{ code: number; message: string; data: null }> {
-    await this.friendOp.handleApprove(req.body as S2SPayload);
-    return { code: BusinessCode.OK, message: 'ok', data: null };
-  }
-
-  /** POST /api/v1/s2s/thread/invite — Step 3. A peer (the origin) invites one of OUR local users to a
-   *  cross-server group. Friend-gated + idempotent mirror find-or-create, inside FederationService. */
-  @Post('thread/invite')
-  @HttpCode(HttpStatus.OK)
-  async postThreadInvite(
-    @Req() req: FastifyRequest,
-  ): Promise<{ code: number; message: string; data: null }> {
-    await this.federation.handleThreadInvite(req.body as S2SThreadInvite);
+    await this.federation.handleInviteAccept(req.body as S2SInviteAccept);
     return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 

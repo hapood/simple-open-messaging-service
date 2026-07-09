@@ -111,11 +111,12 @@ export class InviteController {
       // Federated target → synchronous S2S friend-request (the peer creates the incoming invite +
       // arms its user's badge). Idempotent on the receiver (overwrite on P2002), so retries are safe.
       try {
-        await this.federationService.sendFriendRequest(
-          me,
-          { account: target.account, domain: target.domain },
-          dto.note ?? '',
-        );
+        await this.federationService.sendInvite({
+          kind: 'FRIEND',
+          fromLocalUserId: me,
+          to: { account: target.account, domain: target.domain },
+          note: dto.note ?? '',
+        });
       } catch (e) {
         return {
           code: BusinessCode.FEDERATION_DELIVERY_FAILED,
@@ -172,9 +173,11 @@ export class InviteController {
         // Federated inviter → S2S friend-approve so the peer creates its own thread + marks its
         // outgoing invite ACCEPTED. Only the local approver's other tabs get a live NOTIFY.
         try {
-          await this.federationService.sendFriendApprove(req.user.userId, {
-            account: fromUser.account,
-            domain: fromUser.domain,
+          await this.federationService.sendInviteAccept({
+            kind: 'FRIEND',
+            fromLocalUserId: req.user.userId,
+            targetDomain: fromUser.domain,
+            by: { account: fromUser.account, domain: fromUser.domain },
           });
         } catch (e) {
           return {
@@ -195,15 +198,32 @@ export class InviteController {
       };
     }
 
-    // GROUP → fan out MEMBER_JOINED to the active roster (incl. the new member).
-    const members = await this.participantService.getActiveParticipantUserIds(
-      res.threadId,
-    );
+    // GROUP → fan out MEMBER_JOINED to the active local roster (incl. the new member).
+    const members = await this.participantService.getActiveParticipantUserIds(res.threadId);
     const data = { threadId: res.threadId, userId: req.user.userId, role: GroupRole.MEMBER };
     const audience = new Set([...members.map((m) => m.userId), req.user.userId]);
-    audience.forEach((uid) =>
-      this.sseService.onGroupEvent(uid, 'GROUP_MEMBER_JOINED', data),
-    );
+    audience.forEach((uid) => this.sseService.onGroupEvent(uid, 'GROUP_MEMBER_JOINED', data));
+
+    // Federated mirror (a cross-server group): tell the ORIGIN this user joined, so the origin adds them
+    // to the canonical roster + fans out a thread/member join to every member-server (roster consistency).
+    // A local group (no federatedThreadId) needs no propagation.
+    const fed = res.federatedThreadId;
+    const origin = res.originDomain;
+    if (fed && origin && origin !== this.federationService.ourDomain) {
+      try {
+        await this.federationService.sendInviteAccept({
+          kind: 'GROUP',
+          fromLocalUserId: req.user.userId,
+          targetDomain: origin,
+          thread: fed,
+        });
+      } catch (e) {
+        return {
+          code: BusinessCode.FEDERATION_DELIVERY_FAILED,
+          message: `could not reach ${origin}: ${(e as Error).message}`,
+        };
+      }
+    }
     return { code: BusinessCode.OK, message: 'joined', data: { threadId: res.threadId } };
   }
 
