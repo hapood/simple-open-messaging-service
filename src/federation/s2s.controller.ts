@@ -91,6 +91,28 @@ export class S2sController {
     return rev;
   }
 
+  /** GET /api/v1/s2s/thread/roster — a member-server pulls the canonical roster for a federated group
+   *  (the lazy meta-pull on chat-open). The signer is a trusted peer (S2sSignatureGuard). */
+  @Get('thread/roster')
+  async getThreadRoster(@Query('thread') thread?: string) {
+    if (!thread) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing thread query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const roster = await this.federation.serveGroupRoster(thread);
+    if (roster === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `group ${thread} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return roster;
+  }
+
   // ─── Step 2: coalesced hint map + message pull (serving side) ────────────────
 
   /** GET /api/v1/s2s/new-msg-map — the peer pulls OUR outbound hint entries (the one-directional

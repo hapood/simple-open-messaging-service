@@ -56,6 +56,22 @@ export class GroupService implements OnModuleInit {
     });
   }
 
+  /** Bump the group `!`-User.updatedAt — the meta-revision a federated mirror compares on chat-open to
+   *  decide whether to re-pull the group meta (identity + roster). Call after any roster mutation so a
+   *  roster change (not just a name/avatar edit via updateGroup) is detectable by the lazy meta-pull. */
+  async bumpGroupMeta(threadId: number): Promise<void> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { groupUserId: true },
+    });
+    if (trd?.groupUserId != null) {
+      await this.prisma.user.update({
+        where: { id: trd.groupUserId },
+        data: { updatedAt: new Date() },
+      });
+    }
+  }
+
   /** Batch-load the `!`-User (name/avatar/bio) for each of the given GROUP threads, keyed by threadId.
    *  Replaces the old queryGroups hydration that hit the Group table. Threads with no groupUser (P2P,
    *  or malformed) are omitted. Returns Map<threadId, {id,name,avatar,bio}>. */
@@ -165,6 +181,7 @@ export class GroupService implements OnModuleInit {
       where: { threadId: params.threadId, leftAt: null },
       select: { userId: true },
     });
+    await this.bumpGroupMeta(params.threadId);
     return { remainingMemberIds: remaining.map((r) => r.userId) };
   }
 
@@ -207,6 +224,7 @@ export class GroupService implements OnModuleInit {
       where: { id: target.id },
       data: { leftAt: new Date() },
     });
+    await this.bumpGroupMeta(params.threadId);
   }
 
   /**
@@ -261,6 +279,7 @@ export class GroupService implements OnModuleInit {
         data: { role: GroupRole.OWNER },
       });
     });
+    await this.bumpGroupMeta(params.threadId);
   }
 
   /**
@@ -309,6 +328,7 @@ export class GroupService implements OnModuleInit {
       where: { id: target.id },
       data: { role: params.role },
     });
+    await this.bumpGroupMeta(params.threadId);
   }
 
   /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).

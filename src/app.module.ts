@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { EventEmitterModule } from '@nestjs/event-emitter';
+import { LoggerModule } from './logger/logger.module.js';
 import { MessageController } from './controller/message.controller.js';
 import { AuthController } from './controller/auth.controller.js';
 import { UserModule } from './user/user.module.js';
@@ -30,6 +31,7 @@ import { NotificationQueryService } from './notification/notification-query.serv
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
+    LoggerModule,
     RedisModule,
     AuthModule,
     UserModule,

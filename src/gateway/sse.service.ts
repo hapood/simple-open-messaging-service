@@ -1,6 +1,7 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
+import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 
 /**
  * Group-lifecycle SSE event names. Carried on every group frame so the frontend dispatches by
@@ -49,49 +50,20 @@ interface SseClient {
  */
 @Injectable()
 export class SseService implements OnModuleDestroy {
-  /** Heartbeat interval (must be < Nginx's default proxy_read_timeout of 60s). The `: ping` comment line is not treated as an event by the frontend. */
-  private static readonly HEARTBEAT_MS = 25000;
   private readonly clients: Record<number, SseClient[]> = {};
   private readonly notifClients: Record<number, SseClient[]> = {};
 
   /**
-   * Connect plumbing shared by the primary stream and the notification stream: write the streaming
-   * response headers (X-Accel-Buffering:no tells Nginx not to buffer, otherwise frames would be
-   * batched and delivered late), flush a `: connected` comment so the client's onopen fires
-   * immediately, start the heartbeat, and register cleanup on res.on('close').
+   * Connect plumbing shared by the primary stream and the notification stream: the SSE headers, the
+   * ': connected' flush, and the 25s named-ping heartbeat are in common/sse-stream.ts (one source of
+   * truth — the same wire format the admin log viewer and the consumer sse.worker.ts use). This keeps
+   * the per-user registry insertion and the close cleanup.
    *
    * Auth is already done by the route's guard before reaching this service (JwtAuthGuard for the
    * primary stream, NotificationTokenGuard for the notification stream), so this only pushes.
-   *
-   * `res` is the reply.raw handed over by Fastify after reply.hijack(): ServerResponse under h1.1,
-   * Http2ServerResponse under HTTP/2 (both share the writeHead/write/end/on('close') interface).
-   * HTTP/2 forbids the Connection header (Node http2 throws "HTTP/1 Connection specific headers are
-   * forbidden"), and an h2 connection is already persistent, so Connection: keep-alive is only
-   * written under h1.1. The protocol is detected by the presence of res.stream (Http2ServerResponse only).
    */
   private attach(map: Record<number, SseClient[]>, userId: number, res: ServerResponse): void {
-    const isH2 = (res as unknown as { stream?: unknown }).stream !== undefined;
-    const headers: Record<string, string> = {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'X-Accel-Buffering': 'no',
-    };
-    if (!isH2) headers['Connection'] = 'keep-alive';
-    res.writeHead(200, headers);
-    res.write(': connected\n\n');
-
-    const ping = setInterval(() => {
-      // Heartbeat. Sent as a NAMED event (not a `:` comment) so the client's dispatcher observes it and
-      // can run a liveness watchdog: a comment frame is invisible to fetch-event-source's onmessage, so a
-      // silently stalled / half-open connection would otherwise go undetected and the "connection lost"
-      // banner would never appear on a real disconnect. A failed write (broken connection) → end now and
-      // let the res.on('close') handler finish the cleanup.
-      if (!res.write('event: ping\ndata: {}\n\n')) {
-        try {
-          res.end();
-        } catch {}
-      }
-    }, SseService.HEARTBEAT_MS);
+    const ping = initSseResponse(res);
 
     const entry: SseClient = { res, ping, since: Date.now() };
     (map[userId] ??= []).push(entry);
@@ -179,10 +151,7 @@ export class SseService implements OnModuleDestroy {
   ): void {
     const list = map[userId];
     if (!list || list.length === 0) return;
-    const frame =
-      `event: ${eventName}\n` +
-      (id !== undefined && id !== null ? `id: ${id}\n` : '') +
-      `data: ${JSON.stringify(data)}\n\n`;
+    const frame = formatSseFrame(eventName, data, id);
     for (let i = list.length - 1; i >= 0; i--) {
       const { res } = list[i];
       try {

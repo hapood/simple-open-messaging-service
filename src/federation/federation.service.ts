@@ -922,7 +922,7 @@ export class FederationService {
     const accepter = this.requireS2SAddress(body.accepter);
     const trd = await this.prisma.messageThread.findUnique({
       where: { federatedThreadId: body.thread },
-      select: { id: true },
+      select: { id: true, groupUserId: true },
     });
     if (trd == null) {
       throw new BusinessException(
@@ -933,6 +933,111 @@ export class FederationService {
     }
     const accepterStubId = await this.ensureForeignUser(accepter.account, accepter.domain);
     await this.participantService.upsertMember(trd.id, accepterStubId, GroupRole.MEMBER);
+    // Bump the group-meta revision (the group !-User.updatedAt) so mirrors re-pull the roster on the
+    // next chat-open (lazy meta-pull). Equivalent to GroupService.bumpGroupMeta, inlined to avoid a
+    // GroupService dependency here.
+    if (trd.groupUserId != null) {
+      await this.prisma.user.update({
+        where: { id: trd.groupUserId },
+        data: { updatedAt: new Date() },
+      });
+    }
+  }
+
+  // ─── roster meta-pull (lazy, on chat-open — same shape as the profile sync) ──────────
+
+  /** ORIGIN serves the canonical roster for a federated group (GET /s2s/thread/roster). Members carry
+   *  WIRE addresses (a local member's domain is our real domain, never the "local" sentinel) so the
+   *  pulling mirror can ensureForeignUser each. */
+  async serveGroupRoster(
+    federatedThreadId: string,
+  ): Promise<{ members: { account: string; domain: string; role: GroupRole }[] } | null> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { federatedThreadId },
+      select: { id: true },
+    });
+    if (trd == null) return null;
+    const rows = await this.prisma.threadParticipant.findMany({
+      where: { threadId: trd.id, leftAt: null },
+      select: { role: true, user: { select: { account: true, domain: true } } },
+    });
+    return {
+      members: rows.map((r) => ({
+        account: r.user.account,
+        domain: r.user.domain === 'local' ? this.config.domain : r.user.domain,
+        role: r.role ?? GroupRole.MEMBER,
+      })),
+    };
+  }
+
+  /** MIRROR pulls the origin's roster (signed GET /s2s/thread/roster). Null on peer failure. */
+  private async pullGroupRoster(
+    federatedThreadId: string,
+    originDomain: string,
+  ): Promise<{ members: { account: string; domain: string; role: GroupRole }[] } | null> {
+    try {
+      return await this.getSigned<{
+        members: { account: string; domain: string; role: GroupRole }[];
+      }>(`/api/v1/s2s/thread/roster?thread=${encodeURIComponent(federatedThreadId)}`, originDomain);
+    } catch {
+      return null;
+    }
+  }
+
+  /** Chat-open hook for a FEDERATED group MIRROR: probe the origin's group-meta revision (the group
+   *  !-User.updatedAt); if newer than the mirror's remoteUpdatedAt, re-pull the identity (reuses the
+   *  profile-sync path: fetchRemoteUser + localizeForeignProfile) + the roster (reconcile), then fan a
+   *  GROUP_UPDATED SSE so local members refresh. A local group / when we ARE the origin is a no-op. */
+  async syncGroupMetaIfStale(threadId: number): Promise<void> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { federatedThreadId: true, originDomain: true, groupUserId: true },
+    });
+    if (!trd?.federatedThreadId || !trd.originDomain || trd.originDomain === this.config.domain) return;
+    if (trd.groupUserId == null) return;
+    const gu = await this.prisma.user.findUnique({
+      where: { id: trd.groupUserId },
+      select: { account: true, remoteUpdatedAt: true },
+    });
+    if (!gu) return;
+    const address: S2SAddress = { account: gu.account, domain: trd.originDomain };
+    try {
+      const rev = await this.fetchRemoteRevision(address);
+      if (gu.remoteUpdatedAt !== null && rev.updatedAt <= gu.remoteUpdatedAt.getTime()) return; // fresh
+      // Stale → identity (reuse) + roster reconcile.
+      const profile = await this.fetchRemoteUser(address);
+      await this.localizeForeignProfile(trd.groupUserId, profile);
+      const roster = await this.pullGroupRoster(trd.federatedThreadId, trd.originDomain);
+      if (roster) await this.reconcileRoster(threadId, roster.members);
+      // Nudge local members to refresh their roster/group-info view.
+      const members = await this.participantService.getActiveParticipantUserIds(threadId);
+      members.forEach((m) => this.sse.onGroupEvent(m.userId, 'GROUP_UPDATED', { threadId }));
+    } catch {
+      // Best-effort — keep the cached meta; the next chat-open retries.
+    }
+  }
+
+  /** Reconcile a mirror's FOREIGN roster to match the origin's authoritative roster: upsert present
+   *  foreign members, soft-leave active foreign members no longer on the origin. Local members are
+   *  managed locally (a member with domain == ours IS a local user — skipped, never re-stubbed). */
+  private async reconcileRoster(
+    threadId: number,
+    members: { account: string; domain: string; role: GroupRole }[],
+  ): Promise<void> {
+    const originForeignIds = new Set<number>();
+    for (const m of members) {
+      if (m.domain === this.config.domain) continue; // a local user (us) — managed locally
+      const stubId = await this.ensureForeignUser(m.account, m.domain);
+      originForeignIds.add(stubId);
+      await this.participantService.upsertMember(threadId, stubId, m.role);
+    }
+    const localForeign = await this.prisma.threadParticipant.findMany({
+      where: { threadId, leftAt: null, user: { isForeigner: true } },
+      select: { userId: true },
+    });
+    for (const p of localForeign.filter((p) => !originForeignIds.has(p.userId))) {
+      await this.participantService.softLeaveMember(threadId, p.userId);
+    }
   }
 
   /** Idempotent mirror-thread find-or-create keyed by federatedThreadId (@unique → one mirror per

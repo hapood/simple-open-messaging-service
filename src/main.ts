@@ -1,6 +1,6 @@
 import 'dotenv/config'; // Load .env first so the AppModule import chain (requireEnv, Prisma) sees the vars.
 import { NestFactory } from '@nestjs/core';
-import { LogLevel } from '@nestjs/common';
+import { Logger } from 'nestjs-pino';
 import {
   FastifyAdapter,
   NestFastifyApplication,
@@ -21,31 +21,6 @@ import { configureApp } from './bootstrap.js';
 const tlsCert = process.env.TLS_CERT;
 const tlsKey = process.env.TLS_KEY;
 const enableH2 = Boolean(tlsCert && tlsKey);
-
-// Nest log levels, least→most verbose. The logger option takes the explicit enabled set, so we
-// expand a single requested level into that level + every more-severe one.
-const LOG_LEVELS: readonly LogLevel[] = [
-  'fatal',
-  'error',
-  'warn',
-  'log',
-  'debug',
-  'verbose',
-];
-
-/**
- * Resolve LOG_LEVEL env to the enabled LogLevel set. Default 'log' keeps routine app output
- * (log/warn/error/fatal) while suppressing debug/verbose — so client-disconnect lines (logged at
- * debug by AllExceptionsFilter) stay quiet in normal operation. Set LOG_LEVEL=debug to surface
- * them when investigating an SSE/streaming incident; warn/error to quiet production.
- */
-function resolveLogLevel(raw: string | undefined): LogLevel[] {
-  const requested = (raw ?? 'log').toLowerCase();
-  const idx = LOG_LEVELS.indexOf(requested as LogLevel);
-  // Unknown value → fall back to 'log' (enables log/warn/error/fatal; debug/verbose off).
-  const enabled = idx === -1 ? LOG_LEVELS.indexOf('log') : idx;
-  return LOG_LEVELS.slice(0, enabled + 1);
-}
 
 async function bootstrap() {
   const adapter = new FastifyAdapter(
@@ -74,9 +49,16 @@ async function bootstrap() {
         },
   );
 
+  // bufferLogs: Nest buffers early startup logs until the pino logger is registered below, then
+  // flushes them through pino (no lost startup logs, no double logging). The structured pino logger
+  // (multistream → stdout + rotating file + the in-process ring buffer/SSE fan-out) is built by
+  // LoggerModule (nestjs-pino) and replaces Nest's default ConsoleLogger — so every existing
+  // `new Logger('Ctx')` call site routes through pino with its context preserved, unchanged.
+  // LOG_LEVEL is now resolved inside the pino factory, not here.
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
-    logger: resolveLogLevel(process.env.LOG_LEVEL),
+    bufferLogs: true,
   });
+  app.useLogger(app.get(Logger));
   await configureApp(app, adapter);
 
   const port = Number(process.env.PORT ?? 3000);

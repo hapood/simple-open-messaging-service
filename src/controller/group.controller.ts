@@ -223,6 +223,19 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
+  @Post('group/sync-meta')
+  @ApiOperation({ summary: 'Refresh a federated group meta (roster + identity) if stale (chat-open hook)' })
+  async syncGroupMeta(@Request() req): Promise<ApiResult> {
+    // Chat-open hook: lazily pull the group meta from the origin when the mirror's revision is stale
+    // (same shape as sync-peer-profile). A local group / when we are the origin is a no-op.
+    await this.federationService.syncGroupMetaIfStale(req.threadAccess!.threadId);
+    return { code: BusinessCode.OK, message: 'successful' };
+  }
+
+  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @ResourceId<GroupIdDto>('groupId')
   @Post('group/info')
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
