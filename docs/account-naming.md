@@ -31,14 +31,16 @@ SOMS stores two kinds of accounts in the **same** `User.account` column. They ar
 
 | Class | Sigil | Example | Who may mint it |
 | --- | --- | --- | --- |
-| **User** | none — must start with a letter | `alice`, `john.smith` | the registration endpoint (`RegisterDto`) |
+| **User** | none — must start with a letter | `alice`, `john.smith`, `h2user` | the registration endpoint (`RegisterDto`) |
 | **Group** | `!` | `!01hzxw7x...` | the group-creation flow only |
 
 ### 2.1 Why a grammar-enforced sigil (a security property)
 
-A **user account may contain only letters and `.`** (§3.1), so the sigil `!` can **never appear in a
-user account**. The grammar therefore makes user/group discrimination **un-spoofable**: nobody can
-register `!admin` as a username to impersonate a group — the registration regex rejects it. Type
+A **user account may contain only letters, digits, and `.`** (§3.1) — never `!` — so the sigil `!` can
+**never appear in a user account**. The grammar therefore makes user/group discrimination
+**un-spoofable**: nobody can register `!admin` as a username to impersonate a group — the registration
+regex rejects it. (Digits are allowed; this does not weaken the sigil, since `!` is neither a letter
+nor a digit.) Type
 discrimination is a property of the string itself, not a separate `type` flag or a code-path
 convention that could be bypassed.
 
@@ -66,19 +68,20 @@ a stored account sigil today.
 ### 3.1 User account
 
 ```
-user_account := [a-zA-Z]+ ( "." [a-zA-Z]+ )*     with length 3–31
+user_account := [a-zA-Z][a-zA-Z0-9]* ( "." [a-zA-Z0-9]+ )*     with length 3–31
 ```
 
 Regex (**validate**, then **normalize** — see §4):
 
 ```regex
-/^(?=.{3,31}$)[a-z]+(\.[a-z]+)*$/i
+/^(?=.{3,31}$)[a-z][a-z0-9]*(\.[a-z0-9]+)*$/i
 ```
 
-- **Charset:** ASCII letters `[A-Za-z]` and `.` only. **No digits, no underscore, no other symbols.**
-  v1 is intentionally minimal; widen later only through deliberate review of this document.
-- **Dot rules:** no leading `.`, no trailing `.`, no consecutive `..`. The `(\.[a-z]+)*` structure
-  enforces this — `.` is only ever a single separator between letter-runs.
+- **Charset:** ASCII letters and digits `[A-Za-z0-9]` and `.`. **Must start with a letter**; **no
+  underscore, no other symbols.** Digits are allowed elsewhere — the `!` group sigil stays un-spoofable
+  because `!` is neither a letter nor a digit (§2.1).
+- **Dot rules:** no leading `.`, no trailing `.`, no consecutive `..`. The `(\.[a-z0-9]+)*` structure
+  enforces this — `.` is only ever a single separator between alphanumeric runs.
 - **Length:** 3–31 characters. The DB column is `VarChar(31)` (`prisma/schema.prisma`); 31 is the
   hard ceiling.
 - **Semantics of `.`:** **significant, not collapsed.** `alice` ≠ `alice.bob` ≠ `alicebob` are three
@@ -102,7 +105,7 @@ Regex:
   (`!01hz...`) — case-insensitive by design, safe to store lowercase, and collision-free without a
   name-squatting / rename-resolution dance (the same reason Matrix room IDs are opaque).
 - **Minting authority:** the group-creation flow ONLY. The registration endpoint rejects
-  `!`-prefixed strings automatically, because `!` is not a letter (§3.1).
+  `!`-prefixed strings automatically, because `!` is neither a letter nor a digit (§3.1).
 - Human-readable group names live on `Group.name` (Unicode allowed) and/or a future `#`-alias —
   **never** on the identity account.
 
@@ -201,10 +204,13 @@ applied once at creation, not a later mutation.)
 
 ## 8. Data reset — no migration
 
-The previous v0.1 registration regex was `^[a-zA-Z][a-zA-Z0-9_]{2,30}$` (it allowed digits and
-underscore). Rather than grandfather or migrate non-compliant handles, **all tables are reset** (full
-drop/recreate) when this spec ships — there is no migration step and no legacy account data to
-preserve. The new grammar (§3.1 / §3.2) is the only grammar from a clean database.
+The v0.1 registration regex was `^[a-zA-Z][a-zA-Z0-9_]{2,30}$` (letters + digits + underscore). The
+grammar was later tightened to **letters + `.` only** (no digits, no underscore), shipped over a full
+table reset (drop/recreate — no migration, no legacy handles preserved). **Digits have since been
+re-allowed** (§3.1): the grammar is now letters + digits + `.`, must start with a letter. The `!` group
+sigil stays un-spoofable (`!` is neither a letter nor a digit). Underscode remains excluded; re-adding
+it would be a separate review of this document. No migration was needed for the digit change — the DB
+CHECK constraint only enforces the `!`/`isGroup` consistency, not the user charset.
 
 ## 9. Related / supersedes
 

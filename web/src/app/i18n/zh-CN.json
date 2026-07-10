@@ -63,7 +63,7 @@
     "register": "注册",
     "hidePassword": "隐藏密码",
     "showPassword": "显示密码",
-    "accountHint": "3-31 个字符：字母、数字、下划线，须以字母开头",
+    "accountHint": "3-31 个字符：字母、数字、点号，须以字母开头",
     "displayNameHint": "1 到 30 个字符",
     "passwordHint": "6 到 20 个字母、数字或符号",
     "passwordMismatch": "两次输入的密码不一致，请重新输入",

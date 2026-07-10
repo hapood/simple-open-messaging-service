@@ -49,11 +49,11 @@ export class RegisterDto {
   // @Matches enforces the grammar. The DB column is VarChar(31), so 31 is the hard ceiling.
   @ApiProperty({
     example: 'alice',
-    description: 'Login unique name: 3-31 chars, letters [a-z] and dots only, case-insensitive',
+    description: 'Login unique name: 3-31 chars, letters + digits + dots, must start with a letter, case-insensitive',
   })
   @Transform(({ value }) => normalizeAccount(value))
   @Matches(USER_ACCOUNT_RE, {
-    message: 'account must be 3-31 chars, letters [a-z] and dots only (no leading/trailing/consecutive dots)',
+    message: 'account must be 3-31 chars: letters + digits + dots, start with a letter (no leading/trailing/consecutive dots)',
   })
   account: string;
 

@@ -8,15 +8,18 @@ import { Prisma } from '../prisma/generated/client.js';
  * here. The spec is authoritative; if code and spec disagree, fix the code.
  *
  * Two account classes share the `User.account` column, told apart by a grammar-enforced sigil:
- *   - USER : letters + `.` only, case-insensitive (3–31 chars, dot-rules enforced by the regex shape).
+ *   - USER : letters + digits + `.` only, case-insensitive, must start with a letter (3–31 chars, dot-rules
+ *     enforced by the regex shape). Digits are allowed; the `!` group sigil stays un-spoofable (§2.1).
  *   - GROUP: a leading `!` + an opaque id (the `!` can never appear in a user account, so the sigil is
  *            an un-spoofable discriminator — no separate type flag is needed for correctness; the
  *            `User.isGroup` boolean mirrors it only as a query-time denormalization).
  */
 
-/** User account: `[a-zA-Z]` + `.` only. The `(\.[a-z]+)*` shape enforces no leading/trailing/consecutive
- *  dot. 3–31 chars (VarChar(31) is the hard ceiling). `/i` only matches — case is normalized on write. */
-export const USER_ACCOUNT_RE = /^(?=.{3,31}$)[a-z]+(\.[a-z]+)*$/i;
+/** User account: starts with a letter, then letters/digits, dot-separated. The `(\.[a-z0-9]+)*` shape
+ *  enforces no leading/trailing/consecutive dot. 3–31 chars (VarChar(31) is the hard ceiling). Digits are
+ *  allowed; the `!` group sigil remains un-spoofable because `!` is neither a letter nor a digit
+ *  (docs/account-naming.md §2.1). `/i` only matches — case is normalized on write. */
+export const USER_ACCOUNT_RE = /^(?=.{3,31}$)[a-z][a-z0-9]*(\.[a-z0-9]+)*$/i;
 
 /** Group account: `!` + 2–30 chars of `[a-z0-9]` (total 3–31). The recommended body is a 26-char ULID. */
 export const GROUP_ACCOUNT_RE = /^![a-z0-9]{2,30}$/;

@@ -63,7 +63,7 @@
     "register": "Register",
     "hidePassword": "Hide password",
     "showPassword": "Show password",
-    "accountHint": "3-31 chars: letters, digits, underscore; start with a letter",
+    "accountHint": "3-31 chars: letters, digits, dots; start with a letter",
     "displayNameHint": "1 to 30 characters",
     "passwordHint": "6 to 20 letters/numbers/symbols",
     "passwordMismatch": "Two entered passwords do not match, make sure to re-enter",

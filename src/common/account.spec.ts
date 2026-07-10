@@ -15,9 +15,12 @@ import {
 
 describe('account grammar + minting (docs/account-naming.md)', () => {
   describe('USER_ACCOUNT_RE', () => {
-    it.each(['alice', 'john.smith', 'a.b.c', 'ALICE', 'Alice.Bob'])('accepts %s', (v) => {
-      expect(isValidUserAccount(v)).toBe(true);
-    });
+    it.each(['alice', 'john.smith', 'a.b.c', 'ALICE', 'Alice.Bob', 'h2user', 'alice2', 'a.b2'])(
+      'accepts %s',
+      (v) => {
+        expect(isValidUserAccount(v)).toBe(true);
+      },
+    );
     it.each([
       'a', // too short (< 3)
       'al', // too short
@@ -25,7 +28,7 @@ describe('account grammar + minting (docs/account-naming.md)', () => {
       'alice.', // trailing dot
       '.alice', // leading dot
       'alice..bob', // consecutive dots
-      'alice1', // digit
+      '2alice', // starts with a digit (must start with a letter)
       'alice_', // underscore
       'alice-bob', // hyphen
       'al ice', // space
@@ -82,7 +85,9 @@ describe('account grammar + minting (docs/account-naming.md)', () => {
       expect(g).toMatch(/^![0-9a-z]{26}$/);
       expect(g.length).toBe(27);
       expect(isGroupAccount(g)).toBe(true);
-      // body alone is a valid (non-sigil) shape but not a valid USER account (no letters-only rule met by digits)
+      // body alone is a non-sigil opaque id (26 lowercase base32 alnum chars). Not asserted against the
+      // USER grammar here: a body that happens to start with a letter would parse as a valid user account,
+      // but groups are always addressed by their `!` sigil, so it never matters in practice.
       expect(g.slice(1)).toMatch(/^[0-9a-z]{26}$/);
     });
     it('two mintGroupAccount calls differ', () => {
