@@ -2,25 +2,33 @@
 
 > **Status:** Source of truth for both protocol integrators and node operators.
 > **Scope:** Server-to-server (S2S) federation for SOMS IM threads.
-> **Last updated:** 2026-07-08
+> **Last updated:** 2026-07-10
 
 ---
 
 ## 0. Read this first — what SOMS federation is, and is not
 
-> **What v0.1 ships (Step 1 — friend federation).** Cross-server **friendship**: a user on one server
-> adds a user on another (`alice@aaa.com` ↔ `bob@bbb.com`), and on approve **each server owns its own
-> 1:1 thread** for that pair. Delivery is **synchronous** (sign + POST inline, no outbox/worker) — friend
-> ops are idempotent, so a peer that's down makes the action fail and the user retries safely. Avatars
-> federate inline (base64). Trust is established by the auto-accepting **init handshake** and tracked
-> through a full **trust lifecycle** (trusted → demoted on failure → re-handshake), observable from the
-> admin console.
+> **What is built.** Three steps, all shipped and covered by the dual-process dual-DB e2e harness
+> (`test/federation.e2e-spec.ts`, 22 cases of real signed S2S traffic):
+> - **Step 1 — friend federation.** Cross-server **friendship** (`alice@soms.io` ↔ `bob@other.com`); on
+>   approve each server owns its own 1:1 thread. Delivery is **synchronous** (sign + POST inline, no
+>   outbox/worker). Avatars federate inline (base64). Trust via the auto-accepting **init handshake** +
+>   a full **trust lifecycle** (trusted → demoted → re-handshake), observable from the admin console.
+> - **Step 2 — 1:1 cross-server messages + media.** Light-notify + active **pull** over
+>   `GET /api/v1/s2s/messages` (per-`(thread, sender)` `originSeq` cursor + dedup) — NOT a POSTed
+>   payload, NOT an outbox/worker. Images localize via the CAS path; large files stream over
+>   `Range`/206 on `/get_file`. Authoritative design: `docs/federation-step2-design.md`.
+> - **Step 3 — cross-server groups (origin-hub).** The origin server is the single authority for roster
+>   AND message history: a member signals the origin, the origin pulls + aggregates + re-signals,
+>   members pull the whole thread from the origin. Unified `/s2s/invite` (friend + group); lazy roster
+>   meta-pull; group-invite chat card; leave. Authoritative design: `docs/federation-step3-design.md`.
 >
-> **What v0.1 does NOT ship (Step 2/3 — reserved, not built).** Cross-server **messages**, read receipts,
-> presence/typing, history **backfill**, a shared federated **thread id**, the async **outbox + retry
-> worker**, and federated **groups**. They are described below as the future design, clearly marked. Do
-> not implement against them as if shipped. (Step 2 messages were later decided to use coalesced-notify
-> + active **pull** over `GET /messages` — see `docs/federation-step2-design.md` — not a POSTed payload.)
+> **What is NOT yet built (deferred).** Read receipts, presence/typing (v0.2 ephemeral channel),
+> **edit/delete** propagation, group **rename/avatar/description** sync, a durable **active-liveness**
+> leave backstop, origin death/re-homing, and per-peer **quota** enforcement (`docs/federation-quotas.md`).
+> These are flagged inline as **Deferred**. The per-section "Future" headers below that predate Steps 2/3
+> are retained as historical design notes — read them as **implemented** per the step-design docs unless
+> marked Deferred.
 
 SOMS federation lets two independently deployed SOMS instances exchange messages across their users — **like email, but for chat.** This document is the single reference for anyone who wants to **integrate with** a SOMS node (Part I) or **deploy** one (Part II).
 
@@ -85,7 +93,7 @@ The complexity that sank Matrix (global consistency / DAG) and the complexity Mo
 | **Friend edge** | A bidirectional friendship between two users (`Friendship`, one normalized row per pair + `requesterId` for direction). **The access primitive:** no 1:1 thread exists between two users without one. Replicated on both servers via the `friend-request` / `friend-approve` endpoints; carries an optional ≤255-char `reqMessage`. |
 | **Thread (Step 1)** | A bounded conversation. In Step 1, **each server owns its own local 1:1 `MessageThread`** for a federated pair on approve — there is **no shared federated thread id** (the `thr_<rand>@<origin-domain>` form returns only for federated **groups**, Step 3). 1:1 messages (Step 2) route by `from`/`to` → `Friendship` → the local thread. |
 | **Trust lifecycle** | `FederatedPeer.trustLevel`: `pending → trusted → demoted → trusted…` (+ `blocked` = admin intent). A trusted peer whose signed op fails is immediately demoted and re-handshakes on next contact (self-healing). Append-only `FederatedPeerEvent` records every transition (§5.2). |
-| **Message / Receipt** | Reserved for Step 2 (cross-server messages, delivered via `GET /messages` pull) / v0.2 (read receipts). Not shipped. |
+| **Message / Receipt** | **Message:** shipped in Step 2 (cross-server, via `GET /messages` pull + `originSeq` dedup). **Receipt:** v0.2, not shipped. |
 | **Thread membership** | The canonical access gate at the friend-op endpoint: **you only receive friend ops for relationships you are a party to.** For 1:1, membership is the friend edge; for groups (Step 3), the local roster. |
 
 ---
@@ -112,7 +120,7 @@ address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" 
 > bound to its server in v0.1 (identity portability is a deferred non-goal, §10). A user is therefore
 > `{ account, domain }` for life; there is **no rename and no re-homing operation on the wire.**
 
-> **Reserved for Step 2/3** (not shipped): a federated **thread** id (origin-domain + local id, for cross-server **groups**) and an origin-assigned **message** ULID. Step 1 has neither — each server owns its own local 1:1 thread, and messages are local until Step 2.
+> **Federated thread identity** (shipped): a federated **group** is addressed by its own `!account` (`MessageThread.fedGroupAccount`, minted on group create, globally unique — the same value on the origin and every mirror, never the DB thread id); 1:1 threads have no shared id (each server owns its own local thread). A message's cross-server identity is the `(creator, originSeq)` pair (Step 2), not a UUID.
 
 ### 3.2 Discovery — layered
 
@@ -323,7 +331,7 @@ This current-state cache (`FederatedPeer`) + append-only history (`FederatedPeer
 
 ## 6. Delivery
 
-> **Step 1 = synchronous.** Friend-op payloads are signed + POSTed **inline** in the request path (`FederationService.send*`, 10 s `callTimeoutSec`). There is **no outbox, no worker, no retry queue** in v0.1 — a peer that's down makes the action fail, and the user retries (the receiver dedupes via `S2SFriendOpSeen`, so a retry is safe). The durable outbox + retry worker below (§6.2, §6.4) revive **only if Step 2 messages** need reliable cross-server delivery.
+> **Friend ops = synchronous** (Step 1, unchanged). Friend-op payloads are signed + POSTed **inline** in the request path (`FederationService.send*`, 10 s `callTimeoutSec`). There is **no outbox, no worker, no retry queue** — a peer that's down makes the action fail, and the user retries (the receiver dedupes via `S2SFriendOpSeen`, so a retry is safe). **Step 2 messages do NOT use an outbox** — they use light-notify + active pull (§6.2 ⚠️); the durable outbox + retry worker below (§6.2, §6.4) remains an **unbuilt** design, retained as reference.
 
 ### 6.1 The S2S POST (sync, Step 1)
 
@@ -351,9 +359,9 @@ Body: <payload>
 
 **Semantics: at-least-once with idempotent dedup.** Recipients MUST dedupe by `(origin, id)`. Exactly-once is never attempted — it requires distributed consensus and is the path to Matrix-level complexity.
 
-### 6.2 Retry budget — Future (Step 2)
+### 6.2 Retry budget — unbuilt (design reference; Step 2 uses pull, not a queue)
 
-> **Not built in Step 1** (no outbox). The schedule below is the design for when a durable outbox + worker revive (Step 2 messages needing reliable cross-server delivery).
+> **Not built.** Step 2 chose light-notify + active-pull instead of an outbox (see ⚠️ below), so this schedule was never implemented. Retained as the design for a future tier that needs transactional delivery guarantees.
 >
 > ⚠️ **Step 2 was DECIDED as light-notify + active-pull — NO outbox/worker/dead-letter.** The sender's
 > `Message` table is the source of truth; a tiny best-effort `message.notify` hints the peer, which
@@ -389,9 +397,9 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 
 ---
 
-## 7. Ordering & consistency — Future (Step 2)
+## 7. Ordering & consistency (Step 2 — built)
 
-> **Not applicable in Step 1** — there are no cross-server messages yet, so no federated ordering. Each server owns its own local 1:1 thread and orders locally. The rules below govern Step 2 message federation.
+> **Built (Step 2).** The rules below govern cross-server message ordering. Step 3 §5 refined the display rule: the **arrival time** (the receiver's local `now()` when a pulled message is stored) is what the chatbox shows and what orders the conversation list; `originSeq` (per-sender) is the cursor/dedup authority — never a global order. See `docs/federation-step3-design.md` §5.
 
 - **Within a thread:** sort by `(ts, origin_seq)`. `ts` is the origin's clock; `origin_seq` (per-thread, monotonic on origin) breaks ties.
 - **`origin_seq`:** allocated by a per-thread counter on the origin server. No cross-thread coordination.
@@ -403,9 +411,9 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 
 ---
 
-## 8. History backfill — Future (Step 2/3)
+## 8. History backfill (Step 2/3 — built)
 
-> **Not built in Step 1.** There is no shared federated thread id and no backfill endpoint yet. The design below is for when cross-server messages/groups need history replay.
+> **Built (Step 2/3).** Backfill is the SAME endpoint as incremental pull — `GET /api/v1/s2s/messages?after=0` is a full backfill; `after=<cursor>` is incremental. The ⚠️ below carries the authoritative path/param convention.
 >
 > ⚠️ **Step 2 makes backfill the SAME endpoint as incremental pull** — `GET /api/v1/s2s/messages?after=0`
 > is a full backfill; `after=<cursor>` is incremental. No separate `/threads/:id/messages` route. See
@@ -450,9 +458,9 @@ Alice@soms.io wants to chat with Bob@other.com.
 
 **No `thread.invite` exists in Step 1.** Each server owns its own thread; a Step 2 message from Alice routes on `soms.io` by `from`/`to` → `Friendship` → the local thread, and is delivered to `other.com` where it routes the same way to Bob's local thread. A shared federated thread id returns only for federated **groups** (Step 3).
 
-### 9.2 Send a message — Future (Step 2)
+### 9.2 Send a message (Step 2 — built; see step2-design)
 
-> **Not built in Step 1.** No cross-server messages yet. The flow below is the Step 2 design; the `S2SOutbox` it references revives only then.
+> **Built (Step 2).** The ⚠️ SUPERSEDED note below carries the authoritative flow (light-notify + active-pull, NO `S2SOutbox`). The push flow retained below is the rejected alternative, kept as rationale.
 >
 > ⚠️ **SUPERSEDED — see `docs/federation-step2-design.md` for the authoritative Step 2 flow
 > (light-notify + active-pull, NO `S2SOutbox`).** The actual flow: sender stores locally + allocates
@@ -471,7 +479,7 @@ Alice@soms.io wants to chat with Bob@other.com.
 
 Federation is purely additive — appended after the existing local push.
 
-### 9.3 Cross-server group invite — Future (Step 3)
+### 9.3 Cross-server group invite (Step 3 — built)
 
 Group invites remain friend-gated: **the inviter and invitee must already be friends across servers** (consistent with local SOMS, where groups invite friends). A `thread.invite` addressed to the new participant triggers backfill (§8) on their server so they see prior history. Once a member, their access grant is thread membership — pairwise friendship with every other member is **not** required (matches local group semantics).
 
@@ -515,8 +523,11 @@ model User {
   @@unique([account, domain])
 }
 
-// MessageThread is UNCHANGED — Step 1 drops origin/federatedId. Each server owns its own local
-// thread; there is no shared federated thread id (that returns only for federated groups, Step 3).
+// MessageThread — Step 3 adds the federated GROUP identity: fedGroupAccount (the group's own
+// `!account`, @unique — one local mirror per federated group) + originDomain (the origin server).
+// NULL for purely-local threads (all P2P, local-only groups); 1:1 threads still have no shared id.
+// Message gains originServerTime (Step 2/3 — the sender clock, stored not shown; createdAt = arrival,
+// displayed). See docs/federation-step3-design.md §3.
 
 // Friendship: one normalized row per pair (userAId=min, userBId=max) + requesterId for direction.
 // reqMessage is the ≤255-char friend-request note (local + federated). threadId is the P2P
