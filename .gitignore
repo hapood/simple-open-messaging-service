@@ -64,4 +64,4 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 /uploads
 
 # Federation S2S signing keypair (Ed25519) — generated on first boot, NEVER tracked
-/data
+/data.fed-app-build/

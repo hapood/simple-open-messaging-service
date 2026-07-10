@@ -1,6 +1,5 @@
 import { Injectable, OnModuleInit, OnModuleDestroy, Logger } from '@nestjs/common';
 import { FederationService } from './federation.service.js';
-import { FederationBufferService } from './federation-buffer.service.js';
 
 /**
  * The 60s reconnect sweep (§4.3) — drives the self-healing the design's resilience story leans on.
@@ -30,7 +29,6 @@ export class FederationReconnectService implements OnModuleInit, OnModuleDestroy
 
   constructor(
     private readonly federation: FederationService,
-    private readonly buffer: FederationBufferService,
   ) {}
 
   onModuleInit(): void {
@@ -89,7 +87,7 @@ export class FederationReconnectService implements OnModuleInit, OnModuleDestroy
   private async recover(domain: string): Promise<void> {
     await this.federation.pingPeer(domain);
     await this.federation.ensurePeerTrusted(domain);
-    await this.buffer.flushDomain(domain);
+    await this.federation.flushDomain(domain);
     await this.pullPeerMap(domain);
   }
 

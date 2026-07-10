@@ -29,7 +29,7 @@ import {
   parseVideoContent,
 } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
-import { FederationBufferService } from '../federation/federation-buffer.service.js';
+import { FederationService } from '../federation/federation.service.js';
 import {
   SendMessageDto,
   QueryMessagesDto,
@@ -51,7 +51,7 @@ export class MessageController {
     private readonly pushService: PushService,
     private readonly notifQuery: NotificationQueryService,
     private readonly userBlockService: UserBlockService,
-    private readonly federationBuffer: FederationBufferService,
+    private readonly federation: FederationService,
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -146,7 +146,7 @@ export class MessageController {
     // only / group threads are a no-op inside notifyOnSend. Fire-and-forget (best-effort; pull-on-open
     // is the floor). data.originSeq is always set on a fresh insert (nullable only for legacy rows).
     if (data.originSeq != null) {
-      void this.federationBuffer.notifyOnSend(
+      void this.federation.notifyOnSend(
         req.user.userId,
         dto.threadId,
         data.originSeq,

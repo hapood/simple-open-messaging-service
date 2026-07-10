@@ -1,4 +1,4 @@
-import { Injectable, HttpStatus, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, HttpStatus, Logger, OnModuleDestroy } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { mintUlid, normalizeAccount, isValidAccount } from '../common/account.js';
 import { PrismaService } from '../prisma.service.js';
@@ -132,8 +132,19 @@ export interface S2SInviteAccept extends S2SOpsBase {
  * notification; the peer discovers the severed edge lazily, via a rejection-on-send in Step 2.
  */
 @Injectable()
-export class FederationService {
+export class FederationService implements OnModuleDestroy {
   private readonly config = loadFederationConfig();
+  private readonly logger = new Logger(FederationService.name);
+  /** Debounce window for outbound hint flushes (a burst collapses to one push). */
+  private static readonly FLUSH_DEBOUNCE_MS = 500;
+  /** Entries per push request (each ~100 B → ~100 KB, under the 1 MiB body limit). */
+  private static readonly FLUSH_BATCH = 1000;
+  /** One debounced flush timer per dest domain (cleared in onModuleDestroy). */
+  private readonly flushTimers = new Map<string, NodeJS.Timeout>();
+  /** Receiver-side debounce window: a group thread pulled within this skips a redundant whole-thread GET. */
+  private static readonly GROUP_PULL_DEBOUNCE_MS = 500;
+  /** Per-group-thread last pull timestamp (the receiver debounce on pullGroupWhole). */
+  private readonly recentGroupPulls = new Map<number, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -144,14 +155,10 @@ export class FederationService {
     private readonly message: MessageService,
     private readonly invite: InviteService,
     private readonly sse: SseService,
-    // Cyclic DI with FederationBufferService (it injects us back via the symmetric forwardRef in its
-    // ctor). The cycle is inherent + contained to this module: THIS service pulls messages and, after
-    // storing one, must tell the buffer to propagate the hint (storePulledMessage → signalOutbound); the
-    // buffer holds dirty hints + must flush them through THIS service's signed transport (pushNewMsgMap)
-    // + read ourDomain. forwardRef is the NestJS-sanctioned way to express a same-module service↔buffer
-    // co-dependency. Breaking it would mean extracting a third transport module both depend on — extra
-    // surface for no functional gain, so the cycle is kept deliberately.
-    @Inject(forwardRef(() => FederationBufferService))
+    // ONE-WAY Fed → Buffer: the buffer is now PURE STORAGE (markDirty/snapshot/flushBatch); this class owns
+    // signalOutbound + the debounce timer + flushDomain. The old two-way edge was a forwardRef cycle whose
+    // `design:paramtypes` value references crashed ESM boot ("Cannot access 'FederationBufferService' before
+    // initialization") — breaking it is what lets `node dist/src/main.js` start.
     private readonly buffer: FederationBufferService,
   ) {}
 
@@ -163,6 +170,122 @@ export class FederationService {
   /** This server's domain (config.domain) — for address-domain comparison in controllers. */
   get ourDomain(): string {
     return this.config.domain;
+  }
+
+  // ─── outbound hint routing + debounced flush (owns what used to live in FederationBufferService) ────
+  //
+  // This class is the single owner of the outbound side: it ROUTES a new message to the right dest
+  // domains (signalOutbound), WRITES the dirty hint to the pure-storage buffer, SCHEDULES a debounced
+  // flush per domain, and FLUSHES over its own signed transport (pushNewMsgMap). The buffer holds no
+  // timers + no back-reference here — a one-way Fed → Buffer edge (no cycle, no ESM TDZ).
+
+  /** Hook for the local-send path (MessageController.sendMessage) + the pulled path (storePulledMessage):
+   *  after a message lands, route the outbound hint. Best-effort — never throws into the caller. */
+  async notifyOnSend(senderUserId: number, threadId: number, originSeq: number): Promise<void> {
+    await this.signalOutbound(threadId, senderUserId, originSeq, undefined);
+  }
+
+  /**
+   * The single origin-hub routing + loop-safety entry. Computes the dest domain set for a new message,
+   * then subtracts fetchedFromDomain (the domain the message was just pulled from — it already has it).
+   * This one rule closes BOTH symmetric back-notify paths: a mirror pulling from origin signals nothing
+   * (its only dest IS its fetch source); the origin re-signals every foreign domain EXCEPT the source.
+   * P2P → each foreign peer except the author; GROUP → (origin: all foreign member-domains; mirror:
+   * {originDomain}). Best-effort: logs + swallows.
+   */
+  async signalOutbound(
+    threadId: number,
+    authorUserId: number,
+    latestSeq: number,
+    fetchedFromDomain: string | undefined,
+  ): Promise<void> {
+    try {
+      const [trd, participants] = await Promise.all([
+        this.prisma.messageThread.findUnique({
+          where: { id: threadId },
+          select: {
+            fedGroupAccount: true,
+            originDomain: true,
+            groupUser: { select: { account: true } },
+          },
+        }),
+        this.prisma.threadParticipant.findMany({
+          where: { threadId, leftAt: null },
+          include: { user: { select: { account: true, domain: true, isForeigner: true } } },
+        }),
+      ]);
+      if (!trd) return;
+      const author = participants.find((p) => p.userId === authorUserId);
+      if (!author) return;
+      const authorDomain = author.user.isForeigner ? author.user.domain : this.ourDomain;
+      const authorAccount = author.user.account;
+
+      if (!trd.fedGroupAccount) {
+        // P2P (local-only or federated 1:1): signal each foreign peer participant EXCEPT the author + the
+        // fetch source. A pulled P2P message's only foreign participant is the author → nobody to signal.
+        for (const p of participants) {
+          if (p.userId === authorUserId || !p.user.isForeigner) continue;
+          if (fetchedFromDomain && p.user.domain === fetchedFromDomain) continue;
+          this.buffer.markDirty(p.user.domain, authorAccount, authorDomain, p.user.account, latestSeq);
+          this.scheduleFlush(p.user.domain);
+        }
+        return;
+      }
+      // GROUP federated. dest = (origin → all foreign member-domains; mirror → {originDomain}), minus the
+      // fetch source. The `to` is the group `!account` (one hint per foreign domain).
+      const groupAccount = trd.groupUser?.account;
+      if (!groupAccount) return;
+      const destDomains = new Set<string>();
+      if (trd.originDomain === this.ourDomain) {
+        for (const p of participants) if (p.user.isForeigner) destDomains.add(p.user.domain);
+      } else {
+        destDomains.add(trd.originDomain as string);
+      }
+      if (fetchedFromDomain) destDomains.delete(fetchedFromDomain);
+      for (const d of destDomains) {
+        this.buffer.markDirty(d, authorAccount, authorDomain, groupAccount, latestSeq);
+        this.scheduleFlush(d);
+      }
+    } catch (e) {
+      // Never break the caller (send/pull path) — a transient DB error just skips this notify.
+      this.logger.debug(`signalOutbound(${threadId}) failed: ${(e as Error).message}`);
+    }
+  }
+
+  /** Schedule a debounced flush for a domain (one timer per domain; a burst collapses to one push). */
+  private scheduleFlush(domain: string): void {
+    if (this.flushTimers.has(domain)) return; // a flush is already pending
+    const t = setTimeout(() => {
+      this.flushTimers.delete(domain);
+      void this.flushDomain(domain).catch((e) =>
+        this.logger.debug(`flush ${domain} failed: ${(e as Error).message}`),
+      );
+    }, FederationService.FLUSH_DEBOUNCE_MS);
+    this.flushTimers.set(domain, t);
+  }
+
+  /**
+   * Flush ALL dirty entries for a domain to the peer, batched (FLUSH_BATCH per POST). On each batch's ack,
+   * delete those entries; on failure, keep the rest buffered (the next notifyOnSend reschedules, and the
+   * reconnect sweep retries directly). Safe to re-run — the receiver dedupes by originSeq.
+   */
+  async flushDomain(domain: string): Promise<void> {
+    for (;;) {
+      const batch = this.buffer.flushBatch(domain, FederationService.FLUSH_BATCH);
+      if (batch.entries.length === 0) break;
+      try {
+        await this.pushNewMsgMap(domain, batch.entries, batch.hasMore);
+        this.buffer.deleteKeys(domain, batch.keys); // acked → drop
+      } catch {
+        return; // leave the rest buffered; rescheduled on next notifyOnSend / sweep
+      }
+    }
+    this.buffer.dropDomainIfEmpty(domain);
+  }
+
+  onModuleDestroy(): void {
+    for (const t of this.flushTimers.values()) clearTimeout(t);
+    this.flushTimers.clear();
   }
 
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
@@ -1853,6 +1976,18 @@ export class FederationService {
     originDomain: string,
     e: NewMsgMapEntry,
   ): Promise<boolean> {
+    // Receiver-side debounce: a group mirror's whole-thread pull fetches ALL senders in one GET
+    // (seq > pullUntil), so a burst of N author-hints for one group needs only ONE pull — the first
+    // gets everything + advances pullUntil; the rest would return empty. Skip pulls for this thread
+    // within GROUP_PULL_DEBOUNCE_MS of the last. SAFE: no fetch → no failure → no demote; the first
+    // pull already covered the burst, and messages arriving inside the window have pullUntil still
+    // behind them → the next push's pull carries them (delayed, not lost).
+    const last = this.recentGroupPulls.get(threadId);
+    const now = Date.now();
+    if (last !== undefined && now - last < FederationService.GROUP_PULL_DEBOUNCE_MS) {
+      return true; // recently pulled — skip the redundant empty GET
+    }
+    this.recentGroupPulls.set(threadId, now);
     const th = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
       select: { pullUntil: true },
@@ -2081,7 +2216,7 @@ export class FederationService {
     // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
     // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
     // the OTHER member-domains. See plan "Hub loop-safety".
-    void this.buffer
+    void this
       .signalOutbound(threadId, creatorId, m.originSeq, fetchedFromDomain)
       .catch(() => undefined);
     return created;

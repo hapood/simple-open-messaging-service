@@ -335,7 +335,9 @@ export class InviteService {
           'group invite has no target thread',
         );
       }
-      await this.participantService.upsertMemberInTx(tx, byUserId, invite.threadId, GroupRole.MEMBER);
+      // NOTE: upsertMemberInTx(tx, threadId, userId, role) — threadId FIRST. (A swapped-arg bug here left
+      // the group accept marking the Invite ACCEPTED but never adding the joiner to the mirror thread.)
+      await this.participantService.upsertMemberInTx(tx, invite.threadId, byUserId, GroupRole.MEMBER);
       await tx.invite.update({
         where: { id },
         data: { status: InviteStatus.ACCEPTED },
