@@ -416,7 +416,7 @@ export interface GroupRow {
   lastMessageAt: number | null
   lastMessagePreview: string | null
   originDomain: string | null
-  federatedThreadId: string | null
+  fedGroupAccount: string | null
   groupUser: { account: string; name: string } | null
   _count: { ThreadParticipant: number }
 }

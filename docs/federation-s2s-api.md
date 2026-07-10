@@ -3,16 +3,16 @@
 > Living reference for the federation server-to-server API. **Built:** Step 1 (trust + friend), Step 2
 > (1:1 messages + media), **Step 3 Phase A** (unified invite — friend + group share `/s2s/invite`;
 > cross-server group invite/join + lazy roster meta-pull), **Step 3 Phase B** (cross-server group
-> **messaging** via the origin-hub; group-invite chat card visibility; leave). **Deferred:** the
-> `sinceSeq`-seeded "no history" join option (new members currently see full history via `pullUntil=-1`),
-> a durable active-liveness leave backstop, the frontend card/account-resolution adaptation. See
-> `docs/federation-step3-design.md`.
+> **messaging** via the origin-hub; group-invite chat card visibility; leave). The GROUP invite carries
+> `sinceSeq` (origin curSeq at invite time) so a new member seeds `pullUntil` and starts from invite-time,
+> not full history. **Deferred:** a durable active-liveness leave backstop, group rename/avatar push, the
+> frontend card/account-resolution adaptation. See `docs/federation-step3-design.md`.
 >
 > **Global prefix:** every path is `/api/v1/s2s/...` (`bootstrap.ts`). **Auth:** all endpoints are
 > RFC9421 signature-guarded + trusted-peer-gated by `S2sSignatureGuard` **except `init`** (which *is*
 > the trust step). **Address:** a user is always `{ account, domain }` — never an `@`-joined string on
 > the wire (the `@` is a UI input aid only, split client-side). **No internal ids on the wire:** `from`/
-> `to` are always accounts; a group is addressed by its `!account` (the `federatedThreadId`, stored
+> `to` are always accounts; a group is addressed by its `!account` (the `fedGroupAccount`, stored
 > verbatim — never the DB thread id). `fromDomain` is required (the author may be foreign).
 >
 > **`seq` convention:** `originSeq` is a per-`(thread, sender)` monotonic **int32**, **0-indexed** — the
@@ -58,7 +58,7 @@ S2SAddress = { account: string; domain: string }
 S2SInvite  = { id: string; origin: string; ts: number; kind: 'FRIEND' | 'GROUP';
                from: S2SAddress; to: S2SAddress; note?: string;                 // ≤255
                profile?: S2SProfile;                                            // FRIEND only
-               group?: string; groupName?: string;                              // GROUP: the group `!account` (== federatedThreadId)
+               group?: string; groupName?: string;                              // GROUP: the group `!account` (== fedGroupAccount)
                groupAvatar?: { b64: string; w: number; h: number } | null;
                groupRevision?: number; owner?: S2SAddress }                     // GROUP: origin !-User.updatedAt; owner
 

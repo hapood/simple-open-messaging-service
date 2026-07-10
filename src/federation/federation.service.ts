@@ -1198,12 +1198,33 @@ export class FederationService implements OnModuleDestroy {
       // Nudge local members to refresh their roster/group-info view.
       const members = await this.participantService.getActiveParticipantUserIds(threadId);
       members.forEach((m) => this.sse.onGroupEvent(m.userId, 'GROUP_UPDATED', { threadId }));
-      // Chat-open is also the cheap moment to flush any buffered group-message hints for the origin
-      // (lost pushes / post-restart) — a no-op drain when nothing is buffered. Closes the chat-open
-      // message gap without a dedicated group message-sync (the lazy pull handles it).
-      void this.drainPendingPulls(trd.originDomain as string);
     } catch {
       // Best-effort — keep the cached meta; the next chat-open retries.
+    }
+  }
+
+  /** Chat-open MESSAGE catch-up for a federated group MIRROR — the group twin of P2P's
+   *  syncMessagesWithPeerByStubId. Pulls the whole thread from the origin (force — bypass the receiver
+   *  debounce; an explicit open wants the freshest now), and storePulledMessage SSE-fans any newly-pulled
+   *  messages to local members (= the "update → SSE push" step, reused verbatim from the push path).
+   *
+   *  This is the durable recovery for a group hint dropped by the debounce, or a transiently-lost push with
+   *  no follow-up: without it, such a message sits on the origin until the NEXT message in the group
+   *  re-triggers a pull (P2P already self-heals on every open; now groups do too). No-op for the origin and
+   *  for a purely-local group — their messages are already local and were delivered via onNewMessage on
+   *  send (the "local is simple" case). Best-effort + fire-and-forget-friendly: never blocks opening; a
+   *  transient origin failure retries on the next open. */
+  async syncGroupMessagesOnOpen(threadId: number): Promise<void> {
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { fedGroupAccount: true, originDomain: true },
+    });
+    // Only a federated MIRROR pulls here. Origin / local group: nothing to do (messages already local).
+    if (!trd?.fedGroupAccount || !trd.originDomain || trd.originDomain === this.config.domain) return;
+    try {
+      await this.pullGroupWhole(threadId, trd.originDomain, trd.fedGroupAccount, true);
+    } catch {
+      // Best-effort — keep the cached thread; the next open / push retries.
     }
   }
 
@@ -1962,7 +1983,7 @@ export class FederationService implements OnModuleDestroy {
       const trd = await this.findGroupThread(e.to);
       if (!trd) return true; // not a member here → drop
       if (this.isOriginThread(trd)) return this.pullGroupFromAuthor(domain, trd.id, e);
-      return this.pullGroupWhole(trd.id, trd.originDomain as string, e);
+      return this.pullGroupWhole(trd.id, trd.originDomain as string, e.to);
     } catch {
       return false;
     }
@@ -1970,24 +1991,35 @@ export class FederationService implements OnModuleDestroy {
 
   /** MIRROR whole-thread pull (origin-hub): pull ALL senders' messages from the origin with thread seq >
    *  pullUntil, store each (creator resolved from the payload), advance pullUntil to latestSeq.
-   *  fetchedFromDomain = origin → signalOutbound's exclude rule makes the mirror signal nothing. */
+   *  fetchedFromDomain = origin → signalOutbound's exclude rule makes the mirror signal nothing.
+   *
+   *  `force` bypasses the receiver debounce — used only by the explicit chat-open path
+   *  (syncGroupMessagesOnOpen): the user just opened the chat and wants the freshest NOW, so a read is
+   *  never collapsed there (the debounce exists to collapse PUSH bursts, not user-initiated reads). A
+   *  forced pull still refreshes the debounce timestamp, so a push landing right after the open is
+   *  collapsed (the open already fetched everything). This is the durable recovery for a hint dropped by
+   *  the debounce or a transiently-lost push with no follow-up: P2P self-heals on every open
+   *  (syncMessagesWithPeerByStubId); groups self-heal the same way via this path — never relying on
+   *  another push to arrive. */
   private async pullGroupWhole(
     threadId: number,
     originDomain: string,
-    e: NewMsgMapEntry,
+    toAccount: string,
+    force = false,
   ): Promise<boolean> {
     // Receiver-side debounce: a group mirror's whole-thread pull fetches ALL senders in one GET
     // (seq > pullUntil), so a burst of N author-hints for one group needs only ONE pull — the first
-    // gets everything + advances pullUntil; the rest would return empty. Skip pulls for this thread
-    // within GROUP_PULL_DEBOUNCE_MS of the last. SAFE: no fetch → no failure → no demote; the first
-    // pull already covered the burst, and messages arriving inside the window have pullUntil still
-    // behind them → the next push's pull carries them (delayed, not lost).
-    const last = this.recentGroupPulls.get(threadId);
-    const now = Date.now();
-    if (last !== undefined && now - last < FederationService.GROUP_PULL_DEBOUNCE_MS) {
-      return true; // recently pulled — skip the redundant empty GET
+    // gets everything + advances pullUntil; the rest would return empty. Skip a PUSH's pull for this
+    // thread within GROUP_PULL_DEBOUNCE_MS of the last (a forced open bypasses this — see `force`).
+    // SAFE for the push path: no fetch → no failure → no demote; the first pull covered the burst, and
+    // anything inside the window is recovered on the next chat-open (force) — never lost.
+    if (!force) {
+      const last = this.recentGroupPulls.get(threadId);
+      if (last !== undefined && Date.now() - last < FederationService.GROUP_PULL_DEBOUNCE_MS) {
+        return true; // recently pulled — skip the redundant empty GET
+      }
     }
-    this.recentGroupPulls.set(threadId, now);
+    this.recentGroupPulls.set(threadId, Date.now());
     const th = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
       select: { pullUntil: true },
@@ -2008,7 +2040,7 @@ export class FederationService implements OnModuleDestroy {
           latestSeq: number;
           hasMore: boolean;
         }>(
-          `/api/v1/s2s/messages?to=${encodeURIComponent(e.to)}&afterSeq=${after}&take=50`,
+          `/api/v1/s2s/messages?to=${encodeURIComponent(toAccount)}&afterSeq=${after}&take=50`,
           originDomain,
         ),
       );
@@ -2028,7 +2060,7 @@ export class FederationService implements OnModuleDestroy {
             originDomain,
             m.creator.account,
             m.creator.domain,
-            e.to,
+            toAccount,
           );
         }
       }

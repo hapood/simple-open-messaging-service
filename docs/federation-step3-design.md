@@ -9,10 +9,11 @@
 > re-signals, members pull the whole thread from the origin), the **group-invite chat card** (written
 > into the inviter's P2P mirror → flows to the invitee via Step-2 pull; resolved by the group `!account`),
 > and **leave** (a `left:true` new-msg-map hint → origin dissolves the member). Loop-safety is one rule:
-> `signalOutbound` excludes the fetch-source domain. **Deferred:** the `sinceSeq` "no history" join
-> option (new members currently see full history via `pullUntil=-1`), a durable active-liveness leave
-> backstop, the frontend card/account-resolution adaptation. Builds directly on Step 2
-> (`docs/federation-step2-design.md`), whose 1:1 transport is reused verbatim.
+> `signalOutbound` excludes the fetch-source domain. The GROUP invite carries `sinceSeq` (origin curSeq
+> at invite time) so a new member seeds `pullUntil` and starts from invite-time, not full history.
+> **Deferred:** a durable active-liveness leave backstop, the frontend card/account-resolution
+> adaptation. Builds directly on Step 2 (`docs/federation-step2-design.md`), whose 1:1 transport is
+> reused verbatim.
 >
 > **Scope:** cross-server **GROUP** threads — a group whose owner lives on server A and whose members
 > span servers A, B, C … . Owner is created on A (the **origin**); members on other servers hold local
@@ -93,13 +94,14 @@ timestamp is the **local arrival** time, not the origin's send time.
 ```prisma
 model MessageThread {
   // ...existing columns...
-  // The cross-server canonical id of a federated GROUP, minted at the origin on create:
-  //   "thr_<rand>@<origin-domain>"   (origin-domain == the owner's config.domain)
-  // NULL for purely-local threads (all P2P, local-only groups). @unique enforces ONE local mirror per
-  // federated thread — a second cross-server invite to a different local user reuses the same mirror.
-  federatedThreadId String? @unique
-  // The origin server's domain, denormalized from the id's @suffix for fast "is this mine / who owns
-  // it" queries and the roster-op signer check (§8). NULL iff federatedThreadId is NULL.
+  // The cross-server canonical id of a federated GROUP — the group's OWN `!account` (a `!`-prefixed ULID
+  // minted on group create, globally unique). The SAME value on the origin and every mirror, so it doubles
+  // as the on-wire group address (`to` / `group`), never the DB thread id. NULL for purely-local threads
+  // (all P2P, local-only groups). @unique enforces ONE local mirror per federated thread — a second
+  // cross-server invite to a different local user reuses the same mirror.
+  fedGroupAccount   String? @unique
+  // The origin server's domain (the group owner's config.domain), denormalized for fast "is this mine /
+  // who owns it" queries and the roster-op signer check (§8). NULL iff fedGroupAccount is NULL.
   originDomain      String? @db.VarChar(255)
 }
 
@@ -122,7 +124,7 @@ Nothing else changes structurally:
   creator, originSeq])` are **untouched** — group pull reuses them exactly. A group with members on
   three servers is merely three distinct `creator` values; the per-sender cursor falls out for free.
 
-**Migration.** Two nullable columns + the `federatedThreadId @unique` index. No backfill: all existing
+**Migration.** Two nullable columns + the `fedGroupAccount @unique` index. No backfill: all existing
 rows stay `NULL` (they are local P2P / local-only groups). Apply per the project's manual migration
 discipline (`prisma migrate dev` writes SQL only → `db execute --file` → `migrate resolve --applied`
 → `prisma generate`).
@@ -186,21 +188,20 @@ payload (sender → receiver)   =  { originSeq, contentType, content, ts }
 
 ### 6.1 Reused / generalized (identification moves from address-pair → thread)
 
-- **`GET /api/v1/s2s/messages`** gains an optional `thread` query param. For 1:1, behavior is
-  unchanged (`from` + `to` identify the local P2P thread; membership = APPROVED friendship). For a
-  group, the puller passes `thread=<federatedThreadId>` + `from=<senderAccount>` (+ `after`, `take`);
-  `to` is omitted. The server resolves `thread` to the **local mirror**, authorizes via the **roster**
-  (§8), resolves `from` to the matching user row it holds (a local user OR, at the origin, a foreign
-  sender's stub), and returns:
-  ```
-  { thread, from, messages: [{ originSeq, contentType, content, ts }], latestSeq, hasMore }
-  ```
-  filtered `creator = <from> AND threadId = <mirror> AND originSeq > after`. **Serving is role-dependent
-  (the hub topology):** the **origin** holds every sender's messages (it pulled them in) and serves any
-  sender's stream to any roster member — it **relays**. A **member-server** holds its own locals' sends
-  plus what it pulled from the origin, but is only ever pulled *by the origin* (for its own locals) — it
-  never serves a foreign sender's messages. "Pull all msgs but self" is the member→origin leg: the
-  origin pulls a member's own locals, skipping what isn't that member's.
+- **`GET /api/v1/s2s/messages`** serves a group two ways, both roster-gated (§8) and keyed by the group
+  `!account` as `to` (the `fedGroupAccount`, never the DB thread id). For 1:1, behavior is unchanged
+  (`from` + `to` identify the local P2P thread; membership = APPROVED friendship).
+  - **Whole-thread** (mirror ← origin): `to=<groupAccount>` + `afterSeq` + `take`. Returns EVERY sender's
+    messages with thread `seq > afterSeq`, ascending, each carrying its thread `seq` (the mirror's
+    `pullUntil` cursor, advanced page-by-page to the last stored message) + the author's wire address +
+    the copied `originSeq` (the dedup key). The origin serves any roster member the whole stream.
+  - **Per-author** (origin ← mirror, the hub aggregation leg): `to=<groupAccount>` + `from=<author>` +
+    `fromDomain=<authorDomain>` + `afterSeq` (originSeq space). The origin pulls each member-server's NEW
+    messages this way to aggregate them; its cursor for a member is derived `MAX(originSeq)` per author.
+  **Serving is role-dependent (the hub topology):** the **origin** holds every sender's messages (it
+  pulled them in) and serves any sender's stream to any roster member — it **relays**. A **member-server**
+  holds its own locals' sends plus what it pulled from the origin, but is only ever pulled *by the origin*
+  (for its own locals) — it never serves a foreign sender's messages.
 
 - **`GET` / `POST /api/v1/s2s/new-msg-map`** — the hint entry is keyed per **(sender, conversation)**.
   For 1:1 the conversation key is `toUser` (unchanged); for a group it is the `thread` id. The buffer's
@@ -215,24 +216,30 @@ payload (sender → receiver)   =  { originSeq, contentType, content, ts }
 
 ### 6.2 New — roster lifecycle (origin only)
 
-- **`POST /api/v1/s2s/thread/invite`** (Decision 1). Friend-gated. From the origin (or any member
-  server relaying a local user's invite up to origin first — see §7.2) to the invitee's server:
+- **`POST /api/v1/s2s/invite`** with `kind: "GROUP"` — the **unified** invite endpoint (friend + group
+  share it; see `docs/federation-s2s-api.md`). Friend-gated. From the origin (or any member server
+  relaying a local user's invite up to origin first — see §7.2) to the invitee's server:
   ```json
-  { "id":"<op-ulid>", "origin":"soms.io",
-    "thread":"thr_8x3k@soms.io", "name":"Design", "owner":{"account":"alice","domain":"soms.io"},
-    "avatar":"<b64 inline per federation avatar v0.1>", "by":{"account":"alice","domain":"soms.io"},
-    "to":{"account":"bob","domain":"other.com"}, "ts":1750000000000 }
+  { "id":"<op-ulid>", "origin":"soms.io", "kind":"GROUP", "ts":1750000000000,
+    "from":{"account":"alice","domain":"soms.io"}, "to":{"account":"bob","domain":"other.com"},
+    "group":"!01H8X3K…", "groupName":"Design",
+    "groupAvatar":{"b64":"<inline per federation avatar v0.1>","w":512,"h":512},
+    "groupRevision":1750000000000, "owner":{"account":"alice","domain":"soms.io"},
+    "sinceSeq":42 }
   ```
-  Receiver: resolves/mints the local mirror thread (idempotent on `federatedThreadId`), ensures the
-  owner stub, writes a `GROUP_INVITE` card into the invitee's P2P thread with the inviter (the existing
-  local affordance), and surfaces it via the existing `FRIEND_REQUEST`-style SSE / nav stream. The
-  invitee accepts or declines via the **existing local** `group/join` / decline path — but the join
-  must then register at the origin (§7.2).
+  Receiver: resolves/mints the local mirror thread (idempotent on `fedGroupAccount`), seeds its
+  `pullUntil` from `sinceSeq`, ensures the owner stub, and records the inbound `GROUP_INVITE` (the
+  visible chat card is the inviter's responsibility — written into the inviter's P2P mirror, delivered
+  to the invitee via the Step-2 message pull). The invitee accepts/declines via the **existing local**
+  path — but the join must then register at the origin (§7.2).
 
-- **`POST /api/v1/s2s/thread/member`** — authoritative roster delta, **emitted only by the origin**.
-  Idempotent by `id` (op-ulid); applied to every member-server's local mirror. Shapes:
+- **Roster delta (SHIPPED = lazy pull, NOT a push endpoint).** The original proposal was a push
+  `POST /s2s/thread/member` (origin-emitted, applied to every mirror). **That is NOT built.** The
+  shipped design records joins/leaves at the origin and mirrors reconcile via the lazy **roster
+  meta-pull** on chat-open (`GET /s2s/thread/roster`, §6.1) — the roster is pulled like a profile, not
+  pushed. The push shape below is retained only as the original-proposal reference:
   ```json
-  { "id":"<op-ulid>", "origin":"soms.io", "thread":"thr_8x3k@soms.io",
+  { "id":"<op-ulid>", "origin":"soms.io", "group":"!01H8X3K…",
     "op":"join|leave|kick|role", "user":{"account":"bob","domain":"other.com"},
     "role":"MEMBER",              // for join/role
     "by":{"account":"alice","domain":"soms.io"}, "ts":... }
@@ -257,12 +264,13 @@ payload (sender → receiver)   =  { originSeq, contentType, content, ts }
 Alice@soms.io creates group "Design" with local friend Carol and cross-server friend Bob@other.com.
 
 1. Alice's client → soms.io: group/create (existing local flow).
-2. soms.io: mint federatedThreadId "thr_8x3k@soms.io"; create origin MessageThread(type=GROUP,
-   federatedThreadId, originDomain="soms.io") + Group + ThreadParticipant{alice, OWNER}.
+2. soms.io: the group's `!account` (e.g. "!01H8X3K…") IS the `fedGroupAccount`; create origin
+   MessageThread(type=GROUP, fedGroupAccount, originDomain="soms.io") + Group +
+   ThreadParticipant{alice, OWNER}.
 3. Carol (local): existing GROUP_INVITE-in-P2P-thread path — unchanged.
-4. Bob (cross-server): soms.io → other.com  POST /s2s/thread/invite  (§6.2). Friend gate: alice↔bob
-   must be APPROVED friends (else 403, same gate as friend-request).
-5. other.com: idempotent — find-or-create mirror MessageThread(federatedThreadId="thr_8x3k@soms.io",
+4. Bob (cross-server): soms.io → other.com  POST /s2s/invite  (kind=GROUP, §6.2). Friend gate:
+   alice↔bob must be APPROVED friends (else 403, same gate as friend-request).
+5. other.com: idempotent — find-or-create mirror MessageThread(fedGroupAccount="!01H8X3K…",
    originDomain="soms.io") + mirror Group{name,owner=alice-stub,avatar}; write GROUP_INVITE card into
    bob's P2P thread with alice; SSE/nav-stream to bob. Bob has NOT joined yet (no ThreadParticipant
    for bob, or a leftAt/invited marker).
@@ -388,7 +396,7 @@ authorized(signer, thread, fromAccount) :=
 So the **origin** (serving) authorizes any roster member to pull any sender's stream (it holds all
 senders — local + foreign stubs it aggregated). A **member-server** (serving) only ever answers the
 origin, and only for its own local senders. For 1:1 threads the friend-edge gate is unchanged. The two
-coexist: `federatedThreadId IS NULL` → friend gate; a federated id → roster gate. `get_file` gains the
+coexist: `fedGroupAccount IS NULL` → friend gate; a federated id → roster gate. `get_file` gains the
 identical branch (the origin serves any member's media; a member serves its own locals to the origin).
 
 ---
@@ -415,14 +423,14 @@ identical branch (the origin serves any member's media; a member serves its own 
 ## 10. Implementation status
 
 **Phase A — BUILT (2026-07-09):**
-1. **Schema** ✅ — `MessageThread.federatedThreadId @unique`, `originDomain`, `Message.originServerTime`
+1. **Schema** ✅ — `MessageThread.fedGroupAccount @unique`, `originDomain`, `Message.originServerTime`
    already exist (added during Step 2). No new columns for Phase A.
 2. **Unified S2S invite** ✅ — `/s2s/friend-request` + `/s2s/friend-approve` + `/s2s/thread/invite`
    collapsed into ONE `/s2s/invite` (deliver, `kind` FRIEND|GROUP) + `/s2s/invite-accept`
    (FRIEND→P2P thread accept-wins; GROUP→origin records the joiner). `friend-op.handler.ts` deleted;
    handlers folded into `FederationService.handleInvite`/`handleInviteAccept`.
-3. **Origin create (lazy)** ✅ — `ensureOriginFederatedId` mints `federatedThreadId` + sets
-   `originDomain` at the first cross-server invite (the local group becomes the origin).
+3. **Origin create (lazy)** ✅ — `ensureOriginFederatedId` stamps the group's `!account` as
+   `fedGroupAccount` + sets `originDomain` at the first cross-server invite (the local group becomes the origin).
 4. **Group invite + mirror lifecycle** ✅ — `writeInvites` branches on `isForeigner` → `sendInvite(
    GROUP)`; `handleGroupInvite` (receiver) creates the mirror + an incoming Invite + stores the OWNER,
    revision-gated avatar, NO card (the chat card is Phase B visibility).
