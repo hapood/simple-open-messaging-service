@@ -10,10 +10,12 @@ import { InviteDetailService } from '../../invite-detail/invite-detail.service';
  * Invite message row — a tappable preview card (group avatar + name + home-domain) that opens the full
  * {@link InviteDetailComponent} dialog. The Join + validity flow lives in that dialog.
  *
- * `data.text` is the raw JSON written by group/create|invite (or a federated handleThreadInvite):
- * `{ fromUserId, groupId, groupName, groupAvatar, groupDomain, groupIsLocal, inviteId }`. The card shows
- * the group identity + its home domain (a "Local server" label, or a globe + domain badge for a
- * federated group); the dialog fetches the live validity via /invite/detail on open.
+ * `data.text` is the raw JSON written by group/create|invite (the inviter's P2P thread; a federated
+ * target receives it via the Step-2 P2P pull). Shape: `{ type:'GROUP_INVITE', from, group, groupName,
+ * groupAvatar?, groupDomain, groupIsLocal }` — `from`/`group` are ACCOUNTS (the group `!account` is the
+ * invite-resolution key the dialog uses with /invite/detail + /invite/accept); the display fields render
+ * this row inline on both the inviter's + invitee's side with no fetch (no internal ids on the card). The
+ * dialog fetches the live validity + the authoritative localized avatar via /invite/detail(group).
  *
  * `statusTick` / `isSending` are always inert for invites (invites are always "other") but are kept so
  * this component stays structurally aligned with TextRow/MediaRow.
@@ -47,7 +49,6 @@ export class InviteRowComponent implements OnInit {
     groupAvatar?: string;
     groupDomain?: string;
     groupIsLocal?: boolean;
-    inviteId?: string;
   }>({ groupName: '' });
 
   private readonly inviteDetail = inject(InviteDetailService);
@@ -61,16 +62,14 @@ export class InviteRowComponent implements OnInit {
     groupAvatar?: string;
     groupDomain?: string;
     groupIsLocal?: boolean;
-    inviteId?: string;
   } {
     try {
-      const obj = JSON.parse(content);
+      const obj = JSON.parse(content) as Record<string, unknown>;
       return {
-        groupName: obj.groupName ?? '',
-        groupAvatar: obj.groupAvatar,
-        groupDomain: obj.groupDomain,
-        groupIsLocal: obj.groupIsLocal as boolean | undefined,
-        inviteId: obj.inviteId as string | undefined,
+        groupName: (obj['groupName'] as string) ?? '',
+        groupAvatar: obj['groupAvatar'] as string | undefined,
+        groupDomain: obj['groupDomain'] as string | undefined,
+        groupIsLocal: obj['groupIsLocal'] as boolean | undefined,
       };
     } catch {
       return { groupName: '' };

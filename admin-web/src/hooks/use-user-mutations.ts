@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
+  batchUsers,
   disableUser,
   enableUser,
   forceLogoutUser,
   resetPassword,
   userSessions,
+  type UserBatchAction,
 } from '@/api/users'
 
 function useInvalidateUsers() {
@@ -30,6 +32,14 @@ export function useForceLogoutUser() {
 export function useResetPassword() {
   return useMutation({
     mutationFn: (v: { id: number; newPassword: string }) => resetPassword(v.id, v.newPassword),
+  })
+}
+
+export function useBatchUsers() {
+  const invalidate = useInvalidateUsers()
+  return useMutation({
+    mutationFn: (v: { ids: number[]; action: UserBatchAction }) => batchUsers(v.ids, v.action),
+    onSuccess: invalidate,
   })
 }
 

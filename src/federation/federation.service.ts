@@ -1,6 +1,6 @@
-import { Injectable, HttpStatus } from '@nestjs/common';
+import { Injectable, HttpStatus, Inject, forwardRef } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
-import { mintUlid, mintGroupAccount, normalizeAccount, isValidAccount } from '../common/account.js';
+import { mintUlid, normalizeAccount, isValidAccount } from '../common/account.js';
 import { PrismaService } from '../prisma.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { SignatureService } from './signature.service.js';
@@ -20,6 +20,7 @@ import {
   Prisma,
 } from '../prisma/generated/client.js';
 import { derivePreview, stripMessageId, MessageService } from '../message/message.service.js';
+import { FederationBufferService, type NewMsgMapEntry } from './federation-buffer.service.js';
 import { extractDigestEntries } from '../upload/file-content.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -86,11 +87,12 @@ export interface S2SInvite extends S2SOpsBase {
   // FRIEND only — sender profile so the receiver creates the stub localized inline:
   profile?: S2SProfile;
   // GROUP only:
-  thread?: string; // federatedThreadId "thr_<rand>@<origin-domain>"
+  group?: string; // the group's `!account` (== fedGroupAccount; the on-wire group address)
   groupName?: string;
   groupAvatar?: S2SAvatar | null;
   groupRevision?: number; // origin group !-User.updatedAt (ms); gates the mirror avatar/name update
   owner?: S2SAddress; // group owner → foreign stub on the mirror (== from for an origin-create invite)
+  sinceSeq?: number; // origin thread seq the invitee should start pulling from (-1 = full history; see below)
 }
 
 /** POST /api/v1/s2s/invite-accept — the recipient accepted an invite. FRIEND → the inviter's server
@@ -103,7 +105,7 @@ export interface S2SInviteAccept extends S2SOpsBase {
   // FRIEND only — target = the inviter's domain:
   by?: S2SAddress;
   // GROUP only — target = the group ORIGIN domain:
-  thread?: string; // federatedThreadId
+  group?: string; // the group's `!account` (== fedGroupAccount)
 }
 
 /**
@@ -142,6 +144,15 @@ export class FederationService {
     private readonly message: MessageService,
     private readonly invite: InviteService,
     private readonly sse: SseService,
+    // Cyclic DI with FederationBufferService (it injects us back via the symmetric forwardRef in its
+    // ctor). The cycle is inherent + contained to this module: THIS service pulls messages and, after
+    // storing one, must tell the buffer to propagate the hint (storePulledMessage → signalOutbound); the
+    // buffer holds dirty hints + must flush them through THIS service's signed transport (pushNewMsgMap)
+    // + read ourDomain. forwardRef is the NestJS-sanctioned way to express a same-module service↔buffer
+    // co-dependency. Breaking it would mean extracting a third transport module both depend on — extra
+    // surface for no functional gain, so the cycle is kept deliberately.
+    @Inject(forwardRef(() => FederationBufferService))
+    private readonly buffer: FederationBufferService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -679,7 +690,7 @@ export class FederationService {
    *  holds both kinds in one table; the S2S layer mirrors that with one endpoint + a `kind` field.
    *  Federated delivery is synchronous + idempotent (the receiver dedupes via Invite (origin, originId)
    *  + S2SFriendOpSeen). For GROUP, the LOCAL group thread is lazily promoted to a federated origin
-   *  (ensureOriginFederatedId mints the federatedThreadId). */
+   *  (ensureOriginFederatedId mints the fedGroupAccount). */
   async sendInvite(params: {
     kind: 'FRIEND' | 'GROUP';
     fromLocalUserId: number;
@@ -706,7 +717,21 @@ export class FederationService {
     if (params.kind === 'FRIEND') {
       payload.profile = await this.toS2SProfile(from);
     } else {
-      payload.thread = await this.ensureOriginFederatedId(params.threadId!);
+      payload.group = await this.ensureOriginFederatedId(params.threadId!);
+      // sinceSeq = the origin thread seq the invitee seeds its pullUntil with, so a new member starts
+      // from "now" (post-invite) instead of pulling the whole pre-join history (the pullUntil=-1 default).
+      // ORIGIN (us): our own curSeq (== the origin's latest). MIRROR: our pullUntil (the origin seq we've
+      // caught up to — at worst slightly behind the origin's true latest; the gap closes on the next push).
+      const trd = await this.prisma.messageThread.findUnique({
+        where: { id: params.threadId! },
+        select: { curSeq: true, pullUntil: true, originDomain: true },
+      });
+      payload.sinceSeq =
+        trd == null
+          ? -1
+          : trd.originDomain === this.config.domain
+            ? trd.curSeq
+            : trd.pullUntil;
       payload.groupName = params.groupName?.slice(0, 255);
       payload.groupAvatar = params.groupAvatarUrl
         ? await this.upload.readAvatarAsWire(params.groupAvatarUrl)
@@ -727,7 +752,7 @@ export class FederationService {
     targetDomain: string;
     inviteOriginId?: string;
     by?: S2SAddress; // FRIEND: the original inviter
-    thread?: string; // GROUP: federatedThreadId
+    group?: string; // GROUP: the group `!account` (== fedGroupAccount)
   }): Promise<void> {
     const accepter = await this.requireLocalUser(params.fromLocalUserId);
     const payload: S2SInviteAccept = {
@@ -739,7 +764,7 @@ export class FederationService {
       ts: Date.now(),
     };
     if (params.kind === 'FRIEND') payload.by = params.by;
-    else payload.thread = params.thread;
+    else payload.group = params.group;
     await this.postSigned(
       '/api/v1/s2s/invite-accept',
       JSON.stringify(payload),
@@ -749,26 +774,66 @@ export class FederationService {
 
   // ─── Step 3: cross-server group threads (origin-hub) ────────────────────────
 
-  /** Mint a cross-server canonical thread id: thr_<rand>@<our-domain>. */
-  private mintFederatedThreadId(): string {
-    return `thr_${randomUUID()}@${this.config.domain}`;
-  }
-
-  /** Ensure an origin group thread carries its federated id + originDomain (lazy mint at the first
-   *  cross-server invite — group.create itself is federation-agnostic). Idempotent. Returns the id. */
+  /** Ensure an origin group thread carries its federated id + originDomain (lazy, at the first
+   *  cross-server invite — group.create itself is federation-agnostic). The federated id IS the group's
+   *  `!account` (globally unique ULID) — the same value on the origin and every mirror, so it doubles as
+   *  the on-wire group address (`to` / `group`), never an internal thread id. Idempotent. Returns it. */
   async ensureOriginFederatedId(threadId: number): Promise<string> {
     const trd = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
-      select: { federatedThreadId: true },
+      select: { fedGroupAccount: true, groupUserId: true },
     });
     if (!trd) throw new Error(`thread ${threadId} not found`);
-    if (trd.federatedThreadId) return trd.federatedThreadId;
-    const fedId = this.mintFederatedThreadId();
+    if (trd.fedGroupAccount) return trd.fedGroupAccount;
+    const gu = trd.groupUserId != null
+      ? await this.prisma.user.findUnique({ where: { id: trd.groupUserId }, select: { account: true } })
+      : null;
+    if (!gu) throw new Error(`thread ${threadId} has no group user`);
     await this.prisma.messageThread.update({
       where: { id: threadId },
-      data: { federatedThreadId: fedId, originDomain: this.config.domain },
+      data: { fedGroupAccount: gu.account, originDomain: this.config.domain },
     });
-    return fedId;
+    return gu.account;
+  }
+
+  /** Whether THIS server is the origin (roster + history authority) of a federated group thread. */
+  private isOriginThread(trd: { fedGroupAccount: string | null; originDomain: string | null }): boolean {
+    return trd.fedGroupAccount !== null && trd.originDomain === this.config.domain;
+  }
+
+  /** Resolve a wire address (account + domain) to a User row, normalizing the local domain: wire addresses
+   *  use the real config.domain for locals, but the DB stores local users with domain="local". Foreign
+   *  stubs are looked up by their peer domain verbatim. Returns the stub/local user or null. */
+  private async resolveUserByWireAddress(
+    account: string,
+    fromDomain: string,
+  ): Promise<{ id: number; isForeigner: boolean } | null> {
+    const domain = fromDomain === this.config.domain ? 'local' : fromDomain;
+    return this.prisma.user.findUnique({
+      where: { account_domain: { account: normalizeAccount(account), domain } },
+      select: { id: true, isForeigner: true },
+    });
+  }
+
+  /** Resolve a group `!account` to its local thread (origin or mirror). The group account is the
+   *  fedGroupAccount (stored verbatim), so this is a direct lookup. Null if no such group here. */
+  private async findGroupThread(groupAccount: string): Promise<{
+    id: number;
+    type: MessageThreadType;
+    fedGroupAccount: string | null;
+    originDomain: string | null;
+    groupUserId: number | null;
+  } | null> {
+    return this.prisma.messageThread.findUnique({
+      where: { fedGroupAccount: normalizeAccount(groupAccount) },
+      select: {
+        id: true,
+        type: true,
+        fedGroupAccount: true,
+        originDomain: true,
+        groupUserId: true,
+      },
+    });
   }
 
   /** Inbound POST /s2s/invite — receive an invite (friend OR group), unified. Dispatches on `kind`.
@@ -840,10 +905,14 @@ export class FederationService {
         ? byStubId
         : await this.ensureForeignUser(owner.account, owner.domain);
     const mirrorThreadId = await this.findOrCreateMirrorThread({
-      federatedThreadId: body.thread!,
+      fedGroupAccount: body.group!,
       originDomain: body.origin,
       name: body.groupName ?? '',
       ownerStubId,
+      // Seed the mirror's pull cursor so the new member pulls from the invite-time latest seq, NOT the
+      // entire pre-join history. Absent (-1) ⇒ a peer that doesn't send sinceSeq gets the full history
+      // (safe default; only matters when the group already had messages at invite time).
+      sinceSeq: body.sinceSeq ?? -1,
     });
     // Revision-gated avatar/name refresh: skip when the peer's revision is not newer than the mirror's
     // remoteUpdatedAt (no avatar re-localization / orphan files on an unchanged group).
@@ -920,14 +989,11 @@ export class FederationService {
     // of the join LAZILY via the group-meta freshness probe on chat-open (the roster is PULLED like a
     // profile, not pushed) — see the roster-mutation design in the plan.
     const accepter = this.requireS2SAddress(body.accepter);
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { federatedThreadId: body.thread },
-      select: { id: true, groupUserId: true },
-    });
+    const trd = await this.findGroupThread(body.group ?? '');
     if (trd == null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `group ${body.thread} not found`,
+        `group ${body.group} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -946,16 +1012,13 @@ export class FederationService {
 
   // ─── roster meta-pull (lazy, on chat-open — same shape as the profile sync) ──────────
 
-  /** ORIGIN serves the canonical roster for a federated group (GET /s2s/thread/roster). Members carry
-   *  WIRE addresses (a local member's domain is our real domain, never the "local" sentinel) so the
-   *  pulling mirror can ensureForeignUser each. */
+  /** ORIGIN serves the canonical roster for a federated group (GET /s2s/thread/roster?to=<groupAccount>).
+   *  Members carry WIRE addresses (a local member's domain is our real domain, never the "local" sentinel)
+   *  so the pulling mirror can ensureForeignUser each. */
   async serveGroupRoster(
-    federatedThreadId: string,
+    groupAccount: string,
   ): Promise<{ members: { account: string; domain: string; role: GroupRole }[] } | null> {
-    const trd = await this.prisma.messageThread.findUnique({
-      where: { federatedThreadId },
-      select: { id: true },
-    });
+    const trd = await this.findGroupThread(groupAccount);
     if (trd == null) return null;
     const rows = await this.prisma.threadParticipant.findMany({
       where: { threadId: trd.id, leftAt: null },
@@ -970,15 +1033,15 @@ export class FederationService {
     };
   }
 
-  /** MIRROR pulls the origin's roster (signed GET /s2s/thread/roster). Null on peer failure. */
+  /** MIRROR pulls the origin's roster (signed GET /s2s/thread/roster?to=<groupAccount>). Null on peer failure. */
   private async pullGroupRoster(
-    federatedThreadId: string,
+    groupAccount: string,
     originDomain: string,
   ): Promise<{ members: { account: string; domain: string; role: GroupRole }[] } | null> {
     try {
       return await this.getSigned<{
         members: { account: string; domain: string; role: GroupRole }[];
-      }>(`/api/v1/s2s/thread/roster?thread=${encodeURIComponent(federatedThreadId)}`, originDomain);
+      }>(`/api/v1/s2s/thread/roster?to=${encodeURIComponent(groupAccount)}`, originDomain);
     } catch {
       return null;
     }
@@ -991,9 +1054,9 @@ export class FederationService {
   async syncGroupMetaIfStale(threadId: number): Promise<void> {
     const trd = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
-      select: { federatedThreadId: true, originDomain: true, groupUserId: true },
+      select: { fedGroupAccount: true, originDomain: true, groupUserId: true },
     });
-    if (!trd?.federatedThreadId || !trd.originDomain || trd.originDomain === this.config.domain) return;
+    if (!trd?.fedGroupAccount || !trd.originDomain || trd.originDomain === this.config.domain) return;
     if (trd.groupUserId == null) return;
     const gu = await this.prisma.user.findUnique({
       where: { id: trd.groupUserId },
@@ -1007,11 +1070,15 @@ export class FederationService {
       // Stale → identity (reuse) + roster reconcile.
       const profile = await this.fetchRemoteUser(address);
       await this.localizeForeignProfile(trd.groupUserId, profile);
-      const roster = await this.pullGroupRoster(trd.federatedThreadId, trd.originDomain);
+      const roster = await this.pullGroupRoster(trd.fedGroupAccount, trd.originDomain);
       if (roster) await this.reconcileRoster(threadId, roster.members);
       // Nudge local members to refresh their roster/group-info view.
       const members = await this.participantService.getActiveParticipantUserIds(threadId);
       members.forEach((m) => this.sse.onGroupEvent(m.userId, 'GROUP_UPDATED', { threadId }));
+      // Chat-open is also the cheap moment to flush any buffered group-message hints for the origin
+      // (lost pushes / post-restart) — a no-op drain when nothing is buffered. Closes the chat-open
+      // message gap without a dedicated group message-sync (the lazy pull handles it).
+      void this.drainPendingPulls(trd.originDomain as string);
     } catch {
       // Best-effort — keep the cached meta; the next chat-open retries.
     }
@@ -1040,24 +1107,29 @@ export class FederationService {
     }
   }
 
-  /** Idempotent mirror-thread find-or-create keyed by federatedThreadId (@unique → one mirror per
+  /** Idempotent mirror-thread find-or-create keyed by fedGroupAccount (@unique → one mirror per
    *  federated thread, even across multiple invited local users). A mirror is a `!`-User foreign stub
    *  (carries name/avatar/bio) + the GROUP thread; the origin OWNER is recorded as a ThreadParticipant
-   *  {role:OWNER} so the mirror knows the owner. */
+   *  {role:OWNER} so the mirror knows the owner. `sinceSeq` seeds the new thread's pullUntil (a re-invite
+   *  of an existing mirror does NOT regress the cursor — the early-return keeps the live pullUntil). */
   private async findOrCreateMirrorThread(params: {
-    federatedThreadId: string;
+    fedGroupAccount: string;
     originDomain: string;
     name: string;
     ownerStubId: number;
+    sinceSeq?: number;
   }): Promise<number> {
     const existing = await this.prisma.messageThread.findUnique({
-      where: { federatedThreadId: params.federatedThreadId },
+      where: { fedGroupAccount: params.fedGroupAccount },
       select: { id: true },
     });
     if (existing) return existing.id;
+    // The mirror group-user REUSES the origin's `!account` (== fedGroupAccount): the group account is
+    // globally unique, so it is the stable cross-server address (a mirror writes the same account under
+    // its own domain row — account_domain uniqueness still holds since origin stores it under 'local').
     const groupUser = await this.prisma.user.create({
       data: {
-        account: mintGroupAccount(),
+        account: params.fedGroupAccount,
         domain: params.originDomain,
         isForeigner: true,
         isGroup: true,
@@ -1070,9 +1142,12 @@ export class FederationService {
     const trd = await this.prisma.messageThread.create({
       data: {
         type: MessageThreadType.GROUP,
-        federatedThreadId: params.federatedThreadId,
+        fedGroupAccount: params.fedGroupAccount,
         originDomain: params.originDomain,
         groupUserId: groupUser.id,
+        // Seed pullUntil from the invite's sinceSeq so the member pulls from invite-time latest, not the
+        // full pre-join history. -1 (no sinceSeq) ⇒ pull everything (the safe default for an empty group).
+        pullUntil: params.sinceSeq ?? -1,
       },
     });
     // Record the origin owner on the mirror (roster authority is the origin; the owner never crosses
@@ -1148,7 +1223,7 @@ export class FederationService {
    */
   async pushNewMsgMap(
     domain: string,
-    entries: Array<{ from: string; to: string; latestSeq: number }>,
+    entries: NewMsgMapEntry[],
     hasMore: boolean,
   ): Promise<void> {
     await this.withTrustedPeer(domain, () =>
@@ -1181,7 +1256,7 @@ export class FederationService {
     domain: string,
     cursor: number,
   ): Promise<{
-    entries: Array<{ from: string; to: string; latestSeq: number }>;
+    entries: NewMsgMapEntry[];
     cursor: number | null;
     hasMore: boolean;
   }> {
@@ -1213,9 +1288,9 @@ export class FederationService {
   /**
    * Pull-on-thread-open (§4.4): drain everything available for the conversation between a local user
    * and a foreign stub. The restart floor for the volatile hint map — opening the chat catches up even
-   * if every push was lost (or after a process restart). Fire-and-forget by the caller (never blocks
-   * opening); one cheap GET when already current. `latestSeq=MAX` forces a full catch-up attempt —
-   * pullOneConversation returns once the peer serves everything > the old cursor.
+   * if every push was lost (or after a process restart). Fire-and-forget (never blocks opening); one cheap
+   * GET when already current. Enqueues a MAX latestSeq hint + drains (the drain dedupes vs the local
+   * cursor, so a MAX hint pulls only the genuine gap).
    */
   async syncMessagesWithPeerByStubId(
     stubUserId: number,
@@ -1232,12 +1307,14 @@ export class FederationService {
       }),
     ]);
     if (!stub || !stub.isForeigner || !local || local.isForeigner) return;
-    await this.pullOneConversation(
-      stub.domain,
-      stub.account,
-      local.account,
-      Number.MAX_SAFE_INTEGER,
-    );
+    this.receiveNewMsgMapPush(stub.domain, [
+      {
+        from: stub.account,
+        fromDomain: stub.domain,
+        to: local.account,
+        latestSeq: Number.MAX_SAFE_INTEGER,
+      },
+    ]);
   }
 
   /**
@@ -1321,6 +1398,145 @@ export class FederationService {
     return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
   }
 
+  /** Effective wire domain of a participant's user: locals ("local" in DB) surface as our real
+   *  config.domain; foreign stubs surface their stored peer domain. Used for roster-gate + author
+   *  matching against wire `fromDomain`. */
+  private effectiveDomain(u: { isForeigner: boolean; domain: string }): string {
+    return u.isForeigner ? u.domain : this.config.domain;
+  }
+
+  /**
+   * Group-thread access gate (the roster gate, §8): resolve the group `!account` → local thread, then
+   * prove the REQUESTER (signerDomain) has an active local member here (it is a member-server of this
+   * group). When `from` is given (per-author hub-leg pull), also prove the author is an active member and
+   * return its userId. Throws NOT_FOUND (no such group) / FORBIDDEN (requester or author not a member).
+   * `to`-is-group on the wire routes here; the group account resolves via findGroupThread.
+   */
+  private async resolveGroupThreadAccess(
+    groupAccount: string,
+    fromAccount: string | undefined,
+    fromDomain: string | undefined,
+    signerDomain: string,
+  ): Promise<{ threadId: number; authorId?: number }> {
+    const trd = await this.findGroupThread(groupAccount);
+    if (!trd || trd.type !== MessageThreadType.GROUP) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `group ${groupAccount} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const participants = await this.prisma.threadParticipant.findMany({
+      where: { threadId: trd.id, leftAt: null },
+      include: { user: { select: { account: true, domain: true, isForeigner: true } } },
+    });
+    const signerIsMember = participants.some(
+      (p) => this.effectiveDomain(p.user) === signerDomain,
+    );
+    if (!signerIsMember) {
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'not a member', HttpStatus.FORBIDDEN);
+    }
+    let authorId: number | undefined;
+    if (fromAccount && fromDomain) {
+      const author = participants.find(
+        (p) =>
+          p.user.account === normalizeAccount(fromAccount) &&
+          this.effectiveDomain(p.user) === fromDomain,
+      );
+      if (!author) {
+        throw new BusinessException(BusinessCode.FORBIDDEN, 'author not a member', HttpStatus.FORBIDDEN);
+      }
+      authorId = author.userId;
+    }
+    return { threadId: trd.id, authorId };
+  }
+
+  /**
+   * ALL-SENDERS group pull (mirror ← origin): serve every message in the group thread with thread `seq`
+   * > `after`, ascending, across ALL creators. Each message carries its thread `seq` (the mirror's
+   * pullUntil cursor — advanced page-by-page to the last stored message's seq, NOT jumped to the thread
+   * max, so a >`take`-message catch-up fetches every page without skipping the middle) + its creator's
+   * wire address (so the mirror resolves the right stub) + the copied `originSeq` (the dedup key).
+   * Roster-gated. The one place serving is keyed by thread `seq` (a global per-thread order) rather than
+   * per-author originSeq: a multi-author stream has no single originSeq space. See plan "Cursor model". */
+  async serveOutboundMessagesGroup(
+    groupAccount: string,
+    after: number,
+    take: number,
+    signerDomain: string,
+  ) {
+    const { threadId } = await this.resolveGroupThreadAccess(
+      groupAccount,
+      undefined,
+      undefined,
+      signerDomain,
+    );
+    const rows = await this.prisma.message.findMany({
+      where: { threadId, seq: { gt: after } },
+      orderBy: { seq: 'asc' },
+      take: take + 1,
+      include: { creatorItem: { select: { account: true, domain: true, isForeigner: true } } },
+    });
+    const hasMore = rows.length > take;
+    const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
+      seq: m.seq, // origin thread seq — the mirror advances pullUntil to this, page-by-page
+      originSeq: m.originSeq ?? 0,
+      creator: {
+        account: m.creatorItem.account,
+        domain: this.effectiveDomain(m.creatorItem),
+      },
+      contentType: m.contentType,
+      content: m.content,
+      ts: m.createdAt.getTime(),
+    }));
+    // latestSeq = the highest seq in THIS batch (the cursor the receiver lands on after storing it), NOT
+    // the thread total — so a multi-page catch-up walks every page. -1 only when the batch is empty.
+    const latestSeq = messages.length > 0 ? messages[messages.length - 1].seq : -1;
+    return { messages, latestSeq, hasMore };
+  }
+
+  /**
+   * PER-AUTHOR group pull (origin ← mirror, the hub aggregation leg): serve the author `from`'s messages
+   * in the group with originSeq > `after` (the existing per-author query shape, originSeq space). The
+   * origin pulls each member-server's NEW messages this way to aggregate them; the origin's cursor for a
+   * member is derived MAX(originSeq) per author (unchanged Step-2 mechanism). Roster + author gated.
+   */
+  async serveOutboundMessagesGroupFrom(
+    groupAccount: string,
+    fromAccount: string,
+    fromDomain: string,
+    after: number,
+    take: number,
+    signerDomain: string,
+  ) {
+    const { threadId, authorId } = await this.resolveGroupThreadAccess(
+      groupAccount,
+      fromAccount,
+      fromDomain,
+      signerDomain,
+    );
+    if (authorId === undefined) {
+      throw new BusinessException(BusinessCode.FORBIDDEN, 'author not a member', HttpStatus.FORBIDDEN);
+    }
+    const rows = await this.prisma.message.findMany({
+      where: { threadId, creator: authorId, originSeq: { gt: after } },
+      orderBy: { originSeq: 'asc' },
+      take: take + 1,
+    });
+    const hasMore = rows.length > take;
+    const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
+      originSeq: m.originSeq ?? 0,
+      contentType: m.contentType,
+      content: m.content,
+      ts: m.createdAt.getTime(),
+    }));
+    const latest = await this.prisma.message.aggregate({
+      where: { threadId, creator: authorId },
+      _max: { originSeq: true },
+    });
+    return { messages, latestSeq: latest._max.originSeq ?? -1, hasMore };
+  }
+
   /**
    * Resolve a chat-media file for a federated /get_file (the 3-check authz, §3.3). `from` is OUR local
    * user (the file's owner by virtue of authoring the message); `to` is the requester's user (a foreign
@@ -1331,14 +1547,25 @@ export class FederationService {
   async resolveMediaFile(
     fromAccount: string,
     toAccount: string,
+    fromDomain: string | undefined,
     signerDomain: string,
     digest: string,
   ): Promise<{ absPath: string; bytes: number }> {
-    const { threadId } = await this.resolveFriendshipThread(
-      fromAccount,
-      toAccount,
-      signerDomain,
-    );
+    // Group media (`to` is the group `!account`): roster gate via resolveGroupThreadAccess. P2P media:
+    // friendship gate via resolveFriendshipThread (`from` is the local owner). The 3rd check (digest in
+    // thread) is identical for both — it keys on threadId, however resolved.
+    const threadId = toAccount.startsWith('!')
+      ? (
+          await this.resolveGroupThreadAccess(
+            toAccount,
+            fromAccount,
+            fromDomain,
+            signerDomain,
+          )
+        ).threadId
+      : (
+          await this.resolveFriendshipThread(fromAccount, toAccount, signerDomain)
+        ).threadId;
     // Check 3: the digest is referenced by a message in this thread (one indexed probe on @@index([digest])).
     const inThread = await this.prisma.mediaMessage.findFirst({
       where: { digest, threadId },
@@ -1427,55 +1654,70 @@ export class FederationService {
     return { fromId, threadId };
   }
 
-  // ─── Step 2: inbound hint queue + active pull (receiver side) ─────────────────
+  // ─── Step 2/3: inbound hint queue + active pull (receiver side) ──────────────
   //
-  // pendingPulls is the RECEIVER's work queue (the dual of the outbound domainNewMsgMap). Populated by
-  // a /new-msg-map push (POST) or by pulling the peer's map (§4.3 one-directional fallback); drained by
-  // the message pull below. Volatile (restart → pull-on-open is the floor). Latest-seq-wins + the
-  // originSeq unique index make push/pull overlap idempotent.
+  // pendingPulls is the RECEIVER's work queue (the dual of the outbound buffer). Populated by a
+  // /new-msg-map push (POST) or by pulling the peer's map (§4.3 one-directional fallback); drained by the
+  // pull below. Volatile (restart → pull-on-open is the floor). Latest-seq-wins + the originSeq unique
+  // index make push/pull overlap idempotent. Entries are account-based (from/fromDomain/to + latestSeq,
+  // + optional `left`): `to` is a peer user account (P2P) or the group `!account` (group).
 
-  private readonly pendingPulls = new Map<
-    string,
-    Map<string, Map<string, number>>
-  >(); // domain→from→to→latestSeq
+  /** One queued pull hint. Mirrors the wire NewMsgMapEntry shape (from/fromDomain/to/latestSeq/left?). */
+  private readonly pendingPulls = new Map<string, Map<string, NewMsgMapEntry>>();
   /** Single-flight guard so only one drain runs per domain at a time (a push mid-drain just updates the map). */
   private readonly drainingPulls = new Set<string>();
 
+  /** scopeKey for pendingPulls (internal \0 separator; accounts/domains never contain \0). The left-flag
+   *  keeps a leave hint distinct from message hints for the same (from, to). */
+  private pullScopeKey(e: { from: string; fromDomain: string; to: string; left?: boolean }): string {
+    return `${e.from}\0${e.fromDomain}\0${e.to}\0${e.left ? 1 : 0}`;
+  }
+
   /**
-   * Inbound /new-msg-map push (or map-pull result) → enqueue hints + trigger the drainer. `entries[].from`
-   * is the PEER's user (a foreign stub here); `entries[].to` is OUR local user. Latest-seq-wins. Fire-and-
-   * forget drain (the push handler ACKs fast; the pull runs out of band). Idempotent. Entry shape is
-   * validated defensively (the signature covers integrity, not well-formedness).
+   * Inbound /new-msg-map push (or map-pull result) → enqueue hints + trigger the drainer. Each entry's
+   * `from`/`fromDomain` is the AUTHOR (a foreign stub here, or the origin re-signaling); `to` is OUR local
+   * user (P2P) or the group `!account` (group). Latest-seq-wins for message hints; a leave hint is always
+   * stored (keyed separately). Fire-and-forget drain. Idempotent + defensively validated.
    */
   receiveNewMsgMapPush(
     signerDomain: string,
     entries: ReadonlyArray<{
       from?: unknown;
+      fromDomain?: unknown;
       to?: unknown;
       latestSeq?: unknown;
+      left?: unknown;
     }>,
   ): void {
-    let byFrom = this.pendingPulls.get(signerDomain);
-    if (!byFrom) {
-      byFrom = new Map();
-      this.pendingPulls.set(signerDomain, byFrom);
+    let byScope = this.pendingPulls.get(signerDomain);
+    if (!byScope) {
+      byScope = new Map();
+      this.pendingPulls.set(signerDomain, byScope);
     }
     for (const e of entries) {
       if (
         !e ||
         typeof e.from !== 'string' ||
+        typeof e.fromDomain !== 'string' ||
         typeof e.to !== 'string' ||
         typeof e.latestSeq !== 'number'
       ) {
         continue;
       }
-      let byTo = byFrom.get(e.from);
-      if (!byTo) {
-        byTo = new Map();
-        byFrom.set(e.from, byTo);
+      const entry: NewMsgMapEntry = {
+        from: e.from,
+        fromDomain: e.fromDomain,
+        to: e.to,
+        latestSeq: e.latestSeq,
+        ...(e.left ? { left: true } : {}),
+      };
+      const key = this.pullScopeKey(entry);
+      const prev = byScope.get(key);
+      if (e.left) {
+        byScope.set(key, entry);
+      } else if (!prev || e.latestSeq > prev.latestSeq) {
+        byScope.set(key, entry);
       }
-      const prev = byTo.get(e.to) ?? -1; // 0-indexed: empty → -1 (a real seq 0 must beat it)
-      if (e.latestSeq > prev) byTo.set(e.to, e.latestSeq); // latest-wins
     }
     void this.drainPendingPulls(signerDomain);
   }
@@ -1493,17 +1735,13 @@ export class FederationService {
       for (;;) {
         const snap = this.snapshotPendingPulls(domain);
         if (snap.length === 0) break;
-        // Pull one conversation fully (loops /messages until caught up). On success drop the hint; on
+        // Dispatch one hint by shape: leave → roster dissolve; `to` is a group → group pull (origin does
+        // per-author hub-leg, mirror does whole-thread); else P2P per-author. On success drop the hint; on
         // failure leave it + stop (the sweep retries).
-        const { from, to, latestSeq } = snap[0];
-        const caughtUp = await this.pullOneConversation(
-          domain,
-          from,
-          to,
-          latestSeq,
-        );
+        const { key, entry } = snap[0];
+        const caughtUp = await this.pullHint(domain, entry);
         if (caughtUp) {
-          this.removePendingPull(domain, from, to);
+          this.removePendingPullKey(domain, key);
           progressed = true;
         } else {
           break;
@@ -1520,30 +1758,41 @@ export class FederationService {
   }
 
   /**
-   * Pull one conversation from the peer until the local cursor catches up to latestSeq. Returns true if
-   * caught up OR the hint is stale/invalid (drop it); false on a transient failure (leave for the sweep).
+   * Dispatch one hint by shape. Returns true if caught up OR stale/invalid (drop); false on transient
+   * failure (leave for the sweep). `domain` is the SOURCE domain that pushed the hint (the peer to pull
+   * from for P2P + the origin-hub per-author leg). `e.to` distinguishes P2P (user account) from group
+   * (`!account`); `e.left` is a leave signal.
    */
-  private async pullOneConversation(
-    domain: string,
-    fromAccount: string,
-    toLocalAccount: string,
-    latestSeq: number,
-  ): Promise<boolean> {
+  private async pullHint(domain: string, e: NewMsgMapEntry): Promise<boolean> {
+    if (e.left) return this.handleLeaveHint(domain, e);
+    if (e.to.startsWith('!')) return this.pullGroup(domain, e);
+    return this.pullP2P(domain, e);
+  }
+
+  /** P2P pull: the peer author `from`@`fromDomain`'s messages for our local user `to`. Per-author, cursor
+   *  DERIVED as MAX(originSeq) per (thread, creator) — the unchanged Step-2 mechanism. Derivation (not a
+   *  stored cursor) is deliberate for P2P: it self-heals when the latest row vanishes (a lost store / a
+   *  deleted message drops MAX, so pull-on-open re-fetches the gap — the §4.4 resilience backstop), and a
+   *  fresh thread has no rows ⇒ -1 ⇒ first pull starts at seq 0. The group mirror path uses a STORED
+   *  pullUntil instead (a new member has no local rows to derive from, + the sinceSeq seed). fetchedFromDomain
+   *  = the peer (a pulled P2P message's only foreign participant is the author, so signalOutbound signals
+   *  nobody — the receiver never re-propagates a 1:1 message). */
+  private async pullP2P(domain: string, e: NewMsgMapEntry): Promise<boolean> {
     try {
-      const creatorId = await this.ensureForeignUser(fromAccount, domain);
-      const toLocalUserId = await this.findLocalUserId(toLocalAccount);
-      if (toLocalUserId === null) return true; // local user gone → drop the hint
+      const creatorId = await this.ensureForeignUser(e.from, e.fromDomain);
+      const toLocalUserId = await this.findLocalUserId(e.to);
+      if (toLocalUserId === null) return true; // local user gone → drop
       const threadId = await this.participantService.findP2PThreadBetween(
         creatorId,
         toLocalUserId,
       );
-      if (threadId === null) return true; // not friends (lazy-unfriend §9.4) → drop the hint
+      if (threadId === null) return true; // not friends (lazy-unfriend §9.4) → drop
       const cur = await this.prisma.message.aggregate({
         where: { threadId, creator: creatorId },
         _max: { originSeq: true },
       });
-      let after = cur._max.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1 (before seq 0)
-      if (latestSeq <= after) return true; // already current
+      let after = cur._max.originSeq ?? -1; // 0-indexed: empty (thread, sender) → -1
+      if (e.latestSeq <= after) return true; // already current
       for (;;) {
         const res = await this.withTrustedPeer(domain, () =>
           this.getSigned<{
@@ -1556,7 +1805,7 @@ export class FederationService {
             latestSeq: number;
             hasMore: boolean;
           }>(
-            `/api/v1/s2s/messages?from=${encodeURIComponent(fromAccount)}&to=${encodeURIComponent(toLocalAccount)}&afterSeq=${after}&take=50`,
+            `/api/v1/s2s/messages?from=${encodeURIComponent(e.from)}&fromDomain=${encodeURIComponent(e.fromDomain)}&to=${encodeURIComponent(e.to)}&afterSeq=${after}&take=50`,
             domain,
           ),
         );
@@ -1564,30 +1813,191 @@ export class FederationService {
           const created = await this.storePulledMessage(
             threadId,
             creatorId,
-            toLocalUserId,
+            domain,
+            [toLocalUserId],
             m,
           );
           if (created && this.isMediaContentType(created.contentType)) {
-            // Best-effort media localize: fetch each referenced digest via /get_file, store in local
-            // CAS so it serves same-origin. A per-file failure leaves the message (cross-origin URL is
-            // inert) for a later retry — never blocks the text pull.
-            await this.localizeMedia(
-              created,
-              domain,
-              fromAccount,
-              toLocalAccount,
-            );
+            await this.localizeMedia(created, domain, e.from, e.fromDomain, e.to);
           }
         }
         if (res.messages.length > 0) {
           after = res.messages[res.messages.length - 1].originSeq;
         }
-        if (!res.hasMore) return true; // peer served everything > the old cursor → caught up
+        if (!res.hasMore) return true;
       }
     } catch {
-      // Peer transiently down / signature failed / network — leave the hint for the reconnect sweep.
+      return false; // peer down — leave for the sweep
+    }
+  }
+
+  /** Group pull: route by OUR role. ORIGIN → per-author hub leg (pull the author's new messages from the
+   *  pushing mirror `domain`, then re-signal the others). MIRROR → whole-thread pull from the origin via
+   *  the stored pullUntil cursor. Non-member (no local thread) → drop. */
+  private async pullGroup(domain: string, e: NewMsgMapEntry): Promise<boolean> {
+    try {
+      const trd = await this.findGroupThread(e.to);
+      if (!trd) return true; // not a member here → drop
+      if (this.isOriginThread(trd)) return this.pullGroupFromAuthor(domain, trd.id, e);
+      return this.pullGroupWhole(trd.id, trd.originDomain as string, e);
+    } catch {
       return false;
     }
+  }
+
+  /** MIRROR whole-thread pull (origin-hub): pull ALL senders' messages from the origin with thread seq >
+   *  pullUntil, store each (creator resolved from the payload), advance pullUntil to latestSeq.
+   *  fetchedFromDomain = origin → signalOutbound's exclude rule makes the mirror signal nothing. */
+  private async pullGroupWhole(
+    threadId: number,
+    originDomain: string,
+    e: NewMsgMapEntry,
+  ): Promise<boolean> {
+    const th = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: { pullUntil: true },
+    });
+    let after = th?.pullUntil ?? -1;
+    const recipients = await this.localActiveMemberIds(threadId);
+    for (;;) {
+      const res = await this.withTrustedPeer(originDomain, () =>
+        this.getSigned<{
+          messages: Array<{
+            seq: number; // origin thread seq (the cursor)
+            originSeq: number;
+            creator: { account: string; domain: string };
+            contentType: string;
+            content: string;
+            ts: number;
+          }>;
+          latestSeq: number;
+          hasMore: boolean;
+        }>(
+          `/api/v1/s2s/messages?to=${encodeURIComponent(e.to)}&afterSeq=${after}&take=50`,
+          originDomain,
+        ),
+      );
+      for (const m of res.messages) {
+        const creatorId = await this.ensureForeignUser(m.creator.account, m.creator.domain);
+        const created = await this.storePulledMessage(
+          threadId,
+          creatorId,
+          originDomain,
+          recipients,
+          m,
+        );
+        if (created && this.isMediaContentType(created.contentType)) {
+          // Group media: /get_file?to=<group>&from=<creator> (roster-gated). Group account is `to`.
+          await this.localizeMedia(
+            created,
+            originDomain,
+            m.creator.account,
+            m.creator.domain,
+            e.to,
+          );
+        }
+      }
+      // Advance the cursor page-by-page to the last STORED message's thread seq (NOT res.latestSeq/the
+      // thread total — that would skip the middle of a >`take`-message catch-up). Empty batch ⇒ no advance.
+      if (res.messages.length > 0) {
+        after = res.messages[res.messages.length - 1].seq;
+        await this.prisma.messageThread.update({
+          where: { id: threadId },
+          data: { pullUntil: after },
+        });
+      }
+      if (!res.hasMore) return true;
+    }
+  }
+
+  /** ORIGIN per-author hub leg: pull the author `from`'s new group messages from the pushing mirror
+   *  `domain` (originSeq space), store, then signalOutbound re-signals the OTHER member-domains (exclude
+   *  `domain`). Cursor derived MAX(originSeq) per author — the origin tracks each member separately. */
+  private async pullGroupFromAuthor(
+    domain: string,
+    threadId: number,
+    e: NewMsgMapEntry,
+  ): Promise<boolean> {
+    const creatorId = await this.ensureForeignUser(e.from, e.fromDomain);
+    const cur = await this.prisma.message.aggregate({
+      where: { threadId, creator: creatorId },
+      _max: { originSeq: true },
+    });
+    let after = cur._max.originSeq ?? -1;
+    if (e.latestSeq <= after) return true;
+    const recipients = await this.localActiveMemberIds(threadId);
+    for (;;) {
+      const res = await this.withTrustedPeer(domain, () =>
+        this.getSigned<{
+          messages: Array<{
+            originSeq: number;
+            contentType: string;
+            content: string;
+            ts: number;
+          }>;
+          latestSeq: number;
+          hasMore: boolean;
+        }>(
+          `/api/v1/s2s/messages?to=${encodeURIComponent(e.to)}&from=${encodeURIComponent(e.from)}&fromDomain=${encodeURIComponent(e.fromDomain)}&afterSeq=${after}&take=50`,
+          domain,
+        ),
+      );
+      for (const m of res.messages) {
+        const created = await this.storePulledMessage(
+          threadId,
+          creatorId,
+          domain,
+          recipients,
+          m,
+        );
+        if (created && this.isMediaContentType(created.contentType)) {
+          await this.localizeMedia(created, domain, e.from, e.fromDomain, e.to);
+        }
+      }
+      if (res.messages.length > 0) {
+        after = res.messages[res.messages.length - 1].originSeq;
+      }
+      if (!res.hasMore) return true;
+    }
+  }
+
+  /** Leave hint (`left:true`): the member `from` left the group on its server. Only the ORIGIN acts
+   *  (roster authority): soft-leave the member + bump the group-meta revision (mirrors pick it up on the
+   *  next chat-open meta-pull). A mirror drops it (it initiated its own local leave). Best-effort: the
+   *  hint is volatile — a lost leave leaves the origin's roster stale (a future active-liveness check is
+   *  the durable backstop, deferred). */
+  private async handleLeaveHint(domain: string, e: NewMsgMapEntry): Promise<boolean> {
+    try {
+      const trd = await this.findGroupThread(e.to);
+      if (!trd || !this.isOriginThread(trd)) return true; // not the origin → drop
+      const leaver = await this.resolveUserByWireAddress(e.from, e.fromDomain);
+      if (!leaver) return true;
+      await this.participantService.softLeaveMember(trd.id, leaver.id);
+      if (trd.groupUserId != null) {
+        await this.prisma.user.update({
+          where: { id: trd.groupUserId },
+          data: { updatedAt: new Date() },
+        });
+      }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The active LOCAL member userIds of a thread (foreign stubs excluded — they hold no SSE connection
+   * here). Computed ONCE per pull batch by the caller and passed to storePulledMessage so the per-message
+   * SSE fan is a synchronous loop (no async query between the row commit and the onNewMessage call — that
+   * gap would let a DB-polling observer see the message before the SSE frame, breaking delivery atomicity
+   * from the client's view). The sender (creatorId) is excluded by storePulledMessage.
+   */
+  private async localActiveMemberIds(threadId: number): Promise<number[]> {
+    const rows = await this.prisma.threadParticipant.findMany({
+      where: { threadId, leftAt: null, user: { isForeigner: false } },
+      select: { userId: true },
+    });
+    return rows.map((r) => r.userId);
   }
 
   /**
@@ -1599,7 +2009,8 @@ export class FederationService {
   private async storePulledMessage(
     threadId: number,
     creatorId: number,
-    toLocalUserId: number,
+    fetchedFromDomain: string,
+    recipients: number[],
     m: { originSeq: number; contentType: string; content: string; ts: number },
   ): Promise<Message | null> {
     // The sender server's allocation time (payload `ts`) is stored as originServerTime (future use,
@@ -1641,6 +2052,16 @@ export class FederationService {
         throw e;
       });
     if (!created) return null;
+    // SSE FIRST, synchronously — fan to the pre-computed local recipients BEFORE any other await. A DB
+    // polling observer (the client's reconcile / an e2e) must not see the committed row before the SSE
+    // frame, so delivery is atomic from the client's view (no async gap between commit and onNewMessage).
+    // Excludes the sender (creatorId) — for a pulled message the creator is a foreign stub, absent from
+    // the local recipient set anyway. P2P → the single recipient; GROUP → every local member. Strips the
+    // internal BigInt id (a throughput side-channel).
+    const msgData = serializeBody({ threadId, ...stripMessageId(created) });
+    for (const uid of recipients) {
+      if (uid !== creatorId) this.sse.onNewMessage(uid, msgData);
+    }
     const arrival = created.createdAt;
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer
     // than what's cached (a message the local user sent after this one must not be overwritten). Ordered
@@ -1652,19 +2073,17 @@ export class FederationService {
       },
       data: {
         lastMessageSeq: created.seq,
-        lastMessagePreview: derivePreview(
-          m.contentType as ContentType,
-          m.content,
-        ),
+        lastMessagePreview: derivePreview(m.contentType as ContentType, m.content),
         lastMessageSenderId: creatorId,
         lastMessageAt: arrival,
       },
     });
-    // SSE carries the PUBLIC shape only — strip the internal BigInt id (a throughput side-channel).
-    this.sse.onNewMessage(
-      toLocalUserId,
-      serializeBody({ threadId, ...stripMessageId(created) }),
-    );
+    // Hub re-signal (origin only, via the exclude-fetch-source rule): fire-and-forget. A mirror's only
+    // destination is the origin it just pulled from → excluded → signals nothing. The origin re-signals
+    // the OTHER member-domains. See plan "Hub loop-safety".
+    void this.buffer
+      .signalOutbound(threadId, creatorId, m.originSeq, fetchedFromDomain)
+      .catch(() => undefined);
     return created;
   }
 
@@ -1691,7 +2110,8 @@ export class FederationService {
     msg: { id: bigint; threadId: number; content: string },
     peerDomain: string,
     fromAccount: string,
-    toLocalAccount: string,
+    fromDomain: string,
+    toAccount: string,
   ): Promise<void> {
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
@@ -1708,12 +2128,7 @@ export class FederationService {
           // inert for a later retry.
           await this.upload.saveCasFromStream(
             ext,
-            this.fetchMediaChunks(
-              peerDomain,
-              digest,
-              fromAccount,
-              toLocalAccount,
-            ),
+            this.fetchMediaChunks(peerDomain, digest, fromAccount, fromDomain, toAccount),
             digest,
           );
         }
@@ -1748,11 +2163,12 @@ export class FederationService {
     peerDomain: string,
     digest: string,
     fromAccount: string,
-    toLocalAccount: string,
+    fromDomain: string,
+    toAccount: string,
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
-    const path = `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromAccount)}&to=${encodeURIComponent(toLocalAccount)}`;
+    const path = `/api/v1/s2s/get_file?digest=${digest}&from=${encodeURIComponent(fromAccount)}&fromDomain=${encodeURIComponent(fromDomain)}&to=${encodeURIComponent(toAccount)}`;
     const url = new URL(`${base}${path}`);
     let offset = 0;
     let total: number | null = null;
@@ -1896,28 +2312,21 @@ export class FederationService {
     }
   }
 
-  /** Snapshot a domain's pending pulls as a flat list (for the drain loop). */
+  /** Snapshot a domain's pending pulls as a flat list of { key, entry } (for the drain loop). */
   private snapshotPendingPulls(
     domain: string,
-  ): Array<{ from: string; to: string; latestSeq: number }> {
-    const byFrom = this.pendingPulls.get(domain);
-    if (!byFrom) return [];
-    const out: Array<{ from: string; to: string; latestSeq: number }> = [];
-    for (const [from, byTo] of byFrom) {
-      for (const [to, latestSeq] of byTo) out.push({ from, to, latestSeq });
-    }
-    return out;
+  ): Array<{ key: string; entry: NewMsgMapEntry }> {
+    const byScope = this.pendingPulls.get(domain);
+    if (!byScope) return [];
+    return [...byScope.entries()].map(([key, entry]) => ({ key, entry }));
   }
 
-  /** Remove one pending-pull hint (+ compact emptied buckets). */
-  private removePendingPull(domain: string, from: string, to: string): void {
-    const byFrom = this.pendingPulls.get(domain);
-    if (!byFrom) return;
-    const byTo = byFrom.get(from);
-    if (!byTo) return;
-    byTo.delete(to);
-    if (byTo.size === 0) byFrom.delete(from);
-    if (byFrom.size === 0) this.pendingPulls.delete(domain);
+  /** Remove one pending-pull hint by scopeKey (+ drop the domain bucket when emptied). */
+  private removePendingPullKey(domain: string, key: string): void {
+    const byScope = this.pendingPulls.get(domain);
+    if (!byScope) return;
+    byScope.delete(key);
+    if (byScope.size === 0) this.pendingPulls.delete(domain);
   }
 
   /**

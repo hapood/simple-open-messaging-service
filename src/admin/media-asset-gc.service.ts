@@ -1,12 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { join } from 'path';
-import { readdir, unlink } from 'fs';
+import { readdir, stat, unlink } from 'fs';
 import { promisify } from 'util';
 import { PrismaService } from '../prisma.service.js';
 import { UploadService } from '../upload/upload.service.js';
 import { parseAvatarBase } from '../upload/avatar-path.js';
 
 const readdirAsync = promisify(readdir);
+const statAsync = promisify(stat);
 const unlinkAsync = promisify(unlink);
 
 export interface GcResult {
@@ -96,6 +97,59 @@ export class MediaAssetGcService {
     }
     this.logger.log(`reconcileShards: reaped ${reaped} unreferenced file(s).`);
     return reaped;
+  }
+
+  /** Storage overview for the media page. `db` is the authoritative content size from MediaAsset
+   *  (deduped by digest); `onDisk` walks uploads/shards/ to break bytes down by extension and surface
+   *  drift vs the table. O(files) — fine for a manually triggered admin read. */
+  async stats() {
+    const agg = await this.prisma.mediaAsset.aggregate({
+      _sum: { bytes: true },
+      _count: true,
+    });
+    const reclaimable = await this.prisma.mediaAsset.count({
+      where: { refs: { lte: 0 } },
+    });
+
+    const shardsDir = join(this.upload.uploadDir, 'shards');
+    const byExt = new Map<string, { files: number; bytes: bigint }>();
+    let shardFiles = 0;
+    let shardBytes = 0n;
+    try {
+      for (const a of await readdirAsync(shardsDir, { withFileTypes: true })) {
+        if (!a.isDirectory()) continue;
+        const aDir = join(shardsDir, a.name);
+        for (const b of await readdirAsync(aDir, { withFileTypes: true })) {
+          if (!b.isDirectory()) continue;
+          const bDir = join(aDir, b.name);
+          for (const name of await readdirAsync(bDir)) {
+            const s = await statAsync(join(bDir, name)).catch(() => null);
+            if (!s) continue;
+            const dot = name.lastIndexOf('.');
+            const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : '(none)';
+            const bucket = byExt.get(ext) ?? { files: 0, bytes: 0n };
+            bucket.files++;
+            bucket.bytes += BigInt(s.size);
+            byExt.set(ext, bucket);
+            shardFiles++;
+            shardBytes += BigInt(s.size);
+          }
+        }
+      }
+    } catch {
+      // shards dir missing → empty onDisk breakdown.
+    }
+
+    return {
+      db: { bytes: agg._sum.bytes ?? 0n, assetCount: agg._count, reclaimable },
+      onDisk: {
+        files: shardFiles,
+        bytes: shardBytes,
+        byExt: [...byExt.entries()]
+          .map(([ext, v]) => ({ ext, files: v.files, bytes: v.bytes }))
+          .sort((x, y) => (x.bytes > y.bytes ? -1 : x.bytes < y.bytes ? 1 : 0)),
+      },
+    };
   }
 
   /**

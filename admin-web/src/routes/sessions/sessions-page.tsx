@@ -3,11 +3,12 @@ import { useTranslation } from 'react-i18next'
 import { Search } from 'lucide-react'
 import { toast } from 'sonner'
 import { useAllSessions, usePurgeSessions } from '@/hooks/use-sessions'
+import { useListParams } from '@/hooks/use-list-params'
+import { useIsSuperAdmin } from '@/hooks/use-me'
 import { formatApiError } from '@/lib/format-error'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Dialog,
   DialogContent,
@@ -23,24 +24,27 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { Pagination } from '@/components/common/pagination'
+import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
 
 const PAGE_SIZE = 50
 
 export function SessionsPage() {
   const { t } = useTranslation()
-  const [ipSearch, setIpSearch] = useState('')
-  const [page, setPage] = useState(0)
+  const isSuper = useIsSuperAdmin()
   const [purgeOpen, setPurgeOpen] = useState(false)
+  const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
+    pageSize: PAGE_SIZE,
+  })
   const { data, isLoading, error } = useAllSessions({
-    skip: page * PAGE_SIZE,
-    take: PAGE_SIZE,
-    ip: ipSearch || undefined,
+    skip,
+    take,
+    ip: search || undefined,
   })
   const purge = usePurgeSessions()
 
   const total = data?.total ?? 0
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const onPurge = async () => {
     try {
@@ -61,17 +65,16 @@ export function SessionsPage() {
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
             <Input
               placeholder={t('sessions.searchPlaceholder')}
-              value={ipSearch}
-              onChange={(e) => {
-                setIpSearch(e.target.value)
-                setPage(0)
-              }}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
               className="pl-8"
             />
           </div>
-          <Button variant="destructive" onClick={() => setPurgeOpen(true)} disabled={total === 0}>
-            {t('sessions.purge')}
-          </Button>
+          {isSuper ? (
+            <Button variant="destructive" onClick={() => setPurgeOpen(true)} disabled={total === 0}>
+              {t('sessions.purge')}
+            </Button>
+          ) : null}
         </div>
       </div>
       <p className="text-sm text-muted-foreground">{t('sessions.desc', { count: total })}</p>
@@ -88,30 +91,14 @@ export function SessionsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
-              Array.from({ length: 8 }).map((_, i) => (
-                <TableRow key={i}>
-                  {Array.from({ length: 6 }).map((__, j) => (
-                    <TableCell key={j}>
-                      <Skeleton className="h-5 w-full" />
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            ) : error ? (
-              <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-destructive">
-                  {t('common.loadFailed', { message: formatApiError(error) })}
-                </TableCell>
-              </TableRow>
-            ) : data?.list.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  {t('sessions.empty')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              data?.list.map((s) => (
+            <TableBodyState
+              loading={isLoading}
+              error={error}
+              empty={(data?.list.length ?? 0) === 0}
+              colSpan={6}
+              emptyMessage={t('sessions.empty')}
+            >
+              {data?.list.map((s) => (
                 <TableRow key={s.jti}>
                   <TableCell className="font-medium">
                     {s.user?.account ?? '#' + s.userId}
@@ -133,24 +120,13 @@ export function SessionsPage() {
                     <Timestamp value={s.expiresAt} />
                   </TableCell>
                 </TableRow>
-              ))
-            )}
+              ))}
+            </TableBodyState>
           </TableBody>
         </Table>
       </div>
-      <div className="flex items-center justify-end gap-2 text-sm text-muted-foreground">
-        <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
-          {t('common.previous')}
-        </Button>
-        <span>{t('common.page', { page: page + 1, pages: pageCount })}</span>
-        <Button
-          variant="outline"
-          size="sm"
-          disabled={page + 1 >= pageCount}
-          onClick={() => setPage((p) => p + 1)}
-        >
-          {t('common.next')}
-        </Button>
+      <div className="flex items-center justify-end text-sm text-muted-foreground">
+        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </div>
 
       <Dialog open={purgeOpen} onOpenChange={setPurgeOpen}>

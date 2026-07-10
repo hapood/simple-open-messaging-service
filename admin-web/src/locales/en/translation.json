@@ -11,10 +11,28 @@
     "next": "Next",
     "page": "Page {{page}} / {{pages}}",
     "loadFailed": "Load failed: {{message}}",
-    "operationFailed": "Operation failed"
+    "operationFailed": "Operation failed",
+    "comingSoon": "Coming soon"
+  },
+  "topBar": {
+    "toggleTheme": "Toggle theme",
+    "search": "Search"
+  },
+  "search": {
+    "placeholder": "Search users, peers…",
+    "hint": "Type to search users and federation peers",
+    "empty": "No matches",
+    "section": { "users": "Users", "peers": "Federation peers" }
+  },
+  "roles": {
+    "super": "Super Admin",
+    "admin": "Admin",
+    "viewer": "Viewer"
   },
   "nav": {
+    "dashboard": "Dashboard",
     "users": "User Management",
+    "groups": "Groups",
     "sessions": "Sessions",
     "connections": "Live Connections",
     "adminSessions": "Admin Sessions",
@@ -22,7 +40,35 @@
     "reuse": "Reuse Alerts",
     "push": "Push Management",
     "federation": "Federation",
-    "logout": "Log Out"
+    "selfCheck": "Self-check",
+    "logs": "Logs",
+    "media": "Media & Storage",
+    "audit": "Audit Log",
+    "admins": "Admins",
+    "settings": "Settings",
+    "logout": "Log Out",
+    "group": {
+      "overview": "Overview",
+      "security": "Security & Sessions",
+      "federation": "Federation",
+      "system": "System"
+    }
+  },
+  "dashboard": {
+    "title": "Dashboard",
+    "desc": "System overview at a glance.",
+    "autoRefresh": "Auto-refresh every 15s",
+    "mediaSub": "{{assets}} assets · {{reclaimable}} reclaimable",
+    "noRecentActions": "No admin actions recorded yet",
+    "tile": {
+      "systemStatus": "System status",
+      "onlineNow": "Online now",
+      "onlineConnections": "Online connections",
+      "activeSessions": "Active sessions",
+      "federationHealth": "Federation health",
+      "storageUsage": "Media storage",
+      "recentActions": "Recent admin actions"
+    }
   },
   "language": {
     "label": "Language",
@@ -64,9 +110,22 @@
     "toast": {
       "unbanned": "Unbanned",
       "banned": "Banned",
-      "forceLoggedOut": "Force logged out"
+      "forceLoggedOut": "Force logged out",
+      "batchDone": "Action applied to {{count}} user(s)"
     },
+    "selected": "{{count}} selected",
+    "selectAll": "Select all",
+    "selectRow": "Select {{name}}",
     "total": "{{count}} total"
+  },
+  "userDetail": {
+    "back": "Back to users",
+    "notFound": "User not found",
+    "section": { "profile": "Profile", "groups": "Groups", "sessions": "Active sessions", "push": "Push devices" },
+    "field": { "domain": "Domain", "foreigner": "Foreigner", "tokenVer": "tokenVer", "createdAt": "Created", "updatedAt": "Updated", "bio": "Bio" },
+    "group": { "name": "Group", "role": "Role", "joined": "Joined" },
+    "empty": { "groups": "No group memberships", "sessions": "No active sessions", "push": "No push devices" },
+    "push": { "deviceId": "Device ID" }
   },
   "bans": {
     "title": "Ban Management",
@@ -231,6 +290,124 @@
       "demoted": "Connection lost / demoted",
       "blocked": "Blocked by admin",
       "unblocked": "Unblocked by admin"
+    },
+    "detail": { "back": "Back to federation", "notFound": "Peer not found", "tabOverview": "Overview", "tabTimeline": "Timeline" },
+    "selfCheck": {
+      "title": "S2S Handshake Self-Check",
+      "desc": "Probes THIS server's federation prerequisites from the external viewpoint — DNS/SRV, TLS certificate, .well-known/soms, key consistency, signature loopback and clock skew. Each network check is run per resolved IP (SRV→DDNS or multi-A/AAAA).",
+      "entry": "Self-check",
+      "ntpServer": "Reference clock (NTP)",
+      "dnsResolver": "DNS resolver",
+      "run": "Run checks",
+      "rerun": "Re-run",
+      "copyJson": "Copy JSON",
+      "placeholder": "Pick a reference clock and DNS resolver, then run the probe set.",
+      "target": "Target",
+      "noSrv": "no SRV, apex",
+      "runAt": "Run at",
+      "totalDuration": "Total",
+      "status": {
+        "ok": "Passed",
+        "warn": "Warning",
+        "fail": "Failed",
+        "skip": "Skipped"
+      },
+      "group": {
+        "config": "Local configuration",
+        "dns": "DNS resolution",
+        "tls": "TLS certificate",
+        "well-known": ".well-known/soms",
+        "crypto": "Key & signature",
+        "clock": "Clock skew"
+      },
+      "toast": {
+        "ok": "All checks passed",
+        "hasFails": "{{count}} check(s) failed — review below",
+        "copied": "Report copied to clipboard",
+        "copyFailed": "Copy failed"
+      },
+      "field": {
+        "domain": "domain",
+        "keyId": "keyId",
+        "allowInsecureHttp": "allowInsecureHttp",
+        "nodeEnv": "NODE_ENV",
+        "tlsConfigured": "local TLS",
+        "listenPort": "listen port",
+        "path": "path",
+        "mode": "file mode",
+        "createdAt": "createdAt",
+        "ageDays": "age (days)",
+        "record": "SRV record",
+        "resolvedHost": "host",
+        "resolvedPort": "port",
+        "addresses": "addresses",
+        "authority": "authority",
+        "verified": "verified",
+        "ntpServer": "NTP server",
+        "dnsResolver": "resolver",
+        "offsetSec": "offset (s)",
+        "roundTripMs": "round-trip (ms)",
+        "host": "host",
+        "port": "port",
+        "originTls": "origin TLS",
+        "keyIdDomain": "keyId domain",
+        "expectedDomain": "expected domain",
+        "keyMatch": "key matches",
+        "domainMatch": "domain matches",
+        "localPubB64": "local pub (b64)",
+        "localPubSha256": "local pub sha256",
+        "publishedPubB64": "published pub (b64)",
+        "publishedKeyCount": "published keys"
+      },
+      "cert": {
+        "show": "cert",
+        "hide": "hide",
+        "subject": "Subject",
+        "issuer": "Issuer",
+        "serial": "Serial",
+        "sigAlg": "Signature alg",
+        "pubKey": "Public key",
+        "validFrom": "Valid from",
+        "validTo": "Valid to",
+        "san": "SAN",
+        "keyUsage": "Key usage",
+        "alpn": "ALPN",
+        "sanMatched": "SAN match",
+        "fpSha256": "SHA-256",
+        "fpSha1": "SHA-1",
+        "daysLeft": "{{days}}d left",
+        "chainTitle": "Trust chain",
+        "chainComplete": "chain anchors at a trusted root",
+        "chainIncomplete": "chain does NOT reach a trusted root",
+        "section": "Certificate"
+      }
+    }
+  },
+  "logs": {
+    "title": "System Logs",
+    "desc": "Live tail of the structured log stream — stdout, the rotating log file, and this viewer share one pipeline. New lines stream in real time; the server replays the most recent records on connect. Scroll up to pause auto-follow.",
+    "allLevels": "All levels",
+    "clear": "Clear",
+    "jumpLatest": "Latest",
+    "waiting": "Waiting for logs…",
+    "lineCount": "{{count}} lines",
+    "tabLive": "Live tail",
+    "tabHistory": "History",
+    "searchPlaceholder": "Search message / context",
+    "truncated": "Scan limit reached — older matches exist",
+    "totalMatches": "{{count}} matches",
+    "emptyHistory": "No matching logs",
+    "col": {
+      "time": "Time",
+      "level": "Level",
+      "context": "Context",
+      "message": "Message"
+    },
+    "state": {
+      "connecting": "Connecting",
+      "open": "Live",
+      "reconnecting": "Reconnecting",
+      "closed": "Disconnected"
     }
   },
   "resetPassword": {
@@ -253,6 +430,59 @@
       "created": "Created",
       "expires": "Expires"
     }
+  },
+  "audit": {
+    "title": "Audit Log",
+    "desc": "Every destructive admin action — who did what, from where, when, and whether it succeeded.",
+    "searchPlaceholder": "Filter by action (e.g. user., federation.)",
+    "outcomeAll": "All",
+    "outcomeSuccess": "Success",
+    "outcomeFailed": "Failed",
+    "empty": "No matching actions",
+    "col": { "action": "Action", "target": "Target", "actor": "Actor", "ip": "IP", "at": "When" }
+  },
+  "media": {
+    "title": "Media & Storage",
+    "desc": "Content-addressed media overview + garbage collection. GC reclaims refs<=0; reconcile walks the shards dir (O(files)).",
+    "tileDbBytes": "Stored (DB)",
+    "tileAssets": "Assets",
+    "tileReclaimable": "Reclaimable",
+    "tileOnDisk": "On disk",
+    "reclaimableHint": "assets with refs ≤ 0",
+    "onDiskFiles": "{{files}} files",
+    "byExt": "By extension",
+    "gc": "Run GC",
+    "gcAvatars": "GC avatars",
+    "reconcile": "Reconcile",
+    "col": { "ext": "Extension", "files": "Files", "bytes": "Bytes" },
+    "emptyExt": "No shard files",
+    "confirmTitle": { "gc": "Run garbage collection?", "reconcile": "Reconcile shards?", "avatars": "Reclaim orphan avatars?" },
+    "confirmBody": { "gc": "Deletes MediaAsset rows with refs<=0 and their shard files, then sweeps stale tmp.", "reconcile": "Walks uploads/shards and deletes any file with no MediaAsset row. O(files) — run sparingly.", "avatars": "Deletes avatar files no longer referenced by any user or group." },
+    "confirmAction": { "gc": "Run GC", "reconcile": "Reconcile", "avatars": "Reclaim" },
+    "gcDone": "GC: reaped {{rows}} row(s) / {{files}} file(s)",
+    "reconcileDone": "Reconcile: reaped {{files}} file(s)",
+    "avatarsDone": "Reclaimed {{files}} avatar file(s)"
+  },
+  "admins": {
+    "title": "Admin Accounts",
+    "desc": "Manage who can sign in to the console and their role. Disabling or demoting revokes their sessions immediately.",
+    "add": "Add admin",
+    "addTitle": "Promote a user to admin",
+    "userIdLabel": "User ID",
+    "userIdHint": "Numeric id of an existing user to promote (find it on the Users page).",
+    "roleLabel": "Role",
+    "empty": "No admins",
+    "col": { "account": "Admin", "role": "Role", "status": "Status", "lastLogin": "Last login" },
+    "action": { "disable": "Disable", "enable": "Enable" },
+    "toast": { "created": "Admin created", "disabled": "Admin disabled", "enabled": "Admin enabled", "role": "Role updated" }
+  },
+  "groups": {
+    "title": "Groups",
+    "desc": "Every group thread (local + federated) with member counts and origin.",
+    "searchPlaceholder": "Search group name / account",
+    "col": { "name": "Group", "members": "Members", "origin": "Origin", "lastMessage": "Last message", "created": "Created" },
+    "empty": "No groups",
+    "local": "local"
   },
   "notFound": {
     "code": "404",

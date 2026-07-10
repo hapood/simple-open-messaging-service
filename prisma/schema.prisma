@@ -230,6 +230,15 @@ model MessageThread {
   // construction, so it doubles as the authoritative "latest seq" without a separate aggregate.
   curSeq Int @default(-1)
 
+  // Federation pull cursor: the REMOTE server's thread seq this server has pulled up to. Seeded by the
+  // `sinceSeq` carried in the invite/invite-accept at friend-approve / group-accept (-1 = nothing yet,
+  // = the head), and advanced to the response `latestSeq` after each successful pull. Used by BOTH 1:1
+  // (the peer's thread seq pulled) and a GROUP mirror (the origin's thread seq pulled) — the unified
+  // "how far have I caught up" cursor. Stored (not derived from rows) because a freshly-joined member has
+  // no local rows yet — derivation would give -1 (full-pull) instead of the seeded `sinceSeq` start.
+  // `originSeq` (per-author, on Message) remains the dedup key + the origin's per-author hub-leg cursor.
+  pullUntil Int @default(-1)
+
   // Denormalized "last message" read-cache for the conversation list (the hottest read path).
   // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
   // the same tx as the Message insert); the source of truth — Message.seq / creator / createdAt — keeps
@@ -241,15 +250,17 @@ model MessageThread {
   lastMessageAt       DateTime?
 
   // ── Federation Step 3 (cross-server groups) ──────────────────────────────────────────────────────
-  // The cross-server canonical id of a federated GROUP, minted at the origin on create:
-  //   "thr_<rand>@<origin-domain>"   (origin-domain == the owner's config.domain). NULL for purely-local
-  // threads (all P2P, local-only groups). @unique enforces ONE local mirror per federated thread — a
-  // second cross-server invite to a different local user reuses the same mirror.
-  federatedThreadId String? @unique
-  // The origin server's domain, denormalized from the id's @suffix for fast "is this mine / who owns it"
-  // queries and the roster-op / serving-leg signer check (docs/federation-step3-design.md §8). NULL iff
-  // federatedThreadId is NULL.
-  originDomain      String? @db.VarChar(255)
+  // The federated group's `!account` (a ULID, e.g. "!01ABC…") — the cross-server canonical identity of a
+  // federated GROUP, == the on-wire group address (`to`/`group`). Stored verbatim: on the ORIGIN the
+  // group User carries it under domain='local'; on a MIRROR the group User carries the SAME account under
+  // domain=<originDomain> (so account_domain uniqueness still holds). NULL for non-federated threads
+  // (all P2P, purely-local groups); @unique enforces ONE local mirror per federated group — a second
+  // cross-server invite to a different local user reuses the same mirror thread.
+  fedGroupAccount String? @unique
+  // The origin server's domain (stored independently — NOT parsed from any suffix). Fast "is this mine /
+  // who owns it" check + the roster-op / serving-leg signer gate (docs/federation-step3-design.md §8).
+  // NULL iff fedGroupAccount is NULL.
+  originDomain    String? @db.VarChar(255)
 
   // The "!"-sigil User row that CARRIES this GROUP conversation's name/avatar/bio (the Group table is
   // abolished: a group IS a User row with account="!"+ULID, isGroup=true). Non-null iff type=GROUP;
@@ -394,16 +405,33 @@ model RefreshToken {
 /// (enabled flag, last login, admin refresh-tokens). Admin login authenticates the linked User's password,
 /// then issues an admin session. Admin auth stays physically isolated from user auth (separate
 /// AdminRefreshToken + adminSecret + scope:'admin') — breach isolation is preserved.
+/// Admin role tiers (RBAC). SUPER_ADMIN = all powers (default — the existing seed admin keeps full
+/// access); ADMIN = everyday operations; VIEWER = read-only (list/view endpoints carry no @Roles, so
+/// VIEWER passes AdminAuthGuard but every mutating endpoint is gated to SUPER_ADMIN / ADMIN).
+enum AdminRole {
+  SUPER_ADMIN
+  ADMIN
+  VIEWER
+}
+
+/// Admin profile, LINKED to a User (single account namespace — no user/admin name collision possible).
+/// Identity (account name + password) lives on the linked User; this row holds only admin-specific state
+/// (role, enabled flag, tokenVersion for global session revocation, last login, admin refresh-tokens).
+/// Admin login authenticates the linked User's password, then issues an admin session. Admin auth stays
+/// physically isolated from user auth (separate AdminRefreshToken + adminSecret + scope:'admin').
 model Admin {
   id            Int                 @id @default(autoincrement())
   userId        Int                 @unique
   user          User                @relation(fields: [userId], references: [id])
+  role          AdminRole           @default(SUPER_ADMIN)
   enabled       Boolean             @default(true)
+  tokenVersion  Int                 @default(0) // bumping this invalidates ALL of the admin's access tokens (disable / role change)
   lastLoginIp   String?             @db.VarChar(64)
   lastLoginAt   DateTime?
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   refreshTokens AdminRefreshToken[]
+  actionLogs    AdminActionLog[]
 }
 
 /// Admin refresh token (family-based + reuse detection, mirrors RefreshToken; a separate instance avoids mixing with user sessions).
@@ -423,6 +451,30 @@ model AdminRefreshToken {
 
   @@index([adminId])
   @@index([familyId])
+}
+
+/// Append-only audit trail of admin destructive actions (who did what, from where, when, and whether it
+/// succeeded). Written best-effort by AdminAuditInterceptor on handlers tagged @Audit — a log failure
+/// never blocks the operation. adminRole is denormalized so history survives a later role change.
+model AdminActionLog {
+  id           BigInt    @id @default(autoincrement())
+  adminId      Int
+  admin        Admin     @relation(fields: [adminId], references: [id])
+  adminRole    AdminRole
+  action       String    @db.VarChar(64) // e.g. "user.disable"
+  targetType   String?   @db.VarChar(32) // "user" | "peer" | "admin" …
+  targetId     String?   @db.VarChar(64)
+  ip           String?   @db.VarChar(64)
+  userAgent    String?   @db.VarChar(255)
+  route        String?   @db.VarChar(255)
+  success      Boolean   @default(true)
+  errorMessage String?   @db.VarChar(255)
+  meta         Json?
+  at           DateTime  @default(now())
+
+  @@index([adminId])
+  @@index([at])
+  @@index([action])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

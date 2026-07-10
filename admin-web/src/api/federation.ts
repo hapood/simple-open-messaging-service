@@ -1,5 +1,5 @@
 import { request } from '@/api/client'
-import type { FederatedPeerListResult, FederatedPeerEvent } from '@/types/api'
+import type { FederatedPeer, FederatedPeerListResult, FederatedPeerEvent, SelfCheckReport } from '@/types/api'
 
 export interface FederationPeersQuery {
   skip?: number
@@ -10,6 +10,11 @@ export interface FederationPeersQuery {
 
 export function listFederationPeers(q: FederationPeersQuery): Promise<FederatedPeerListResult> {
   return request<FederatedPeerListResult>('/admin/federation/peers', q)
+}
+
+/** Single peer's current lifecycle state (the routed detail page's source — deep-linkable by domain). */
+export function getFederationPeer(domain: string): Promise<FederatedPeer> {
+  return request<FederatedPeer>(`/admin/federation/peers/${encodeURIComponent(domain)}`)
 }
 
 /** The domain is a single path segment (dots are fine; never a slash), so it routes as :domain. */
@@ -26,4 +31,13 @@ export function blockFederationPeer(domain: string, note?: string): Promise<void
 
 export function unblockFederationPeer(domain: string): Promise<void> {
   return request<void>(`/admin/federation/peers/${encodeURIComponent(domain)}/unblock`)
+}
+
+/** Run the S2S handshake self-check. Both options are optional; the server defaults to
+ *  ntp.aliyun.com and the system DNS resolver. */
+export function runFederationSelfCheck(opts?: {
+  ntpServer?: string
+  dnsResolver?: string
+}): Promise<SelfCheckReport> {
+  return request<SelfCheckReport>('/admin/federation/self-check', opts)
 }

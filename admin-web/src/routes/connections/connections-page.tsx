@@ -1,9 +1,7 @@
 import dayjs from 'dayjs'
 import { useTranslation } from 'react-i18next'
 import { useConnections } from '@/hooks/use-connections'
-import { formatApiError } from '@/lib/format-error'
 import { Badge } from '@/components/ui/badge'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -12,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
 
 /** Compact human-readable duration "1d 2h" / "5m 10s" / "12s" from milliseconds. */
@@ -75,30 +74,15 @@ export function ConnectionsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
-              Array.from({ length: 5 }).map((_, i) => (
-                <TableRow key={i}>
-                  {Array.from({ length: 4 }).map((__, j) => (
-                    <TableCell key={j}>
-                      <Skeleton className="h-5 w-full" />
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            ) : error ? (
-              <TableRow>
-                <TableCell colSpan={4} className="py-8 text-center text-destructive">
-                  {t('common.loadFailed', { message: formatApiError(error) })}
-                </TableCell>
-              </TableRow>
-            ) : clients.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">
-                  {t('connections.empty')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              clients.map((c) => (
+            <TableBodyState
+              loading={isLoading}
+              error={error}
+              empty={clients.length === 0}
+              colSpan={4}
+              skeletonRows={5}
+              emptyMessage={t('connections.empty')}
+            >
+              {clients.map((c) => (
                 <TableRow key={c.userId}>
                   <TableCell className="font-medium">
                     {c.account ?? '#' + c.userId}
@@ -115,8 +99,8 @@ export function ConnectionsPage() {
                     {formatDuration(Date.now() - c.since)}
                   </TableCell>
                 </TableRow>
-              ))
-            )}
+              ))}
+            </TableBodyState>
           </TableBody>
         </Table>
       </div>

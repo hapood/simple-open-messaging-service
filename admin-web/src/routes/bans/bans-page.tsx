@@ -1,10 +1,8 @@
 import { useTranslation } from 'react-i18next'
 import { ShieldOff } from 'lucide-react'
 import { useBans, useUnban } from '@/hooks/use-bans'
-import { formatApiError } from '@/lib/format-error'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -13,6 +11,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
 
 export function BansPage() {
@@ -38,27 +37,20 @@ export function BansPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={5}>
-                  <Skeleton className="h-5 w-full" />
-                </TableCell>
-              </TableRow>
-            ) : error ? (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-destructive">
-                  {t('common.loadFailed', { message: formatApiError(error) })}
-                </TableCell>
-              </TableRow>
-            ) : !data || data.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+            <TableBodyState
+              loading={isLoading}
+              error={error}
+              empty={!data || data.length === 0}
+              colSpan={5}
+              skeletonRows={6}
+              emptyMessage={
+                <div>
                   <ShieldOff className="mx-auto mb-2 size-5 opacity-40" />
                   {t('bans.empty')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              data.map((b) => (
+                </div>
+              }
+            >
+              {data?.map((b) => (
                 <TableRow key={b.key}>
                   <TableCell>
                     <Badge variant={b.type === 'ip' ? 'default' : 'secondary'}>
@@ -85,8 +77,8 @@ export function BansPage() {
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))
-            )}
+              ))}
+            </TableBodyState>
           </TableBody>
         </Table>
       </div>

@@ -19,6 +19,7 @@ import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { UserService } from '../user/user.service.js';
+import { PrismaService } from '../prisma.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
 import { RolesGuard } from '../group/roles.guard.js';
@@ -58,6 +59,7 @@ export class GroupController {
     private readonly sseService: SseService,
     private readonly federationService: FederationService,
     private readonly userService: UserService,
+    private readonly prisma: PrismaService,
   ) {}
 
   /**
@@ -116,11 +118,14 @@ export class GroupController {
   }
 
   /**
-   * Invite friends into a group. LOCAL friends get an Invite row + a minimal GROUP_INVITE card in the P2P
-   * thread (the frontend fetches the group identity by groupUserId). FEDERATED friends get a cross-server
-   * invite (sendInvite GROUP) — the peer's handleGroupInvite creates the mirror + an incoming Invite
-   * (visible in Phase B messaging); no local card. The Invite id is stable across re-invites
-   * (createGroupInvite overwrites in place). A target is SKIPPED (not fatal) on a write/send failure.
+   * Invite friends into a group — LOCAL and FEDERATED now share ONE card shape, addressed by the group's
+   * `!account` (no internal ids). The card is ALWAYS written into the inviter's P2P thread with the
+   * target: for a LOCAL friend that thread is shared (the target sees it directly); for a FEDERATED friend
+   * it is the inviter's P2P MIRROR, and the card flows to the invitee via the Step-2 P2P message pull
+   * (Phase B). The invitee resolves their pending invite by the `group` account (/invite/detail). The
+   * federated branch ALSO sends the cross-server invite (sendInvite GROUP) so the peer creates the mirror
+   * + the incoming Invite BEFORE the card arrives (the card's /invite/detail must find a row). Re-invites
+   * overwrite the Invite in place (stable id). A target is SKIPPED (not fatal) on a write/send failure.
    */
   private async writeInvites(
     inviter: number,
@@ -130,7 +135,29 @@ export class GroupController {
     const deduped = Array.from(new Set(userIds));
     const invited: number[] = [];
     const skipped: { userId: number; reason: string }[] = [];
-    // Batch-load the targets' federation identity to branch local vs federated.
+    // The group's `!account` — the federated-stable identity on the card (== fedGroupAccount once the
+    // first federated invite mints it; for a purely-local group it is just the groupUser account). Both
+    // resolve the invite cross-server via the @@unique-backed (toUser, thread) lookup.
+    const [inviterRow, groupUserRow, trdRow] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: inviter }, select: { account: true } }),
+      this.prisma.user.findUnique({ where: { id: group.groupUserId }, select: { account: true } }),
+      this.prisma.messageThread.findUnique({ where: { id: group.threadId }, select: { originDomain: true } }),
+    ]);
+    const inviterAccount = inviterRow?.account;
+    const groupAccount = groupUserRow?.account;
+    if (!inviterAccount || !groupAccount) {
+      // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
+      return { invited, skipped: deduped.map((userId) => ({ userId, reason: 'inviter or group missing' })) };
+    }
+    // The group's home domain for the card preview: our domain when we are the origin, else the origin
+    // domain. Carried inline so the row renders on BOTH the inviter's + invitee's side without a fetch
+    // (/invite/detail is invitee-only — it 404s for the inviter's own copy of the card). The avatar path is
+    // same-origin for a local group; a federated viewer's row falls back to a letter avatar and the dialog
+    // resolves the authoritative localized avatar via /invite/detail(group).
+    const groupIsLocal = !trdRow?.originDomain || trdRow.originDomain === this.federationService.ourDomain;
+    const groupDomain = groupIsLocal
+      ? this.federationService.ourDomain
+      : (trdRow!.originDomain as string);
     const targets = deduped.length ? await this.userService.queryUsers({ where: { id: { in: deduped } } }) : [];
     const byId = new Map(targets.map((u) => [u.id, u]));
     for (const userId of deduped) {
@@ -139,10 +166,16 @@ export class GroupController {
         skipped.push({ userId, reason: 'user not found' });
         continue;
       }
-      if (target.isForeigner) {
-        // Federated friend → cross-server invite. The peer's handleGroupInvite creates the mirror + an
-        // incoming Invite (visibility = Phase B). No local card; the friend gate runs on the peer.
-        try {
+      // The inviter's P2P thread with the target (shared for local; the inviter's mirror for federated).
+      const p2pThreadId = await this.participantService.findP2PThreadBetween(inviter, userId);
+      if (p2pThreadId === null) {
+        skipped.push({ userId, reason: 'not a friend or no conversation' });
+        continue;
+      }
+      try {
+        if (target.isForeigner) {
+          // Federated: deliver the cross-server invite first (peer creates mirror + Invite), then write
+          // the card into the inviter's mirror so it flows to the invitee via Step-2 P2P pull.
           await this.federationService.sendInvite({
             kind: 'GROUP',
             fromLocalUserId: inviter,
@@ -152,35 +185,34 @@ export class GroupController {
             groupAvatarUrl: group.avatar || undefined,
             groupRevision: group.updatedAt,
           });
-          invited.push(userId);
-        } catch (e) {
-          skipped.push({
-            userId,
-            reason: `federated invite failed: ${(e as Error)?.message ?? String(e)}`,
-          });
+        } else {
+          // Local: the Invite row the invitee will accept.
+          await this.inviteService.createGroupInvite(inviter, group.threadId, userId);
         }
-      } else {
-        // Local friend → local Invite + a minimal card (the frontend fetches identity by groupUserId).
-        const p2pThreadId = await this.participantService.findP2PThreadBetween(inviter, userId);
-        if (p2pThreadId === null) {
-          skipped.push({ userId, reason: 'not a friend or no conversation' });
-          continue;
-        }
-        try {
-          const inviteId = await this.inviteService.createGroupInvite(inviter, group.threadId, userId);
-          await this.messageService.writeMsgToThread(
-            inviter,
-            p2pThreadId,
-            JSON.stringify({ type: 'GROUP_INVITE', fromUserId: inviter, groupUserId: group.groupUserId, inviteId }),
-            ContentType.INVITE,
-          );
-          invited.push(userId);
-        } catch (e) {
-          skipped.push({
-            userId,
-            reason: `invite write failed: ${(e as Error)?.message ?? String(e)}`,
-          });
-        }
+        // Card identity = accounts only (`from` = inviter account, `group` = the `!account`); the invitee
+        // resolves + accepts by `group` (/invite/detail + /invite/accept take a group account). The display
+        // fields are carried inline so the row renders instantly on both sides with no per-row fetch and no
+        // internal ids on the card.
+        await this.messageService.writeMsgToThread(
+          inviter,
+          p2pThreadId,
+          JSON.stringify({
+            type: 'GROUP_INVITE',
+            from: inviterAccount,
+            group: groupAccount,
+            groupName: group.name,
+            groupAvatar: group.avatar || undefined,
+            groupDomain,
+            groupIsLocal,
+          }),
+          ContentType.INVITE,
+        );
+        invited.push(userId);
+      } catch (e) {
+        skipped.push({
+          userId,
+          reason: `invite failed: ${(e as Error)?.message ?? String(e)}`,
+        });
       }
     }
     return { invited, skipped };

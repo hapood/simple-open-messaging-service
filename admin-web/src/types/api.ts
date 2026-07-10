@@ -164,3 +164,264 @@ export interface FederatedPeerEvent {
   reason: string | null // demoted: the failure message; blocked: optional admin note
   createdAt: number
 }
+
+// ─── S2S handshake self-check (POST /admin/federation/self-check) ───
+// Probes THIS server's federation prerequisites from the external viewpoint. Each network check
+// (tls-public / well-known) carries an `ips[]` evidence array — one independent probe per resolved IP,
+// because an SRV target can point at a DDNS host or the apex can have many A/AAAA records, and each
+// IP may present a different cert or be differently reachable.
+export type SelfCheckStatus = 'ok' | 'warn' | 'fail' | 'skip'
+export type SelfCheckGroup = 'config' | 'dns' | 'tls' | 'well-known' | 'crypto' | 'clock'
+
+export interface SelfCheckSummary {
+  ok: number
+  warn: number
+  fail: number
+  skip: number
+}
+
+export interface SelfCheckCertInfo {
+  subject: string
+  issuer: string
+  subjectCN: string | null
+  issuerCN: string | null
+  subjectAltName: string | null
+  serialNumber: string
+  validFrom: string
+  validTo: string
+  daysToExpiry: number
+  signatureAlgorithm: string | null
+  publicKey: { algorithm: string | null; bits: number | null; curve: string | null }
+  fingerprintSha1: string
+  fingerprintSha256: string
+  ca: boolean
+  keyUsage: string[] | null
+  alpn: string | null
+  sanMatched: boolean
+}
+
+export interface SelfCheckChainNode {
+  subject: string
+  issuer: string
+  subjectCN: string | null
+  validTo: string | null
+  selfSigned: boolean
+  isCA: boolean
+}
+
+export interface SelfCheckIpTlsProbe {
+  ip: string
+  family: 4 | 6
+  reachable: boolean
+  status: SelfCheckStatus
+  detail: string
+  cert?: SelfCheckCertInfo
+  chain?: SelfCheckChainNode[]
+  chainComplete?: boolean
+  errorClass?: 'reachability' | 'cert' | 'timeout'
+  code?: string
+}
+
+export interface SelfCheckIpWellKnownProbe {
+  ip: string
+  family: 4 | 6
+  reachable: boolean
+  status: SelfCheckStatus
+  detail: string
+  httpStatus?: number
+  contentType?: string
+  software?: string | null
+  keyCount?: number
+  keysValid?: boolean
+  errorClass?: 'reachability' | 'cert' | 'timeout' | 'http' | 'parse'
+  code?: string
+}
+
+export interface SelfCheckCheck {
+  key: string
+  group: SelfCheckGroup
+  title: string
+  status: SelfCheckStatus
+  detail: string
+  evidence?: Record<string, unknown>
+  durationMs: number
+}
+
+export interface SelfCheckReport {
+  domain: string
+  runAt: number // ms epoch
+  durationMs: number
+  summary: SelfCheckSummary
+  target: { host: string; port: number; scheme: 'https' | 'http'; hasSrv: boolean }
+  resolver: string
+  ntpServer: string
+  checks: SelfCheckCheck[]
+}
+
+// Reference NTP / DNS resolver options for the controls. `alias` is a brand/region tag shown alongside
+// the technical value (not localized — Aliyun / Tencent are recognized in either language).
+export const NTP_SERVERS: ReadonlyArray<{ value: string; alias: string }> = [
+  { value: 'ntp.aliyun.com', alias: 'Aliyun' },
+  { value: 'time1.cloud.tencent.com', alias: 'Tencent Cloud' },
+  { value: 'cn.ntp.org.cn', alias: 'China NTP' },
+  { value: 'pool.ntp.org', alias: 'NTP Pool' },
+  { value: 'time.google.com', alias: 'Google' },
+  { value: 'time.cloudflare.com', alias: 'Cloudflare' },
+  { value: 'time.windows.com', alias: 'Microsoft' },
+]
+
+export const DNS_RESOLVERS: ReadonlyArray<{ value: string; alias: string }> = [
+  { value: 'system', alias: 'System' },
+  { value: '223.5.5.5', alias: 'AliDNS' },
+  { value: '119.29.29.29', alias: 'DNSPod' },
+  { value: '114.114.114.114', alias: '114 DNS' },
+  { value: '8.8.8.8', alias: 'Google' },
+  { value: '1.1.1.1', alias: 'Cloudflare' },
+]
+
+// ── RBAC (mirrors backend AdminRole enum) ────────────────────────────────────
+export type AdminRole = 'SUPER_ADMIN' | 'ADMIN' | 'VIEWER'
+
+// ── Current admin identity (POST /admin/me) ──────────────────────────────────
+export interface MeResult {
+  account: string
+  name: string
+  role: AdminRole
+}
+
+// ── User 360° detail (POST /admin/users/:id/detail) ──────────────────────────
+export interface UserDetailUser {
+  id: number
+  account: string
+  name: string
+  avatar: string
+  bio: string
+  domain: string | null
+  isForeigner: boolean
+  isGroup: boolean
+  isDeleted: boolean
+  tokenVersion: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface UserDetailGroup {
+  threadId: number
+  role: 'OWNER' | 'ADMIN' | 'MEMBER' | null
+  joinedAt: number
+  leftAt: number | null
+  thread: { groupUser: { account: string; name: string } | null }
+}
+
+export interface UserDetailPushToken {
+  id: number
+  platform: 'ANDROID' | 'WEB' | 'IOS'
+  deviceId: string | null
+  lastSeenAt: number
+}
+
+export interface UserDetail {
+  user: UserDetailUser
+  groups: UserDetailGroup[]
+  sessions: Session[]
+  pushTokens: UserDetailPushToken[]
+}
+
+// ── Dashboard overview (POST /admin/dashboard) ───────────────────────────────
+// Backend BigInt (media.bytes) is serialized to a string by the global interceptor.
+export interface DashboardFederation {
+  trusted: number
+  demoted: number
+  pending: number
+  blocked: number
+}
+
+export interface DashboardAction {
+  id: string
+  action: string
+  targetType: string | null
+  targetId: string | null
+  adminId: number
+  adminRole: AdminRole
+  success: boolean
+  errorMessage: string | null
+  ip: string | null
+  at: number
+}
+
+export interface DashboardSummary {
+  online: { totalConnections: number; uniqueUsers: number }
+  activeSessions: number
+  federation: DashboardFederation
+  media: { bytes: string; assetCount: number; reclaimable: number }
+  recentActions: DashboardAction[]
+}
+
+// ── Audit log (POST /admin/audit) ────────────────────────────────────────────
+export interface AuditEntry {
+  id: string
+  adminId: number
+  adminRole: AdminRole
+  action: string
+  targetType: string | null
+  targetId: string | null
+  ip: string | null
+  userAgent: string | null
+  route: string | null
+  success: boolean
+  errorMessage: string | null
+  at: number
+}
+
+export interface AuditListResult {
+  list: AuditEntry[]
+  total: number
+}
+
+// ── Media storage (POST /admin/media/stats) ──────────────────────────────────
+// BigInt byte sums are serialized to strings by the global interceptor.
+export interface MediaExtBucket {
+  ext: string
+  files: number
+  bytes: string
+}
+
+export interface MediaStats {
+  db: { bytes: string; assetCount: number; reclaimable: number }
+  onDisk: { files: number; bytes: string; byExt: MediaExtBucket[] }
+}
+
+// ── Admin self-management (POST /admin/admins*) ──────────────────────────────
+export interface AdminAccount {
+  id: number
+  userId: number
+  account: string
+  name: string
+  role: AdminRole
+  enabled: boolean
+  lastLoginAt: number | null
+  lastLoginIp: string | null
+  createdAt: number
+}
+
+export interface AdminListResult {
+  list: AdminAccount[]
+  total: number
+}
+
+// ── Groups/threads (POST /admin/groups) ──────────────────────────────────────
+export interface GroupRow {
+  id: number
+  createdAt: number
+  lastMessageAt: number | null
+  lastMessagePreview: string | null
+  originDomain: string | null
+  federatedThreadId: string | null
+  groupUser: { account: string; name: string } | null
+  _count: { ThreadParticipant: number }
+}
+
+export interface GroupListResult {
+  list: GroupRow[]
+  total: number
+}

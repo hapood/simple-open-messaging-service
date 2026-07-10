@@ -91,22 +91,23 @@ export class S2sController {
     return rev;
   }
 
-  /** GET /api/v1/s2s/thread/roster — a member-server pulls the canonical roster for a federated group
-   *  (the lazy meta-pull on chat-open). The signer is a trusted peer (S2sSignatureGuard). */
+  /** GET /api/v1/s2s/thread/roster?to=<groupAccount> — a member-server pulls the canonical roster for a
+   *  federated group (the lazy meta-pull on chat-open). The group is addressed by its `!account` (no
+   *  internal thread id on the wire). The signer is a trusted peer (S2sSignatureGuard). */
   @Get('thread/roster')
-  async getThreadRoster(@Query('thread') thread?: string) {
-    if (!thread) {
+  async getThreadRoster(@Query('to') to?: string) {
+    if (!to) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing thread query param',
+        'missing to query param',
         HttpStatus.BAD_REQUEST,
       );
     }
-    const roster = await this.federation.serveGroupRoster(thread);
+    const roster = await this.federation.serveGroupRoster(to);
     if (roster === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `group ${thread} not found`,
+        `group ${to} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -134,21 +135,25 @@ export class S2sController {
     );
   }
 
-  /** GET /api/v1/s2s/messages — the peer pulls the SENDER's side of a 1:1 thread (authoritative,
-   *  §3.2). `from` is OUR local user; `to` is the requester's user (the signer). Gate 2 (APPROVED
-   *  friendship) is enforced inside serveOutboundMessages. */
+  /** GET /api/v1/s2s/messages — the peer pulls messages. Three shapes, all account-based (no internal
+   *  thread id): `to` is a peer user (P2P, `from` = our local sender) or the group `!account` (group). For
+   *  a group: `from` absent → ALL-SENDERS whole-thread pull (mirror ← origin, keyed by thread seq,
+   *  advances the mirror's pullUntil); `from` present → PER-AUTHOR pull (origin ← mirror hub leg, keyed by
+   *  originSeq). `fromDomain` is the author's domain (required for group; for P2P it is our own). Gates
+   *  (friendship / roster) are enforced inside the serve* methods. */
   @Get('messages')
   async getMessages(
     @Req() req: FastifyRequest,
     @Query('from') fromAccount?: string,
+    @Query('fromDomain') fromDomain?: string,
     @Query('to') toAccount?: string,
     @Query('afterSeq') afterSeqParam?: string,
     @Query('take') takeParam?: string,
   ) {
-    if (!fromAccount || !toAccount) {
+    if (!toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing from/to query param',
+        'missing to query param',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -163,10 +168,33 @@ export class S2sController {
       );
     }
     const take = Math.min(Number(takeParam ?? '50') || 50, 50);
+    const signer = this.signerDomain(req);
+    if (toAccount.startsWith('!')) {
+      // Group: all-senders (mirror ← origin) when no `from`; per-author (origin ← mirror) when `from`.
+      if (fromAccount && fromDomain) {
+        return this.federation.serveOutboundMessagesGroupFrom(
+          toAccount,
+          fromAccount,
+          fromDomain,
+          after,
+          take,
+          signer,
+        );
+      }
+      return this.federation.serveOutboundMessagesGroup(toAccount, after, take, signer);
+    }
+    // P2P: `from` is our local sender, `to` is the requester's user. Friendship gate inside.
+    if (!fromAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing from query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     return this.federation.serveOutboundMessages(
       fromAccount,
       toAccount,
-      this.signerDomain(req),
+      signer,
       after,
       take,
     );
@@ -235,8 +263,10 @@ export class S2sController {
       signer,
       entries as ReadonlyArray<{
         from?: unknown;
+        fromDomain?: unknown;
         to?: unknown;
         latestSeq?: unknown;
+        left?: unknown;
       }>,
     );
     return { code: BusinessCode.OK, message: 'ok', data: null };
@@ -269,6 +299,7 @@ export class S2sController {
     @Res() reply: FastifyReply,
     @Query('digest') digest?: string,
     @Query('from') fromAccount?: string,
+    @Query('fromDomain') fromDomain?: string,
     @Query('to') toAccount?: string,
   ) {
     if (!digest || !fromAccount || !toAccount) {
@@ -281,6 +312,7 @@ export class S2sController {
     const { absPath, bytes } = await this.federation.resolveMediaFile(
       fromAccount,
       toAccount,
+      fromDomain,
       this.signerDomain(req),
       digest,
     );

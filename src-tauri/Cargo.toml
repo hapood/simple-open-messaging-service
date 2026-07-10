@@ -26,6 +26,28 @@ serde = { version = "1", features = ["derive"] }
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
 
+# Desktop-only deps. tauri-plugin-single-instance has no mobile backend (a phone has no concept of
+# "another instance"), so it is gated to non-mobile targets to keep the Android build compiling.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+
+# Lean release binary + lower runtime RSS for BOTH desktop and Android release builds — Cargo applies
+# [profile.release] regardless of target, so the NDK cross-build inherits it too. codegen-units = 1 +
+# LTO let the optimizer see the whole program (smaller binary, fewer redundant copies in the text/heap);
+# opt-level = "s" optimizes for size; strip drops debug symbols; panic = "abort" drops the unwind
+# tables (binary AND resident memory both shrink).
+#
+# lto = "thin" (NOT fat `true`): Tauri's dependency graph is huge, and fat LTO during Android NDK
+# linking eats several GB of RAM and readily OOMs the cross-toolchain. Thin LTO keeps nearly all the
+# size/binary win at a fraction of the memory+time, so the same profile is safe on both targets.
+# Dev builds are untouched so iteration stays fast.
+[profile.release]
+lto = "thin"
+opt-level = "s"
+strip = true
+panic = "abort"
+codegen-units = 1
+
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]

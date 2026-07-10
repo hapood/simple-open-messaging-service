@@ -9,6 +9,8 @@
 // is reused (no orphans accumulate). global-setup only ensures the base `soms_test` is reachable.
 import 'dotenv/config';
 import { execSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 if (!process.env.DATABASE_URL) {
   throw new Error(
@@ -33,3 +35,10 @@ const forkUrl = new URL(process.env.DATABASE_URL);
 forkUrl.pathname = `/${forkDb}`;
 process.env.DATABASE_URL = forkUrl.toString();
 execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+
+// Keep structured logs out of the repo and quiet during e2e. LoggerModule builds the pino instance
+// during AppModule boot even though the e2e harness never calls useLogger, so without this every
+// fork would create a `logs/` dir in the repo root and emit verbose boot output. Override by setting
+// LOG_DIR / LOG_LEVEL in the shell before `npm run test:e2e`.
+process.env.LOG_DIR ??= join(tmpdir(), `soms-test-logs-fork${poolId}`);
+process.env.LOG_LEVEL ??= 'warn';

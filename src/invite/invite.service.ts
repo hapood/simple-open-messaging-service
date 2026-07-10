@@ -30,7 +30,7 @@ export type AcceptInviteResult =
   | {
       kind: 'GROUP';
       threadId: number;
-      federatedThreadId: string | null; // non-null ⇒ a cross-server group mirror
+      fedGroupAccount: string | null; // non-null ⇒ a cross-server group mirror
       originDomain: string | null; // the group's home domain (origin-propagation target)
     };
 
@@ -211,7 +211,7 @@ export class InviteService {
    * whether the caller already joined. Non-leaking — an invite not addressed to the caller (or a missing
    * one) resolves to INVITE_NOT_FOUND. The dialog renders "valid → Join", "joined", "expired", or "invalid".
    */
-  async getInviteDetail(inviteId: string, callerId: number): Promise<{
+  async getInviteDetail(inviteIdOrGroup: string, callerId: number): Promise<{
     id: string;
     kind: string;
     status: string;
@@ -232,7 +232,7 @@ export class InviteService {
       isForeigner: boolean;
     };
   }> {
-    const id = this.parseInviteId(inviteId);
+    const id = await this.resolveInviteId(inviteIdOrGroup, callerId, false);
     const invite = await this.prisma.invite.findUnique({
       where: { id },
       include: {
@@ -277,10 +277,10 @@ export class InviteService {
    * MEMBER + mark ACCEPTED. Validates PENDING, ownership, and expiry.
    */
   async acceptInvite(
-    inviteId: string,
+    inviteIdOrGroup: string,
     byUserId: number,
   ): Promise<AcceptInviteResult> {
-    const id = this.parseInviteId(inviteId);
+    const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
     return this.prisma.$transaction(async (tx) => {
       const invite = await tx.invite.findUnique({ where: { id } });
       if (invite === null || invite.status !== InviteStatus.PENDING) {
@@ -340,16 +340,16 @@ export class InviteService {
         where: { id },
         data: { status: InviteStatus.ACCEPTED },
       });
-      // The group's federation fields: non-null federatedThreadId ⇒ a cross-server mirror; the controller
+      // The group's federation fields: non-null fedGroupAccount ⇒ a cross-server mirror; the controller
       // uses originDomain to propagate the join to the origin (roster fanout).
       const thread = await tx.messageThread.findUnique({
         where: { id: invite.threadId },
-        select: { federatedThreadId: true, originDomain: true },
+        select: { fedGroupAccount: true, originDomain: true },
       });
       return {
         kind: 'GROUP',
         threadId: invite.threadId,
-        federatedThreadId: thread?.federatedThreadId ?? null,
+        fedGroupAccount: thread?.fedGroupAccount ?? null,
         originDomain: thread?.originDomain ?? null,
       };
     });
@@ -588,5 +588,46 @@ export class InviteService {
         `invalid inviteId [${s}]`,
       );
     }
+  }
+
+  /**
+   * Resolve an invite id from EITHER a BigInt invite id (local legacy) OR a group `!account` (the
+   * federated-stable card identity). The card carries the group account; the invitee's local Invite row
+   * (created by handleGroupInvite) is found by (toUserId=caller, thread.fedGroupAccount=groupAccount).
+   * `pendingOnly` — detail shows any-status (so an already-joined invite renders its final state); accept
+   * requires PENDING. Returns null if no such invite (caller throws the domain error).
+   */
+  private async findInviteIdByGroup(
+    groupAccount: string,
+    callerId: number,
+    pendingOnly: boolean,
+  ): Promise<bigint | null> {
+    const invite = await this.prisma.invite.findFirst({
+      where: {
+        toUserId: callerId,
+        kind: InviteKind.GROUP,
+        ...(pendingOnly ? { status: InviteStatus.PENDING } : {}),
+        thread: { fedGroupAccount: groupAccount },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    return invite?.id ?? null;
+  }
+
+  /** Resolve the concrete invite id from a card identity: a group `!account` (lookup) or a BigInt id. */
+  private async resolveInviteId(
+    groupAccountOrId: string,
+    callerId: number,
+    pendingOnly: boolean,
+  ): Promise<bigint> {
+    if (groupAccountOrId.startsWith('!')) {
+      const id = await this.findInviteIdByGroup(groupAccountOrId, callerId, pendingOnly);
+      if (id === null) {
+        throw new BusinessException(BusinessCode.INVITE_NOT_FOUND, 'invite not found');
+      }
+      return id;
+    }
+    return this.parseInviteId(groupAccountOrId);
   }
 }

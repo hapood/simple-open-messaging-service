@@ -3,11 +3,16 @@
 > **Status:** **Phase A BUILT** (2026-07-09): the unified S2S invite (`/s2s/invite` +
 > `/s2s/invite-accept`, friend + group share one endpoint — see `docs/federation-s2s-api.md`),
 > cross-server group **invite + join** (origin records the joiner), and the lazy **roster meta-pull**
-> (chat-open probe, reusing the Step-2 profile-sync path + `GET /s2s/thread/roster`). **Phase B
-> (deferred):** cross-server group **messaging** (generalize `messages`/`new-msg-map`/`get_file` with a
-> `thread` param + roster gate + origin-hub signal + join backfill) — which also makes the federated
-> group-invite chat card **visible** — and the **leave** flow (new-msg-map discovery). Builds directly
-> on Step 2 (`docs/federation-step2-design.md`), whose 1:1 transport is reused verbatim.
+> (chat-open probe, reusing the Step-2 profile-sync path + `GET /s2s/thread/roster`). **Phase B BUILT**
+> (2026-07-10): cross-server group **messaging** via the **origin-hub** (the origin is the single
+> authority for roster AND message history — a member signals the origin, the origin pulls + aggregates +
+> re-signals, members pull the whole thread from the origin), the **group-invite chat card** (written
+> into the inviter's P2P mirror → flows to the invitee via Step-2 pull; resolved by the group `!account`),
+> and **leave** (a `left:true` new-msg-map hint → origin dissolves the member). Loop-safety is one rule:
+> `signalOutbound` excludes the fetch-source domain. **Deferred:** the `sinceSeq` "no history" join
+> option (new members currently see full history via `pullUntil=-1`), a durable active-liveness leave
+> backstop, the frontend card/account-resolution adaptation. Builds directly on Step 2
+> (`docs/federation-step2-design.md`), whose 1:1 transport is reused verbatim.
 >
 > **Scope:** cross-server **GROUP** threads — a group whose owner lives on server A and whose members
 > span servers A, B, C … . Owner is created on A (the **origin**); members on other servers hold local
@@ -432,22 +437,29 @@ identical branch (the origin serves any member's media; a member serves its own 
    the origin). Mirror-side kick/role are not explicitly guarded — the roster reconcile reverts any
    mirror-local mutation to match the origin, so a guard is redundant.
 
-**Phase B — DEFERRED (cross-server group messaging + visibility + leave):**
-7. **Timing/identity refactor** — `storePulledMessage`: arrival `createdAt` vs stored `originServerTime`;
-   drop `clientMessageId` from the served payload.
-8. **Generalize `messages` / `new-msg-map` / `get_file`** to the `thread` param + roster gate (§6.1,
-   §8). Keep the 1:1 path bit-identical behind the `federatedThreadId IS NULL` branch.
-9. **Send + signal loop (hub)** — `notifyOnSend` signals the origin on a member send; the origin
-   re-signals the other members after it stores the message. Per-(thread, sender) pull on both legs.
-10. **Backfill on join** — per-sender `after=0` pull from the origin (§7.4).
-11. **Group-invite chat card visibility** — the federated GROUP_INVITE card is written by the SENDER
-    (into its P2P mirror) + delivered to the receiver via the Step-2 message pull (Phase A leaves the
-    Invite + mirror working but the invitee sees no card until this lands).
-12. **Leave** — a member leaving a mirror signals via `new-msg-map`; the origin discovers it on its next
-    pull (the leaver's server returns "not friends" → the origin dissolves the membership).
-13. **e2e** — two-server harness: create group on `aaa` with a `bbb` member; send both directions;
-    backfill on a third member's join; leave/kick; verify arrival-time display, `originServerTime`
-    stored not shown, origin invariant under local owner transfer.
+**Phase B — BUILT (2026-07-10, origin-hub):** the origin is the single authority for roster AND message
+history. A member stores locally + signals the origin; the origin pulls per-author + aggregates + re-signals
+the other member-servers; members pull the whole thread from the origin via a thread-level `pullUntil`
+cursor (`MessageThread.pullUntil`, seeded by the invite's `sinceSeq`). Loop-safety is one rule at the
+hint-write layer: `signalOutbound` excludes the domain the message was fetched from.
+7. **Timing/identity refactor** — DONE in Step 2 (verified): `storePulledMessage` stores `originServerTime`
+   but displays/sorts by arrival `createdAt`; `clientMessageId` is not on the served payload.
+8. **Generalize `messages` / `new-msg-map` / `get_file`** — DONE: `to` is the group `!account` (all-senders
+   or per-author), `fromDomain` required; roster gate via `resolveGroupThreadAccess`. The 1:1 path is
+   bit-identical (to = user account).
+9. **Send + signal loop (hub)** — DONE: `signalOutbound` routes origin→all foreign member-domains,
+   mirror→origin-only, minus the fetch-source. The origin re-signals after `storePulledMessage`.
+10. **Cursor on join** — DONE (partial): `pullUntil` defaults to `-1` (full history) until seeded by
+    `sinceSeq`; the "latest = no history" option (seed from the invite's `sinceSeq`) is the deferred tail.
+11. **Group-invite chat card visibility** — DONE: `writeInvites` writes the account-based card
+    `{from, group}` into the inviter's P2P mirror → delivered via Step-2 pull; the invitee resolves by
+    the group `!account` (`InviteService.resolveInviteId`). Frontend card-rendering adaptation is the
+    remaining consumer-side work.
+12. **Leave** — DONE (best-effort): a `left:true` new-msg-map hint → the origin soft-leaves the member +
+    bumps the group meta. A durable active-liveness backstop is deferred.
+13. **e2e** — DONE (core): two-server harness — create group on `aaa` with a `bbb` member, accept by group
+    account, origin records the joiner, alice's message reaches bob's mirror via the hub + SSE. Full
+    coverage (3-app re-signal, backfill, leave, media transit) is the remaining tail.
 
 ---
 

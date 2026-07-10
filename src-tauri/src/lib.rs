@@ -76,7 +76,23 @@ pub fn run() {
     };
     let proxy_for_protocol = proxy_state.clone();
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+
+    // Single-instance lock — desktop only. The plugin has no mobile backend, and a phone's app model
+    // has no "second instance" to suppress, so it is excluded from the Android build (see the
+    // target-gated Cargo dep). Registered first so a duplicate launch short-circuits before any other
+    // plugin/window initializes; the callback focuses the existing main window instead of spawning a
+    // second WebView process (every extra instance carries its own multi-hundred-MB heap).
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.unminimize();
+            let _ = window.show();
+            let _ = window.set_focus();
+        }
+    }));
+
+    builder
         .plugin(tauri_plugin_notification::init())
         .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
             // Clone the state into the spawned task (cheap: Arc + refcounted Client).
@@ -147,10 +163,18 @@ pub fn run() {
         .expect("error while running tauri application");
 }
 
-/// Service one `media://localhost/<path>` request: forward to `${api_origin}/<path>` with the
-/// current Bearer token, stream the response body back. Hop-by-hop and length headers are dropped
-/// (they describe the upstream transport, not ours). On any upstream failure respond 502 so the <img>
-/// shows a broken-image / the gallery's retry card rather than a misleading 200.
+/// Service one `media://localhost/<path>` request: forward to `${api_origin}/<path>` with the current
+/// Bearer token AND the browser's `Range` header, returning the upstream's 206 Partial Content verbatim.
+///
+/// Tauri's `UriSchemeResponder` takes one complete body buffer (`Cow<'static, [u8]>`) — it cannot
+/// stream chunk-by-chunk to the WebView. So bounding each request to the byte range the `<video>` /
+/// `<audio>` actually requested is what keeps peak memory low: a large video arrives as many small
+/// (typically 1–2 MB) range reads, never one whole-file buffer. (Non-range requests — small `<img>`,
+/// explicit file downloads — are bounded instead by the backend's per-route upload caps.) Only
+/// hop-by-hop transport headers are dropped; content-length / content-range / accept-ranges pass
+/// through (a 206 MUST carry content-range + content-length per RFC 7233, and the body is forwarded
+/// verbatim so the upstream's length is exactly ours). On any upstream failure respond 502 so the
+/// `<img>` shows a broken-image / the gallery's retry card rather than a misleading 200.
 async fn proxy_media(
     st: ProxyState,
     request: tauri::http::Request<Vec<u8>>,
@@ -174,22 +198,31 @@ async fn proxy_media(
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {}", t));
     }
+    // Forward the browser's Range so the upstream answers 206 over JUST the requested bytes — the core
+    // memory bound for this proxy (see the method doc). Without it the proxy would buffer every whole
+    // media file. The backend's @fastify/static mount and the federation get_file both honor Range/206.
+    if let Some(range) = request.headers().get("range") {
+        req = req.header("range", range.clone());
+    }
 
     match req.send().await {
         Ok(upstream) => {
             let status = upstream.status();
             let mut builder = Response::builder().status(status);
             for (name, value) in upstream.headers().iter() {
-                // Drop headers that describe the hop, not the resource; Content-Length would mismatch
-                // our body if any intermediate re-encoded, and the others are transport-level.
+                // Drop only hop-by-hop headers (they describe the upstream transport, not ours).
+                // content-length / content-range / accept-ranges are KEPT: the body is forwarded
+                // verbatim so the upstream's length is exactly ours, and a 206 MUST carry content-range
+                // + content-length (RFC 7233).
                 if matches!(
                     name.as_str(),
-                    "content-length" | "transfer-encoding" | "connection" | "keep-alive"
+                    "transfer-encoding" | "connection" | "keep-alive"
                 ) {
                     continue;
                 }
                 builder = builder.header(name.clone(), value.clone());
             }
+            // Only the requested range is buffered (not the whole file) — see the method doc.
             let bytes = upstream.bytes().await.unwrap_or_default();
             responder.respond(
                 builder

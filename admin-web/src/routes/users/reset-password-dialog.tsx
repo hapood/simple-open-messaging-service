@@ -17,13 +17,12 @@ import { Label } from '@/components/ui/label'
 import { PASSWORD_REGEX } from '@/lib/constants'
 import { formatApiError } from '@/lib/format-error'
 import { useResetPassword } from '@/hooks/use-user-mutations'
-import type { User } from '@/types/api'
 
 export function ResetPasswordDialog({
   user,
   onClose,
 }: {
-  user: User | null
+  user: { id: number; account: string } | null
   onClose: () => void
 }) {
   const { t } = useTranslation()

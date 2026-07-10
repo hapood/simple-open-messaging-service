@@ -78,4 +78,11 @@ export class KeypairService implements OnModuleInit {
   getPublicKeyB64(): string {
     return this.key.publicKey;
   }
+
+  /** ISO timestamp of keypair creation — the admin self-check warns if the key is very young, since a
+   *  freshly-regenerated key without the documented 5-step rotation leaves existing peers holding a
+   *  stale public key (their inbound signature verification starts failing 401). */
+  getCreatedAt(): string {
+    return this.key.createdAt;
+  }
 }

@@ -1,6 +1,7 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsNumber, IsOptional, IsString, Matches } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
 import { Type } from 'class-transformer';
+import { AdminRole } from '../prisma/generated/client.js';
 
 /** Admin login input. */
 export class AdminLoginDto {
@@ -177,4 +178,140 @@ export class AdminFederationBlockDto {
   @IsOptional()
   @IsString()
   note?: string;
+}
+
+/** Inputs to the S2S self-check: which NTP server to compare the clock against, and which DNS resolver
+ *  to run lookups through (default 'system' = /etc/resolv.conf; a public resolver surfaces split-horizon
+ *  / propagation issues). Both optional. */
+export class AdminFederationSelfCheckDto {
+  @ApiProperty({
+    required: false,
+    example: 'ntp.aliyun.com',
+    description: 'NTP server used to measure clock skew (optional, default ntp.aliyun.com)',
+  })
+  @IsOptional()
+  @IsString()
+  ntpServer?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '223.5.5.5',
+    description: "DNS resolver IP for lookups (optional, default 'system')",
+  })
+  @IsOptional()
+  @IsString()
+  dnsResolver?: string;
+}
+
+/** Audit-log query: pagination + filters. `action` is a substring match (e.g. 'user.' );
+ *  `success` filters the outcome; `adminId` scopes to one actor. */
+export class AdminAuditQueryDto {
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  skip?: number;
+
+  @ApiPropertyOptional({ default: 50, minimum: 1, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  take?: number;
+
+  @ApiPropertyOptional({ description: 'Substring over action (e.g. user., federation., session.)' })
+  @IsOptional()
+  @IsString()
+  action?: string;
+
+  @ApiPropertyOptional({ description: 'Scope to one actor' })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  adminId?: number;
+
+  @ApiPropertyOptional({ description: 'Filter by outcome' })
+  @IsOptional()
+  @Type(() => Boolean)
+  success?: boolean;
+}
+
+/** Admin self-management: paginated, searchable list of admin accounts. */
+export class AdminManageListDto {
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  skip?: number;
+
+  @ApiPropertyOptional({ default: 50, minimum: 1, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  take?: number;
+
+  @ApiPropertyOptional({ description: 'Fuzzy search by linked user account (optional)' })
+  @IsOptional()
+  @IsString()
+  search?: string;
+}
+
+/** Promote an existing User to an admin. */
+export class AdminCreateDto {
+  @ApiProperty({ example: 42, description: 'Id of the User to promote' })
+  @Type(() => Number)
+  @IsInt()
+  userId: number;
+
+  @ApiProperty({ enum: AdminRole, description: 'Initial role' })
+  @IsIn([AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.VIEWER])
+  role: AdminRole;
+}
+
+/** Change an admin's role. */
+export class AdminSetRoleDto {
+  @ApiProperty({ enum: AdminRole })
+  @IsIn([AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.VIEWER])
+  role: AdminRole;
+}
+
+/** Apply one action to many users at once. Each affected user is processed through the same path as
+ *  the single-user endpoint (so disable still force-logs-out, etc.). */
+export class AdminUserBatchDto {
+  @ApiProperty({ type: [Number], example: [3, 7], description: 'User ids to act on' })
+  @IsArray()
+  @IsInt({ each: true })
+  ids: number[];
+
+  @ApiProperty({ enum: ['disable', 'enable', 'force-logout'] })
+  @IsIn(['disable', 'enable', 'force-logout'])
+  action: 'disable' | 'enable' | 'force-logout';
+}
+
+/** Groups/threads list query (type=GROUP threads; fuzzy search over the group name/account). */
+export class AdminGroupsListDto {
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  skip?: number;
+
+  @ApiPropertyOptional({ default: 50, minimum: 1, maximum: 200 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  take?: number;
+
+  @ApiPropertyOptional({ description: 'Fuzzy search by group account / name' })
+  @IsOptional()
+  @IsString()
+  search?: string;
 }

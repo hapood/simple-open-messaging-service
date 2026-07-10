@@ -11,10 +11,28 @@
     "next": "下一页",
     "page": "第 {{page}} / {{pages}} 页",
     "loadFailed": "加载失败：{{message}}",
-    "operationFailed": "操作失败"
+    "operationFailed": "操作失败",
+    "comingSoon": "敬请期待"
+  },
+  "topBar": {
+    "toggleTheme": "切换主题",
+    "search": "搜索"
+  },
+  "search": {
+    "placeholder": "搜索用户、节点…",
+    "hint": "输入以搜索用户和联邦节点",
+    "empty": "无匹配",
+    "section": { "users": "用户", "peers": "联邦节点" }
+  },
+  "roles": {
+    "super": "超级管理员",
+    "admin": "管理员",
+    "viewer": "只读"
   },
   "nav": {
+    "dashboard": "仪表盘",
     "users": "用户管理",
+    "groups": "群组",
     "sessions": "会话总览",
     "connections": "实时连接",
     "adminSessions": "管理员会话",
@@ -22,7 +40,35 @@
     "reuse": "重用告警",
     "push": "推送管理",
     "federation": "联邦",
-    "logout": "登出"
+    "selfCheck": "自检",
+    "logs": "日志",
+    "media": "媒体与存储",
+    "audit": "审计日志",
+    "admins": "管理员",
+    "settings": "设置",
+    "logout": "登出",
+    "group": {
+      "overview": "概览",
+      "security": "安全与会话",
+      "federation": "联邦",
+      "system": "系统"
+    }
+  },
+  "dashboard": {
+    "title": "仪表盘",
+    "desc": "系统概览一览。",
+    "autoRefresh": "每 15 秒自动刷新",
+    "mediaSub": "{{assets}} 个资源 · {{reclaimable}} 个可回收",
+    "noRecentActions": "暂无管理员操作记录",
+    "tile": {
+      "systemStatus": "系统状态",
+      "onlineNow": "当前在线",
+      "onlineConnections": "在线连接",
+      "activeSessions": "活跃会话",
+      "federationHealth": "联邦健康",
+      "storageUsage": "媒体存储",
+      "recentActions": "近期管理员操作"
+    }
   },
   "language": {
     "label": "语言",
@@ -64,9 +110,22 @@
     "toast": {
       "unbanned": "已解禁",
       "banned": "已封禁",
-      "forceLoggedOut": "已强制下线"
+      "forceLoggedOut": "已强制下线",
+      "batchDone": "已对 {{count}} 个用户执行操作"
     },
+    "selected": "已选 {{count}} 项",
+    "selectAll": "全选",
+    "selectRow": "选择 {{name}}",
     "total": "共 {{count}} 条"
+  },
+  "userDetail": {
+    "back": "返回用户列表",
+    "notFound": "用户不存在",
+    "section": { "profile": "资料", "groups": "群组", "sessions": "活跃会话", "push": "推送设备" },
+    "field": { "domain": "域", "foreigner": "境外", "tokenVer": "tokenVer", "createdAt": "创建时间", "updatedAt": "更新时间", "bio": "简介" },
+    "group": { "name": "群组", "role": "角色", "joined": "加入时间" },
+    "empty": { "groups": "无群组成员关系", "sessions": "无活跃会话", "push": "无推送设备" },
+    "push": { "deviceId": "设备 ID" }
   },
   "bans": {
     "title": "封禁管理",
@@ -231,6 +290,124 @@
       "demoted": "连接丢失 / 降级",
       "blocked": "管理员屏蔽",
       "unblocked": "管理员取消屏蔽"
+    },
+    "detail": { "back": "返回联邦", "notFound": "节点不存在", "tabOverview": "概览", "tabTimeline": "时间线" },
+    "selfCheck": {
+      "title": "S2S 握手自检",
+      "desc": "从外部视角诊断本服务器的联邦前置件——DNS/SRV、TLS 证书、.well-known/soms、密钥一致性、签名回环与时钟偏移。每项网络检查按解析出的每个 IP 独立执行（SRV→DDNS 或多 A/AAAA 记录）。",
+      "entry": "握手自检",
+      "ntpServer": "参考时钟 (NTP)",
+      "dnsResolver": "DNS 解析器",
+      "run": "运行检查",
+      "rerun": "重新运行",
+      "copyJson": "复制 JSON",
+      "placeholder": "选择参考时钟与 DNS 解析器，然后运行检测。",
+      "target": "目标",
+      "noSrv": "无 SRV，用 apex",
+      "runAt": "运行时间",
+      "totalDuration": "总耗时",
+      "status": {
+        "ok": "通过",
+        "warn": "警告",
+        "fail": "失败",
+        "skip": "跳过"
+      },
+      "group": {
+        "config": "本地配置",
+        "dns": "DNS 解析",
+        "tls": "TLS 证书",
+        "well-known": ".well-known/soms",
+        "crypto": "密钥与签名",
+        "clock": "时钟偏移"
+      },
+      "toast": {
+        "ok": "全部检查通过",
+        "hasFails": "{{count}} 项失败——请查看下方",
+        "copied": "报告已复制到剪贴板",
+        "copyFailed": "复制失败"
+      },
+      "field": {
+        "domain": "域名",
+        "keyId": "keyId",
+        "allowInsecureHttp": "允许HTTP",
+        "nodeEnv": "NODE_ENV",
+        "tlsConfigured": "本地TLS",
+        "listenPort": "监听端口",
+        "path": "路径",
+        "mode": "文件权限",
+        "createdAt": "创建时间",
+        "ageDays": "密龄(天)",
+        "record": "SRV记录",
+        "resolvedHost": "主机",
+        "resolvedPort": "端口",
+        "addresses": "地址",
+        "authority": "authority",
+        "verified": "已验证",
+        "ntpServer": "NTP服务器",
+        "dnsResolver": "解析器",
+        "offsetSec": "偏移(秒)",
+        "roundTripMs": "往返(毫秒)",
+        "host": "主机",
+        "port": "端口",
+        "originTls": "源站TLS",
+        "keyIdDomain": "keyId域",
+        "expectedDomain": "期望域",
+        "keyMatch": "密钥匹配",
+        "domainMatch": "域匹配",
+        "localPubB64": "本地公钥(b64)",
+        "localPubSha256": "本地公钥sha256",
+        "publishedPubB64": "发布公钥(b64)",
+        "publishedKeyCount": "已发布密钥数"
+      },
+      "cert": {
+        "show": "证书",
+        "hide": "收起",
+        "subject": "主体",
+        "issuer": "签发者",
+        "serial": "序列号",
+        "sigAlg": "签名算法",
+        "pubKey": "公钥",
+        "validFrom": "生效自",
+        "validTo": "到期",
+        "san": "SAN",
+        "keyUsage": "密钥用途",
+        "alpn": "ALPN",
+        "sanMatched": "SAN匹配",
+        "fpSha256": "SHA-256",
+        "fpSha1": "SHA-1",
+        "daysLeft": "剩{{days}}天",
+        "chainTitle": "信任链",
+        "chainComplete": "信任链锚定到可信根",
+        "chainIncomplete": "信任链未到达可信根",
+        "section": "证书"
+      }
+    }
+  },
+  "logs": {
+    "title": "系统日志",
+    "desc": "结构化日志的实时流——stdout、轮转日志文件与本查看器共用同一条管线。新日志实时流入；连接时服务端回放最近记录。向上滚动可暂停自动跟随。",
+    "allLevels": "全部级别",
+    "clear": "清空",
+    "jumpLatest": "最新",
+    "waiting": "等待日志…",
+    "lineCount": "{{count}} 行",
+    "tabLive": "实时流",
+    "tabHistory": "历史检索",
+    "searchPlaceholder": "搜索消息 / 上下文",
+    "truncated": "已达扫描上限——存在更早的匹配",
+    "totalMatches": "{{count}} 条匹配",
+    "emptyHistory": "无匹配日志",
+    "col": {
+      "time": "时间",
+      "level": "级别",
+      "context": "上下文",
+      "message": "消息"
+    },
+    "state": {
+      "connecting": "连接中",
+      "open": "实时",
+      "reconnecting": "重连中",
+      "closed": "已断开"
     }
   },
   "resetPassword": {
@@ -253,6 +430,59 @@
       "created": "创建",
       "expires": "过期"
     }
+  },
+  "audit": {
+    "title": "审计日志",
+    "desc": "每一次破坏性管理员操作 —— 谁在何时从何地对谁做了什么，以及是否成功。",
+    "searchPlaceholder": "按操作过滤（如 user.、federation.）",
+    "outcomeAll": "全部",
+    "outcomeSuccess": "成功",
+    "outcomeFailed": "失败",
+    "empty": "无匹配操作",
+    "col": { "action": "操作", "target": "目标", "actor": "操作者", "ip": "IP", "at": "时间" }
+  },
+  "media": {
+    "title": "媒体与存储",
+    "desc": "内容寻址媒体概览 + 垃圾回收。GC 回收 refs<=0 的资源；对账遍历 shards 目录（O(文件数)）。",
+    "tileDbBytes": "存储量（DB）",
+    "tileAssets": "资源数",
+    "tileReclaimable": "可回收",
+    "tileOnDisk": "磁盘占用",
+    "reclaimableHint": "refs ≤ 0 的资源",
+    "onDiskFiles": "{{files}} 个文件",
+    "byExt": "按扩展名",
+    "gc": "执行 GC",
+    "gcAvatars": "回收头像",
+    "reconcile": "对账",
+    "col": { "ext": "扩展名", "files": "文件数", "bytes": "字节" },
+    "emptyExt": "无 shard 文件",
+    "confirmTitle": { "gc": "执行垃圾回收？", "reconcile": "对账 shards？", "avatars": "回收孤立头像？" },
+    "confirmBody": { "gc": "删除 refs<=0 的 MediaAsset 行及其 shard 文件，并清理残留 tmp。", "reconcile": "遍历 uploads/shards，删除任何无 MediaAsset 记录的文件。O(文件数)——请谨慎执行。", "avatars": "删除不再被任何用户或群组引用的头像文件。" },
+    "confirmAction": { "gc": "执行 GC", "reconcile": "对账", "avatars": "回收" },
+    "gcDone": "GC：回收 {{rows}} 行 / {{files}} 文件",
+    "reconcileDone": "对账：回收 {{files}} 文件",
+    "avatarsDone": "回收 {{files}} 个头像文件"
+  },
+  "admins": {
+    "title": "管理员账号",
+    "desc": "管理可登录控制台的人员及其角色。禁用或降级会立即吊销其会话。",
+    "add": "添加管理员",
+    "addTitle": "将用户提升为管理员",
+    "userIdLabel": "用户 ID",
+    "userIdHint": "要提升的已有用户的数字 ID（在用户页查找）。",
+    "roleLabel": "角色",
+    "empty": "无管理员",
+    "col": { "account": "管理员", "role": "角色", "status": "状态", "lastLogin": "最近登录" },
+    "action": { "disable": "禁用", "enable": "启用" },
+    "toast": { "created": "已创建管理员", "disabled": "已禁用管理员", "enabled": "已启用管理员", "role": "角色已更新" }
+  },
+  "groups": {
+    "title": "群组",
+    "desc": "所有群组会话（本地 + 联邦）及其成员数与来源。",
+    "searchPlaceholder": "搜索群组名称 / 账号",
+    "col": { "name": "群组", "members": "成员", "origin": "来源", "lastMessage": "最近消息", "created": "创建时间" },
+    "empty": "无群组",
+    "local": "本地"
   },
   "notFound": {
     "code": "404",

@@ -1,18 +1,22 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { MoreHorizontal, Search } from 'lucide-react'
 import { useAdminUsers } from '@/hooks/use-admin-users'
+import { useListParams } from '@/hooks/use-list-params'
+import { useIsSuperAdmin } from '@/hooks/use-me'
 import {
+  useBatchUsers,
   useDisableUser,
   useEnableUser,
   useForceLogoutUser,
 } from '@/hooks/use-user-mutations'
+import type { UserBatchAction } from '@/api/users'
 import type { User } from '@/types/api'
 import { Button, buttonVariants } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -27,8 +31,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { Pagination } from '@/components/common/pagination'
+import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
-import { formatApiError } from '@/lib/format-error'
 import { SessionsDialog } from './sessions-dialog'
 import { ResetPasswordDialog } from './reset-password-dialog'
 
@@ -36,29 +41,24 @@ const PAGE_SIZE = 20
 
 export function UsersPage() {
   const { t } = useTranslation()
-  const [search, setSearch] = useState('')
-  const [debounced, setDebounced] = useState('')
-  const [page, setPage] = useState(0)
+  const isSuper = useIsSuperAdmin()
   const [sessionsUser, setSessionsUser] = useState<User | null>(null)
   const [resetUser, setResetUser] = useState<User | null>(null)
 
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebounced(search)
-      setPage(0)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [search])
+  const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
+    pageSize: PAGE_SIZE,
+  })
 
   const { data, isLoading, isFetching, error } = useAdminUsers({
-    skip: page * PAGE_SIZE,
-    take: PAGE_SIZE,
-    search: debounced || undefined,
+    skip,
+    take,
+    search: search || undefined,
   })
 
   const disable = useDisableUser()
   const enable = useEnableUser()
   const forceLogout = useForceLogoutUser()
+  const batch = useBatchUsers()
 
   const onAction = async (
     m: { mutateAsync: (id: number) => Promise<void> },
@@ -74,7 +74,41 @@ export function UsersPage() {
   }
 
   const total = data?.total ?? 0
-  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  // Clear the selection whenever the view changes (search/page) so we never act on stale ids.
+  useEffect(() => {
+    setSelected(new Set())
+  }, [search, page])
+
+  const listIds = (data?.list ?? []).map((u) => u.id)
+  const allSelected = listIds.length > 0 && listIds.every((id) => selected.has(id))
+  const toggle = (id: number) =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  const toggleAll = () =>
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (allSelected) listIds.forEach((id) => next.delete(id))
+      else listIds.forEach((id) => next.add(id))
+      return next
+    })
+
+  const onBatch = async (action: UserBatchAction) => {
+    const ids = [...selected]
+    if (ids.length === 0) return
+    try {
+      const r = await batch.mutateAsync({ ids, action })
+      toast.success(t('users.toast.batchDone', { count: r.affected }))
+      setSelected(new Set())
+    } catch {
+      /* Global mutation onError already shows a toast. */
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -84,17 +118,61 @@ export function UsersPage() {
           <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
           <Input
             placeholder={t('users.searchPlaceholder')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
             className="pl-8"
           />
         </div>
       </div>
 
+      {selected.size > 0 ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border bg-muted/40 px-3 py-2 text-sm">
+          <span>{t('users.selected', { count: selected.size })}</span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={batch.isPending}
+            onClick={() => onBatch('force-logout')}
+          >
+            {t('users.action.forceLogout')}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive"
+            disabled={batch.isPending}
+            onClick={() => onBatch('disable')}
+          >
+            {t('users.action.ban')}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={batch.isPending}
+            onClick={() => onBatch('enable')}
+          >
+            {t('users.action.unban')}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => setSelected(new Set())}>
+            {t('common.cancel')}
+          </Button>
+        </div>
+      ) : null}
+
       <div className="rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
+              <TableHead className="w-10">
+                <input
+                  type="checkbox"
+                  aria-label={t('users.selectAll')}
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  disabled={(data?.list.length ?? 0) === 0}
+                  className="size-4"
+                />
+              </TableHead>
               <TableHead className="w-16">{t('users.col.id')}</TableHead>
               <TableHead>{t('users.col.account')}</TableHead>
               <TableHead>{t('users.col.domain')}</TableHead>
@@ -106,33 +184,29 @@ export function UsersPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
-              Array.from({ length: 8 }).map((_, i) => (
-                <TableRow key={i}>
-                  {Array.from({ length: 8 }).map((__, j) => (
-                    <TableCell key={j}>
-                      <Skeleton className="h-5 w-full" />
-                    </TableCell>
-                  ))}
-                </TableRow>
-              ))
-            ) : error ? (
-              <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-destructive">
-                  {t('common.loadFailed', { message: formatApiError(error) })}
-                </TableCell>
-              </TableRow>
-            ) : data?.list.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={8} className="py-8 text-center text-muted-foreground">
-                  {t('common.noData')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              data?.list.map((u) => (
+            <TableBodyState
+              loading={isLoading}
+              error={error}
+              empty={(data?.list.length ?? 0) === 0}
+              colSpan={9}
+            >
+              {data?.list.map((u) => (
                 <TableRow key={u.id}>
+                  <TableCell>
+                    <input
+                      type="checkbox"
+                      aria-label={t('users.selectRow', { name: u.account })}
+                      checked={selected.has(u.id)}
+                      onChange={() => toggle(u.id)}
+                      className="size-4"
+                    />
+                  </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">{u.id}</TableCell>
-                  <TableCell className="font-medium">{u.account}</TableCell>
+                  <TableCell className="font-medium">
+                    <Link to={`/users/${u.id}`} className="hover:underline">
+                      {u.account}
+                    </Link>
+                  </TableCell>
                   <TableCell className="text-muted-foreground">{u.domain ?? '—'}</TableCell>
                   <TableCell>{u.isForeigner ? t('common.yes') : t('common.no')}</TableCell>
                   <TableCell>
@@ -177,40 +251,24 @@ export function UsersPage() {
                         <DropdownMenuItem onClick={() => setSessionsUser(u)}>
                           {t('users.action.viewSessions')}
                         </DropdownMenuItem>
-                        <DropdownMenuItem onClick={() => setResetUser(u)}>
-                          {t('users.action.resetPassword')}
-                        </DropdownMenuItem>
+                        {isSuper ? (
+                          <DropdownMenuItem onClick={() => setResetUser(u)}>
+                            {t('users.action.resetPassword')}
+                          </DropdownMenuItem>
+                        ) : null}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </TableCell>
                 </TableRow>
-              ))
-            )}
+              ))}
+            </TableBodyState>
           </TableBody>
         </Table>
       </div>
 
       <div className="flex items-center justify-between text-sm text-muted-foreground">
         <span>{t('users.total', { count: total })}</span>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page === 0}
-            onClick={() => setPage((p) => p - 1)}
-          >
-            {t('common.previous')}
-          </Button>
-          <span>{t('common.page', { page: page + 1, pages: pageCount })}</span>
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={page + 1 >= pageCount}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            {t('common.next')}
-          </Button>
-        </div>
+        <Pagination page={page} total={total} pageSize={PAGE_SIZE} onPageChange={setPage} />
       </div>
 
       <SessionsDialog user={sessionsUser} onClose={() => setSessionsUser(null)} />

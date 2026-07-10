@@ -121,6 +121,19 @@ export async function configureApp(
     return stream;
   });
 
+  // Echo the request correlation id on the response. request.id is already set by Fastify at the
+  // onRequest stage (honored from the inbound X-Request-Id header, else the UUID from the adapter's
+  // genReqId in main.ts); pino-http reuses that same id, so the echoed value matches the req.id in
+  // every access + app log line for the request — a client or support can grep the full trail. Set in
+  // onRequest (not onSend): onSend has payload-return semantics a void header-setting hook would
+  // violate (it hung the response); reply headers accumulate and are sent once at final send.
+  // Scoped to API routes (static assets / SPA HTML carry no correlation value; hijacked SSE responses
+  // skip Fastify's lifecycle entirely anyway).
+  adapter.getInstance().addHook('onRequest', async (request: FastifyRequest, reply: FastifyReply) => {
+    if (!request.url.startsWith('/api/') && !request.url.startsWith('/.well-known/')) return;
+    reply.header('X-Request-Id', String(request.id));
+  });
+
   // CORS posture:
   //  - Same-origin production deploy (single-image, path-prefix) needs none.
   //  - Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.

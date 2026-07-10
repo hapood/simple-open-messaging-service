@@ -6,7 +6,6 @@ import { firstValueFrom } from 'rxjs';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { UserService } from '../../services/user.service';
-import { ConversationListService } from '../../services/conversation-list.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { prefersReducedMotion } from '../../lib/motion-utils';
 import type { InviteDetail } from '../../services/model';
@@ -19,10 +18,11 @@ type ViewState = 'loading' | 'valid' | 'joined' | 'expired' | 'invalid';
 
 /**
  * Fullscreen Material dialog for a group invite. Opened with the raw GROUP_INVITE message body; it
- * parses the invite id, fetches the LIVE state via /invite/detail (spinner while loading), and renders
- * valid → Join (→ /invite/accept), already-joined → Open group, expired, or invalid. The card carries
- * group identity + the group's home domain (a "Local server" label, or a globe + domain badge for a
- * federated group). Mounted as a transient overlay by {@link InviteDetailService}; backdrop/X/close.
+ * parses the group `!account` (the card's `group` field — no internal id), fetches the LIVE state via
+ * /invite/detail (spinner while loading), and renders valid → Join (→ /invite/accept), already-joined →
+ * Open group, expired, or invalid. The card carries inline display identity + the group's home domain (a
+ * "Local server" label, or a globe + domain badge for a federated group). Mounted as a transient overlay
+ * by {@link InviteDetailService}; backdrop/X/close.
  *
  * Join flow: /invite/accept → nav.openChat(threadId). The nav state machine clears the pane stack, so
  * this dialog's entry is removed and the TransientOverlayService effect disposes the CDK overlay.
@@ -41,12 +41,12 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   @Output() close = new EventEmitter<void>();
 
   private readonly userService = inject(UserService);
-  private readonly convList = inject(ConversationListService);
   private readonly nav = inject(NavStateMachineService);
   private readonly transloco = inject(TranslocoService);
 
   /** Fallback identity parsed from the card message (shown instantly while the detail loads). */
-  readonly fallback = signal<{ groupName: string; groupAvatar?: string; fromUserId?: number }>({ groupName: '' });
+  readonly fallback = signal<{ groupName: string; groupAvatar?: string }>({ groupName: '' });
+  /** The invite-resolution key — the group `!account` parsed from the card (a BigInt id is NOT carried). */
   readonly inviteId = signal<string>('');
   readonly detail = signal<InviteDetail | null>(null);
   /** True when /invite/detail could not find the invite (→ "invalid" view). */
@@ -67,15 +67,8 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
   readonly groupName = computed(() => this.detail()?.groupName || this.fallback().groupName || '');
   readonly groupAvatar = computed(() => this.detail()?.groupAvatar || this.fallback().groupAvatar);
 
-  /** Inviter display name — authoritative from the detail; while loading, resolved from the P2P thread. */
-  readonly inviterName = computed(() => {
-    const fromDetail = this.detail()?.fromUser?.name;
-    if (fromDetail) return fromDetail;
-    const fid = this.fallback().fromUserId;
-    if (fid == null) return '';
-    const item = this.convList.items().find((t) => t.type === 'P2P' && t.peerUser?.id === fid);
-    return item?.peerUser?.name ?? '';
-  });
+  /** Inviter display name — authoritative from /invite/detail (hidden while loading). */
+  readonly inviterName = computed(() => this.detail()?.fromUser?.name ?? '');
 
   /** Positioning frame aligned to .chat-slot's rect so the card centers on the chat pane. */
   readonly frame = viewChild<ElementRef<HTMLElement>>('frame');
@@ -93,8 +86,8 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
 
   ngOnInit(): void {
     const parsed = this.parseRaw(this.raw());
-    this.fallback.set({ groupName: parsed.groupName, groupAvatar: parsed.groupAvatar, fromUserId: parsed.fromUserId });
-    this.inviteId.set(parsed.inviteId ?? '');
+    this.fallback.set({ groupName: parsed.groupName, groupAvatar: parsed.groupAvatar });
+    this.inviteId.set(parsed.group ?? ''); // the group `!account` is the resolve key for /invite/detail + /invite/accept
     void this.loadDetail();
   }
 
@@ -148,14 +141,16 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
     );
   }
 
-  private parseRaw(raw: string): { groupName: string; groupAvatar?: string; fromUserId?: number; inviteId?: string } {
+  /** Parse the GROUP_INVITE card body. `group` (the `!account`) is the resolve key; `from` is the inviter
+   *  account; groupName/groupAvatar are inline display fallbacks. No internal ids on the card. */
+  private parseRaw(raw: string): { groupName: string; groupAvatar?: string; from?: string; group?: string } {
     try {
       const o = JSON.parse(raw) as Record<string, unknown>;
       return {
         groupName: (o['groupName'] as string) ?? '',
         groupAvatar: o['groupAvatar'] as string | undefined,
-        fromUserId: o['fromUserId'] as number | undefined,
-        inviteId: o['inviteId'] as string | undefined,
+        from: o['from'] as string | undefined,
+        group: o['group'] as string | undefined,
       };
     } catch {
       return { groupName: '' };

@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Loader2, Send, Smartphone, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useDeletePushToken, usePushTokens, useSendPushTest } from '@/hooks/use-push'
+import { useListParams } from '@/hooks/use-list-params'
 import type { PushToken } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Skeleton } from '@/components/ui/skeleton'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   Dialog,
@@ -18,30 +18,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
-import { formatApiError } from '@/lib/format-error'
 
 const PAGE_SIZE = 15
 
 export function PushPage() {
   const { t } = useTranslation()
-  const [search, setSearch] = useState('')
-  const [debounced, setDebounced] = useState('')
-  const [page, setPage] = useState(0)
-
-  // Debounce the search input (300ms) and reset to the first page whenever it changes.
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebounced(search.trim())
-      setPage(0)
-    }, 300)
-    return () => clearTimeout(timer)
-  }, [search])
+  const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
+    pageSize: PAGE_SIZE,
+  })
 
   const { data, isLoading, error, isFetching } = usePushTokens({
-    skip: page * PAGE_SIZE,
-    take: PAGE_SIZE,
-    search: debounced || undefined,
+    skip,
+    take,
+    search: search.trim() || undefined,
   })
   const del = useDeletePushToken()
   const sendTest = useSendPushTest()
@@ -100,8 +91,8 @@ export function PushPage() {
       </div>
 
       <Input
-        value={search}
-        onChange={(e) => setSearch((e.target as HTMLInputElement).value)}
+        value={searchInput}
+        onChange={(e) => setSearchInput((e.target as HTMLInputElement).value)}
         placeholder={t('push.searchPlaceholder')}
         className="max-w-sm"
       />
@@ -118,27 +109,19 @@ export function PushPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={5}>
-                  <Skeleton className="h-5 w-full" />
-                </TableCell>
-              </TableRow>
-            ) : error ? (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-destructive">
-                  {t('common.loadFailed', { message: formatApiError(error) })}
-                </TableCell>
-              </TableRow>
-            ) : list.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={5} className="py-8 text-center text-muted-foreground">
+            <TableBodyState
+              loading={isLoading}
+              error={error}
+              empty={list.length === 0}
+              colSpan={5}
+              emptyMessage={
+                <div>
                   <Smartphone className="mx-auto mb-2 size-5 opacity-40" />
                   {t('push.empty')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              list.map((token) => (
+                </div>
+              }
+            >
+              {list.map((token) => (
                 <TableRow key={token.id}>
                   <TableCell>
                     <Badge variant="secondary">{t(`push.platform.${token.platform}`)}</Badge>
@@ -171,8 +154,8 @@ export function PushPage() {
                     </div>
                   </TableCell>
                 </TableRow>
-              ))
-            )}
+              ))}
+            </TableBodyState>
           </TableBody>
         </Table>
       </div>
@@ -186,10 +169,10 @@ export function PushPage() {
               : t('push.range', { from, to, total })}
         </span>
         <div className="ml-auto flex gap-2">
-          <Button variant="outline" size="sm" disabled={!canPrev} onClick={() => setPage((p) => p - 1)}>
+          <Button variant="outline" size="sm" disabled={!canPrev} onClick={() => setPage(page - 1)}>
             {t('common.previous')}
           </Button>
-          <Button variant="outline" size="sm" disabled={!canNext} onClick={() => setPage((p) => p + 1)}>
+          <Button variant="outline" size="sm" disabled={!canNext} onClick={() => setPage(page + 1)}>
             {t('common.next')}
           </Button>
         </div>

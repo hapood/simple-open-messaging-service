@@ -1,12 +1,11 @@
-import { randomUUID } from 'node:crypto';
 import type { Params } from 'nestjs-pino';
 import { buildPino } from './pino-factory.js';
 import { logStreamStore } from './log-stream-store.js';
 
-/** Minimal structural view of a request for the serializer — the fields the access log needs, which
- *  pino-http/Fastify add at runtime but the statically-inferred IncomingMessage type lacks. */
+/** Minimal structural view of a request for the access-log serializer — FastifyRequest fields
+ *  (id, method, url, ip) plus the principal guards set on req.user. */
 type ReqLike = {
-  id?: string;
+  id?: string | number;
   method?: string;
   url?: string;
   ip?: string;
@@ -16,24 +15,18 @@ type ReqLike = {
 /**
  * Build the nestjs-pino Params. A single pre-built multistream pino instance is passed via
  * `pinoHttp.logger` (nestjs-pino's "PassedLogger" shape): nestjs-pino uses it for out-of-request app
- * logs (`new Logger('Ctx')`) AND hands the same object to pino-http, which applies genReqId /
- * serializers / access logging as children of that instance — so access logs flow to stdout + file +
- * the live ring buffer too (one consistent pipeline).
+ * logs (`new Logger('Ctx')`) AND hands the same object to pino-http, which applies the access-log
+ * config as children of that instance — so access logs flow to stdout + file + the live ring buffer.
+ *
+ * The request correlation id is NOT generated here: Fastify owns `request.id` (honoring an inbound
+ * X-Request-Id header, else a UUID — see the adapter's requestIdHeader/genReqId in main.ts). pino-http
+ * reuses that existing request.id (its default genReqId returns req.id when already set), so every
+ * access + app log for one request shares the id; bootstrap's onSend hook echoes it on the response.
  */
 export function buildLoggerParams(): Params {
   return {
     pinoHttp: {
       logger: buildPino(logStreamStore),
-      // Correlation ID: honor an inbound X-Request-Id (reverse-proxy / upstream), else mint a UUID.
-      // Stamp it on the raw response so a client/support can grep the full request trail across logs.
-      // pino-http hands genReqId the raw ServerResponse, so setHeader (not Fastify's reply.header).
-      genReqId: (req, res) => {
-        const incoming = req.headers?.['x-request-id'];
-        const id =
-          typeof incoming === 'string' && incoming ? incoming : randomUUID();
-        res.setHeader('X-Request-Id', id);
-        return id;
-      },
       // Severity by outcome: a thrown error or 5xx → error; 4xx → warn; otherwise info.
       customLogLevel: (_req, res, err) => {
         if (err || res.statusCode >= 500) return 'error';
@@ -44,7 +37,8 @@ export function buildLoggerParams(): Params {
         `${req.method} ${req.url} → ${res.statusCode} ${responseTime}ms`,
       customErrorMessage: (req, res, err) =>
         `${req.method} ${req.url} → ${res.statusCode} ${err.message}`,
-      // Trim each access record to the correlation-relevant fields. Bodies are deliberately NOT
+      // Trim each access record to the correlation-relevant fields. `req` is the FastifyRequest
+      // wrapper (has .id/.method/.url/.ip), so these read directly. Bodies are deliberately NOT
       // serialized (passwords / PII never enter the access log). userId/adminId come from req.user,
       // which JwtAuthGuard/AdminAuthGuard set before the response-time access line is written.
       serializers: {
@@ -57,12 +51,6 @@ export function buildLoggerParams(): Params {
             remoteAddress: r.ip,
             userId: r.user?.userId,
             adminId: r.user?.adminId,
-            // DIAGNOSTIC (temporary): is `req` the raw IncomingMessage or the FastifyRequest wrapper?
-            __diag: {
-              hasRaw: !!(req as unknown as { raw?: unknown }).raw,
-              hasSocket: !!(req as unknown as { socket?: unknown }).socket,
-              ctor: (req as unknown as { constructor?: { name?: string } }).constructor?.name,
-            },
           };
         },
         res: (res) => ({ statusCode: res.statusCode }),

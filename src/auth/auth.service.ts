@@ -288,6 +288,70 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // ── Admin session/overview reads (moved from AdminController) ────────────────
+  // These own the user-side RefreshToken table; admin-session reads (AdminRefreshToken) live in
+  // AdminAuthService. Services return domain data; the controller wraps the HTTP envelope.
+
+  /** System-wide active refresh-session overview (filter by userId / ip). */
+  async listAllSessions(opts: { skip?: number; take?: number; userId?: number; ip?: string }) {
+    const where = {
+      revokedAt: null,
+      expiresAt: { gt: new Date() },
+      ...(opts.userId ? { userId: opts.userId } : {}),
+      ...(opts.ip ? { ip: { contains: opts.ip } } : {}),
+    };
+    const [list, total] = await Promise.all([
+      this.prisma.refreshToken.findMany({
+        where,
+        skip: opts.skip ?? 0,
+        take: opts.take ?? 50,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          userId: true,
+          jti: true,
+          device: true,
+          userAgent: true,
+          ip: true,
+          createdAt: true,
+          expiresAt: true,
+          user: { select: { id: true, account: true } },
+        },
+      }),
+      this.prisma.refreshToken.count({ where }),
+    ]);
+    return { list, total };
+  }
+
+  /** Refresh-token reuse events (the family has been revoked at the root). */
+  reuseAlerts(take = 50) {
+    return this.prisma.refreshToken.findMany({
+      where: { revokeReason: 'reuse' },
+      select: {
+        userId: true,
+        familyId: true,
+        jti: true,
+        ip: true,
+        userAgent: true,
+        revokedAt: true,
+      },
+      orderBy: { revokedAt: 'desc' },
+      take,
+    });
+  }
+
+  /** Purge every active session in one shot (forces every user to re-login; access tokens die at once). */
+  async purgeAllSessions(): Promise<{ purgedUsers: number }> {
+    const active = await this.prisma.refreshToken.findMany({
+      where: { revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { userId: true },
+      distinct: ['userId'],
+    });
+    for (const { userId } of active) {
+      await this.invalidateAllSessions(userId, 'admin_purge');
+    }
+    return { purgedUsers: active.length };
+  }
+
   private async cleanupExpiredRefreshTokens() {
     await this.prisma.refreshToken.deleteMany({
       where: { expiresAt: { lt: new Date() } },

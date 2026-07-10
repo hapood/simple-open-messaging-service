@@ -6,6 +6,7 @@ import {
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
 import { readFileSync } from 'fs';
+import { randomUUID } from 'crypto';
 import { AppModule } from './app.module.js';
 import { configureApp } from './bootstrap.js';
 
@@ -29,6 +30,11 @@ async function bootstrap() {
           // Trust a single reverse-proxy hop so rate limiting sees the real client IP
           // (see local.strategy.ts). Number = trust the last N hops; never `true`.
           trustProxy: 1,
+          // Correlation ID: honor an inbound X-Request-Id (reverse-proxy / upstream) else mint a UUID.
+          // Fastify owns request.id; pino-http reuses it, so every access + app log for one request
+          // shares the id, and bootstrap's onSend hook echoes it back on the response header.
+          requestIdHeader: 'x-request-id',
+          genReqId: () => randomUUID(),
           http2: true,
           https: {
             cert: readFileSync(tlsCert as string),
@@ -44,6 +50,9 @@ async function bootstrap() {
         }
       : {
           trustProxy: 1,
+          // Correlation ID — see the h2 branch above.
+          requestIdHeader: 'x-request-id',
+          genReqId: () => randomUUID(),
           // See the h2 branch above: global JSON/body ceiling (fits a ~55 KiB base64 S2S avatar), multipart-exempt.
           bodyLimit: 1_048_576,
         },

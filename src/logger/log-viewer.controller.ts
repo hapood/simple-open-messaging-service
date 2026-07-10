@@ -1,8 +1,9 @@
-import { Controller, Get, Query, Req, Res, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { AdminAuthGuard } from '../admin/admin-auth.guard.js';
 import { LogViewerService } from './log-viewer.service.js';
+import { AdminLogHistoryDto } from './log-viewer.dto.js';
 
 const LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
 
@@ -36,6 +37,17 @@ export class LogViewerController {
   ): void {
     reply.hijack(); // take over the raw response before any reply.raw write
     this.viewer.attach(reply.raw, this.normalizeLevel(level));
+  }
+
+  /**
+   * Historical log search across the current file + rotated archives. POST (admin convention) with an
+   * offset-paginated {skip, take, level?, from?, to?, search?} body → {list, total, truncated}.
+   * `truncated` means the LOG_HISTORY_SCAN_BYTES cap was hit (older matches exist beyond the window).
+   */
+  @Post('history')
+  @ApiOperation({ summary: 'Admin historical log search' })
+  history(@Body() dto: AdminLogHistoryDto) {
+    return this.viewer.history(dto);
   }
 
   private normalizeLevel(level?: string): string | undefined {

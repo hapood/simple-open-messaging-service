@@ -1,9 +1,7 @@
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useReuseAlerts } from '@/hooks/use-reuse-alerts'
-import { formatApiError } from '@/lib/format-error'
 import { Button } from '@/components/ui/button'
-import { Skeleton } from '@/components/ui/skeleton'
 import {
   Table,
   TableBody,
@@ -12,6 +10,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
+import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
 
 const SIZES = [50, 100, 200]
@@ -54,26 +53,15 @@ export function ReuseAlertsPage() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {isLoading ? (
-              <TableRow>
-                <TableCell colSpan={6}>
-                  <Skeleton className="h-5 w-full" />
-                </TableCell>
-              </TableRow>
-            ) : error ? (
-              <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-destructive">
-                  {t('common.loadFailed', { message: formatApiError(error) })}
-                </TableCell>
-              </TableRow>
-            ) : !data || data.length === 0 ? (
-              <TableRow>
-                <TableCell colSpan={6} className="py-8 text-center text-muted-foreground">
-                  {t('reuse.empty')}
-                </TableCell>
-              </TableRow>
-            ) : (
-              data.map((r) => (
+            <TableBodyState
+              loading={isLoading}
+              error={error}
+              empty={!data || data.length === 0}
+              colSpan={6}
+              skeletonRows={6}
+              emptyMessage={t('reuse.empty')}
+            >
+              {data?.map((r) => (
                 <TableRow key={r.jti}>
                   <TableCell className="font-mono text-xs">{r.userId}</TableCell>
                   <TableCell
@@ -96,8 +84,8 @@ export function ReuseAlertsPage() {
                     <Timestamp value={r.revokedAt} />
                   </TableCell>
                 </TableRow>
-              ))
-            )}
+              ))}
+            </TableBodyState>
           </TableBody>
         </Table>
       </div>

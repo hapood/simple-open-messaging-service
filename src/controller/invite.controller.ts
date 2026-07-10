@@ -206,8 +206,8 @@ export class InviteController {
 
     // Federated mirror (a cross-server group): tell the ORIGIN this user joined, so the origin adds them
     // to the canonical roster + fans out a thread/member join to every member-server (roster consistency).
-    // A local group (no federatedThreadId) needs no propagation.
-    const fed = res.federatedThreadId;
+    // A local group (no fedGroupAccount) needs no propagation.
+    const fed = res.fedGroupAccount;
     const origin = res.originDomain;
     if (fed && origin && origin !== this.federationService.ourDomain) {
       try {
@@ -215,7 +215,7 @@ export class InviteController {
           kind: 'GROUP',
           fromLocalUserId: req.user.userId,
           targetDomain: origin,
-          thread: fed,
+          group: fed,
         });
       } catch (e) {
         return {
