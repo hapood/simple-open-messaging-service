@@ -63,5 +63,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Runtime uploads (user avatars / images) — never tracked
 /uploads
 
-# Federation S2S signing keypair (Ed25519) — generated on first boot, NEVER tracked
-/data.fed-app-build/
+# Federation S2S signing keypair (Ed25519) — generated on first boot into data/, NEVER tracked
+/data
+
+# Federation e2e compiled entry — tsc output of test/federation-app.main.ts + deps, rebuilt on
+# demand by ensureCompiledEntry (test/federation-harness.ts); never tracked
+/.fed-app-build
