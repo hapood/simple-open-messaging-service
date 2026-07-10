@@ -110,6 +110,53 @@ implementation("com.squareup.okhttp3:okhttp:4.12.0")            // worker HTTP P
   `ctx.getString(R.string.notif_*)` resolves to the right one with no explicit branching. Wording
   mirrors `web/src/app/i18n/{en,zh-CN}.json notif.*` for cross-surface consistency.
 
+## Compile invariants (these broke a release build — keep them on re-apply)
+
+`tauri android init` regenerates `gen/android`, so any hand-written Kotlin there is lost. The two
+files below currently have fixes that are NOT obvious from the surrounding code; re-create them this
+way (the on-disk files are canonical, these are the rules that must hold):
+
+- **`MessageSyncService.kt`** extends `android.app.Service` → it MUST override `onBind` (the base
+  member is abstract), or `compileUniversalReleaseKotlin` fails with "does not implement abstract
+  base class member onBind". Add:
+  ```kotlin
+  override fun onBind(intent: Intent?): IBinder? = null   // bound mode unused (started FGS)
+  ```
+  (and `import android.os.IBinder`). This file is the domestic `dataSync` foreground service
+  (native SSE to `/notifications/stream`, the mainland-China real-time path with no FCM); it is NOT
+  in the original §5 list — add it when re-applying.
+- **`SomsMessagingService.parseSnapshotArray`** — the per-item `JSONObject` loop local MUST NOT be
+  named `it`. Inside `mid.takeIf { … }` the implicit `it` is `mid` (a String), so `it.has(...)` /
+  `it.isNull(...)` fail with "Unresolved reference". Name it `obj` (or anything but `it`):
+  ```kotlin
+  val obj = arr.optJSONObject(i) ?: continue
+  …
+  latestMessageId = mid.takeIf { obj.has("latestMessageId") && !obj.isNull("latestMessageId") && mid.isNotEmpty() },
+  ```
+
+## Release signing (optional — needed only to install a *release* APK)
+
+`make apk` produces `app-universal-release-unsigned.apk` by default; Android won't install an
+unsigned build. For a quick installable test build, build debug instead (`--debug`, auto-signed by
+the Android debug keystore — no setup). For a signed *release* build, wire a signing config:
+
+1. Generate a keystore (do this once; keep the file + passwords safe — it is your signing identity):
+   ```
+   keytool -genkeypair -keystore src-tauri/gen/android/app/soms-release.keystore \
+     -alias soms -keyalg RSA -keysize 2048 -validity 10000 \
+     -storepass <STOREPASS> -keypass <KEYPASS> -dname "CN=SOMS, O=SOMS"
+   ```
+2. `src-tauri/gen/android/keystore.properties` (gitignored — secrets):
+   ```
+   storeFile=app/soms-release.keystore
+   storePassword=<STOREPASS>
+   keyAlias=soms
+   keyPassword=<KEYPASS>
+   ```
+3. In `gen/android/app/build.gradle.kts`, load `keystore.properties` and add a `signingConfigs.release`
+   pointed at it, then set `buildTypes.release.signingConfig = signingConfigs.release`. Load guards on
+   the file's presence so unsigned builds still work when it's absent.
+
 ## IPC contract (webview ↔ Kotlin)
 
 | Direction | Carrier | Mechanism |
