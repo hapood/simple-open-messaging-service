@@ -1,4 +1,6 @@
-# SOMS Android APK builder — docker-based. Reuses the host's proxy env verbatim (no hardcoding).
+# SOMS Android APK builder — LINUX host, docker-based. Sits next to the Dockerfile it builds and
+# produces the Android release APK on a Linux (Ubuntu/Debian) host. macOS / Windows desktop artifacts
+# are NOT built here — macOS can't be cross-built on Linux (needs hdiutil/codesign + the macOS SDK).
 #
 #   make image   — (re)build the self-contained builder image (one-time, ~20 min cold).
 #   make apk     — build the frontend (host npm) + emit a release APK inside the image.
@@ -6,11 +8,21 @@
 #   make clean   — drop generated Android build outputs (keeps the gradle cache volume warm).
 #   make help    — this list.
 #
+# Invoke from anywhere — paths anchor to this file's location, so all of these are equivalent:
+#   make -C src-tauri apk          # from the repo root
+#   cd src-tauri && make apk       # from inside src-tauri
+#   make -f src-tauri/Makefile apk # explicit path
+#
 # Proxy: HTTP_PROXY / HTTPS_PROXY / NO_PROXY from your shell are forwarded to docker as-is — set
 # them if you're behind a proxy, leave unset to go direct. Once `make image` and the first `make apk`
 # have warmed the caches, later `make apk` runs need NO network at all (proxy or not).
 #
-# Host prerequisites: Docker (hard), Node (for the frontend `npm --prefix web run build`).
+# Host prerequisites: Docker (hard), Node (for the frontend `npm run build` in ../web).
+
+# Anchor every path to this Makefile's own location so it runs identically regardless of CWD:
+# MAKE_DIR = the directory holding this file (.../src-tauri/), ROOT = the repo root.
+MAKE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
+ROOT     := $(abspath $(MAKE_DIR)..)
 
 IMAGE      := soms-android-build:24.04
 GRADLE_VOL := soms-gradle
@@ -27,22 +39,22 @@ CLEAR_JAVA_PROXY := -e JAVA_TOOL_OPTIONS=
 
 DOCKER_RUN := docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
               $(PROXY_RUN_FLAGS) $(CLEAR_JAVA_PROXY) \
-              -v "$(CURDIR):$(WORK)" -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
+              -v "$(ROOT):$(WORK)" -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
 
 .PHONY: help image apk shell clean
 help:  ## show this help
 	@awk 'BEGIN{FS":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-8s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
 image:  ## (re)build the builder image (standard sources; reuses host proxy if set)
-	docker build -t $(IMAGE) $(PROXY_BUILD_ARGS) src-tauri
+	docker build -t $(IMAGE) $(PROXY_BUILD_ARGS) $(MAKE_DIR)
 
 apk:  ## build frontend + release APK (no proxy needed once caches are warm)
-	npm --prefix web run build
+	npm --prefix $(ROOT)/web run build
 	$(DOCKER_RUN) $(IMAGE) cargo tauri android build --apk --config '{"build":{"beforeBuildCommand":""}}'
-	@echo "✓ APK:"; @ls -1 src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk 2>/dev/null | sed 's/^/    /'
+	@echo "✓ APK:"; @ls -1 $(ROOT)/src-tauri/gen/android/app/build/outputs/apk/universal/release/*.apk 2>/dev/null | sed 's/^/    /'
 
 shell:  ## interactive shell in the builder
 	$(DOCKER_RUN) -it $(IMAGE) bash
 
 clean:  ## drop generated Android build outputs (keeps the gradle cache volume warm)
-	rm -rf src-tauri/gen/android/.gradle src-tauri/gen/android/build src-tauri/gen/android/app/build
+	rm -rf $(ROOT)/src-tauri/gen/android/.gradle $(ROOT)/src-tauri/gen/android/build $(ROOT)/src-tauri/gen/android/app/build
