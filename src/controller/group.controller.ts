@@ -107,7 +107,7 @@ export class GroupController {
     // still succeeds for the owner and the rest.
     const { invited, skipped } = await this.writeInvites(
       owner,
-      { threadId: grp.threadId, groupUserId: grp.id, name: grp.name, avatar: grp.avatar, updatedAt: Date.now() },
+      { threadId: grp.threadId, groupUserId: grp.id, name: grp.name, avatar: grp.avatar, profileRev: 0 },
       dto.inviteUserIds ?? [],
     );
     // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
@@ -130,7 +130,7 @@ export class GroupController {
    */
   private async writeInvites(
     inviter: number,
-    group: { threadId: number; groupUserId: number; name: string; avatar: string; updatedAt: number },
+    group: { threadId: number; groupUserId: number; name: string; avatar: string; profileRev: number },
     userIds: number[],
   ): Promise<{ invited: number[]; skipped: { userId: number; reason: string }[] }> {
     const deduped = Array.from(new Set(userIds));
@@ -183,7 +183,7 @@ export class GroupController {
             threadId: group.threadId,
             groupName: group.name,
             groupAvatarUrl: group.avatar || undefined,
-            groupRevision: group.updatedAt,
+            groupRevision: group.profileRev,
           });
         } else {
           // Local: the Invite row the invitee will accept.
@@ -240,7 +240,7 @@ export class GroupController {
         groupUserId: gu?.id ?? 0,
         name: gu?.name ?? '',
         avatar: gu?.avatar ?? '',
-        updatedAt: gu?.updatedAt?.getTime() ?? Date.now(),
+        profileRev: gu?.profileRev ?? 0,
       },
       dto.userIds,
     );

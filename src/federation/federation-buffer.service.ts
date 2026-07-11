@@ -9,18 +9,15 @@ interface DirtyEntry {
   toAccount: string;
   latestSeq: number;
   generatedAt: number;
-  left?: boolean;
 }
 
 /** The on-wire shape pushed (POST /new-msg-map) and snapshotted (GET /new-msg-map). `fromDomain` is always
- *  present (every federated domain is distinct; the author may be foreign). No `@`-join, no internal ids.
- *  `left` marks a leave signal (handled on drain as a roster dissolve, not a pull). */
+ *  present (every federated domain is distinct; the author may be foreign). No `@`-join, no internal ids. */
 export interface NewMsgMapEntry {
   fromAccount: string;
   fromDomain: string;
   toAccount: string;
   latestSeq: number;
-  left?: boolean;
 }
 
 /**
@@ -47,8 +44,8 @@ export class FederationBufferService {
   private static readonly CAP_PER_DOMAIN = 10_000;
 
   /** scopeKey for the nested map (internal only — \0 cannot appear in accounts/domains). */
-  private scopeKey(e: { fromAccount: string; fromDomain: string; toAccount: string; left?: boolean }): string {
-    return `${e.fromAccount}\0${e.fromDomain}\0${e.toAccount}\0${e.left ? 1 : 0}`;
+  private scopeKey(e: { fromAccount: string; fromDomain: string; toAccount: string }): string {
+    return `${e.fromAccount}\0${e.fromDomain}\0${e.toAccount}`;
   }
 
   /** Mark a conversation dirty: the author <fromAccount>/<fromDomain> has new messages up to latestSeq for
@@ -61,17 +58,16 @@ export class FederationBufferService {
     fromDomain: string,
     toAccount: string,
     latestSeq: number,
-    left = false,
   ): void {
     let byScope = this.domains.get(domain);
     if (!byScope) {
       byScope = new Map();
       this.domains.set(domain, byScope);
     }
-    const key = this.scopeKey({ fromAccount, fromDomain, toAccount, left });
+    const key = this.scopeKey({ fromAccount, fromDomain, toAccount });
     const existing = byScope.get(key);
-    if (existing && !left && existing.latestSeq >= latestSeq) return; // stale — never regress (leave always passes)
-    byScope.set(key, { fromAccount, fromDomain, toAccount, latestSeq, generatedAt: Date.now(), left });
+    if (existing && existing.latestSeq >= latestSeq) return; // stale — never regress
+    byScope.set(key, { fromAccount, fromDomain, toAccount, latestSeq, generatedAt: Date.now() });
     if (byScope.size > FederationBufferService.CAP_PER_DOMAIN) this.evictHalf(byScope);
   }
 
@@ -85,7 +81,7 @@ export class FederationBufferService {
 
   /** Flatten a DirtyEntry to the on-wire NewMsgMapEntry (drops generatedAt). */
   private toWire(e: DirtyEntry): NewMsgMapEntry {
-    return { fromAccount: e.fromAccount, fromDomain: e.fromDomain, toAccount: e.toAccount, latestSeq: e.latestSeq, left: e.left };
+    return { fromAccount: e.fromAccount, fromDomain: e.fromDomain, toAccount: e.toAccount, latestSeq: e.latestSeq };
   }
 
   /**

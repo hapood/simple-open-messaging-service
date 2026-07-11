@@ -67,4 +67,30 @@ export class ThreadRevisionService {
     });
     return rows as { threadId: number; direction: 'ADD' | 'DELETE'; revision: number }[];
   }
+
+  /** The set of threadIds active (added, not since-deleted) at revision R for this user — the
+   *  historically-accurate snapshot used to pin `query-thread/valid` pagination. Uses the operation-log
+   *  revision columns, NOT the `isDelete` flag (that is a current-state fast-flag; snapshot(R) must reflect
+   *  state as-of R). A thread is active at R iff its latest operation with revision ≤ R is an ADD — which
+   *  correctly handles re-add (ADD upserted past a prior DELETE ⇒ ADD.revision > DELETE.revision ⇒ the ADD
+   *  is the latest ⇒ active). The accepted tradeoff (per the upsert model) is that the window between an
+   *  original ADD and its DELETE, when a later re-add overwrote the ADD row's revision, is inaccurate. */
+  async activeThreadIdsAt(userId: number, revision: number): Promise<Set<number>> {
+    const rows = await this.prisma.threadRevision.findMany({
+      where: { userId, revision: { lte: revision } },
+      select: { threadId: true, direction: true, revision: true },
+    });
+    // Latest operation per threadId (max revision ≤ R). With @@unique([userId, threadId, direction])
+    // there is at most one ADD + one DELETE per thread, so this is a small per-user set.
+    const latest = new Map<number, { dir: 'ADD' | 'DELETE'; rev: number }>();
+    for (const r of rows) {
+      const cur = latest.get(r.threadId);
+      if (!cur || r.revision > cur.rev) {
+        latest.set(r.threadId, { dir: r.direction, rev: r.revision });
+      }
+    }
+    const active = new Set<number>();
+    for (const [threadId, v] of latest) if (v.dir === 'ADD') active.add(threadId);
+    return active;
+  }
 }

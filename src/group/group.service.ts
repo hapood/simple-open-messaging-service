@@ -60,9 +60,10 @@ export class GroupService implements OnModuleInit {
     });
   }
 
-  /** Bump the group `!`-User.updatedAt — the meta-revision a federated mirror compares on chat-open to
-   *  decide whether to re-pull the group meta (identity + roster). Call after any roster mutation so a
-   *  roster change (not just a name/avatar edit via updateGroup) is detectable by the lazy meta-pull. */
+  /** Bump Group.rosterRev — the roster revision a federated mirror compares (against its remoteRosterRev)
+   *  on chat-open to decide whether to re-pull the roster. Call after any roster mutation (join/leave/
+   *  kick/role/transfer) so a roster change is detectable by the lazy meta-pull, independent of identity
+   *  (identity has its own User.profileRev, bumped by updateGroup/updateProfile/updateAvatar). */
   async bumpRosterRev(threadId: number): Promise<void> {
     const trd = await this.prisma.messageThread.findUnique({
       where: { id: threadId },

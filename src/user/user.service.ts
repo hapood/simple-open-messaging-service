@@ -1,7 +1,9 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, HttpStatus } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { User, Prisma } from '../prisma/generated/client.js';
-import { normalizeAccount } from '../common/account.js';
+import { isValidUserAccount, normalizeAccount } from '../common/account.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
 
 @Injectable()
 export class UserService implements OnModuleInit {
@@ -97,6 +99,17 @@ export class UserService implements OnModuleInit {
 
   addUser(params: { account: string; name: string; hashPwd: string }) {
     const account = normalizeAccount(params.account); // case-insensitive (docs/account-naming.md §4)
+    // Defense-in-depth at the single creation choke point: RegisterDto's @Matches guards the HTTP path,
+    // but addUser is also reachable from internal/admin/test callers — enforce the USER grammar here so an
+    // illegal account can never reach the DB regardless of caller. (A `!`-group account is rejected too —
+    // addUser is for persons; groups are minted via mintGroupAccount at their own create sites.)
+    if (!isValidUserAccount(account)) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        `invalid account [${params.account}]`,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     return this.prisma.$transaction(async (prisma) => {
       const user = await prisma.user.findUnique({
         where: { account_domain: { account, domain: 'local' } },

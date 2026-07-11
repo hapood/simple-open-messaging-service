@@ -159,9 +159,21 @@ export class UserController {
     @Body() dto: QueryValidThreadDto,
   ): Promise<ApiResult> {
     const me = req.user.userId;
+    // Pinned snapshot: membership = threads active at revision R per the ThreadRevision operation log
+    // (added, not since-deleted). This pins the page membership so offset pagination stays consistent
+    // across pages and the snapshot composes cleanly with query-thread/delta from R forward. The leftAt
+    // filter is intentionally NOT applied here — a thread active at R may have been left since (leftAt set
+    // after R), yet its participant row still carries the current display state (role/pinned/unread) we
+    // want to surface; the revision set is the source of truth for "active at R".
+    const active = await this.threadRevisionService.activeThreadIdsAt(
+      me,
+      dto.revision,
+    );
     const where: Prisma.ThreadParticipantWhereInput = {
       userId: me,
-      leftAt: null,
+      // Empty-set guard: Prisma treats `in: []` as "no filter" (returns all rows), so an empty active set
+      // must materialize as an impossible-id list to yield an empty page.
+      threadId: { in: active.size > 0 ? [...active] : [-1] },
     };
     if (dto.type) {
       where.thread = { is: { type: dto.type } };
@@ -498,7 +510,7 @@ export class UserController {
   @Post('user/sync-peer-profile')
   @ApiOperation({
     summary:
-      'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. Pass sinceUpdatedAt to get a lightweight data:null short-circuit when unchanged.',
+      'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. ACK-only — returns no payload; pass sinceProfileRev so a stale local peer is pushed a PEER_PROFILE_UPDATED signal to pull.',
   })
   @ApiResultResponse(UserResponseDto)
   async syncPeerProfile(@Request() req, @Body() dto: SyncPeerProfileDto): Promise<ApiResult> {

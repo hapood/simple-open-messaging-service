@@ -41,19 +41,24 @@
 
 ## 3. DEFERRED — message API (the remaining "乱")
 
-- [ ] **Cursor unification — the real mess.** `afterSeq` / `latestSeq` carry two different number
-  spaces on the same endpoint: **thread-seq** (group all-senders) vs **originSeq** (single +
-  per-author); and two pagination strategies: **PAGE** (group all-senders, batch-by-batch) vs
-  **JUMP** (single/per-author, `latestSeq = author global MAX`). The JUMP/PAGE split is *justified*
-  by use-case (single steady-state vs group catch-up); the space split is inherent (multi-author has
-  no single originSeq). Options:
-  - **(a) Opaque cursor** — `?after=<token>`, response `nextCursor`; server encodes `{space, seq}`.
-    Hides both. **Needs a schema change**: `MessageThread.pullUntil` Int → String (store the opaque
-    token). **Defer until the e2e blocker (§5) is green** so a wire+schema change is verifiable.
-  - **(b) Named cursors** — `afterThreadSeq` (group all-senders) vs `afterOriginSeq` (single/per-author).
-    No schema; explicit + debuggable; less "unified" surface. Reasonable no-schema interim.
-  - **(c) Status quo + clearer docs** — lowest value.
-  - **Lean:** (a) once e2e is green; (b) as an interim if we want progress before then.
+- [x] **Cursor "unification" — RETRACTED (non-issue, misframed).** Originally flagged "two number
+  spaces (thread-seq vs originSeq) + two pagination strategies (PAGE vs JUMP) on one endpoint." Both
+  halves were wrong on examination:
+  - **Two spaces is intentional + inherent.** `originSeq` = per-`(thread,sender)`, sender-allocated
+    cross-server dedup key; `seq` = receiver-local per-thread arrival order. The receiver trusts its
+    OWN stored copy in every path (`after = res.messages[last].seq/originSeq` — the code comment says
+    "NOT res.latestSeq"). Each shape rides the space meaningful to it: per-author shapes use originSeq
+    (single author); all-senders uses thread-seq (multi-author has no cross-author originSeq meaning).
+  - **"Two pagination strategies" did not exist.** The receiver advances page-by-page to the last
+    STORED message in ALL shapes (P2P derives `MAX(originSeq)`; all-senders stores `pullUntil` = last
+    stored seq). There is ONE advancement strategy. The "JUMP vs PAGE" was a misread of the RESPONSE
+    `latestSeq` field — which SOMS receivers do NOT use for the cursor at all.
+  - **No wire/schema change wanted.** The opaque-cursor / `pullUntil Int→String` idea is dropped.
+  - **Only residue (doc-level):** the response `latestSeq` field has shape-dependent, thread-scoped
+    semantics and is unused by SOMS — per-author = the author's max `originSeq` **within this thread**;
+    all-senders = the batch's highest thread `seq` (note: `seq` is per-thread, not global — it was moved
+    from a global counter to per-thread `MessageThread.curSeq` in an earlier change). Document the
+    per-shape contract (or decide whether to keep `latestSeq` at all for external impls).
 - [x] **Param rename + explicit `toDomain` — DONE** (`from→fromAccount`, `to→toAccount`, new validated
   `toDomain`; `fromDomain` kept). Applied across controller query params + the `POST /new-msg-map` body
   shape, the `NewMsgMapEntry`/`DirtyEntry` types (+ `scopeKey`/`markDirty`/`toWire`), every service
@@ -63,15 +68,20 @@
   `FEDERATION_BINDING_VIOLATION`) via `S2sController.requireBinding` on `/messages`, `/messages/before`,
   `/get_file` (NOT roster — different, trusted-peer gate). Docs (`docs/federation-s2s-api.md`) updated.
   `S2SAddress` objects (`S2SInvite.from/to`, `accepter`/`by`/`owner`) deliberately NOT renamed. Typechecks
-  clean (`src/` 0 errors); buffer spec green; 6 service-spec failures are the pre-existing baseline.
+  clean (`src/` 0 errors); unit specs green (19/19).
 - [ ] **A2 — message item has no `kind` discriminator.** Item is flat
   `{ originSeq, contentType, content, ts }` (+ optional `creator`). Deferred edit/delete/receipts
   will force a breaking shape change. **Add `kind: 'message'` now** (+ a versioned envelope) — cheap
   forward-compat insurance.
-- [ ] **A3 — leave signal `HTTP 200 { code: 50010 }`** makes `/messages` return two structurally
-  incompatible 200 bodies, purely to dodge the demote-on-403 path. Couples leave-detection to
-  message-flow (a leaver who never sent is only caught by the lazy meta-pull). Move roster-state out
-  of the message body — a dedicated membership-state probe or a roster-revision delta.
+- [x] **A3 — leave signal — DONE (implemented the documented `{code:50010}` path).** The leave signal
+  now lives ONLY on the per-author pull RESPONSE (`{code: FEDERATION_GROUP_AUTHOR_LEFT}`, HTTP 200 — not
+  403, so `getSigned` does not demote), NOT in the hint map. `notifyGroupLeave` writes a NORMAL
+  per-author hint (latestSeq = cursor+1); the origin's `pullGroupFromAuthor` pulls → mirror's
+  `serveOutboundMessagesGroupFrom` returns `{code:50010}` for a soft-left author (via
+  `resolveGroupAuthorOrLeave`) → origin `softLeaveMemberAndBump`. The `left` flag is GONE from
+  `NewMsgMapEntry`/`DirtyEntry` + `markDirty`/`scopeKey` + every service read + `pullHint`; the
+  `handleLeaveHint` dead path is deleted. `/messages` per-author (forward + backward) carries the
+  50010; media + all-senders do not. Unit specs green; e2e leave test asserts exactly this flow.
 
 ## 4. Other audit items (not yet discussed in detail)
 
@@ -79,8 +89,10 @@
   `!account`". Legacy name → `/group/:account/roster`.
 - **B2** — revision probes modeled inconsistently: `/users/:account/revision`→`profileRev` vs
   `/group/:account/roster-revision`→`rosterRev` (different roots, different keys, parallel concerns).
-- **B3** — `GET /messages/before` is built + guarded + maintained but **never called by SOMS**
-  (forward-only). Dead surface / attack surface.
+- **B3 — RESOLVED (extended, not removed).** `/messages/before` was P2P-only + dead (SOMS forward-only).
+  Decision: keep + extend to groups for full A1 symmetry. Now 3 shapes (P2P + group all-senders +
+  group per-author w/ the {code:50010} leave signal), mirroring `/messages`. SOMS still has no internal
+  backward caller, so the group legs are symmetric-by-construction but not e2e-exercised.
 - **C1** — GET requests have hidden state side-effects: every successful signed read advances the
   peer liveness watermark via `markContactSuccess` inside `getSigned`; `/ping`'s server handler also
   mutates it. Liveness should be driven by an explicit signal, not implicit in reads.
@@ -111,25 +123,32 @@
 - **E5** — `docs/federation-quotas.md` header "deferred until Step 2 is designed" — Step 2 is built;
   rationale stale (quotas themselves still genuinely deferred).
 
-## 6. BLOCKER (unrelated to this review — do not confuse)
+## 6. E2E status (was the BLOCKER)
 
-- **Federation e2e is RED (10 failed | 13 passed of 23).** Cause: an in-flight refactor that **folds
-  `MessageThread.fedGroupAccount` into `groupUser.account`** (the schema field was removed; migration
-  `20260710140000_rename_fed_group_account` renamed `federatedThreadId→fedGroupAccount`, then a later
-  edit dropped the column in favor of `groupUser.account`). `test/federation.e2e-spec.ts` still
-  selects the removed field (e.g. line ~930: `select: { fedGroupAccount: true }`) → runtime
-  `Unknown field fedGroupAccount`. Fix = update test (+ any code) refs to read via `groupUser.account`.
-  - **Not caused by the message-API work.** Must be resolved before any schema-changing API change
-    (opaque cursor §3) can be verified.
-- Note: `migrate deploy` itself is clean on a fresh DB (all 7 migrations apply). The failure is a
-  stale test/code reference to a removed field, plus the base `soms_test` DB had drifted from
-  migration history (reset: drop+create `soms_test` + `migrate deploy`).
+- The federation e2e was RED (10 failed | 13 passed). Root: the in-flight refactor folding
+  `MessageThread.fedGroupAccount`→`groupUser.account` + `originDomain`→`groupUser.domain`, and
+  `User.remoteUpdatedAt`→`remoteProfileRev` — the e2e selected the removed fields.
+- **Rename now applied to the e2e spec** (`fedGroupAccount`→`groupUser.account`, `originDomain`→
+  `groupUser.domain`, `remoteUpdatedAt`→`remoteProfileRev`; `findUnique(by fedGroupAccount)`→
+  `findFirst(by groupUser.account)`). A separate agent is fixing the remaining cascade failures
+  (the leave/Step-3 tests share outer-scope vars; the first failure starves the rest).
+- `src/` typechecks clean; unit specs green (19/19). e2e green = the verification gate for any
+  further wire/schema change (cursor unification §3).
 
 ---
 
 ## Resume checklist
 
-1. Decide cursor approach (§3): opaque (needs §6 green first) vs named-cursor interim vs docs-only.
-2. ~~Apply param rename + `toDomain` validation (§3)~~ — DONE.
-3. Add `kind` discriminator (§3 A2) — cheap, do regardless.
-4. Work through §4 + §5 doc defects.
+1. **E2E green first** — the rename (fedGroupAccount→groupUser.account, originDomain→groupUser.domain,
+   remoteUpdatedAt→remoteProfileRev, `left`→50010) is applied to the spec; a separate agent is fixing
+   the remaining cascade failures. Do NOT start more message-API code until this is green (verification
+   baseline + avoid racing the agent). [§6]
+2. ~~Cursor unification~~ — RETRACTED (non-issue; two spaces intentional, one advancement strategy).
+3. ~~Param rename + `toDomain`~~ — DONE. ~~A3 leave signal~~ — DONE (50010). ~~B3 /messages/before~~ —
+   DONE (extended to groups). A1 symmetry complete (forward + backward, 3 shapes each).
+4. Add `kind` discriminator (§3 A2) — cheap, do regardless (after e2e green).
+5. Doc-only: clarify the response `latestSeq` per-shape contract — per-author = the author's max
+   `originSeq` in-thread; all-senders = batch's highest thread `seq` (per-thread, not global); unused by
+   SOMS receivers.
+6. Work through the remaining §4 items (B1 roster-path rename, B2 revision-probe consistency, C1 GET
+   liveness side-effects, C2 dual error model — now salient via 50010, C3 inline avatars) + §5 doc defects.

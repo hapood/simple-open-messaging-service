@@ -222,12 +222,16 @@ export class S2sController {
   /** GET /api/v1/s2s/messages/before — the BACKWARD twin of /messages (reserved for external/other
    *  federation implementations; SOMS's own transport is forward-only). `beforeSeq` is an exclusive
    *  upper bound (`seq < beforeSeq`); `< 0` (default) means no upper bound → the latest `take` messages.
-   *  Returns the batch OLDEST-FIRST (descending query, reversed) so a caller prepends it directly; the
-   *  next-older page uses `messages[0].originSeq` as the new `beforeSeq`. Same friendship gate. */
+   *  Returns the batch OLDEST-FIRST (descending query, reversed) so a caller prepends it directly. The
+   *  next-older page uses `messages[0].originSeq`/`messages[0].seq` as the new `beforeSeq`. THREE shapes,
+   *  symmetric with /messages: P2P (`fromAccount`+`toAccount`), group all-senders (`toAccount=!group`),
+   *  group per-author (`toAccount=!group`+`fromAccount`+`fromDomain`, carries the {code:50010} leave
+   *  signal). Same gates (friendship / roster) as the forward leg. */
   @Get('messages/before')
   async getMessagesBefore(
     @Req() req: FastifyRequest,
     @Query('fromAccount') fromAccount?: string,
+    @Query('fromDomain') fromDomain?: string,
     @Query('toAccount') toAccount?: string,
     @Query('toDomain') toDomain?: string,
     @Query('beforeSeq') beforeSeqParam?: string,
@@ -235,10 +239,10 @@ export class S2sController {
   ) {
     const signer = this.signerDomain(req);
     this.requireBinding(toDomain, signer);
-    if (!fromAccount || !toAccount) {
+    if (!toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing fromAccount/toAccount query param',
+        'missing toAccount query param',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -252,6 +256,28 @@ export class S2sController {
       );
     }
     const take = Math.min(Number(takeParam ?? '50') || 50, 50);
+    if (toAccount.startsWith('!')) {
+      // Group: all-senders when no `fromAccount`; per-author (with the {code:50010} leave signal) when present.
+      if (fromAccount && fromDomain) {
+        return this.federation.serveOutboundMessagesGroupFromBefore(
+          toAccount,
+          fromAccount,
+          fromDomain,
+          beforeSeq,
+          take,
+          signer,
+        );
+      }
+      return this.federation.serveOutboundMessagesGroupBefore(toAccount, beforeSeq, take, signer);
+    }
+    // P2P: `fromAccount` is our local sender, `toAccount` is the requester's user. Friendship gate inside.
+    if (!fromAccount) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing fromAccount query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
     return this.federation.serveOutboundMessagesBefore(
       fromAccount,
       toAccount,

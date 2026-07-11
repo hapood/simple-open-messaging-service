@@ -105,8 +105,8 @@ genuinely-concurrent case). Different users in the same thread never contend (di
 - **No `S2SOutbox`** — coalesced in-memory hint map (§2.3), sync flush (best-effort).
 - **No shared federated thread id** — each server still owns its own local P2P `MessageThread`
   (unchanged from Step 1). The pull identifies the conversation by the **address pair**
-  (`from`/`to` → `Friendship` → local thread), never by a cross-server thread id. That returns only
-  for federated **groups** (Step 3).
+  (`fromAccount`/`toAccount` → `Friendship` → local thread), never by a cross-server thread id. That
+  returns only for federated **groups** (Step 3).
 
 ### 2.3 In-memory delivery buffers (volatile — no migration, no persistence)
 
@@ -217,22 +217,26 @@ the `/messages` endpoint.
 ### 3.2 `GET /api/v1/s2s/messages` (the authoritative pull)
 
 The receiver pulls the **sender's side only** — never its own authored messages. Query:
-- `from=<account>` — the sender, a **local** user on the serving (sender's) server.
-- `to=<account>` — the requester's user (a foreign stub here); identifies the friend pair + thread.
-- `after=<originSeq>` — the receiver's cursor (`MAX(originSeq)` it already has); `0`/omitted = from
+- `fromAccount=<account>` — the author, a **local** user on the serving (author's) server. Always the
+  peer/source side — never "me".
+- `toAccount=<account>` — the requester's user (a foreign stub here); together with `fromAccount`
+  identifies the friend pair + thread.
+- `toDomain=<domain>` — the requester's domain; **binding-checked `=== signer`** (the signature proves
+  only the signer domain, so the requester asserts it explicitly).
+- `afterSeq=<originSeq>` — the receiver's cursor (`MAX(originSeq)` it already has); `-1`/omitted = from
   the start (history backfill — Step 2.5 uses the same endpoint).
 - `take=<N>` — batch size, default `50`, capped (the quota hook, §6).
 
 The serving server:
-1. `S2sSignatureGuard` (signed + trusted; `signer.domain === to.domain` — the requester is the
-   signing server).
-2. Resolve `from` → local user; `to` → foreign stub of the signer domain; **`Friendship.status ===
-   'APPROVED'`** (Gate 2).
+1. `S2sSignatureGuard` (signed + trusted; `toDomain === signer` — the requester is the signing server).
+2. Resolve `fromAccount` → local user; `toAccount` → foreign stub of the signer domain;
+   **`Friendship.status === 'APPROVED'`** (Gate 2).
 3. `thread = Friendship.threadId` for that pair.
-4. `findMany({ where: { threadId: thread, creator: from.id, originSeq: { gt: after } },
+4. `findMany({ where: { threadId: thread, creator: fromAccount.id, originSeq: { gt: afterSeq } },
    orderBy: { originSeq: 'asc' }, take: take + 1 })` → drop the `+1`th as `hasMore`.
-5. `latestSeq = MAX(originSeq)` for `(threadId, creator=from.id)` (one indexed query; lets the
-   receiver know the absolute head, independent of how big `take` is).
+5. `latestSeq = MAX(originSeq)` for `(threadId, creator=fromAccount.id)` (the author's high-water mark
+   within this thread — informational; the receiver advances its own cursor from the messages it
+   STORES, not from `latestSeq`).
 
 Response:
 ```json
@@ -273,9 +277,9 @@ Signature-Input: ... (signed by the requester server, keyId = <requester-domain>
 ```
 The serving server (the file's **owner**) runs the three checks, then streams:
 1. **Signed + trusted** — `S2sSignatureGuard` (`trustLevel === 'trusted'`, valid signature,
-   `signer.domain === to.domain`).
-2. **Valid friendship** — `from` is a local user, `to` is a foreign stub of the signer domain, and
-   their `Friendship.status === 'APPROVED'`.
+   `toDomain === signer`).
+2. **Valid friendship** — `fromAccount` is a local user, `toAccount` is a foreign stub of the signer
+   domain, and their `Friendship.status === 'APPROVED'`.
 3. **File exists in that thread** — `MediaMessage WHERE digest = $D AND threadId = <that
    friendship's thread>` exists (one indexed probe on `@@index([digest])`). This reuses the exact
    per-object index the local `/uploads/shards/*` gate uses; it answers "is this digest referenced by

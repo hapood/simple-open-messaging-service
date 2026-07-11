@@ -47,7 +47,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let png2: Buffer; // second avatar (distinct color) for the re-pull test
   let firstGroupThreadA: number; // the first federated group's ORIGIN thread on appA (reused by later group tests)
   let firstMirrorBId: number; // that group's MIRROR thread on appB
-  let firstGroupAccount: string; // its `!account` (fedGroupAccount) — the on-wire group address
+  let firstGroupAccount: string; // its `!account` (groupUser.account) — the on-wire group address
   let tokenDave: string; // dave @ appB — a SECOND local member of the same mirror (shared-mirror fan-out test)
   let daveLocalIdB: number;
 
@@ -58,7 +58,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     process.env.SOMS_MEDIA_CHUNK_BYTES = '64';
     // Boot appA (aaa.local) + appB (bbb.local) in SEPARATE processes on SEPARATE databases. Each app is
     // its own Node process (isolated global state — Passport's `local` strategy etc. are per-app, not
-    // cross-app leaks) + its own DB (a group's fedGroupAccount is @unique per DB). A transparent S2S proxy
+    // cross-app leaks) + its own DB (a group's groupUser.account is @unique per DB). A transparent S2S proxy
     // sits on appB→appA (for the resume test's fault injection). bootFederationPair asserts the DBs differ.
     ({ appA, appB, proxy } = await bootFederationPair());
     await truncateFederationDbs(appA, appB);
@@ -473,13 +473,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const before = await appB.prisma.user.findUnique({
       where: { id: aliceStubIdOnB },
     });
-    expect(before?.remoteUpdatedAt).not.toBeNull();
+    expect(before?.remoteProfileRev).not.toBeNull();
     const avatarBefore = before!.avatar;
 
-    // alice changes her avatar on appA → User.updatedAt bumps (multipart upload — the real path).
+    // alice changes her avatar on appA → profileRev bumps (multipart upload — the real path).
     await uploadAvatar(appA, tokenA, png2);
 
-    // bob@appB opens the chat → sync-peer-profile probes /revision → newer → re-pull + re-localize.
+    // bob@appB opens the chat → sync-peer-profile ACKs immediately; the federated probe + re-pull run
+    // ASYNC (fire-and-forget). Poll for the re-localized avatar + advanced remoteProfileRev.
     const sync = await request(appB.baseUrl)
       .post('/api/v1/user/sync-peer-profile')
       .set('Authorization', `Bearer ${tokenB}`)
@@ -487,49 +488,52 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(sync.status).toBe(200);
     expect(sync.body.code).toBe(BusinessCode.OK);
 
-    const after = await appB.prisma.user.findUnique({
-      where: { id: aliceStubIdOnB },
-    });
-    expect(after!.avatar).not.toBe(avatarBefore);
-    expect(after!.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
-    expect(after!.remoteUpdatedAt?.getTime()).toBeGreaterThanOrEqual(
-      before!.remoteUpdatedAt!.getTime(),
+    const after = await vi.waitFor(
+      async () => {
+        const a = await appB.prisma.user.findUnique({
+          where: { id: aliceStubIdOnB },
+        });
+        expect(a?.avatar).not.toBe(avatarBefore); // re-pulled to the new avatar
+        return a!;
+      },
+      { timeout: 8000 },
     );
+    expect(after.avatar).toMatch(/^\/uploads\/.+-512\.webp$/);
+    expect(after.remoteProfileRev!).toBeGreaterThanOrEqual(before!.remoteProfileRev!);
   });
 
-  it('sync-peer-profile short-circuits (data:null) when sinceUpdatedAt is fresh', async () => {
-    const stub = await appB.prisma.user.findUnique({
+  it('sync-peer-profile is ACK-only (no payload) and no-ops when the stub is fresh', async () => {
+    // After the re-pull above, the stub is fresh (remoteProfileRev == appA's profileRev). The signal-only
+    // design ALWAYS returns ACK with NO profile payload; a fresh stub triggers no async re-pull.
+    const before = await appB.prisma.user.findUnique({
       where: { id: aliceStubIdOnB },
-      select: { updatedAt: true },
+      select: { avatar: true, remoteProfileRev: true },
     });
-    expect(stub).not.toBeNull();
-    const fresh = stub!.updatedAt.getTime();
+    expect(before).not.toBeNull();
+    const avatarBefore = before!.avatar;
 
-    // Caller already holds this exact revision → server returns data:null (no payload, no churn).
-    const sameRev = await request(appB.baseUrl)
+    const res = await request(appB.baseUrl)
       .post('/api/v1/user/sync-peer-profile')
       .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB, sinceUpdatedAt: fresh });
-    expect(sameRev.status).toBe(200);
-    expect(sameRev.body.code).toBe(BusinessCode.OK);
-    expect(sameRev.body.data).toBeNull();
+      .send({ userId: aliceStubIdOnB, sinceProfileRev: before!.remoteProfileRev! });
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe(BusinessCode.OK);
+    expect(res.body.data).toBeFalsy(); // ACK-only — no profile payload on the wire
 
-    // A cursor older than the live row → full user returned with a ms updatedAt.
-    const pulled = await request(appB.baseUrl)
-      .post('/api/v1/user/sync-peer-profile')
-      .set('Authorization', `Bearer ${tokenB}`)
-      .send({ userId: aliceStubIdOnB, sinceUpdatedAt: fresh - 1 });
-    expect(pulled.status).toBe(200);
-    expect(pulled.body.code).toBe(BusinessCode.OK);
-    expect(pulled.body.data).not.toBeNull();
-    expect(pulled.body.data.id).toBe(aliceStubIdOnB);
-    expect(pulled.body.data.updatedAt).toBe(fresh);
+    // Fresh stub → the async federated probe finds nothing newer → no re-localize. Give the async probe a
+    // moment to (not) re-pull, then confirm the avatar is untouched.
+    await new Promise((r) => setTimeout(r, 1500));
+    const after = await appB.prisma.user.findUnique({
+      where: { id: aliceStubIdOnB },
+      select: { avatar: true },
+    });
+    expect(after?.avatar).toBe(avatarBefore);
   });
 
   it('local profile edit fans PEER_PROFILE_UPDATED to every approved peer', async () => {
-    // alice (@appA) edits her name → notifyPeersOfProfileUpdate → each approved P2P peer gets the FULL
-    // fresh profile via SSE. carol is alice's LOCAL approved peer on appA (a foreign stub holds no SSE
-    // connection), so read carol's real SSE stream for the PEER_PROFILE_UPDATED frame.
+    // alice (@appA) edits her name → notifyPeersOfProfileUpdate → each approved P2P peer gets a
+    // PEER_PROFILE_UPDATED SIGNAL ({ userId }) via SSE. carol is alice's LOCAL approved peer on appA (a
+    // foreign stub holds no SSE connection), so read carol's real SSE stream for the frame.
     const reader = await openSse(appA.baseUrl, tokenCarol);
     try {
       const res = await request(appA.baseUrl)
@@ -542,12 +546,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         (event, data) =>
           event === 'PEER_PROFILE_UPDATED' &&
           typeof data === 'object' && data !== null &&
-          (data as { id?: number; name?: string }).id === aliceLocalIdA &&
-          (data as { name?: string }).name === 'Alice Renamed',
-      )) as { updatedAt?: number; avatar?: string };
-      // Pushed payload is the full profile (avatar path + ms updatedAt), not a partial patch.
-      expect(typeof payload.updatedAt).toBe('number');
-      expect(payload.avatar).toMatch(/^\/uploads\//);
+          (data as { userId?: number }).userId === aliceLocalIdA,
+      )) as { userId?: number };
+      // Signal-only: the payload carries just { userId } — the client HTTP-pulls the fresh profile itself
+      // (the project's SSE-signal-only convention). No profile fields on the wire.
+      expect(payload.userId).toBe(aliceLocalIdA);
     } finally {
       await reader.cancel();
     }
@@ -568,13 +571,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .post('/api/v1/user/sync-peer-profile')
         .set('Authorization', `Bearer ${tokenB}`)
         .send({ userId: aliceStubIdOnB });
+      // The re-localization is ASYNC (syncForeignUserIfStale is fire-and-forget); the SIGNAL ({ userId })
+      // fires once localizeForeignProfile completes. waitForSseEvent polls until it lands.
       await waitForSseEvent(
         reader,
         (event, data) =>
           event === 'PEER_PROFILE_UPDATED' &&
           typeof data === 'object' && data !== null &&
-          (data as { id?: number; isForeigner?: boolean }).id === aliceStubIdOnB &&
-          (data as { isForeigner?: boolean }).isForeigner === true,
+          (data as { userId?: number }).userId === aliceStubIdOnB,
       );
     } finally {
       await reader.cancel();
@@ -594,31 +598,34 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(create.body.code).toBe(BusinessCode.OK);
     const groupThreadA = create.body.data.threadId as number;
 
-    // The group account (fedGroupAccount == the group !account) — the on-wire group address.
+    // The group account (groupUser.account == the group !account) — the on-wire group address.
     const trdA = await appA.prisma.messageThread.findUnique({
       where: { id: groupThreadA },
-      select: { fedGroupAccount: true, originDomain: true },
+      select: { groupUser: { select: { account: true, domain: true } } },
     });
-    expect(trdA?.fedGroupAccount).toBeTruthy();
-    expect(trdA?.originDomain).toBe(DOM_A); // appA is the origin
-    const groupAccount = trdA!.fedGroupAccount as string;
+    expect(trdA?.groupUser?.account).toBeTruthy();
+    // appA is the ORIGIN: a local group-user carries the 'local' domain sentinel (isOriginThread checks
+    // `=== 'local'`); the real domain is materialized only on the wire (roster/address mapping). The
+    // mirror (appB) stores the origin's real domain — asserted below.
+    expect(trdA?.groupUser?.domain).toBe('local');
+    const groupAccount = trdA!.groupUser!.account;
 
     // appB mints the mirror + the incoming Invite (handleGroupInvite). Poll for the mirror thread.
     const mirrorB = await vi.waitFor(
       async () => {
-        const m = await appB.prisma.messageThread.findUnique({
-          where: { fedGroupAccount: groupAccount },
-          select: { id: true, originDomain: true },
+        const m = await appB.prisma.messageThread.findFirst({
+          where: { groupUser: { account: groupAccount } },
+          select: { id: true, groupUser: { select: { domain: true } } },
         });
         expect(m).not.toBeNull();
-        expect(m!.originDomain).toBe(DOM_A); // mirror knows the origin
+        expect(m!.groupUser?.domain).toBe(DOM_A); // mirror knows the origin
         return m!;
       },
       { timeout: 5000 },
     );
 
     // bob accepts via the group account (the federated-stable card identity). appB's acceptInvite
-    // resolves the pending Invite by (toUser=bob, thread.fedGroupAccount) + notifies the origin.
+    // resolves the pending Invite by (toUser=bob, thread.groupUser.account) + notifies the origin.
     const accept = await request(appB.baseUrl)
       .post('/api/v1/invite/accept')
       .set('Authorization', `Bearer ${tokenB}`)
@@ -743,7 +750,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   it('Step 3: two local members on the same mirror both receive an origin message (shared mirror)', async () => {
     // The untested topology path: TWO local members (bob + dave) on appB's SAME mirror thread. A pulled
     // message must SSE-fan to EVERY local active member (storePulledMessage's recipient loop), and the
-    // mirror is SHARED (fedGroupAccount @unique → one mirror per group, not one per local user).
+    // mirror is SHARED (MessageThread.groupUserId @unique → one mirror per group, not one per local user).
     // Friend gate for the group invite: befriend alice↔dave (resolve → request → dave accepts).
     const resolveDave = await request(appA.baseUrl)
       .post('/api/v1/user/resolve')
@@ -796,7 +803,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
               kind: 'GROUP',
               status: 'PENDING',
               toUserId: daveLocalIdB,
-              thread: { fedGroupAccount: firstGroupAccount },
+              thread: { groupUser: { account: firstGroupAccount } },
             },
           }),
         ).not.toBeNull();
@@ -929,14 +936,14 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     const groupAccount = (await appA.prisma.messageThread.findUnique({
       where: { id: groupThreadA },
-      select: { fedGroupAccount: true },
-    }))!.fedGroupAccount as string;
+      select: { groupUser: { select: { account: true } } },
+    }))!.groupUser!.account;
 
     // bob's mirror is created with pullUntil seeded to sinceSeq = 0 (past the pre-invite seq 0).
     const mirrorB = await vi.waitFor(
       async () => {
-        const m = await appB.prisma.messageThread.findUnique({
-          where: { fedGroupAccount: groupAccount },
+        const m = await appB.prisma.messageThread.findFirst({
+          where: { groupUser: { account: groupAccount } },
           select: { id: true, pullUntil: true },
         });
         expect(m).not.toBeNull();

@@ -66,7 +66,15 @@ export function mintUlid(): string {
  *  (docs/account-naming.md §3.3) — multi-process same-ms draws can still collide at the unique index, so
  *  the loop is a real (if probabilistically rare) safety net, not a digit-suffix retreat. */
 export function mintGroupAccount(): string {
-  return '!' + mintUlid();
+  const account = '!' + mintUlid();
+  // Belt-and-suspenders on a proven-impossible path: the lowercased Crockford-base32 ULID alphabet is a
+  // strict subset of GROUP_ACCOUNT_RE's [a-z0-9], so this CAN'T fail today. Enforce the contract anyway so
+  // a future ULID-library swap can't silently mint an illegal account. Internal invariant → a thrown Error
+  // (5xx), NOT a user-facing BusinessException — this is a "the mint is broken" bug, not user input.
+  if (!isValidGroupAccount(account)) {
+    throw new Error(`mintGroupAccount invariant violated: produced invalid account [${account}]`);
+  }
+  return account;
 }
 
 /** Prisma unique-constraint-violation (the codebase's 5 existing sites all use this exact shape). */

@@ -13,11 +13,26 @@
 > the trust step). **Address:** a user is always `{ account, domain }` — never an `@`-joined string on
 > the wire (the `@` is a UI input aid only, split client-side). **No internal ids on the wire:** the
 > account params are always bare accounts — `fromAccount` (the author), `toAccount` (the requester's
-> user, or the group `!account`). A group is addressed by its `!account` (the `fedGroupAccount`, stored
-> verbatim — never the DB thread id). `fromDomain` is the author's domain (the author may be foreign);
+> user, or the group `!account`). A group is addressed by its `!account` (the `groupUser.account`,
+> stored verbatim — never the DB thread id). `fromDomain` is the author's domain (the author may be foreign);
 > `toDomain` is the requester's domain and is **binding-checked against the RFC9421 signer** on the
 > message + media endpoints (`toDomain === signer`, else `FEDERATION_BINDING_VIOLATION`) — the signature
 > proves only the signer domain, so the requester explicitly asserts which domain `toAccount` lives on.
+>
+> **Identity model — who `from`/`to` are, and how they identify the thread.** Every pull is stated from
+> the **requester's** perspective, and the `(fromAccount, toAccount)` pair IDENTIFIES the thread:
+> - **`fromAccount` is always the author / source side** — the user whose messages are being served (a
+>   local user on the SERVING server). A server never pulls its own authored messages; `fromAccount` is
+>   the peer author.
+> - **`toAccount` is the conversation's other endpoint from the requester's view** — for P2P it is the
+>   requester's OWN user ("the peer's messages to me"); for a group it is the group `!account`.
+> - **P2P:** `(fromAccount, toAccount)` → `Friendship` (status APPROVED) → the local 1:1 thread. **Group:**
+>   `toAccount` (the `!account`) → the group thread; `fromAccount` present selects one author (per-author
+>   hub leg), absent selects all senders.
+> - There is **no cross-server thread id for 1:1** — each server owns its own local thread for the pair;
+>   a shared group id exists only as the group `!account`. The signature proves the requester's DOMAIN,
+>   not a user, so the requester asserts `fromAccount` + `toDomain`(==signer) and the serving server
+>   resolves the thread from the pair + the friendship/roster gate.
 >
 > **`seq` convention:** `originSeq` is a per-`(thread, sender)` monotonic **int32**, **0-indexed** — the
 > first message in a (thread, sender) is seq 0, then 1, 2, …; `-1` means "empty / before seq 0". It is
@@ -45,11 +60,12 @@
 | 3 | `POST /s2s/invite-accept` | body `S2SInviteAccept` (`kind`) | — | The recipient accepted. FRIEND → the inviter's server creates the P2P thread (accept-wins); GROUP → the group **origin** records the joiner on its canonical roster (+ bumps the group meta revision) |
 | 4 | `GET /s2s/thread/roster` | query `toAccount` (group `!account`) | trusted peer | The ORIGIN serves the canonical roster (active members, wire addresses + roles) — pulled by a mirror's lazy meta-pull on chat-open |
 | 5 | `GET /s2s/users/:account` | path `account` | — | A local user's full profile (avatar inline base64). A group is a `!`-User, so this also serves a group's identity |
-| 6 | `GET /s2s/users/:account/revision` | path `account` | — | Lightweight profile-revision probe (no avatar). For a group `!`-User this is the **meta revision** (`updatedAt`) the mirror compares on chat-open |
+| 6 | `GET /s2s/users/:account/revision` | path `account` | — | Lightweight profile-revision probe (no avatar) → `{ profileRev }`. For a group `!`-User this is the group identity revision (`User.profileRev`) the mirror compares on chat-open |
+| 6b | `GET /s2s/group/:account/roster-revision` | path `account` (group `!account`) | — | Lightweight roster-revision probe → `{ rosterRev }` (`Group.rosterRev`). The mirror compares against its `remoteRosterRev` on chat-open to decide whether to re-pull the roster (symmetric with #6 for identity) |
 | 7 | `GET /s2s/new-msg-map` | query `cursor`(int,def0), `take`(int,cap1000) | — | Peer pulls OUR outbound hint snapshot |
 | 8 | `POST /s2s/new-msg-map` | body `{origin, entries:[{fromAccount,fromDomain,toAccount,latestSeq}]}` | `origin==signer` | Peer pushes ITS outbound hints (ACK fast) |
 | 9 | `GET /s2s/messages` | query `fromAccount`,`fromDomain`,`toAccount`,`toDomain`,`afterSeq`(originSeq,def -1=from start),`take`(cap50) | active P2P thread | Forward pull: the SENDER's 1:1 messages with `seq > afterSeq` |
-| 10 | `GET /s2s/messages/before` | query `fromAccount`,`toAccount`,`toDomain`,`beforeSeq`(def -1=from latest),`take`(cap50) | active P2P thread | Backward twin of #9: `seq < beforeSeq`, oldest-first (reserved for external impls; SOMS is forward-only) |
+| 10 | `GET /s2s/messages/before` | query `fromAccount`,`fromDomain`,`toAccount`,`toDomain`,`beforeSeq`(def -1=from latest),`take`(cap50) | active P2P thread / roster | Backward twin of #9, **three shapes symmetric with /messages**: P2P (`fromAccount`+`toAccount`), group all-senders (`toAccount=!group`), group per-author (`+fromAccount`+`fromDomain`, carries the {code:50010} leave signal). `seq`/`originSeq < beforeSeq`, oldest-first (reserved for external impls; SOMS is forward-only) |
 | 11 | `GET /s2s/ping` | — | — | Signed liveness probe (advances watermark) |
 | 12 | `GET /s2s/get_file` | query `digest`,`fromAccount`,`fromDomain`,`toAccount`,`toDomain` (HTTP Range) | 3-check media authz | Stream a chat-media asset by sha256 |
 
@@ -62,9 +78,9 @@ S2SAddress = { account: string; domain: string }
 S2SInvite  = { id: string; origin: string; ts: number; kind: 'FRIEND' | 'GROUP';
                from: S2SAddress; to: S2SAddress; note?: string;                 // ≤255
                profile?: S2SProfile;                                            // FRIEND only
-               group?: string; groupName?: string;                              // GROUP: the group `!account` (== fedGroupAccount)
+               group?: string; groupName?: string;                              // GROUP: the group `!account` (== groupUser.account)
                groupAvatar?: { b64: string; w: number; h: number } | null;
-               groupRevision?: number; owner?: S2SAddress }                     // GROUP: origin !-User.updatedAt; owner
+               groupRevision?: number; owner?: S2SAddress }                     // GROUP: origin !-User.profileRev (Int); owner
 
 // POST /s2s/invite-accept
 S2SInviteAccept = { id: string; origin: string; ts: number; kind: 'FRIEND' | 'GROUP';
@@ -84,10 +100,11 @@ NewMsgMapEntry = { fromAccount: string; fromDomain: string; toAccount: string; l
 //  ?fromAccount=A&fromDomain=D&toAccount=B&toDomain=R&afterSeq&take        → P2P: A's messages for B (originSeq space)
 //  ?toAccount=!group&toDomain=R&afterSeq&take                              → group ALL-SENDERS EXCEPT the requester's own authors (mirror←origin, thread-seq space, pullUntil)
 //  ?toAccount=!group&fromAccount=A&fromDomain=D&toDomain=R&afterSeq&take   → group PER-AUTHOR (origin←mirror hub leg, originSeq space)
-// All-senders response carries each message's creator (multiple authors in one stream):
-{ messages: Array<{ originSeq: number; creator: { account; domain }; contentType: string; content: string; ts: number }>;
+// All-senders response carries each message's thread `seq` (the mirror's pullUntil cursor) + its creator
+// (multiple authors in one stream):
+{ messages: Array<{ seq: number; originSeq: number; creator: { account; domain }; contentType: string; content: string; ts: number }>;
   latestSeq: number; hasMore: boolean }
-// Per-author / P2P response (creator implicit = from):
+// Per-author / P2P response (creator implicit = fromAccount):
 { messages: Array<{ originSeq: number; contentType: string; content: string; ts: number }>;
   latestSeq: number; hasMore: boolean }
 // Per-author group pull — leave signal: if the author is no longer an active member on the serving server

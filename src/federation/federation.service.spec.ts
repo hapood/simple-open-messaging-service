@@ -57,8 +57,6 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   it('P2P: signals every foreign peer except the author', async () => {
     const { svc, prisma, markDirty } = makeStubs();
     prisma.messageThread.findUnique.mockResolvedValue({
-      fedGroupAccount: null,
-      originDomain: null,
       groupUser: null,
     });
     prisma.threadParticipant.findMany.mockResolvedValue([
@@ -77,8 +75,6 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   it('P2P: excludes fetchedFromDomain (a pulled message does not re-notify its source)', async () => {
     const { svc, prisma, markDirty } = makeStubs();
     prisma.messageThread.findUnique.mockResolvedValue({
-      fedGroupAccount: null,
-      originDomain: null,
       groupUser: null,
     });
     prisma.threadParticipant.findMany.mockResolvedValue([
@@ -96,9 +92,7 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   it('GROUP origin: signals every foreign member-DOMAIN (deduped) except the fetch source', async () => {
     const { svc, prisma, markDirty } = makeStubs();
     prisma.messageThread.findUnique.mockResolvedValue({
-      fedGroupAccount: '!grp',
-      originDomain: OUR,
-      groupUser: { account: '!grp' },
+      groupUser: { account: '!grp', domain: 'local' },
     });
     // Two members on b.com (bob + dave) + one on c.com → dest set dedupes to {b.com, c.com}.
     prisma.threadParticipant.findMany.mockResolvedValue([
@@ -124,9 +118,7 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
   it('GROUP mirror: signals ONLY {originDomain} — and nothing when that was the fetch source', async () => {
     const { svc, prisma, markDirty } = makeStubs();
     prisma.messageThread.findUnique.mockResolvedValue({
-      fedGroupAccount: '!grp',
-      originDomain: 'origin.com',
-      groupUser: { account: '!grp' },
+      groupUser: { account: '!grp', domain: 'origin.com' },
     });
     prisma.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
 
@@ -150,8 +142,6 @@ describe('FederationService.signalOutbound — the loop-safety routing rule', ()
     expect(markDirty).not.toHaveBeenCalled();
 
     prisma.messageThread.findUnique.mockResolvedValue({
-      fedGroupAccount: null,
-      originDomain: null,
       groupUser: null,
     });
     prisma.threadParticipant.findMany.mockResolvedValue([foreignUser(99, 'x', 'b.com')]);
@@ -166,9 +156,7 @@ describe('FederationService sender debounce (scheduleFlush / flushDomain)', () =
     try {
       const { svc, prisma, flushBatch } = makeStubs();
       prisma.messageThread.findUnique.mockResolvedValue({
-        fedGroupAccount: '!grp',
-        originDomain: 'origin.com',
-        groupUser: { account: '!grp' },
+        groupUser: { account: '!grp', domain: 'origin.com' },
       });
       prisma.threadParticipant.findMany.mockResolvedValue([localUser(1, 'alice')]);
 
@@ -198,9 +186,7 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
   // the lazy roster meta-pull).
 
   function makeSvc(opts: {
-    thread:
-      | { fedGroupAccount: string | null; originDomain: string | null; groupUser?: { account: string } | null }
-      | null;
+    thread: { groupUser: { account: string; domain: string } | null } | null;
     leaver: { account: string; domain: string; isForeigner: boolean } | null;
     maxMsg?: number | null;
     maxPending?: number | null;
@@ -235,7 +221,7 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
 
   it('MIRROR thread: pushes a per-author hint to the origin, latestSeq = cursor+1 (local leaver w/ history)', async () => {
     const { svc, markDirty } = makeSvc({
-      thread: { fedGroupAccount: '!grp', originDomain: 'origin.com', groupUser: { account: '!grp' } },
+      thread: { groupUser: { account: '!grp', domain: 'origin.com' } },
       leaver: { account: 'bob', domain: 'local', isForeigner: false },
       maxMsg: 5, // bob authored up to originSeq 5 on the mirror
     });
@@ -248,7 +234,7 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
 
   it('MIRROR thread, leaver authored nothing: latestSeq floors at 0 (cursor -1 → 0 still beats -1)', async () => {
     const { svc, markDirty } = makeSvc({
-      thread: { fedGroupAccount: '!grp', originDomain: 'origin.com', groupUser: { account: '!grp' } },
+      thread: { groupUser: { account: '!grp', domain: 'origin.com' } },
       leaver: { account: 'bob', domain: 'local', isForeigner: false },
       // no maxMsg/maxPending → both null → cursor -1 → latestSeq 0
     });
@@ -258,7 +244,7 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
 
   it('PendingMedia is included in the cursor (a staged-but-uncommitted media bumps latestSeq past it)', async () => {
     const { svc, markDirty } = makeSvc({
-      thread: { fedGroupAccount: '!grp', originDomain: 'origin.com', groupUser: { account: '!grp' } },
+      thread: { groupUser: { account: '!grp', domain: 'origin.com' } },
       leaver: { account: 'bob', domain: 'local', isForeigner: false },
       maxMsg: 3,
       maxPending: 7, // a staged media at originSeq 7 → cursor 7 → latestSeq 8
@@ -267,18 +253,18 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
     expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 8);
   });
 
-  it('ORIGIN thread (we are the origin): no hint pushed', async () => {
+  it('ORIGIN thread (we are the origin — groupUser.domain is the "local" sentinel): no hint pushed', async () => {
     const { svc, markDirty } = makeSvc({
-      thread: { fedGroupAccount: '!grp', originDomain: OUR, groupUser: { account: '!grp' } },
+      thread: { groupUser: { account: '!grp', domain: 'local' } },
       leaver: { account: 'bob', domain: 'local', isForeigner: false },
     });
     await svc.notifyGroupLeave(10, 42);
     expect(markDirty).not.toHaveBeenCalled();
   });
 
-  it('non-federated group: no hint pushed', async () => {
+  it('non-federated group (no groupUser): no hint pushed', async () => {
     const { svc, markDirty } = makeSvc({
-      thread: { fedGroupAccount: null, originDomain: null, groupUser: null },
+      thread: { groupUser: null },
       leaver: { account: 'bob', domain: 'local', isForeigner: false },
     });
     await svc.notifyGroupLeave(10, 42);

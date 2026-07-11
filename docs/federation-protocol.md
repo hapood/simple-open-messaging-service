@@ -91,7 +91,7 @@ The complexity that sank Matrix (global consistency / DAG) and the complexity Mo
 | **User address** | Identity = a `{account, domain}` pair (e.g. `{account:"alice", domain:"soms.io"}`). The `alice@soms.io` form is a **UI input aid only** — the client splits it before any API call (§3.1). DNS-discoverable by `domain`. |
 | **User stub** | A remote user is represented locally as a `User` row with `domain = <peer-domain>` (local users carry the `"local"` sentinel — never exposed; display uses the real `config.domain`). `@@unique([account, domain)]` enforces both local and stub uniqueness (a local "bob" does not block "bob@bbb.com"). Friendship and thread participation reference these stubs like any local user. |
 | **Friend edge** | A bidirectional friendship between two users (`Friendship`, one normalized row per pair + `requesterId` for direction). **The access primitive:** no 1:1 thread exists between two users without one. Replicated on both servers via the `friend-request` / `friend-approve` endpoints; carries an optional ≤255-char `reqMessage`. |
-| **Thread (Step 1)** | A bounded conversation. In Step 1, **each server owns its own local 1:1 `MessageThread`** for a federated pair on approve — there is **no shared federated thread id** (the `thr_<rand>@<origin-domain>` form returns only for federated **groups**, Step 3). 1:1 messages (Step 2) route by `from`/`to` → `Friendship` → the local thread. |
+| **Thread (Step 1)** | A bounded conversation. In Step 1, **each server owns its own local 1:1 `MessageThread`** for a federated pair on approve — there is **no shared federated thread id** (the `thr_<rand>@<origin-domain>` form returns only for federated **groups**, Step 3). 1:1 messages (Step 2) route by `fromAccount`/`toAccount` → `Friendship` → the local thread. |
 | **Trust lifecycle** | `FederatedPeer.trustLevel`: `pending → trusted → demoted → trusted…` (+ `blocked` = admin intent). A trusted peer whose signed op fails is immediately demoted and re-handshakes on next contact (self-healing). Append-only `FederatedPeerEvent` records every transition (§5.2). |
 | **Message / Receipt** | **Message:** shipped in Step 2 (cross-server, via `GET /messages` pull + `originSeq` dedup). **Receipt:** v0.2, not shipped. |
 | **Thread membership** | The canonical access gate at the friend-op endpoint: **you only receive friend ops for relationships you are a party to.** For 1:1, membership is the friend edge; for groups (Step 3), the local roster. |
@@ -120,7 +120,7 @@ address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" 
 > bound to its server in v0.1 (identity portability is a deferred non-goal, §10). A user is therefore
 > `{ account, domain }` for life; there is **no rename and no re-homing operation on the wire.**
 
-> **Federated thread identity** (shipped): a federated **group** is addressed by its own `!account` (`MessageThread.fedGroupAccount`, minted on group create, globally unique — the same value on the origin and every mirror, never the DB thread id); 1:1 threads have no shared id (each server owns its own local thread). A message's cross-server identity is the `(creator, originSeq)` pair (Step 2), not a UUID.
+> **Federated thread identity** (shipped): a federated **group** is addressed by its own `!account` (stored as `MessageThread.groupUser.account`, minted on group create, globally unique — the same value on the origin and every mirror, never the DB thread id); 1:1 threads have no shared id (each server owns its own local thread). A message's cross-server identity is the `(creator, originSeq)` pair (Step 2), not a UUID.
 
 ### 3.2 Discovery — layered
 
@@ -456,7 +456,7 @@ Alice@soms.io wants to chat with Bob@other.com.
    NEW_THREAD to its own user. There is NO thread.invite and NO shared federated thread id.
 ```
 
-**No `thread.invite` exists in Step 1.** Each server owns its own thread; a Step 2 message from Alice routes on `soms.io` by `from`/`to` → `Friendship` → the local thread, and is delivered to `other.com` where it routes the same way to Bob's local thread. A shared federated thread id returns only for federated **groups** (Step 3).
+**No `thread.invite` exists in Step 1.** Each server owns its own thread; a Step 2 message from Alice routes on `soms.io` by `fromAccount`/`toAccount` → `Friendship` → the local thread, and is delivered to `other.com` where it routes the same way to Bob's local thread. A shared federated thread id returns only for federated **groups** (Step 3).
 
 ### 9.2 Send a message (Step 2 — built; see step2-design)
 
@@ -523,9 +523,10 @@ model User {
   @@unique([account, domain])
 }
 
-// MessageThread — Step 3 adds the federated GROUP identity: fedGroupAccount (the group's own
-// `!account`, @unique — one local mirror per federated group) + originDomain (the origin server).
-// NULL for purely-local threads (all P2P, local-only groups); 1:1 threads still have no shared id.
+// MessageThread — Step 3 adds the federated GROUP identity: a `groupUser` (a `!`-sigil User — the
+// group's own `!account`, @unique, one local mirror per federated group) carrying the account + the
+// origin server's domain (groupUser.domain). NULL groupUserId for purely-local threads (all P2P,
+// local-only groups); 1:1 threads still have no shared id.
 // Message gains originServerTime (Step 2/3 — the sender clock, stored not shown; createdAt = arrival,
 // displayed). See docs/federation-step3-design.md §3.
 

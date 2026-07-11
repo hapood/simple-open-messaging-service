@@ -198,6 +198,19 @@ export class QueryValidThreadDto {
   })
   @IsOptional()
   type?: MessageThreadType;
+
+  @ApiProperty({
+    example: 5,
+    description:
+      'Snapshot revision pin. The page returns threads that were ACTIVE at this revision (added, not ' +
+      'since-deleted per the ThreadRevision log) — pinning membership so offset pagination stays ' +
+      'consistent across pages and the snapshot composes cleanly with query-thread/delta from this ' +
+      'revision forward. The client passes its threadRevision cursor (from /user/my-profile).',
+  })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  revision: number;
 }
 
 /** Body for /user/query-thread/delta — pull ADD/DELETE deltas in (fromRevision, toRevision]
