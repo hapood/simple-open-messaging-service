@@ -4,6 +4,10 @@ import { AuthService } from './auth.service';
 import { sseUrl } from './constants';
 import type { ToMain, ToWorker } from './sse-worker-protocol';
 
+/** Dev-build-only diagnostic gate (mirrors Angular's own per-file declaration): truthy under
+ *  `ng serve`, dead-code-eliminated in prod AOT — see the [sse] recv trace below. */
+declare const ngDevMode: boolean | null | undefined;
+
 export interface StandardMessage<T = any> {
   event: string,
   status: number,
@@ -98,7 +102,12 @@ export class WebsocketService {
   private onMessage(m: ToMain): void {
     switch (m.type) {
       case 'state': this.state.set(m.state); break
-      case 'event': this.eventSubject.next(m.payload as StandardMessage); break
+      case 'event':
+        // Dev-only: trace every SSE business event the worker forwards to the main thread, so signal
+        // reception is visible in the console under `ng serve`. Gated by ngDevMode → stripped in prod AOT.
+        if (ngDevMode) console.log('[sse] recv', m.payload.event, m.payload.data);
+        this.eventSubject.next(m.payload as StandardMessage);
+        break
       case 'reconnect': this.reconnect$.next(); break
       case 'need-token': void this.handleNeedToken(m.reqId); break
       case 'renew-token': void this.handleRenewToken(m.reqId); break
