@@ -9,6 +9,9 @@
 /web/dist
 /admin-web/dist
 /src/prisma/generated
+# Tauri/Android build tree (src-tauri/target ~5GB of Rust artifacts, gen/android) — irrelevant to
+# the server image; excluding it keeps the build context tiny.
+/src-tauri
 /.git
 /.env
 /.env.local

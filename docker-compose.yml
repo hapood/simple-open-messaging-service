@@ -1,0 +1,73 @@
+# Self-contained SOMS stack: postgres + one-shot migrate + app.
+#
+#   cp .env.docker.example .env   # then edit .env (passwords, SOMS_DOMAIN)
+#   docker compose up -d
+#
+# First deploy only — seed the bootstrap admin:
+#   docker compose run --rm app node prisma/seed-admin.cjs
+
+services:
+  postgres:
+    # Standard Postgres 16. The dev DB happens to run on TimescaleDB, but the schema has no timescale
+    # dependency; swap to timescale/timescaledb:2.17-pg16 if you want parity.
+    image: postgres:16
+    environment:
+      POSTGRES_DB: soms
+      POSTGRES_USER: timescale
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timescale -d soms"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot migration runner. Reuses the app image (prisma CLI + migrations + config already baked
+  # in), applies pending migrations idempotently, then exits 0. Runs on every `up` but is a sub-second
+  # no-op when nothing is pending — `prisma migrate deploy` is idempotent via the _prisma_migrations
+  # table, and the existing manual `migrate resolve --applied` history keeps that table in sync.
+  migrate:
+    image: soms:${APP_VERSION:-dev}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://timescale:${POSTGRES_PASSWORD:?}@postgres:5432/soms?schema=public
+    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+    restart: "no"
+
+  app:
+    build:
+      context: .
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+    image: soms:${APP_VERSION:-dev}
+    # The app does NOT start until postgres is healthy AND migrate has exited 0 — a failed migration
+    # keeps the app down with a visible error rather than booting half-schema.
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    env_file:
+      - .env
+    environment:
+      # Compose computes this: the DB host is the `postgres` service name, not localhost.
+      DATABASE_URL: postgresql://timescale:${POSTGRES_PASSWORD:?}@postgres:5432/soms?schema=public
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
+      APP_VERSION: ${APP_VERSION:-dev}
+    volumes:
+      - app-uploads:/app/uploads
+      - app-data:/app/data     # S2S Ed25519 keypair (SOMS_S2S_KEY_PATH defaults to ./data/...)
+      - app-logs:/app/logs
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  app-uploads:
+  app-data:
+  app-logs:
