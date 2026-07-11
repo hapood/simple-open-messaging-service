@@ -123,6 +123,12 @@ export class UploadService {
   /** Image size cap (avatars + chat images). Enforced in consumeImage so the global multipart
    * ceiling can be raised for generic files (MAX_FILE_BYTES) without also raising it for images. */
   static readonly MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  /** Cap on an inbound federated avatar's base64 string length (pre-decode). A real federated avatar is
+   *  the ~55 KB 512-representative (`readAvatarAsWire` reads `User.avatar` = the representative that
+   *  `saveAvatars` wrote, NOT the upload source), so 1 MiB of base64 (~750 KB decoded) is ~18× headroom.
+   *  This exists ONLY to stop a trusted-but-broken peer OOM-ing us with a huge b64 before `Buffer.from`
+   *  allocates — a round number avoids the imprecise base64 4/3 ceil math. See design-review item C3. */
+  static readonly MAX_AVATAR_WIRE_B64_LEN = 1024 * 1024;
 
   /**
    * Consume a single image from multipart/form-data: whitelist the image mimetype, cap at
@@ -638,6 +644,15 @@ export class UploadService {
     const h = avatar.h | 0;
     if (w > 0 && h > 0 && w * h > UploadService.MAX_AVATAR_PIXELS) {
       throw new Error('federated avatar too large in pixels');
+    }
+    // Pre-decode byte cap: reject BEFORE `Buffer.from` allocates, so a trusted-but-broken peer can't
+    // OOM us with a huge b64 string (the pixel check above can't see raw byte size — a small-declared
+    // but gigabyte-encoded blob would pass it, then exhaust memory on decode). The existing sharp
+    // metadata read remains the authoritative pixel-bomb check; this is the byte-bomb guard. A round
+    // 1 MiB cap (~18× a real representative) avoids the imprecise base64 4/3 ceil math. Trusted-peer
+    // path only — low threat, but cheap defense-in-depth. See design-review item C3.
+    if (avatar.b64.length > UploadService.MAX_AVATAR_WIRE_B64_LEN) {
+      throw new Error('federated avatar too large in bytes');
     }
     const buf = Buffer.from(avatar.b64, 'base64');
     return this.saveAvatars(buf);

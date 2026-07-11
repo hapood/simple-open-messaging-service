@@ -174,8 +174,29 @@
     serve methods, `pullGroupFromAuthor`, `sendSignedPost`), `s2s.controller.ts` (POST handlers + leave
     via thrown 410), `test/federation.e2e-spec.ts` (leave-flow comments; assertions unchanged — DB
     outcomes + not-demoted guard still hold under 410). e2e 23/23 green.
-- **C3** — avatars ferried inline as base64 `{b64,w,h}` in `/invite` + `/users/:account`, unbounded
-  at the API layer. Reference by digest + reuse `/get_file`.
+- **C3 — RESOLVED (minimal byte cap; full digest redesign RETRACTED as not worth it).** The wire avatar
+  is the **~55 KB 512-representative** (`readAvatarAsWire` reads `User.avatar` = the representative
+  `saveAvatars` wrote, NOT the upload source), ferried inline as `{b64,w,h}` on `/invite` +
+  `/users/:account`. Two concerns, only one real:
+  - **Efficiency ("ferried inline"):** already handled — `localizeForeignProfile` is `remoteProfileRev`-gated
+    (skip if not newer), so the ~55 KB crosses the wire only on a genuine avatar change. Not a hot path.
+  - **Unbounded (the real gap):** `Buffer.from(b64)` allocated BEFORE any size check, so a
+    trusted-but-broken peer could OOM us with a huge b64 (the existing `MAX_AVATAR_PIXELS` pixel check +
+    sharp metadata can't see raw byte size). **Fix:** `saveAvatarFromWire` now rejects
+    `b64.length > MAX_AVATAR_WIRE_B64_LEN` (1 MiB ≈ 18× a real representative) BEFORE `Buffer.from`.
+    `localizeForeignProfile` already catches the throw → keeps the existing avatar. A round 1 MiB avoids
+    the imprecise base64 4/3 ceil math (`4*ceil(N/3)` ≠ `ceil(N*4/3)`; the latter is shorter + would
+    wrongly reject a boundary input).
+  - **Why not the digest + `/get_file` redesign:** avatars use sharp (multi-size webp, path-addressed),
+    chat media uses raw-byte sha256 CAS — different storage models; forcing avatars into the digest model
+    means "digest a sharp OUTPUT then re-sharp it," which is awkward. Combined with the revision-gate
+    already handling efficiency + the pixel check handling bombs, the full redesign (new endpoint + wire
+    shape change + `remoteAvatarDigest` column + migration + receiver fetch path) was overkill on a cold,
+    small, already-gated, trusted-peer-only path. Best practice here IS the minimal cap. (Orphan GC is
+    already built: `gcOrphanedAvatars` live-set scan, covering both local-upload + federation-relocalize
+    orphans — NOT refcount; that's chat-media's `MediaAsset.refs`.)
+  - File: `src/upload/upload.service.ts` (`MAX_AVATAR_WIRE_B64_LEN` constant + the pre-decode guard in
+    `saveAvatarFromWire`). e2e 23/23 green (the avatar-localization tests pass — real avatars are ~55 KB).
 - **D1** — origin-hub group messaging: O(N member-servers) round-trips per message, all through the
   origin; origin down = group read-only; no read-path failover. (Structural; documented.)
 - **D2** — loop-safety rests on one implicit rule ("exclude the domain just pulled from") at
@@ -230,4 +251,5 @@
    — RETRACTED. ~~C1 (GET liveness side-effects)~~ — RETRACTED (lastSuccessAt is observability-only;
    drives no state machine; explicit `/ping` signal already exists; success-advance is failure-demote's
    matched complement). ~~C2 (dual error model)~~ — DONE (one error channel: `getSigned` status-aware
-   + leave → HTTP 410 GONE; + Step 9 POST acks → 202/204). C3 (inline avatars → digest + `/get_file`).
+   + leave → HTTP 410 GONE; + Step 9 POST acks → 202/204). ~~C3 (inline avatars)~~ — DONE (minimal
+   pre-decode byte cap; full digest redesign retracted as not worth it).
