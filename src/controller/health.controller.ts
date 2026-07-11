@@ -1,25 +1,9 @@
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { SERVER_VERSION } from '../common/version.js';
 import { Throttle, ThrottleGuard } from '../auth/throttle.guard.js';
-
-/**
- * Server version, read once at module load from the project-root package.json (the same `process.cwd()`
- * convention bootstrap.ts uses for uploadsDir / public). Cached: health is hit on every connection
- * probe, so re-reading the file per request would be wasteful. Falls back to 'unknown' if the file is
- * missing/unreadable rather than throwing — a liveness probe must never 500 on a config quirk.
- */
-const SERVER_VERSION: string = (() => {
-  try {
-    const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'));
-    return typeof pkg.version === 'string' && pkg.version ? pkg.version : 'unknown';
-  } catch {
-    return 'unknown';
-  }
-})();
 
 /** Payload of GET /api/v1/health. */
 export class HealthResponseDto {

@@ -1,4 +1,5 @@
 import { Controller, Get } from '@nestjs/common';
+import { SERVER_VERSION } from '../common/version.js';
 import { KeypairService } from './keypair.service.js';
 import { loadFederationConfig } from './federation.config.js';
 
@@ -22,7 +23,7 @@ export class WellKnownController {
   @Get('soms')
   getWellKnown() {
     return {
-      software: 'soms/0.1',
+      software: `soms/${SERVER_VERSION}`,
       keys: [{ keyId: this.keypair.getKeyId(), ed25519: this.keypair.getPublicKeyB64() }],
     };
   }
