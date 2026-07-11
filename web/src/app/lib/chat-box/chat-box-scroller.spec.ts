@@ -1389,6 +1389,75 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(t.dataOf(-1)).toBe(111);                                     // still the FIRST snapshot, not 222
   });
 
+  // Defensive prune at send-success: if the real that fulfills the optimistic (same clientMessageId) is ALREADY mounted
+  // — the mount loaded past the pending's seq while the optimistic never entered its removal flow — confirmPending must
+  // self-heal by removing the stale optimistic (the real owns the slot) and surface a warn, NOT morph a duplicate bubble.
+  // By construction this state is unreachable via markSent (the SSE-echo path drops source.pending first → markPendingSent
+  // returns false → confirmPending is never called), so these tests manufacture the orphan directly to cover the backstop.
+  it('confirmPending: defensively removes a stale optimistic whose fulfilling real is already mounted (+warn, no morph)', async () => {
+    const warnSpy = spyOn(console, 'warn');
+    const t = trackingHooks();
+    const cid = 'cid-stale';
+    // A source whose newest real (id 499) carries the SAME cid as the in-flight optimistic — the orphan. getPending
+    // returns [] to mirror that source.pending was already dropped (only the mounted optimistic lingered).
+    const src: CbSource<number> = {
+      ...fakeSource(500),
+      init: async () => {
+        const out: CbItem<number>[] = [];
+        for (let i = 400; i <= 499; i++) out.push(i === 499 ? { id: i, data: i, clientMessageId: cid, boundary: 'newest' } : { id: i, data: i });
+        return out;
+      },
+      getPending: () => [],
+    };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    // Mount the stale optimistic AFTER the real. insertAfter does not reconcile, so both now coexist (the orphan).
+    scroller.insertAfter(499, { id: -1, data: -1, clientMessageId: cid }, { optimistic: true });
+    animEnd('-1');
+    await flush();
+    expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(1); // orphan present before the fix
+    expect(content.querySelectorAll('[data-cb-id="499"]').length).toBe(1);
+
+    const updatesBefore = t.updateCount();
+    scroller.confirmPending(cid); // send-success milestone fires on the stale optimistic
+    await flush();
+
+    expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(0); // stale optimistic removed (self-heal)
+    expect(content.querySelectorAll('[data-cb-id="499"]').length).toBe(1); // fulfilling real untouched — owns the slot
+    expect(t.updateCount()).toBe(updatesBefore);                          // NO in-place morph (returned before the update path)
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(String(warnSpy.calls.mostRecent().args[0])).toContain('stale optimistic'); // invariant violation is observable
+  });
+
+  it('confirmPending: defensive removal is album-aware (a real whose clientMessageIds album includes the cid)', async () => {
+    const warnSpy = spyOn(console, 'warn');
+    const t = trackingHooks();
+    const cid = 'cid-album-member';
+    // The fulfilling real is an album head whose clientMessageIds includes the optimistic's cid (e.g. a self-sent image
+    // absorbed into a running album). itemFulfilledCids must surface it so the defensive prune fires album-aware.
+    const src: CbSource<number> = {
+      ...fakeSource(500),
+      init: async () => {
+        const out: CbItem<number>[] = [];
+        for (let i = 400; i <= 499; i++) out.push(i === 499 ? { id: i, data: i, clientMessageIds: ['cid-other', cid], boundary: 'newest' } : { id: i, data: i });
+        return out;
+      },
+      getPending: () => [],
+    };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    scroller.insertAfter(499, { id: -1, data: -1, clientMessageId: cid }, { optimistic: true });
+    animEnd('-1');
+    await flush();
+
+    scroller.confirmPending(cid);
+    await flush();
+
+    expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(0); // stale optimistic removed via the album cid
+    expect(content.querySelectorAll('[data-cb-id="499"]').length).toBe(1); // album real untouched
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
   // A plain incoming real (no clientMessageId) landing ABOVE an optimistic tail does NOT confirm anything, so the tail
   // survives and is shoved DOWN by the real's height. That shove is non-zero → the surviving tail gets a cb-move FLIP, and
   // the incoming real enters from above (cb-enter-above) for the same cover-avoidance reason. This exercises the tail-shove

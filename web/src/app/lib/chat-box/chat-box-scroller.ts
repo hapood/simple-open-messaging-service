@@ -1842,11 +1842,48 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    * and NO FLIP: a sent send stays at its tail position, so the later SSE-echo cb-move FLIP remains the only movement
    * and stays unaffected (the decoupling). Single-trigger: a no-op if the SSE echo already swapped the optimistic out
    * (no mounted match) or it already carries cb-confirmed (play once).
+   *
+   * Defensive prune: if the real fulfilling this cid is ALREADY mounted (the mount loaded past the pending before it
+   * entered its removal flow — an invariant violation, since the SSE-echo path should have both dropped source.pending
+   * and removed the optimistic), the stale optimistic is removed here and a warn is surfaced rather than morphing a
+   * duplicate. See {@link indexOfFulfiller}.
    */
   confirmPending(clientMessageId: string): void {
     if (!this.steady) return;
     const e = this.mounted.find((x) => x.optimistic && !x.leaving && x.item.clientMessageId === clientMessageId);
     if (!e || e.el.classList.contains('cb-confirmed')) return; // SSE echo already swapped it out, or already confirmed → play once
+
+    // Defensive backstop for the "mount already loaded past the pending" invariant. The real that fulfills this
+    // optimistic (same clientMessageId) must be ABSENT here: the SSE-echo path that mounts it (loadNewer →
+    // mountNewerReals → reconcileOptimistic) also drops the source.pending entry, so markPendingSent would have
+    // returned false and confirmPending would never have been called. If a fulfilling real IS mounted anyway, the
+    // invariant is violated — the optimistic duplicate never entered its removal flow while the mount raced ahead of
+    // the pending's seq. Self-heal: remove the stale optimistic now (the real already owns the slot, tagged
+    // cb-confirmed by reconcileOptimistic or inert), mirroring reconcileOptimistic's synchronous removal + anchor
+    // re-apply so a tail removal while pinned at the bottom re-pins correctly. Surface a warn (unguarded, like the
+    // '[JUMP] ... not mounted' error at openAround) so the regression is observable in prod, not just dev.
+    const fulfillerIdx = this.indexOfFulfiller(clientMessageId);
+    if (fulfillerIdx >= 0) {
+      const real = this.mounted[fulfillerIdx];
+      console.warn(
+        `[chat-box] confirmPending: removed a stale optimistic (id=${e.item.id}, cid=${clientMessageId}) whose ` +
+        `fulfilling real (id=${real.item.id}) is already mounted — the mount loaded past the pending before it entered ` +
+        `its removal flow. Invariant violation: reconcileOptimistic should have removed it first. Please report.`,
+      );
+      this.resorting = true; // rule-4a: keep trim away from the synchronous removal (mirrors reconcileOptimistic)
+      try {
+        const anchor = this.captureAnchor();
+        this.unmountAt(this.mounted.indexOf(e));
+        this.dirtyPrefix = true;
+        this.measurePending();
+        this.applyAnchor(anchor);
+      } finally {
+        this.resorting = false;
+      }
+      this.emit();
+      return;
+    }
+
     const fresh = this.source.getPending().find((p) => p.clientMessageId === clientMessageId);
     if (!fresh) return; // source already dropped the entry — nothing to morph to
     const idx = this.mounted.indexOf(e);
@@ -2034,6 +2071,18 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   private itemFulfilledCids(item: CbItem<T>): string[] {
     if (item.clientMessageIds) return item.clientMessageIds;
     return item.clientMessageId !== undefined ? [item.clientMessageId] : [];
+  }
+
+  /** Index of the mounted REAL entry that fulfills the given clientMessageId — the confirm counterpart of an in-flight
+   *  optimistic (the real — or its album, via {@link itemFulfilledCids} — that carries this cid). -1 if none. Mirrors the
+   *  fulfiller half of {@link reconcileOptimistic}'s scan so the defensive prune in {@link confirmPending} shares the exact
+   *  same album-aware pairing logic: a self-sent image absorbed into a running album fulfills its cid just as a standalone
+   *  real does. Scans reals only (skips transient/optimistic/leaving) — an optimistic never fulfills another optimistic. */
+  private indexOfFulfiller(cid: string): number {
+    return this.mounted.findIndex((e) => {
+      if (e.transient || e.optimistic || e.leaving) return false;
+      return this.itemFulfilledCids(e.item).includes(cid);
+    });
   }
 
   /** Oldest mounted item id that is a real source member — skips transient inserts (insertAfter), optimistic sends
