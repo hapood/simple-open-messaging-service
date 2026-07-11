@@ -2,9 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { FederationBufferService } from './federation-buffer.service.js';
 
 // The outbound hint buffer is now PURE STORAGE (zero constructor deps) — the ideal unit-test target.
-// These cover the invariants signalOutbound + the debounced flush rely on: latest-seq-wins, the \0
-// scopeKey that keeps a leave hint distinct from a message hint, the per-domain cap's half-eviction,
-// and the non-destructive snapshot / flushBatch-then-deleteKeys ack dance.
+// These cover the invariants signalOutbound + the debounced flush rely on: latest-seq-wins, the per-domain
+// cap's half-eviction, and the non-destructive snapshot / flushBatch-then-deleteKeys ack dance.
 describe('FederationBufferService (pure outbound hint storage)', () => {
   const D = 'peer.com';
 
@@ -19,17 +18,7 @@ describe('FederationBufferService (pure outbound hint storage)', () => {
     expect(b.snapshotOutboundFor(D, 0, 100).entries[0].latestSeq).toBe(9);
   });
 
-  it('a leave hint coexists with a message hint for the same (from,to) — \\0 scopeKey keeps them distinct', () => {
-    const b = new FederationBufferService();
-    b.markDirty(D, 'alice', 'soms.io', '!grp', 3);
-    b.markDirty(D, 'alice', 'soms.io', '!grp', 0, true); // left signal
-    const entries = b.snapshotOutboundFor(D, 0, 100).entries;
-    expect(entries).toHaveLength(2);
-    expect(entries.filter((e) => e.left)).toHaveLength(1);
-    expect(entries.filter((e) => !e.left)).toHaveLength(1);
-  });
-
-  it('distinct conversations are distinct entries (one per (from,fromDomain,to,left))', () => {
+  it('distinct conversations are distinct entries (one per (fromAccount,fromDomain,toAccount))', () => {
     const b = new FederationBufferService();
     b.markDirty(D, 'alice', 'soms.io', 'bob', 1);
     b.markDirty(D, 'alice', 'soms.io', 'carol', 1);
@@ -81,7 +70,7 @@ describe('FederationBufferService (pure outbound hint storage)', () => {
     b.deleteKeys(D, first.keys); // ack the first only
     const rest = b.flushBatch(D, 100);
     expect(rest.entries).toHaveLength(1);
-    expect(rest.entries[0].from).toBe('b'); // the not-yet-acked entry survived
+    expect(rest.entries[0].fromAccount).toBe('b'); // the not-yet-acked entry survived
   });
 
   it('half-evicts the older half on CAP_PER_DOMAIN overflow (bounded by active-conversation count)', () => {

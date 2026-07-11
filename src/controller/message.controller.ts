@@ -17,8 +17,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { MessageResponseDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
-import { PushService } from '../push/push.service.js';
-import { NotificationQueryService } from '../notification/notification-query.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
@@ -29,9 +27,10 @@ import {
   parseVideoContent,
 } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
-import { FederationService } from '../federation/federation.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
 import {
   SendMessageDto,
+  SendMediaDto,
   QueryMessagesDto,
   MarkReadDto,
   SetMutedDto,
@@ -48,10 +47,8 @@ export class MessageController {
     private readonly messageService: MessageService,
     private readonly sseService: SseService,
     private readonly participantService: ThreadParticipantService,
-    private readonly pushService: PushService,
-    private readonly notifQuery: NotificationQueryService,
     private readonly userBlockService: UserBlockService,
-    private readonly federation: FederationService,
+    private readonly fanout: MessageFanoutService,
   ) {}
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -104,55 +101,46 @@ export class MessageController {
       contentType,
       dto.clientMessageId,
     );
-    // Push the full message body over SSE (serializeBody converts BigInt→string / Date→ms, the same
-    // shape as the HTTP response; the client can render it directly without a second query-messages).
-    const msgData = serializeBody({ threadId: dto.threadId, ...data });
-    // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
-    // Participants now carry `muted` so the notification channels (push + notif-snapshot) can honor mute.
-    const participants =
-      await this.participantService.getActiveParticipantUserIds(dto.threadId);
-    // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push,
-    // no notif snapshot — the blocked user is invisible to the blocker's message stream).
-    const blockers = await this.userBlockService.blockersOf(req.user.userId);
-    // SSE: deliver to everyone active except blocking recipients. The sender stays in the set so their
-    // own other tabs/devices get the echo (multi-device consistency); block never applies to self.
-    const sseTargets = participants.filter((p) => !blockers.has(p.userId));
-    sseTargets.forEach((p) => {
-      this.sseService.onNewMessage(p.userId, msgData);
-    });
-    // Notification channels (FCM/Web Push wake-up + Android FGS unread snapshot): additionally exclude
-    // MUTED recipients (mute = suppress the heads-up notification, NOT the in-app delivery — the bubble
-    // still renders via SSE above) and the sender (foregrounded). Fire-and-forget; push failures never
-    // break delivery.
-    const notifTargets = sseTargets.filter(
-      (p) => !p.muted && p.userId !== req.user.userId,
-    );
-    void this.pushService.dispatchForMessage(
-      notifTargets,
+    // Fire-and-forget: the response confirms PERSISTENCE (the row is committed above); recipient
+    // fan-out (SSE + push + notif + federation hint) runs off the request critical path. The client
+    // reconciles by seq/id, so an SSE frame landing after the 200 is harmless. The staged-media promote
+    // path uses the same dispatch, so text and media fan out identically.
+    void this.fanout.dispatch(data);
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /**
+   * Stage a media message BEFORE its file is uploaded. Creates a PendingMedia(pending) row keyed by
+   * clientMessageId (carrying any client-probed display meta) — durable intent recorded BEFORE the file
+   * write, so a crash between staging and upload leaves an attributable record, never the unattributed
+   * orphan the old upload-then-send order produced. No Message or seq is created; nothing is fanned
+   * out. The client follows this with POST /upload* (carrying the same clientMessageId) which writes
+   * the file and promotes the stage to a real Message (the promote path runs the fan-out).
+   *
+   * Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants), same as text.
+   * Idempotent: a retried stage with the same clientMessageId returns the existing stage.
+   */
+  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<SendMediaDto>('threadId')
+  @Throttle(60, 60)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('send-media')
+  @ApiOperation({ summary: 'Stage a media message (before upload); promoted on POST /upload*' })
+  @ApiResultResponse(MessageResponseDto)
+  async sendMedia(@Request() req, @Body() dto: SendMediaDto): Promise<ApiResult> {
+    const meta: Record<string, unknown> = {};
+    if (dto.meta?.w !== undefined) meta.w = dto.meta.w;
+    if (dto.meta?.h !== undefined) meta.h = dto.meta.h;
+    if (dto.meta?.duration !== undefined) meta.duration = dto.meta.duration;
+    await this.messageService.stageMedia(
       req.user.userId,
       dto.threadId,
-      msgData,
+      dto.contentType,
+      dto.clientMessageId,
+      meta,
     );
-    notifTargets.forEach((p) => {
-      const uid = p.userId;
-      if (this.sseService.hasNotifClient(uid)) {
-        void this.notifQuery
-          .buildUnreadSnapshot(uid)
-          .then((snapshot) => this.sseService.pushNotifSnapshot(uid, snapshot));
-      }
-    });
-    // Federation Step 2: if the thread has a foreign (federated) participant, mark the conversation
-    // dirty in the outbound hint buffer — a debounced /new-msg-map push tells the peer to pull. Local-
-    // only / group threads are a no-op inside notifyOnSend. Fire-and-forget (best-effort; pull-on-open
-    // is the floor). data.originSeq is always set on a fresh insert (nullable only for legacy rows).
-    if (data.originSeq != null) {
-      void this.federation.notifyOnSend(
-        req.user.userId,
-        dto.threadId,
-        data.originSeq,
-      );
-    }
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return { code: BusinessCode.OK, message: 'successful', data: { clientMessageId: dto.clientMessageId } };
   }
 
   @UseGuards(JwtAuthGuard, ThreadAccessGuard)

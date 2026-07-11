@@ -27,6 +27,7 @@ import {
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -46,6 +47,7 @@ import {
   PeerTrustStatusDto,
   QueryUsersDto,
   QueryValidThreadDto,
+  ThreadDeltaDto,
   UpdateProfileDto,
   BlockDto,
 } from '../dto/user.dto.js';
@@ -65,6 +67,7 @@ export class UserController {
     private readonly messageService: MessageService,
     private readonly userBlockService: UserBlockService,
     private readonly federationService: FederationService,
+    private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -289,12 +292,32 @@ export class UserController {
       } else {
         const gu = groupByThread.get(p.threadId);
         item.group = gu
-          ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio }
+          ? {
+              id: p.threadId,
+              threadId: p.threadId,
+              name: gu.name,
+              avatar: gu.avatar,
+              description: gu.bio,
+              ownerId: gu.group?.ownerId ?? 0,
+              createdAt: (gu.group?.createdAt ?? p.thread.createdAt).getTime(),
+              updatedAt: (gu.group?.updatedAt ?? p.thread.updatedAt).getTime(),
+            }
           : undefined;
       }
       return item;
     });
     return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('user/query-thread/delta')
+  @ApiOperation({ summary: 'Fetch thread-list ADD/DELETE deltas (from excl, to incl)' })
+  async queryThreadDelta(@Request() req, @Body() dto: ThreadDeltaDto): Promise<ApiResult> {
+    const me = req.user.userId;
+    const data = await this.threadRevisionService.queryDelta(me, dto.fromRevision, dto.toRevision);
+    return { code: BusinessCode.OK, message: 'successful', data: serializeBody(data) };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -321,19 +344,14 @@ export class UserController {
     // Soft-leave BOTH participants in one shot. The thread row + participants stay (history), but the
     // edge is severed (findP2PThreadBetween now returns null); re-friending later mints a fresh thread.
     await this.participantService.softLeaveP2PBoth(threadId);
+    // Record the thread delete (bump threadRevision + push THREAD_REVISION_UPDATED) — replaces the
+    // former FRIEND_DELETED NOTIFY. Local peer: both users' lists drop it; federated peer: only me
+    // (the peer's thread list lives on their origin server; they discover the severance lazily via a
+    // 403 on the next /messages pull).
+    await this.threadRevisionService.recordThreadDelete(me, threadId);
     if (!peer?.isForeigner) {
-      // Local peer → NOTIFY so their conversation list drops it immediately.
-      this.sseService.onNotify(
-        dto.userId,
-        serializeBody({
-          event: 'NOTIFY',
-          type: 'FRIEND_DELETED',
-          byUserId: me,
-        }),
-      );
+      await this.threadRevisionService.recordThreadDelete(dto.userId, threadId);
     }
-    // Federated peer → LOCAL-ONLY deletion. No S2S notification: unfriending never fans out. The peer
-    // discovers the severed edge lazily via a 403 on its next /messages pull (resolveFriendshipThread).
     return { code: BusinessCode.OK, message: 'friend removed' };
   }
 
@@ -485,24 +503,21 @@ export class UserController {
   @ApiResultResponse(UserResponseDto)
   async syncPeerProfile(@Request() req, @Body() dto: SyncPeerProfileDto): Promise<ApiResult> {
     // Chat-open / profile-panel-open staleness hook. Federated: probe the peer's /revision; if newer than
-    // the stub's remoteUpdatedAt, re-pull + re-localize avatar/name/bio (no-op for local users, whose own
-    // updatedAt is authoritative). Best-effort — a transient peer outage keeps the cached profile so
-    // opening the conversation never blocks. Then the lightweight short-circuit: when the caller already
-    // holds this exact revision (sinceUpdatedAt not older than the live row), return data:null so the
-    // client keeps its cache — no payload transfer, no signal update, no re-render.
-    await this.federationService.syncForeignUserIfStale(dto.userId);
-    // Step 2 pull-on-open (§4.4): also catch up on THIS conversation's messages, even if every push was
-    // lost or after a process restart (the volatile hint map's restart floor). Fire-and-forget so opening
-    // the chat never blocks on a slow peer; a transient failure retries on the next open / sweep.
+    // the stub's remoteProfileRev, re-pull + re-localize avatar/name/bio (no-op for local users). Runs
+    // ASYNC — the response returns immediately; a re-localized stub fans a PEER_PROFILE_UPDATED signal on
+    // completion, so the caller pulls then. Best-effort — a transient peer outage keeps the cached profile.
+    void this.federationService.syncForeignUserIfStale(dto.userId);
+    // Message catch-up (§4.4): recover any hint dropped by the debounce / a lost push. Fire-and-forget.
     void this.federationService.syncMessagesWithPeerByStubId(dto.userId, req.user.userId);
+    // Local comparison: if the caller's cached profileRev is stale, push a signal so it pulls. Federated
+    // stale is covered by syncForeignUserIfStale's notify above; this covers the local case (and is a
+    // harmless duplicate for federated — the pull is idempotent).
     const data = await this.userService.findUniqueUser({ id: dto.userId });
-    if (!data) {
-      return { code: BusinessCode.NOT_FOUND, message: `user [${dto.userId}] not found` };
+    if (data && dto.sinceProfileRev !== undefined && data.profileRev > dto.sinceProfileRev) {
+      this.sseService.onPeerProfileUpdated(req.user.userId, { userId: dto.userId });
     }
-    if (dto.sinceUpdatedAt !== undefined && data.updatedAt.getTime() <= dto.sinceUpdatedAt) {
-      return { code: BusinessCode.OK, message: 'not-modified', data: null };
-    }
-    return { code: BusinessCode.OK, message: 'successful', data };
+    // ACK-only — no profile payload. The client pulls on receipt of the signal.
+    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(JwtAuthGuard)

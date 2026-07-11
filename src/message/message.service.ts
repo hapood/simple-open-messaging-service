@@ -94,7 +94,7 @@ export class MessageService implements OnModuleInit {
         where: { clientMessageId },
         omit: { id: true },
       });
-      if (existing !== null) return existing; // retry → return the original message
+      if (existing !== null) return existing; // retry → return the original message (already dispatched)
     }
     try {
       return await this.prisma.$transaction(async (tx) => {
@@ -177,6 +177,149 @@ export class MessageService implements OnModuleInit {
       }
       throw e;
     }
+  }
+
+  /**
+   * Stage a LOCAL media send BEFORE the file is uploaded: create a PendingMedia(pending) row carrying
+   * the client-probed display metadata (`meta` — w/h, duration). No Message, no seq, no fan-out — the
+   * message is invisible in the thread until {@link promoteStaged} runs after a successful upload.
+   *
+   * Creating the staging row FIRST (before any file write) is the orphan-safety guarantee: a crash
+   * between staging and upload always leaves an attributable record, never the unattributed orphan the
+   * old upload-then-send order produced (a file on disk with no idea who it was for). The CAS url is
+   * NOT stored here — it is injected at promote from the server's own saveCas digest, so the real
+   * Message.content URL is never client-supplied.
+   *
+   * Idempotent by clientMessageId: a retried send-media resumes the same stage (upsert with an empty
+   * update — a retry must not reset an in-flight stage). If clientMessageId already committed a Message,
+   * the send already completed → return as-is.
+   */
+  async stageMedia(
+    userId: number,
+    threadId: number,
+    contentType: ContentType,
+    clientMessageId: string,
+    meta: Record<string, unknown>,
+  ): Promise<{ clientMessageId: string }> {
+    const committed = await this.prisma.message.findUnique({
+      where: { clientMessageId },
+      select: { seq: true },
+    });
+    if (committed) return { clientMessageId }; // already promoted — nothing to stage
+    await this.prisma.pendingMedia.upsert({
+      where: { clientMessageId },
+      create: {
+        threadId,
+        creatorId: userId,
+        contentType,
+        content: JSON.stringify(meta ?? {}),
+        clientMessageId,
+      },
+      update: {}, // idempotent re-stage: keep the existing row's state intact
+    });
+    return { clientMessageId };
+  }
+
+  /**
+   * Link a staged send to its on-disk asset (after saveCas wrote the file + MediaAsset). A SEPARATE
+   * commit from {@link promoteStaged} so a crash between the two still leaves an attributable orphan
+   * (a pending row whose digest points at the file) rather than a mystery asset. Best-effort: a missing
+   * or non-pending stage is a no-op (the upload still succeeded; promote will surface the state).
+   */
+  async linkStagedDigest(clientMessageId: string, digest: string): Promise<void> {
+    await this.prisma.pendingMedia.updateMany({
+      where: { clientMessageId, status: 'pending' },
+      data: { digest },
+    });
+  }
+
+  /**
+   * Promote a staged media send to a real Message after the upload succeeded. Merges the server-generated
+   * upload payload (url/name/size/mimeType) with the staged client-probed meta (w/h/duration) into the
+   * final content, then runs the SAME commit core as writeMsgToThread (atomic seq allocation, Message +
+   * MediaMessage + last-message cache + sender read cursor) and deletes the PendingMedia. Emits
+   * MESSAGE_COMMITTED_EVENT so the unified fan-out runs.
+   *
+   * Idempotent: if clientMessageId already committed a Message (a retried upload after a committed
+   * promote), returns the existing Message without re-creating. Returns null if no pending stage exists
+   * for this clientMessageId (the caller passed a clientMessageId but never staged — a client bug; the
+   * upload result is returned to the client unchanged).
+   */
+  async promoteStaged(
+    clientMessageId: string,
+    uploadPayload: Record<string, unknown>,
+  ): Promise<Omit<Message, 'id'> | null> {
+    const committed = await this.prisma.message.findUnique({
+      where: { clientMessageId },
+      omit: { id: true },
+    });
+    if (committed) return committed; // retry after a committed promote → return the original
+    const stage = await this.prisma.pendingMedia.findUnique({
+      where: { clientMessageId },
+    });
+    if (!stage || stage.status !== 'pending') return null; // nothing to promote
+    const meta = stage.content
+      ? (JSON.parse(stage.content) as Record<string, unknown>)
+      : {};
+    const content = JSON.stringify({ ...uploadPayload, ...meta });
+    let created: Omit<Message, 'id'>;
+    try {
+      created = await this.prisma.$transaction(async (tx) => {
+        const { curSeq: seq } = await tx.messageThread.update({
+          where: { id: stage.threadId },
+          data: { curSeq: { increment: 1 } },
+          select: { curSeq: true },
+        });
+        const msg = await tx.message.create({
+          data: {
+            content,
+            contentType: stage.contentType,
+            threadId: stage.threadId,
+            creator: stage.creatorId,
+            clientMessageId,
+            seq,
+            originSeq: seq,
+          },
+        });
+        await tx.messageThread.update({
+          where: { id: stage.threadId },
+          data: {
+            lastMessageSeq: seq,
+            lastMessagePreview: derivePreview(stage.contentType, content),
+            lastMessageSenderId: stage.creatorId,
+            lastMessageAt: msg.createdAt,
+          },
+        });
+        await tx.threadParticipant.update({
+          where: {
+            userId_threadId: { userId: stage.creatorId, threadId: stage.threadId },
+          },
+          data: { lastReadSeq: seq },
+        });
+        const digest = extractDigests(content)[0];
+        if (digest) {
+          await tx.mediaMessage.create({
+            data: { messageId: msg.id, threadId: stage.threadId, digest },
+          });
+        }
+        await tx.pendingMedia.delete({ where: { id: stage.id } });
+        return stripMessageId(msg);
+      });
+    } catch (e) {
+      // Concurrent retry race (P2002 on clientMessageId) → return the winner rather than surfacing.
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === 'P2002'
+      ) {
+        const winner = await this.prisma.message.findUnique({
+          where: { clientMessageId },
+          omit: { id: true },
+        });
+        if (winner !== null) return winner;
+      }
+      throw e;
+    }
+    return created;
   }
 
   async queryMessages(

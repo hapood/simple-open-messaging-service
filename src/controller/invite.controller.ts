@@ -198,11 +198,12 @@ export class InviteController {
       };
     }
 
-    // GROUP → fan out MEMBER_JOINED to the active local roster (incl. the new member).
+    // GROUP → fan out GROUP_ROSTER_UPDATED (signal-only) to the active local roster (incl. the new
+    // member). The client pulls the fresh roster. The former GROUP_MEMBER_JOINED payload (userId/role)
+    // is dropped — toast/UX detail is handled client-side from the pulled roster.
     const members = await this.participantService.getActiveParticipantUserIds(res.threadId);
-    const data = { threadId: res.threadId, userId: req.user.userId, role: GroupRole.MEMBER };
     const audience = new Set([...members.map((m) => m.userId), req.user.userId]);
-    audience.forEach((uid) => this.sseService.onGroupEvent(uid, 'GROUP_MEMBER_JOINED', data));
+    audience.forEach((uid) => this.sseService.onGroupEvent(uid, 'GROUP_ROSTER_UPDATED', { threadId: res.threadId }));
 
     // Federated mirror (a cross-server group): tell the ORIGIN this user joined, so the origin adds them
     // to the canonical roster + fans out a thread/member join to every member-server (roster consistency).

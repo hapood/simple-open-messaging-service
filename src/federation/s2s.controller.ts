@@ -91,23 +91,39 @@ export class S2sController {
     return rev;
   }
 
-  /** GET /api/v1/s2s/thread/roster?to=<groupAccount> — a member-server pulls the canonical roster for a
-   *  federated group (the lazy meta-pull on chat-open). The group is addressed by its `!account` (no
-   *  internal thread id on the wire). The signer is a trusted peer (S2sSignatureGuard). */
+  /** GET /api/v1/s2s/group/:account/roster-revision — a member-server probes the origin's roster
+   *  revision for a federated group (the lazy roster meta-pull on chat-open). Symmetric with the profile
+   *  /users/:account/revision probe. The group is addressed by its `!account`. */
+  @Get('group/:account/roster-revision')
+  async getGroupRosterRevision(@Param('account') account: string) {
+    const rev = await this.federation.getLocalGroupRosterRevision(account);
+    if (!rev) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `group ${account} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return rev;
+  }
+
+  /** GET /api/v1/s2s/thread/roster?toAccount=<groupAccount> — a member-server pulls the canonical roster
+   *  for a federated group (the lazy meta-pull on chat-open). The group is addressed by its `!account`
+   *  (no internal thread id on the wire). The signer is a trusted peer (S2sSignatureGuard). */
   @Get('thread/roster')
-  async getThreadRoster(@Query('to') to?: string) {
-    if (!to) {
+  async getThreadRoster(@Query('toAccount') toAccount?: string) {
+    if (!toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing to query param',
+        'missing toAccount query param',
         HttpStatus.BAD_REQUEST,
       );
     }
-    const roster = await this.federation.serveGroupRoster(to);
+    const roster = await this.federation.serveGroupRoster(toAccount);
     if (roster === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `group ${to} not found`,
+        `group ${toAccount} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -136,24 +152,28 @@ export class S2sController {
   }
 
   /** GET /api/v1/s2s/messages — the peer pulls messages. Three shapes, all account-based (no internal
-   *  thread id): `to` is a peer user (P2P, `from` = our local sender) or the group `!account` (group). For
-   *  a group: `from` absent → ALL-SENDERS whole-thread pull (mirror ← origin, keyed by thread seq,
-   *  advances the mirror's pullUntil); `from` present → PER-AUTHOR pull (origin ← mirror hub leg, keyed by
-   *  originSeq). `fromDomain` is the author's domain (required for group; for P2P it is our own). Gates
-   *  (friendship / roster) are enforced inside the serve* methods. */
+   *  thread id): `toAccount` is a peer user (P2P, `fromAccount` = our local sender) or the group
+   *  `!account` (group). For a group: `fromAccount` absent → ALL-SENDERS whole-thread pull (mirror ←
+   *  origin, keyed by thread seq, advances the mirror's pullUntil); `fromAccount` present → PER-AUTHOR
+   *  pull (origin ← mirror hub leg, keyed by originSeq). `fromDomain` is the author's domain (required
+   *  for group; for P2P it is our own). `toDomain` is the REQUESTER's domain (== the signature signer;
+   *  binding-checked). Gates (friendship / roster) are enforced inside the serve* methods. */
   @Get('messages')
   async getMessages(
     @Req() req: FastifyRequest,
-    @Query('from') fromAccount?: string,
+    @Query('fromAccount') fromAccount?: string,
     @Query('fromDomain') fromDomain?: string,
-    @Query('to') toAccount?: string,
+    @Query('toAccount') toAccount?: string,
+    @Query('toDomain') toDomain?: string,
     @Query('afterSeq') afterSeqParam?: string,
     @Query('take') takeParam?: string,
   ) {
+    const signer = this.signerDomain(req);
+    this.requireBinding(toDomain, signer);
     if (!toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing to query param',
+        'missing toAccount query param',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -168,9 +188,8 @@ export class S2sController {
       );
     }
     const take = Math.min(Number(takeParam ?? '50') || 50, 50);
-    const signer = this.signerDomain(req);
     if (toAccount.startsWith('!')) {
-      // Group: all-senders (mirror ← origin) when no `from`; per-author (origin ← mirror) when `from`.
+      // Group: all-senders (mirror ← origin) when no `fromAccount`; per-author (origin ← mirror) when present.
       if (fromAccount && fromDomain) {
         return this.federation.serveOutboundMessagesGroupFrom(
           toAccount,
@@ -183,11 +202,11 @@ export class S2sController {
       }
       return this.federation.serveOutboundMessagesGroup(toAccount, after, take, signer);
     }
-    // P2P: `from` is our local sender, `to` is the requester's user. Friendship gate inside.
+    // P2P: `fromAccount` is our local sender, `toAccount` is the requester's user. Friendship gate inside.
     if (!fromAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing from query param',
+        'missing fromAccount query param',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -208,15 +227,18 @@ export class S2sController {
   @Get('messages/before')
   async getMessagesBefore(
     @Req() req: FastifyRequest,
-    @Query('from') fromAccount?: string,
-    @Query('to') toAccount?: string,
+    @Query('fromAccount') fromAccount?: string,
+    @Query('toAccount') toAccount?: string,
+    @Query('toDomain') toDomain?: string,
     @Query('beforeSeq') beforeSeqParam?: string,
     @Query('take') takeParam?: string,
   ) {
+    const signer = this.signerDomain(req);
+    this.requireBinding(toDomain, signer);
     if (!fromAccount || !toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing from/to query param',
+        'missing fromAccount/toAccount query param',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -233,7 +255,7 @@ export class S2sController {
     return this.federation.serveOutboundMessagesBefore(
       fromAccount,
       toAccount,
-      this.signerDomain(req),
+      signer,
       beforeSeq,
       take,
     );
@@ -262,11 +284,10 @@ export class S2sController {
     this.federation.receiveNewMsgMapPush(
       signer,
       entries as ReadonlyArray<{
-        from?: unknown;
+        fromAccount?: unknown;
         fromDomain?: unknown;
-        to?: unknown;
+        toAccount?: unknown;
         latestSeq?: unknown;
-        left?: unknown;
       }>,
     );
     return { code: BusinessCode.OK, message: 'ok', data: null };
@@ -275,6 +296,27 @@ export class S2sController {
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */
   private signerDomain(req: FastifyRequest): string {
     return (req as FastifyRequest & { peer: { domain: string } }).peer.domain;
+  }
+
+  /** Binding-check `toDomain` (the REQUESTER's asserted domain) against the RFC 9421 signer — belt-and-
+   *  suspenders over the signature, same pattern as the `origin === signer` check in POST /new-msg-map. The
+   *  signature proves only the signer DOMAIN (not a specific user), so the requester explicitly asserts
+   *  which domain `toAccount` lives on and we enforce it matches the cryptographic identity. */
+  private requireBinding(toDomain: string | undefined, signer: string): void {
+    if (!toDomain) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_MALFORMED,
+        'missing toDomain query param',
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    if (toDomain !== signer) {
+      throw new BusinessException(
+        BusinessCode.FEDERATION_BINDING_VIOLATION,
+        `toDomain (${toDomain}) != signer (${signer})`,
+        HttpStatus.UNAUTHORIZED,
+      );
+    }
   }
 
   /** GET /api/v1/s2s/ping — signed liveness probe (reconnect sweep + quiet-peer lastSuccessAt, §3.4).
@@ -298,14 +340,17 @@ export class S2sController {
     @Req() req: FastifyRequest,
     @Res() reply: FastifyReply,
     @Query('digest') digest?: string,
-    @Query('from') fromAccount?: string,
+    @Query('fromAccount') fromAccount?: string,
     @Query('fromDomain') fromDomain?: string,
-    @Query('to') toAccount?: string,
+    @Query('toAccount') toAccount?: string,
+    @Query('toDomain') toDomain?: string,
   ) {
+    const signer = this.signerDomain(req);
+    this.requireBinding(toDomain, signer);
     if (!digest || !fromAccount || !toAccount) {
       throw new BusinessException(
         BusinessCode.FEDERATION_MALFORMED,
-        'missing digest/from/to query param',
+        'missing digest/fromAccount/toAccount query param',
         HttpStatus.BAD_REQUEST,
       );
     }
@@ -313,7 +358,7 @@ export class S2sController {
       fromAccount,
       toAccount,
       fromDomain,
-      this.signerDomain(req),
+      signer,
       digest,
     );
     const range = parseRange(req.headers.range, bytes);

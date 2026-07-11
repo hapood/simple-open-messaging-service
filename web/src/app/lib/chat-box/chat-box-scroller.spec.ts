@@ -327,6 +327,93 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(info.noOlder).toBe(false); // not yet at the oldest
   });
 
+  it('a signal in the init-fetch window is saved + replayed once after init (not dropped)', async () => {
+    // Models the race: a message arrives DURING init's initial source.init(-1) HTTP fetch — it MISSES the
+    // snapshot, so it's known only via its SSE signal. The source's init is deferred (the window) + it can
+    // grow a newer id mid-flight. Before the fix, runMessageSignal's `!noNewer && !primed` branch DROPPED
+    // this signal; now it's saved (coalesced) and init replays it once.
+    let top = 99; // highest existing id; grows when a message "arrives"
+    let resolveInitFn: ((items: CbItem<number>[]) => void) | null = null;
+    let newerCalls = 0;
+    const item = (i: number): CbItem<number> =>
+      i === 0 ? { id: i, data: i, boundary: 'oldest' }
+        : i === top ? { id: i, data: i, boundary: 'newest' }
+          : { id: i, data: i };
+    const slice = (lo: number, hi: number): CbItem<number>[] => {
+      const out: CbItem<number>[] = [];
+      for (let i = Math.max(0, lo); i < Math.min(top + 1, hi); i++) out.push(item(i));
+      return out;
+    };
+    const src: CbSource<number> = {
+      init: (anchorId) => (anchorId === -1 ? new Promise(r => { resolveInitFn = r; }) : Promise.resolve([])),
+      getOlder: async () => [], // no older fill — keep the test focused on the init batch
+      getNewer: async (c, k) => { newerCalls++; return slice(c + 1, c + 1 + k); },
+      pushLive: () => {}, getPending: () => [], destroy: () => {},
+    };
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+
+    const initP = scroller.init();        // bottom-pin: source.init(-1) deferred → the init-fetch window
+    await flush();
+    expect(resolveInitFn).not.toBeNull(); // init's initial fetch is still in flight
+
+    // Snapshot taken BEFORE the arrival (ids 80..99, 99 = newest) — what init's query returned.
+    const snapshot = slice(80, 100);
+    expect(snapshot.at(-1)!.id).toBe(99);
+
+    // A message (id 100) arrives during the window + its signal fires (would be DROPPED before the fix).
+    top = 100;
+    scroller.onMessageSignal(100);
+
+    // init resolves with the pre-arrival snapshot (id 100 missed it).
+    resolveInitFn!(snapshot); resolveInitFn = null;
+    await initP;
+    await flush();
+
+    // The saved signal was replayed once init primed → loadNewer → getNewer → id 100 mounted (recovered).
+    expect(newerCalls).toBeGreaterThanOrEqual(1);
+    expect(scroller!.getInfo().newestId).toBe(100);
+  });
+
+  it('a window signal whose seq init already mounted is NOT replayed (the max-seq gate skips it)', async () => {
+    // Same deferred-init source, but the signal is for a seq the snapshot already contains (99 ≤ newestMounted
+    // 99). primeAndReplay's gate (pendingSeq > newestMounted) skips the replay — no spurious loadNewer. This
+    // is the accuracy max-seq tracking buys over a blind "any signal → replay" boolean.
+    let resolveInitFn: ((items: CbItem<number>[]) => void) | null = null;
+    let newerCalls = 0;
+    const item = (i: number): CbItem<number> =>
+      i === 0 ? { id: i, data: i, boundary: 'oldest' }
+        : i === 99 ? { id: i, data: i, boundary: 'newest' }
+          : { id: i, data: i };
+    const slice = (lo: number, hi: number): CbItem<number>[] => {
+      const out: CbItem<number>[] = [];
+      for (let i = Math.max(0, lo); i < Math.min(100, hi); i++) out.push(item(i));
+      return out;
+    };
+    const src: CbSource<number> = {
+      init: (anchorId) => (anchorId === -1 ? new Promise(r => { resolveInitFn = r; }) : Promise.resolve([])),
+      getOlder: async () => [],
+      getNewer: async (c, k) => { newerCalls++; return slice(c + 1, c + 1 + k); },
+      pushLive: () => {}, getPending: () => [], destroy: () => {},
+    };
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+
+    const initP = scroller.init();
+    await flush();
+    // Signal for seq 99 — which the snapshot (80..99) already includes. Saved max-seq = 99.
+    scroller.onMessageSignal(99);
+    const snapshot = slice(80, 100);            // ids 80..99, 99 = newest → newestMounted = 99
+    resolveInitFn!(snapshot); resolveInitFn = null;
+    await initP;
+    await flush();
+
+    // Gate: 99 > 99 is false → no replay → no getNewer, newestId stays 99.
+    expect(newerCalls).toBe(0);
+    expect(scroller!.getInfo().newestId).toBe(99);
+  });
+
+
   it('scrolling to the top edge → loadOlder triggers getOlder, mounts older, oldestId moves older', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
@@ -1231,6 +1318,75 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(real?.classList.contains('cb-enter')).toBe(false);          // no from-below enter either
     expect(real?.classList.contains('cb-confirmed')).toBe(true);       // only the spinner→check choreography plays
     expect(content.querySelector('[data-cb-id="-1"]')).toBeNull(); // optimistic duplicate removed (no two-bubble flash)
+  });
+
+  // confirmPending is the decoupled delivery-confirm path: fired at the HTTP-200 / upload-success milestone, it morphs
+  // the OPTIMISTIC bubble to the source's fresh status:'sent' snapshot IN PLACE (update, no remount) and tags it
+  // cb-confirmed so the spinner→check→fade choreography plays WITHOUT a mount/unmount or a cb-move FLIP — the later
+  // SSE-echo reconcile still owns those. Single-trigger: no-op when the optimistic is gone (SSE won the race) or the
+  // entry is already confirmed.
+  it('confirmPending: morphs the optimistic in place (update, no remount) + tags cb-confirmed, no FLIP', async () => {
+    const t = trackingHooks();
+    const base = fakeSource(500);
+    const sent: CbItem<number> = { id: -1, clientMessageId: 'cid-cp', data: 999 }; // fresh status:'sent' snapshot (new data ref)
+    const src: CbSource<number> = { ...base, getPending: () => [sent] };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    scroller.insertAfter(499, { id: -1, data: -1, clientMessageId: 'cid-cp' }, { optimistic: true });
+    animEnd('-1');
+    await flush();
+
+    const elBefore = content.querySelector('[data-cb-id="-1"]');
+    expect(elBefore?.classList.contains('cb-confirmed')).toBe(false);
+    const createsBefore = t.createCount();
+    const updatesBefore = t.updateCount();
+
+    scroller.confirmPending('cid-cp');
+    await flush();
+
+    expect(content.querySelector('[data-cb-id="-1"]')).toBe(elBefore);   // SAME element — in place, no remount
+    expect(elBefore?.classList.contains('cb-confirmed')).toBe(true);     // spinner→check→fade choreography gated
+    expect(t.createCount()).toBe(createsBefore);                         // NO recreate (in-place morph only)
+    expect(t.updateCount()).toBe(updatesBefore + 1);                     // fresh snapshot applied via update
+    expect(t.dataOf(-1)).toBe(999);                                      // the fresh "sent" data
+    expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(1);// no duplicate bubble
+    expect(elBefore?.classList.contains('cb-move')).toBe(false);         // decoupled — NO reorder FLIP
+  });
+
+  it('confirmPending: no-op when no optimistic matches the cid (the SSE echo already swapped it out)', async () => {
+    const t = trackingHooks();
+    const base = fakeSource(500);
+    const src: CbSource<number> = { ...base, getPending: () => [] };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    const updatesBefore = t.updateCount();
+    scroller.confirmPending('cid-absent');                              // nothing mounted for this cid
+    await flush();
+    expect(t.updateCount()).toBe(updatesBefore);                        // no morph
+    expect(content.querySelector('[data-cb-id="-1"]')).toBeNull();
+  });
+
+  it('confirmPending: play once — a second call on an already-confirmed entry does NOT re-morph', async () => {
+    const t = trackingHooks();
+    const base = fakeSource(500);
+    let sent: CbItem<number> = { id: -1, clientMessageId: 'cid-once', data: 111 };
+    const src: CbSource<number> = { ...base, getPending: () => [sent] };
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    scroller.insertAfter(499, { id: -1, data: -1, clientMessageId: 'cid-once' }, { optimistic: true });
+    animEnd('-1');
+    await flush();
+
+    scroller.confirmPending('cid-once');
+    await flush();
+    expect(t.dataOf(-1)).toBe(111);
+    const updatesAfterFirst = t.updateCount();
+
+    sent = { id: -1, clientMessageId: 'cid-once', data: 222 };          // a different fresh snapshot
+    scroller.confirmPending('cid-once');                                // cb-confirmed already present → guard returns
+    await flush();
+    expect(t.updateCount()).toBe(updatesAfterFirst);                    // no second morph — the lock held
+    expect(t.dataOf(-1)).toBe(111);                                     // still the FIRST snapshot, not 222
   });
 
   // A plain incoming real (no clientMessageId) landing ABOVE an optimistic tail does NOT confirm anything, so the tail

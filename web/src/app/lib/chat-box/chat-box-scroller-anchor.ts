@@ -1418,6 +1418,32 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   }
 
   /**
+   * Flip an in-flight optimistic send to "sent" in place — the delivery-confirm milestone (HTTP 200 / upload done) was
+   * reached. Morphs the entry to the source's fresh status:'sent' snapshot via CbElement.update (no remount) and tags
+   * the element cb-confirmed so the spinner→check→fade choreography plays. Unlike reconcilePending this does NO reorder
+   * and NO FLIP: a sent send stays at its tail position, so the later SSE-echo cb-move FLIP remains the only movement
+   * and stays unaffected (the decoupling). Single-trigger: a no-op if the SSE echo already swapped the optimistic out
+   * (no mounted match) or it already carries cb-confirmed (play once). Mirrors ChatBoxScroller.confirmPending.
+   */
+  confirmPending(clientMessageId: string): void {
+    if (!this.steady) return;
+    const e = this.mounted.find((x) => x.optimistic && !x.leaving && x.item.clientMessageId === clientMessageId);
+    if (!e || e.el.classList.contains('cb-confirmed')) return; // SSE echo already swapped it out, or already confirmed → play once
+    const fresh = this.source.getPending().find((p) => p.clientMessageId === clientMessageId);
+    if (!fresh) return; // source already dropped the entry — nothing to morph to
+    const idx = this.mounted.indexOf(e);
+    const prev = idx > 0 ? this.mounted[idx - 1].item : null;
+    this.measuring = true; // suppress onElHeight compensation/balance for the synchronous re-render (mirrors reconcilePending)
+    e.item = fresh;
+    e.vs.update(fresh, prev); // re-render: status:'sent' renders the check + drops msg-sending (un-dims the bubble)
+    e.el.classList.add('cb-confirmed'); // gates the spinner→check→fade choreography (_row-base.scss :host(.cb-confirmed))
+    const h = e.el.offsetHeight; // status morph is icon/opacity-only → height is stable, but stay honest
+    if (h !== e.height) { e.height = h; this.dirtyPrefix = true; }
+    this.measuring = false;
+    this.emit();
+  }
+
+  /**
    * FLIP-move (cb-move) entries whose absolute top changed in a reconcilePending pass. FLIP = First-Last-Invert-Play:
    * each mover's old top is passed in; after the reorder/height-change its new top is recomputed, an invert transform
    * makes it APPEAR still at the old top, and the @keyframes animates the transform to identity so it slides to the new.

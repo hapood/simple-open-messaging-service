@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication } from '@nestjs/common';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
+import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 import { unlink } from 'fs/promises';
 import { join } from 'path';
@@ -122,5 +123,105 @@ describe('Media asset garbage collection (Phase 5)', () => {
         where: { account_domain: { account: 'avatar-gc-live', domain: 'local' } },
       })
       .catch(() => {});
+  });
+
+  // ── PendingMedia stale-pending sweep ─────────────────────────────────────────────────────────
+  // A staged media send whose upload/localize never completed (crash/abandon) leaves a PendingMedia
+  // row created BEFORE the file write. The sweep reaps it past TTL — the orphan-cleanup handle that
+  // did not exist before PendingMedia. Helper: seed a thread + user for the FKs.
+  async function seedThreadAndUser(): Promise<{ threadId: number; userId: number }> {
+    const user = await prisma.user.create({
+      data: { account: `gc-${randomUUID().replace(/-/g, '').slice(0, 8)}`, hashPwd: 'x', name: 'gc', isForeigner: false },
+    });
+    const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
+    return { threadId: thread.id, userId: user.id };
+  }
+
+  it('gcStalePending reaps an abandoned staged send (file + asset + stage) when no message committed', async () => {
+    const { digest, absPath } = await seedAsset('stale-pending'); // file on disk + MediaAsset refs=1
+    expect(existsSync(absPath)).toBe(true);
+    const { threadId, userId } = await seedThreadAndUser();
+    // Staged send that never promoted: PendingMedia(pending, digest) and NO MediaMessage.
+    const stage = await prisma.pendingMedia.create({
+      data: {
+        threadId, creatorId: userId, contentType: 'FILE', content: '{}',
+        digest, clientMessageId: randomUUID(),
+      },
+    });
+    // Backdate past the TTL so the sweep reaps it now.
+    await prisma.pendingMedia.update({
+      where: { id: stage.id },
+      data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+    });
+
+    const result = await gc.gcStalePending(60 * 60 * 1000);
+
+    expect(result.sweptRows).toBeGreaterThanOrEqual(1);
+    expect(existsSync(absPath)).toBe(false); // orphan file reaped
+    expect(await prisma.mediaAsset.findUnique({ where: { digest } })).toBeNull(); // asset row gone
+    expect(await prisma.pendingMedia.findUnique({ where: { id: stage.id } })).toBeNull(); // stage gone
+    await prisma.messageThread.delete({ where: { id: threadId } }).catch(() => {});
+    await prisma.user.delete({ where: { id: userId } }).catch(() => {});
+  });
+
+  it('gcStalePending keeps the file when a committed MediaMessage references the digest', async () => {
+    const { digest, absPath } = await seedAsset('stale-live');
+    const { threadId, userId } = await seedThreadAndUser();
+    const stage = await prisma.pendingMedia.create({
+      data: {
+        threadId, creatorId: userId, contentType: 'FILE', content: '{}',
+        digest, clientMessageId: randomUUID(),
+      },
+    });
+    // A committed message DOES reference this digest (MediaMessage row) → the file is live.
+    const msg = await prisma.message.create({
+      data: {
+        threadId, creator: userId, seq: 0, originSeq: 0,
+        contentType: 'FILE', content: '{}',
+      },
+    });
+    await prisma.mediaMessage.create({ data: { messageId: msg.id, threadId, digest } });
+    await prisma.pendingMedia.update({
+      where: { id: stage.id },
+      data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+    });
+
+    const result = await gc.gcStalePending(60 * 60 * 1000);
+
+    expect(result.sweptRows).toBeGreaterThanOrEqual(1); // the stale stage row is still swept
+    expect(existsSync(absPath)).toBe(true); // but the file is KEPT (a live message references it)
+    expect(await prisma.mediaAsset.findUnique({ where: { digest } })).not.toBeNull();
+    expect(await prisma.pendingMedia.findUnique({ where: { id: stage.id } })).toBeNull();
+    // cleanup
+    await prisma.mediaMessage.delete({ where: { messageId: msg.id } }).catch(() => {});
+    await prisma.message.delete({ where: { id: msg.id } }).catch(() => {});
+    await prisma.messageThread.delete({ where: { id: threadId } }).catch(() => {});
+    await prisma.user.delete({ where: { id: userId } }).catch(() => {});
+    await prisma.mediaAsset.delete({ where: { digest } }).catch(() => {});
+    await unlink(absPath).catch(() => {});
+  });
+
+  it('gcStalePending leaves fresh (in-flight) staged sends untouched', async () => {
+    const { digest, absPath } = await seedAsset('stale-fresh');
+    const { threadId, userId } = await seedThreadAndUser();
+    // Just-created stage (createdAt = now) — within TTL → must not be reaped.
+    const stage = await prisma.pendingMedia.create({
+      data: {
+        threadId, creatorId: userId, contentType: 'FILE', content: '{}',
+        digest, clientMessageId: randomUUID(),
+      },
+    });
+
+    const result = await gc.gcStalePending(60 * 60 * 1000);
+
+    expect(result.sweptRows).toBe(0);
+    expect(existsSync(absPath)).toBe(true); // kept
+    expect(await prisma.pendingMedia.findUnique({ where: { id: stage.id } })).not.toBeNull();
+    // cleanup
+    await prisma.pendingMedia.delete({ where: { id: stage.id } }).catch(() => {});
+    await prisma.messageThread.delete({ where: { id: threadId } }).catch(() => {});
+    await prisma.user.delete({ where: { id: userId } }).catch(() => {});
+    await prisma.mediaAsset.delete({ where: { digest } }).catch(() => {});
+    await unlink(absPath).catch(() => {});
   });
 });

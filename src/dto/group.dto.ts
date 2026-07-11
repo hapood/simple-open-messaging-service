@@ -99,6 +99,17 @@ export class GroupIdDto {
   groupId: number;
 }
 
+/** Body for /group/members (batch) — fetch rosters for multiple group threads in one request. The
+ *  server returns rosters only for threads the caller is an active member of. */
+export class GroupMembersBatchDto {
+  @ApiProperty({ type: [Number], example: [12, 13], description: 'Group thread ids' })
+  @Type(() => Number)
+  @IsArray()
+  @IsInt({ each: true })
+  @ArrayMinSize(1)
+  threadIds: number[];
+}
+
 export class KickGroupDto {
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)

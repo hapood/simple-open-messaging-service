@@ -1,29 +1,83 @@
-<div class="sc-card">
-  <h1>Server</h1>
-  <p class="sc-hint">Point the app at the SOMS backend. Saved once, used on every launch.</p>
+<div class="auth-shell">
+  <app-auth-brand aria-hidden="true"></app-auth-brand>
 
-  <label class="sc-field">
-    <span>Backend URL</span>
-    <input
-      type="url"
-      inputmode="url"
-      autocomplete="off"
-      spellcheck="false"
-      [value]="url()"
-      (input)="url.set($any($event.target).value)"
-      placeholder="http://192.168.1.10:3000"
-      [disabled]="saving()"
-    />
-  </label>
+  <main class="form-pane">
+    <app-auth-toolbar></app-auth-toolbar>
 
-  @if (errorMsg()) {
-    <p class="sc-error" role="alert">{{ errorMsg() }}</p>
-  }
+    <form class="sc-card" (ngSubmit)="save()">
+      <div class="progress-slot">
+        @if (saving()) {
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+        }
+      </div>
 
-  <div class="sc-actions">
-    <button type="button" class="sc-secondary" (click)="cancel()" [disabled]="saving()">Cancel</button>
-    <button type="button" class="sc-primary" (click)="save()" [disabled]="saving()">
-      {{ saving() ? 'Saving…' : 'Save' }}
-    </button>
-  </div>
+      <div class="sc-head">
+        <span class="sc-head-icon">
+          <app-icon [type]="AppIcon.SERVER" [style]="{ width: '22px', height: '22px' }" />
+        </span>
+        <h1 class="sc-title">{{ 'serverConfig.title' | transloco }}</h1>
+      </div>
+      <p class="sc-hint">{{ 'serverConfig.hint' | transloco }}</p>
+
+      <mat-form-field class="sc-field" appearance="fill">
+        <mat-label>{{ 'serverConfig.urlLabel' | transloco }}</mat-label>
+        <input
+          matInput
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          [formControl]="urlControl"
+          [placeholder]="'serverConfig.placeholder' | transloco"
+        />
+        <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
+      </mat-form-field>
+
+      <div class="sc-test">
+        <button
+          mat-stroked-button
+          type="button"
+          class="sc-test-btn"
+          (click)="testConnection()"
+          [disabled]="testing() || saving() || urlControl.invalid"
+        >
+          <app-icon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
+          {{ (testing() ? 'serverConfig.testing' : 'serverConfig.testBtn') | transloco }}
+        </button>
+
+        @if (showStatus()) {
+          <div
+            class="sc-status"
+            [class.sc-status-ok]="status() === 'ok'"
+            [class.sc-status-warn]="status() === 'warn' || status() === 'notsoms'"
+            [class.sc-status-fail]="status() === 'fail'"
+          >
+            @if (statusIcon(); as icon) {
+              <app-icon [type]="icon" [style]="{ width: '16px', height: '16px' }" />
+            }
+            <span>{{ statusKey() | transloco: { version: version() || '?' } }}</span>
+          </div>
+        }
+      </div>
+
+      @if (saveError()) {
+        <p class="sc-save-error" role="alert">{{ saveError() }}</p>
+      }
+
+      <div class="sc-actions">
+        <button mat-button type="button" (click)="cancel()" [disabled]="saving()">
+          {{ 'serverConfig.cancel' | transloco }}
+        </button>
+        <button
+          mat-flat-button
+          color="primary"
+          type="submit"
+          class="sc-save-btn"
+          [disabled]="saving() || urlControl.invalid"
+        >
+          {{ (saving() ? 'serverConfig.saving' : 'serverConfig.save') | transloco }}
+        </button>
+      </div>
+    </form>
+  </main>
 </div>

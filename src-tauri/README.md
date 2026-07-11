@@ -8,7 +8,7 @@ remote backend over the network instead of being served same-origin by NestJS.
 | Concern | Mechanism |
 |---|---|
 | Where the API is | `SOMS_API_ORIGIN` env (default `http://localhost:3000`). Injected into the webview as `window.__SOMS_API_ORIGIN__` by an initialization script **before Angular boots**; read once at module load by `web/src/app/services/runtime.ts` → `constants.ts` → every `apiPrefix`/`sseUrl`. |
-| API + SSE auth | Bearer `Authorization` header (the Angular `AuthInterceptor` + the SSE worker already send it). Cross-origin is allowed by the backend's `ALLOWED_ORIGINS` env. |
+| API + SSE auth | Bearer `Authorization` header (the Angular `AuthInterceptor` + the SSE worker already send it). The backend's CORS is fully open (reflects any Origin), so the cross-origin webview is admitted without configuration. |
 | `/uploads/*` media auth | A `media://localhost` custom URI scheme registered in `src/lib.rs` proxies to `${SOMS_API_ORIGIN}/uploads/*`, injecting `Authorization: Bearer`. The frontend rewrites bare `/uploads/...` URLs to `media://localhost/...` via `assetUrl()` (browser path unchanged). Bare `<img src>`/CSS `url()` can't set headers and the `media_token` cookie is `SameSite=Strict` (no cross-origin), so the proxy is the only correct path. |
 | Token handoff | The frontend calls `window.__TAURI__.core.invoke('set_access_token', { token })` on login/renew and `clear_access_token` on logout (see `AuthService`). Stored in `ProxyState` for the proxy. |
 
@@ -58,11 +58,11 @@ SOMS_API_ORIGIN=http://localhost:3000 cargo tauri dev
 cargo tauri build
 ```
 
-The NestJS backend must be running and reachable at `SOMS_API_ORIGIN`, with `ALLOWED_ORIGINS` set
-to the three Tauri webview origins:
+The NestJS backend must be running and reachable at `SOMS_API_ORIGIN`. No CORS configuration is
+needed — the backend reflects any Origin:
 
 ```bash
-ALLOWED_ORIGINS="tauri://localhost,https://tauri.localhost,http://tauri.localhost" npm run start:prod
+npm run start:prod
 ```
 
 ## Known caveats

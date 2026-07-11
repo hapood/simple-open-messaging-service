@@ -156,10 +156,12 @@ export class MessageThreadComponent implements OnDestroy {
       // init(-1), which is also where rawToItems runs once (so ids register once — no double-registration to
       // dedup away a self-send echo / reply on an empty thread). onMessageSignal is the optimistic-confirm
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
-      { onSignal: () => {
+      { onSignal: (seq: number) => {
         // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
-        // and the just-signaled live item would never mount (silent drop in the open chatbox).
-        void this.scroller?.onMessageSignal().catch((e) => console.error('[chat] onMessageSignal rejected', e));
+        // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
+        // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
+        // window to decide whether a post-init replay is actually needed.
+        void this.scroller?.onMessageSignal(seq).catch((e) => console.error('[chat] onMessageSignal rejected', e));
       } },
     );
     this.scroller = new ChatBoxScroller<ChatItemData>({
@@ -334,21 +336,23 @@ export class MessageThreadComponent implements OnDestroy {
       threadId: tid, content: item.data.text, contentType: 'PURE_TEXT', clientMessageId: cid,
     })).then((res) => {
       if (res.code !== 0) void this.failPending(item);
-      // success: the SSE echo reconciles the optimistic bubble (no-op here).
+      else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
     }).catch(() => void this.failPending(item));
   }
 
+  /** Send-media-first flow: POST /send-media stages a PendingMedia (durable intent, keyed by cid),
+   *  then the upload (carrying the same cid via the x-client-message-id header) writes the file and the
+   *  server promotes the stage to a real Message. The NEW_MESSAGE SSE echo (matched by cid) reconciles
+   *  the optimistic bubble — so on upload success there is nothing to do here. Any failure → failPending. */
   private async uploadAndSendImage(cid: string, f: File, item: CbItem<ChatItemData>, dims: { w: number; h: number }): Promise<void> {
     const tid = this.threadId();
     if (!tid) return;
     try {
-      const up = await firstValueFrom(this.msgService.uploadMedia(f, dims.w, dims.h));
-      if (up.code !== 0 || !up.data) { await this.failPending(item); return; }
-      const res = await firstValueFrom(this.msgService.sendMessage({
-        threadId: tid, content: JSON.stringify({ url: up.data.url, w: dims.w, h: dims.h }),
-        contentType: 'IMAGE', clientMessageId: cid,
-      }));
-      if (res.code !== 0) await this.failPending(item);
+      const staged = await firstValueFrom(this.msgService.sendMedia({ threadId: tid, contentType: 'IMAGE', clientMessageId: cid }));
+      if (staged.code !== 0) { await this.failPending(item); return; }
+      const up = await firstValueFrom(this.msgService.uploadMedia(f, dims.w, dims.h, cid));
+      if (up.code !== 0) await this.failPending(item);
+      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
     } catch {
       await this.failPending(item);
     }
@@ -358,12 +362,11 @@ export class MessageThreadComponent implements OnDestroy {
     const tid = this.threadId();
     if (!tid) return;
     try {
-      const data = await this.uploadFileResult(f);
-      if (!data) { await this.failPending(item); return; }
-      const res = await firstValueFrom(this.msgService.sendMessage({
-        threadId: tid, content: JSON.stringify(data), contentType: 'FILE', clientMessageId: cid,
-      }));
-      if (res.code !== 0) await this.failPending(item);
+      const staged = await firstValueFrom(this.msgService.sendMedia({ threadId: tid, contentType: 'FILE', clientMessageId: cid }));
+      if (staged.code !== 0) { await this.failPending(item); return; }
+      const ok = await this.uploadFileResult(f, cid);
+      if (!ok) await this.failPending(item);
+      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
     } catch {
       await this.failPending(item);
     }
@@ -375,17 +378,13 @@ export class MessageThreadComponent implements OnDestroy {
     const tid = this.threadId();
     if (!tid) return;
     try {
-      const up = await firstValueFrom(this.msgService.uploadVideo(f));
-      if (up.code !== 0 || !up.data) { await this.failPending(item); return; }
-      const res = await firstValueFrom(this.msgService.sendMessage({
-        threadId: tid,
-        content: JSON.stringify({
-          url: up.data.url, name: up.data.name, size: up.data.size, mimeType: up.data.mimeType,
-          w: meta.w, h: meta.h, duration: meta.duration,
-        }),
-        contentType: 'VIDEO', clientMessageId: cid,
+      const staged = await firstValueFrom(this.msgService.sendMedia({
+        threadId: tid, contentType: 'VIDEO', clientMessageId: cid, meta: { w: meta.w, h: meta.h, duration: meta.duration },
       }));
-      if (res.code !== 0) await this.failPending(item);
+      if (staged.code !== 0) { await this.failPending(item); return; }
+      const up = await firstValueFrom(this.msgService.uploadVideo(f, cid));
+      if (up.code !== 0) await this.failPending(item);
+      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
     } catch {
       await this.failPending(item);
     }
@@ -397,26 +396,24 @@ export class MessageThreadComponent implements OnDestroy {
     const tid = this.threadId();
     if (!tid) return;
     try {
-      const up = await firstValueFrom(this.msgService.uploadAudio(f));
-      if (up.code !== 0 || !up.data) { await this.failPending(item); return; }
-      const res = await firstValueFrom(this.msgService.sendMessage({
-        threadId: tid,
-        content: JSON.stringify({
-          url: up.data.url, name: up.data.name, size: up.data.size, mimeType: up.data.mimeType,
-          duration: meta.duration,
-        }),
-        contentType: 'AUDIO', clientMessageId: cid,
+      const staged = await firstValueFrom(this.msgService.sendMedia({
+        threadId: tid, contentType: 'AUDIO', clientMessageId: cid, meta: { duration: meta.duration },
       }));
-      if (res.code !== 0) await this.failPending(item);
+      if (staged.code !== 0) { await this.failPending(item); return; }
+      const up = await firstValueFrom(this.msgService.uploadAudio(f, cid));
+      if (up.code !== 0) await this.failPending(item);
+      else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
     } catch {
       await this.failPending(item);
     }
   }
 
-  /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on error. */
-  private async uploadFileResult(f: File): Promise<{ url: string; name: string; size: number; mimeType: string } | null> {
+  /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on
+   *  error. `cid` promotes a staged send; on a successful response the server has already committed the
+   *  Message and the SSE echo reconciles the bubble. */
+  private async uploadFileResult(f: File, cid?: string): Promise<{ url: string; name: string; size: number; mimeType: string } | null> {
     try {
-      return await firstValueFrom(this.msgService.uploadFile(f).pipe(
+      return await firstValueFrom(this.msgService.uploadFile(f, cid).pipe(
         filter((e): e is HttpResponse<StandardResponse<{ url: string; name: string; size: number; mimeType: string }>> =>
           e.type === HttpEventType.Response),
         map((e) => e.body?.data ?? null),
@@ -454,6 +451,20 @@ export class MessageThreadComponent implements OnDestroy {
     if (!scroller || !source || item.clientMessageId === undefined) return;
     if (!source.failPending(item.clientMessageId)) return; // already confirmed/dropped — nothing to fail
     await scroller.reconcilePending();
+  }
+
+  /** Mark an optimistic send SENT (the HTTP-200 / upload-success milestone): the source flips its pending entry to
+   *  status:'sent' in place (stable identity, stays at its tail position); the kernel's confirmPending morphs the
+   *  bubble in place (sending→sent) + tags cb-confirmed so the spinner→check→fade choreography plays WITHOUT touching
+   *  the reorder animation (owned by the later SSE echo). Self-heals the SSE-beats-HTTP race: if the echo already
+   *  dropped the pending entry, markPendingSent returns false and confirmPending is skipped — the real carries the
+   *  choreography instead. */
+  private async markSent(item: CbItem<ChatMsgData>): Promise<void> {
+    const scroller = this.scroller;
+    const source = this.source;
+    if (!scroller || !source || item.clientMessageId === undefined) return;
+    if (!source.markPendingSent(item.clientMessageId)) return; // already confirmed/dropped — the real owns the choreography
+    scroller.confirmPending(item.clientMessageId);
   }
 
   // ---------- optimistic-insert orchestration (ported from the playground) ----------

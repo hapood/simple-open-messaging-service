@@ -4,7 +4,10 @@
     <app-auth-toolbar></app-auth-toolbar>
     <app-login (onSuccess)="onSuccess()"></app-login>
     @if (isTauri()) {
-      <a class="server-link" routerLink="/config">Server settings</a>
+      <a mat-button class="server-link" routerLink="/config">
+        <app-icon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+        {{ 'serverConfig.entry' | transloco }}
+      </a>
     }
   </main>
 </div>

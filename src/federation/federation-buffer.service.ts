@@ -1,23 +1,24 @@
 import { Injectable } from '@nestjs/common';
 
-/** One outbound hint entry. `from`/`fromDomain` identify the AUTHOR (a local user, or a foreign stub the
- *  origin re-propagates); `to` identifies the CONVERSATION — a peer user account (P2P) or the group
- *  `!account` (group). `left` marks a leave signal (handled on drain as a roster dissolve, not a pull). */
+/** One outbound hint entry. `fromAccount`/`fromDomain` identify the AUTHOR (a local user, or a foreign
+ *  stub the origin re-propagates); `toAccount` identifies the CONVERSATION — a peer user account (P2P) or
+ *  the group `!account` (group). */
 interface DirtyEntry {
-  from: string;
+  fromAccount: string;
   fromDomain: string;
-  to: string;
+  toAccount: string;
   latestSeq: number;
   generatedAt: number;
   left?: boolean;
 }
 
 /** The on-wire shape pushed (POST /new-msg-map) and snapshotted (GET /new-msg-map). `fromDomain` is always
- *  present (every federated domain is distinct; the author may be foreign). No `@`-join, no internal ids. */
+ *  present (every federated domain is distinct; the author may be foreign). No `@`-join, no internal ids.
+ *  `left` marks a leave signal (handled on drain as a roster dissolve, not a pull). */
 export interface NewMsgMapEntry {
-  from: string;
+  fromAccount: string;
   fromDomain: string;
-  to: string;
+  toAccount: string;
   latestSeq: number;
   left?: boolean;
 }
@@ -39,29 +40,26 @@ export interface NewMsgMapEntry {
  */
 @Injectable()
 export class FederationBufferService {
-  /** per-domain → (scopeKey → entry). scopeKey encodes (from, fromDomain, to, left?) with a \0 separator
-   *  (accounts/domains are restricted to letters/digits/dots — never \0), so a message hint and a leave
-   *  hint for the same (from, to) coexist without collision. */
+  /** per-domain → (scopeKey → entry). scopeKey encodes (fromAccount, fromDomain, toAccount) with a \0
+   *  separator (accounts/domains are restricted to letters/digits/dots — never \0). */
   private readonly domains = new Map<string, Map<string, DirtyEntry>>();
   /** Per-domain entry cap. On overflow, the older HALF is evicted in one shot. */
   private static readonly CAP_PER_DOMAIN = 10_000;
 
-  /** scopeKey for the nested map (internal only — \0 cannot appear in accounts/domains). The trailing
-   *  left-flag keeps a leave signal distinct from message hints for the same (from, to). */
-  private scopeKey(e: { from: string; fromDomain: string; to: string; left?: boolean }): string {
-    return `${e.from}\0${e.fromDomain}\0${e.to}\0${e.left ? 1 : 0}`;
+  /** scopeKey for the nested map (internal only — \0 cannot appear in accounts/domains). */
+  private scopeKey(e: { fromAccount: string; fromDomain: string; toAccount: string; left?: boolean }): string {
+    return `${e.fromAccount}\0${e.fromDomain}\0${e.toAccount}\0${e.left ? 1 : 0}`;
   }
 
-  /** Mark a conversation dirty: the author <from>/<fromDomain> has new messages up to latestSeq for <to>
-   *  on <domain>. Latest-seq-wins for message hints (never regress — a stale notify must not overwrite a
-   *  newer one); a leave hint is always written (keyed separately). Enforces the per-domain cap
-   *  (half-eviction on overflow). STORAGE ONLY — the caller (FederationService.signalOutbound) schedules
-   *  the debounced flush; this class owns no timers. */
+  /** Mark a conversation dirty: the author <fromAccount>/<fromDomain> has new messages up to latestSeq for
+   *  <toAccount> on <domain>. Latest-seq-wins (never regress — a stale notify must not overwrite a newer
+   *  one). Enforces the per-domain cap (half-eviction on overflow). STORAGE ONLY — the caller
+   *  (FederationService) schedules the debounced flush; this class owns no timers. */
   markDirty(
     domain: string,
-    from: string,
+    fromAccount: string,
     fromDomain: string,
-    to: string,
+    toAccount: string,
     latestSeq: number,
     left = false,
   ): void {
@@ -70,10 +68,10 @@ export class FederationBufferService {
       byScope = new Map();
       this.domains.set(domain, byScope);
     }
-    const key = this.scopeKey({ from, fromDomain, to, left });
+    const key = this.scopeKey({ fromAccount, fromDomain, toAccount, left });
     const existing = byScope.get(key);
-    if (existing && !left && existing.latestSeq >= latestSeq) return; // stale — never regress
-    byScope.set(key, { from, fromDomain, to, latestSeq, generatedAt: Date.now(), left });
+    if (existing && !left && existing.latestSeq >= latestSeq) return; // stale — never regress (leave always passes)
+    byScope.set(key, { fromAccount, fromDomain, toAccount, latestSeq, generatedAt: Date.now(), left });
     if (byScope.size > FederationBufferService.CAP_PER_DOMAIN) this.evictHalf(byScope);
   }
 
@@ -87,9 +85,7 @@ export class FederationBufferService {
 
   /** Flatten a DirtyEntry to the on-wire NewMsgMapEntry (drops generatedAt). */
   private toWire(e: DirtyEntry): NewMsgMapEntry {
-    return e.left
-      ? { from: e.from, fromDomain: e.fromDomain, to: e.to, latestSeq: e.latestSeq, left: true }
-      : { from: e.from, fromDomain: e.fromDomain, to: e.to, latestSeq: e.latestSeq };
+    return { fromAccount: e.fromAccount, fromDomain: e.fromDomain, toAccount: e.toAccount, latestSeq: e.latestSeq, left: e.left };
   }
 
   /**

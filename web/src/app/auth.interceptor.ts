@@ -10,10 +10,11 @@ import { Observable, of, EMPTY, throwError, catchError, switchMap } from 'rxjs';
 import { AuthService } from './services/auth.service';
 
 /**
- * 公开端点（无需 token、不参与 401 重试）：auth 相关 + 用户注册（注册在 /user/register，登录前可用）。
+ * 公开端点（无需 token、不参与 401 重试）：auth 相关 + 用户注册（注册在 /user/register，登录前可用）+
+ * 健康检查（GET /health，server-config 连接检测 + 将来主界面的连接状态条都可能用到）。
  * 原 `Authorization: 'public'` header 标记已废——改用 URL 路径白名单（声明式、无歧义）。
  */
-const PUBLIC_PATH = /\/(auth\/(login|renew-access|renew-refresh|logout)|user\/register)$/;
+const PUBLIC_PATH = /\/(auth\/(login|renew-access|renew-refresh|logout)|user\/register|health)$/;
 
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {

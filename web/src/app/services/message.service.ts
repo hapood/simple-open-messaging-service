@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Message, QueryMessageLogParams, StandardResponse } from './model'
 import { apiPrefix } from './constants';
 
@@ -21,13 +21,36 @@ export class MsgService {
     return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
   }
 
-  /** Upload an image (multipart: file + width/height), returns {url,w,h}. w/h are read client-side via createImageBitmap and sent along. */
-  uploadMedia(file: File, w: number, h: number) {
+  /**
+   * Stage a media message BEFORE its upload: the server creates a PendingMedia row keyed by
+   * `clientMessageId` (+ the client-probed display meta) — durable intent recorded before the file
+   * write, so a crash between staging and upload leaves a reclaimable record, never an orphan. No
+   * Message or seq is created yet. The caller follows this with the matching upload() carrying the
+   * same clientMessageId, which writes the file and promotes the stage to a real Message (confirmed
+   * via the NEW_MESSAGE SSE echo keyed by clientMessageId).
+   */
+  sendMedia(params: {
+    threadId: number,
+    contentType: 'IMAGE' | 'FILE' | 'VIDEO' | 'AUDIO',
+    clientMessageId: string,
+    meta?: { w?: number, h?: number, duration?: number },
+  }) {
+    return this.http.post<StandardResponse<{ clientMessageId: string }>>(`${apiPrefix}/send-media`, params)
+  }
+
+  /** Upload an image (multipart: file + width/height), returns {url,w,h}. w/h are read client-side via
+   *  createImageBitmap and sent along. When `clientMessageId` is set (a prior POST /send-media staged
+   *  this send), the server promotes the staged send to a real Message after the upload. */
+  uploadMedia(file: File, w: number, h: number, clientMessageId?: string) {
     const fd = new FormData()
     fd.append('file', file)
     fd.append('w', String(w))
     fd.append('h', String(h))
-    return this.http.post<StandardResponse<{ url: string, w: number, h: number }>>(`${apiPrefix}/upload`, fd)
+    return this.http.post<StandardResponse<{ url: string, w: number, h: number }>>(
+      `${apiPrefix}/upload`,
+      fd,
+      clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : undefined,
+    )
   }
 
   /**
@@ -36,37 +59,50 @@ export class MsgService {
    * (HttpProgressEvent); the final response body arrives in the last HttpResponse event. The mimetype allowlist
    * and size cap for POST /upload/file are enforced by the backend.
    */
-  uploadFile(file: File) {
+  uploadFile(file: File, clientMessageId?: string) {
     const fd = new FormData()
     fd.append('file', file)
     return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
       `${apiPrefix}/upload/file`,
       fd,
-      { reportProgress: true, observe: 'events' },
+      {
+        reportProgress: true,
+        observe: 'events',
+        ...(clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : {}),
+      },
     )
   }
 
   /** Upload a video (multipart: file). The server validates only the container family via magic bytes
    *  (no probe/extract); w/h/duration are NOT sent here — they are client-probed via <video>
-   *  loadedmetadata and ride in the VIDEO message content. Returns {url,name,size,mimeType}. */
-  uploadVideo(file: File) {
+   *  loadedmetadata and ride in the staged send's meta. Returns {url,name,size,mimeType}. When
+   *  `clientMessageId` is set, the upload promotes a staged send to a real Message. */
+  uploadVideo(file: File, clientMessageId?: string) {
     const fd = new FormData()
     fd.append('file', file)
     return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
       `${apiPrefix}/upload/video`,
       fd,
+      clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : undefined,
     )
   }
 
   /** Upload an audio clip (multipart: file). Same contract as uploadVideo (magic-byte check only);
-   *  duration is client-probed and carried in the AUDIO message content. */
-  uploadAudio(file: File) {
+   *  duration is client-probed and carried in the staged send's meta. When `clientMessageId` is set,
+   *  the upload promotes a staged send to a real Message. */
+  uploadAudio(file: File, clientMessageId?: string) {
     const fd = new FormData()
     fd.append('file', file)
     return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
       `${apiPrefix}/upload/audio`,
       fd,
+      clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : undefined,
     )
+  }
+
+  /** The header that tells an upload route to promote a staged send after writing the file. */
+  private cmidHeader(clientMessageId: string): HttpHeaders {
+    return new HttpHeaders({ 'x-client-message-id': clientMessageId })
   }
 
   queryMessageLog(params: QueryMessageLogParams) {

@@ -51,7 +51,9 @@ export enum BusinessCode {
   GROUP_FORBIDDEN = 40005, // role permission denied (cannot kick/modify/transfer this target)
   GROUP_TARGET_NOT_MEMBER = 40006, // target is not an active member of the group
 
-  // 50xxx federation (S2S) — all protocol/system-tier; HTTP status drives sender retry, code is detail.
+  // 50xxx federation (S2S) — protocol/system-tier; HTTP status drives sender retry, code is detail.
+  //       Exception: GET /s2s/messages returns business outcomes at HTTP 200 (the pull itself succeeded; the
+  //       body IS the result), so a 200 + code there is a normal outcome, not a retryable failure.
   FEDERATION_PEER_NOT_TRUSTED = 50001, // signer domain not in FederatedPeer trusted (401, no retry)
   FEDERATION_BAD_SIGNATURE = 50002, // signature invalid OR keyId not in the published set (401, no retry)
   FEDERATION_BINDING_VIOLATION = 50003, // from.domain != signer.domain (401, no retry)
@@ -60,4 +62,9 @@ export enum BusinessCode {
   FEDERATION_MALFORMED = 50007, // malformed Signature-Input / friend-op payload (401, no retry)
   FEDERATION_DELIVERY_FAILED = 50008, // sync S2S send failed (peer unreachable/rejected) — user retries
   FEDERATION_PEER_BLOCKED = 50009, // an admin blocked this peer domain — federation refused (403, no retry)
+  FEDERATION_GROUP_AUTHOR_LEFT = 50010, // per-author group pull: author no longer an active member → returned at
+                                        // HTTP 200 on /s2s/messages?fromAccount=... so the origin dissolves its roster
+                                        // entry (softLeaveMember + bump group meta) WITHOUT demoting the peer —
+                                        // a business outcome, not a protocol failure (the 200 already ran
+                                        // markContactSuccess in getSigned)
 }

@@ -54,6 +54,12 @@ export class UserResponseDto {
   })
   updatedAt: number;
 
+  @ApiProperty({
+    example: 3,
+    description: 'Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.',
+  })
+  profileRev: number;
+
   @ApiProperty({ example: false })
   isDeleted: boolean;
 
@@ -65,6 +71,15 @@ export class UserResponseDto {
     description: 'Unread friend-request badge (self only)',
   })
   hasUrFriendReq?: boolean;
+
+  // SELF-ONLY: the caller's thread-list revision cursor (bumped on thread add/delete). Populated solely
+  // by the self-profile read; every other response builder omits it.
+  @ApiProperty({
+    required: false,
+    example: 5,
+    description: 'Thread-list revision (self only — the thread-sync cursor)',
+  })
+  threadRevision?: number;
 
   // Note: hashPwd never appears in responses.
 }

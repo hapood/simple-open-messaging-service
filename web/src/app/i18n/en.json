@@ -395,5 +395,22 @@
     "mediaThreshold": "Image load threshold",
     "mediaThresholdHint": "Larger images show a tap-to-load placeholder.",
     "noLimit": "No limit"
+  },
+  "serverConfig": {
+    "entry": "Server settings",
+    "title": "Backend server",
+    "hint": "Point the app at the SOMS backend. Saved once, used on every launch.",
+    "urlLabel": "Backend URL",
+    "placeholder": "http://192.168.1.10:3000",
+    "urlInvalid": "Enter a full URL, e.g. http://192.168.1.10:3000 or https://api.example.com",
+    "testBtn": "Test connection",
+    "testing": "Testing…",
+    "save": "Save",
+    "saving": "Saving…",
+    "cancel": "Cancel",
+    "statusOk": "Connected · v{{version}}",
+    "statusWarn": "Reachable, but the response is CORS-blocked — usually a reverse proxy in front of the backend. The backend itself allows all origins.",
+    "statusNotSoms": "Reached a server, but it isn't a SOMS backend.",
+    "statusFail": "Can't reach the server. Check the address, your network, or that the server is running."
   }
 }

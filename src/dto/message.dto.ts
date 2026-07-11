@@ -5,12 +5,14 @@ import {
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
   Max,
   MaxLength,
   Min,
+  ValidateNested,
 } from 'class-validator';
 import { ContentType } from '../prisma/generated/client.js';
 
@@ -58,6 +60,73 @@ export class SendMessageDto {
   @IsOptional()
   @IsUUID()
   clientMessageId?: string;
+}
+
+/**
+ * Client-probed display metadata for a staged media send. Only the fields the upload route does NOT
+ * itself derive are carried here: w/h (pixels) for image/video and duration (seconds) for video/audio.
+ * The CAS url, filename, byte size, and MIME are all server-generated at upload and injected at promote,
+ * so they never appear in (and cannot be forged via) this DTO.
+ */
+export class SendMediaMetaDto {
+  @ApiProperty({ required: false, description: 'Image/video pixel width (client-probed)' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  w?: number;
+
+  @ApiProperty({ required: false, description: 'Image/video pixel height (client-probed)' })
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100000)
+  h?: number;
+
+  @ApiProperty({ required: false, description: 'Video/audio duration in seconds (client-probed)' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(86400)
+  duration?: number;
+}
+
+/**
+ * Stage a media send BEFORE the upload: the server creates a PendingMedia(pending) row carrying
+ * clientMessageId (+ optional display meta) so a crash between staging and upload leaves an
+ * attributable record. No Message or seq is created yet — the upload route promotes the stage to a
+ * real Message once the bytes land. Idempotent by clientMessageId (a retried stage is a no-op).
+ */
+export class SendMediaDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId: number;
+
+  @ApiProperty({
+    enum: ['IMAGE', 'FILE', 'VIDEO', 'AUDIO'],
+    description: 'Media content type being staged (PURE_TEXT uses /send-message directly).',
+  })
+  @IsIn(['IMAGE', 'FILE', 'VIDEO', 'AUDIO'])
+  contentType: ContentType;
+
+  @ApiProperty({
+    description:
+      'Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent.',
+  })
+  @IsUUID()
+  clientMessageId: string;
+
+  @ApiProperty({
+    required: false,
+    type: SendMediaMetaDto,
+    description: 'Client-probed display metadata (w/h, duration). Omitted fields are not staged.',
+  })
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SendMediaMetaDto)
+  meta?: SendMediaMetaDto;
 }
 
 export class QueryMessagesDto {

@@ -49,7 +49,7 @@ export interface HttpItemSourceLiveOpts {
    *  onMessageSignal. The body's ids are registered in knownMsgIds ONCE, at pull time inside rawToItems — so a
    *  self-send echo / incoming reply on an empty (just-added-friend) thread reconciles correctly instead of
    *  being deduped away. */
-  onSignal: () => void;
+  onSignal: (seq: number) => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -68,7 +68,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly pending: CbItem<ChatItemData>[] = [];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
-  private readonly onSignal: () => void;
+  private readonly onSignal: (seq: number) => void;
 
   constructor(
     private readonly conv: ConversationItem,
@@ -82,7 +82,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     this.sseSub = wsService.eventSubject.subscribe((msg) => this.onSseEvent(msg));
     // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
     // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
-    this.reconnectSub = wsService.reconnect$.subscribe(() => this.onSignal());
+    this.reconnectSub = wsService.reconnect$.subscribe(() => this.onSignal(Number.MAX_SAFE_INTEGER));
   }
 
   /**
@@ -219,7 +219,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (msg.event !== 'NEW_MESSAGE' || msg.status !== 0 || !msg.data) return;
     const data = msg.data as Message & { threadId: number };
     if (data.threadId !== this.conv.threadId) return;
-    this.onSignal();
+    this.onSignal(data.seq);
   }
 
   /** No-op. The signal-only SSE path caches nothing; live data is pulled from the DB on demand. Kept to satisfy
@@ -270,6 +270,24 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return retrying;
   }
 
+  /**
+   * Mark an in-flight optimistic send SENT (the HTTP-200 / upload-success milestone) — flips the pending entry's
+   * status 'sending'→'sent' IN PLACE at its CURRENT tail position (unlike failPending, which sinks a failed send to
+   * the end). Stable identity + a fresh data ref let the kernel's confirmPending morph the bubble in place
+   * (sending→sent) and tag it cb-confirmed so the spinner→check→fade choreography plays WITHOUT a mount/unmount or
+   * reorder — decoupling the delivery-confirm visual from the later SSE-echo reconcile (which still owns the real's
+   * mount + the cb-move FLIP). The entry STAYS in `pending` until the SSE echo's real fulfills it (reconcilePending
+   * drops it) so a remount before the echo still reads 'sent'. Returns false if no pending entry matches (the echo
+   * already confirmed+dropped it → the real owns the choreography, the rare SSE-beats-HTTP race).
+   */
+  markPendingSent(clientMessageId: string): boolean {
+    const i = this.pending.findIndex((p) => p.clientMessageId === clientMessageId);
+    if (i < 0) return false;
+    const entry = this.pending[i];
+    this.pending[i] = { ...entry, data: { ...entry.data, status: 'sent', kind: undefined } }; // stay at the current position
+    return true;
+  }
+
 
   destroy(): void {
     this.sseSub?.unsubscribe();
@@ -305,7 +323,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // removes the optimistic duplicate). Without this the optimistic would never be reconciled away → two
       // bubbles. Backend serializeBody ships clientMessageId on the wire (no DTO whitelisting).
       const item: CbItem<ChatItemData> = { id, data: this.toMsgData(m, images, file) };
-      if (m.clientMessageId) item.clientMessageId = m.clientMessageId;
+      if (m.clientMessageId) {
+        item.clientMessageId = m.clientMessageId;
+        // Single-trigger "lock" on the real side: the spinner→check→fade choreography plays on THIS real only when
+        // the send-success milestone (HTTP 200 / upload done) has NOT already played it on the optimistic bubble —
+        // i.e. the pending entry is still 'sending' (SSE echo won the race). When 200 already fired, the pending
+        // entry is 'sent' and the optimistic already carried the choreography, so the real mounts SILENT (no status)
+        // and the cb-confirmed the kernel tags on it is inert (no .msg-status--sent to animate) → the animation fires
+        // exactly once. History / incoming (no pending match) never carry a tick. `this.pending` still holds the entry
+        // here: the source reconcilePending that drops fulfilled cids runs AFTER rawToItems (see getNewer / init).
+        const pending = this.pending.find((p) => p.clientMessageId === m.clientMessageId);
+        if (pending && pending.data.status === 'sending') item.data = { ...item.data, status: 'sent' };
+      }
       out.push(item);
     }
     return out;

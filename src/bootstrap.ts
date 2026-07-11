@@ -32,24 +32,6 @@ const MULTIPART_LIMIT = 100 * 1024 * 1024;
  *  across requests, which the shared hook requires. */
 const SHARD_DIGEST_GATE_RE = /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./;
 
-/** Parse a comma-separated ALLOWED_ORIGINS env into a trimmed, de-duplicated list. Empty when
- *  unset → CORS falls back to the dev/permissive posture (see configureApp). Used to admit
- *  cross-origin native clients such as the Tauri desktop webview (tauri://localhost,
- *  https://tauri.localhost, http://tauri.localhost). */
-function parseAllowedOrigins(raw: string | undefined): string[] {
-  if (!raw) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const part of raw.split(',')) {
-    const origin = part.trim();
-    if (origin && !seen.has(origin)) {
-      seen.add(origin);
-      out.push(origin);
-    }
-  }
-  return out;
-}
-
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. Used as
  *  the cross-origin fallback for /uploads/* (native <img> can't set headers → they use the
  *  media_token cookie; the Tauri media proxy + other native clients send Bearer instead). */
@@ -134,19 +116,28 @@ export async function configureApp(
     reply.header('X-Request-Id', String(request.id));
   });
 
-  // CORS posture:
-  //  - Same-origin production deploy (single-image, path-prefix) needs none.
-  //  - Dev echoes any Origin so the separate frontend dev servers (web :4200, admin :5180) can call :3000.
-  //  - Cross-origin native clients (Tauri desktop webview at tauri://localhost etc.) set
-  //    ALLOWED_ORIGINS to an explicit allowlist; the request Origin is mirrored only if listed,
-  //    and credentials are allowed so the media_token cookie + Authorization can ride along.
-  const isDev = process.env.NODE_ENV !== 'production';
-  const allowedOrigins = parseAllowedOrigins(process.env.ALLOWED_ORIGINS);
-  app.enableCors(
-    allowedOrigins.length > 0
-      ? { origin: allowedOrigins, credentials: true }
-      : { origin: isDev },
-  );
+  // CORS posture — fully open: reflect any Origin, NO credentialed cross-origin.
+  //
+  // CORS is a BROWSER-side gate against "another site rides the user's credentials" (CSRF); it is NOT
+  // an access-control mechanism for this API. That gate is moot here because authentication is Bearer
+  // tokens held in JS and sent via the Authorization header (see AuthInterceptor) — a cross-origin
+  // attacker page can neither read those tokens nor forge the header, and the Authorization header
+  // itself crosses origins fine via Access-Control-Allow-Headers (which @fastify/cors allows by
+  // default). No `credentials: true` is needed for Bearer auth.
+  //
+  // The only cookie the API sets is the httpOnly media_token, and it is `SameSite=Strict`
+  // (access-token.validator.ts) — so it NEVER travels on a cross-origin request regardless of the
+  // credentials flag. Media therefore authenticates one of two ways, neither credentialed-CORS:
+  //   - same-origin web deploy (single-image): CORS doesn't apply at all;
+  //   - Tauri/Android: the media:// Rust proxy injects a Bearer header.
+  // So `credentials: true` would be dead config that only broadens the credentialed-CORS surface for
+  // no benefit — it is left off.
+  //
+  // Revisit if a `SameSite=None` cookie or cookie-session auth is ever introduced: that would create a
+  // real cross-origin credential surface and warrant both `credentials: true` AND an explicit Origin
+  // allowlist. The former ALLOWED_ORIGINS env + dev/prod split was removed because the split's prod
+  // branch (origin:false) was exactly what broke cross-origin Tauri/Android clients.
+  app.enableCors({ origin: true });
 
   app.useGlobalPipes(
     new ValidationPipe({

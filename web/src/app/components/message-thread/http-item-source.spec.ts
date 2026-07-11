@@ -41,6 +41,19 @@ function sseFrame(m: Message, tid: number): StandardMessage {
   return { event: 'NEW_MESSAGE', status: 0, message: 'ok', data: { ...m, threadId: tid } };
 }
 
+/** A pending (optimistic, status:'sending') self-text send keyed by `cid`. Mirrors makeOptimisticItem's shape. */
+function pendingItem(cid: string, id = -1) {
+  return {
+    id,
+    data: {
+      type: 'msg', msgId: id, creator: 1, isSelf: true, name: 'Me',
+      text: 'hi', time: '09:00', contentType: 'PURE_TEXT', images: null, file: null, createdAtMs: 0,
+      status: 'sending', kind: 'pending',
+    } as never,
+    clientMessageId: cid,
+  };
+}
+
 describe('HttpItemSource (signal-only SSE contract)', () => {
   /** Build a source whose MsgService returns `dbResult` for every query-messages call. `onSignal` is captured. */
   function setup(dbResult: StandardResponse<Message[]>, tid = 42) {
@@ -117,5 +130,56 @@ describe('HttpItemSource (signal-only SSE contract)', () => {
   it('pushLive is a no-op (signal-only path caches nothing; satisfies the CbSource interface)', () => {
     const { src } = setup({ code: 0, message: 'ok', data: [], hasMore: false });
     expect(() => src.pushLive([{ id: -1, data: {} as never }])).not.toThrow();
+  });
+
+  // ---- send-success confirmation: markPendingSent + the rawToItems single-trigger "lock" ----
+
+  it('markPendingSent flips a pending entry sending→sent IN PLACE (keeps position) and returns false when absent', () => {
+    const { src } = setup({ code: 0, message: 'ok', data: [], hasMore: false });
+    src.addPending(pendingItem('cid-keep-1', -1));
+    src.addPending(pendingItem('cid-keep-2', -2));
+
+    expect(src.markPendingSent('cid-keep-1')).toBe(true);
+    const pending = src.getPending();
+    expect(pending.length).toBe(2);
+    expect(pending[0].clientMessageId).toBe('cid-keep-1');        // position KEPT (unlike failPending, which sinks to tail)
+    expect(pending[0].data.status).toBe('sent');
+    expect(pending[0].data.kind).toBeUndefined();
+    expect(pending[1].clientMessageId).toBe('cid-keep-2');        // sibling untouched
+    expect(pending[1].data.status).toBe('sending');
+
+    expect(src.markPendingSent('no-such-cid')).toBe(false);       // echo already dropped it → false (self-heal)
+  });
+
+  it('rawToItems: a real whose cid matches a still-sending pending entry carries status sent (SSE-first → real owns the choreography)', async () => {
+    const cid = 'sse-first-cid';
+    const echo = row(100, 1, cid);
+    const { src, ws } = setup({ code: 0, message: 'ok', data: [echo], hasMore: false });
+    src.addPending(pendingItem(cid));                              // HTTP 200 has NOT fired yet → still 'sending'
+    ws.eventSubject.next(sseFrame(echo, 42));                      // SSE echo wins the race → onSignal
+
+    const items = await src.init(-1, 50, 0);
+    expect(items[0].data.status).toBe('sent');                    // SSE-first → the real carries the choreography
+    expect(src.getPending().length).toBe(0);                      // fulfilled pending dropped
+  });
+
+  it('rawToItems: a real whose cid matches a sent pending entry (HTTP 200 already fired) mounts SILENT → choreography plays once', async () => {
+    const cid = 'http-first-cid';
+    const echo = row(100, 1, cid);
+    const { src, ws } = setup({ code: 0, message: 'ok', data: [echo], hasMore: false });
+    src.addPending(pendingItem(cid));
+    expect(src.markPendingSent(cid)).toBe(true);                  // HTTP 200 won the race → pending now 'sent'
+
+    ws.eventSubject.next(sseFrame(echo, 42));                      // SSE echo arrives after — the optimistic already played it
+    const items = await src.init(-1, 50, 0);
+    expect(items[0].data.status).toBeUndefined();                 // real mounts silent → cb-confirmed is inert (play once)
+  });
+
+  it('rawToItems: a history message (no pending match) never carries a status tick', async () => {
+    const echo = row(100, 1);                                      // no clientMessageId → not an in-flight send
+    const { src, ws } = setup({ code: 0, message: 'ok', data: [echo], hasMore: false });
+    ws.eventSubject.next(sseFrame(echo, 42));
+    const items = await src.init(-1, 50, 0);
+    expect(items[0].data.status).toBeUndefined();
   });
 });

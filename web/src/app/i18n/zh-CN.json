@@ -395,5 +395,22 @@
     "mediaThreshold": "图片加载阈值",
     "mediaThresholdHint": "较大的图片显示点击加载占位符。",
     "noLimit": "不限制"
+  },
+  "serverConfig": {
+    "entry": "服务器设置",
+    "title": "后端服务器",
+    "hint": "将本应用指向 SOMS 后端。仅保存一次，每次启动自动生效。",
+    "urlLabel": "后端地址",
+    "placeholder": "http://192.168.1.10:3000",
+    "urlInvalid": "请输入完整地址，如 http://192.168.1.10:3000 或 https://api.example.com",
+    "testBtn": "测试连接",
+    "testing": "测试中…",
+    "save": "保存",
+    "saving": "保存中…",
+    "cancel": "取消",
+    "statusOk": "已连接 · v{{version}}",
+    "statusWarn": "服务器可达，但响应被 CORS 拦截——通常是后端前层的反向代理所致。后端本身放行所有来源。",
+    "statusNotSoms": "已连接到服务器，但它不是 SOMS 后端。",
+    "statusFail": "无法连接服务器。请检查地址、网络，或确认服务端已运行。"
   }
 }

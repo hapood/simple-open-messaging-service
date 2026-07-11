@@ -45,6 +45,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
   let carolLocalIdA: number;
   let adminTokenA: string; // super-admin on appA — the real path for the block test + admin reads
   let png2: Buffer; // second avatar (distinct color) for the re-pull test
+  let firstGroupThreadA: number; // the first federated group's ORIGIN thread on appA (reused by later group tests)
+  let firstMirrorBId: number; // that group's MIRROR thread on appB
+  let firstGroupAccount: string; // its `!account` (fedGroupAccount) — the on-wire group address
+  let tokenDave: string; // dave @ appB — a SECOND local member of the same mirror (shared-mirror fan-out test)
+  let daveLocalIdB: number;
 
   beforeAll(async () => {
     // Force tiny media chunks so a modest fixture file spans multiple Range requests — exercises the
@@ -62,6 +67,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     // now isolated per process, so /auth/login works correctly for each app).
     ({ id: aliceLocalIdA, token: tokenA } = await registerAndLogin(appA, 'alice', 'Alice'));
     ({ token: tokenB } = await registerAndLogin(appB, 'bob', 'Bob'));
+    // dave @ appB — a second local user, used as a second member of the same group MIRROR (the
+    // shared-mirror two-member test: same-server members receive via the one mirror thread's SSE fan).
+    ({ id: daveLocalIdB, token: tokenDave } = await registerAndLogin(appB, 'dave', 'Dave'));
 
     // carol @ appA — a LOCAL friend of alice. The profile-edit fan-out (PEER_PROFILE_UPDATED) targets
     // active P2P peers; a foreign stub holds no SSE connection, so this gives the fan-out a real local
@@ -659,6 +667,238 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     } finally {
       await reader.cancel();
     }
+    // Capture the group + mirror for the recovery test + the shared-mirror two-member test (both reuse it).
+    firstGroupThreadA = groupThreadA;
+    firstGroupAccount = groupAccount;
+    firstMirrorBId = mirrorB.id;
+  }, 60_000);
+
+  it('Step 3: group chat-open recovers messages the mirror fell behind on (open-message backstop)', async () => {
+    // The #1 fix: a group message that lands in the receiver-debounce window (or a transiently-lost push
+    // with no follow-up) is recovered on chat-open by syncGroupMessagesOnOpen — the group twin of P2P's
+    // pull-on-open. alice sends two messages; appB's mirror pulls both (pullUntil advances past them).
+    await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ threadId: firstGroupThreadA, content: 'open-recover-1', contentType: 'PURE_TEXT' });
+    await request(appA.baseUrl)
+      .post('/api/v1/send-message')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ threadId: firstGroupThreadA, content: 'open-recover-2', contentType: 'PURE_TEXT' });
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-1' } }),
+        ).not.toBeNull();
+        expect(
+          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-2' } }),
+        ).not.toBeNull();
+      },
+      { timeout: 8000 },
+    );
+
+    // Simulate the stuck state (a hint the debounce dropped / a lost push): the mirror's pull never
+    // advanced for these two. Wipe them AND regress pullUntil to BEFORE open-recover-1. Groups use a
+    // STORED cursor in the ORIGIN's thread-seq space (the global per-thread order — NOT originSeq, which is
+    // per-author), so a deletion alone would NOT self-heal (unlike P2P's derived MAX). We regress the
+    // cursor explicitly — the exact real stuck condition — reading open-recover-1's origin thread seq from
+    // appA (the authority), since appB's stored copy carries only its OWN local seq + the per-author originSeq.
+    const recover1OriginSeq = (
+      await appA.prisma.message.findFirst({
+        where: { threadId: firstGroupThreadA, content: 'open-recover-1' },
+        select: { seq: true },
+      })
+    )!.seq;
+    await appB.prisma.message.deleteMany({
+      where: { threadId: firstMirrorBId, content: { in: ['open-recover-1', 'open-recover-2'] } },
+    });
+    await appB.prisma.messageThread.update({
+      where: { id: firstMirrorBId },
+      data: { pullUntil: recover1OriginSeq - 1 },
+    });
+    expect(
+      await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-1' } }),
+    ).toBeNull();
+
+    // bob opens the group chat → /group/sync-meta → syncGroupMessagesOnOpen → force-pull (bypasses the
+    // receiver debounce) → re-fetches both. Without the #1 fix, these would stay stuck on the origin
+    // until some OTHER message re-triggered a push.
+    await request(appB.baseUrl)
+      .post('/api/v1/group/sync-meta')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ groupId: firstMirrorBId });
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-1' } }),
+        ).not.toBeNull();
+        expect(
+          await appB.prisma.message.findFirst({ where: { threadId: firstMirrorBId, content: 'open-recover-2' } }),
+        ).not.toBeNull();
+      },
+      { timeout: 8000 },
+    );
+  }, 60_000);
+
+  it('Step 3: two local members on the same mirror both receive an origin message (shared mirror)', async () => {
+    // The untested topology path: TWO local members (bob + dave) on appB's SAME mirror thread. A pulled
+    // message must SSE-fan to EVERY local active member (storePulledMessage's recipient loop), and the
+    // mirror is SHARED (fedGroupAccount @unique → one mirror per group, not one per local user).
+    // Friend gate for the group invite: befriend alice↔dave (resolve → request → dave accepts).
+    const resolveDave = await request(appA.baseUrl)
+      .post('/api/v1/user/resolve')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ account: 'dave', domain: DOM_B });
+    expect(resolveDave.body.code).toBe(BusinessCode.OK);
+    const daveStubA = resolveDave.body.data.id as number;
+
+    await request(appA.baseUrl)
+      .post('/api/v1/invite/friend')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ toUserId: daveStubA, note: 'hi dave' });
+    const daveFriendInv = await vi.waitFor(
+      async () => {
+        const inv = await appB.prisma.invite.findFirst({
+          where: { kind: 'FRIEND', status: 'PENDING', toUserId: daveLocalIdB },
+        });
+        expect(inv).not.toBeNull();
+        return inv!;
+      },
+      { timeout: 5000 },
+    );
+    await request(appB.baseUrl)
+      .post('/api/v1/invite/accept')
+      .set('Authorization', `Bearer ${tokenDave}`)
+      .send({ inviteId: daveFriendInv.id.toString() });
+    // The group-invite friend gate keys on an active P2P thread alice↔dave on appB — wait for it.
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.threadParticipant.findFirst({
+            where: { userId: daveLocalIdB, leftAt: null, thread: { type: 'P2P' } },
+            select: { threadId: true },
+          }),
+        ).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+
+    // Invite dave to the SAME group bob is in; appB adds dave to the EXISTING mirror thread.
+    await request(appA.baseUrl)
+      .post('/api/v1/group/invite')
+      .set('Authorization', `Bearer ${tokenA}`)
+      .send({ groupId: firstGroupThreadA, userIds: [daveStubA] });
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.invite.findFirst({
+            where: {
+              kind: 'GROUP',
+              status: 'PENDING',
+              toUserId: daveLocalIdB,
+              thread: { fedGroupAccount: firstGroupAccount },
+            },
+          }),
+        ).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+    const daveAccept = await request(appB.baseUrl)
+      .post('/api/v1/invite/accept')
+      .set('Authorization', `Bearer ${tokenDave}`)
+      .send({ inviteId: firstGroupAccount });
+    expect([BusinessCode.OK, BusinessCode.FEDERATION_DELIVERY_FAILED]).toContain(daveAccept.body.code);
+
+    // dave is now on the SAME mirror thread as bob (the shared-mirror property).
+    await vi.waitFor(
+      async () => {
+        expect(
+          await appB.prisma.threadParticipant.findFirst({
+            where: { userId: daveLocalIdB, threadId: firstMirrorBId, leftAt: null },
+          }),
+        ).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+
+    // Open BOTH SSE streams; alice sends; assert BOTH bob AND dave receive it (the multi-local-member fan).
+    const readerBob = await openSse(appB.baseUrl, tokenB);
+    const readerDave = await openSse(appB.baseUrl, tokenDave);
+    try {
+      await request(appA.baseUrl)
+        .post('/api/v1/send-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ threadId: firstGroupThreadA, content: 'hi both', contentType: 'PURE_TEXT' });
+      await waitForSseEvent(readerBob, (event, data) =>
+        event === 'NEW_MESSAGE' && (data as { content?: string }).content === 'hi both',
+      );
+      await waitForSseEvent(readerDave, (event, data) =>
+        event === 'NEW_MESSAGE' && (data as { content?: string }).content === 'hi both',
+      );
+    } finally {
+      await readerBob.cancel();
+      await readerDave.cancel();
+    }
+  }, 60_000);
+
+  it('Step 3: a mirror member leaving propagates to the origin roster (pull-reject dissolution, no demote)', async () => {
+    // Precondition: bob's stub is ACTIVE on the origin's canonical roster for the first group.
+    const bobOnABefore = await appA.prisma.threadParticipant.findUnique({
+      where: { userId_threadId: { userId: bobStubIdOnA, threadId: firstGroupThreadA } },
+      select: { leftAt: true },
+    });
+    expect(bobOnABefore?.leftAt).toBeNull();
+
+    // bob @ appB leaves the group. appB soft-leaves him on the mirror + notifyGroupLeave pushes a per-author
+    // hint to the origin. The origin pulls bob's author-messages from appB; appB's per-author gate sees bob
+    // is no longer active → answers HTTP 200 { code: FEDERATION_GROUP_AUTHOR_LEFT } → the origin soft-leaves
+    // bob's stub on its canonical roster + bumps the group meta. The 200 is a business outcome, NOT a
+    // failure → appA must NOT demote bbb. (bob authored no messages in this group → pushed latestSeq = 0,
+    // origin cursor = -1 → 0 > -1 → the probe fires.)
+    const leave = await request(appB.baseUrl)
+      .post('/api/v1/group/leave')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .send({ groupId: firstMirrorBId });
+    expect(leave.status).toBe(200);
+    expect(leave.body.code).toBe(BusinessCode.OK);
+
+    // appB soft-left bob on the mirror thread (the local side of the leave — synchronous).
+    const bobLocalB = await appB.prisma.user.findUnique({
+      where: { account_domain: { account: 'bob', domain: 'local' } },
+      select: { id: true },
+    });
+    expect(bobLocalB).not.toBeNull();
+    await vi.waitFor(
+      async () => {
+        const bobOnB = await appB.prisma.threadParticipant.findUnique({
+          where: { userId_threadId: { userId: bobLocalB!.id, threadId: firstMirrorBId } },
+          select: { leftAt: true },
+        });
+        expect(bobOnB?.leftAt).not.toBeNull();
+      },
+      { timeout: 5000 },
+    );
+
+    // The origin dissolved bob's stub from its canonical roster (pull-reject → soft-leave). This is the
+    // end-to-end proof: a leave on the mirror reached the origin over the message-pull channel.
+    await vi.waitFor(
+      async () => {
+        const bobOnAAfter = await appA.prisma.threadParticipant.findUnique({
+          where: { userId_threadId: { userId: bobStubIdOnA, threadId: firstGroupThreadA } },
+          select: { leftAt: true },
+        });
+        expect(bobOnAAfter?.leftAt).not.toBeNull();
+      },
+      { timeout: 8000 },
+    );
+
+    // Regression guard for the core hazard: the 200 FEDERATION_GROUP_AUTHOR_LEFT outcome must NOT demote the
+    // peer. (Before this change, a left author yielded HTTP 403 → getSigned demoted → the trust broke.)
+    const peer = await appA.prisma.federatedPeer.findUnique({
+      where: { domain: DOM_B },
+      select: { trustLevel: true },
+    });
+    expect(peer?.trustLevel).toBe('trusted');
   }, 60_000);
 
   it('Step 3: sinceSeq seeds pullUntil — a new member starts from invite-time, not full history', async () => {

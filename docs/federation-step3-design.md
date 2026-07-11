@@ -8,10 +8,13 @@
 > authority for roster AND message history — a member signals the origin, the origin pulls + aggregates +
 > re-signals, members pull the whole thread from the origin), the **group-invite chat card** (written
 > into the inviter's P2P mirror → flows to the invitee via Step-2 pull; resolved by the group `!account`),
-> and **leave** (a `left:true` new-msg-map hint → origin dissolves the member). Loop-safety is one rule:
+> and **leave** (pull-reject: a mirror's `group/leave` nudges the origin with a per-author hint; the origin
+> pulls the leaver's messages, the mirror answers HTTP 200 `FEDERATION_GROUP_AUTHOR_LEFT` → the origin
+> dissolves the member from its canonical roster + bumps the group meta). Loop-safety is one rule:
 > `signalOutbound` excludes the fetch-source domain. The GROUP invite carries `sinceSeq` (origin curSeq
 > at invite time) so a new member seeds `pullUntil` and starts from invite-time, not full history.
-> **Deferred:** a durable active-liveness leave backstop, the frontend card/account-resolution
+> **Deferred:** a durable active-liveness leave backstop (the pull-reject hint is volatile), the frontend
+> card/account-resolution
 > adaptation. Builds directly on Step 2 (`docs/federation-step2-design.md`), whose 1:1 transport is
 > reused verbatim.
 >
@@ -339,12 +342,33 @@ When Bob first joins (on other.com), he has no group history.
 store because it aggregates every sender's messages. (If the origin is unreachable at join time, the
 history is fetched lazily on the next pull/sweep once reachable — the Step 2 resilience floor.)
 
-### 7.5 Leave / kick / role
+### 7.5 Leave propagation (pull-reject, mirror → origin)
 
-Initiated at the origin (a member's `group/leave` or an admin's `kick`/`role` is relayed to the origin
-if the actor is remote, then the origin fans `thread.member`). Each mirror applies it (set `leftAt` /
-change `role`), idempotently by op-id. A left member's future sends are rejected at their server's own
-roster check before signaling; the origin stops fanning to their server.
+A member's `group/leave` is applied **locally first** (soft-leave — `ThreadParticipant.leftAt` set on the
+server where the leave happened). Propagating it to the roster authority (the **origin**) reuses the
+existing message-pull channel rather than a dedicated leave wire-op:
+
+1. The mirror's `group/leave` handler calls `notifyGroupLeave`, which writes a NORMAL per-author hint for
+   the leaver to its outbound buffer (`markDirty(originDomain, leaver, !group, latestSeq)`) and schedules a
+   flush. `latestSeq` is set to `MAX(leaver's originSeq over Message ∪ PendingMedia) + 1` so it always
+   exceeds the origin's per-author cursor — the origin's hub-leg pull is never short-circuited. No-op when
+   the leaver's server IS the origin (its own leave is already on the canonical roster; mirrors catch up via
+   the lazy roster meta-pull).
+2. The origin drains the hint into `pullGroupFromAuthor` and `GET /s2s/messages?to=!group&from=leaver…`.
+3. The mirror's per-author gate (`serveOutboundMessagesGroupFrom`) finds the leaver no longer active
+   (`leftAt` set) and answers **HTTP 200 `{ code: FEDERATION_GROUP_AUTHOR_LEFT }`** — NOT 403. This is the
+   crux: a 200 is a business outcome, so `getSigned` runs `markContactSuccess` and the peer is **not
+   demoted** (a 403 would demote + break trust).
+4. The origin recognizes the code → `softLeaveMember` on its canonical roster + bumps the group-meta
+   revision. Other mirrors then reconcile (drop the leaver) on their next chat-open roster meta-pull.
+
+A left member's future sends are rejected at their own server's roster check before signaling; the origin
+stops fanning to their server. The hint is volatile — a lost leave leaves the origin's roster stale until a
+future event retriggers a pull for that author; a durable active-liveness backstop is the deferred fix.
+
+**Kick / role change** remain origin-initiated and are not yet federated (a cross-server kick needs the
+kicked member's server to learn of a removal it did not initiate — a `removed:true` hint or an admin op;
+deferred).
 
 ### 7.6 Owner transfer — local only (origin invariant)
 
@@ -463,8 +487,11 @@ hint-write layer: `signalOutbound` excludes the domain the message was fetched f
     `{from, group}` into the inviter's P2P mirror → delivered via Step-2 pull; the invitee resolves by
     the group `!account` (`InviteService.resolveInviteId`). Frontend card-rendering adaptation is the
     remaining consumer-side work.
-12. **Leave** — DONE (best-effort): a `left:true` new-msg-map hint → the origin soft-leaves the member +
-    bumps the group meta. A durable active-liveness backstop is deferred.
+12. **Leave (mirror → origin)** — DONE: pull-reject — `group/leave` on a mirror nudges the origin with a
+    per-author hint; the origin pulls the leaver's messages; the mirror answers HTTP 200
+    `FEDERATION_GROUP_AUTHOR_LEFT`; the origin `softLeaveMember`s the leaver on its canonical roster +
+    bumps the group meta (mirrors reconcile lazily). The 200 outcome does NOT demote the peer. A durable
+    active-liveness backstop is deferred.
 13. **e2e** — DONE (core): two-server harness — create group on `aaa` with a `bbb` member, accept by group
     account, origin records the joiner, alice's message reaches bob's mirror via the hub + SSE. Full
     coverage (3-app re-signal, backfill, leave, media transit) is the remaining tail.

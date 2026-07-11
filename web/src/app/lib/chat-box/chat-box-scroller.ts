@@ -218,13 +218,20 @@ export interface ScrollerApi<T = unknown> {
    *  global newest, pulls the new items via loadNewer (getNewer), runs reconcileOptimistic (remove any optimistic sends
    *  whose real counterpart arrived, tagging the real cb-confirmed), follows to the bottom if pinned, and trims. If the
    *  newer end is trimmed, this is a no-op (the items are cached; loaded on scroll-back). */
-  onMessageSignal(): Promise<void>;
+  onMessageSignal(seq?: number): Promise<void>;
   /** Re-sync the mounted optimistic/pending entries to the source's current `getPending()` snapshot — the entry point
    *  the caller uses after mutating the pending store (e.g. marking a send failed and sinking it to the end). For each
    *  mounted optimistic entry: morphs its data in place via `CbElement.update` (no remount) when the status changed,
    *  reorders the optimistic tail block to match the source order, and FLIP-animates (cb-move) every entry whose
    *  absolute top changed. No I/O (pure re-read of getPending). No-op when no optimistic entries are mounted. */
   reconcilePending(): Promise<void>;
+  /** Flip an in-flight optimistic send to "sent" IN PLACE — morph the entry to the source's fresh status:'sent'
+   *  snapshot and tag the element cb-confirmed so the spinner→check→fade choreography plays with NO mount/unmount
+   *  and NO reorder (a sent send stays at its tail position). This decouples the delivery-confirm visual (fired at
+   *  the HTTP-200 / upload-success milestone) from the SSE-echo reconcile (which still owns the real's mount + the
+   *  cb-move FLIP). Single-trigger: no-op if the optimistic was already swapped out (the SSE echo won the race) OR
+   *  already confirmed (the cb-confirmed class is present) — so the choreography fires exactly once. */
+  confirmPending(clientMessageId: string): void;
   getInfo(): CbScrollInfo;
   refresh(): void;
   /** Apply a viewport resize that was deferred during an immunity frame (see
@@ -405,6 +412,16 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  async handler that mutates mount order, the height model, and scrollTop. */
   private signalInFlight = false;
   private signalQueued = false;
+  /** True once the first {@link init} has mounted its initial batch + established `noNewer` — the kernel has
+   *  "primed." Before priming, a `!noNewer` state is the init-fetch window (the initial `source.init(-1)` HTTP
+   *  call is in flight); AFTER priming it means the user scrolled up (the newer end is trimmed). Only the
+   *  former must not lose a signal (its message may have missed the init snapshot) — the latter correctly
+   *  caches for scroll-back. {@link pendingSignalBeforePrimeSeq} tracks the max-seq signal during the window. */
+  private primed = false;
+  /** The highest seq of a signal that arrived during the init-fetch window (before priming), or null. Each
+   *  arrival keeps the MAX (compare-before-set); a seq-less signal counts as +∞ so it still forces a replay.
+   *  {@link primeAndReplay} replays once iff this is newer than what init already mounted. */
+  private pendingSignalBeforePrimeSeq: number | null = null;
   /** Set during reconcileOptimistic. Reconcile is synchronous (no slide animation) and never spans an await, so this is
    *  never observed true by a deferred trim — kept so trimOlder/trimNewer (rule 4a) stay self-documenting. */
   private resorting = false;
@@ -455,7 +472,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
   async init(opts?: CbInitOpts): Promise<void> {
     // Jump / re-anchor: open at a specific message (bidirectional fetch + centered positioning), skip the newest-layout path.
     const startId = opts?.startMsgId ?? null;
-    if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); return; }
+    if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); this.primeAndReplay(); return; }
     const batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
     const merged = this.mergeBatch(batch);
     if (merged.length === 0) {
@@ -468,6 +485,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.scrollToBottom();
       this.updateGhost();
       this.emit();
+      this.primeAndReplay();
       return;
     }
     this.absorbBoundary(merged);
@@ -496,6 +514,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
       this.pinToBottom(); // a prepend grew content above → re-pin to the new bottom before the next async fetch yields to the painter
     }
     this.scrollToBottom();
+    this.primeAndReplay();
   }
 
   appendLive(rawItems: CbItem<T>[]): void {
@@ -524,7 +543,7 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
    *  top items → scrollHeight shrinks), so the pin must anchor to the post-trim bottom — pinning before trim left the
    *  latest message below the fold (pinToBottom reads live scrollHeight, so it is immune to cached-height drift). If the
    *  newer end is trimmed, this is a no-op (items are cached; loaded on scroll-back). */
-  async onMessageSignal(): Promise<void> {
+  async onMessageSignal(seq?: number): Promise<void> {
     if (!this.steady) return;
     // Single-flight + tail-coalesce: two SSE frames can land in the same microtask window (two onSignal
     // callbacks back-to-back). Running them concurrently races on shared state — the second's loadNewer bails on
@@ -536,15 +555,42 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     try {
       do {
         this.signalQueued = false;
-        await this.runMessageSignal();
+        await this.runMessageSignal(seq);
       } while (this.signalQueued && this.steady);
     } finally {
       this.signalInFlight = false;
     }
   }
 
-  private async runMessageSignal(): Promise<void> {
-    if (!this.noNewer) return;                               // newer end trimmed → cached only; load on scroll-back
+  /** Mark the kernel primed (first init/jump completed) and replay a signal that arrived during the
+   *  init-fetch window (saved by {@link runMessageSignal}'s `!primed` branch). Called at the end of {@link init}. */
+  private primeAndReplay(): void {
+    this.primed = true;
+    const pendingSeq = this.pendingSignalBeforePrimeSeq;
+    this.pendingSignalBeforePrimeSeq = null;
+    if (pendingSeq === null || this.destroyed) return;
+    // Replay only if the saved high-water seq is NEWER than what init mounted — a signal for a message the
+    // snapshot already had (seq ≤ newest mounted) needs no catch-up. Empty window (no mounted items) replays.
+    const newestMounted = this.mounted.length > 0 ? this.mounted[this.mounted.length - 1].item.id : -Infinity;
+    if (pendingSeq > newestMounted) void this.onMessageSignal();
+  }
+
+  private async runMessageSignal(seq?: number): Promise<void> {
+    if (!this.noNewer) {
+      // Newer edge not mounted. Two cases, told apart by `primed` (true once the first init has run):
+      //  • !primed → the init-fetch window (the initial source.init(-1) HTTP call is still in flight, noNewer
+      //    not yet set). A signal here must NOT be lost — its message may have missed the init snapshot. Save
+      //    it (coalesced: the latest arrival wins, earlier ones just re-set the flag) for init to replay once.
+      //  • primed → the user scrolled up (newer end trimmed). Dropping is correct — the message is cached and
+      //    loads on scroll-back. (loadNewer is cursor-based, so the single replay catches every window message
+      //    regardless of how many signals fired.)
+      if (!this.primed) {
+        // Save the highest seq seen during the window (compare-before-set → keep the max; a seq-less signal
+        // counts as +∞ so it still forces the replay).
+        this.pendingSignalBeforePrimeSeq = Math.max(this.pendingSignalBeforePrimeSeq ?? -Infinity, seq ?? Infinity);
+      }
+      return;
+    }
     const wasAtBottom = this.isAtBottom();
 
     // Coordinated enter/shove animation — FLIP "First": snapshot the optimistic tail's absolute tops at their LAST
@@ -1786,6 +1832,32 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     // 5. FLIP every suffix entry whose absolute top changed (reorder and/or morph height delta).
     this.flipMove(suffix, oldTop);
 
+    this.emit();
+  }
+
+  /**
+   * Flip an in-flight optimistic send to "sent" in place — the delivery-confirm milestone (HTTP 200 / upload done) was
+   * reached. Morphs the entry to the source's fresh status:'sent' snapshot via CbElement.update (no remount) and tags
+   * the element cb-confirmed so the spinner→check→fade choreography plays. Unlike reconcilePending this does NO reorder
+   * and NO FLIP: a sent send stays at its tail position, so the later SSE-echo cb-move FLIP remains the only movement
+   * and stays unaffected (the decoupling). Single-trigger: a no-op if the SSE echo already swapped the optimistic out
+   * (no mounted match) or it already carries cb-confirmed (play once).
+   */
+  confirmPending(clientMessageId: string): void {
+    if (!this.steady) return;
+    const e = this.mounted.find((x) => x.optimistic && !x.leaving && x.item.clientMessageId === clientMessageId);
+    if (!e || e.el.classList.contains('cb-confirmed')) return; // SSE echo already swapped it out, or already confirmed → play once
+    const fresh = this.source.getPending().find((p) => p.clientMessageId === clientMessageId);
+    if (!fresh) return; // source already dropped the entry — nothing to morph to
+    const idx = this.mounted.indexOf(e);
+    const prev = idx > 0 ? this.mounted[idx - 1].item : null;
+    this.measuring = true; // suppress onElHeight compensation/balance for the synchronous re-render (mirrors reconcilePending)
+    e.item = fresh;
+    e.vs.update(fresh, prev); // re-render: status:'sent' renders the check + drops msg-sending (un-dims the bubble)
+    e.el.classList.add('cb-confirmed'); // gates the spinner→check→fade choreography (_row-base.scss :host(.cb-confirmed))
+    const h = e.el.offsetHeight; // status morph is icon/opacity-only → height is stable, but stay honest
+    if (h !== e.height) { e.height = h; this.dirtyPrefix = true; }
+    this.measuring = false;
     this.emit();
   }
 

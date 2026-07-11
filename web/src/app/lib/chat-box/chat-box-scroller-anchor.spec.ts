@@ -639,6 +639,69 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(content.querySelector('[data-cb-id="600"]')?.classList.contains('cb-confirmed')).toBe(true); // real tagged cb-confirmed
   });
 
+  // confirmPending parity with ChatBoxScroller: the decoupled delivery-confirm path (HTTP 200 / upload success)
+  // morphs the OPTIMISTIC in place + tags cb-confirmed, with no remount and no FLIP. Single-trigger (play once).
+  it('confirmPending: morphs the optimistic in place (update, no remount) + tags cb-confirmed, no FLIP', async () => {
+    const t = trackingHooks();
+    const base = fakeSource(500);
+    const sent: CbItem<number> = { id: -1, clientMessageId: 'cid-cp', data: 999 };
+    const src: CbSource<number> = { ...base, getPending: () => [sent] };
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    scroller.insertAfter(499, { id: -1, data: -1, clientMessageId: 'cid-cp' }, { optimistic: true });
+    animEnd('-1');
+    await flush();
+
+    const elBefore = content.querySelector('[data-cb-id="-1"]');
+    const createsBefore = t.createCount();
+    const updatesBefore = t.updateCount();
+
+    scroller.confirmPending('cid-cp');
+    await flush();
+
+    expect(content.querySelector('[data-cb-id="-1"]')).toBe(elBefore);   // same element — in place, no remount
+    expect(elBefore?.classList.contains('cb-confirmed')).toBe(true);
+    expect(t.createCount()).toBe(createsBefore);                         // no recreate
+    expect(t.updateCount()).toBe(updatesBefore + 1);                     // fresh snapshot via update
+    expect(t.dataOf(-1)).toBe(999);
+    expect(content.querySelectorAll('[data-cb-id="-1"]').length).toBe(1);
+    expect(elBefore?.classList.contains('cb-move')).toBe(false);         // no FLIP — decoupled from the reorder
+  });
+
+  it('confirmPending: no-op when no optimistic matches the cid (SSE echo already swapped it out)', async () => {
+    const t = trackingHooks();
+    const base = fakeSource(500);
+    const src: CbSource<number> = { ...base, getPending: () => [] };
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    const updatesBefore = t.updateCount();
+    scroller.confirmPending('cid-absent');
+    await flush();
+    expect(t.updateCount()).toBe(updatesBefore);
+    expect(content.querySelector('[data-cb-id="-1"]')).toBeNull();
+  });
+
+  it('confirmPending: play once — a second call on an already-confirmed entry does NOT re-morph', async () => {
+    const t = trackingHooks();
+    const base = fakeSource(500);
+    let sent: CbItem<number> = { id: -1, clientMessageId: 'cid-once', data: 111 };
+    const src: CbSource<number> = { ...base, getPending: () => [sent] };
+    scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks: t.hooks, source: src });
+    await scroller.init();
+    scroller.insertAfter(499, { id: -1, data: -1, clientMessageId: 'cid-once' }, { optimistic: true });
+    animEnd('-1');
+    await flush();
+
+    scroller.confirmPending('cid-once');
+    await flush();
+    const updatesAfterFirst = t.updateCount();
+    sent = { id: -1, clientMessageId: 'cid-once', data: 222 };
+    scroller.confirmPending('cid-once');                                // already cb-confirmed → guard returns
+    await flush();
+    expect(t.updateCount()).toBe(updatesAfterFirst);                    // no second morph — the lock held
+    expect(t.dataOf(-1)).toBe(111);
+  });
+
   it('Phase C: removeItem(mountedId) plays cb-leave then unmounts on animationend; returns 1', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });

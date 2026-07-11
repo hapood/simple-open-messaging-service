@@ -17,15 +17,29 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { UploadService } from './upload.service.js';
+import { MessageService } from '../message/message.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
+import { extractDigests } from './file-content.js';
 
 /**
  * 图片上传：multipart/form-data，字段 file=图片二进制 + w/h（前端 createImageBitmap 读出的宽高）。
  * w/h 经 consumeImage 解析（无 DTO class，ValidationPipe 不介入），原样回填。
+ *
+ * The four media routes (/upload, /upload/file, /upload/video, /upload/audio) double as the PROMOTE
+ * step of a staged media send: when the request carries an `x-client-message-id` header (set by the
+ * client after POST /send-media), the route — after writing the file — links the staged record to the
+ * asset's digest and promotes it to a real Message (allocating seq, creating the MediaMessage authz
+ * row, deleting the PendingMedia), then runs the unified fan-out. Without the header the route behaves
+ * exactly as before (a plain upload). /upload/avatar never carries the header → never promotes.
  */
 @ApiTags('upload')
 @Controller()
 export class UploadController {
-  constructor(private readonly uploadService: UploadService) {}
+  constructor(
+    private readonly uploadService: UploadService,
+    private readonly messageService: MessageService,
+    private readonly fanout: MessageFanoutService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -51,6 +65,9 @@ export class UploadController {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
     const { url, size } = await this.uploadService.save(img.mimetype, img.buffer);
+    // Promote a staged IMAGE send if this upload carries a client-message-id (the message content is
+    // {url,w,h}; the staged meta for an image is empty — w/h come from consumeImage above).
+    await this.maybePromote(req, { url, w: img.w, h: img.h });
     return {
       code: BusinessCode.OK,
       message: 'successful',
@@ -131,6 +148,9 @@ export class UploadController {
       f.filename,
       f.buffer,
     );
+    // Promote a staged FILE send if a client-message-id is present (data is already the {url,name,size,
+    // mimeType} FILE content shape; staged meta for a file is empty).
+    await this.maybePromote(req, data);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -160,6 +180,9 @@ export class UploadController {
       v.filename,
       v.buffer,
     );
+    // Promote a staged VIDEO send if a client-message-id is present. data is {url,name,size,mimeType};
+    // the staged meta {w,h,duration} is merged in at promote → the full VIDEO content shape.
+    await this.maybePromote(req, data);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -184,6 +207,9 @@ export class UploadController {
       a.filename,
       a.buffer,
     );
+    // Promote a staged AUDIO send if a client-message-id is present. data is {url,name,size,mimeType};
+    // the staged meta {duration} is merged in at promote → the full AUDIO content shape.
+    await this.maybePromote(req, data);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -196,5 +222,33 @@ export class UploadController {
     if (reason === 'too-large') return 'file too large';
     if (reason === 'bad-name') return 'invalid filename';
     return `invalid ${kind}`;
+  }
+
+  /**
+   * Promote a staged media send when the upload carries an `x-client-message-id` header (the client
+   * set it after POST /send-media). Links the staged record to the asset's digest (so a crash between
+   * this and the promote leaves an attributable orphan), promotes it to a real Message — merging
+   * `contentPayload` (the server-generated url/name/size/mimeType) with the staged client-probed meta
+   * (w/h/duration) — and runs the unified fan-out. Without the header this is a plain upload (no-op).
+   * A missing/stale stage → promoteStaged returns null → nothing is promoted (the upload still succeeds
+   * and its result is returned; the orphan file is reclaimable by the GC).
+   */
+  private async maybePromote(
+    req: FastifyRequest,
+    contentPayload: Record<string, unknown>,
+  ): Promise<void> {
+    const raw = req.headers['x-client-message-id'];
+    if (raw === undefined) return; // plain upload — no staged send to promote
+    const clientMessageId = Array.isArray(raw) ? raw[0] : raw;
+    if (typeof clientMessageId !== 'string' || clientMessageId.length === 0) return;
+    const digest = extractDigests(String(contentPayload.url))[0];
+    if (digest) await this.messageService.linkStagedDigest(clientMessageId, digest);
+    const promoted = await this.messageService.promoteStaged(
+      clientMessageId,
+      contentPayload,
+    );
+    // Fire-and-forget: promoteStaged already committed the Message (the upload response confirms that);
+    // the recipient fan-out runs off the request critical path, same as the text send path.
+    if (promoted) void this.fanout.dispatch(promoted);
   }
 }

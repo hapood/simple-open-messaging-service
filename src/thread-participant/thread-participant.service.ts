@@ -107,6 +107,16 @@ export class ThreadParticipantService {
     });
   }
 
+  /** Batch roster fetch for multiple threads (mixed; group by threadId at the call site). Used by the
+   *  /group/members batch endpoint so the client can hydrate all group rosters in one request. */
+  getRosters(threadIds: number[]) {
+    return this.prisma.threadParticipant.findMany({
+      where: { threadId: { in: threadIds }, leftAt: null },
+      include: { user: true },
+      orderBy: { joinedAt: 'asc' },
+    });
+  }
+
   /**
    * Generic list query (used by the conversation-list endpoint). Generic over the args so that
    * `include`/`select` are reflected in the returned payload type — Prisma can't infer includes

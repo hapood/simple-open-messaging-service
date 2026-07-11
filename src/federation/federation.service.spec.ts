@@ -34,6 +34,7 @@ function makeStubs() {
     {} as never, // message
     {} as never, // invite
     {} as never, // sse
+    {} as never, // threadRevisionService
     buffer,
   );
   return { svc, prisma, markDirty, flushBatch };
@@ -186,5 +187,101 @@ describe('FederationService sender debounce (scheduleFlush / flushDomain)', () =
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('FederationService.notifyGroupLeave — mirror-leave → origin per-author hint', () => {
+  // The leave producer: a MIRROR member's leave nudges the ORIGIN with a normal per-author hint whose
+  // latestSeq beats the origin's derived cursor (MAX(Message ∪ PendingMedia) for the leaver) so the pull —
+  // and the FEDERATION_GROUP_AUTHOR_LEFT dissolution — always fires. No-op when we are the origin or the
+  // group is non-federated (the origin's own leave is already on the canonical roster; mirrors catch up via
+  // the lazy roster meta-pull).
+
+  function makeSvc(opts: {
+    thread:
+      | { fedGroupAccount: string | null; originDomain: string | null; groupUser?: { account: string } | null }
+      | null;
+    leaver: { account: string; domain: string; isForeigner: boolean } | null;
+    maxMsg?: number | null;
+    maxPending?: number | null;
+  }) {
+    const markDirty = vi.fn();
+    const buffer = {
+      markDirty,
+      flushBatch: vi.fn(() => ({ entries: [], keys: [] as string[], hasMore: false })),
+      deleteKeys: vi.fn(),
+      dropDomainIfEmpty: vi.fn(),
+    } as unknown as FederationBufferService;
+    const prisma = {
+      messageThread: { findUnique: vi.fn(async () => opts.thread) },
+      user: { findUnique: vi.fn(async () => opts.leaver) },
+      message: { aggregate: vi.fn(async () => ({ _max: { originSeq: opts.maxMsg ?? null } })) },
+      pendingMedia: { aggregate: vi.fn(async () => ({ _max: { originSeq: opts.maxPending ?? null } })) },
+    };
+    const svc = new FederationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      buffer,
+    );
+    return { svc, markDirty };
+  }
+
+  it('MIRROR thread: pushes a per-author hint to the origin, latestSeq = cursor+1 (local leaver w/ history)', async () => {
+    const { svc, markDirty } = makeSvc({
+      thread: { fedGroupAccount: '!grp', originDomain: 'origin.com', groupUser: { account: '!grp' } },
+      leaver: { account: 'bob', domain: 'local', isForeigner: false },
+      maxMsg: 5, // bob authored up to originSeq 5 on the mirror
+    });
+    await svc.notifyGroupLeave(10, 42);
+    // cursor = MAX(5, -1) = 5 → latestSeq 6 (beats the origin's per-author cursor so the probe fires).
+    // The leaver is local → its wire domain is OUR.
+    expect(markDirty).toHaveBeenCalledTimes(1);
+    expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 6);
+  });
+
+  it('MIRROR thread, leaver authored nothing: latestSeq floors at 0 (cursor -1 → 0 still beats -1)', async () => {
+    const { svc, markDirty } = makeSvc({
+      thread: { fedGroupAccount: '!grp', originDomain: 'origin.com', groupUser: { account: '!grp' } },
+      leaver: { account: 'bob', domain: 'local', isForeigner: false },
+      // no maxMsg/maxPending → both null → cursor -1 → latestSeq 0
+    });
+    await svc.notifyGroupLeave(10, 42);
+    expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 0);
+  });
+
+  it('PendingMedia is included in the cursor (a staged-but-uncommitted media bumps latestSeq past it)', async () => {
+    const { svc, markDirty } = makeSvc({
+      thread: { fedGroupAccount: '!grp', originDomain: 'origin.com', groupUser: { account: '!grp' } },
+      leaver: { account: 'bob', domain: 'local', isForeigner: false },
+      maxMsg: 3,
+      maxPending: 7, // a staged media at originSeq 7 → cursor 7 → latestSeq 8
+    });
+    await svc.notifyGroupLeave(10, 42);
+    expect(markDirty).toHaveBeenCalledWith('origin.com', 'bob', OUR, '!grp', 8);
+  });
+
+  it('ORIGIN thread (we are the origin): no hint pushed', async () => {
+    const { svc, markDirty } = makeSvc({
+      thread: { fedGroupAccount: '!grp', originDomain: OUR, groupUser: { account: '!grp' } },
+      leaver: { account: 'bob', domain: 'local', isForeigner: false },
+    });
+    await svc.notifyGroupLeave(10, 42);
+    expect(markDirty).not.toHaveBeenCalled();
+  });
+
+  it('non-federated group: no hint pushed', async () => {
+    const { svc, markDirty } = makeSvc({
+      thread: { fedGroupAccount: null, originDomain: null, groupUser: null },
+      leaver: { account: 'bob', domain: 'local', isForeigner: false },
+    });
+    await svc.notifyGroupLeave(10, 42);
+    expect(markDirty).not.toHaveBeenCalled();
   });
 });

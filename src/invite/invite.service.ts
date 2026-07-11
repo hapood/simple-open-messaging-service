@@ -7,11 +7,12 @@ import {
   MessageThreadType,
   Prisma,
 } from '../prisma/generated/client.js';
-import { mintUlid } from '../common/account.js';
+import { mintUlid, normalizeAccount } from '../common/account.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 
 /** Friend + group invite TTL: 7 days. Validated at accept time; the background sweep/GC is deferred
  *  (a row stays PENDING past expiry until then — the client renders an "expired" prompt from
@@ -65,6 +66,7 @@ export class InviteService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly participantService: ThreadParticipantService,
+    private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
   /**
@@ -281,7 +283,7 @@ export class InviteService {
     byUserId: number,
   ): Promise<AcceptInviteResult> {
     const id = await this.resolveInviteId(inviteIdOrGroup, byUserId, true);
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx): Promise<AcceptInviteResult> => {
       const invite = await tx.invite.findUnique({ where: { id } });
       if (invite === null || invite.status !== InviteStatus.PENDING) {
         throw new BusinessException(
@@ -342,19 +344,30 @@ export class InviteService {
         where: { id },
         data: { status: InviteStatus.ACCEPTED },
       });
-      // The group's federation fields: non-null fedGroupAccount ⇒ a cross-server mirror; the controller
-      // uses originDomain to propagate the join to the origin (roster fanout).
+      // The group's federation fields: a cross-server mirror iff groupUser.domain !== 'local'. The
+      // controller uses originDomain (non-null = mirror) to propagate the join to the origin (roster fanout).
       const thread = await tx.messageThread.findUnique({
         where: { id: invite.threadId },
-        select: { fedGroupAccount: true, originDomain: true },
+        select: { groupUser: { select: { account: true, domain: true } } },
       });
+      const groupAccount = thread?.groupUser?.account ?? null;
+      const groupDomain = thread?.groupUser?.domain ?? null;
       return {
         kind: 'GROUP',
         threadId: invite.threadId,
-        fedGroupAccount: thread?.fedGroupAccount ?? null,
-        originDomain: thread?.originDomain ?? null,
+        fedGroupAccount: groupAccount, // the group `!account` (S2S 'to'); non-null for any group
+        originDomain: groupDomain && groupDomain !== 'local' ? groupDomain : null, // non-null = federated mirror
       };
     });
+    // Record the thread add AFTER the tx commits (bump threadRevision + push signal). FRIEND adds the
+    // thread for BOTH users (inviter + accepter); GROUP adds it for the joiner only.
+    if (result.kind === 'FRIEND') {
+      await this.threadRevisionService.recordThreadAdd(result.fromUserId, result.threadId);
+      await this.threadRevisionService.recordThreadAdd(byUserId, result.threadId);
+    } else {
+      await this.threadRevisionService.recordThreadAdd(byUserId, result.threadId);
+    }
+    return result;
   }
 
   /** Reject a pending invite addressed to `byUserId`. */
@@ -609,7 +622,7 @@ export class InviteService {
         toUserId: callerId,
         kind: InviteKind.GROUP,
         ...(pendingOnly ? { status: InviteStatus.PENDING } : {}),
-        thread: { fedGroupAccount: groupAccount },
+        thread: { groupUser: { account: normalizeAccount(groupAccount), isGroup: true } },
       },
       orderBy: { createdAt: 'desc' },
       select: { id: true },

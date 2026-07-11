@@ -30,20 +30,20 @@ export class UserIdDto {
   userId: number;
 }
 
-/** Body for /user/sync-peer-profile (chat-open + profile-panel-open staleness probe). `sinceUpdatedAt`
- *  is the caller's last-seen peer updatedAt (ms): when set and not older than the live row, the server
- *  returns data:null so the client keeps its cache and skips the signal update + re-render. */
+/** Body for /user/sync-peer-profile (chat-open + profile-panel-open staleness probe). `sinceProfileRev`
+ *  is the caller's last-seen peer profileRev: when set and older than the live row, the server pushes a
+ *  PEER_PROFILE_UPDATED signal so the client pulls the fresh profile. Response is always ACK-only. */
 export class SyncPeerProfileDto extends UserIdDto {
   @ApiProperty({
     required: false,
-    example: 1700000000000,
+    example: 3,
     description:
-      "Caller's last-seen peer updatedAt (ms). When not older than the live row, the server returns data:null (no change).",
+      "Caller's last-seen peer profileRev. When older than the live row, the server pushes a signal (client pulls).",
   })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
-  sinceUpdatedAt?: number;
+  sinceProfileRev?: number;
 }
 
 /** Block or unblock a user (P2P). Independent of the friendship state machine — blocking survives an
@@ -198,5 +198,21 @@ export class QueryValidThreadDto {
   })
   @IsOptional()
   type?: MessageThreadType;
+}
+
+/** Body for /user/query-thread/delta — pull ADD/DELETE deltas in (fromRevision, toRevision]
+ *  (from exclusive, to inclusive). The client applies them in revision order. */
+export class ThreadDeltaDto {
+  @ApiProperty({ example: 0, description: 'From revision (exclusive)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  fromRevision: number;
+
+  @ApiProperty({ example: 5, description: 'To revision (inclusive)' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  toRevision: number;
 }
 

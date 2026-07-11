@@ -22,7 +22,9 @@ import { FederationModule } from './federation/federation.module.js';
 import { PrismaModule } from './prisma.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
-import { NotificationQueryService } from './notification/notification-query.service.js';
+import { HealthController } from './controller/health.controller.js';
+import { MessageFanoutModule } from './message/message-fanout.module.js';
+import { ThreadRevisionModule } from './thread-revision/thread-revision.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -46,6 +48,8 @@ import { NotificationQueryService } from './notification/notification-query.serv
     UserBlockModule,
     FederationModule,
     PrismaModule,
+    MessageFanoutModule,
+    ThreadRevisionModule,
   ],
   controllers: [
     MessageController,
@@ -55,7 +59,8 @@ import { NotificationQueryService } from './notification/notification-query.serv
     InviteController,
     DeviceController,
     NotificationController,
+    HealthController,
   ],
-  providers: [NotificationQueryService],
+  providers: [],
 })
 export class AppModule {}

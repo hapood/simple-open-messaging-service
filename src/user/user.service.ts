@@ -15,7 +15,7 @@ export class UserService implements OnModuleInit {
   findUniqueUser(userWhereUniqueInput: Prisma.UserWhereUniqueInput) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
-      omit: { hashPwd: true, hasUrFriendReq: true },
+      omit: { hashPwd: true, hasUrFriendReq: true, threadRevision: true },
     });
   }
 
@@ -42,7 +42,7 @@ export class UserService implements OnModuleInit {
 
   /** Update the current user's avatar (inline User.avatar). */
   updateAvatar(userId: number, avatar: string) {
-    return this.prisma.user.update({ where: { id: userId }, data: { avatar } });
+    return this.prisma.user.update({ where: { id: userId }, data: { avatar, profileRev: { increment: 1 } } });
   }
 
   /** Update the current user's display name / bio (inline User columns). */
@@ -50,6 +50,7 @@ export class UserService implements OnModuleInit {
     const update: Prisma.UserUpdateInput = {};
     if (data.name !== undefined) update.name = data.name;
     if (data.bio !== undefined) update.bio = data.bio;
+    update.profileRev = { increment: 1 }; // identity change bumps the profile revision
     return this.prisma.user.update({ where: { id: userId }, data: update, omit: { hashPwd: true } });
   }
 
@@ -58,7 +59,7 @@ export class UserService implements OnModuleInit {
     // (select + omit are mutually exclusive in Prisma); all current callers pass only `where`.
     return this.prisma.user.findMany({
       ...params,
-      omit: { hashPwd: true, hasUrFriendReq: true, ...(params.omit ?? {}) },
+      omit: { hashPwd: true, hasUrFriendReq: true, threadRevision: true, ...(params.omit ?? {}) },
     });
   }
 

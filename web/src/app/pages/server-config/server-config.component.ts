@@ -1,5 +1,21 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, DestroyRef, computed, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import {
+  AbstractControl,
+  FormControl,
+  ReactiveFormsModule,
+  ValidationErrors,
+  Validators,
+} from '@angular/forms';
 import { Router } from '@angular/router';
+import { TranslocoPipe } from '@jsverse/transloco';
+import { MatButtonModule } from '@angular/material/button';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
+import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
+import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { apiOrigin, setApiOrigin } from '../../services/runtime';
 
 /**
@@ -10,36 +26,167 @@ import { apiOrigin, setApiOrigin } from '../../services/runtime';
  * (captured once at module load) and every derived apiPrefix/sseUrl/media URL re-resolve.
  *
  * First-run gating: `guestGuard` redirects here when `isTauri() && apiOriginIsLocalhost()` (no server
- * configured yet). Reachable later from the login page's "Server settings" link to re-point the app.
+ * configured yet). Reachable later from the login page's "Server settings" Material button.
+ *
+ * Connection probe: a two-stage pre-flight check against the CANDIDATE url (the typed value, not the
+ * committed `apiOrigin`) — see {@link testConnection}. Lets the user verify "this URL really is a SOMS
+ * backend I can reach" before committing it or typing credentials.
  */
+type ProbeStatus = 'idle' | 'testing' | 'ok' | 'warn' | 'notsoms' | 'fail';
+
+/** Validator: must parse as an http(s) URL with a host. */
+function urlValidator(control: AbstractControl): ValidationErrors | null {
+  const v = (control.value ?? '').trim();
+  if (!v) return null; // "required" is flagged by Validators.required; don't double-flag here.
+  try {
+    const u = new URL(v);
+    return (u.protocol === 'http:' || u.protocol === 'https:') && u.host ? null : { url: true };
+  } catch {
+    return { url: true };
+  }
+}
+
 @Component({
   selector: 'app-server-config',
+  imports: [
+    ReactiveFormsModule,
+    TranslocoPipe,
+    MatButtonModule,
+    MatFormFieldModule,
+    MatInputModule,
+    MatProgressBarModule,
+    AuthBrandComponent,
+    AuthToolbarComponent,
+    IconComponent,
+  ],
   templateUrl: './server-config.component.html',
   styleUrl: './server-config.component.scss',
 })
 export class ServerConfigComponent {
   private readonly router = inject(Router);
+  private readonly destroyRef = inject(DestroyRef);
 
-  /** Pre-fill with the origin Rust injected at boot (persisted value, or the localhost default). */
-  readonly url = signal(apiOrigin);
+  readonly AppIcon = AppIconType;
+
+  /** Pre-filled with the origin Rust injected at boot (persisted value, or the localhost default). */
+  readonly urlControl = new FormControl(apiOrigin, {
+    nonNullable: true,
+    validators: [Validators.required, urlValidator],
+  });
+
   readonly saving = signal(false);
-  readonly errorMsg = signal<string | null>(null);
+  readonly testing = signal(false);
+  /** Outcome of the last connection probe; 'idle' before the first probe. */
+  readonly status = signal<ProbeStatus>('idle');
+  /** Server version reported by the probe (shown on success). */
+  readonly version = signal<string | null>(null);
+  /** Save-time failure text (Rust rejected the URL); cleared on the next edit. */
+  readonly saveError = signal<string | null>(null);
+
+  constructor() {
+    // Editing the URL invalidates any prior probe result + any save error.
+    this.urlControl.valueChanges.pipe(takeUntilDestroyed(this.destroyRef)).subscribe(() => {
+      if (this.status() !== 'idle') this.status.set('idle');
+      if (this.saveError()) this.saveError.set(null);
+    });
+  }
+
+  /** Whether a terminal status pill should render (ok / warn / notsoms / fail — not idle/testing). */
+  readonly showStatus = computed(() => {
+    const s = this.status();
+    return s === 'ok' || s === 'warn' || s === 'notsoms' || s === 'fail';
+  });
+
+  /** transloco key for the status pill text. */
+  readonly statusKey = computed<string>(() => {
+    switch (this.status()) {
+      case 'ok':
+        return 'serverConfig.statusOk';
+      case 'warn':
+        return 'serverConfig.statusWarn';
+      case 'notsoms':
+        return 'serverConfig.statusNotSoms';
+      case 'fail':
+        return 'serverConfig.statusFail';
+      default:
+        return '';
+    }
+  });
+
+  /** Leading icon for the status pill (CHECK on success, CLOSE on any failure). */
+  readonly statusIcon = computed<AppIconType | null>(() => {
+    switch (this.status()) {
+      case 'ok':
+        return AppIconType.CHECK;
+      case 'warn':
+      case 'notsoms':
+      case 'fail':
+        return AppIconType.CLOSE;
+      default:
+        return null;
+    }
+  });
+
+  /** Candidate origin: trimmed, trailing slash(es) stripped — what we both probe and persist. */
+  private normalizedUrl(): string {
+    return (this.urlControl.value ?? '').trim().replace(/\/+$/, '');
+  }
+
+  /**
+   * Two-stage reachability + identity probe against the CANDIDATE url (NOT via HttpClient — that is
+   * pinned to the committed apiPrefix and would attach a token). Uses raw fetch against the typed
+   * origin so the user can verify a URL BEFORE saving it.
+   *
+   *  1. Reachability (mode:'no-cors'): CORS-immune — the promise resolves (opaque response) iff some
+   *     HTTP server answered. A rejection here = host unreachable / refused / timeout → 'fail'.
+   *  2. CORS + SOMS identity (default cors): reads the body. A SOMS backend returns our ApiResult
+   *     envelope with code===0 and data.status==='ok' → 'ok' (+ version). A reachable non-SOMS server
+   *     returns HTML/other JSON → 'notsoms'. A throw here AFTER stage 1 succeeded = the readable
+   *     response is CORS-blocked — usually a reverse proxy in front of the backend (the backend itself
+   *     reflects any Origin) → 'warn'.
+   */
+  async testConnection(): Promise<void> {
+    if (this.testing() || this.urlControl.invalid) return;
+    this.testing.set(true);
+    this.status.set('testing');
+    this.version.set(null);
+    const base = this.normalizedUrl();
+    try {
+      await this.fetchWithTimeout(`${base}/api/v1/health`, { mode: 'no-cors' }, 6000);
+      try {
+        const res = await this.fetchWithTimeout(`${base}/api/v1/health`, {}, 6000);
+        const data = (await res.json().catch(() => null)) as
+          | { code?: unknown; data?: { status?: unknown; version?: unknown } }
+          | null;
+        if (data && data.code === 0 && data.data && data.data.status === 'ok') {
+          this.version.set(typeof data.data.version === 'string' ? data.data.version : null);
+          this.status.set('ok');
+        } else {
+          this.status.set('notsoms');
+        }
+      } catch {
+        this.status.set('warn');
+      }
+    } catch {
+      this.status.set('fail');
+    } finally {
+      this.testing.set(false);
+    }
+  }
 
   async save(): Promise<void> {
-    const value = this.url().trim();
-    if (!/^https?:\/\//i.test(value)) {
-      this.errorMsg.set('Enter a full URL, e.g. http://192.168.1.10:3000 or https://api.example.com');
-      return;
-    }
+    if (this.saving() || this.urlControl.invalid) return;
+    const value = this.normalizedUrl();
+    if (!value) return;
     this.saving.set(true);
-    this.errorMsg.set(null);
+    this.saveError.set(null);
     try {
       await setApiOrigin(value);
       // Rust persisted + updated the proxy. Reload so module-load constants re-resolve to the new origin.
       location.reload();
     } catch (e) {
       this.saving.set(false);
-      this.errorMsg.set(e instanceof Error ? e.message : String(e));
+      this.saveError.set(e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -47,5 +194,12 @@ export class ServerConfigComponent {
    *  is the correct behavior (you can't log in without a reachable server). */
   cancel(): void {
     this.router.navigate(['/auth/login']);
+  }
+
+  /** fetch with a hard timeout via AbortController. Rejects on timeout or network error. */
+  private fetchWithTimeout(input: string, init: RequestInit, ms: number): Promise<Response> {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    return fetch(input, { ...init, signal: ctrl.signal }).finally(() => clearTimeout(timer));
   }
 }

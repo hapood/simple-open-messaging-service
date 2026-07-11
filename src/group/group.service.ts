@@ -8,6 +8,7 @@ import {
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { mintGroupAccount, isP2002 } from '../common/account.js';
+import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 
 /** Privilege rank — LOWER is more privileged (OWNER outranks ADMIN outranks MEMBER). */
 function roleRank(role: GroupRole | null): number {
@@ -43,7 +44,10 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  */
 @Injectable()
 export class GroupService implements OnModuleInit {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly threadRevisionService: ThreadRevisionService,
+  ) {}
 
   async onModuleInit() {}
 
@@ -52,22 +56,22 @@ export class GroupService implements OnModuleInit {
   findGroupByThreadId(threadId: number) {
     return this.prisma.messageThread.findUnique({
       where: { id: threadId },
-      include: { groupUser: true },
+      include: { groupUser: { include: { group: true } } },
     });
   }
 
   /** Bump the group `!`-User.updatedAt — the meta-revision a federated mirror compares on chat-open to
    *  decide whether to re-pull the group meta (identity + roster). Call after any roster mutation so a
    *  roster change (not just a name/avatar edit via updateGroup) is detectable by the lazy meta-pull. */
-  async bumpGroupMeta(threadId: number): Promise<void> {
+  async bumpRosterRev(threadId: number): Promise<void> {
     const trd = await this.prisma.messageThread.findUnique({
       where: { id: threadId },
       select: { groupUserId: true },
     });
     if (trd?.groupUserId != null) {
-      await this.prisma.user.update({
-        where: { id: trd.groupUserId },
-        data: { updatedAt: new Date() },
+      await this.prisma.group.update({
+        where: { groupUserId: trd.groupUserId },
+        data: { rosterRev: { increment: 1 } },
       });
     }
   }
@@ -77,16 +81,18 @@ export class GroupService implements OnModuleInit {
    *  or malformed) are omitted. Returns Map<threadId, {id,name,avatar,bio}>. */
   async resolveGroupUsersByThreadIds(
     threadIds: number[],
-  ): Promise<Map<number, { id: number; name: string; avatar: string; bio: string }>> {
+  ): Promise<Map<number, { id: number; name: string; avatar: string; bio: string; group: { ownerId: number; createdAt: Date; updatedAt: Date } | null }>> {
     if (threadIds.length === 0) return new Map();
     const threads = await this.prisma.messageThread.findMany({
       where: { id: { in: threadIds } },
       select: {
         id: true,
-        groupUser: { select: { id: true, name: true, avatar: true, bio: true } },
+        groupUser: {
+          select: { id: true, name: true, avatar: true, bio: true, group: { select: { ownerId: true, createdAt: true, updatedAt: true } } },
+        },
       },
     });
-    const m = new Map<number, { id: number; name: string; avatar: string; bio: string }>();
+    const m = new Map<number, { id: number; name: string; avatar: string; bio: string; group: { ownerId: number; createdAt: Date; updatedAt: Date } | null }>();
     for (const t of threads) {
       if (t.groupUser) m.set(t.id, t.groupUser);
     }
@@ -110,7 +116,7 @@ export class GroupService implements OnModuleInit {
     for (let attempt = 0; attempt < 3; attempt++) {
       const account = mintGroupAccount();
       try {
-        return await this.prisma.$transaction(async (prisma) => {
+        const result = await this.prisma.$transaction(async (prisma) => {
           const groupUser = await prisma.user.create({
             data: {
               account,
@@ -133,6 +139,10 @@ export class GroupService implements OnModuleInit {
               role: GroupRole.OWNER,
             },
           });
+          // Group-exclusive state: owner + roster revision (origin group: remoteRosterRev null).
+          await prisma.group.create({
+            data: { groupUserId: groupUser.id, ownerId: params.owner, rosterRev: 0 },
+          });
           return {
             id: groupUser.id,
             threadId: thread.id,
@@ -141,6 +151,9 @@ export class GroupService implements OnModuleInit {
             bio: groupUser.bio,
           };
         });
+        // Record the thread add for the owner AFTER the tx commits (bump threadRevision + push signal).
+        await this.threadRevisionService.recordThreadAdd(params.owner, result.threadId);
+        return result;
       } catch (e) {
         if (!isP2002(e)) throw e; // regenerate a fresh ULID, never append a counter
       }
@@ -181,7 +194,9 @@ export class GroupService implements OnModuleInit {
       where: { threadId: params.threadId, leftAt: null },
       select: { userId: true },
     });
-    await this.bumpGroupMeta(params.threadId);
+    await this.bumpRosterRev(params.threadId);
+    // Record the thread delete for the leaver (bump threadRevision + push signal).
+    await this.threadRevisionService.recordThreadDelete(params.userId, params.threadId);
     return { remainingMemberIds: remaining.map((r) => r.userId) };
   }
 
@@ -224,7 +239,9 @@ export class GroupService implements OnModuleInit {
       where: { id: target.id },
       data: { leftAt: new Date() },
     });
-    await this.bumpGroupMeta(params.threadId);
+    await this.bumpRosterRev(params.threadId);
+    // Record the thread delete for the kicked member (bump threadRevision + push signal).
+    await this.threadRevisionService.recordThreadDelete(params.targetUserId, params.threadId);
   }
 
   /**
@@ -287,7 +304,17 @@ export class GroupService implements OnModuleInit {
         data: { role: GroupRole.OWNER },
       });
     });
-    await this.bumpGroupMeta(params.threadId);
+    // Transfer bumps rosterRev AND flips the denormalized ownerId (mirrors the OWNER participant).
+    const trd = await this.prisma.messageThread.findUnique({
+      where: { id: params.threadId },
+      select: { groupUserId: true },
+    });
+    if (trd?.groupUserId != null) {
+      await this.prisma.group.update({
+        where: { groupUserId: trd.groupUserId },
+        data: { ownerId: params.toUserId, rosterRev: { increment: 1 } },
+      });
+    }
   }
 
   /**
@@ -336,7 +363,7 @@ export class GroupService implements OnModuleInit {
       where: { id: target.id },
       data: { role: params.role },
     });
-    await this.bumpGroupMeta(params.threadId);
+    await this.bumpRosterRev(params.threadId);
   }
 
   /** Update a group's name / description / avatar on the `!`-User row (only provided fields are written).
@@ -362,6 +389,7 @@ export class GroupService implements OnModuleInit {
     if (params.name !== undefined) data.name = params.name;
     if (params.description !== undefined) data.bio = params.description;
     if (params.avatar !== undefined) data.avatar = params.avatar;
+    data.profileRev = { increment: 1 }; // identity change bumps the profile revision
     return this.prisma.user.update({ where: { id: trd.groupUserId }, data });
   }
 }

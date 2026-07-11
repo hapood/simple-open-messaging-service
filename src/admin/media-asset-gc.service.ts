@@ -10,6 +10,11 @@ const readdirAsync = promisify(readdir);
 const statAsync = promisify(stat);
 const unlinkAsync = promisify(unlink);
 
+/** A PendingMedia(pending) row older than this is a crashed/abandoned send or localization — reclaim
+ *  it (and its orphan file, if any). Generous: a normal upload/localize completes in seconds; this
+ *  only sweeps sends that never finished across a long window. */
+const STALE_PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 export interface GcResult {
   /** MediaAsset rows deleted (refs <= 0). */
   reapedRows: number;
@@ -17,6 +22,10 @@ export interface GcResult {
   reapedFiles: number;
   /** Stale *.tmp files removed (crash leftovers from saveCas's tmp+rename). */
   sweptTmp: number;
+  /** Stale PendingMedia(pending) rows reclaimed (abandoned/crashed sends + localizations past TTL). */
+  sweptPending: number;
+  /** Orphan shard files reaped via the stale-pending sweep (file written but the message never committed). */
+  reapedPendingFiles: number;
 }
 
 /**
@@ -45,7 +54,9 @@ export class MediaAssetGcService {
     private readonly upload: UploadService,
   ) {}
 
-  /** Primary GC: reap MediaAsset rows with refs <= 0 + their shard file, then sweep stale tmp. */
+  /** Primary GC: reap MediaAsset rows with refs <= 0 + their shard file, sweep stale tmp, and reap
+   *  stale PendingMedia(pending) staging rows (abandoned/crashed sends + localizations past TTL) along
+   *  with any orphan file they point at. */
   async gcOrphanedAssets(): Promise<GcResult> {
     const orphans = await this.prisma.mediaAsset.findMany({
       where: { refs: { lte: 0 } },
@@ -59,11 +70,65 @@ export class MediaAssetGcService {
       });
     }
     const sweptTmp = await this.sweepTmp();
-    const result: GcResult = { reapedRows: orphans.length, reapedFiles, sweptTmp };
+    const pending = await this.gcStalePending(STALE_PENDING_TTL_MS);
+    const result: GcResult = {
+      reapedRows: orphans.length,
+      reapedFiles,
+      sweptTmp,
+      sweptPending: pending.sweptRows,
+      reapedPendingFiles: pending.reapedFiles,
+    };
     this.logger.log(
-      `gcOrphanedAssets: reaped ${result.reapedRows} row(s), ${reapedFiles} file(s), swept ${sweptTmp} tmp.`,
+      `gcOrphanedAssets: reaped ${result.reapedRows} row(s), ${reapedFiles} file(s), swept ${sweptTmp} tmp, ${pending.sweptRows} stale stage(s) (${pending.reapedFiles} file(s)).`,
     );
     return result;
+  }
+
+  /**
+   * Reap stale PendingMedia(pending) rows — staged media sends/localizations that never committed (a
+   * crash between stage and promote, or a localize that hung) past `ttlMs`. This is the orphan-cleanup
+   * handle that did not exist before PendingMedia: the staging row, created BEFORE the file write,
+   * makes an abandoned upload attributable and reclaimable instead of a mystery file on disk.
+   *
+   * For each stale stage: if it carries a digest, reap the shard file + MediaAsset row ONLY when no
+   * committed MediaMessage references that digest (a committed message keeps the file live). A stage
+   * without a digest (the upload never wrote a file) just drops the row. The TTL protects fresh
+   * in-flight sends from ever being reaped.
+   */
+  async gcStalePending(
+    ttlMs: number,
+  ): Promise<{ sweptRows: number; reapedFiles: number }> {
+    const cutoff = new Date(Date.now() - ttlMs);
+    const stale = await this.prisma.pendingMedia.findMany({
+      where: { status: 'pending', createdAt: { lt: cutoff } },
+      select: { id: true, digest: true },
+    });
+    let reapedFiles = 0;
+    for (const { id, digest } of stale) {
+      if (digest) {
+        // Reap the file only if NO committed message references this digest — a MediaMessage row means
+        // the file is live (some other send/localize committed and is using it).
+        const inUse = await this.prisma.mediaMessage.findFirst({
+          where: { digest },
+          select: { messageId: true },
+        });
+        if (!inUse) {
+          if (await this.reapDigest(digest)) reapedFiles++;
+          await this.prisma.mediaAsset
+            .deleteMany({ where: { digest } })
+            .catch(() => {
+              // row already gone — nothing to do.
+            });
+        }
+      }
+      await this.prisma.pendingMedia.delete({ where: { id } }).catch(() => {
+        // row already gone (concurrent sweep) — nothing to do.
+      });
+    }
+    this.logger.log(
+      `gcStalePending: swept ${stale.length} stale stage(s), reaped ${reapedFiles} orphan file(s).`,
+    );
+    return { sweptRows: stale.length, reapedFiles };
   }
 
   /** Walk uploads/shards/ and delete any file whose digest has no MediaAsset row. Corrects refs drift.

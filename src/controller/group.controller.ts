@@ -30,6 +30,7 @@ import {
   CreateGroupDto,
   InviteGroupDto,
   GroupIdDto,
+  GroupMembersBatchDto,
   KickGroupDto,
   TransferGroupDto,
   SetRoleGroupDto,
@@ -138,10 +139,9 @@ export class GroupController {
     // The group's `!account` — the federated-stable identity on the card (== fedGroupAccount once the
     // first federated invite mints it; for a purely-local group it is just the groupUser account). Both
     // resolve the invite cross-server via the @@unique-backed (toUser, thread) lookup.
-    const [inviterRow, groupUserRow, trdRow] = await Promise.all([
+    const [inviterRow, groupUserRow] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: inviter }, select: { account: true } }),
-      this.prisma.user.findUnique({ where: { id: group.groupUserId }, select: { account: true } }),
-      this.prisma.messageThread.findUnique({ where: { id: group.threadId }, select: { originDomain: true } }),
+      this.prisma.user.findUnique({ where: { id: group.groupUserId }, select: { account: true, domain: true } }),
     ]);
     const inviterAccount = inviterRow?.account;
     const groupAccount = groupUserRow?.account;
@@ -149,15 +149,15 @@ export class GroupController {
       // Should not happen (inviter + group exist) — fail every target loudly rather than silent skip.
       return { invited, skipped: deduped.map((userId) => ({ userId, reason: 'inviter or group missing' })) };
     }
-    // The group's home domain for the card preview: our domain when we are the origin, else the origin
-    // domain. Carried inline so the row renders on BOTH the inviter's + invitee's side without a fetch
+    // groupUser.domain: 'local' = we are the origin; <peer> = a federated mirror. The card carries the
+    // group's home domain so it renders on BOTH the inviter's + invitee's side without a fetch
     // (/invite/detail is invitee-only — it 404s for the inviter's own copy of the card). The avatar path is
     // same-origin for a local group; a federated viewer's row falls back to a letter avatar and the dialog
     // resolves the authoritative localized avatar via /invite/detail(group).
-    const groupIsLocal = !trdRow?.originDomain || trdRow.originDomain === this.federationService.ourDomain;
+    const groupIsLocal = !groupUserRow?.domain || groupUserRow.domain === 'local';
     const groupDomain = groupIsLocal
       ? this.federationService.ourDomain
-      : (trdRow!.originDomain as string);
+      : (groupUserRow!.domain as string);
     const targets = deduped.length ? await this.userService.queryUsers({ where: { id: { in: deduped } } }) : [];
     const byId = new Map(targets.map((u) => [u.id, u]));
     for (const userId of deduped) {
@@ -260,7 +260,12 @@ export class GroupController {
   async syncGroupMeta(@Request() req): Promise<ApiResult> {
     // Chat-open hook: lazily pull the group meta from the origin when the mirror's revision is stale
     // (same shape as sync-peer-profile). A local group / when we are the origin is a no-op.
-    await this.federationService.syncGroupMetaIfStale(req.threadAccess!.threadId);
+    void this.federationService.syncGroupMetaIfStale(req.threadAccess!.threadId);
+    // Chat-open MESSAGE catch-up (the group twin of /user/sync-peer-profile's pull-on-open): if this is a
+    // federated mirror, pull the whole thread from the origin NOW (force — bypass the receiver debounce) so
+    // any hint dropped by the debounce / a transiently-lost push is recovered on open. Fire-and-forget so
+    // opening never blocks on a slow origin; storePulledMessage SSE-fans the new messages. No-op for origin/local.
+    void this.federationService.syncGroupMessagesOnOpen(req.threadAccess!.threadId);
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
@@ -272,63 +277,68 @@ export class GroupController {
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
   async getGroupInfo(@Request() req): Promise<ApiResult> {
-    // Membership already enforced by ThreadAccessGuard. Build GroupResponseDto from the `!`-User +
-    // the owner (derived from the OWNER participant; Group.ownerId is gone).
+    // Membership already enforced by ThreadAccessGuard. Build GroupResponseDto from the `!`-User
+    // (identity) + the Group row (ownerId + updatedAt). The roster is NOT loaded here — it has its own
+    // /group/members endpoint; group info carries only identity + owner + revision timestamps.
     const threadId = req.threadAccess!.threadId;
     const trd = await this.groupService.findGroupByThreadId(threadId);
     const gu = trd?.groupUser;
     if (!trd || !gu) {
       return { code: BusinessCode.NOT_FOUND, message: 'group not found' };
     }
-    const roster = await this.participantService.getRoster(threadId);
-    const owner = roster.find((r) => r.role === GroupRole.OWNER);
     return {
       code: BusinessCode.OK,
       message: 'successful',
       data: {
         id: threadId,
         name: gu.name,
-        ownerId: owner?.userId ?? 0,
+        ownerId: gu.group?.ownerId ?? 0,
         avatar: gu.avatar,
         description: gu.bio,
         threadId,
         createdAt: trd.createdAt.getTime(),
-        updatedAt: trd.updatedAt.getTime(),
+        updatedAt: (gu.group?.updatedAt ?? trd.updatedAt).getTime(),
       },
     };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
-  @ResourceId<GroupIdDto>('groupId')
   @Post('group/members')
-  @ApiOperation({ summary: 'Group roster with roles (members only)' })
-  @ApiResultResponse(GroupMemberDto, true)
-  async getMembers(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
-    const threadId = req.threadAccess!.threadId;
-    const rows = await this.participantService.getRoster(threadId);
-    const data = rows.map((r) => ({
-      userId: r.userId,
-      account: r.user.account,
-      name: r.user.name,
-      avatar: r.user.avatar,
-      role: r.role,
-      joinedAt: r.joinedAt,
-      isOwner: r.role === GroupRole.OWNER,
-    }));
-    // Owner first, then admins, then members; within a role, by join time.
-    data.sort(
-      (a, b) =>
-        ROLE_DISPLAY_RANK[a.role as GroupRole] -
-          ROLE_DISPLAY_RANK[b.role as GroupRole] ||
-        a.joinedAt.getTime() - b.joinedAt.getTime(),
-    );
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: serializeBody(data),
-    };
+  @ApiOperation({ summary: 'Batch fetch group rosters (members only; caller membership filtered)' })
+  async getMembers(@Request() req, @Body() dto: GroupMembersBatchDto): Promise<ApiResult> {
+    const me = req.user.userId;
+    const rows = await this.participantService.getRosters(dto.threadIds);
+    // Group by threadId; keep only threads where the caller is an active member (roster contains me).
+    const byThread = new Map<number, typeof rows>();
+    for (const r of rows) {
+      const arr = byThread.get(r.threadId);
+      if (arr) arr.push(r);
+      else byThread.set(r.threadId, [r]);
+    }
+    const data = [...byThread.entries()]
+      .filter(([, members]) => members.some((m) => m.userId === me))
+      .map(([threadId, members]) => {
+        const mapped = members.map((r) => ({
+          userId: r.userId,
+          account: r.user.account,
+          name: r.user.name,
+          avatar: r.user.avatar,
+          role: r.role,
+          joinedAt: r.joinedAt,
+          isOwner: r.role === GroupRole.OWNER,
+        }));
+        // Owner first, then admins, then members; within a role, by join time.
+        mapped.sort(
+          (a, b) =>
+            ROLE_DISPLAY_RANK[a.role as GroupRole] -
+              ROLE_DISPLAY_RANK[b.role as GroupRole] ||
+            a.joinedAt.getTime() - b.joinedAt.getTime(),
+        );
+        return { threadId, members: serializeBody(mapped) };
+      });
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
@@ -347,9 +357,12 @@ export class GroupController {
       role: participant.role,
     });
     // Fans to all still-active members (= remaining after the soft-leave); the leaver is excluded.
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_MEMBER_LEFT, {
-      userId: req.user.userId,
-    });
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
+    // Federation: if this is a MIRROR thread, nudge the origin so it discovers the leave (a normal per-author
+    // hint → the origin pulls → this server answers HTTP 200 FEDERATION_GROUP_AUTHOR_LEFT → the origin
+    // dissolves the leaver from its canonical roster). No-op for a local group / when we ARE the origin.
+    // Best-effort + fire-and-forget (mirrors notifyOnSend on the send path).
+    void this.federationService.notifyGroupLeave(threadId, req.user.userId);
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
@@ -374,8 +387,8 @@ export class GroupController {
     });
     await this.fanoutGroup(
       threadId,
-      GROUP_SSE.GROUP_MEMBER_KICKED,
-      { userId: dto.userId, byUserId: req.user.userId },
+      GROUP_SSE.GROUP_ROSTER_UPDATED,
+      {},
       [dto.userId], // the kicked user may no longer be "active" after the soft-leave
     );
     return { code: BusinessCode.OK, message: 'successful' };
@@ -399,17 +412,9 @@ export class GroupController {
       fromUserId: req.user.userId,
       toUserId: dto.toUserId,
     });
-    // Two role changes: old owner → MEMBER, new owner → OWNER.
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROLE_CHANGED, {
-      userId: req.user.userId,
-      role: GroupRole.MEMBER,
-      byUserId: req.user.userId,
-    });
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROLE_CHANGED, {
-      userId: dto.toUserId,
-      role: GroupRole.OWNER,
-      byUserId: req.user.userId,
-    });
+    // Signal-only: members pull the fresh roster (GroupService.transferOwnership bumped rosterRev +
+    // flipped ownerId). The former two GROUP_ROLE_CHANGED events collapse into one roster-refresh signal.
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
@@ -432,11 +437,7 @@ export class GroupController {
       role: dto.role,
       operatorUserId: req.user.userId,
     });
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROLE_CHANGED, {
-      userId: dto.userId,
-      role: dto.role,
-      byUserId: req.user.userId,
-    });
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
@@ -459,12 +460,9 @@ export class GroupController {
       description: dto.description,
       avatar: dto.avatar,
     });
-    // updated is the `!`-User row; description lives in User.bio.
-    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {
-      name: updated.name,
-      description: updated.bio,
-      avatar: updated.avatar,
-    });
+    // updated is the `!`-User row; description lives in User.bio. Signal-only: the client receives
+    // { threadId } and HTTP-pulls /group/info to refresh (GroupService.updateGroup bumped profileRev).
+    await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {});
     return { code: BusinessCode.OK, message: 'successful' };
   }
 }
