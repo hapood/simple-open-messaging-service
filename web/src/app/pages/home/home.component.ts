@@ -53,23 +53,16 @@ export class HomeComponent implements OnInit, OnDestroy {
 
     // Friend-lifecycle notifications ride the generic NOTIFY event, discriminated by `data.type`:
     //  - FRIEND_REQUEST: an incoming request armed the unread badge → refetch the profile.
-    //  - FRIEND_APPROVED (either side of a just-accepted request) / FRIEND_DELETED (peer unfriended):
-    //    the conversation set changed → reload the list from the server (source of truth), so a
-    //    newly created / removed P2P thread appears live without a manual refresh.
+    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by the
+    //    THREAD_REVISION_UPDATED delta handler (ConversationListService — fetches the new thread with
+    //    a precise FLIP, or removes locally), so the NOTIFY is a no-op for these.
     this.subs.push(
       this.wsService.eventSubject
         .pipe(filter((m) => m.event === 'NOTIFY'))
         .subscribe((m) => {
           const t = m.data?.type;
-          if (t === 'FRIEND_APPROVED') {
-            // A new P2P thread appeared (the new friend) → promote it to the top with a FLIP enter.
-            this.convList.markTopOnNextNewThread();
-            this.convList.load();
-          } else if (t === 'FRIEND_DELETED') {
-            this.convList.load();
-          } else {
-            this.userService.updateSessionProfile();
-          }
+          if (t === 'FRIEND_APPROVED' || t === 'FRIEND_DELETED') return;
+          this.userService.updateSessionProfile();
         }),
     );
     // Live conversation list: an incoming message refreshes that thread's preview + bumps unread
@@ -82,8 +75,10 @@ export class HomeComponent implements OnInit, OnDestroy {
     );
     this.subs.push(
       this.wsService.reconnect$.subscribe(() => {
-        this.userService.updateSessionProfile();
-        this.convList.load();
+        // Force-reload: re-seed the thread-revision cursor from the server's current threadRevision
+        // (any add/delete missed during the disconnect) and re-snapshot at that fresh revision,
+        // cancelling any in-flight load so the snapshot pins the new cursor consistently.
+        this.convList.load({ force: true });
       }),
     );
   }

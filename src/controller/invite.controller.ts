@@ -90,14 +90,10 @@ export class InviteController {
     );
 
     if (res.status === 'auto-accepted') {
-      // Local mutual → friends immediately. NOTIFY both sides so each opens the new thread live.
-      const payload = serializeBody({
-        event: 'NOTIFY',
-        type: 'FRIEND_APPROVED',
-        byUserId: me,
-      });
-      this.sseService.onNotify(target.id, payload);
-      this.sseService.onNotify(me, payload);
+      // Local mutual → friends immediately. Both sides' thread-list adds are driven by the
+      // THREAD_REVISION_UPDATED delta (recordThreadAdd fires for both users in createFriendInvite);
+      // no NOTIFY — the former FRIEND_APPROVED push is dropped (the delta subsumes it, aligning local
+      // with the federated path which already dropped it).
       return {
         code: BusinessCode.OK,
         message: 'you are now friends',
@@ -164,14 +160,10 @@ export class InviteController {
 
     if (res.kind === 'FRIEND') {
       const fromUser = await this.userService.findUniqueUser({ id: res.fromUserId });
-      const payload = serializeBody({
-        event: 'NOTIFY',
-        type: 'FRIEND_APPROVED',
-        byUserId: req.user.userId,
-      });
       if (fromUser?.isForeigner) {
         // Federated inviter → S2S friend-approve so the peer creates its own thread + marks its
-        // outgoing invite ACCEPTED. Only the local approver's other tabs get a live NOTIFY.
+        // outgoing invite ACCEPTED. Both sides' thread-list adds are driven by THREAD_REVISION_UPDATED
+        // (recordThreadAdd fires for the approver here, and for the inviter via the S2S accept path).
         try {
           await this.federationService.sendInviteAccept({
             kind: 'FRIEND',
@@ -185,12 +177,10 @@ export class InviteController {
             message: `could not reach ${fromUser.domain}: ${(e as Error).message}`,
           };
         }
-        this.sseService.onNotify(req.user.userId, payload);
-      } else if (fromUser) {
-        // Local inviter → NOTIFY both sides so each picks up the new thread live.
-        this.sseService.onNotify(fromUser.id, payload);
-        this.sseService.onNotify(req.user.userId, payload);
       }
+      // Local inviter: recordThreadAdd fired for both users in acceptInvite's tx → both sides get
+      // THREAD_REVISION_UPDATED; no NOTIFY (the former FRIEND_APPROVED push is dropped — the delta
+      // subsumes it, aligning local with the federated path which already dropped it).
       return {
         code: BusinessCode.OK,
         message: 'friend request approved',

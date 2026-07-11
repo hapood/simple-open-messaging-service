@@ -85,7 +85,10 @@ export class InviteService {
     const expiresAt = new Date(Date.now() + INVITE_TTL_MS);
     const origin = this.config.domain;
 
-    return this.prisma.$transaction(async (tx) => {
+    // Explicit type param keeps the callback's `status` literals from widening to string (the
+    // bare `const result = await …` form loses the method-return contextual type the old
+    // `return this.prisma.$transaction(…)` form got for free).
+    const result = await this.prisma.$transaction<CreateFriendInviteResult>(async (tx) => {
       if (allowAutoAccept) {
         const mutual = await tx.invite.findFirst({
           where: {
@@ -153,6 +156,14 @@ export class InviteService {
         throw e;
       }
     });
+    // Record the thread add AFTER the tx commits (bump threadRevision + push signal). Auto-accept
+    // creates the P2P thread for BOTH users — mirrors acceptInvite's recordThreadAdd for both
+    // (inviter + accepter). The 'created'/'already-pending' paths create no thread, so no signal.
+    if (result.status === 'auto-accepted') {
+      await this.threadRevisionService.recordThreadAdd(fromUserId, result.threadId);
+      await this.threadRevisionService.recordThreadAdd(toUserId, result.threadId);
+    }
+    return result;
   }
 
   /**

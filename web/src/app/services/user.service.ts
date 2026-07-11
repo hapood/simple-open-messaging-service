@@ -1,8 +1,9 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, Subscription } from 'rxjs';
+import { Observable, Subscription, of, map, shareReplay } from 'rxjs';
 import { apiPrefix } from './constants';
 import { User, QueryUserThreadParams, ConversationItem, MessageThreadType, Invite, InviteDetail, StandardResponse } from './model'
+import { ThreadDeltaOp } from './thread-delta'
 
 export type { User } from './model'
 
@@ -11,18 +12,70 @@ export type { User } from './model'
 })
 export class UserService {
   sessionProfile = signal<User | undefined>(undefined)
+
+  /** The client's applied thread-list revision cursor — the `threadRevision` from /user/my-profile,
+   *  advanced after each THREAD_REVISION_UPDATED delta is applied. Lives here (not in
+   *  ConversationListService) so `queryUserThreadValid` can pin snapshot queries to the LIVE cursor
+   *  (the boot-time sessionProfile.threadRevision goes stale as deltas land), and ConversationListService
+   *  (which injects this service) can read/advance it without a circular DI. In-memory only — seeded
+   *  fresh each boot/reconnect; not persisted (the list itself is loaded fresh each session). */
+  private readonly _threadRevCursor = signal<number | undefined>(undefined)
+  readonly threadRevCursor = this._threadRevCursor.asReadonly()
+
   constructor(private http: HttpClient) {
   }
 
+  /** In-flight profile fetch (dedup): boot calls updateSessionProfile() AND ConversationListService
+   *  calls ensureProfile() in the same init batch — without sharing, both would fire /user/my-profile.
+   *  Cached here (shareReplay) so concurrent callers ride one HTTP request; once it resolves,
+   *  sessionProfile is set and late callers take the short-circuit branch. `force:true` bypasses the
+   *  cache (reconnect always re-fetches). */
+  private profileFetch?: Observable<User>
+
+  /** Idempotent self-profile load: returns the cached sessionProfile if already loaded, else fetches
+   *  /user/my-profile (seeding sessionProfile + the thread-revision cursor). `force:true` re-fetches
+   *  (reconnect — re-seed the cursor to the server's current threadRevision after a gap that may have
+   *  missed add/delete signals). ConversationListService.load() awaits this so the snapshot is pinned
+   *  to a real cursor, not the pre-seed default. */
+  ensureProfile(opts?: { force?: boolean }): Observable<User> {
+    if (!opts?.force && this.sessionProfile() !== undefined) {
+      return of(this.sessionProfile() as User)
+    }
+    if (!opts?.force && this.profileFetch) {
+      return this.profileFetch
+    }
+    const fetch = this.getMyProfile().pipe(
+      map((res) => {
+        const u = res.data as User
+        this.sessionProfile.set(u)
+        this.seedThreadRevCursor(u.threadRevision ?? 0)
+        return u
+      }),
+      shareReplay(1),
+    )
+    if (!opts?.force) this.profileFetch = fetch
+    return fetch
+  }
+
+  /** Fire-and-forget profile refresh (boot + NOTIFY FRIEND_REQUEST badge). Seeds the cursor as a side
+   *  effect. Prefer ensureProfile() for callers that need to await the load. */
   updateSessionProfile() {
-    this.getMyProfile().subscribe({
-      next: res => {
-        this.sessionProfile.set(res.data)
-      },
+    this.ensureProfile().subscribe({
       error: (err) => {
         console.error(err)
-      }
+      },
     })
+  }
+
+  /** Seed the thread-revision cursor (from /user/my-profile). */
+  seedThreadRevCursor(rev: number): void {
+    this._threadRevCursor.set(rev)
+  }
+
+  /** Advance the cursor after applying a delta (monotonic — ignore a non-advancing/stale revision). */
+  advanceThreadRevCursor(rev: number): void {
+    const cur = this._threadRevCursor()
+    if (cur === undefined || rev > cur) this._threadRevCursor.set(rev)
   }
 
   register(params: { account: string, name: string, password: string }) {
@@ -48,8 +101,27 @@ export class UserService {
     return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/update-profile`, params)
   }
 
-  queryUserThreadValid(params: QueryUserThreadParams) {
-    return this.http.post<StandardResponse<ConversationItem[]>>(`${apiPrefix}/user/query-thread/valid`, params)
+  /** Query a page of active conversations. `revision` (REQUIRED by the backend — pins membership to
+   *  "active at R") is auto-injected from the live thread-revision cursor so callers (list load, folder
+   *  editor, friend-picker) don't each have to source it. The `Omit` keeps the param type stable even
+   *  if api-types is later regenerated with `revision` required. */
+  queryUserThreadValid(params: Omit<QueryUserThreadParams, 'revision'> & { revision?: number }) {
+    const revision = params.revision ?? this.threadRevCursor() ?? 0
+    return this.http.post<StandardResponse<ConversationItem[]>>(
+      `${apiPrefix}/user/query-thread/valid`,
+      { ...params, revision },
+    )
+  }
+
+  /** Pull the thread-list ADD/DELETE ops in the half-open range `(fromRevision, toRevision]` — the
+   *  delta the client applies on a `THREAD_REVISION_UPDATED { revision }` signal. `fromRevision` = the
+   *  client's current cursor (exclusive); `toRevision` = the signal's revision (inclusive). Returned
+   *  ordered by revision asc. See thread-delta.ts (`planDelta`) for the apply semantics. */
+  queryThreadDelta(params: { fromRevision: number; toRevision: number }) {
+    return this.http.post<StandardResponse<ThreadDeltaOp[]>>(
+      `${apiPrefix}/user/query-thread/delta`,
+      params,
+    )
   }
 
   /**

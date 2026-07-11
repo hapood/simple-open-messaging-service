@@ -1,9 +1,10 @@
 import { Injectable, inject, signal } from '@angular/core';
-import { filter } from 'rxjs';
+import { filter, firstValueFrom, forkJoin, map, catchError, of, switchMap, Subscription } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ConversationItem, User } from './model';
+import { planDelta } from './thread-delta';
 import { toFriendlyHttpError } from './http-error';
 
 /**
@@ -55,9 +56,12 @@ export class ConversationListService {
   readonly topInserted = this._topInserted.asReadonly();
   /** Explicit thread to force-top on the next applyItems (set by markTopOnNextUpdate). */
   private _pendingTopId: number | null = null;
-  /** When true, the next applyItems promotes the first newly-appearing thread (set by
-   *  markTopOnNextNewThread, for events where the new threadId is unknown, e.g. FRIEND_APPROVED). */
-  private _topNextNew = false;
+
+  /** Single-flight + tail-coalesce for THREAD_REVISION_UPDATED (mirrors onmessagesignal-single-flight):
+   *  while a delta pull is in-flight, the latest incoming revision is stashed as the tail; on
+   *  completion the tail is pulled `(cursor, tail]`, collapsing a signal burst into ranged pulls. */
+  private _deltaInFlight = false;
+  private _pendingTailRev: number | undefined;
 
   /** Per-thread high-water-mark of the newest message id applied via onNewMessage. Guards against SSE
    *  redelivery (e.g. a frame duplicated across a reconnect) double-bumping the unread badge: if an
@@ -106,6 +110,15 @@ export class ConversationListService {
         if (typeof u?.id !== 'number') return;
         this.updatePeerByUserId(u.id, u);
       });
+
+    // Thread-list versioning: a THREAD_REVISION_UPDATED { revision } signal fires on every thread
+    // add/delete (friend approve, group create/join, leave, kick, unfriend). Pull the ranged delta
+    // (cursor, revision] and apply — DELETE removes locally (O(1)), ADD fetches the single new thread
+    // (getThreadInfo) + inserts with a FLIP. Replaces the former FRIEND_APPROVED/FRIEND_DELETED →
+    // load() fanout on the NOTIFY path (the delta handler owns thread-list add/delete now).
+    this.ws.eventSubject
+      .pipe(filter((m) => m.event === 'THREAD_REVISION_UPDATED' && m.data !== undefined))
+      .subscribe((m) => this.onThreadRevisionUpdated((m.data as { revision: number }).revision));
   }
 
   /** Patch per-user thread metadata (mute/pin/clear/block) on a row, then re-sort so pin/unpin reorders
@@ -132,31 +145,41 @@ export class ConversationListService {
     });
   }
 
-  /** Fetch the conversation list from the server (authoritative state). */
-  load() {
+  /** Tracks the in-flight snapshot load so a force refresh (reconnect) can cancel + restart it. */
+  private loadSub?: Subscription;
+
+  /** Fetch the conversation list from the server (authoritative state), pinned to the current
+   *  thread-revision cursor. Self-seeds the cursor via ensureProfile() first so the snapshot is not
+   *  taken at the pre-seed revision 0 (which would include soft-left threads). */
+  load(opts?: { force?: boolean }) {
+    // A non-force call while a load is already in-flight is a no-op (redundant trigger — e.g.
+    // onNewMessage firing during boot). A force call (reconnect) cancels the in-flight load and
+    // restarts: the snapshot must use ONE consistent cursor across all its pages, so a cursor change
+    // mid-flight (force re-seed to the server's current threadRevision) invalidates the in-flight paging.
+    if (!opts?.force && this._status() === 'LOADING') return;
+    this.loadSub?.unsubscribe();
     this._status.set('LOADING');
     this._error.set('');
-    // Page through the full thread set (query-thread/valid is @Max(50) per request) so client-side
-    // folder filtering sees every conversation, not just the first page.
-    this.userService.queryAllUserThreads().subscribe({
-      next: (items) => this.applyItems(items),
-      error: (err) => {
-        this._error.set(toFriendlyHttpError(err, this.transloco.translate('errors.networkError')));
-        this._status.set('ERROR');
-      },
-    });
+    this.loadSub = this.userService
+      .ensureProfile({ force: opts?.force })
+      .pipe(switchMap(() => this.userService.queryAllUserThreads()))
+      .subscribe({
+        // Page through the full thread set (query-thread/valid is @Max(50) per request) so client-side
+        // folder filtering sees every conversation, not just the first page.
+        next: (items) => this.applyItems(items),
+        error: (err) => this.failLoad(err),
+      });
+  }
+
+  private failLoad(err: unknown): void {
+    this._error.set(toFriendlyHttpError(err, this.transloco.translate('errors.networkError')));
+    this._status.set('ERROR');
   }
 
   /** Force `threadId` to index 0 on the next update and emit `topInserted` so the row animates in.
    *  Use when the caller knows the new id (group join SSE, group create response). */
   markTopOnNextUpdate(threadId: number): void {
     this._pendingTopId = threadId;
-  }
-
-  /** On the next update, promote the first newly-appearing thread to index 0 (and animate). Use when
-   *  the caller cannot name the new id (FRIEND_APPROVED carries only the approver's userId). */
-  markTopOnNextNewThread(): void {
-    this._topNextNew = true;
   }
 
   /** Clear the `topInserted` pulse after the list has played its enter/FLIP animation. */
@@ -183,7 +206,7 @@ export class ConversationListService {
   private applyItems(items: ConversationItem[]): void {
     // Server returns the page already pin-first-ordered, but sort defensively so the in-memory order
     // matches byPinRank exactly (the server and this comparator are kept in lockstep). An explicit
-    // topId (markTopOnNextUpdate / markTopOnNextNewThread — a just-created/joined thread) is promoted
+    // topId (markTopOnNextUpdate — a just-created/joined thread, or a delta ADD) is promoted
     // to index 0 ON TOP of the pin tier, so the user sees their new thread immediately.
     const sorted = [...items].sort(byPinRank);
     const topId = this.resolveTopId(items);
@@ -194,18 +217,15 @@ export class ConversationListService {
   }
 
   /** Determine which thread (if any) to promote to index 0 on this update, consuming the pending
-   *  flags. Priority: an explicit id (markTopOnNextUpdate), else the first newly-appearing thread
-   *  when markTopOnNextNewThread was armed. */
+   *  flag. The only top-insert mechanism now is an explicit id (markTopOnNextUpdate) — friend
+   *  add/delete is driven by the THREAD_REVISION_UPDATED delta, which carries the threadId, so the
+   *  former fuzzy "first newly-appearing thread" path is obsolete. */
   private resolveTopId(items: ConversationItem[]): number | undefined {
     let topId: number | undefined;
     if (this._pendingTopId != null && items.some((t) => t.threadId === this._pendingTopId)) {
       topId = this._pendingTopId;
-    } else if (this._topNextNew) {
-      const oldIds = new Set(this._items().map((t) => t.threadId));
-      topId = items.find((t) => !oldIds.has(t.threadId))?.threadId;
     }
     this._pendingTopId = null;
-    this._topNextNew = false;
     return topId;
   }
 
@@ -302,6 +322,27 @@ export class ConversationListService {
     if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
   }
 
+  /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
+   *  applyItems' FLIP: if `_pendingTopId` matches (set by markTopOnNextUpdate for a just-added
+   *  thread), force-top it + emit `topInserted` so the list animates the enter. Idempotent — an item
+   *  already present (the delta raced with a concurrent load, or a re-add of an active thread) is
+   *  updated in place rather than duplicated. */
+  private upsertThread(item: ConversationItem): void {
+    this._items.update((list) => {
+      const idx = list.findIndex((t) => t.threadId === item.threadId);
+      const base = list.slice();
+      if (idx === -1) base.unshift(item);
+      else base[idx] = item;
+      const sorted = base.sort(byPinRank);
+      return this._pendingTopId === item.threadId ? moveToTop(sorted, item.threadId) : sorted;
+    });
+    if (this._pendingTopId === item.threadId) {
+      this._topInserted.set(item.threadId);
+      this._pendingTopId = null;
+    }
+    this._status.set('READY');
+  }
+
   private clearUnread(threadId: number) {
     this._items.update((list) =>
       list.map((t) =>
@@ -369,6 +410,66 @@ export class ConversationListService {
       return next;
     });
     if (!existed) this.load();
+  }
+
+  /**
+   * Apply a THREAD_REVISION_UPDATED { revision } signal: pull the ranged delta (cursor, revision]
+   * and merge — DELETE drops the thread locally (O(1), no reload), ADD fetches the single new thread
+   * (getThreadInfo) + inserts with a FLIP. The cursor advances to `revision` after the merge.
+   * Single-flight + tail-coalesce: a burst of signals collapses into one ranged pull per in-flight
+   * window (the ranged query covers everything between cursor and the latest revision, so coalescing
+   * is lossless even under out-of-order SSE delivery).
+   */
+  onThreadRevisionUpdated(toRev: number): void {
+    if (this._deltaInFlight) {
+      this._pendingTailRev = toRev;
+      return;
+    }
+    void this.pullDelta(toRev);
+  }
+
+  private async pullDelta(toRev: number): Promise<void> {
+    const cursor = this.userService.threadRevCursor();
+    // Cursor undefined = boot hasn't seeded yet (load() is still fetching /user/my-profile). Drop the
+    // signal — the boot snapshot at the seeded revision will reflect the current state, and the cursor
+    // is advanced past this signal once seeded.
+    if (cursor === undefined) return;
+    // Already applied (our own action echoed back, or a coalesced tail already covered). No-op.
+    if (toRev <= cursor) return;
+    this._deltaInFlight = true;
+    try {
+      const res = await firstValueFrom(
+        this.userService.queryThreadDelta({ fromRevision: cursor, toRevision: toRev }),
+      );
+      if (res.code === 0) {
+        const plan = planDelta(cursor, toRev, res.data ?? []);
+        // Apply DELETEs first (local, instant). ADDs are fetched in parallel; we await them BEFORE
+        // advancing the cursor so a later DELETE of a just-added thread sees the insert (no stale
+        // re-insert from a racing fetch resolving after the removal).
+        for (const id of plan.removeIds) this.removeThread(id);
+        if (plan.addIds.length > 0) {
+          const fetches = plan.addIds.map((id) => {
+            this.markTopOnNextUpdate(id); // precise FLIP — the delta carries the threadId
+            return this.userService.getThreadInfo({ threadId: id }).pipe(
+              map((r) => (r.code === 0 && r.data ? r.data : null)),
+              catchError(() => of(null)), // a failed fetch is skipped, not fatal to the batch
+            );
+          });
+          const items = await firstValueFrom(forkJoin(fetches));
+          for (const item of items) if (item) this.upsertThread(item);
+        }
+        this.userService.advanceThreadRevCursor(plan.nextCursor);
+      }
+    } finally {
+      this._deltaInFlight = false;
+      const tail = this._pendingTailRev;
+      this._pendingTailRev = undefined;
+      // If signals arrived while in-flight, pull (cursor, tail] — the cursor has advanced to toRev,
+      // so this covers only the genuinely-newer portion.
+      if (tail !== undefined && tail > (this.userService.threadRevCursor() ?? -Infinity)) {
+        void this.pullDelta(tail);
+      }
+    }
   }
 }
 

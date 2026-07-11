@@ -1968,6 +1968,13 @@ export interface components {
              * @example false
              */
             hasUrFriendReq?: boolean;
+            /**
+             * @description Thread-list revision (self only — the thread-sync cursor). Returned only by
+             *   /user/my-profile; omitted by list/query/resolve reads. The client pins query-thread/valid
+             *   to this revision and pulls (cursor, toRevision] deltas via query-thread/delta.
+             * @example 5
+             */
+            threadRevision?: number;
         };
         UpdateProfileDto: {
             /**
