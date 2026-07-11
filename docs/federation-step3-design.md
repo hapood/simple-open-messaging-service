@@ -3,13 +3,13 @@
 > **Status:** **Phase A BUILT** (2026-07-09): the unified S2S invite (`/s2s/invite` +
 > `/s2s/invite-accept`, friend + group share one endpoint — see `docs/federation-s2s-api.md`),
 > cross-server group **invite + join** (origin records the joiner), and the lazy **roster meta-pull**
-> (chat-open probe, reusing the Step-2 profile-sync path + `GET /s2s/thread/roster`). **Phase B BUILT**
+> (chat-open probe, reusing the Step-2 profile-sync path + `GET /s2s/group/:account/roster`). **Phase B BUILT**
 > (2026-07-10): cross-server group **messaging** via the **origin-hub** (the origin is the single
 > authority for roster AND message history — a member signals the origin, the origin pulls + aggregates +
 > re-signals, members pull the whole thread from the origin), the **group-invite chat card** (written
 > into the inviter's P2P mirror → flows to the invitee via Step-2 pull; resolved by the group `!account`),
 > and **leave** (pull-reject: a mirror's `group/leave` nudges the origin with a per-author hint; the origin
-> pulls the leaver's messages, the mirror answers HTTP 200 `FEDERATION_GROUP_AUTHOR_LEFT` → the origin
+> pulls the leaver's messages, the mirror answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) → the origin
 > dissolves the member from its canonical roster + bumps the group meta). Loop-safety is one rule:
 > `signalOutbound` excludes the fetch-source domain. The GROUP invite carries `sinceSeq` (origin curSeq
 > at invite time) so a new member seeds `pullUntil` and starts from invite-time, not full history.
@@ -22,8 +22,9 @@
 > span servers A, B, C … . Owner is created on A (the **origin**); members on other servers hold local
 > **mirror** threads that pull history **from the origin** (the single message authority).
 >
-> **Out of scope (deferred):** group rename/avatar sync propagation, edit/delete (still Step 2's
-> deferred item), origin death / re-homing, per-peer quota enforcement (`docs/federation-quotas.md`).
+> **Out of scope (deferred):** group rename/avatar sync propagation, origin death / re-homing, per-peer
+> quota enforcement (`docs/federation-quotas.md`). Edit/delete is a **non-goal** (Step 2 §9: the origin
+> cannot mutate receiver-local data once delivered).
 
 ---
 
@@ -244,7 +245,7 @@ payload (sender → receiver)   =  { originSeq, contentType, content, ts }
 - **Roster delta (SHIPPED = lazy pull, NOT a push endpoint).** The original proposal was a push
   `POST /s2s/thread/member` (origin-emitted, applied to every mirror). **That is NOT built.** The
   shipped design records joins/leaves at the origin and mirrors reconcile via the lazy **roster
-  meta-pull** on chat-open (`GET /s2s/thread/roster`, §6.1) — the roster is pulled like a profile, not
+  meta-pull** on chat-open (`GET /s2s/group/:account/roster`, §6.1) — the roster is pulled like a profile, not
   pushed. The push shape below is retained only as the original-proposal reference:
   ```json
   { "id":"<op-ulid>", "origin":"soms.io", "group":"!01H8X3K…",
@@ -361,10 +362,10 @@ existing message-pull channel rather than a dedicated leave wire-op:
    the lazy roster meta-pull).
 2. The origin drains the hint into `pullGroupFromAuthor` and `GET /s2s/messages?toAccount=!group&fromAccount=leaver…`.
 3. The mirror's per-author gate (`serveOutboundMessagesGroupFrom`) finds the leaver no longer active
-   (`leftAt` set) and answers **HTTP 200 `{ code: FEDERATION_GROUP_AUTHOR_LEFT }`** — NOT 403. This is the
-   crux: a 200 is a business outcome, so `getSigned` runs `markContactSuccess` and the peer is **not
-   demoted** (a 403 would demote + break trust).
-4. The origin recognizes the code → `softLeaveMember` on its canonical roster + bumps the group-meta
+   (`leftAt` set) and answers **HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT)** — a resource response, not 403. This is the
+   crux: 410 is not a peer failure (only 401/403/5xx are), so `getSigned` does **not demote** the peer
+   (a 403 would demote + break trust).
+4. The origin recognizes the 410 (S2sResponseError) → `softLeaveMember` on its canonical roster + bumps the group-meta
    revision. Other mirrors then reconcile (drop the leaver) on their next chat-open roster meta-pull.
 
 A left member's future sends are rejected at their own server's roster check before signaling; the origin
@@ -493,9 +494,9 @@ hint-write layer: `signalOutbound` excludes the domain the message was fetched f
     the group `!account` (`InviteService.resolveInviteId`). Frontend card-rendering adaptation is the
     remaining consumer-side work.
 12. **Leave (mirror → origin)** — DONE: pull-reject — `group/leave` on a mirror nudges the origin with a
-    per-author hint; the origin pulls the leaver's messages; the mirror answers HTTP 200
-    `FEDERATION_GROUP_AUTHOR_LEFT`; the origin `softLeaveMember`s the leaver on its canonical roster +
-    bumps the group meta (mirrors reconcile lazily). The 200 outcome does NOT demote the peer. A durable
+    per-author hint; the origin pulls the leaver's messages; the mirror answers HTTP 410 GONE
+    (FEDERATION_GROUP_AUTHOR_LEFT); the origin `softLeaveMember`s the leaver on its canonical roster +
+    bumps the group meta (mirrors reconcile lazily). 410 is a resource response, so it does NOT demote the peer. A durable
     active-liveness backstop is deferred.
 13. **e2e** — DONE (core): two-server harness — create group on `aaa` with a `bbb` member, accept by group
     account, origin records the joiner, alice's message reaches bob's mirror via the hub + SSE. Full
@@ -508,8 +509,8 @@ hint-write layer: `signalOutbound` excludes the domain the message was fetched f
 - **Group rename / avatar / description sync.** The mirror copies these at invite time; a later origin
   rename does not yet propagate. A `thread.meta` op (same shape as `thread.member`, origin-only) covers
   it later without a new trust path.
-- **Edit / delete propagation.** Still Step 2's deferred item (a `tombstone`/`editOf` shape on the same
-  pull endpoint); groups inherit it whenever it ships.
+- **Edit / delete propagation — non-goal.** Step 2 §9 establishes the origin cannot mutate receiver-
+  local data once delivered, so there is nothing for groups to inherit; a local edit/delete stays local.
 - **Origin death / re-homing.** With owner-transfer-to-foreign forbidden (Decision 2), the origin is
   fixed; if it dies the group goes read-only (members retain whatever they have pulled) until it
   returns. Re-homing to another server is explicitly out of scope — it would require a trust transfer
@@ -517,5 +518,5 @@ hint-write layer: `signalOutbound` excludes the domain the message was fetched f
 - **Per-peer quota enforcement.** Hooks designed in `docs/federation-quotas.md`; group traffic
   (origin fan-out to N members, single-origin backfill) is the main reason the quota layer matters and
   is enforced when that lands.
-- **Read receipts / typing / presence.** v0.2 ephemeral channel (`federation-protocol.md` §6.3);
-  groups need them most but they are not in this step.
+- **Read receipts / typing / presence.** v0.2, deferred (presence+typing best-effort ephemeral; read
+  receipts a separate item); groups need them most but they are not in this step.

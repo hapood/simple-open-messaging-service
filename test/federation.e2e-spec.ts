@@ -858,8 +858,8 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
 
     // bob @ appB leaves the group. appB soft-leaves him on the mirror + notifyGroupLeave pushes a per-author
     // hint to the origin. The origin pulls bob's author-messages from appB; appB's per-author gate sees bob
-    // is no longer active → answers HTTP 200 { code: FEDERATION_GROUP_AUTHOR_LEFT } → the origin soft-leaves
-    // bob's stub on its canonical roster + bumps the group meta. The 200 is a business outcome, NOT a
+    // is no longer active → answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) → the origin soft-leaves
+    // bob's stub on its canonical roster + bumps the group meta. 410 is a resource response, NOT a peer
     // failure → appA must NOT demote bbb. (bob authored no messages in this group → pushed latestSeq = 0,
     // origin cursor = -1 → 0 > -1 → the probe fires.)
     const leave = await request(appB.baseUrl)
@@ -899,8 +899,9 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
       { timeout: 8000 },
     );
 
-    // Regression guard for the core hazard: the 200 FEDERATION_GROUP_AUTHOR_LEFT outcome must NOT demote the
-    // peer. (Before this change, a left author yielded HTTP 403 → getSigned demoted → the trust broke.)
+    // Regression guard for the core hazard: the 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) outcome must NOT
+    // demote the peer. (Before this change, a left author yielded HTTP 403 → getSigned demoted → the trust
+    // broke.)
     const peer = await appA.prisma.federatedPeer.findUnique({
       where: { domain: DOM_B },
       select: { trustLevel: true },

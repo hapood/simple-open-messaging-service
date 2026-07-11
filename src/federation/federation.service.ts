@@ -26,6 +26,24 @@ import { extractDigestEntries } from '../upload/file-content.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
+/**
+ * A non-2xx S2S response that is NOT a peer-liveness failure (i.e. a 4xx application response such as
+ * 404 Not Found or 410 Gone, NOT 401/403/5xx which DO mark the peer demoted). Thrown by getSigned so the
+ * caller can branch on `status` — e.g. the per-author group pull reacts to 410 GONE
+ * (FEDERATION_GROUP_AUTHOR_LEFT) by soft-leaving the author instead of treating it as a transport error.
+ * Carries the parsed body's business `code` (if any) for diagnostics. See design-review item C2.
+ */
+export class S2sResponseError extends Error {
+  readonly status: number;
+  readonly code?: number;
+  constructor(message: string, status: number, code?: number) {
+    super(message);
+    this.name = 'S2sResponseError';
+    this.status = status;
+    this.code = code;
+  }
+}
+
 /** Friend/group invite TTL (mirrors InviteService) — used for inbound friend invites. */
 const INVITE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -188,7 +206,7 @@ export class FederationService implements OnModuleDestroy {
   }
 
   /** Best-effort: if a local user just left a federated GROUP MIRROR, nudge the origin so it discovers the
-   *  leave (a normal per-author hint → the origin pulls → answers HTTP 200 FEDERATION_GROUP_AUTHOR_LEFT →
+   *  leave (a normal per-author hint → the origin pulls → answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) →
    *  dissolves the leaver). No-op for a local group / when we ARE the origin. */
   async notifyGroupLeave(threadId: number, leaverUserId: number): Promise<void> {
     try {
@@ -209,7 +227,7 @@ export class FederationService implements OnModuleDestroy {
       const latestSeq = Math.max(cursor + 1, 0);
       const leaverDomain = leaver.isForeigner ? leaver.domain : this.config.domain;
       // A NORMAL per-author hint (latestSeq beats the origin's derived cursor → the pull always fires).
-      // The origin pulls → this mirror answers HTTP 200 {code:50010} (author soft-left) → the origin
+      // The origin pulls → this mirror answers HTTP 410 (FEDERATION_GROUP_AUTHOR_LEFT — author soft-left) → the origin
       // softLeaveMemberAndBump's the leaver on its canonical roster. No `left` flag — the leave signal
       // lives on the per-author pull RESPONSE (the 50010 business code), not in the hint map.
       this.buffer.markDirty(originDomain, leaver.account, leaverDomain, groupAccount, latestSeq);
@@ -487,7 +505,7 @@ export class FederationService implements OnModuleDestroy {
 
   /**
    * Shared signed-POST transport: sign the (method, path, authority, body) tuple, POST, and apply the
-   * trust-lifecycle wiring — `markContactSuccess` on 200/202/409 (delivered or idempotent),
+   * trust-lifecycle wiring — `markContactSuccess` on 200/202/204/409 (delivered or idempotent),
    * `markDemoted` on network failure or non-success status (self-heal on next contact). Throws on any
    * non-success. Extracted so the friend-op POSTs and the Step 2 path POSTs share one transport.
    */
@@ -519,7 +537,12 @@ export class FederationService implements OnModuleDestroy {
         `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
-    if (res.status === 200 || res.status === 202 || res.status === 409) {
+    if (
+      res.status === 200 ||
+      res.status === 202 ||
+      res.status === 204 ||
+      res.status === 409
+    ) {
       await this.markContactSuccess(peerDomain); // delivered or idempotent → advance liveness
       return;
     }
@@ -554,9 +577,19 @@ export class FederationService implements OnModuleDestroy {
       );
     }
     if (!res.ok) {
-      await this.markDemoted(peerDomain, `GET ${path} HTTP ${res.status}`);
-      throw new Error(
-        `S2S GET ${path} from ${peerDomain} rejected: HTTP ${res.status}`,
+      const status = res.status;
+      // Peer/trust failure (401/403 = signature/trust rejected — the sweep re-handshakes; 5xx = peer
+      // broken) → demote so the reconnect sweep self-heals. Resource responses (400/404/410/…) mean the
+      // peer is healthy and answered — do NOT demote; surface a typed error so the caller can react
+      // (e.g. 410 GONE = the author left). See design-review item C2.
+      if (status === 401 || status === 403 || status >= 500) {
+        await this.markDemoted(peerDomain, `GET ${path} HTTP ${status}`);
+      }
+      const body = await res.json().catch(() => undefined);
+      throw new S2sResponseError(
+        `S2S GET ${path} from ${peerDomain} rejected: HTTP ${status}`,
+        status,
+        typeof body?.code === 'number' ? body.code : undefined,
       );
     }
     await this.markContactSuccess(peerDomain);
@@ -696,7 +729,14 @@ export class FederationService implements OnModuleDestroy {
    *  and multiple instances (a no-op zero-row probe within the window). Precision is deliberately
    *  ±window — a liveness watermark needs minute, not sub-second, granularity. No event (events are
    *  for state transitions only, keeping the log low-volume). Best-effort: a write failure is swallowed
-   *  so a DB hiccup can never break the caller's real S2S op. */
+   *  so a DB hiccup can never break the caller's real S2S op.
+   *
+   *  Observability-only: NO state machine consumes lastSuccessAt. Demotion is failure-driven (the
+   *  matched markDemoted on a failed op), NOT staleness-driven; the reconnect sweep + slowPoll select
+   *  targets by trustLevel, never by this watermark. So this write is benign bookkeeping — the explicit
+   *  liveness channel is GET /s2s/ping (+ ensurePeerTrusted on trust refresh); advancing here is the
+   *  higher-fidelity supplement that records every real successful contact. See design-review item C1
+   *  (RETRACTED) in docs/federation-api-design-review.md. */
   async markContactSuccess(domain: string): Promise<void> {
     const now = Date.now();
     const last = this.lastSuccessSentAt.get(domain);
@@ -1204,7 +1244,7 @@ export class FederationService implements OnModuleDestroy {
 
   // ─── roster meta-pull (lazy, on chat-open — same shape as the profile sync) ──────────
 
-  /** ORIGIN serves the canonical roster for a federated group (GET /s2s/thread/roster?toAccount=<groupAccount>).
+  /** ORIGIN serves the canonical roster for a federated group (GET /s2s/group/:account/roster).
    *  Members carry WIRE addresses (a local member's domain is our real domain, never the "local" sentinel)
    *  so the pulling mirror can ensureForeignUser each. */
   async serveGroupRoster(
@@ -1225,7 +1265,7 @@ export class FederationService implements OnModuleDestroy {
     };
   }
 
-  /** MIRROR pulls the origin's roster (signed GET /s2s/thread/roster?toAccount=<groupAccount>). Null on peer failure. */
+  /** MIRROR pulls the origin's roster (signed GET /s2s/group/:account/roster). Null on peer failure. */
   private async pullGroupRoster(
     groupAccount: string,
     originDomain: string,
@@ -1233,7 +1273,7 @@ export class FederationService implements OnModuleDestroy {
     try {
       return await this.getSigned<{
         members: { account: string; domain: string; role: GroupRole }[];
-      }>(`/api/v1/s2s/thread/roster?toAccount=${encodeURIComponent(groupAccount)}`, originDomain);
+      }>(`/api/v1/s2s/group/${encodeURIComponent(groupAccount)}/roster`, originDomain);
     } catch {
       return null;
     }
@@ -1691,30 +1731,35 @@ export class FederationService implements OnModuleDestroy {
   }
 
   /** Resolve a per-author group pull's author membership with a LEAVE signal: an ACTIVE author → its
-   *  userId; a SOFT-LEFT (or absent) author → `{ code: FEDERATION_GROUP_AUTHOR_LEFT }` (the HTTP 200
-   *  business code the serving endpoint returns INSTEAD of a message payload — NOT a 403). Distinct from
-   *  resolveGroupThreadAccess's author check (which 403s) — this is the one path where "author no longer
-   *  active" is a NORMAL outcome (the member left), not a forbidden one, so the origin reading it dissolves
-   *  the leaver without demoting the peer. Domain-matched via effectiveDomain (a foreign author stub on
-   *  `fromDomain` matches; locals surface as our domain). */
+   *  userId; a SOFT-LEFT (or absent) author → throws BusinessException(FEDERATION_GROUP_AUTHOR_LEFT,
+   *  HttpStatus.GONE) — the serving endpoint answers HTTP 410 GONE (body carries the business code) INSTEAD
+   *  of a message payload. Distinct from resolveGroupThreadAccess's author check (which 403s) — this is
+   *  the one path where "author no longer active" is a NORMAL outcome (the member left), not a forbidden
+   *  one, so the origin reading it dissolves the leaver. 410 is a resource response, so getSigned does NOT
+   *  demote the peer. Domain-matched via effectiveDomain (a foreign author stub on `fromDomain` matches;
+   *  locals surface as our domain). See design-review item C2. */
   private async resolveGroupAuthorOrLeave(
     threadId: number,
     fromAccount: string,
     fromDomain: string,
-  ): Promise<{ authorId: number } | { code: number }> {
+  ): Promise<{ authorId: number }> {
     const p = await this.prisma.threadParticipant.findFirst({
       where: { threadId, user: { account: normalizeAccount(fromAccount) } },
       select: { userId: true, leftAt: true, user: { select: { isForeigner: true, domain: true } } },
     });
     if (!p || this.effectiveDomain(p.user) !== fromDomain || p.leftAt !== null) {
-      return { code: BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT };
+      throw new BusinessException(
+        BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT,
+        `author ${fromAccount}@${fromDomain} left the group`,
+        HttpStatus.GONE,
+      );
     }
     return { authorId: p.userId };
   }
 
   /** Soft-leave a member on OUR canonical roster + bump the group-meta revision (the `!`-User.updatedAt
    *  mirrors compare on chat-open) so mirrors reconcile. Called when the ORIGIN detects a member left a
-   *  mirror — the per-author hub-leg pull answered {code:50010}. */
+   *  mirror — the per-author hub-leg pull answered HTTP 410 (FEDERATION_GROUP_AUTHOR_LEFT). */
   private async softLeaveMemberAndBump(threadId: number, userId: number): Promise<void> {
     await this.participantService.softLeaveMember(threadId, userId);
     const trd = await this.prisma.messageThread.findUnique({
@@ -1777,9 +1822,7 @@ export class FederationService implements OnModuleDestroy {
    * PER-AUTHOR group pull (origin ← mirror, the hub aggregation leg): serve the author `fromAccount`'s
    * messages in the group with originSeq > `after` (originSeq space). The origin pulls each member-server's
    * NEW messages this way to aggregate them; the origin's cursor for a member is derived MAX(originSeq) per
-   * author. Roster-gated; the author gate carries a LEAVE signal — a soft-left (or absent) author returns
-   * HTTP 200 `{ code: FEDERATION_GROUP_AUTHOR_LEFT }` instead of a payload (NOT 403 — a 200 is a business
-   * outcome so getSigned does NOT demote the peer). The origin reads this and dissolves the leaver. */
+   * author. Roster-gated; the author gate carries a LEAVE signal — a soft-left (or absent) author makes resolveGroupAuthorOrLeave throw, so the controller answers HTTP 410 GONE (body carries the business code) instead of a payload. 410 is a resource response, so getSigned does NOT demote the peer. The origin reads the 410 and dissolves the leaver. */
   async serveOutboundMessagesGroupFrom(
     groupAccount: string,
     fromAccount: string,
@@ -1794,10 +1837,9 @@ export class FederationService implements OnModuleDestroy {
       undefined,
       signerDomain,
     );
-    // Author gate with LEAVE signal: active → serve; soft-left/absent → HTTP 200 {code:50010}.
-    const author = await this.resolveGroupAuthorOrLeave(threadId, fromAccount, fromDomain);
-    if ('code' in author) return author;
-    const authorId = author.authorId;
+    // Author gate with LEAVE signal: active → serve; soft-left/absent → resolveGroupAuthorOrLeave
+    // throws (→ HTTP 410 GONE) before reaching here.
+    const { authorId } = await this.resolveGroupAuthorOrLeave(threadId, fromAccount, fromDomain);
     const rows = await this.prisma.message.findMany({
       where: { threadId, creator: authorId, originSeq: { gt: after } },
       orderBy: { originSeq: 'asc' },
@@ -1868,7 +1910,7 @@ export class FederationService implements OnModuleDestroy {
   /**
    * PER-AUTHOR group pull, BACKWARD (the `originSeq < beforeSeq` twin of serveOutboundMessagesGroupFrom,
    * for `/messages/before`). Same LEAVE signal as the forward per-author leg — a soft-left/absent author
-   * returns HTTP 200 `{code:50010}` instead of a payload (NOT 403). Batch OLDEST-FIRST (descending +
+   * returns HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT) instead of a payload. Batch OLDEST-FIRST (descending +
    * reverse); `latestSeq` = the author's global MAX originSeq (JUMP — mirrors the forward per-author leg +
    * the P2P backward twin). SOMS is forward-only; no internal caller. */
   async serveOutboundMessagesGroupFromBefore(
@@ -1885,10 +1927,9 @@ export class FederationService implements OnModuleDestroy {
       undefined,
       signerDomain,
     );
-    // Author gate with LEAVE signal: active → serve; soft-left/absent → HTTP 200 {code:50010}.
-    const author = await this.resolveGroupAuthorOrLeave(threadId, fromAccount, fromDomain);
-    if ('code' in author) return author;
-    const authorId = author.authorId;
+    // Author gate with LEAVE signal: active → serve; soft-left/absent → resolveGroupAuthorOrLeave
+    // throws (→ HTTP 410 GONE) before reaching here.
+    const { authorId } = await this.resolveGroupAuthorOrLeave(threadId, fromAccount, fromDomain);
     const rows = await this.prisma.message.findMany({
       where: {
         threadId,
@@ -2048,7 +2089,7 @@ export class FederationService implements OnModuleDestroy {
    * `fromAccount`/`fromDomain` is the AUTHOR (a foreign stub here, or the origin re-signaling);
    * `toAccount` is OUR local user (P2P) or the group `!account` (group). Latest-seq-wins (a leave is now
    * signaled as a normal per-author hint whose latestSeq beats the cursor; the leave OUTCOME is the serve
-   * side's {code:50010}, not a hint type). Fire-and-forget drain. Idempotent + defensively validated.
+   * side's HTTP 410, not a hint type). Fire-and-forget drain. Idempotent + defensively validated.
    */
   receiveNewMsgMapPush(
     signerDomain: string,
@@ -2302,9 +2343,10 @@ export class FederationService implements OnModuleDestroy {
   /** ORIGIN per-author hub leg: pull the author `fromAccount`'s new group messages from the pushing
    *  mirror `domain` (originSeq space), store, then signalOutbound re-signals the OTHER member-domains
    *  (exclude `domain`). Cursor derived MAX(originSeq) per author — the origin tracks each member
-   *  separately. LEAVE: if the mirror answers HTTP 200 `{code:50010}` (the author soft-left there), the
-   *  origin dissolves the leaver on its canonical roster + bumps the group meta (softLeaveMemberAndBump);
-   *  mirrors reconcile on chat-open. The 200 already ran markContactSuccess — no demote. */
+   *  separately. LEAVE: if the mirror answers HTTP 410 GONE (FEDERATION_GROUP_AUTHOR_LEFT — the author
+   *  soft-left there), the origin dissolves the leaver on its canonical roster + bumps the group meta
+   *  (softLeaveMemberAndBump); mirrors reconcile on chat-open. 410 is a resource response → getSigned does
+   *  NOT demote the peer. */
   private async pullGroupFromAuthor(
     domain: string,
     threadId: number,
@@ -2318,46 +2360,52 @@ export class FederationService implements OnModuleDestroy {
     let after = cur._max.originSeq ?? -1;
     if (e.latestSeq <= after) return true;
     const recipients = await this.localActiveMemberIds(threadId);
-    for (;;) {
-      const res = await this.withTrustedPeer(domain, () =>
-        this.getSigned<{
-          code?: number;
-          messages?: Array<{
-            originSeq: number;
-            contentType: string;
-            content: string;
-            ts: number;
-          }>;
-          latestSeq?: number;
-          hasMore?: boolean;
-        }>(
-          `/api/v1/s2s/messages?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
-          domain,
-        ),
-      );
-      // LEAVE signal — the author soft-left on the pushing mirror. Dissolve on our canonical roster +
-      // bump the group meta; nothing further to pull from a leaver. (200 → contact already success.)
-      if (res.code === BusinessCode.FEDERATION_GROUP_AUTHOR_LEFT) {
+    try {
+      for (;;) {
+        const res = await this.withTrustedPeer(domain, () =>
+          this.getSigned<{
+            messages?: Array<{
+              originSeq: number;
+              contentType: string;
+              content: string;
+              ts: number;
+            }>;
+            latestSeq?: number;
+            hasMore?: boolean;
+          }>(
+            `/api/v1/s2s/messages?toAccount=${encodeURIComponent(e.toAccount)}&fromAccount=${encodeURIComponent(e.fromAccount)}&fromDomain=${encodeURIComponent(e.fromDomain)}&toDomain=${encodeURIComponent(this.ourDomain)}&afterSeq=${after}&take=50`,
+            domain,
+          ),
+        );
+        const messages = res.messages ?? [];
+        for (const m of messages) {
+          const created = await this.storePulledMessage(
+            threadId,
+            creatorId,
+            domain,
+            recipients,
+            m,
+          );
+          if (created && this.isMediaContentType(created.contentType)) {
+            await this.localizeMedia(created, domain, e.fromAccount, e.fromDomain, e.toAccount);
+          }
+        }
+        if (messages.length > 0) {
+          after = messages[messages.length - 1].originSeq;
+        }
+        if (!res.hasMore) return true;
+      }
+    } catch (e) {
+      // LEAVE signal — the author soft-left on the pushing mirror: resolveGroupAuthorOrLeave threw on
+      // the serve side, so getSigned surfaces HTTP 410 GONE as an S2sResponseError. 410 is a resource
+      // response (NOT 401/403/5xx) → getSigned did NOT demote the peer. Dissolve the leaver on our
+      // canonical roster + bump the group meta; nothing further to pull from a leaver. See design-review
+      // item C2.
+      if (e instanceof S2sResponseError && e.status === HttpStatus.GONE) {
         await this.softLeaveMemberAndBump(threadId, creatorId);
         return true;
       }
-      const messages = res.messages ?? [];
-      for (const m of messages) {
-        const created = await this.storePulledMessage(
-          threadId,
-          creatorId,
-          domain,
-          recipients,
-          m,
-        );
-        if (created && this.isMediaContentType(created.contentType)) {
-          await this.localizeMedia(created, domain, e.fromAccount, e.fromDomain, e.toAccount);
-        }
-      }
-      if (messages.length > 0) {
-        after = messages[messages.length - 1].originSeq;
-      }
-      if (!res.hasMore) return true;
+      throw e;
     }
   }
 

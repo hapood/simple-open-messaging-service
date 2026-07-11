@@ -23,9 +23,11 @@
 >   members pull the whole thread from the origin. Unified `/s2s/invite` (friend + group); lazy roster
 >   meta-pull; group-invite chat card; leave. Authoritative design: `docs/federation-step3-design.md`.
 >
-> **What is NOT yet built (deferred).** Read receipts, presence/typing (v0.2 ephemeral channel),
-> **edit/delete** propagation, group **rename/avatar/description** sync, a durable **active-liveness**
-> leave backstop, origin death/re-homing, and per-peer **quota** enforcement (`docs/federation-quotas.md`).
+> **What is NOT yet built (deferred).** Presence/typing (v0.2, best-effort ephemeral — lossy, no retry),
+> read receipts (v0.2, a separate item — NOT best-effort, delivery is wanted), group
+> **rename/avatar/description** sync, a durable **active-liveness** leave backstop, origin death/re-homing,
+> and per-peer **quota** enforcement (`docs/federation-quotas.md`). **Edit/delete propagation is a
+> non-goal**, not deferred — the origin has no authority over receiver-local data once delivered (§9).
 > These are flagged inline as **Deferred**. The per-section "Future" headers below that predate Steps 2/3
 > are retained as historical design notes — read them as **implemented** per the step-design docs unless
 > marked Deferred.
@@ -69,6 +71,10 @@ A **lightweight, JSON-based, IM-native federation protocol.** ActivityPub-inspir
 - **Not** end-to-end encryption across federation. `content` is reserved opaque for a future E2EE effort.
 - **Not** open federation. Peers must be explicitly trusted, **and** users must be friends before any communication.
 - **Not** global ordering, DAG-based state resolution, or strong consistency.
+- **Not** remote edit/delete of delivered messages. The origin's authority ends at delivery — once a peer
+  pulls + stores a message it is that receiver's local data (the delivered-immutability / email model).
+  A local edit/delete stays local; a deleted-by-sender message is a gap on the receiver, never a
+  remote-driven tombstone. (See `docs/federation-step2-design.md` §9.)
 
 ### Why this design, not the alternatives
 
@@ -126,7 +132,7 @@ address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" 
 
 Discovery resolves "where is the SOMS service for `<domain>`?" in two layers:
 
-1. **SRV record (optional):** look up `_soms._tcp.<domain>`. If present, it gives the **host:port** (and priority/weight for multi-server deployments; selection algorithm in §6.4).
+1. **SRV record (optional):** look up `_soms._tcp.<domain>`. If present, it gives the **host:port** (and priority/weight for multi-server deployments; selection algorithm in §6.3).
 2. **Fallback:** if no SRV, use `https://<domain>:443`.
 3. **`.well-known/soms` (required):** at the resolved host:port, fetch the rich endpoint/key metadata over HTTPS.
 
@@ -331,7 +337,7 @@ This current-state cache (`FederatedPeer`) + append-only history (`FederatedPeer
 
 ## 6. Delivery
 
-> **Friend ops = synchronous** (Step 1, unchanged). Friend-op payloads are signed + POSTed **inline** in the request path (`FederationService.send*`, 10 s `callTimeoutSec`). There is **no outbox, no worker, no retry queue** — a peer that's down makes the action fail, and the user retries (the receiver dedupes via `S2SFriendOpSeen`, so a retry is safe). **Step 2 messages do NOT use an outbox** — they use light-notify + active pull (§6.2 ⚠️); the durable outbox + retry worker below (§6.2, §6.4) remains an **unbuilt** design, retained as reference.
+> **Friend ops = synchronous** (Step 1, unchanged). Friend-op payloads are signed + POSTed **inline** in the request path (`FederationService.send*`, 10 s `callTimeoutSec`). There is **no outbox, no worker, no retry queue** — a peer that's down makes the action fail, and the user retries (the receiver dedupes via `S2SFriendOpSeen`, so a retry is safe). **Step 2 messages do NOT use an outbox** — they use light-notify + active pull (§6.2 ⚠️); the durable outbox + retry worker below (§6.2, §6.3) remains an **unbuilt** design, retained as reference.
 
 ### 6.1 The S2S POST (sync, Step 1)
 
@@ -372,11 +378,7 @@ Body: <payload>
 
 Backoff schedule: **30s → 1m → 5m → 30m → 2h → 24h**, then **dead-letter** for operator inspection. Single-worker per `(thread, recipient-domain)` to preserve `origin_seq` order; parallelism across threads/domains is fine.
 
-### 6.3 Ephemeral channel (v0.2 — placeholder)
-
-Presence and typing are lossy; carry no `id` and are never retried. Candidate transports: periodic best-effort POST to `/api/s2s/presence` (simplest), or a persistent S2S WebSocket per peer pair (lower latency).
-
-### 6.4 Outbound target & address selection
+### 6.3 Outbound target & address selection
 
 When the S2S client delivers a friend-op payload (the sync `FederationService` today; the outbox worker if it revives in Step 2), it selects where to connect in three layers. All three live in our own client code — we do **not** rely on Node's Happy Eyeballs (see "Why explicit racing" below).
 
@@ -600,7 +602,7 @@ model S2SFriendOpSeen {
 | `POST` | `/api/v1/s2s/init` | Trust-establishment bootstrap (auto-accept; NOT allow-list-gated — §D7) |
 | `POST` | `/api/v1/s2s/invite` | **Unified** invite (friend OR group, `kind`-discriminated) from a trusted peer (allow-list-gated) |
 | `POST` | `/api/v1/s2s/invite-accept` | The peer accepted an invite (friend→P2P thread; group→origin records the join) |
-| `GET` | `/api/v1/s2s/thread/roster` | The origin serves the canonical roster (lazy meta-pull on chat-open) |
+| `GET` | `/api/v1/s2s/group/:account/roster` | The origin serves the canonical roster (lazy meta-pull on chat-open) |
 | `GET` | `/api/v1/s2s/users/:account` | A local user's public profile (avatar inline as base64 — §10.1). A group is a `!`-User, so this also serves a group's identity |
 | `GET` | `/api/v1/s2s/users/:account/revision` | Lightweight profile-revision probe (staleness check, no avatar). For a group `!`-User this is the meta revision |
 | `GET` | `/.well-known/soms` | Publish server keys + endpoints |
@@ -636,7 +638,7 @@ Avatars are the **only media that federates in v0.1** — message-image federati
 ### Deferred (explicit non-goals for v0.1)
 
 - **E2EE** — `content` reserved; crypto is a separate effort.
-- **Presence / typing** — ephemeral channel, v0.2.
+- **Presence / typing** — ephemeral, v0.2 (lossy, carry no `id`, never retried).
 - **Read receipts across federation** — `receipt` type reserved; logic v0.2.
 - **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). Per-peer **quotas** for that future step are designed (daily message/image/file limits + size caps, admin-adjustable) but also deferred — see `docs/federation-quotas.md`.
 - **Open federation / anti-spam** — allow-list only.
@@ -813,7 +815,7 @@ DNS returns both families; `getaddrinfo` orders them (RFC 6724, v6 first by defa
 
 ### Make it robust
 
-1. **SOMS races address families explicitly** in its S2S client (§6.4) — it does **not** depend on Node's Happy Eyeballs, which is incomplete and has known `ETIMEDOUT` failure modes. Node 22+ remains the runtime baseline. (So the "~250ms" row in the table above is what SOMS achieves by its own implementation, not by trusting Node's HE.)
+1. **SOMS races address families explicitly** in its S2S client (§6.3) — it does **not** depend on Node's Happy Eyeballs, which is incomplete and has known `ETIMEDOUT` failure modes. Node 22+ remains the runtime baseline. (So the "~250ms" row in the table above is what SOMS achieves by its own implementation, not by trusting Node's HE.)
 2. **At the DDNS layer, publish AAAA only if v6 is genuinely reachable end-to-end.** Your DDNS updater should probe v6 reachability before publishing AAAA. If in doubt, **publish only A** and skip v6 entirely — simplest and bulletproof.
 
 ### Inbound (server side)

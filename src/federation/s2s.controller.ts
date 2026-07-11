@@ -44,21 +44,15 @@ export class S2sController {
   ) {}
 
   @Post('invite')
-  @HttpCode(HttpStatus.OK)
-  async postInvite(
-    @Req() req: FastifyRequest,
-  ): Promise<{ code: number; message: string; data: null }> {
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postInvite(@Req() req: FastifyRequest): Promise<void> {
     await this.federation.handleInvite(req.body as S2SInvite);
-    return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 
   @Post('invite-accept')
-  @HttpCode(HttpStatus.OK)
-  async postInviteAccept(
-    @Req() req: FastifyRequest,
-  ): Promise<{ code: number; message: string; data: null }> {
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postInviteAccept(@Req() req: FastifyRequest): Promise<void> {
     await this.federation.handleInviteAccept(req.body as S2SInviteAccept);
-    return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 
   @Get('users/:account')
@@ -107,23 +101,17 @@ export class S2sController {
     return rev;
   }
 
-  /** GET /api/v1/s2s/thread/roster?toAccount=<groupAccount> — a member-server pulls the canonical roster
-   *  for a federated group (the lazy meta-pull on chat-open). The group is addressed by its `!account`
-   *  (no internal thread id on the wire). The signer is a trusted peer (S2sSignatureGuard). */
-  @Get('thread/roster')
-  async getThreadRoster(@Query('toAccount') toAccount?: string) {
-    if (!toAccount) {
-      throw new BusinessException(
-        BusinessCode.FEDERATION_MALFORMED,
-        'missing toAccount query param',
-        HttpStatus.BAD_REQUEST,
-      );
-    }
-    const roster = await this.federation.serveGroupRoster(toAccount);
+  /** GET /api/v1/s2s/group/:account/roster — a member-server pulls the canonical roster for a
+   *  federated group (the lazy meta-pull on chat-open). The group is addressed by its `!account` path
+   *  param (no internal thread id on the wire) — a sibling of /group/:account/roster-revision. The
+   *  signer is a trusted peer (S2sSignatureGuard). */
+  @Get('group/:account/roster')
+  async getGroupRoster(@Param('account') account: string) {
+    const roster = await this.federation.serveGroupRoster(account);
     if (roster === null) {
       throw new BusinessException(
         BusinessCode.NOT_FOUND,
-        `group ${toAccount} not found`,
+        `group ${account} not found`,
         HttpStatus.NOT_FOUND,
       );
     }
@@ -289,12 +277,11 @@ export class S2sController {
 
   /** POST /api/v1/s2s/new-msg-map — a peer pushes ITS outbound hint entries (dirty conversations) to us.
    *  Validate `origin === signer` (belt-and-suspenders over the signature), then enqueue + drain. ACKs
-   *  fast — the actual message pull runs out of band. See docs/federation-step2-design.md §3.1 / §4.2. */
+   *  fast (202 Accepted — the actual message pull runs out of band). See docs/federation-step2-design.md
+   *  §3.1 / §4.2. */
   @Post('new-msg-map')
-  @HttpCode(HttpStatus.OK)
-  async postNewMsgMap(
-    @Req() req: FastifyRequest,
-  ): Promise<{ code: number; message: string; data: null }> {
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postNewMsgMap(@Req() req: FastifyRequest): Promise<void> {
     const body = req.body as
       | { origin?: unknown; entries?: unknown }
       | undefined;
@@ -316,7 +303,6 @@ export class S2sController {
         latestSeq?: unknown;
       }>,
     );
-    return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 
   /** The verified signer domain (set by S2sSignatureGuard as req.peer.domain). */

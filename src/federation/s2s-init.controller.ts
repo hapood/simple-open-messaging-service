@@ -8,7 +8,6 @@ import {
 import type { FastifyRequest } from 'fastify';
 import { S2sVerifyService } from './s2s-verify.service.js';
 import { FederationService } from './federation.service.js';
-import { BusinessCode } from '../common/business-code.js';
 
 /**
  * S2S trust-establishment endpoint — `POST /api/v1/s2s/init`. This is the bootstrap by which two SOMS
@@ -35,10 +34,8 @@ export class S2sInitController {
   ) {}
 
   @Post('init')
-  @HttpCode(HttpStatus.OK)
-  async postInit(
-    @Req() req: FastifyRequest,
-  ): Promise<{ code: number; message: string; data: null }> {
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postInit(@Req() req: FastifyRequest): Promise<void> {
     // Verify the requester's signature via their own .well-known (no inline key — the requester can't
     // lie; .well-known is CA-validated HTTPS). Throws FEDERATION_MALFORMED / KEY_FETCH_FAILED /
     // BAD_SIGNATURE on failure (caller-appropriate status codes).
@@ -51,6 +48,5 @@ export class S2sInitController {
     // a repeat init from an already-trusted peer just refreshes lastSuccessAt. addedBy is null
     // (auto-accepted, no admin).
     await this.federationService.markTrusted(domain);
-    return { code: BusinessCode.OK, message: 'ok', data: null };
   }
 }

@@ -1,8 +1,9 @@
 # SOMS Federation — Per-Peer Quotas (design notes, NOT YET BUILT)
 
-> **Status:** Design notes only. **Deferred** until the real federation communication protocol
-> (Step 2 — cross-server messages / images / files) is designed. Captured here so the decisions are
-> not lost and can be picked up unchanged when that work begins.
+> **Status:** Design notes only. **Deferred.** Step 2 (cross-server messages / images / files) is now
+> BUILT, so the traffic these limits would gate is live on the wire — but per-peer quota enforcement has
+> not yet been a live pain point and is lower priority than finishing Step 3. Captured here so the
+> decisions are not lost and can be picked up unchanged when quota work begins.
 > **Scope:** Daily per-peer limits and single-media size caps on federated (auto-handshaked) traffic.
 > **Last updated:** 2026-07-08
 
@@ -10,19 +11,20 @@
 
 ## 1. Why this is deferred
 
-The limit categories below (**messages / images / videos / large-files**) are all **Step 2** traffic.
-Step 1 (what ships today) only federates friend ops (`friend-request` / `friend-approve`) — control traffic, low volume, no media.
-So as of today there is **nothing in those categories to count**. Building idle enforcement now would
-ship a half-feature (admin sets thresholds that gate zero traffic). The honest sequencing is:
+The limit categories below (**messages / images / videos / large-files**) are all **Step 2** traffic,
+and Step 2 (1:1 messages, media, large-file Range streaming) plus Step 3 (federated groups) are now
+BUILT — so this traffic IS live on the wire. The deferral is one of priority, not precondition: per-peer
+quota enforcement has not yet been a live pain point, and finishing Step 3 ranks higher. The honest
+sequencing is:
 
-1. **First** — design the real federation protocol (Step 2: how a message/image/file actually crosses
-   servers — sync inline vs. outbox+worker vs. blob-reference). That choice *determines* several
-   decisions in §5 (notably large-file transport — see §5.1).
-2. **Then** — land this quota model as part of, or right after, Step 2, so there is real traffic to
-   enforce against.
+1. **[DONE]** — the real federation protocol (Step 2: how a message/image/file crosses servers) is
+   designed + built. Text/media travel inline in the `GET /messages` pull; large files are a blob-
+   reference fetched on demand via `GET /get_file` with Range/206 stream-to-disk (see §5.1). That choice
+   is reflected in the §5 decisions below.
+2. **[DEFERRED]** — land this quota model so there is enforcement against that now-live traffic. Not yet
+   a live pain point; ranked behind finishing Step 3.
 
-The schema and enforcement shape below are stable regardless of that choice and can be lifted
-verbatim when the time comes.
+The schema and enforcement shape below are stable regardless and can be lifted verbatim when the time comes.
 
 ---
 

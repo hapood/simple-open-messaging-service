@@ -7,14 +7,17 @@
 > pull-on-thread-open + slow poll. The federation e2e is **16/16 green** (4 new Step 2 scenarios: text
 > push+pull+SSE, idempotent re-sync, pull-on-open recovery, media round-trip — alongside the 12 Step 1 /
 > profile tests, no regressions). The resilience story is live: a lost push recovers via the sweep +
-> pull-on-open + slow poll. **Deferred** (§9 + `docs/federation-quotas.md`): edit/delete propagation,
-> read receipts/presence/typing, federated groups (Step 3), history backfill as a feature (Step 2.5),
-> per-peer quotas, and a durable outbox (only if a future tier needs transactional delivery). This is
+> pull-on-open + slow poll. **Deferred** (§9 + `docs/federation-quotas.md`): read receipts/presence/typing,
+> history backfill as a feature (Step 2.5), per-peer quotas, and a durable outbox (only if a future tier
+> needs transactional delivery). Edit/delete is a **non-goal** (§9, not deferred); federated groups shipped
+> in Step 3. This is
 > the authoritative Step 2 design; it **supersedes** the outbox-push/backfill prose retained in
 > `docs/federation-protocol.md` §6.2 / §8 / §9.2 (kept there as rejected-alternative rationale).
-> **Scope:** cross-server **1:1 text + media**. **Out of scope (deferred):** edit/delete propagation,
-> read receipts/presence/typing (v0.2 ephemeral), federated **groups** + shared thread id (Step 3),
-> history backfill as a distinct feature (Step 2.5 — same endpoint as incremental pull).
+> **Scope:** cross-server **1:1 text + media**. **Out of scope:** edit/delete propagation (**non-goal**
+> — the origin cannot mutate receiver-local data once delivered; §9), presence/typing (v0.2,
+> best-effort/ephemeral), read receipts (v0.2, a separate deferred item — §10), federated **groups** + shared
+> thread id (Step 3, built), history backfill as a distinct feature (Step 2.5 — same endpoint as
+> incremental pull).
 
 ---
 
@@ -29,7 +32,8 @@ single source of truth — the hint map is only a latency optimizer, the pull is
 lost or overflowed hint is caught by **pull-on-thread-open** and a **slow periodic poll**. There is
 **no persistent outbox, no worker, no dead-letter queue** — the map is volatile (survives a network
 outage, not a process restart; pull-on-open is the restart floor), deletion shows up as gaps in the
-sequence (absorbed naturally), and edit/delete *propagation* is deferred (local-only for now). A
+sequence (absorbed naturally), and edit/delete *propagation* is a **non-goal** (the origin cannot mutate
+receiver-local data; §9) — a local edit/delete stays local. A
 **60 s reconnect sweep** plus a dedicated **signed ping** re-handshake demoted peers and **never get
 permanently stuck on a cert/key rotation** (every tick re-fetches `.well-known` fresh; we never pin).
 Media rides the same trust/friendship chain via a digest-keyed `get_file` (content-addressed → dedup
@@ -265,9 +269,10 @@ receiver fetches each digest via `get_file` (§3.3), stores it locally, and **re
 digest already in the receiver's CAS (`MediaAsset` hit) skips the `get_file` round trip entirely
 (content-addressed dedup).
 
-**Edit/delete.** Not represented in the response (deferred). A deleted sender message simply does not
-appear in the window — a gap in `originSeq` the receiver absorbs naturally (cursor advances past it).
-Edit propagation will later add a `tombstone`/`editOf` shape on the same endpoint.
+**Edit/delete.** Not represented in the response — a **non-goal** (§9: the origin has no authority over
+receiver-local data once delivered). A deleted-by-sender message simply does not appear in the window —
+a gap in `originSeq` the receiver absorbs naturally (cursor advances past it). No `tombstone`/`editOf`
+shape is planned; a local edit/delete by either side stays local (never a remote-driven mutation).
 
 ### 3.3 `GET /api/v1/s2s/get_file` (media, digest-keyed, 3-check authz)
 
@@ -365,10 +370,13 @@ so an at-most-once pull trigger is fine; a missed pull is caught by pull-on-open
 
 ### 4.3 Reconnect sweep + one-directional pull + cert-rotation safety
 
-> **Implementation status: NOT YET WIRED.** `withTrustedPeer` exists, but no background timer drives this
-> sweep today — a demoted peer re-handshakes only on the next user action (`ensurePeerTrusted`). The
-> one-directional pull + cert-rotation safety below are the **design**; this is the open work tracked at
-> §8 item 10. Read the guarantees below as the target, not as current behavior.
+> **Implementation status: BUILT** (`FederationReconnectService.onModuleInit`). A 60 s `setInterval`
+> drives `sweep()` over `listRecoverablePeerDomains()` (pending/demoted peers), with ±5 s jitter (per-
+> domain `setTimeout`) and a per-domain `inFlight` guard (≤1 recovery in flight). `recover(domain)` runs
+> exactly the sequence below: `pingPeer` → `ensurePeerTrusted` → `flushDomain` (buffered outbound) →
+> `pullPeerMap` (one-directional fallback). The cert/key-rotation safety is inherent — every tick fetches
+> `.well-known` fresh (no key pinning), so a rotation can't permanently break us. The guarantees below ARE
+> current behavior.
 
 A background sweep owns recovery for **non-trusted** (demoted/pending) peers — today trust only
 re-handshakes when some user action triggers `ensurePeerTrusted`; the sweep makes it active and bounded:
@@ -408,11 +416,13 @@ silently); only a genuinely-broken peer enters the sweep, and the sweep always h
 
 ### 4.4 Catch-up triggers (the backstops — and the restart floor)
 
-> **Implementation status: NOT YET WIRED.** `syncForeignUserIfStale` (chat-open) currently syncs the peer
-> **profile** only; the message-cursor pull below and the slow periodic poll are not built. Pull-on-
-> thread-open is the intended restart floor but does not yet exist — so today a process restart (empty
-> in-memory buffer) is NOT caught up until a push happens to land or a user action triggers a pull. Open
-> work tracked at §8 item 11.
+> **Implementation status: PARTIAL.** The slow periodic poll (item 2) IS built —
+> `FederationReconnectService` runs a 5 min `slowPoll` over every trusted peer pulling its `/new-msg-map`,
+> which also serves as the restart floor (a process restart with an empty in-memory buffer is caught within
+> ≤5 min even if no push lands). The remaining open work is item 1 — pull-on-thread-open for MESSAGES:
+> `syncForeignUserIfStale` (chat-open) still syncs the peer **profile** only and does not derive + pull the
+> message cursor, so an individual thread is not caught up at the instant of open if every push/poll was
+> lost (the 5 min slow poll is the bound). Tracked at §8 item 11.
 
 1. **Pull-on-thread-open** — extends the existing chat-open staleness path. Today
    `syncForeignUserIfStale` probes the peer's `/revision` (profile). Step 2 adds: also derive the
@@ -518,9 +528,9 @@ No quota tables are added in Step 2 v0.1 (enforcement is deferred); the endpoint
 > (§4.4). Item 12 (e2e) covers the 8 Step 2 message/media scenarios (a–h) alongside the 12 Step 1 /
 > profile tests — no regressions. A lost push now self-heals via sweep + pull-on-open + slow poll.
 > Bug fixed during e2e: `drainPendingPulls` spun on a persistently failing pull (now progress-gated).
-> **Open work is the §9 deferrals** (edit/delete propagation, read receipts/presence/typing, federated
-> groups = Step 3, history backfill = Step 2.5, per-peer quotas — design ready at
-> `docs/federation-quotas.md`).
+> **Open work is the §9 deferrals** (read receipts/presence/typing, history backfill = Step 2.5, per-peer
+> quotas — design ready at `docs/federation-quotas.md`). Edit/delete is a non-goal (§9); federated groups
+> shipped in Step 3.
 
 1. **Schema migration** — add `Message.originSeq Int?` + `@@unique([threadId, creator, originSeq])` +
    `@@index([threadId, creator, originSeq])`. Migration `20260709000000_message_origin_seq`. Apply via
@@ -547,12 +557,14 @@ No quota tables are added in Step 2 v0.1 (enforcement is deferred); the endpoint
    Best-effort (a per-file failure stores the message with a placeholder digest for lazy retry).
 9. **`ping` endpoint** — `@Get('ping')` in `S2sController` → `{ domain, ts }`; refreshes
    `lastSuccessAt` via `markContactSuccess`.
-10. **Unified pre-flight + reconnect sweep** — add `FederationService.withTrustedPeer(domain, fn)`;
-    route all new ops through it. Add the 60 s reconnect sweep (per demoted/pending peer, ± jitter, 1
-    in-flight): ping → `ensurePeerTrusted` → flush outbound map + pull peer's map. Add the slow
-    quiet-peer liveness tick (optional).
-11. **Catch-up triggers** — extend `syncForeignUserIfStale` (chat-open) to also pull messages (the
-    restart floor); add the slow periodic poll sweep over active federated P2P threads.
+10. **[BUILT] Unified pre-flight + reconnect sweep** — `FederationService.withTrustedPeer(domain, fn)`
+    routes new ops through it. `FederationReconnectService` drives the 60 s reconnect sweep (per demoted/
+    pending peer, ±5 s jitter, ≤1 in-flight via `inFlight`): `pingPeer` → `ensurePeerTrusted` → flush the
+    outbound map + pull the peer's map. The slow quiet-peer liveness tick is the 5 min `slowPoll`.
+11. **[PARTIAL] Catch-up triggers** — the slow periodic poll sweep IS built
+    (`FederationReconnectService.slowPoll`, 5 min over trusted peers, also the restart floor). Still open:
+    extend `syncForeignUserIfStale` (chat-open) to also pull MESSAGES (so an individual thread catches up
+    at open, not just within the 5 min slow-poll bound).
 12. **e2e** — extend `test/federation.e2e-spec.ts`: (a) alice sends → bob receives via push+pull,
     assert stored + SSE shape; (b) media round-trip (image digest arrives, localizes, renders
     same-origin); (c) peer down → notify buffers → peer back → 60 s sweep flushes → bob catches up;
@@ -566,12 +578,20 @@ No quota tables are added in Step 2 v0.1 (enforcement is deferred); the endpoint
 
 ## 9. Deferred (explicit non-goals for Step 2 v0.1)
 
-- **Edit/delete propagation** — a deleted sender message is a gap (absorbed); an edit is local-only
-  for now. A later `message.edit`/`message.delete` hint + a `tombstone`/`editOf` shape on the same
-  pull endpoint covers this without a new endpoint.
-- **Read receipts / presence / typing** — v0.2 ephemeral channel (`federation-protocol.md` §6.3).
-- **Federated groups + shared thread id** — Step 3 (a `thread.invite` + a cross-server thread id
-  finally appears); the pull model generalizes (a group thread has N foreign senders → N cursors).
+- **Edit/delete propagation — NON-GOAL (origin has no authority over receiver-local data).** Once a
+  message is pulled + stored it is the receiver's local data; the origin may NOT reach back to mutate it
+  (the delivered-immutability / email model — this sidesteps distributed mutation consensus entirely). A
+  local edit/delete by either side stays local; a deleted-by-sender message is a gap on the receiver
+  (absorbed), never a remote-driven tombstone. The earlier `message.edit`/`message.delete` hint +
+  `tombstone`/`editOf`-shape design is **retracted** — it would contradict this principle.
+- **Presence / typing** — v0.2, best-effort ephemeral (lossy, carry no `id`, never retried).
+- **Read receipts across federation** — v0.2, **a separate deferred item (not the lossy presence/typing
+  path).** A receipt is append-only metadata ("user X read msg Y at T"), NOT a mutation of message data,
+  so it is compatible with the immutability principle above. It is NOT best-effort — delivery is wanted;
+  the channel is undecided. `receipt` type reserved in `federation-protocol.md` §10.
+- **[BUILT in Step 3] Federated groups** — the generalization landed in Step 3: a group is a `!`-User
+  addressed by account (never a cross-server thread id, per §3.1), and the pull model generalizes to N
+  foreign senders (the origin-hub aggregates per-author). See `docs/federation-step3-design.md`.
 - **History backfill as a feature** — Step 2.5; it IS the `/messages?after=0` endpoint (no new code,
   just a UI affordance + a bulk quota).
 - **Restart-resilient hints** — the in-memory map is volatile; pull-on-open (§4.4) is the floor. If a
