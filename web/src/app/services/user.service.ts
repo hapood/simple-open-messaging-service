@@ -44,11 +44,14 @@ export class UserService {
   }
 
   /** Tear down the in-memory session (logout). Clears sessionProfile → the lifecycle effect closes +
-   *  deletes this user's DB; a fresh ensureProfile() re-fetches on the next login. */
+   *  deletes this user's DB AND every DB-layer repository's own session-end effect (watching the same
+   *  signal) resets its in-memory cache; a fresh ensureProfile() re-fetches on the next login. Also
+   *  wipes the user-scoped localStorage keys (client-only folders / emoji recents). */
   clearSession(): void {
     this.sessionProfile.set(undefined)
     this._threadRevCursor.set(undefined)
     this.profileFetch = undefined
+    clearUserScopedLocalStorage()
   }
 
   /** In-flight profile fetch (dedup): boot calls updateSessionProfile() AND ConversationListService
@@ -87,10 +90,15 @@ export class UserService {
     return fetch
   }
 
-  /** Fire-and-forget profile refresh (boot + NOTIFY FRIEND_REQUEST badge). Seeds the cursor as a side
-   *  effect. Prefer ensureProfile() for callers that need to await the load. */
+  /** Fire-and-forget profile refresh — ALWAYS hits the network (`force: true`), because every caller
+   *  wants FRESH data: the NOTIFY FRIEND_REQUEST badge arming, the post-avatar / post-name-bio edit
+   *  re-read, and markInvitesRead clearing the badge. A non-force call would short-circuit on the
+   *  already-set sessionProfile (`ensureProfile` returns `of(cached)`) and serve stale data — which is
+   *  why a live friend request didn't surface the badge, and an avatar/name edit didn't refresh the
+   *  rail/drawer, until a full reload. Use ensureProfile() (no force) for the idempotent get-or-load at
+   *  boot. threadRevision is unchanged by all these triggers, so re-seeding the cursor is a no-op. */
   updateSessionProfile() {
-    this.ensureProfile().subscribe({
+    this.ensureProfile({ force: true }).subscribe({
       error: (err) => {
         console.error(err)
       },
@@ -336,4 +344,24 @@ function recentFirst(a: ConversationItem, b: ConversationItem): number {
   const ta = a.lastMessageAt ?? -Infinity
   const tb = b.lastMessageAt ?? -Infinity
   return tb - ta || a.threadId - b.threadId
+}
+
+/**
+ * localStorage keys holding USER-SCOPED client-only data (no server copy) — cleared on logout so a
+ * second account on the same browser never sees the previous one's folders / emoji recents. This mirrors
+ * the IDB purge-on-logout (the per-user DB is closed + deleted): local cache is wiped, rebuilt from
+ * scratch on the next login. NOTE these are client-only — clearing is permanent (even for the same user
+ * re-logging in), which is the chosen trade-off for account isolation.
+ *
+ * Deliberately NOT cleared (device-level preferences, shared across accounts on this browser): theme,
+ * language, the desktop list-pane width, the media-size threshold, `device_id`, and `is_keep_login`.
+ */
+const USER_SCOPED_LS_KEYS = ['soms.chatFolders', 'soms.chat.emojiRecents']
+
+/** Remove every user-scoped localStorage key (logout / account switch). SSR/prerender-safe. */
+export function clearUserScopedLocalStorage(): void {
+  if (typeof localStorage === 'undefined') return
+  for (const k of USER_SCOPED_LS_KEYS) {
+    try { localStorage.removeItem(k) } catch { /* private-mode / quota — best-effort */ }
+  }
 }

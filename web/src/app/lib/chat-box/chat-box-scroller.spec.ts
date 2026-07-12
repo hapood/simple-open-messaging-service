@@ -2083,6 +2083,100 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(info.atBottom).toBe(true);                                // first message sits at the bottom
   });
 
+  it('empty thread: incoming first message (receiver flow — no optimistic bubble) mounts via the init(-1) fallback', async () => {
+    // Receiver-side regression for the reported bug: an empty thread (mounted === []) receives its FIRST message
+    // live via SSE. Unlike the sender flow above (which pre-mounts an optimistic bubble → mounted.length === 1 when
+    // the signal fires), the receiver has nothing mounted. loadNewer(true) must NOT bail on `mounted.length === 0` —
+    // it must fall through to the init(-1) newest-page fallback and mount the just-cached real. Pre-fix the guard
+    // returned 0 and the first message was silently dropped (empty chatbox); only the SECOND message showed, because
+    // by then mounted.length > 0.
+    const live: CbItem<number>[] = [];
+    const src: CbSource<number> = {
+      init: async (_a, olderCount) => {
+        const start = Math.max(0, live.length - olderCount);
+        const out = live.slice(start).map(it => ({ ...it }));
+        if (out.length) out[out.length - 1] = { ...out[out.length - 1], boundary: 'newest' as const };
+        return out;
+      },
+      getOlder: async () => [],
+      getNewer: async (cursorId) => {
+        const idx = live.findIndex(it => String(it.id) === String(cursorId));
+        if (idx < 0) return [];
+        const out = live.slice(idx + 1).map(it => ({ ...it }));
+        if (out.length) out[out.length - 1] = { ...out[out.length - 1], boundary: 'newest' as const };
+        return out;
+      },
+      pushLive: (items) => { for (const it of items) live.push(it); },
+      getPending: () => [],
+      destroy: () => {},
+    };
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+    await scroller.init();
+    expect(scroller.getInfo().mounted).toBe(0);
+    expect(scroller.getInfo().noNewer).toBe(true);
+
+    // Receiver: the first message arrives live (SSE → repo cache → signal). NO optimistic bubble is mounted.
+    src.pushLive([{ id: 0, data: 42 }]);
+    await scroller.onMessageSignal();
+
+    // The first incoming message MUST mount and pin to the bottom — pre-fix this stayed mounted===0.
+    const info = scroller.getInfo();
+    expect(info.mounted).toBe(1);
+    expect(content.querySelector('[data-cb-id="0"]')).not.toBeNull();
+    expect(info.newestId).toBe(0);
+    expect(info.noNewer).toBe(true);
+    expect(info.atBottom).toBe(true);
+  });
+
+  it('empty thread: first message arriving DURING the init-fetch window is saved + replayed (not dropped)', async () => {
+    // The same guard bug also defeated the primeAndReplay race path: a signal that lands during init's fetch window
+    // is saved, then replayed once init primes — but the replay routes back into loadNewer(true) on mounted===[],
+    // which pre-fix bailed at the guard. One root cause, two symptoms; this test pins the second. Mirrors the
+    // non-empty "signal in the init-fetch window" test, but the snapshot resolves EMPTY (a brand-new thread).
+    const live: CbItem<number>[] = [];
+    let resolveInitFn: ((items: CbItem<number>[]) => void) | null = null;
+    let initCalls = 0;
+    const src: CbSource<number> = {
+      init: async (anchorId) => {
+        if (anchorId !== -1) return [];
+        // 1st call (kernel init): deferred — resolves with the empty pre-arrival snapshot.
+        // 2nd call (loadNewer's init(-1) fallback after the replay): return the now-cached live message.
+        if (initCalls++ === 0) return new Promise(r => { resolveInitFn = r; });
+        const out = live.slice().map(it => ({ ...it }));
+        if (out.length) out[out.length - 1] = { ...out[out.length - 1], boundary: 'newest' as const };
+        return out;
+      },
+      getOlder: async () => [],
+      getNewer: async () => [],
+      pushLive: (items) => { for (const it of items) live.push(it); },
+      getPending: () => [],
+      destroy: () => {},
+    };
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+
+    const initP = scroller.init();        // source.init(-1) deferred → the init-fetch window (state stays 'steady')
+    await flush();
+    expect(resolveInitFn).not.toBeNull(); // init's initial fetch is still in flight
+
+    // The first message (id 0) arrives during the window + its signal fires (saved by runMessageSignal's !primed arm).
+    src.pushLive([{ id: 0, data: 42 }]);
+    scroller.onMessageSignal(0);
+
+    // init resolves with the EMPTY pre-arrival snapshot (id 0 missed it).
+    resolveInitFn!([]); resolveInitFn = null;
+    await initP;
+    await flush();
+
+    // primeAndReplay fired the saved signal → loadNewer(true) on the empty window → init(-1) fallback → id 0 mounted.
+    const info = scroller.getInfo();
+    expect(info.mounted).toBe(1);
+    expect(content.querySelector('[data-cb-id="0"]')).not.toBeNull();
+    expect(info.newestId).toBe(0);
+    expect(info.atBottom).toBe(true);
+  });
+
   it('single-message thread (count=1): the sole item is marked "both" → noOlder AND noNewer set, no wasted loads, no ghost', async () => {
     // A 1-message sequence: the source emits boundary:'both' for the sole item (it is both the global oldest and newest).
     const sole: CbItem<number> = { id: 0, data: 0, boundary: 'both' };

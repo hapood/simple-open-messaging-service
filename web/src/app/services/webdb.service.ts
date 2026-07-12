@@ -157,10 +157,14 @@ export class WebdbService implements OnDestroy {
     }
   }
 
-  /** Close and physically delete the given user's database (logout / account switch). */
+  /** Close and physically delete the given user's database (logout / account switch). The synchronous
+   *  head nulls `currentUserId` too, so a `db()` call racing in before the new user's effect re-fires
+   *  cannot re-open THIS user's database via the stale id (`db()`'s lazy re-open reads `currentUserId`).
+   *  The actual handle close + on-disk delete are awaited below. */
   async closeAndDelete(userId: string): Promise<void> {
     const closing = this.dbPromise;
     this.dbPromise = null;
+    this.currentUserId = null;
     this.ready.set(false);
     this.avatarBytes = 0;
     if (closing) {

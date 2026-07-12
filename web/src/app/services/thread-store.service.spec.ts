@@ -157,6 +157,34 @@ describe('ThreadRepository', () => {
     expect(repo.items().map((t) => t.threadId)).toEqual([1]);
   });
 
+  // Regression guard for the account-switch bug: logout (clearSession → sessionProfile undefined) must
+  // drop the previous user's cached list + flip status back to LOADING, so the next login's list component
+  // (guarded on `status===LOADING && items empty`) re-triggers load() instead of painting stale data.
+  // The SSE worker's fresh connect emits no reconnect$ pulse, and ngOnInit's guard would otherwise be
+  // suppressed by the leftover READY+items — so this reset is the only thing that re-arms the reload.
+  it('session-end reset drops the cached list and re-arms LOADING (account switch)', async () => {
+    queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11), p2p(2, 22)]));
+    repo.load({ force: true });
+    await flush(20);
+    expect(repo.items().length).toBe(2);
+    expect(repo.status()).toBe('READY');
+
+    // Logout → sessionProfile becomes undefined → the repo's session-end effect fires reset().
+    sessionProfile.set(undefined);
+    await flush(20);
+
+    expect(repo.items()).toEqual([]);
+    expect(repo.status()).toBe('LOADING');
+    expect(repo.error()).toBe('');
+
+    // The next login reloads cleanly for the new user (no stale carryover).
+    sessionProfile.set({ id: 2 } as User);
+    queryAllUserThreadsSpy.and.returnValue(of([p2p(5, 55)]));
+    repo.load();
+    await flush(20);
+    expect(repo.items().map((t) => t.threadId)).toEqual([5]);
+  });
+
   it('onNewMessage bumps unread (closed thread, someone else) and reorders to the tier head', async () => {
     queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11, { lastMessageAt: 100 }), p2p(2, 22, { lastMessageAt: 200 })]));
     repo.load({ force: true });

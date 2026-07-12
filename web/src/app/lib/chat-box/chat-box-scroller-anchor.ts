@@ -1145,16 +1145,26 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
   /** Load ONE newer batch: getNewer + mergeItems, then a mount-dispatch. **Pure load — no trim** (split: the caller —
    *  balance / onMessageSignal — trims + reconciles). Returns the count mounted (0 = boundary / overtaken / no data). */
   private async loadNewer(force = false): Promise<number> {
-    if (this.inflightNewer || this.mounted.length === 0) return 0;
+    if (this.inflightNewer) return 0;
+    // Empty window has no real cursor. Only a FORCED (signal-triggered) pull may proceed — it falls through
+    // to the init(-1) newest-page fallback below, which is how an empty thread mounts its FIRST incoming
+    // message (receiver side) and how an all-optimistic window confirms its first send (sender side). An
+    // unforced call (balance / followToNewest) on an empty window has nothing to do. newerCursorId() is never
+    // reached on the empty path: the hasReal ternary below routes empty/all-optimistic windows to init(-1),
+    // never getNewer — so the empty-mounted crash the old combined guard protected against is unreachable here.
+    if (this.mounted.length === 0 && !force) return 0;
     if (!force && this.noNewer) return 0;
     this.inflightNewer = true;
     const g = this.gen;
     let batch: CbItem<T>[];
     try {
-      // No real cursor exists when the window is entirely optimistic/transient (the first send in an empty thread):
-      // newerCursorId() would then fall back to an optimistic/transient id, which getNewer cannot resolve (returns []),
-      // stranding the confirmed real off-window and leaving the bubble "sending" forever. Fetch the newest page
-      // directly via init(-1, …) — the canonical "newest N items" op — which resolves from the live-cached reals.
+      // No real cursor exists when the window is empty (the FIRST incoming message on a brand-new thread — receiver
+      // side) OR entirely optimistic/transient (the first send in an empty thread — sender side): newerCursorId()
+      // would then fall back to an optimistic/transient id (or throw on empty), which getNewer cannot resolve
+      // (returns []), stranding the confirmed real off-window and leaving the bubble "sending" forever / the incoming
+      // message undelivered. Fetch the newest page directly via init(-1, …) — the canonical "newest N items" op —
+      // which resolves from the live-cached reals. The empty-window case reaches this branch only via the forced
+      // signal path (see the guard above); an unforced call bails earlier.
       const hasReal = this.mounted.some(e => !e.transient && !e.optimistic && !e.leaving && !e.resortTarget);
       batch = hasReal
         ? await this.source.getNewer(this.newerCursorId(), this.cfg.mountItem)

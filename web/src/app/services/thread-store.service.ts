@@ -1,4 +1,4 @@
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, inject, signal, effect } from '@angular/core';
 import { filter, firstValueFrom, forkJoin, map, catchError, of, Subscription } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { UserService } from './user.service';
@@ -93,6 +93,9 @@ export class ThreadRepository {
    *  duplicates are blocked. */
   private readonly lastSeenSeq = new Map<number, number>();
 
+  /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
+  private prevSessionId: number | null = null;
+
   private readonly sseSub: Subscription;
 
   constructor() {
@@ -118,6 +121,42 @@ export class ThreadRepository {
     // (any add/delete / preview / unread missed during the disconnect — SSE does not replay). Owned here
     // (the DB layer handles its own refresh), so the UI layer stops subscribing for this purpose.
     this.sseSub.add(this.ws.reconnect$.subscribe(() => this.load({ force: true })));
+
+    // Session-end reset: when the session ends (sessionProfile → undefined, i.e. clearSession/logout),
+    // drop the in-memory list so a second account logging into the same live SPA cannot inherit this
+    // user's cached list. The IDB partition is handled by WebdbService; this covers the in-memory layer.
+    // Reset flips status back to LOADING, so the next login's ThreadListComponent.ngOnInit (guarded on
+    // `status===LOADING && items empty`) re-triggers load() — otherwise the stale READY+items would
+    // suppress the reload, and the SSE worker's fresh connect emits no `reconnect$` pulse to do it.
+    // Driven by the same sessionProfile signal UserService already uses for the DB open/close effect
+    // (consistent lifecycle; no extra registration API for consumers to wire).
+    effect(() => {
+      const id = this.userService.sessionProfile()?.id ?? null;
+      if (id === this.prevSessionId) return;
+      this.prevSessionId = id;
+      if (id === null) this.reset();
+    });
+  }
+
+  /**
+   * Drop ALL in-memory session state (logout / account switch). The IDB store is closed + deleted by
+   * WebdbService; this resets the in-memory caches so they cannot leak across users. Bumps {@link bootGen}
+   * to invalidate any in-flight boot of the previous user (its snapshot is now stale and must not be
+   * written back), and clears {@link bootInFlight} so the next login's boot runs. Resets {@link _status}
+   * to LOADING so the freshly-mounted list re-loads.
+   */
+  private reset(): void {
+    this._items.set([]);
+    this._status.set('LOADING');
+    this._error.set('');
+    this._openThreadId.set(undefined);
+    this._topInserted.set(null);
+    this._pendingTopId = null;
+    this._deltaInFlight = false;
+    this._pendingTailRev = undefined;
+    this.lastSeenSeq.clear();
+    this.bootGen++;
+    this.bootInFlight = false;
   }
 
   // ── boot: cached paint → snapshot refresh ──────────────────────────────────────────────────

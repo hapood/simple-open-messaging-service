@@ -111,5 +111,18 @@ describe('WebdbService', () => {
       await webdb.openForUser('1');
       expect(await webdb.getAvatar('u9')).toBeUndefined();
     });
+
+    // Regression guard for the stale-currentUserId bug: closeAndDelete must null currentUserId, so a
+    // racing db() call (e.g. a repository read fired before the new user's effect re-opens a DB) cannot
+    // transparently RE-OPEN this user's database via the lazy re-open path. Before the fix,
+    // currentUserId stayed '1' and db() would silently re-create soms-webdb-u1.
+    it('closeAndDelete resets currentUserId so db() does not transparently re-open that user', async () => {
+      await webdb.openForUser('1');
+      expect(webdb.ready()).toBe(true);
+      await webdb.closeAndDelete('1');
+      // db() has no handle and no currentUserId → it must reject (it must NOT lazily reopen '1').
+      await expectAsync(webdb.db()).toBeRejected();
+      expect(webdb.ready()).toBe(false);
+    });
   });
 });

@@ -302,6 +302,15 @@ $danger: var(--app-danger);
     border-radius: var(--app-radius-md);
     box-sizing: border-box;
 
+    // Native <button> resolves `color` from the UA `buttontext` system color,
+    // which tracks color-scheme — NOT [data-theme=dark]. The app never sets
+    // color-scheme: dark, so buttontext stays at its light-scheme default
+    // (near-black); on the #202c33 dark panel the .user-name below renders
+    // near-invisible. Pin the theme token explicitly, mirroring .search-input
+    // / .reason-input / .state-title. (The .user-card and .pending-meta
+    // .user-name are <div>-based and inherit body's --app-text already.)
+    color: var(--app-text);
+
     &:hover {
       background: var(--app-hover);
     }

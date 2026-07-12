@@ -1,11 +1,12 @@
 import 'fake-indexeddb/auto';
 import { TestBed } from '@angular/core/testing';
 import { Subject, of, throwError } from 'rxjs';
-import { provideZonelessChangeDetection } from '@angular/core';
+import { provideZonelessChangeDetection, signal } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { MessageRepository } from './message-repository.service';
 import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
+import { UserService } from './user.service';
 import type { Message, StandardResponse } from './model';
 
 /** Flush the microtask + macrotask queue so async IDB writes + the NEW_MESSAGE handler settle. */
@@ -26,9 +27,12 @@ describe('MessageRepository', () => {
   let webdb: WebdbService;
   let eventSubject: Subject<{ event: string; status: number; data?: unknown }>;
   let queryMessageLogSpy: jasmine.Spy;
+  /** The sessionProfile signal the repo's session-end effect watches (logout = set undefined). */
+  let sessionProfile: ReturnType<typeof signal<{ id: number } | undefined>>;
 
   beforeEach(async () => {
     eventSubject = new Subject();
+    sessionProfile = signal<{ id: number } | undefined>({ id: 1 });
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -41,6 +45,7 @@ describe('MessageRepository', () => {
             queryMessageLog: (queryMessageLogSpy = jasmine.createSpy('queryMessageLog')),
           },
         },
+        { provide: UserService, useValue: { sessionProfile } },
       ],
     });
     repo = TestBed.inject(MessageRepository);
@@ -221,5 +226,37 @@ describe('MessageRepository', () => {
     const res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 5, orderBy: 'asc' });
     expect(res.data.map((m) => m.seq)).toEqual([6]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill — nothing stale served from the purged cache
+  });
+
+  // Regression guard for the account-switch bug: logout (clearSession → sessionProfile undefined) must
+  // clear the in-memory maxSeenSeq ceiling (it is documented "in-memory only — re-established by the init
+  // backend-probe each session"). A stale ceiling from the previous user would make getNewer falsely
+  // report the cache reached its ceiling. The per-user IDB is wiped separately by WebdbService.
+  it('session-end reset clears maxSeenSeq (a getNewer cache HIT becomes a gap-fill)', async () => {
+    // Seed [5,6,7] + establish seq 7 as the ceiling (init sets maxSeenSeq).
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [7, 6, 5].map((s) => msg(42, s)), hasMore: false }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
+    queryMessageLogSpy.calls.reset();
+
+    // getNewer (above 4): cache holds [5,6,7] contiguously up to the ceiling (7) → HIT, no backend.
+    let res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 4, orderBy: 'asc' });
+    expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
+    expect(res.hasMore).toBe(false); // reached the ceiling
+    expect(queryMessageLogSpy).not.toHaveBeenCalled();
+
+    // Logout → sessionProfile undefined → the repo's session-end effect fires reset() → ceiling cleared.
+    sessionProfile.set(undefined);
+    await flush(10);
+
+    // Same query now gap-fills: with no ceiling, the short cached range is not authoritative → backend.
+    // (orderBy:'asc' → the backend returns the page ascending.)
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [5, 6, 7].map((s) => msg(42, s)), hasMore: false }),
+    );
+    res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 4, orderBy: 'asc' });
+    expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill after the ceiling was cleared
   });
 });

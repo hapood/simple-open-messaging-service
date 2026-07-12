@@ -1,8 +1,9 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, effect } from '@angular/core';
 import { Subject, filter, firstValueFrom } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import { MsgService } from './message.service';
+import { UserService } from './user.service';
 import { Message, QueryMessageLogParams } from './model';
 
 /** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
@@ -38,6 +39,7 @@ export class MessageRepository {
   private readonly webdb = inject(WebdbService);
   private readonly ws = inject(WebsocketService);
   private readonly msg = inject(MsgService);
+  private readonly userService = inject(UserService);
 
   /**
    * Fires `{threadId, seq}` AFTER a NEW_MESSAGE body has been cached for that thread. The per-thread
@@ -51,6 +53,9 @@ export class MessageRepository {
    *  re-established by the init backend-probe each session. Drives the getNewer cache-hit ceiling test. */
   private readonly maxSeenSeq = new Map<number, number>();
 
+  /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
+  private prevSessionId: number | null = null;
+
   constructor() {
     // Own the NEW_MESSAGE SSE: cache the body, update the ceiling, THEN emit the live signal. The body
     // is the full Message (serializeBody of the committed row, id-stripped) — the same shape as the
@@ -58,6 +63,23 @@ export class MessageRepository {
     this.ws.eventSubject
       .pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined))
       .subscribe((m) => void this.onNewMessage(m.data as unknown as Message));
+
+    // Session-end reset: maxSeenSeq is documented "in-memory only — re-established by the init
+    // backend-probe each session", so it must not survive an account switch (a stale ceiling from the
+    // previous user could make getNewer falsely report the cache reached its ceiling). The IDB messages
+    // store is per-user and wiped by WebdbService; this clears the in-memory ceiling. Driven by the same
+    // sessionProfile signal the other session-scoped caches watch.
+    effect(() => {
+      const id = this.userService.sessionProfile()?.id ?? null;
+      if (id === this.prevSessionId) return;
+      this.prevSessionId = id;
+      if (id === null) this.reset();
+    });
+  }
+
+  /** Drop in-memory session state (logout / account switch). IDB is wiped per-user by WebdbService. */
+  private reset(): void {
+    this.maxSeenSeq.clear();
   }
 
   /**

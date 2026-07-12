@@ -1,4 +1,5 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, inject, signal, effect } from '@angular/core';
+import { UserService } from './user.service';
 
 /** Folder type rule — reuses the thread type dimension. */
 export type FolderTypeFilter = 'ALL' | 'P2P' | 'GROUP'
@@ -54,8 +55,24 @@ export function inFolder(
 export class FolderService {
   private readonly _folders = signal<ChatFolder[]>(this.load())
   readonly folders = this._folders.asReadonly()
+  private readonly userService = inject(UserService)
+  /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
+  private prevSessionId: number | null = null
 
   private seq = 0
+
+  constructor() {
+    // Session-end reset: drop the in-memory folder list on logout so a second account on the same
+    // browser never sees the previous one's folders (which reference that account's threadIds). The
+    // `soms.chatFolders` localStorage key is cleared centrally by UserService.clearSession; this resets
+    // the in-memory signal that survives as root-singleton state across the live SPA.
+    effect(() => {
+      const id = this.userService.sessionProfile()?.id ?? null
+      if (id === this.prevSessionId) return
+      this.prevSessionId = id
+      if (id === null) this._folders.set([])
+    })
+  }
 
   getById(id: string): ChatFolder | undefined {
     return this._folders().find(f => f.id === id)
