@@ -127,6 +127,32 @@ describe('ThreadRepository', () => {
     expect(repo.status()).toBe('READY');
   });
 
+  // Regression guard for the swallowed-throw bug: a non-zero API code / network failure during boot must
+  // surface as ERROR (status flip + error message) instead of leaving the list stuck on the LOADING
+  // skeleton forever. queryAllUserThreads rejects → firstValueFrom rejects → boot()'s catch → failLoad.
+  it('non-force initial boot on failure enters ERROR (does not hang on LOADING)', async () => {
+    queryAllUserThreadsSpy.and.returnValue(throwError(() => new Error('backend rejected')));
+    repo.load(); // NON-force, initial LOADING state — the load() gate must NOT reject the first boot
+    await flush(20);
+    expect(repo.status()).toBe('ERROR');
+    expect(repo.error()).toBeTruthy(); // the thrown message surfaces — it was not swallowed
+    expect(repo.items()).toEqual([]);
+  });
+
+  it('retry after ERROR clears the error and re-loads successfully', async () => {
+    queryAllUserThreadsSpy.and.returnValue(throwError(() => new Error('net down')));
+    repo.load();
+    await flush(20);
+    expect(repo.status()).toBe('ERROR');
+
+    queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11)]));
+    repo.load(); // non-force retry: status is ERROR (≠ LOADING) → proceeds; load() clears the error first
+    await flush(20);
+    expect(repo.error()).toBe('');
+    expect(repo.status()).toBe('READY');
+    expect(repo.items().map((t) => t.threadId)).toEqual([1]);
+  });
+
   it('onNewMessage bumps unread (closed thread, someone else) and reorders to the tier head', async () => {
     queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11, { lastMessageAt: 100 }), p2p(2, 22, { lastMessageAt: 200 })]));
     repo.load({ force: true });

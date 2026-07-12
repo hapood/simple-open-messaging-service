@@ -73,9 +73,11 @@ export class ThreadRepository {
   private _deltaInFlight = false;
   private _pendingTailRev: number | undefined;
 
-  /** True while a boot (cache-read + snapshot refresh) is in progress — a second non-force load() is a
-   *  no-op while this is set (mirrors the former status===LOADING gate, independent of the cached-paint
-   *  status flip). */
+  /** True while a boot (cache-read + snapshot refresh) is in progress — the SOLE single-flight guard:
+   *  a non-force {@link load} is a no-op while this is set. Set at the start of {@link boot} and cleared
+   *  in its `finally` (only by the newest boot, so a force supersedure doesn't prematurely clear it). Do
+   *  NOT gate on `_status() === 'LOADING'` instead — the initial status IS 'LOADING' before the first
+   *  boot, so that would block the first boot and the list would never load until a reconnect. */
   private bootInFlight = false;
   /** Generation counter: a `force` boot supersedes an in-flight one; a stale boot's writes are dropped. */
   private bootGen = 0;
@@ -121,11 +123,15 @@ export class ThreadRepository {
   /**
    * Load (or refresh) the conversation list. Boot-from-cache: paint cached records instantly (READY, no
    * skeleton), then a background snapshot freshens. A non-force call while a boot is already in-flight is
-   * a no-op; a force call (reconnect) supersedes the in-flight boot. Mirrors the former
-   * {@link ConversationListService.load} gating.
+   * a no-op ({@link bootInFlight}); a force call (reconnect) bypasses the guard and supersedes the
+   * in-flight boot via {@link bootGen}.
+   *
+   * The guard is `bootInFlight` ONLY. The initial `_status` is `'LOADING'` before any boot has run, so
+   * gating on `_status() === 'LOADING'` would reject the very first boot — the list would never load
+   * until a reconnect (ThreadListComponent.ngOnInit's non-force `load()` is the initial trigger).
    */
   load(opts?: { force?: boolean }) {
-    if (!opts?.force && (this._status() === 'LOADING' || this.bootInFlight)) return;
+    if (!opts?.force && this.bootInFlight) return;
     this._error.set('');
     // First boot with no cache → LOADING (skeleton gate). With cache (or a reconnect refresh) → keep the
     // current paint; the snapshot freshens silently in the background.
@@ -135,6 +141,7 @@ export class ThreadRepository {
 
   private async boot(force: boolean): Promise<void> {
     const gen = ++this.bootGen;
+    this.bootInFlight = true;
     try {
       if (!force) {
         const cached = await this.readCachedThreads();
@@ -160,6 +167,10 @@ export class ThreadRepository {
       // First-boot failure (no cached paint) → ERROR. Otherwise keep the cached paint (stale but usable);
       // a later reconnect retries.
       if (this._items().length === 0) this.failLoad(err);
+    } finally {
+      // Only the newest boot owns the in-flight flag — a force supersedure (gen mismatch) leaves it set
+      // for the newer boot to clear when it finishes.
+      if (gen === this.bootGen) this.bootInFlight = false;
     }
   }
 
