@@ -34,6 +34,7 @@ export enum BusinessCode {
 
   // 20xxx friend / invite state
   FRIEND_SELF = 20001, // cannot invite / friend yourself
+  FRIEND_NOT_FOUND = 20002, // cannot unfriend someone who is not your friend (delete-friend on a non-edge)
   FRIEND_INVALID_TARGET = 20004, // cannot befriend this target (e.g. a `!`-group account)
   INVITE_NOT_FOUND = 20010, // invite does not exist or is no longer pending
   INVITE_EXPIRED = 20011, // invite is past its expiresAt

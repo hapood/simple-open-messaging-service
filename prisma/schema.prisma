@@ -278,7 +278,6 @@ model MessageThread {
   type      MessageThreadType
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
-  isDeleted Boolean           @default(false)
 
   // Per-thread last-allocated Message.seq (-1 = no messages yet; first message → 0). The atomic counter
   // backing seq allocation: `UPDATE SET curSeq = curSeq + 1 RETURNING curSeq` inside the message-create

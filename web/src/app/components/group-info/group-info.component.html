@@ -56,6 +56,9 @@
             <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.name" [identityId]="m.userId" [src]="m.avatar"></app-user-avatar>
             <div class="member-info">
               <span class="member-name">{{ m.name }}@if (m.userId === myUserId()) { {{ 'common.you' | transloco }}}</span>
+              @if (m.domain) {
+                <app-federated-badge [domain]="m.domain"></app-federated-badge>
+              }
               <span class="role-badge" [class.owner]="m.role === 'OWNER'" [class.admin]="m.role === 'ADMIN'">{{ roleName(m.role) }}</span>
             </div>
           </div>

@@ -16,6 +16,7 @@ import { GroupEventService } from '../../services/group-event.service';
 import { ConversationItem } from '../../services/model';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { ThreadAliasEditorComponent } from '../thread-alias-editor/thread-alias-editor.component';
+import { FederatedBadgeComponent } from '../federated-badge/federated-badge.component';
 import { apiPrefix } from '../../services/constants';
 
 type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
@@ -32,7 +33,7 @@ type Role = 'OWNER' | 'ADMIN' | 'MEMBER';
  */
 @Component({
   selector: 'app-group-info',
-  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent, TranslocoPipe, ThreadAliasEditorComponent],
+  imports: [UserListComponent, IconComponent, MatButtonModule, FormsModule, UserAvatarComponent, TranslocoPipe, ThreadAliasEditorComponent, FederatedBadgeComponent],
   templateUrl: './group-info.component.html',
   styleUrl: './group-info.component.scss',
 })

@@ -2,7 +2,7 @@
 
 This document is the target design baseline for the SOMS **backend API and frontend-backend interaction protocol stack**, used for team alignment and subsequent incremental implementation. Based on a review of the existing code (5 backend controllers, `EventGateway`, `AuthService`, and the frontend `AuthInterceptor` / `WebsocketService`), it proposes a layered target contract, an error code system, a WS event catalog, and an evolution roadmap.
 
-- **Status**: P0/P1/P2 completed and verified; real-time communication was migrated from WebSocket to **SSE** on 2026-06-30 (§4.5 / §5.5 / §Six P2 have been rewritten accordingly); this document only retains the to-do items (P2+ / P3 + ESM side task). Last updated 2026-07-12.
+- **Status**: P0/P1/P2/P2+ completed and verified; real-time communication was migrated from WebSocket to **SSE** on 2026-06-30 (§4.5 / §5.5 / §Six P2 have been rewritten accordingly); this document only retains the to-do items (P3; the ESM side task landed under P1). Last updated 2026-07-12.
 - **Scope**: HTTP APIs, data contracts, authentication, real-time communication, frontend-backend coordination
 - **Goal**: Under the positioning of "concise and easy for third-party applications to integrate", round out the contracts, correctness, and reliability
 
@@ -256,18 +256,31 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 
 > With typing/presence removed, all P2 items are landed. **Next roadmap work** = P2+ (friend-domain feature gaps) and P3 (engineering/production readiness) below.
 
-### P2+ — Friend Domain Feature Completion (Product Alignment)
+### P2+ — Friend Domain Feature Completion (Product Alignment) ✅ Completed
 
-> Already fixed in this round (2026-06-26): the mutual-add-friend auto-approve parameter-order bug (`makeFriendRequest` FROM_PENDING branch), inaccurate status copy in `sendFriendRequest`/`acceptFriendRequest`, the frontend search results now distinguishing "can add / already a friend / already sent / the other side sent to you" by thread status (no longer always showing Send Request), the mis-set error copy on `ngOnInit` success, and several typos.
-> **Decline friend request** is implemented: `POST user/decline-friend-request` + a frontend Decline button on Pending items. Semantics = delete this pair of request rows (both FROM_PENDING/TO_PENDING), returning to the initial state, without notifying the other party, and allowing a resend (benchmarked against Telegram).
-> **Cancel sent request** is implemented: `POST user/cancel-friend-request` + a frontend Cancel button on "my sent" items. Reuses decline's "both rows → DELETED" logic; semantics = I proactively retract my own pending request, the other party is unaware, and a resend is allowed.
-> **Real-time notification** is implemented (landed with P2 "Notify integration", see above): new friend requests are pushed in real time via SSE `NOTIFY`, no longer relying on frontend polling.
-> The following are remaining **feature gaps** (modeled in schema but with no endpoint / no UI); by product benchmarking (Telegram/Discord) they should be added, and are listed as TODO for now:
-
-| Content | Current State | Affected |
-| --- | --- | --- |
-| Delete friend / block | `DELETED`/`BLOCKED` statuses exist but no endpoint writes them | Cannot unfriend; no anti-harassment |
-| Request message | The `UserMessageThread.reqMessage` field is unused; `send-friend-request` only accepts `userId` | Cannot carry verification info (benchmarked against WeChat/Telegram request messages) |
+> The friend domain was rebuilt on a unified `Invite` table (`kind` FRIEND|GROUP) in migration
+> `20260709120000_invite_model`: the old `Friendship` table and its `FriendshipStatus` enum
+> (`PENDING`/`APPROVED`/`BLOCKED`/`DELETED`) were dropped, and a friend relationship is now **derived
+> state** — an active P2P thread shared by both users (`ThreadParticipant.leftAt IS NULL`), not a stored
+> status. Every item that was once a "feature gap" here is live, end-to-end (backend + consumer UI + en/zh
+> i18n):
+>
+> - **Send / accept / decline / cancel friend request** — `POST invite/friend` (carries `note`, the request
+>   message — the renamed, formerly-unused `UserMessageThread.reqMessage` column) / `invite/accept` /
+>   `invite/reject` / `invite/revoke` (`src/controller/invite.controller.ts`); the consumer `friend-requests`
+>   popup wires all four with a message textarea + the incoming-note display.
+> - **Delete friend (unfriend)** — `POST user/delete-friend` (`user.controller.ts:341`): mutual soft-leave
+>   (both `ThreadParticipant.leftAt` set; history retained) + a `THREAD_REVISION_UPDATED` delta. UI: the
+>   PeerProfile two-step confirm + the chat-header MORE menu.
+> - **Block / unblock** — `POST user/block` (`user.controller.ts:379`), an idempotent toggle on the
+>   `UserBlock` table; the message path drops delivery and hides the blocked creator's messages
+>   (`blockedByMe`). Independent of friendship (survives unfriend); UI in the chat-header MORE menu + the
+>   blocked banner.
+> - **Real-time notification** — friend requests ride the SSE `NOTIFY` event (landed with P2 "Notify
+>   integration"); no polling.
+>
+> The earlier "TODO" rows (delete/block endpoints, `reqMessage` unused) reflected the pre-migration schema
+> and are removed. P2+ is complete.
 
 ### P3 — Engineering and Production Readiness
 

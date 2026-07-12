@@ -22,9 +22,7 @@
 
 services:
   postgres:
-    # Standard Postgres 16. The dev DB happens to run on TimescaleDB, but the schema has no timescale
-    # dependency; swap to timescale/timescaledb:2.17-pg16 if you want parity.
-    image: postgres:16
+    image: postgres:18
     environment:
       POSTGRES_DB: soms
       POSTGRES_USER: timescale

@@ -4,6 +4,7 @@ import { WebdbService } from './webdb.service';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
+import { MessageRepository } from './message-repository.service';
 import { ConversationItem, User } from './model';
 import { planDelta } from './thread-delta';
 import { toFriendlyHttpError } from './http-error';
@@ -43,6 +44,7 @@ export class ThreadRepository {
   private readonly userService = inject(UserService);
   private readonly ws = inject(WebsocketService);
   private readonly profileRepo = inject(ProfileRepository);
+  private readonly messageRepo = inject(MessageRepository);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -305,11 +307,19 @@ export class ThreadRepository {
     if (changed) void this.persistThread(changed);
   }
 
-  /** Drop a thread (self-kick / self-left / unfriend). */
+  /** Drop a thread (self-kick / self-left / unfriend). This is the SOLE chokepoint for thread removal — the
+   *  direct unfriend paths (header menu, peer-profile aside) and the indirect delta path (leaveGroup / kicked
+   *  / a multi-device THREAD_REVISION DELETE, via {@link pullDelta}) all funnel here — so the full local
+   *  cleanup lives here: drop the list row + open-thread pointer, delete the `threads`-store record, clear the
+   *  stale {@link lastSeenSeq} residue, AND purge the cached message bodies via the message repo (the
+   *  threadId is dead: the backend mints a fresh one on re-friend / re-join, so the orphaned bytes would
+   *  otherwise linger until logout). Both IDB writes are best-effort + fire-and-forget. */
   removeThread(threadId: number): void {
     this._items.update((list) => list.filter((t) => t.threadId !== threadId));
     if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
+    this.lastSeenSeq.delete(threadId);
     void this.deleteThreadFromDb(threadId);
+    void this.messageRepo.deleteByThread(threadId);
   }
 
   /** Optimistically clear the unread badge on a thread (UI open → mark-read). */

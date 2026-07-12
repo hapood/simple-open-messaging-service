@@ -310,6 +310,7 @@ export class UserController {
               name: gu.name,
               avatar: gu.avatar,
               description: gu.bio,
+              domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,
               createdAt: (gu.group?.createdAt ?? p.thread.createdAt).getTime(),
               updatedAt: (gu.group?.updatedAt ?? p.thread.updatedAt).getTime(),
@@ -347,11 +348,11 @@ export class UserController {
     }
     const peer = await this.userService.findUniqueUser({ id: dto.userId });
     // A friend relationship == an active P2P thread shared by both. No thread → nothing to end
-    // (idempotent). THREAD_NOT_FOUND matches the P2P "no conversation" signal the message/thread
-    // routes use.
+    // (idempotent). FRIEND_NOT_FOUND signals the caller has no friendship edge to end (distinct from the
+    // generic THREAD_NOT_FOUND the read paths use for a missing conversation).
     const threadId = await this.participantService.findP2PThreadBetween(me, dto.userId);
     if (threadId === null) {
-      return { code: BusinessCode.THREAD_NOT_FOUND, message: `not friends with [${dto.userId}]` };
+      return { code: BusinessCode.FRIEND_NOT_FOUND, message: `not friends with [${dto.userId}]` };
     }
     // Soft-leave BOTH participants in one shot. The thread row + participants stay (history), but the
     // edge is severed (findP2PThreadBetween now returns null); re-friending later mints a fresh thread.
@@ -615,7 +616,7 @@ export class UserController {
         await this.groupService.resolveGroupUsersByThreadIds([p.threadId])
       ).get(p.threadId);
       item.group = gu
-        ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio }
+        ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio, domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain }
         : undefined;
       // Resolve the last-message sender's display name for the group preview prefix.
       if (p.thread.lastMessageSenderId != null) {

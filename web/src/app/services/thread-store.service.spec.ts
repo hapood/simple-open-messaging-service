@@ -4,10 +4,12 @@ import { Subject, of, throwError } from 'rxjs';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { ThreadRepository } from './thread-store.service';
+import { MessageRepository } from './message-repository.service';
 import { ProfileRepository } from './profile-store.service';
 import { UserService } from './user.service';
+import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
-import { ConversationItem, User } from './model';
+import { ConversationItem, Message, User } from './model';
 
 /** Flush the microtask + macrotask queue so the async boot (IDB read + Observable awaits) settles. */
 function flush(ms = 0): Promise<void> {
@@ -63,7 +65,9 @@ describe('ThreadRepository', () => {
       providers: [
         provideZonelessChangeDetection(),
         ThreadRepository,
+        MessageRepository,
         WebdbService,
+        { provide: MsgService, useValue: { queryMessageLog: jasmine.createSpy('queryMessageLog') } },
         {
           provide: ProfileRepository,
           useValue: { putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined) },
@@ -238,6 +242,39 @@ describe('ThreadRepository', () => {
     await flush();
     expect(repo.items().map((t) => t.threadId)).toEqual([2]);
     expect(await (await webdb.db()).get('threads', 1)).toBeUndefined();
+  });
+
+  it('removeThread also purges the cached message bodies from IDB (cache GC on thread removal)', async () => {
+    queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11), p2p(2, 22)]));
+    repo.load({ force: true });
+    await flush(20);
+
+    // Seed message bodies for BOTH threads directly into the messages store.
+    const db = await webdb.db();
+    const seed = db.transaction('messages', 'readwrite');
+    const put = (threadId: number, seq: number) =>
+      seed.store.put({
+        seq, contentType: 'PURE_TEXT', content: `${threadId}:${seq}`, threadId, creator: threadId * 11,
+        createdAt: 0, updatedAt: 0, isDeleted: false,
+      } as unknown as Message);
+    await put(1, 1); await put(1, 2); await put(2, 1);
+    await seed.done;
+
+    const msgCount = async (threadId: number): Promise<number> => {
+      let n = 0;
+      let cursor = await db.transaction('messages').store.openCursor(
+        IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+      );
+      while (cursor) { n++; cursor = await cursor.continue(); }
+      return n;
+    };
+    expect(await msgCount(1)).toBe(2); // pre-condition
+
+    repo.removeThread(1);
+    await flush();
+
+    expect(await msgCount(1)).toBe(0); // thread 1's bodies purged via the message repo
+    expect(await msgCount(2)).toBe(1); // thread 2's bodies untouched — the purge is scoped
   });
 
   it('THREAD_REVISION_UPDATED delta: DELETE removes locally, ADD fetches + inserts, cursor advances', async () => {

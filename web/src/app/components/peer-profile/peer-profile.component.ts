@@ -12,9 +12,10 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
 /**
  * P2P (friend) profile panel — rendered in the `aside` auxiliary outlet (`chat/:threadId/(aside:profile)`).
  * Resolves its conversation from the parent route's `:threadId` + the shared list (no input binding
- * needed — the aside child route carries no params of its own). Surfaces Unfriend (delete-friend) with a
- * two-step inline confirm; on success it drops the thread and returns to the conversation list, which
- * closes both the chat and this panel. A future custom-name/alias feature would also live here.
+ * needed — the aside child route carries no params of its own). Surfaces Unfriend (delete-friend) and
+ * Block/Unblock — the destructive actions use a two-step inline confirm (mutually exclusive); Unblock is
+ * a single tap. On unfriend it drops the thread and returns to the conversation list, which closes both
+ * the chat and this panel. A future custom-name/alias feature would also live here.
  */
 @Component({
   selector: 'app-peer-profile',
@@ -52,6 +53,20 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
         } @else {
           <button mat-stroked-button color="warn" class="unfriend-btn" [disabled]="busy()" (click)="askUnfriend()">{{ 'profile.unfriend' | transloco }}</button>
         }
+
+        @if (blocked()) {
+          <button mat-stroked-button class="block-btn" [disabled]="busy()" (click)="doUnblock()">{{ 'profile.unblock' | transloco }}</button>
+        } @else if (confirmBlock()) {
+          <div class="confirm-row">
+            <span>{{ 'profile.blockConfirm' | transloco:{ name: peerDisplayName() } }}</span>
+            <div class="confirm-actions">
+              <button mat-stroked-button [disabled]="busy()" (click)="cancelBlock()">{{ 'common.cancel' | transloco }}</button>
+              <button mat-flat-button color="warn" [disabled]="busy()" (click)="doBlock()">{{ 'profile.block' | transloco }}</button>
+            </div>
+          </div>
+        } @else {
+          <button mat-stroked-button color="warn" class="block-btn" [disabled]="busy()" (click)="askBlock()">{{ 'profile.block' | transloco }}</button>
+        }
       </div>
     </div>
   `,
@@ -76,6 +91,7 @@ import { FederatedBadgeComponent } from '../federated-badge/federated-badge.comp
     // Full-width destructive action — real mat-stroked-button color="warn" (red outline + text, Material
     // state layer on hover, disabled styling built in). Matches the confirm-state unfriend button below.
     .unfriend-btn { width: 100%; }
+    .block-btn { width: 100%; }
     .confirm-row {
       display: flex; flex-direction: column; gap: 12px; padding: 14px;
       border: 1px solid var(--app-border-strong); border-radius: var(--app-radius-md);
@@ -120,6 +136,9 @@ export class PeerProfileComponent {
   readonly busy = signal(false)
   /** Two-step destructive confirm gate for Unfriend. */
   readonly confirmUnfriend = signal(false)
+  /** Two-step destructive confirm gate for Block (mirrors confirmUnfriend; mutually exclusive with it —
+   *  starting one cancels the other so at most one confirm-row is ever visible). */
+  readonly confirmBlock = signal(false)
 
   /** The panel is open over the currently-viewed chat — read its id + item from the shared list. */
   readonly threadId = this.convList.openThreadId
@@ -139,9 +158,20 @@ export class PeerProfileComponent {
     const p = this.peer();
     return p && p.isForeigner ? p.domain : null;
   })
+  /** Whether the caller has blocked this peer (hydrated on the conversation item by the backend's batched
+   *  UserBlock lookup). Drives the Block ↔ Unblock label; patched in place by applyThreadMeta on toggle. */
+  readonly blocked = computed(() => this.userMsgTrd()?.blocked ?? false)
 
-  askUnfriend() { this.confirmUnfriend.set(true) }
+  askUnfriend() {
+    this.confirmBlock.set(false)
+    this.confirmUnfriend.set(true)
+  }
   cancelUnfriend() { this.confirmUnfriend.set(false) }
+  askBlock() {
+    this.confirmUnfriend.set(false)
+    this.confirmBlock.set(true)
+  }
+  cancelBlock() { this.confirmBlock.set(false) }
 
   doUnfriend() {
     const peer = this.peer()
@@ -156,6 +186,40 @@ export class PeerProfileComponent {
         // (primary outlet) and this panel (aside outlet) in one step.
         this.convList.removeThread(threadId)
         this.nav.closeChat()
+      },
+      error: () => this.busy.set(false),
+    })
+  }
+
+  /** Block the peer (two-step confirmed). Patches the conversation item's `blocked` flag in place via
+   *  applyThreadMeta so the chat-header menu + blocked banner flip immediately; the panel stays open. */
+  doBlock() {
+    const peer = this.peer()
+    const threadId = this.threadId()
+    if (!peer || threadId === undefined) return
+    this.busy.set(true)
+    this.userService.setBlock({ userId: peer.id, block: true }).subscribe({
+      next: (res) => {
+        this.busy.set(false)
+        if (res.code !== 0) return
+        this.convList.applyThreadMeta(threadId, { blocked: true })
+        this.confirmBlock.set(false)
+      },
+      error: () => this.busy.set(false),
+    })
+  }
+
+  /** Unblock the peer (single tap — non-destructive, no confirm). */
+  doUnblock() {
+    const peer = this.peer()
+    const threadId = this.threadId()
+    if (!peer || threadId === undefined) return
+    this.busy.set(true)
+    this.userService.setBlock({ userId: peer.id, block: false }).subscribe({
+      next: (res) => {
+        this.busy.set(false)
+        if (res.code !== 0) return
+        this.convList.applyThreadMeta(threadId, { blocked: false })
       },
       error: () => this.busy.set(false),
     })

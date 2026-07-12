@@ -76,6 +76,9 @@
               <div class="thread-info">
                 <div class="thread-row">
                   <span class="thread-name">{{ displayName(thread) }}</span>
+                  @if (thread.group.domain) {
+                    <app-federated-badge [domain]="thread.group.domain"></app-federated-badge>
+                  }
                   @if (thread.muted) {
                     <span class="thread-muted" [title]="'threadList.muted' | transloco">
                       <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
