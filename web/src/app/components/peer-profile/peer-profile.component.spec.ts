@@ -80,7 +80,11 @@ describe('PeerProfileComponent (Block/Unblock + Unfriend)', () => {
         },
         { provide: NavStateMachineService, useValue: { closeChat, closeAside: jasmine.createSpy() } as unknown as NavStateMachineService },
       ],
-    });
+    })
+      // These tests assert the component's class logic (signals + service calls), not the DOM. Blank the
+      // template so the view's transitive deps (<app-user-avatar> → AvatarRepository → HttpClient, IDB, …)
+      // are never instantiated — the unit under test stays isolated from its view's rendering concerns.
+      .overrideComponent(PeerProfileComponent, { set: { template: '' } });
     comp = TestBed.createComponent(PeerProfileComponent).componentInstance;
   });
   afterEach(() => TestBed.resetTestingModule());
