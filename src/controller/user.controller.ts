@@ -24,11 +24,11 @@ import {
   MessageThreadType,
   Prisma,
 } from '../prisma/generated/client.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
+import { Public } from '../common/public.decorator.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -70,7 +70,6 @@ export class UserController {
     private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/my-profile')
@@ -84,7 +83,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-avatar')
@@ -131,7 +129,6 @@ export class UserController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
@@ -148,7 +145,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/valid')
@@ -322,7 +318,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/delta')
@@ -333,7 +328,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: serializeBody(data) };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/delete-friend')
@@ -368,7 +362,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'friend removed' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/block')
@@ -393,7 +386,6 @@ export class UserController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query')
@@ -406,7 +398,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: list };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/peer-trust-status')
@@ -424,7 +415,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: { trusted } };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
@@ -485,7 +475,6 @@ export class UserController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/search')
@@ -505,7 +494,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/sync-peer-profile')
@@ -533,7 +521,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('/user/thread-info')
@@ -629,6 +616,7 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: item };
   }
 
+  @Public()
   @ApiTags('auth')
   @HttpCode(HttpStatus.OK)
   @Post('user/register')

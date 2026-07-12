@@ -12,7 +12,6 @@ import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { ContentType, GroupRole } from '../prisma/generated/client.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -87,7 +86,7 @@ export class GroupController {
     ids.forEach((uid) => this.sseService.onGroupEvent(uid, eventName, data));
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @UseGuards(ThrottleGuard)
   @Throttle(10, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -229,7 +228,7 @@ export class GroupController {
     return { invited, skipped };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<InviteGroupDto>('groupId')
@@ -262,7 +261,7 @@ export class GroupController {
     };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
@@ -280,7 +279,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
@@ -316,7 +315,6 @@ export class GroupController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/members')
@@ -359,7 +357,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @Throttle(20, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -384,7 +382,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
@@ -412,7 +410,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
@@ -436,7 +434,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
@@ -459,7 +457,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()

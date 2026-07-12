@@ -14,7 +14,6 @@ import {
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import {
@@ -25,6 +24,7 @@ import { NotificationTokenService } from '../auth/notification-token.service.js'
 import { LoginAuthInfo } from '../auth/local.strategy.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { Public } from '../common/public.decorator.js';
 import {
   LoginDto,
   RefreshTokenDto,
@@ -57,6 +57,7 @@ export class AuthController {
     reply.clearCookie(MEDIA_TOKEN_COOKIE, { path: '/' });
   }
 
+  @Public()
   @UseGuards(LocalAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('auth/login')
@@ -107,6 +108,7 @@ export class AuthController {
     }
   }
 
+  @Public()
   @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-access')
@@ -145,6 +147,7 @@ export class AuthController {
     }
   }
 
+  @Public()
   @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/renew-refresh')
@@ -182,6 +185,7 @@ export class AuthController {
     }
   }
 
+  @Public()
   @Throttle(30, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout')
@@ -200,7 +204,6 @@ export class AuthController {
     return { code: BusinessCode.OK, message: 'success' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout-all')
@@ -214,7 +217,6 @@ export class AuthController {
     return { code: BusinessCode.OK, message: 'success' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Throttle(10, 60)
   @HttpCode(HttpStatus.OK)
@@ -243,7 +245,6 @@ export class AuthController {
     return { code: BusinessCode.VALIDATION_FAILED, message: 'old password wrong' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/sessions')
@@ -256,7 +257,6 @@ export class AuthController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/revoke-session')
@@ -274,7 +274,6 @@ export class AuthController {
   // /notifications/missed; it is separate from the JWT/refresh-token family so it can't race the
   // web client's renewal and can't be used for anything beyond the missed-thread summary.
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @Throttle(10, 60)
   @HttpCode(HttpStatus.OK)
@@ -288,6 +287,7 @@ export class AuthController {
   /** Self-revoke: a device presents its own Bearer notification token and the server invalidates
    *  that one token (per-device, not all the user's tokens). No guard needed — possession of the
    *  token IS the proof; a not-found/already-revoked token is an idempotent no-op. Called on logout. */
+  @Public()
   @HttpCode(HttpStatus.OK)
   @Delete('auth/notification-token')
   @ApiOperation({ summary: 'Revoke the presented notification token (self-revoke on logout)' })

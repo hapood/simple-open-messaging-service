@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -35,6 +36,7 @@ import { BusinessCode } from '../common/business-code.js';
  */
 @ApiTags('notification')
 @ApiBearerAuth()
+@Public()
 @Controller()
 export class NotificationController {
   constructor(

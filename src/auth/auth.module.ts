@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { EventEmitterModule } from '@nestjs/event-emitter';
 import { AuthService } from './auth.service.js';
 import { UserModule } from '../user/user.module.js';
@@ -10,6 +11,7 @@ import { JwtModule } from '@nestjs/jwt';
 import { jwtConstants } from './constants.js';
 import { UserService } from '../user/user.service.js';
 import { ThrottleGuard } from './throttle.guard.js';
+import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { NotificationTokenService } from './notification-token.service.js';
 import { NotificationTokenGuard } from './notification-token.guard.js';
 
@@ -31,6 +33,10 @@ import { NotificationTokenGuard } from './notification-token.guard.js';
     ThrottleGuard,
     NotificationTokenService,
     NotificationTokenGuard,
+    // Global guard: every route is JWT-authenticated unless it opts out with @Public(). Registered here
+    // (not in AppModule) to co-locate with JwtAuthGuard/JwtStrategy/PassportModule. Mirrors the existing
+    // APP_INTERCEPTOR→AdminAuditInterceptor precedent in AdminModule.
+    { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
   exports: [AuthService, LocalStrategy, AccessTokenValidator, NotificationTokenService, NotificationTokenGuard],
 })

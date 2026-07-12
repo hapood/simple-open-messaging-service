@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -26,6 +27,7 @@ import { FederationService } from './federation.service.js';
  * Raw-body capture (bootstrap.ts preParsing, scoped to /api/v1/s2s/*) feeds req.rawBody to the verifier
  * so the content-digest matches what the sender signed.
  */
+@Public()
 @Controller('s2s')
 export class S2sInitController {
   constructor(

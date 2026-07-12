@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -35,6 +36,7 @@ import { FederationSelfCheckService } from './federation-self-check.service.js';
  * Block/Unblock are SUPER_ADMIN-only (high-impact: refuses federation for a whole domain) and audited.
  */
 @ApiTags('admin')
+@Public()
 @Controller()
 export class AdminFederationController {
   constructor(

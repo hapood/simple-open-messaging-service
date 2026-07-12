@@ -1,6 +1,5 @@
 import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { SseService } from './sse.service.js';
 
 /**
@@ -16,7 +15,6 @@ import { SseService } from './sse.service.js';
  * （官方明确），无需改动全局拦截器。
  */
 @Controller('events')
-@UseGuards(JwtAuthGuard)
 export class EventsController {
   constructor(private readonly sseService: SseService) {}
 
