@@ -1,7 +1,7 @@
 import { reportGeneratedJwtSecrets, resolveJwtSecret } from './jwt-secret.js';
 
 export const jwtConstants = {
-  // access_token signing/verification secret (JwtModule, JwtStrategy, WebSocket gateway).
+  // access_token signing/verification secret (JwtModule, JwtStrategy, SSE gateway).
   accessSecret: resolveJwtSecret('JWT_ACCESS_SECRET', 'jwt-access.key'),
   // refresh_token signing/verification secret (AuthService only; kept separate from access).
   refreshSecret: resolveJwtSecret('JWT_REFRESH_SECRET', 'jwt-refresh.key'),

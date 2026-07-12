@@ -108,7 +108,7 @@ All four are public (finding #3). They are the client-side counterpart to the ex
 
 ### Android client
 
-In `com.soms.desktop` (the package owning `SomsBridge.kt`, `SomsMessagingService.kt`,
+In `com.soms.client` (the package owning `SomsBridge.kt`, `SomsMessagingService.kt`,
 `SomsSecureStore.kt`, `MainActivity.kt`):
 
 1. **Strip the build-time path.** Remove the `com.google.gms.google-services` plugin from
@@ -156,7 +156,7 @@ desktop uses system/browser notifications with no Firebase client config.
       #5: the only possible gate is server-side package+SHA-1 registration, which the spike exercises for
       real). If the spike fails, stop and re-investigate before proceeding.
 - [ ] Backend: add `GET /notifications/fcm-config` handler + DTO/response typing; add the four
-      `FIREBASE_CLIENT_*` vars to `.env.example` and `.env.docker.example`.
+      `FIREBASE_CLIENT_*` vars to `.env.example`.
 - [ ] Android: strip plugin/json/provider; add the fetch in the connect step; persist to `SomsSecureStore`;
       add the `initializeApp` call (foreground path + cold-start path).
 - [ ] Update `src-tauri/FCM_ANDROID_PATCH.md`: mark §1–§2 (plugin + json) as **removed** under the runtime
@@ -172,7 +172,7 @@ These are inherent to FCM regardless of build-time vs runtime config, and must b
 self-hosting guide:
 
 1. Create a Firebase project.
-2. Add an Android app with package name `com.soms.desktop` (matches `applicationId` / `tauri.conf.json`
+2. Add an Android app with package name `com.soms.client` (matches `applicationId` / `tauri.conf.json`
    `identifier`).
 3. Register the signing-key SHA-1 (debug **and** release) under "SHA certificate fingerprint" — without
    it, token retrieval silently fails (finding #5).
