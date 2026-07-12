@@ -1,4 +1,4 @@
-// SOMS desktop shell (Tauri v2).
+// SOMS cross-platform shell (Tauri v2) — desktop (Linux/Windows/macOS) and Android.
 //
 // Responsibilities:
 //  1. Resolve the backend origin and inject `window.__SOMS_API_ORIGIN__` before the Angular app boots
