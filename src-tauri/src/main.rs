@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    soms_app_lib::run()
+    soms_client_lib::run()
 }

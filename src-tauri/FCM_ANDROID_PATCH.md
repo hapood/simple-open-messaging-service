@@ -6,12 +6,12 @@ truth. Re-apply all changes below after regenerating the Android project (or whe
 version). The browser/backend builds are unaffected.
 
 The edits live in four persistent (non-`generated/`) files plus two new Kotlin files. **Never** edit
-anything under `gen/android/app/src/main/java/com/soms/app/generated/` or any `tauri.*.gradle.kts`
+anything under `gen/android/app/src/main/java/com/soms/client/generated/` or any `tauri.*.gradle.kts`
 — they carry `AUTO-GENERATED` headers and are overwritten.
 
 ## Prerequisites (one Firebase project)
 
-1. Create a Firebase project. Add an **Android app** with package name `com.soms.app` (matches
+1. Create a Firebase project. Add an **Android app** with package name `com.soms.client` (matches
    `app/build.gradle.kts` `applicationId` and `src-tauri/tauri.conf.json` `identifier`).
 2. Download `google-services.json` → drop at `gen/android/app/google-services.json` (gitignored).
 3. Register the debug **and** release signing-key SHA-1 in the console app's "SHA certificate
@@ -59,7 +59,7 @@ implementation("com.google.firebase:firebase-messaging")
 </service>
 ```
 
-### 4. `gen/android/app/src/main/java/com/soms/app/MainActivity.kt`
+### 4. `gen/android/app/src/main/java/com/soms/client/MainActivity.kt`
 
 Replace the stock 11-line `MainActivity` with the version that:
 - captures the cold-start deep-link `EXTRA_THREAD_ID` into `DeepLinkState` in `onCreate`,
@@ -70,7 +70,7 @@ Replace the stock 11-line `MainActivity` with the version that:
 
 See the current on-disk `MainActivity.kt` for the canonical text.
 
-### 5. New Kotlin files in `com.soms.app`
+### 5. New Kotlin files in `com.soms.client`
 
 - `SomsBridge.kt` — process-global bridge: the live webview reference (set by
   `MainActivity.onWebViewCreate`), a UI-thread `eval()` helper, a `jsonStr()` escaper, and two nested

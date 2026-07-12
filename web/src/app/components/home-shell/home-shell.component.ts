@@ -13,7 +13,7 @@ import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 
-const LIST_WIDTH_KEY = 'soms.desktop.listWidth'
+const LIST_WIDTH_KEY = 'soms.client.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
 
 /** Mobile overlay transition state. `static` = desktop/tablet (the slot is an inline flex column / side

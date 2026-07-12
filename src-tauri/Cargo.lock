@@ -3380,7 +3380,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "soms-app"
+name = "soms-client"
 version = "0.1.0"
 dependencies = [
  "reqwest 0.12.28",
