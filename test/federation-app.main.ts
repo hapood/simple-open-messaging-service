@@ -12,6 +12,7 @@
 // graceful app.close() (the demote test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
 import { Controller, Get, Query } from '@nestjs/common';
+import { Public } from '../src/common/public.decorator.js';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from '../src/app.module.js';
@@ -31,6 +32,7 @@ import { TestDiscoveryService, makeInMemoryKeypair } from './federation-harness.
  * Nest's listen-time route finalization + caused intermittent boot failures). SignatureService +
  * DiscoveryService are @Global-exported by FederationModule, so they inject here. See design-review B3.
  */
+@Public() // opts out of the global JwtAuthGuard — this is a test-only probe (no JWT; it signs the upstream S2S call itself).
 @Controller('test')
 class TestS2sHookController {
   constructor(

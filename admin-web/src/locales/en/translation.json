@@ -46,12 +46,39 @@
     "audit": "Audit Log",
     "admins": "Admins",
     "settings": "Settings",
+    "quotas": "Daily Quotas",
     "logout": "Log Out",
     "group": {
       "overview": "Overview",
       "security": "Security & Sessions",
       "federation": "Federation",
       "system": "System"
+    }
+  },
+  "quota": {
+    "title": "Daily Quotas",
+    "desc": "Per-node daily budgets (the local server + each federated peer). Resets at 00:00 UTC.",
+    "empty": "No quota nodes.",
+    "local": "Local",
+    "peer": "Peer",
+    "edit": "Edit",
+    "editTitle": "Quota limits — {{domain}}",
+    "editHint": "Leave a field empty to use the global default; values apply from now and reset daily at 00:00 UTC.",
+    "placeholder": {
+      "default": "default"
+    },
+    "maxBytes": "Max {{cat}} (MB)",
+    "save": "Save",
+    "cancel": "Cancel",
+    "toast": {
+      "saved": "Quota limits saved"
+    },
+    "col": {
+      "node": "Node",
+      "messages": "Messages",
+      "images": "Images",
+      "largeFiles": "Large files",
+      "requests": "Requests"
     }
   },
   "dashboard": {

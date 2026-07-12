@@ -223,7 +223,7 @@ model ThreadParticipant {
   @@index([userId, pinned]) // pinned-first conversation list per user
 }
 
-/// A friend-add or group-invite request — the single home for invites of all kinds ("方法一致").
+/// A friend-add or group-invite request — the single home for invites of all kinds (uniform shape).
 /// kind=FRIEND: one user asking another to be friends (threadId null; the P2P thread is minted on
 /// accept). kind=GROUP: a member inviting a friend into a group thread (threadId = target group).
 /// Delivered to `toUserId` and accepted by sending the invite id back as a payload.
@@ -591,6 +591,15 @@ model FederatedPeer {
   demotionCount Int       @default(0) // how many times demoted — a flakiness signal
   blockedAt     DateTime? // admin block time
 
+  // Per-peer daily-quota overrides (null = use the global default from loadQuotaConfig). Set from the
+  // admin Quotas page. See docs/federation-quotas.md + the unified QuotaService (src/quota/).
+  dailyMsgLimit       Int? // messages/day this peer may pull from us
+  dailyImageLimit     Int? // image media items/day
+  dailyLargeFileLimit Int? // video/large-file media items/day
+  dailyRequestLimit   Int? // inbound friend ops/day (anti-spam)
+  maxImageBytes       Int? // single-image byte cap
+  maxLargeFileBytes   Int? // single-large-file byte cap
+
   @@index([trustLevel])
   @@index([lastSuccessAt]) // "stale / never-heard-from" peers sweep
 }
@@ -630,6 +639,21 @@ model S2SFriendOpSeen {
   receivedAt DateTime @default(now())
 
   @@id([origin, opId])
+}
+
+/// Unified daily-quota counters. One row per (node, day, category). A "node" is a domain: the local
+/// server's own SOMS_DOMAIN (the aggregate local bucket — all local users share it) OR a federated peer
+/// domain. `date` is a UTC calendar day, so the budget resets automatically at 00:00 UTC (yesterday's
+/// row is simply not today's — no cron). The atomic increment is an `INSERT … ON CONFLICT DO UPDATE
+/// … RETURNING count` in QuotaService.tick (exact, not ±1). See docs/federation-quotas.md.
+model QuotaDailyUsage {
+  domain   String   @db.VarChar(63) // SOMS_DOMAIN (local node) OR a peer domain
+  date     DateTime @db.Date        // UTC calendar day
+  category String   @db.VarChar(15) // messages | images | largeFiles | requests
+  count    Int      @default(0)
+
+  @@id([domain, date, category])
+  @@index([date]) // cheap purge sweep (DELETE WHERE date < today - N)
 }
 
 /// Generic key→value store for admin-managed runtime settings. The typed SettingsService

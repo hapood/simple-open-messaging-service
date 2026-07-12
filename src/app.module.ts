@@ -26,6 +26,7 @@ import { NotificationController } from './controller/notification.controller.js'
 import { HealthController } from './controller/health.controller.js';
 import { MessageFanoutModule } from './message/message-fanout.module.js';
 import { ThreadRevisionModule } from './thread-revision/thread-revision.module.js';
+import { QuotaModule } from './quota/quota.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -52,6 +53,7 @@ import { ThreadRevisionModule } from './thread-revision/thread-revision.module.j
     SettingsModule,
     MessageFanoutModule,
     ThreadRevisionModule,
+    QuotaModule,
   ],
   controllers: [
     MessageController,

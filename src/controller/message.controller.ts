@@ -11,7 +11,6 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { ContentType, Prisma } from '../prisma/generated/client.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -29,6 +28,7 @@ import {
 } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
+import { QuotaService } from '../quota/quota.service.js';
 import {
   SendMessageDto,
   SendMediaDto,
@@ -50,9 +50,10 @@ export class MessageController {
     private readonly participantService: ThreadParticipantService,
     private readonly userBlockService: UserBlockService,
     private readonly fanout: MessageFanoutService,
+    private readonly quota: QuotaService,
   ) {}
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SendMessageDto>('threadId')
   @Throttle(60, 60) // anti-spam ceiling: 60 sends/min
   @ApiBearerAuth()
@@ -95,6 +96,19 @@ export class MessageController {
         message: 'invalid audio content',
       };
     }
+    // Daily quota (local aggregate budget — one bucket shared by all local users). A TEXT send consumes
+    // one 'messages' unit; media contentTypes (IMAGE/FILE/VIDEO/AUDIO) are counted at their /upload*
+    // step (images / largeFiles), not here, so a media message is never double-counted.
+    if (contentType === ContentType.PURE_TEXT) {
+      const q = await this.quota.tryTickLocal('messages');
+      if (q.exceeded) {
+        return {
+          code: BusinessCode.QUOTA_EXCEEDED,
+          message: `daily message quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+          data: { category: 'messages', limit: q.limit, retryAfter: q.retryAfter },
+        };
+      }
+    }
     const data = await this.messageService.writeMsgToThread(
       req.user.userId,
       dto.threadId,
@@ -121,7 +135,7 @@ export class MessageController {
    * Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants), same as text.
    * Idempotent: a retried stage with the same clientMessageId returns the existing stage.
    */
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SendMediaDto>('threadId')
   @Throttle(60, 60)
   @ApiBearerAuth()
@@ -144,7 +158,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful', data: { clientMessageId: dto.clientMessageId } };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ResourceId<QueryMessagesDto>('threadId')
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -193,7 +207,6 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful', data, hasMore };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('thread/by-user-id')
@@ -220,7 +233,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful', data: { threadId } };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<MarkReadDto>('threadId')
   @Throttle(60, 60)
   @ApiBearerAuth()
@@ -277,7 +290,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetMutedDto>('threadId')
   @Throttle(30, 60)
   @ApiBearerAuth()
@@ -305,7 +318,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetPinnedDto>('threadId')
   @Throttle(30, 60)
   @ApiBearerAuth()
@@ -337,7 +350,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<ClearHistoryDto>('threadId')
   @Throttle(10, 60)
   @ApiBearerAuth()
@@ -366,7 +379,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SetAliasDto>('threadId')
   @Throttle(30, 60)
   @ApiBearerAuth()
@@ -394,7 +407,7 @@ export class MessageController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @ResourceId<SearchMessagesDto>('threadId')
   @Throttle(30, 60)
   @ApiBearerAuth()

@@ -105,6 +105,10 @@ export const router = createBrowserRouter([
             path: '/settings',
             lazy: () => import('@/routes/settings/settings-page').then((m) => ({ Component: m.SettingsPage })),
           },
+          {
+            path: '/quotas',
+            lazy: () => import('@/routes/quotas/quotas-page').then((m) => ({ Component: m.QuotasPage })),
+          },
         ],
       },
       { path: '*', element: <NotFoundPage /> },

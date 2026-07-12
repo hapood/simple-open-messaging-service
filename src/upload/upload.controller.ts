@@ -13,17 +13,18 @@ import {
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { UploadService } from './upload.service.js';
 import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { extractDigests } from './file-content.js';
+import { QuotaService } from '../quota/quota.service.js';
 
 /**
- * 图片上传：multipart/form-data，字段 file=图片二进制 + w/h（前端 createImageBitmap 读出的宽高）。
- * w/h 经 consumeImage 解析（无 DTO class，ValidationPipe 不介入），原样回填。
+ * Image upload: multipart/form-data, field file=<image bytes> + w/h (the dimensions the frontend read
+ * via createImageBitmap). w/h are parsed by consumeImage (no DTO class; ValidationPipe is not involved)
+ * and passed through verbatim.
  *
  * The four media routes (/upload, /upload/file, /upload/video, /upload/audio) double as the PROMOTE
  * step of a staged media send: when the request carries an `x-client-message-id` header (set by the
@@ -39,9 +40,24 @@ export class UploadController {
     private readonly uploadService: UploadService,
     private readonly messageService: MessageService,
     private readonly fanout: MessageFanoutService,
+    private readonly quota: QuotaService,
   ) {}
 
-  @UseGuards(JwtAuthGuard)
+  /** Tick the local aggregate daily quota for a media upload; returns an error ApiResult when the budget
+   *  is exhausted (the caller returns it as HTTP 200 + QUOTA_EXCEEDED), else null (proceed). Local uploads
+   *  already enforce per-item size via the /upload pipeline, so this is the COUNT cap only (no byte 413). */
+  private async tickLocal(
+    category: 'images' | 'largeFiles',
+  ): Promise<ApiResult | null> {
+    const q = await this.quota.tryTickLocal(category);
+    if (!q.exceeded) return null;
+    return {
+      code: BusinessCode.QUOTA_EXCEEDED,
+      message: `daily ${category} quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+      data: { category, limit: q.limit, retryAfter: q.retryAfter },
+    };
+  }
+
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload')
@@ -60,10 +76,12 @@ export class UploadController {
               : 'invalid image',
       };
     }
-    // magic number 二次校验：非真实图片拒绝（防伪造 mimetype 的恶意上传）。
+    // Magic-number second check: reject non-genuine images (defends against forged-mimetype malicious uploads).
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
+    const blocked = await this.tickLocal('images');
+    if (blocked) return blocked;
     const { url, size } = await this.uploadService.save(img.mimetype, img.buffer);
     // Promote a staged IMAGE send if this upload carries a client-message-id (the message content is
     // {url,w,h}; the staged meta for an image is empty — w/h come from consumeImage above).
@@ -84,7 +102,6 @@ export class UploadController {
    * uploads/avatars/ (outside the per-object authz gate's shards/ scope) instead of generic /upload
    * (which writes to shards/ and would 401 under thread-membership authz).
    */
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/avatar')
@@ -122,7 +139,6 @@ export class UploadController {
    * client cannot forge any of these — url/name/mimeType are produced by the server, size is the
    * real buffer length, and parseFileContent re-validates the shape on send.
    */
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/file')
@@ -143,6 +159,8 @@ export class UploadController {
                 : 'invalid file type',
       };
     }
+    const blocked = await this.tickLocal('largeFiles');
+    if (blocked) return blocked;
     const data = await this.uploadService.saveFile(
       f.mimetype,
       f.filename,
@@ -160,7 +178,6 @@ export class UploadController {
    * (<video> loadedmetadata) and carried in the VIDEO message content; the server neither reads nor
    * trusts them. Returns {url, name, size, mimeType}; the client stores it verbatim as VIDEO content.
    */
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/video')
@@ -174,6 +191,8 @@ export class UploadController {
         message: this.mediaRejectMessage(v.reason, 'video'),
       };
     }
+    const blocked = await this.tickLocal('largeFiles');
+    if (blocked) return blocked;
     const data = await this.uploadService.saveMedia(
       v.ext,
       v.mime,
@@ -187,7 +206,6 @@ export class UploadController {
   }
 
   /** Audio upload: same contract as video with the audio family + cap. */
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/audio')
@@ -201,6 +219,8 @@ export class UploadController {
         message: this.mediaRejectMessage(a.reason, 'audio'),
       };
     }
+    const blocked = await this.tickLocal('largeFiles');
+    if (blocked) return blocked;
     const data = await this.uploadService.saveMedia(
       a.ext,
       a.mime,
