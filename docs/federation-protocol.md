@@ -25,9 +25,10 @@
 >
 > **What is NOT yet built (deferred).** Presence/typing (v0.2, best-effort ephemeral — lossy, no retry),
 > read receipts (v0.2, a separate item — NOT best-effort, delivery is wanted), group
-> **rename/avatar/description** sync, a durable **active-liveness** leave backstop, origin death/re-homing,
-> and per-peer **quota** enforcement (`docs/federation-quotas.md`). **Edit/delete propagation is a
-> non-goal**, not deferred — the origin has no authority over receiver-local data once delivered (§9).
+> **rename/avatar/description** sync, a durable **active-liveness** leave backstop, origin death/re-homing.
+> Per-peer **quota** enforcement is now **BUILT** (unified local + peers — see
+> `docs/federation-quotas.md`). **Edit/delete propagation is a non-goal**, not deferred — the origin has no
+> authority over receiver-local data once delivered (§9).
 > These are flagged inline as **Deferred**. The per-section "Future" headers below that predate Steps 2/3
 > are retained as historical design notes — read them as **implemented** per the step-design docs unless
 > marked Deferred.
@@ -640,7 +641,7 @@ Avatars are the **only media that federates in v0.1** — message-image federati
 - **E2EE** — `content` reserved; crypto is a separate effort.
 - **Presence / typing** — ephemeral, v0.2 (lossy, carry no `id`, never retried).
 - **Read receipts across federation** — `receipt` type reserved; logic v0.2.
-- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). Per-peer **quotas** for that future step are designed (daily message/image/file limits + size caps, admin-adjustable) but also deferred — see `docs/federation-quotas.md`.
+- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). The per-node **quota** system that will bound that traffic is **BUILT** (daily message/image/file count limits + size caps, admin-adjustable, applied to local + peers) — see `docs/federation-quotas.md`; it is already live for text `messages`, image/large-file local uploads, and inbound S2S `requests`.
 - **Open federation / anti-spam** — allow-list only.
 - **Bridges to Matrix / XMPP / ActivityPub** — separate adapter services.
 - **Identity portability** — `user@domain` is bound to its server in v0.1.

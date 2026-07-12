@@ -22,9 +22,9 @@
 > span servers A, B, C … . Owner is created on A (the **origin**); members on other servers hold local
 > **mirror** threads that pull history **from the origin** (the single message authority).
 >
-> **Out of scope (deferred):** group rename/avatar sync propagation, origin death / re-homing, per-peer
-> quota enforcement (`docs/federation-quotas.md`). Edit/delete is a **non-goal** (Step 2 §9: the origin
-> cannot mutate receiver-local data once delivered).
+> **Out of scope (deferred):** group rename/avatar sync propagation, origin death / re-homing. Per-peer
+> quota enforcement is now **BUILT** (unified local + peers — see `docs/federation-quotas.md`). Edit/delete
+> is a **non-goal** (Step 2 §9: the origin cannot mutate receiver-local data once delivered).
 
 ---
 

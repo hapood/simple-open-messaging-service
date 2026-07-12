@@ -7,9 +7,10 @@
 > pull-on-thread-open + slow poll. The federation e2e is **16/16 green** (4 new Step 2 scenarios: text
 > push+pull+SSE, idempotent re-sync, pull-on-open recovery, media round-trip — alongside the 12 Step 1 /
 > profile tests, no regressions). The resilience story is live: a lost push recovers via the sweep +
-> pull-on-open + slow poll. **Deferred** (§9 + `docs/federation-quotas.md`): read receipts/presence/typing,
-> history backfill as a feature (Step 2.5), per-peer quotas, and a durable outbox (only if a future tier
-> needs transactional delivery). Edit/delete is a **non-goal** (§9, not deferred); federated groups shipped
+> pull-on-open + slow poll. **Deferred** (§9): read receipts/presence/typing,
+> history backfill as a feature (Step 2.5), and a durable outbox (only if a future tier
+> needs transactional delivery). Per-peer quotas are now **BUILT** (unified local + peers — see
+> `docs/federation-quotas.md`). Edit/delete is a **non-goal** (§9, not deferred); federated groups shipped
 > in Step 3. This is
 > the authoritative Step 2 design; it **supersedes** the outbox-push/backfill prose retained in
 > `docs/federation-protocol.md` §6.2 / §8 / §9.2 (kept there as rejected-alternative rationale).
@@ -483,7 +484,7 @@ a user action.
 
 ## 6. Quota hook points
 
-Per `docs/federation-quotas.md` (deferred enforcement, designed here). The pull model makes quota a
+Now **BUILT** per `docs/federation-quotas.md` (unified local + peers). The pull model makes quota a
 **receiver-inbound** concern naturally:
 
 - **Pull response (`GET /messages`)** — the sender's server counts the batch toward the requester
@@ -495,8 +496,10 @@ Per `docs/federation-quotas.md` (deferred enforcement, designed here). The pull 
 - **`new-msg-map` push** — rate-limited per `(from, to)` to bound notify-spam; the "no-op if
   `latestSeq <= cursor`" already absorbs redundant entries.
 
-No quota tables are added in Step 2 v0.1 (enforcement is deferred); the endpoints expose the hooks
-(response truncation points, 429/413 codes) so quotas bolt on without API change.
+Step 2 v0.1 deliberately exposed the quota hooks (response truncation points, 429/413 codes) without
+the enforcement, so quotas could bolt on without an API change — and they since have: the unified
+per-node quota system is **BUILT** (`docs/federation-quotas.md`), and these Step-2 endpoints now enforce
+ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaService`.
 
 ---
 
