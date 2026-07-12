@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -27,6 +28,7 @@ import { BusinessCode } from '../common/business-code.js';
 @ApiBearerAuth()
 @UseGuards(AdminAuthGuard, AdminRolesGuard)
 @Roles(AdminRole.SUPER_ADMIN)
+@Public()
 @Controller()
 export class MediaAssetGcController {
   constructor(private readonly gc: MediaAssetGcService) {}

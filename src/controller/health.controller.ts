@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import { Controller, Get, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { ApiResult } from '../common/api-result.js';
@@ -38,6 +39,7 @@ export class HealthResponseDto {
  * Throttled (generously) so a public unauthenticated endpoint can't be abused for load; no auth guard.
  */
 @ApiTags('health')
+@Public()
 @Controller()
 @UseGuards(ThrottleGuard)
 export class HealthController {

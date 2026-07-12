@@ -12,16 +12,20 @@ import { BusinessCode } from './business-code.js';
 import { BusinessException } from './business.exception.js';
 
 /**
- * 全局异常过滤器：所有异常统一转 { code, message, data } 信封，code 为业务码段（见 business-code.ts）。
+ * Global exception filter: every exception is normalized to the { code, message, data } envelope, where
+ * `code` is a business-code segment (see business-code.ts).
  *
- * 业务流原则（P1b）：参数校验等「业务输入失败」纳入业务流 → HTTP 200 + 业务码，
- * 让前端在 success 回调统一按 code 分支（不必分 error/success 两套）。
- * 仅未认证 / 资源不存在 / 冲突 / 服务器异常 这类协议·系统层保留 HTTP 状态码给大类。
+ * Business-flow principle (P1b): "business input failures" such as parameter validation are folded into
+ * the business flow → HTTP 200 + a business code, so the frontend branches uniformly on `code` in its
+ * success callback (no separate error/success paths). Only protocol/system-layer outcomes —
+ * unauthenticated / not-found / conflict / server-error — retain their HTTP status code for the broad
+ * category.
  *
- * - ValidationPipe 的 BadRequestException（字段级 message 数组）→ HTTP 200 + VALIDATION_FAILED
- * - 其它 HttpException → 沿用其 HTTP 码，code 按 status 映射到 10xxx 段
- * - Prisma 已知错误：P2002(唯一冲突)→409/ALREADY_EXISTS，P2025(记录不存在)→404/NOT_FOUND
- * - 其它未知异常 → 500/INTERNAL；原文仅记服务端日志（结构化日志 + traceId 属 P3）
+ * - ValidationPipe's BadRequestException (field-level message array) → HTTP 200 + VALIDATION_FAILED
+ * - Other HttpException → keeps its HTTP status; code is mapped from the status to the 10xxx segment
+ * - Known Prisma errors: P2002 (unique conflict) → 409/ALREADY_EXISTS, P2025 (record not found) → 404/NOT_FOUND
+ * - Any other unknown exception → 500/INTERNAL; the original message is logged server-side only
+ *   (structured logging + traceId is P3 work)
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -47,6 +51,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
     const { httpStatus, code, message } = this.map(exception);
 
+    // A BusinessException may carry a structured `data` payload (e.g. a quota hit's
+    // {category, limit, retryAfter}); surface it on the envelope. All other exceptions → data:null.
+    const data =
+      exception instanceof BusinessException
+        ? ((exception.getResponse() as { data?: unknown }).data ?? null)
+        : null;
+
     // Tier by severity: 5xx / unknown → error with stack (real faults stay visible); 4xx
     // (expired token, missing resource, validation) → concise warn with no stack.
     if (httpStatus >= HttpStatus.INTERNAL_SERVER_ERROR) {
@@ -71,7 +82,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     response.status(httpStatus).send({
       code,
       message,
-      data: null,
+      data,
     });
   }
 
@@ -119,7 +130,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
               : String((resp as any).message)
             : exception.message;
 
-      // ValidationPipe 字段级校验错误（message 为数组）→ 纳入业务流：HTTP 200 + VALIDATION_FAILED
+      // ValidationPipe field-level validation error (message is an array) → folded into the business
+      // flow: HTTP 200 + VALIDATION_FAILED
       if (
         httpStatus === HttpStatus.BAD_REQUEST &&
         resp &&
@@ -178,7 +190,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     };
   }
 
-  /** HTTP 状态码 → 10xxx 业务码段（协议·系统层错误，HTTP 码保留给大类）。 */
+  /** HTTP status → 10xxx business-code segment (protocol/system-layer errors; the HTTP code is kept for the broad category). */
   private httpStatusToBusinessCode(status: HttpStatus): number {
     switch (status) {
       case HttpStatus.UNAUTHORIZED:

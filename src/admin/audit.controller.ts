@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -20,6 +21,7 @@ import { PrismaService } from '../prisma.service.js';
  */
 @ApiTags('admin')
 @ApiBearerAuth()
+@Public()
 @Controller()
 export class AuditController {
   constructor(private readonly prisma: PrismaService) {}

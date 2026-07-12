@@ -21,9 +21,13 @@ export class BusinessException extends HttpException {
     public readonly bizCode: number,
     message: string,
     httpStatus: HttpStatus = HttpStatus.OK,
+    /** Optional structured payload surfaced on the response envelope's `data` field (the filter
+     *  passes it through verbatim; absent → `data: null` as usual). Use for error context the client
+     *  can act on — e.g. a quota hit's `{category, limit, retryAfter}` or a rate-limit's `retryAfter`. */
+    public readonly data?: unknown,
   ) {
-    // Stash the domain code inside the response object so the filter can read it without a
+    // Stash the domain code + data inside the response object so the filter can read them without a
     // circular import on BusinessCode (it already imports BusinessCode itself).
-    super({ code: bizCode, message }, httpStatus);
+    super({ code: bizCode, message, data: data ?? null }, httpStatus);
   }
 }

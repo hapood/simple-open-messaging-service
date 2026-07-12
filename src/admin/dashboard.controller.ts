@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -19,6 +20,7 @@ import { BusinessCode } from '../common/business-code.js';
  */
 @ApiTags('admin')
 @ApiBearerAuth()
+@Public()
 @Controller()
 export class DashboardController {
   constructor(

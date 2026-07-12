@@ -76,10 +76,14 @@ export class MessageHeaderComponent {
     return trd.type === 'P2P' ? displayUserName(trd.peerUser) : trd.group.name;
   });
 
-  /** The peer's domain when the open conversation is a federated P2P peer, else null (self-hides the badge). */
+  /** The home domain of the open conversation when it is federated, else null (self-hides the badge).
+   *  P2P = the peer's domain; GROUP = the group's origin domain (the backend exposes '' for a
+   *  local-origin group, so the badge self-hides there). */
   readonly federatedDomain = computed(() => {
     const trd = this.userMsgTrd();
-    return trd?.type === 'P2P' && trd.peerUser.isForeigner ? trd.peerUser.domain : null;
+    if (!trd) return null;
+    if (trd.type === 'P2P') return trd.peerUser.isForeigner ? trd.peerUser.domain : null;
+    return trd.group.domain || null;
   });
 
   /** Optional subtitle line under the title: the peer's bio (P2P) or the group description (GROUP).

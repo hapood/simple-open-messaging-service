@@ -1,5 +1,6 @@
 import { Injectable, inject } from '@angular/core';
 import { UserService } from './user.service';
+import { GroupService } from './group.service';
 import { ThreadRepository } from './thread-store.service';
 import { User } from './model';
 
@@ -21,6 +22,7 @@ export { ConversationLoadStatus } from './thread-store.service';
 export class ConversationListService {
   private readonly repo = inject(ThreadRepository);
   private readonly userService = inject(UserService);
+  private readonly groupService = inject(GroupService);
 
   // ── delegated data signals (the same references the repo owns) ──
   readonly items = this.repo.items;
@@ -59,6 +61,16 @@ export class ConversationListService {
     }
     // P2P peer (local OR federated): lazily refresh avatar/name/bio if it changed since the list snapshot.
     this.repo.refreshPeerOnOpen(threadId);
+    // GROUP (local OR federated mirror): fire the chat-open catch-up hook so a federated mirror lazily
+    // pulls roster + history from the origin (the GROUP twin of refreshPeerOnOpen, which no-ops for GROUP).
+    // The resulting GROUP_UPDATED / GROUP_ROSTER_UPDATED SSE are already routed by GroupEventService.
+    if (item?.type === 'GROUP') {
+      this.groupService.syncMeta({ groupId: threadId }).subscribe({
+        error: () => {
+          /* fire-and-forget — an unreachable origin degrades to the next open / reconnect sweep */
+        },
+      });
+    }
   }
 
   /** Clear the open thread (chat-pane unmounted / mobile popup closed). */

@@ -16,7 +16,7 @@ import { BusinessCode } from '../common/business-code.js';
  * it now that groups are `!`-User threads) and rejects with GROUP_FORBIDDEN when it is absent or
  * not in the allowed set. Runs strictly AFTER ThreadAccessGuard in the guard chain.
  *
- * Must be combined as: `@UseGuards(JwtAuthGuard, ThreadAccessGuard, RolesGuard)` + `@Roles(...)`.
+ * Must be combined as: `@UseGuards(ThreadAccessGuard, RolesGuard)` + `@Roles(...)` (JWT auth is global).
  */
 @Injectable()
 export class RolesGuard implements CanActivate {

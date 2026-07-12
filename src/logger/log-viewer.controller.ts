@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import { Body, Controller, Get, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -13,6 +14,7 @@ const LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
  */
 @ApiTags('admin')
 @ApiBearerAuth()
+@Public()
 @Controller('admin/logs')
 @UseGuards(AdminAuthGuard)
 export class LogViewerController {

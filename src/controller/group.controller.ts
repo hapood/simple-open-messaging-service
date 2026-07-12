@@ -10,8 +10,8 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
+import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { ContentType, GroupRole } from '../prisma/generated/client.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -55,6 +55,7 @@ const ROLE_DISPLAY_RANK: Record<GroupRole, number> = {
 export class GroupController {
   constructor(
     private readonly messageService: MessageService,
+    private readonly messageFanoutService: MessageFanoutService,
     private readonly groupService: GroupService,
     private readonly participantService: ThreadParticipantService,
     private readonly inviteService: InviteService,
@@ -85,7 +86,7 @@ export class GroupController {
     ids.forEach((uid) => this.sseService.onGroupEvent(uid, eventName, data));
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @UseGuards(ThrottleGuard)
   @Throttle(10, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -194,7 +195,7 @@ export class GroupController {
         // resolves + accepts by `group` (/invite/detail + /invite/accept take a group account). The display
         // fields are carried inline so the row renders instantly on both sides with no per-row fetch and no
         // internal ids on the card.
-        await this.messageService.writeMsgToThread(
+        const inviteMsg = await this.messageService.writeMsgToThread(
           inviter,
           p2pThreadId,
           JSON.stringify({
@@ -208,6 +209,14 @@ export class GroupController {
           }),
           ContentType.INVITE,
         );
+        // Deliver the card LIVE, exactly like a normal send: dispatch fans NEW_MESSAGE to every active
+        // participant of the P2P thread (LOCAL → the invitee sees the card the instant it is written; no
+        // more "only on next list refresh"), and its federation leg (notifyOnSend, since originSeq is set)
+        // marks the inviter's mirror dirty so the invitee's server promptly pulls the card via the Step-2
+        // P2P path → storePulledMessage → NEW_MESSAGE (FEDERATED). Without this the invitee had no live
+        // discovery path. Fire-and-forget: the card is already committed; a fan-out failure degrades to
+        // the existing chat-open pull backstop, never a lost invite.
+        void this.messageFanoutService.dispatch(inviteMsg);
         invited.push(userId);
       } catch (e) {
         skipped.push({
@@ -219,7 +228,7 @@ export class GroupController {
     return { invited, skipped };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<InviteGroupDto>('groupId')
@@ -252,7 +261,7 @@ export class GroupController {
     };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
@@ -270,7 +279,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThreadAccessGuard)
+  @UseGuards(ThreadAccessGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ResourceId<GroupIdDto>('groupId')
@@ -296,6 +305,9 @@ export class GroupController {
         ownerId: gu.group?.ownerId ?? 0,
         avatar: gu.avatar,
         description: gu.bio,
+        // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group so the
+        // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).
+        domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
         threadId,
         createdAt: trd.createdAt.getTime(),
         updatedAt: (gu.group?.updatedAt ?? trd.updatedAt).getTime(),
@@ -303,7 +315,6 @@ export class GroupController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/members')
@@ -326,6 +337,10 @@ export class GroupController {
           account: r.user.account,
           name: r.user.name,
           avatar: r.user.avatar,
+          // Pass through verbatim — a local member's User.domain is already '' (not the 'local' sentinel),
+          // so the badge self-hides for locals and shows the peer domain for federated stubs.
+          isForeigner: r.user.isForeigner,
+          domain: r.user.domain,
           role: r.role,
           joinedAt: r.joinedAt,
           isOwner: r.role === GroupRole.OWNER,
@@ -342,7 +357,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
   @Throttle(20, 60)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
@@ -367,7 +382,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()
@@ -395,7 +410,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
@@ -419,7 +434,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER)
   @ApiBearerAuth()
@@ -442,7 +457,7 @@ export class GroupController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard, ThreadAccessGuard, RolesGuard)
+  @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
   @Throttle(20, 60)
   @Roles(GroupRole.OWNER, GroupRole.ADMIN)
   @ApiBearerAuth()

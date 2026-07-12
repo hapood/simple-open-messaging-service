@@ -24,11 +24,11 @@ import {
   MessageThreadType,
   Prisma,
 } from '../prisma/generated/client.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
+import { Public } from '../common/public.decorator.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
@@ -70,7 +70,6 @@ export class UserController {
     private readonly threadRevisionService: ThreadRevisionService,
   ) {}
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/my-profile')
@@ -84,7 +83,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-avatar')
@@ -131,7 +129,6 @@ export class UserController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/update-profile')
@@ -148,7 +145,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/valid')
@@ -310,6 +306,7 @@ export class UserController {
               name: gu.name,
               avatar: gu.avatar,
               description: gu.bio,
+              domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,
               createdAt: (gu.group?.createdAt ?? p.thread.createdAt).getTime(),
               updatedAt: (gu.group?.updatedAt ?? p.thread.updatedAt).getTime(),
@@ -321,7 +318,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/delta')
@@ -332,7 +328,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: serializeBody(data) };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/delete-friend')
@@ -347,11 +342,11 @@ export class UserController {
     }
     const peer = await this.userService.findUniqueUser({ id: dto.userId });
     // A friend relationship == an active P2P thread shared by both. No thread → nothing to end
-    // (idempotent). THREAD_NOT_FOUND matches the P2P "no conversation" signal the message/thread
-    // routes use.
+    // (idempotent). FRIEND_NOT_FOUND signals the caller has no friendship edge to end (distinct from the
+    // generic THREAD_NOT_FOUND the read paths use for a missing conversation).
     const threadId = await this.participantService.findP2PThreadBetween(me, dto.userId);
     if (threadId === null) {
-      return { code: BusinessCode.THREAD_NOT_FOUND, message: `not friends with [${dto.userId}]` };
+      return { code: BusinessCode.FRIEND_NOT_FOUND, message: `not friends with [${dto.userId}]` };
     }
     // Soft-leave BOTH participants in one shot. The thread row + participants stay (history), but the
     // edge is severed (findP2PThreadBetween now returns null); re-friending later mints a fresh thread.
@@ -367,7 +362,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'friend removed' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/block')
@@ -392,7 +386,6 @@ export class UserController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query')
@@ -405,7 +398,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: list };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/peer-trust-status')
@@ -423,7 +415,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: { trusted } };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/resolve')
@@ -484,7 +475,6 @@ export class UserController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/search')
@@ -504,7 +494,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/sync-peer-profile')
@@ -532,7 +521,6 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('/user/thread-info')
@@ -615,7 +603,7 @@ export class UserController {
         await this.groupService.resolveGroupUsersByThreadIds([p.threadId])
       ).get(p.threadId);
       item.group = gu
-        ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio }
+        ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio, domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain }
         : undefined;
       // Resolve the last-message sender's display name for the group preview prefix.
       if (p.thread.lastMessageSenderId != null) {
@@ -628,6 +616,7 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data: item };
   }
 
+  @Public()
   @ApiTags('auth')
   @HttpCode(HttpStatus.OK)
   @Post('user/register')

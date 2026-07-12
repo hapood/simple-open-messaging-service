@@ -18,6 +18,10 @@ export interface GroupMember {
   account: string
   name: string
   avatar: string
+  /** Whether this member is an external (federated) user — drives the federated-badge in the roster. */
+  isForeigner: boolean
+  /** Home domain; empty for a local member (the badge self-hides). */
+  domain: string
   /** OWNER | ADMIN | MEMBER */
   role: 'OWNER' | 'ADMIN' | 'MEMBER'
   /** joined at, ms timestamp */
@@ -50,6 +54,15 @@ export class GroupService {
 
   getMembers(params: { groupId: number }) {
     return this.http.post<StandardResponse<GroupMember[]>>(`${apiPrefix}/group/members`, params)
+  }
+
+  /** Chat-open hook for a (possibly federated mirror) group: the backend lazily pulls the roster +
+   *  message history from the origin if the mirror is stale, then SSE-fans GROUP_UPDATED /
+   *  GROUP_ROSTER_UPDATED (already routed by GroupEventService → re-pulls /group/info + /group/members).
+   *  The GROUP twin of ThreadRepository.refreshPeerOnOpen (P2P). Fire-and-forget; a local / origin group
+   *  is a server-side no-op. Never blocks chat-open. */
+  syncMeta(params: { groupId: number }) {
+    return this.http.post<StandardResponse>(`${apiPrefix}/group/sync-meta`, params)
   }
 
   leaveGroup(params: { groupId: number }) {

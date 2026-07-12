@@ -30,10 +30,14 @@ export enum BusinessCode {
   RATE_LIMITED = 10005, // rate limited / IP banned
   REFRESH_REUSE_DETECTED = 10006, // refresh-token reuse → force frontend re-login (family revoked at the root)
   SESSION_REVOKED = 10007, // session revoked (all-device logout / password change / single-device kick)
+  QUOTA_EXCEEDED = 10008, // daily-quota budget exhausted on a LOCAL user endpoint (HTTP 200 + this code; the
+                          // body carries {category, limit, retryAfter}). Distinct from the IP-burst RATE_LIMITED
+                          // (10005): a daily budget is a business outcome, not a protocol rate-limit. See src/quota/.
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state
   FRIEND_SELF = 20001, // cannot invite / friend yourself
+  FRIEND_NOT_FOUND = 20002, // cannot unfriend someone who is not your friend (delete-friend on a non-edge)
   FRIEND_INVALID_TARGET = 20004, // cannot befriend this target (e.g. a `!`-group account)
   INVITE_NOT_FOUND = 20010, // invite does not exist or is no longer pending
   INVITE_EXPIRED = 20011, // invite is past its expiresAt
@@ -68,6 +72,14 @@ export enum BusinessCode {
                                         // entry (softLeaveMember + bump group meta) WITHOUT demoting the peer —
                                         // a business outcome, not a protocol failure (the 200 already ran
                                         // markContactSuccess in getSigned)
+  FEDERATION_QUOTA_EXCEEDED = 50011, // a federated peer exceeded its daily-quota budget → HTTP 429 (transient; the
+                                     // body carries {category, limit, retryAfter = seconds to 00:00 UTC}). Returned on
+                                     // the synchronous POST /s2s/invite leg; the pull-based messages/media legs refuse
+                                     // internally (no peer-visible status). NEVER demotes the peer — 429 is outside the
+                                     // demote set in getSigned/sendSignedPost. See src/quota/.
+  FEDERATION_PAYLOAD_TOO_LARGE = 50012, // an inbound federated media item exceeds the single-item byte cap → HTTP 413
+                                        // (permanent for that item; the body carries {category, limit, received}). Refused
+                                        // at ingest before any disk write. NEVER demotes the peer.
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)

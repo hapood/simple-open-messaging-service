@@ -50,3 +50,40 @@ export function loadFederationConfig(): FederationConfig {
     allowInsecureHttp: process.env.SOMS_ALLOW_INSECURE_HTTP === '1',
   };
 }
+
+/**
+ * Unified daily-quota configuration (local SOMS_DOMAIN node + each federated peer). These are the
+ * global defaults; a per-node override (FederatedPeer columns for a peer, SystemSetting 'quota:local'
+ * for the local node) takes precedence when set (null override → use the default here). Thresholds
+ * benchmarked in docs/federation-quotas.md §2. Loaded separately from FederationConfig to keep the
+ * transport config focused. See src/quota/quota.service.ts.
+ */
+export interface QuotaConfig {
+  /** Inbound friend ops/day per node (anti-spam). */
+  dailyRequestLimit: number;
+  /** Messages/day per node. */
+  dailyMsgLimit: number;
+  /** Image media items/day per node. */
+  dailyImageLimit: number;
+  /** Video/large-file media items/day per node. */
+  dailyLargeFileLimit: number;
+  /** Single-image byte cap (oversized → refused at ingest). */
+  maxImageBytes: number;
+  /** Single-large-file byte cap (oversized → refused at ingest). */
+  maxLargeFileBytes: number;
+}
+
+export function loadQuotaConfig(): QuotaConfig {
+  return {
+    dailyRequestLimit: Number(process.env.SOMS_QUOTA_DAILY_REQUEST_LIMIT ?? 100),
+    dailyMsgLimit: Number(process.env.SOMS_QUOTA_DAILY_MSG_LIMIT ?? 5000),
+    dailyImageLimit: Number(process.env.SOMS_QUOTA_DAILY_IMAGE_LIMIT ?? 500),
+    dailyLargeFileLimit: Number(
+      process.env.SOMS_QUOTA_DAILY_LARGE_FILE_LIMIT ?? 50,
+    ),
+    maxImageBytes: Number(process.env.SOMS_QUOTA_MAX_IMAGE_BYTES ?? 50 * 1024 * 1024),
+    maxLargeFileBytes: Number(
+      process.env.SOMS_QUOTA_MAX_LARGE_FILE_BYTES ?? 500 * 1024 * 1024,
+    ),
+  };
+}

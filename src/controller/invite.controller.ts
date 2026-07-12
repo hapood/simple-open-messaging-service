@@ -14,7 +14,7 @@ import { InviteService } from '../invite/invite.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { FederationService } from '../federation/federation.service.js';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
+import { QuotaService } from '../quota/quota.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -45,9 +45,9 @@ export class InviteController {
     private readonly participantService: ThreadParticipantService,
     private readonly sseService: SseService,
     private readonly federationService: FederationService,
+    private readonly quota: QuotaService,
   ) {}
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/friend')
@@ -79,6 +79,17 @@ export class InviteController {
         code: BusinessCode.OK,
         message: 'you are already friends',
         messageKey: 'friend.msg.alreadyFriends',
+      };
+    }
+
+    // Daily quota (local aggregate): a friend request consumes one 'requests' unit (anti-spam). Ticked
+    // AFTER validation so a request to a non-existent / already-friend target never burns the budget.
+    const q = await this.quota.tryTickLocal('requests');
+    if (q.exceeded) {
+      return {
+        code: BusinessCode.QUOTA_EXCEEDED,
+        message: `daily friend-request quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+        data: { category: 'requests', limit: q.limit, retryAfter: q.retryAfter },
       };
     }
 
@@ -140,7 +151,6 @@ export class InviteController {
     };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/accept')
@@ -219,7 +229,6 @@ export class InviteController {
     return { code: BusinessCode.OK, message: 'joined', data: { threadId: res.threadId } };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/reject')
@@ -234,7 +243,6 @@ export class InviteController {
     return { code: BusinessCode.OK, message: 'invite rejected' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/revoke')
@@ -249,7 +257,6 @@ export class InviteController {
     return { code: BusinessCode.OK, message: 'invite revoked' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/incoming')
@@ -267,7 +274,6 @@ export class InviteController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/outgoing')
@@ -284,7 +290,6 @@ export class InviteController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/detail')
@@ -300,7 +305,6 @@ export class InviteController {
     }
   }
 
-  @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('invite/mark-read')

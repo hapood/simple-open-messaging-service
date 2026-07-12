@@ -21,6 +21,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/send-media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Stage a media message (before upload); promoted on POST /upload* */
+        post: operations["MessageController_sendMedia"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/query-messages": {
         parameters: {
             query?: never;
@@ -379,6 +396,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/user/query-thread/delta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fetch thread-list ADD/DELETE deltas (from excl, to incl) */
+        post: operations["UserController_queryThreadDelta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/user/delete-friend": {
         parameters: {
             query?: never;
@@ -490,7 +524,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. Pass sinceUpdatedAt to get a lightweight data:null short-circuit when unchanged. */
+        /** Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. ACK-only — returns no payload; pass sinceProfileRev so a stale local peer is pushed a PEER_PROFILE_UPDATED signal to pull. */
         post: operations["UserController_syncPeerProfile"];
         delete?: never;
         options?: never;
@@ -566,6 +600,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/group/sync-meta": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Refresh a federated group meta (roster + identity) if stale (chat-open hook) */
+        post: operations["GroupController_syncGroupMeta"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/group/info": {
         parameters: {
             query?: never;
@@ -592,7 +643,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Group roster with roles (members only) */
+        /** Batch fetch group rosters (members only; caller membership filtered) */
         post: operations["GroupController_getMembers"];
         delete?: never;
         options?: never;
@@ -906,6 +957,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Public liveness probe (unauthenticated): status, version, server time. */
+        get: operations["HealthController_health"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/logs/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin live log tail (SSE) */
+        get: operations["LogViewerController_stream"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/logs/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin historical log search */
+        post: operations["LogViewerController_history"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/events": {
         parameters: {
             query?: never;
@@ -1058,6 +1160,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Current admin identity (account + role) for the console header + role gating */
+        post: operations["AdminController_me"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/users": {
         parameters: {
             query?: never;
@@ -1194,6 +1313,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/users/{id}/detail": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** User 360° detail: profile + groups + sessions + push tokens */
+        post: operations["AdminController_userDetail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/users/{id}/reset-password": {
         parameters: {
             query?: never;
@@ -1205,6 +1341,23 @@ export interface paths {
         put?: never;
         /** Reset a user's password (revokes all sessions) */
         post: operations["AdminController_resetPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/users/batch": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Apply an action to many users at once (disable / enable / force-logout) */
+        post: operations["AdminController_batchUsers"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1347,6 +1500,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/settings/notifications": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Notification transport config — VAPID status (subject + publicKey, never privateKey), FCM status, server domain */
+        post: operations["AdminSettingsController_getNotifications"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/vapid/generate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Generate a fresh VAPID keypair server-side and persist it (privateKey never returned) */
+        post: operations["AdminSettingsController_generateVapid"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/vapid/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save (paste) a VAPID keypair — validates first, rejects malformed / mismatched pairs */
+        post: operations["AdminSettingsController_saveVapid"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/vapid/clear": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Remove the VAPID keypair — disables Web Push */
+        post: operations["AdminSettingsController_clearVapid"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/settings/health-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Validate the configured VAPID keypair + transport status (deterministic, no network) */
+        post: operations["AdminSettingsController_healthCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/federation/peers": {
         parameters: {
             query?: never;
@@ -1358,6 +1596,23 @@ export interface paths {
         put?: never;
         /** Federated-peer lifecycle list (trust state + audit cols), paginated + filterable */
         post: operations["AdminFederationController_listPeers"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/federation/peers/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Single federated peer detail (current lifecycle state) */
+        post: operations["AdminFederationController_peerDetail"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1415,6 +1670,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/federation/self-check": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** S2S handshake self-check — probes this server own DNS/SRV/TLS/well-known/key/clock from the external viewpoint (read-only) */
+        post: operations["AdminFederationController_selfCheck"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/media/gc": {
         parameters: {
             query?: never;
@@ -1466,6 +1738,159 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/dashboard": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Console overview: online, sessions, federation health, media, recent admin actions */
+        post: operations["DashboardController_summary"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/media/stats": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Media storage overview: DB bytes/count/reclaimable + on-disk per-extension breakdown */
+        post: operations["DashboardController_mediaStats"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin action audit log (paginated + filter by action/adminId/success) */
+        post: operations["AuditController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Admin account list (paginated + searchable) */
+        post: operations["AdminManageController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/create": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Promote an existing User to an admin */
+        post: operations["AdminManageController_create"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Disable an admin (revokes all their sessions immediately) */
+        post: operations["AdminManageController_disable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Re-enable a disabled admin */
+        post: operations["AdminManageController_enable"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/admins/{id}/role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change an admin's role (demotion revokes their sessions) */
+        post: operations["AdminManageController_setRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/groups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Group threads list (member count + owner + federation origin) */
+        post: operations["GroupManageController_list"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/.well-known/soms": {
         parameters: {
             query?: never;
@@ -1482,7 +1907,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/friend-request": {
+    "/api/v1/s2s/invite": {
         parameters: {
             query?: never;
             header?: never;
@@ -1491,14 +1916,14 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["S2sController_postFriendRequest"];
+        post: operations["S2sController_postInvite"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/v1/s2s/friend-approve": {
+    "/api/v1/s2s/invite-accept": {
         parameters: {
             query?: never;
             header?: never;
@@ -1507,23 +1932,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        post: operations["S2sController_postFriendApprove"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/s2s/thread/invite": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post: operations["S2sController_postThreadInvite"];
+        post: operations["S2sController_postInviteAccept"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1554,6 +1963,38 @@ export interface paths {
             cookie?: never;
         };
         get: operations["S2sController_getUserRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/group/{account}/roster-revision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupRosterRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/s2s/group/{account}/roster": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["S2sController_getGroupRoster"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1740,6 +2181,30 @@ export interface components {
              * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
              */
             clientMessageId?: string;
+        };
+        SendMediaMetaDto: {
+            /** @description Image/video pixel width (client-probed) */
+            w?: number;
+            /** @description Image/video pixel height (client-probed) */
+            h?: number;
+            /** @description Video/audio duration in seconds (client-probed) */
+            duration?: number;
+        };
+        SendMediaDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Media content type being staged (PURE_TEXT uses /send-message directly).
+             * @enum {string}
+             */
+            contentType: "IMAGE" | "FILE" | "VIDEO" | "AUDIO";
+            /** @description Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent. */
+            clientMessageId: string;
+            /** @description Client-probed display metadata (w/h, duration). Omitted fields are not staged. */
+            meta?: components["schemas"]["SendMediaMetaDto"];
         };
         QueryMessagesDto: {
             /**
@@ -1961,6 +2426,11 @@ export interface components {
              * @example 1700000000000
              */
             updatedAt: number;
+            /**
+             * @description Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.
+             * @example 3
+             */
+            profileRev: number;
             /** @example false */
             isDeleted: boolean;
             /**
@@ -1969,9 +2439,7 @@ export interface components {
              */
             hasUrFriendReq?: boolean;
             /**
-             * @description Thread-list revision (self only — the thread-sync cursor). Returned only by
-             *   /user/my-profile; omitted by list/query/resolve reads. The client pins query-thread/valid
-             *   to this revision and pulls (cursor, toRevision] deltas via query-thread/delta.
+             * @description Thread-list revision (self only — the thread-sync cursor)
              * @example 5
              */
             threadRevision?: number;
@@ -2011,6 +2479,11 @@ export interface components {
              * @example Frontend team sync
              */
             description: string;
+            /**
+             * @description The group's home (origin) domain. Empty for a locally-originated group (this server is the origin); a peer domain for a federated mirror. Drives the federated-badge the way UserResponseDto.domain does for a P2P peer — empty self-hides the badge.
+             * @example soms.io
+             */
+            domain: string;
             /**
              * @description Group message thread id
              * @example 12
@@ -2128,6 +2601,23 @@ export interface components {
              * @enum {string}
              */
             type?: "P2P" | "GROUP";
+            /**
+             * @description Snapshot revision pin. The page returns threads that were ACTIVE at this revision (added, not since-deleted per the ThreadRevision log) — pinning membership so offset pagination stays consistent across pages and the snapshot composes cleanly with query-thread/delta from this revision forward. The client passes its threadRevision cursor (from /user/my-profile).
+             * @example 5
+             */
+            revision: number;
+        };
+        ThreadDeltaDto: {
+            /**
+             * @description From revision (exclusive)
+             * @example 0
+             */
+            fromRevision: number;
+            /**
+             * @description To revision (inclusive)
+             * @example 5
+             */
+            toRevision: number;
         };
         BlockDto: {
             /**
@@ -2195,10 +2685,10 @@ export interface components {
              */
             userId: number;
             /**
-             * @description Caller's last-seen peer updatedAt (ms). When not older than the live row, the server returns data:null (no change).
-             * @example 1700000000000
+             * @description Caller's last-seen peer profileRev. When older than the live row, the server pushes a signal (client pulls).
+             * @example 3
              */
-            sinceUpdatedAt?: number;
+            sinceProfileRev?: number;
         };
         ThreadIdDto: {
             /**
@@ -2209,7 +2699,7 @@ export interface components {
         };
         RegisterDto: {
             /**
-             * @description Login unique name: 3-31 chars, letters [a-z] and dots only, case-insensitive
+             * @description Login unique name: 3-31 chars, letters + digits + dots, must start with a letter, case-insensitive
              * @example alice
              */
             account: string;
@@ -2290,39 +2780,15 @@ export interface components {
              */
             groupId: number;
         };
-        GroupMemberDto: {
-            /** @example 7 */
-            userId: number;
+        GroupMembersBatchDto: {
             /**
-             * @description Login unique name
-             * @example alice
+             * @description Group thread ids
+             * @example [
+             *       12,
+             *       13
+             *     ]
              */
-            account: string;
-            /**
-             * @description Display name
-             * @example Alice
-             */
-            name: string;
-            /**
-             * @description Avatar URL
-             * @example https://.../a.webp
-             */
-            avatar: string;
-            /**
-             * @description Member role in this group
-             * @enum {string}
-             */
-            role: "OWNER" | "ADMIN" | "MEMBER";
-            /**
-             * @description Joined at (ms timestamp)
-             * @example 1700000000000
-             */
-            joinedAt: number;
-            /**
-             * @description Whether this member is the group owner
-             * @example false
-             */
-            isOwner: boolean;
+            threadIds: number[];
         };
         GroupIdDto: {
             /**
@@ -2474,6 +2940,26 @@ export interface components {
             /** @description Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps. */
             deviceId?: string;
         };
+        AdminLogHistoryDto: {
+            /**
+             * @description Offset for pagination (newest-first)
+             * @default 0
+             */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /**
+             * @description Inclusive minimum level
+             * @enum {string}
+             */
+            level?: "trace" | "debug" | "info" | "warn" | "error" | "fatal";
+            /** @description Lower time bound, ms epoch */
+            from?: number;
+            /** @description Upper time bound, ms epoch */
+            to?: number;
+            /** @description Case-insensitive substring over msg + context */
+            search?: string;
+        };
         AdminLoginDto: {
             /**
              * @description Admin account
@@ -2551,6 +3037,18 @@ export interface components {
              */
             newPassword: string;
         };
+        AdminUserBatchDto: {
+            /**
+             * @description User ids to act on
+             * @example [
+             *       3,
+             *       7
+             *     ]
+             */
+            ids: number[];
+            /** @enum {string} */
+            action: "disable" | "enable" | "force-logout";
+        };
         AdminUnbanDto: {
             /**
              * @description Banned IP (optional)
@@ -2584,6 +3082,24 @@ export interface components {
              * @example 1.2.3.4
              */
             ip?: string;
+        };
+        GenerateVapidDto: {
+            /**
+             * @description Contact URL (mailto: or https:); optional — defaults to mailto:noreply@soms.local
+             * @example mailto:admin@example.com
+             */
+            subject?: string;
+        };
+        SaveVapidDto: {
+            /**
+             * @description Contact URL (mailto: or https:)
+             * @example mailto:admin@example.com
+             */
+            subject: string;
+            /** @description Base64url uncompressed P-256 public key (65 bytes, leading 0x04) */
+            publicKey: string;
+            /** @description Base64url P-256 private key scalar (32 bytes) */
+            privateKey: string;
         };
         AdminListFederationPeersDto: {
             /**
@@ -2621,6 +3137,62 @@ export interface components {
              */
             note?: string;
         };
+        AdminFederationSelfCheckDto: {
+            /**
+             * @description NTP server used to measure clock skew (optional, default ntp.aliyun.com)
+             * @example ntp.aliyun.com
+             */
+            ntpServer?: string;
+            /**
+             * @description DNS resolver IP for lookups (optional, default 'system')
+             * @example 223.5.5.5
+             */
+            dnsResolver?: string;
+        };
+        AdminAuditQueryDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Substring over action (e.g. user., federation., session.) */
+            action?: string;
+            /** @description Scope to one actor */
+            adminId?: number;
+            /** @description Filter by outcome */
+            success?: boolean;
+        };
+        AdminManageListDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Fuzzy search by linked user account (optional) */
+            search?: string;
+        };
+        AdminCreateDto: {
+            /**
+             * @description Id of the User to promote
+             * @example 42
+             */
+            userId: number;
+            /**
+             * @description Initial role
+             * @enum {string}
+             */
+            role: "SUPER_ADMIN" | "ADMIN" | "VIEWER";
+        };
+        AdminSetRoleDto: {
+            /** @enum {string} */
+            role: "SUPER_ADMIN" | "ADMIN" | "VIEWER";
+        };
+        AdminGroupsListDto: {
+            /** @default 0 */
+            skip: number;
+            /** @default 50 */
+            take: number;
+            /** @description Fuzzy search by group account / name */
+            search?: string;
+        };
     };
     responses: never;
     parameters: never;
@@ -2640,6 +3212,31 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SendMessageDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResult"] & {
+                        data?: components["schemas"]["MessageResponseDto"];
+                    };
+                };
+            };
+        };
+    };
+    MessageController_sendMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SendMediaDto"];
             };
         };
         responses: {
@@ -3117,6 +3714,27 @@ export interface operations {
             };
         };
     };
+    UserController_queryThreadDelta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThreadDeltaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     UserController_deleteFriend: {
         parameters: {
             query?: never;
@@ -3368,6 +3986,23 @@ export interface operations {
             };
         };
     };
+    GroupController_syncGroupMeta: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     GroupController_getGroupInfo: {
         parameters: {
             query?: never;
@@ -3398,7 +4033,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["GroupIdDto"];
+                "application/json": components["schemas"]["GroupMembersBatchDto"];
             };
         };
         responses: {
@@ -3406,11 +4041,7 @@ export interface operations {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["ApiResult"] & {
-                        data?: components["schemas"]["GroupMemberDto"][];
-                    };
-                };
+                content?: never;
             };
         };
     };
@@ -3778,6 +4409,63 @@ export interface operations {
             };
         };
     };
+    HealthController_health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    LogViewerController_stream: {
+        parameters: {
+            query: {
+                level: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    LogViewerController_history: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminLogHistoryDto"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     EventsController_stream: {
         parameters: {
             query?: never;
@@ -3947,6 +4635,23 @@ export interface operations {
             };
         };
     };
+    AdminController_me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AdminController_listUsers: {
         parameters: {
             query?: never;
@@ -4105,6 +4810,25 @@ export interface operations {
             };
         };
     };
+    AdminController_userDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AdminController_resetPassword: {
         parameters: {
             query?: never;
@@ -4117,6 +4841,27 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AdminResetPasswordDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminController_batchUsers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminUserBatchDto"];
             };
         };
         responses: {
@@ -4278,6 +5023,99 @@ export interface operations {
             };
         };
     };
+    AdminSettingsController_getNotifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_generateVapid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["GenerateVapidDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_saveVapid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveVapidDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_clearVapid: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminSettingsController_healthCheck: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     AdminFederationController_listPeers: {
         parameters: {
             query?: never;
@@ -4290,6 +5128,25 @@ export interface operations {
                 "application/json": components["schemas"]["AdminListFederationPeersDto"];
             };
         };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminFederationController_peerDetail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -4364,6 +5221,27 @@ export interface operations {
             };
         };
     };
+    AdminFederationController_selfCheck: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFederationSelfCheckDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     MediaAssetGcController_triggerGc: {
         parameters: {
             query?: never;
@@ -4415,6 +5293,185 @@ export interface operations {
             };
         };
     };
+    DashboardController_summary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    DashboardController_mediaStats: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AuditController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminAuditQueryDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminManageListDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_create: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminCreateDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_disable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_enable: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminManageController_setRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminSetRoleDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    GroupManageController_list: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminGroupsListDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     WellKnownController_getWellKnown: {
         parameters: {
             query?: never;
@@ -4432,7 +5489,7 @@ export interface operations {
             };
         };
     };
-    S2sController_postFriendRequest: {
+    S2sController_postInvite: {
         parameters: {
             query?: never;
             header?: never;
@@ -4441,7 +5498,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4449,7 +5506,7 @@ export interface operations {
             };
         };
     };
-    S2sController_postFriendApprove: {
+    S2sController_postInviteAccept: {
         parameters: {
             query?: never;
             header?: never;
@@ -4458,24 +5515,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    S2sController_postThreadInvite: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4503,6 +5543,44 @@ export interface operations {
         };
     };
     S2sController_getUserRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupRosterRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                account: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    S2sController_getGroupRoster: {
         parameters: {
             query?: never;
             header?: never;
@@ -4550,7 +5628,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -4561,8 +5639,10 @@ export interface operations {
     S2sController_getMessages: {
         parameters: {
             query: {
-                from: string;
-                to: string;
+                fromAccount: string;
+                fromDomain: string;
+                toAccount: string;
+                toDomain: string;
                 afterSeq: string;
                 take: string;
             };
@@ -4583,8 +5663,10 @@ export interface operations {
     S2sController_getMessagesBefore: {
         parameters: {
             query: {
-                from: string;
-                to: string;
+                fromAccount: string;
+                fromDomain: string;
+                toAccount: string;
+                toDomain: string;
                 beforeSeq: string;
                 take: string;
             };
@@ -4623,8 +5705,10 @@ export interface operations {
         parameters: {
             query: {
                 digest: string;
-                from: string;
-                to: string;
+                fromAccount: string;
+                fromDomain: string;
+                toAccount: string;
+                toDomain: string;
             };
             header?: never;
             path?: never;
@@ -4649,7 +5733,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            202: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -8,6 +8,7 @@ import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
+import { QuotaService } from '../quota/quota.service.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { InviteService } from '../invite/invite.service.js';
@@ -180,6 +181,7 @@ export class FederationService implements OnModuleDestroy {
     // `design:paramtypes` value references crashed ESM boot ("Cannot access 'FederationBufferService' before
     // initialization") — breaking it is what lets `node dist/src/main.js` start.
     private readonly buffer: FederationBufferService,
+    private readonly quota: QuotaService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -537,17 +539,24 @@ export class FederationService implements OnModuleDestroy {
         `S2S POST to ${peerDomain} failed (network/timeout): ${(e as Error).message}`,
       );
     }
-    if (
-      res.status === 200 ||
-      res.status === 202 ||
-      res.status === 204 ||
-      res.status === 409
-    ) {
+    const status = res.status;
+    if (status === 200 || status === 202 || status === 204 || status === 409) {
       await this.markContactSuccess(peerDomain); // delivered or idempotent → advance liveness
       return;
     }
-    await this.markDemoted(peerDomain, `POST HTTP ${res.status}`);
-    throw new Error(`S2S POST to ${peerDomain} rejected: HTTP ${res.status}`);
+    // Trust/server failure (401/403 = signature/trust rejected; 5xx = peer broken) → demote so the
+    // reconnect sweep self-heals. A quota refusal (429/413) or resource response (400/404/410) means the
+    // peer is HEALTHY and answered — do NOT demote (a quota hit must never demote; see QuotaService).
+    // Mirrors getSigned; surface a typed S2sResponseError so a caller can branch on the status.
+    if (status === 401 || status === 403 || status >= 500) {
+      await this.markDemoted(peerDomain, `POST HTTP ${status}`);
+    }
+    const errBody = await res.json().catch(() => undefined);
+    throw new S2sResponseError(
+      `S2S POST to ${peerDomain} rejected: HTTP ${status}`,
+      status,
+      typeof errBody?.code === 'number' ? errBody.code : undefined,
+    );
   }
 
   /** GET a signed S2S endpoint (users / revision). Returns the parsed JSON. Throws on non-success. */
@@ -1057,9 +1066,13 @@ export class FederationService implements OnModuleDestroy {
   }
 
   /** Inbound POST /s2s/invite — receive an invite (friend OR group), unified. Dispatches on `kind`.
-   *  Dedup via S2SFriendOpSeen + the Invite (origin, originId) unique. */
+   *  Dedup via S2SFriendOpSeen + the Invite (origin, originId) unique. Quota: peek (reject exhausted
+   *  before dedup, so an over-limit retry burns no dedup slot) → dedup → tick on non-duplicate (replays
+   *  never burn quota — tick runs only after isOpSeen returns false). */
   async handleInvite(body: S2SInvite): Promise<void> {
+    await this.quota.peek(body.origin, 'requests');
     if (await this.isOpSeen(body.origin, body.id)) return;
+    await this.quota.tick(body.origin, 'requests');
     if (body.kind === 'GROUP') return this.handleGroupInvite(body);
     return this.handleFriendInvite(body);
   }
@@ -1187,7 +1200,9 @@ export class FederationService implements OnModuleDestroy {
    *  P2P thread (accept-wins); GROUP → we are the ORIGIN: add the accepter to our roster + fan out a
    *  thread/member join so the roster is consistent on every member-server. */
   async handleInviteAccept(body: S2SInviteAccept): Promise<void> {
+    await this.quota.peek(body.origin, 'requests');
     if (await this.isOpSeen(body.origin, body.id)) return;
+    await this.quota.tick(body.origin, 'requests');
     if (body.kind === 'GROUP') return this.handleGroupAccept(body);
     return this.handleFriendAccept(body);
   }
@@ -2453,7 +2468,7 @@ export class FederationService implements OnModuleDestroy {
           data: { curSeq: { increment: 1 } },
           select: { curSeq: true },
         });
-        return tx.message.create({
+        const msg = await tx.message.create({
           data: {
             contentType: m.contentType as ContentType,
             content: m.content,
@@ -2465,6 +2480,11 @@ export class FederationService implements OnModuleDestroy {
             // createdAt defaults to now() → the local arrival time
           },
         });
+        // Quota: tick the peer's daily message budget ON THE SAME tx. Over-limit throws inside the tx →
+        // rolls back the seq increment + this message too (no seq gap, no count burn); caught below as a
+        // skip. `fetchedFromDomain` is always a peer (we pull FROM peers, never ourselves).
+        await this.quota.tick(fetchedFromDomain, 'messages', tx);
+        return msg;
       })
       .catch((e: unknown) => {
         if (
@@ -2472,6 +2492,14 @@ export class FederationService implements OnModuleDestroy {
           e.code === 'P2002'
         ) {
           return null; // already pulled (push/pull race) — idempotent skip (tx rolled back → no seq gap)
+        }
+        if (
+          e instanceof BusinessException &&
+          e.bizCode === BusinessCode.FEDERATION_QUOTA_EXCEEDED
+        ) {
+          // Peer's daily message budget exhausted — drop this message (tx rolled back: no seq gap, no
+          // count burn). The drainer continues; further pulls from this peer today skip the same way.
+          return null;
         }
         throw e;
       });
@@ -2531,12 +2559,18 @@ export class FederationService implements OnModuleDestroy {
    * URL (inert) for a later retry.
    */
   private async localizeMedia(
-    msg: { id: bigint; threadId: number; content: string },
+    msg: { id: bigint; threadId: number; content: string; contentType: ContentType },
     peerDomain: string,
     fromAccount: string,
     fromDomain: string,
     toAccount: string,
   ): Promise<void> {
+    // Quota category: IMAGE → 'images'; FILE/VIDEO/AUDIO → 'largeFiles'. MediaAsset stores no mime
+    // (schema declares it redundant), so classify by the message contentType. Enforced inside
+    // fetchMediaChunks after the byte size is known; the dedup path below (file already local) skips
+    // fetchMediaChunks entirely — counted once on first pull.
+    const category: 'images' | 'largeFiles' =
+      msg.contentType === ContentType.IMAGE ? 'images' : 'largeFiles';
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
@@ -2552,7 +2586,7 @@ export class FederationService implements OnModuleDestroy {
           // inert for a later retry.
           await this.upload.saveCasFromStream(
             ext,
-            this.fetchMediaChunks(peerDomain, digest, fromAccount, fromDomain, toAccount),
+            this.fetchMediaChunks(peerDomain, digest, fromAccount, fromDomain, toAccount, category),
             digest,
           );
         }
@@ -2589,6 +2623,7 @@ export class FederationService implements OnModuleDestroy {
     fromAccount: string,
     fromDomain: string,
     toAccount: string,
+    category: 'images' | 'largeFiles',
   ): AsyncGenerator<Buffer> {
     const chunkBytes = this.config.mediaChunkBytes;
     const base = await this.discovery.resolveBase(peerDomain);
@@ -2597,6 +2632,7 @@ export class FederationService implements OnModuleDestroy {
     let offset = 0;
     let total: number | null = null;
     let markedAlive = false;
+    let quotaChecked = false;
 
     while (total === null || offset < total) {
       const reqEnd =
@@ -2609,11 +2645,27 @@ export class FederationService implements OnModuleDestroy {
         markedAlive = true;
       }
       if (unit.fallback200) {
+        // Quota: enforce the byte cap + tick ONCE before streaming. On the no-Range path Content-Length
+        // is the only size hint; if absent the cap is best-effort (skipped) but the COUNT still ticks.
+        if (!quotaChecked) {
+          const len = Number(unit.res.headers.get('content-length') ?? 0);
+          if (len > 0) await this.quota.assertUnderCap(peerDomain, category, len);
+          await this.quota.tick(peerDomain, category);
+          quotaChecked = true;
+        }
         // Peer ignored Range: stream the full body once and stop (no resume, no loop).
         for await (const piece of this.webBody(unit.res)) yield piece;
         return;
       }
       total = unit.total;
+      // Quota: the 206 Content-Range total is the authoritative size — enforce the byte cap + tick ONCE
+      // before the first chunk. Over cap/limit → throws → saveCasFromStream gets no bytes (nothing
+      // written); localizeMedia's catch leaves the message inert. 413/429 never demote the peer.
+      if (!quotaChecked) {
+        await this.quota.assertUnderCap(peerDomain, category, total);
+        await this.quota.tick(peerDomain, category);
+        quotaChecked = true;
+      }
       let unitLen = unit.end - unit.start + 1;
 
       // Accumulate the unit body with retry-on-abort. A body-read error or a byte-count mismatch

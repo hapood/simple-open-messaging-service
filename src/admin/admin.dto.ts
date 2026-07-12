@@ -180,6 +180,47 @@ export class AdminFederationBlockDto {
   note?: string;
 }
 
+/** Per-node daily-quota override fields (POST admin/quota/nodes/:domain). All optional; a null/absent
+ *  field means "use the global default". Applies to the local node (domain == SOMS_DOMAIN, stored in
+ *  SystemSetting 'quota:local') or a federated peer (stored on FederatedPeer). See QuotaService.setLimits. */
+export class AdminSetQuotaDto {
+  @ApiProperty({ required: false, example: 5000, description: 'Messages/day (null = default)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  dailyMsgLimit?: number | null;
+
+  @ApiProperty({ required: false, example: 500, description: 'Image media items/day (null = default)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  dailyImageLimit?: number | null;
+
+  @ApiProperty({ required: false, example: 50, description: 'Video/large-file media items/day (null = default)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  dailyLargeFileLimit?: number | null;
+
+  @ApiProperty({ required: false, example: 100, description: 'Inbound friend ops/day — anti-spam (null = default)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  dailyRequestLimit?: number | null;
+
+  @ApiProperty({ required: false, example: 52428800, description: 'Single-image byte cap (null = default)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxImageBytes?: number | null;
+
+  @ApiProperty({ required: false, example: 524288000, description: 'Single-large-file byte cap (null = default)' })
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  maxLargeFileBytes?: number | null;
+}
+
 /** Inputs to the S2S self-check: which NTP server to compare the clock against, and which DNS resolver
  *  to run lookups through (default 'system' = /etc/resolv.conf; a public resolver surfaces split-horizon
  *  / propagation issues). Both optional. */

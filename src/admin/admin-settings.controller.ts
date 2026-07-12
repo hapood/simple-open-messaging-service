@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -34,6 +35,7 @@ import { SaveVapidDto, GenerateVapidDto } from './admin-settings.dto.js';
  * returned. Generate creates the pair server-side so the private key never transits the browser at all.
  */
 @ApiTags('admin')
+@Public()
 @Controller()
 export class AdminSettingsController {
   constructor(

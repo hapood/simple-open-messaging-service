@@ -11,7 +11,6 @@ import {
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -34,7 +33,7 @@ import { PushService } from '../push/push.service.js';
 export class DeviceController {
   constructor(private readonly pushService: PushService) {}
 
-  @UseGuards(JwtAuthGuard, ThrottleGuard)
+  @UseGuards(ThrottleGuard)
   @Throttle(10, 60) // token rotation is rare: 10 registers/min per user is ample headroom
   @HttpCode(HttpStatus.OK)
   @Post('devices/register')
@@ -47,7 +46,6 @@ export class DeviceController {
     return { code: BusinessCode.OK, message: 'successful' };
   }
 
-  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Delete('devices/register/:token')
   @ApiOperation({ summary: 'Unregister an FCM push token (called on logout)' })

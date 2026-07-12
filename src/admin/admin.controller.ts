@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -48,6 +49,7 @@ import { PushService } from '../push/push.service.js';
  * SUPER_ADMIN. Every mutation is tagged @Audit → AdminAuditInterceptor writes an AdminActionLog row.
  */
 @ApiTags('admin')
+@Public()
 @Controller()
 export class AdminController {
   constructor(

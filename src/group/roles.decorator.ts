@@ -9,6 +9,6 @@ export const ROLES_KEY = 'group:roles';
  * loads the caller's ThreadParticipant and attaches it to `req.threadAccess`. RolesGuard then
  * checks `participant.role` against this set.
  *
- * Usage: `@UseGuards(JwtAuthGuard, ThreadAccessGuard, RolesGuard)` + `@Roles(GroupRole.OWNER)`.
+ * Usage: `@UseGuards(ThreadAccessGuard, RolesGuard)` + `@Roles(GroupRole.OWNER)` (JWT auth is global).
  */
 export const Roles = (...roles: GroupRole[]) => SetMetadata(ROLES_KEY, roles);

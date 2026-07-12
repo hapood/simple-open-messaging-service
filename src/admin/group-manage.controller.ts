@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -19,6 +20,7 @@ import { AdminGroupsListDto } from './admin.dto.js';
 @ApiTags('admin')
 @ApiBearerAuth()
 @UseGuards(AdminAuthGuard)
+@Public()
 @Controller()
 export class GroupManageController {
   constructor(private readonly svc: GroupManageService) {}

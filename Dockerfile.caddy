@@ -1,0 +1,26 @@
+# Caddy edge with the Cloudflare DNS-01 plugin, built via xcaddy. DNS-01 lets Caddy obtain and
+# renew Let's Encrypt certificates without exposing ports 80/443 — the only published port is
+# 7667 (see docker-compose.yml). The app behind Caddy stays plain HTTP/1.1 (no TLS_CERT/TLS_KEY).
+#
+# Pinned to the 2.11 minor line (rolls forward on security patches). For exact reproducibility,
+# pin both tags to a patch, e.g. caddy:2.11.1-builder / caddy:2.11.1-alpine.
+#
+# To use a DIFFERENT DNS provider, swap BOTH:
+#   - the --with plugin import below  (e.g. github.com/caddy-dns/alidns, .../dnspod, .../route53)
+#   - the `dns <provider>` line + env var in Caddyfile, and the matching credential env in compose.
+#
+# Multi-stage: build the custom binary in the official builder, then copy onto the slim runtime.
+# Caddy is statically compiled (CGO disabled), so a debian-builder → alpine-runtime COPY is safe.
+FROM caddy:2.11-builder AS builder
+# GOPROXY for the Go module fetches xcaddy performs. Defaults to Go's own proxy.golang.org (also set
+# in docker-compose.yml); override to https://goproxy.cn,direct behind a restricted network.
+ARG GOPROXY=https://proxy.golang.org,direct
+ENV GOPROXY=${GOPROXY}
+# Downloaded Go modules land inside this RUN's image layer, so Docker's layer cache reuses them on
+# unchanged rebuilds (no re-download). --mount=type=cache is intentionally omitted so this also
+# builds with the legacy builder — this host has no buildx plugin. On a buildx host you may re-add
+# --mount=type=cache,target=/go/pkg/mod to also survive layer invalidation (plugin swaps / bumps).
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2.11-alpine
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

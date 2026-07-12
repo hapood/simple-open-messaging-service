@@ -20,7 +20,7 @@ import {
 } from './federation-test-helpers.js';
 import { BusinessCode } from '../src/common/business-code.js';
 import { SignatureService } from '../src/federation/signature.service.js';
-import { MessageThreadType } from '../src/prisma/generated/client.js';
+import { MessageThreadType, ContentType } from '../src/prisma/generated/client.js';
 
 /**
  * Federation e2e — two full SOMS apps (aaa.local + bbb.local) in one process, making real signed HTTP
@@ -686,6 +686,22 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         return m!;
       },
       { timeout: 5000 },
+    );
+
+    // The invite card is delivered to bob LIVE (gap-1 fix). writeInvites now routes the INVITE card
+    // through MessageFanoutService.dispatch; its federation leg (notifyOnSend) marks alice's P2P mirror
+    // dirty → appB pulls the card → storePulledMessage. Before the fix the card sat undelivered on
+    // alice's mirror until a manual chat-open pulled it, so a federated invitee had NO discovery path.
+    // Assert the card lands on appB with no nudge from bob (the contentType + the group account on the
+    // card body pinpoint it; the `!account` is globally unique).
+    await vi.waitFor(
+      async () => {
+        const card = await appB.prisma.message.findFirst({
+          where: { contentType: ContentType.INVITE, content: { contains: groupAccount } },
+        });
+        expect(card).not.toBeNull();
+      },
+      { timeout: 8000 },
     );
 
     // bob accepts via the group account (the federated-stable card identity). appB's acceptInvite

@@ -153,6 +153,36 @@ export interface FederatedPeerListResult {
   total: number
 }
 
+// ─── Daily quotas (POST /admin/quota/nodes) ───
+// Unified per-node daily budgets: the local server (domain == SOMS_DOMAIN) + each federated peer.
+// See src/quota/quota.service.ts + docs/federation-quotas.md.
+export type QuotaCategory = 'messages' | 'images' | 'largeFiles' | 'requests'
+
+/** Per-node override set (null/absent = use the global default). */
+export interface QuotaOverrides {
+  dailyMsgLimit?: number | null
+  dailyImageLimit?: number | null
+  dailyLargeFileLimit?: number | null
+  dailyRequestLimit?: number | null
+  maxImageBytes?: number | null
+  maxLargeFileBytes?: number | null
+}
+
+/** Today's usage for one category (count against the effective limit). */
+export interface QuotaCategoryUsage {
+  count: number
+  limit: number
+}
+
+/** One row of the Quotas admin page (the local node + each federated peer). */
+export interface QuotaNode {
+  domain: string
+  isLocal: boolean
+  trustLevel: FederationTrustLevel | null
+  overrides: QuotaOverrides
+  usage: Record<QuotaCategory, QuotaCategoryUsage> | undefined
+}
+
 // One trust-lifecycle transition (POST /admin/federation/peers/:domain/events) — the admin timeline
 // that shows the trust → connection-loss process.
 export type FederationPeerEventType = 'discovered' | 'trusted' | 'demoted' | 'blocked' | 'unblocked'

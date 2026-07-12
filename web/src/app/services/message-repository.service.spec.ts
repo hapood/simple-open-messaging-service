@@ -186,4 +186,40 @@ describe('MessageRepository', () => {
     expect(res.data).toEqual([]);
     expect(res.hasMore).toBe(false);
   });
+
+  it('deleteByThread purges the thread cache but leaves other threads untouched (cache GC)', async () => {
+    // Seed two threads: 42 ([1,2,3]) and 99 ([1,2]).
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [3, 2, 1].map((s) => msg(42, s)), hasMore: true }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 3, orderBy: 'desc' });
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [2, 1].map((s) => msg(99, s)), hasMore: false }),
+    );
+    await repo.queryMessages(99, { skip: 0, take: 2, orderBy: 'desc' });
+    expect(await dbCount(42)).toBe(3);
+    expect(await dbCount(99)).toBe(2);
+
+    await repo.deleteByThread(42);
+
+    expect(await dbCount(42)).toBe(0); // thread 42 purged
+    expect(await dbCount(99)).toBe(2); // thread 99 untouched — the range delete is scoped to one thread
+  });
+
+  it('after deleteByThread, a getNewer gap-fills from the backend (the stale cache + ceiling are gone)', async () => {
+    // Seed thread 42 + establish seq 5 as the prior ceiling.
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 5)], hasMore: false }),
+    );
+    await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' });
+    await repo.deleteByThread(42); // purge the cached body + clear maxSeenSeq
+    queryMessageLogSpy.calls.reset();
+
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 6)], hasMore: false }),
+    );
+    const res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 5, orderBy: 'asc' });
+    expect(res.data.map((m) => m.seq)).toEqual([6]);
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill — nothing stale served from the purged cache
+  });
 });

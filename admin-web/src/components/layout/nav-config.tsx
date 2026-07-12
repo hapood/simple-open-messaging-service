@@ -4,6 +4,7 @@ import {
   BellRing,
   ClipboardList,
   Globe,
+  Gauge,
   HardDrive,
   Hash,
   LayoutDashboard,
@@ -37,6 +38,7 @@ export type NavKey =
   | 'audit'
   | 'admins'
   | 'settings'
+  | 'quotas'
 
 /** Full i18n key for a group header (under nav.group.*). */
 export type NavGroupKey =
@@ -98,6 +100,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/admins', key: 'admins', icon: UserCog },
       { to: '/logs', key: 'logs', icon: ScrollText },
       { to: '/settings', key: 'settings', icon: Settings },
+      { to: '/quotas', key: 'quotas', icon: Gauge },
     ],
   },
 ]

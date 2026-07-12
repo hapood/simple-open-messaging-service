@@ -77,8 +77,10 @@ ENV PATH=/cargo/bin:${ANDROID_HOME}/cmdline-tools/latest/bin:${ANDROID_HOME}/pla
 # 3a) Android SDK + NDK — the expensive, cacheable install (NDK r27b 27.1.12297006 + android-36 +
 #     platform-tools). curl pulls cmdline-tools through the forwarded proxy; sdkmanager is Java and
 #     ignores env proxies (goes direct — the proxy mangles its large NDK TLS transfer). Split from
-#     the perm fix so a later chmod tweak never re-downloads the SDK. build-tools are left for AGP to
-#     fetch on first APK build (small, cached in the gradle volume).
+#     the perm fix so a later chmod tweak never re-downloads the SDK. build-tools;35.0.0 are baked in
+#     here too: AGP installs them under $ANDROID_HOME/build-tools (NOT the /opt/gradle volume), and the
+#     run container is --rm with no SDK volume mount, so leaving them to AGP would re-download ~every
+#     make apk. Bump the version if a future AGP requires a newer build-tools.
 RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
     && curl -sSf -o /tmp/cmdline-tools.zip \
         https://dl.google.com/android/repository/${CMDLINE_TOOLS_ZIP} \
@@ -86,7 +88,7 @@ RUN mkdir -p ${ANDROID_HOME}/cmdline-tools \
     && mv ${ANDROID_HOME}/cmdline-tools/cmdline-tools ${ANDROID_HOME}/cmdline-tools/latest \
     && rm /tmp/cmdline-tools.zip \
     && yes | sdkmanager --licenses > /dev/null \
-    && sdkmanager "platform-tools" "platforms;android-${ANDROID_SDK_VERSION}" "ndk;${ANDROID_NDK_VERSION}" \
+    && sdkmanager "platform-tools" "platforms;android-${ANDROID_SDK_VERSION}" "build-tools;35.0.0" "ndk;${ANDROID_NDK_VERSION}" \
     && chmod -R 777 ${ANDROID_HOME}
 
 # 3b) GRADLE_USER_HOME — the gradle cache is bind-mounted here (named volume) at runtime. Must exist

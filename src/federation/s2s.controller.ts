@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Get,
@@ -35,6 +36,7 @@ import { BusinessCode } from '../common/business-code.js';
  * NOTE: there is no unfriend/member-delete endpoint — those are LOCAL-ONLY. A severed edge / left member
  * is discovered lazily via rejection-on-send in Step 2 (see docs/federation-protocol.md).
  */
+@Public()
 @Controller('s2s')
 @UseGuards(S2sSignatureGuard)
 export class S2sController {

@@ -1,0 +1,36 @@
+# Caddy edge for SOMS — single published port 7667 (HTTPS only), TLS via Cloudflare DNS-01.
+# Caddy terminates TLS (+ h2 / h3) at the edge and reverse-proxies to the app over plain HTTP/1.1.
+#
+# The app was designed for exactly this topology (see src/main.ts): with no TLS_CERT/TLS_KEY it
+# runs HTTP/1.1 behind a proxy that terminates TLS+h2. trustProxy:1 + secure:'auto' read Caddy's
+# X-Forwarded-* headers, so real client IPs (rate limit, logs) and secure media cookies work.
+# SSE passes through unbuffered — Caddy auto-flushes text/event-stream and excludes it from encode.
+#
+# Env (substituted at config load — set on the caddy service in docker-compose.yml):
+#   {$SOMS_DOMAIN}             the public host, also the federation identity (@user@<SOMS_DOMAIN>)
+#   {$CLOUDFLARE_API_TOKEN}    Cloudflare API token with Zone:DNS:Edit on the SOMS_DOMAIN zone
+#
+# To use another DNS provider: build the matching plugin (Dockerfile.caddy) and replace the
+# `dns cloudflare` line + the env var name below (and the credential env in compose).
+
+{
+	# No port 80 is published, so drop the automatic HTTP->HTTPS redirect listener.
+	# Certificate automation (DNS-01) is unaffected — it never needed 80/443.
+	auto_https disable_redirects
+
+	# email you@example.com   # optional: uncomment + set for Let's Encrypt expiry notices
+}
+
+https://{$SOMS_DOMAIN}:7667 {
+	tls {
+		# DNS-01 via Cloudflare — no inbound 80/443 required for issuance or renewal.
+		dns cloudflare {$CLOUDFLARE_API_TOKEN}
+	}
+
+	# Compress responses for the web frontend. SSE (text/event-stream) is auto-excluded.
+	encode zstd gzip
+
+	# Origin leg is plain HTTP/1.1 to the app container. Caddy sets X-Forwarded-* by default,
+	# which the app honors via trustProxy:1 — no header_up needed.
+	reverse_proxy app:3000
+}

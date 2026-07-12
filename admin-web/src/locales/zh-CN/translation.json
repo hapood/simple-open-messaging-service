@@ -46,12 +46,39 @@
     "audit": "审计日志",
     "admins": "管理员",
     "settings": "设置",
+    "quotas": "每日配额",
     "logout": "登出",
     "group": {
       "overview": "概览",
       "security": "安全与会话",
       "federation": "联邦",
       "system": "系统"
+    }
+  },
+  "quota": {
+    "title": "每日配额",
+    "desc": "按节点的每日额度（本服务器 + 各联邦对端）。UTC 00:00 重置。",
+    "empty": "暂无配额节点。",
+    "local": "本机",
+    "peer": "对端",
+    "edit": "编辑",
+    "editTitle": "配额上限 — {{domain}}",
+    "editHint": "留空表示使用全局默认值；设置即时生效，每日 UTC 00:00 重置。",
+    "placeholder": {
+      "default": "默认"
+    },
+    "maxBytes": "{{cat}} 上限 (MB)",
+    "save": "保存",
+    "cancel": "取消",
+    "toast": {
+      "saved": "配额已保存"
+    },
+    "col": {
+      "node": "节点",
+      "messages": "消息",
+      "images": "图片",
+      "largeFiles": "大文件",
+      "requests": "请求"
     }
   },
   "dashboard": {

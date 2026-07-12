@@ -5,6 +5,7 @@ import { PassportModule } from '@nestjs/passport';
 import { AdminController } from './admin.controller.js';
 import { AdminSettingsController } from './admin-settings.controller.js';
 import { AdminFederationController } from './admin-federation.controller.js';
+import { AdminQuotaController } from './admin-quota.controller.js';
 import { MediaAssetGcController } from './media-asset-gc.controller.js';
 import { DashboardController } from './dashboard.controller.js';
 import { AuditController } from './audit.controller.js';
@@ -35,16 +36,16 @@ import { RedisModule } from '../redis/redis.module.js';
     JwtModule.register({ secret: jwtConstants.adminSecret }),
     AuthModule,
     UserManageModule,
-    // SseService（导出自 GatewayModule）供 admin/connections 观测在线 SSE 连接。
+    // SseService (exported by GatewayModule) powers the admin/connections live-SSE observation.
     GatewayModule,
-    // PushService（导出自 PushModule）供 admin/push 设备 token 管理 + 测试推送。
+    // PushService (exported by PushModule) powers admin/push device-token management + test pushes.
     PushModule,
-    // UploadService（导出自 UploadModule）供 MediaAssetGcService 解析 shards/ 路径（refs<=0 回收）。
+    // UploadService (exported by UploadModule) lets MediaAssetGcService resolve shards/ paths (refs<=0 → GC).
     UploadModule,
-    // RedisService 供 ThrottleGuard 计数（admin/login 失败限流）。
+    // RedisService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     RedisModule,
   ],
-  controllers: [AdminController, AdminSettingsController, AdminFederationController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController],
+  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController],
   providers: [
     AdminAuthService,
     AdminJwtStrategy,

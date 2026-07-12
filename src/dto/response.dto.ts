@@ -145,6 +145,15 @@ export class GroupResponseDto {
   })
   description!: string;
 
+  @ApiProperty({
+    example: 'soms.io',
+    description:
+      "The group's home (origin) domain. Empty for a locally-originated group (this server is the " +
+      'origin); a peer domain for a federated mirror. Drives the federated-badge the way ' +
+      'UserResponseDto.domain does for a P2P peer — empty self-hides the badge.',
+  })
+  domain!: string;
+
   @ApiProperty({ example: 12, description: 'Group message thread id' })
   threadId!: number;
 
@@ -199,6 +208,7 @@ export class ConversationItemDto {
   unreadCount!: number;
 
   @ApiProperty({
+    type: String,
     example: 'hi group',
     nullable: true,
     description:
@@ -207,6 +217,7 @@ export class ConversationItemDto {
   lastMessagePreview?: string | null;
 
   @ApiProperty({
+    type: Number,
     example: 1_700_000_000_000,
     nullable: true,
     description:
@@ -215,6 +226,7 @@ export class ConversationItemDto {
   lastMessageAt?: number | null;
 
   @ApiProperty({
+    type: Number,
     example: 7,
     nullable: true,
     description: 'Sender userId of the last message. Null on empty threads.',
@@ -222,6 +234,7 @@ export class ConversationItemDto {
   lastMessageSenderId?: number | null;
 
   @ApiProperty({
+    type: String,
     example: 'Alice',
     nullable: true,
     description:
@@ -244,6 +257,7 @@ export class ConversationItemDto {
   pinned!: boolean;
 
   @ApiProperty({
+    type: Number,
     example: 1_700_000_000_000,
     nullable: true,
     description:
@@ -252,6 +266,7 @@ export class ConversationItemDto {
   pinnedAt?: number | null;
 
   @ApiProperty({
+    type: Number,
     example: 1_700_000_000_000,
     nullable: true,
     description:
@@ -268,6 +283,7 @@ export class ConversationItemDto {
   blocked?: boolean;
 
   @ApiProperty({
+    type: String,
     required: false,
     example: 'Alice (work)',
     nullable: true,
@@ -336,6 +352,12 @@ export class GroupMemberDto {
 
   @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
   avatar!: string;
+
+  @ApiProperty({ example: false, description: 'Whether this member is an external (federated) user' })
+  isForeigner!: boolean;
+
+  @ApiProperty({ example: 'example.com', description: 'Domain (empty for a local member)' })
+  domain!: string;
 
   @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })
   role!: GroupRole;

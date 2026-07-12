@@ -1,3 +1,4 @@
+import { Public } from '../common/public.decorator.js';
 import {
   Controller,
   Post,
@@ -30,6 +31,7 @@ import {
 @ApiBearerAuth()
 @UseGuards(AdminAuthGuard, AdminRolesGuard)
 @Roles(AdminRole.SUPER_ADMIN)
+@Public()
 @Controller()
 export class AdminManageController {
   constructor(private readonly svc: AdminManageService) {}

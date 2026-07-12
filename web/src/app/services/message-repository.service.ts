@@ -20,8 +20,9 @@ export type MessageQuery = Pick<QueryMessageLogParams, 'skip' | 'take' | 'lastSe
  * **Persistence model:** messages are mirrored to IDB (`messages` store, composite key `[threadId, seq]`,
  * one record per message). Reads are **cache-first + gap-fill**: a held range is served from IDB with no
  * network; only a range the cache genuinely lacks is backfilled from the API (no duplicate pulls of held
- * data). Writes dedup by key (idempotent `put`). Add-only — there is no server-side delete command, so the
- * store never deletes.
+ * data). Writes dedup by key (idempotent `put`). Add-only PER MESSAGE — there is no server-side delete
+ * command, so individual messages are never removed; the ONE exception is whole-thread cache GC when a
+ * thread leaves the user's roster (see {@link deleteByThread}).
  *
  * **Boot/init freshness:** `init` (`skip:0`) always backend-probes + writes through — the SSE stream does
  * NOT replay messages received while the app was closed, so the latest page must be re-read to stay fresh
@@ -84,6 +85,35 @@ export class MessageRepository {
     const verdict = this.cacheVerdict(cached, anchor, q.take, q.orderBy, threadId);
     if (verdict.hit) return { data: cached, hasMore: verdict.hasMore };
     return this.backend(threadId, q); // gap-fill: the cache lacks a contiguous held range here
+  }
+
+  /**
+   * Purge ALL cached message bodies for a thread — the cache-GC counterpart to
+   * {@link ThreadRepository.removeThread}. Called when a thread leaves the user's roster (unfriend /
+   * self-leave / self-kick / a multi-device THREAD_REVISION DELETE).
+   *
+   * This is the ONE exception to the add-only rule above. It is NOT a per-message delete (the backend has no
+   * such command); it is whole-thread cache garbage collection. The threadId is dead — the backend mints a
+   * FRESH threadId on re-friend / re-join (a soft-leave retains the old row server-side only as history), so
+   * these cached bytes will never be re-queried. Dropping them reclaims orphaned cache without diverging from
+   * server state, exactly as {@link WebdbService.closeAndDelete} reclaims the whole DB on logout. The stale
+   * {@link maxSeenSeq} ceiling is cleared too, so the (never-reused) threadId leaves no in-memory residue.
+   *
+   * Best-effort: IDB unavailable → graceful no-op (a transient miss just leaves the cache behind until the
+   * next logout wipes the whole DB).
+   */
+  async deleteByThread(threadId: number): Promise<void> {
+    this.maxSeenSeq.delete(threadId);
+    try {
+      const db = await this.webdb.db();
+      const tx = db.transaction('messages', 'readwrite');
+      // Composite-key range delete: every [threadId, *] row in one atomic op (seq is a non-negative int, so
+      // the -Infinity..Infinity span is the same idiom the range reads use).
+      await tx.store.delete(IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]));
+      await tx.done;
+    } catch {
+      /* IDB unavailable / closed — cache is best-effort */
+    }
   }
 
   /** Backend read + write-through cache. Returns the page in `orderBy` order + the authoritative hasMore. */
