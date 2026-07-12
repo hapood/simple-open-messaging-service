@@ -107,7 +107,7 @@ import { LanguageService } from '../../../services/language.service';
       background: #e53935;
       border: 2px solid var(--app-bg-muted);
     }
-    .avatar { margin-bottom: 8px; border-radius: 8px; overflow: hidden; }
+    .avatar { margin-bottom: 12px; border-radius: 8px; overflow: hidden; }
   `]
 })
 export class IconRailComponent {
