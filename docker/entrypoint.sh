@@ -1,52 +1,18 @@
 #!/usr/bin/env bash
-# All-in-one container supervisor (CMD of the `full` image): runs the node app (origin, :3000) and
-# Caddy (TLS edge, :7667) in ONE container. PID 1 is tini (compose `init: true`); this script is PID 2.
+# Image ENTRYPOINT (both `runtime` and `full` stages). Loads the init-generated environment, if present,
+# then execs the command (CMD). The `init` one-shot service writes /soms/run/app.env from soms.conf
+# (docker/init.sh): DATABASE_URL (constructed from POSTGRES_PASSWORD), SOMS_DOMAIN, and any pass-through.
 #
-# Fail-fast: if EITHER process exits on its own, the container exits so compose `restart: unless-stopped`
-# recycles both. Caddy is stable; node is the more likely failure. "Either dies = container died" is the
-# correct unit here — they are a 1:1 dedicated couple, not independently scalable, so a real supervisor
-# (s6-overlay) would buy nothing.
-#
-# This is CMD (not ENTRYPOINT) so compose `command:` overrides (the `migrate` service, one-off tasks)
-# replace it entirely instead of being passed to it as args.
+# When /soms/run/app.env is absent this is a plain `exec "$@"` — that covers: the `init` service itself,
+# the slim image run standalone (operator provides env directly), and any `docker compose run app …`
+# escape hatch. So nothing here is allowed to fail the boot if the file is missing.
 set -euo pipefail
 
-# --- 1. Start the node origin (plain HTTP/1.1 on :3000; Caddy terminates TLS at the edge) ---
-node dist/src/main.js &
-NODE_PID=$!
+if [ -f /soms/run/app.env ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . /soms/run/app.env
+  set +a
+fi
 
-# --- 2. Wait briefly for node to accept on :3000 so the first proxied requests don't 502 ---
-# Caddy tolerates an unavailable upstream regardless, so this is UX polish, not correctness. The bash
-# /dev/tcp builtin checks the port accepts connections without spawning a node process per attempt.
-PORT="${PORT:-3000}"
-for _ in $(seq 1 60); do
-  if (exec 3<>/dev/tcp/127.0.0.1/"${PORT}") 2>/dev/null; then break; fi
-  sleep 0.5
-done
-
-# --- 3. Start Caddy in the foreground (`run`, not `start`) so its logs flow to the container's ---
-#     stderr/stdout — ACME issuance / DNS-01 progress / renewal, essential for cert debugging.
-caddy run --config /etc/caddy/Caddyfile --adapter caddyfile &
-CADDY_PID=$!
-
-# --- 4. Graceful shutdown on SIGTERM/SIGINT (docker compose stop / down) ---
-# Forward the signal to both children, give a bounded drain window, then SIGKILL stragglers, and exit 0
-# so the container stops cleanly — `restart: unless-stopped` honors a manual stop and does NOT restart.
-cleanup() {
-  kill -TERM "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-  sleep "${SHUTDOWN_GRACE_SEC:-10}"
-  kill -KILL "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-  exit 0
-}
-trap cleanup TERM INT
-
-# --- 5. Block until the FIRST child exits, then take the other down and propagate the code ---
-# `set +e` around `wait -n` so a child's non-zero exit is captured instead of aborting the script; a
-# non-zero exit here means a crash, so the container exits non-zero and `restart: unless-stopped` reloops.
-set +e
-wait -n
-EXIT_CODE=$?
-set -e
-kill -TERM "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-wait "$CADDY_PID" "$NODE_PID" 2>/dev/null || true
-exit "$EXIT_CODE"
+exec "$@"

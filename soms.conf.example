@@ -1,0 +1,48 @@
+# ============================================================================
+# SOMS deployment config. Copy to soms.conf and fill in (soms.conf is gitignored).
+# This is the ONLY file you edit — docker-compose.yml is static. The `init` one-shot service reads it
+# on every `docker compose up -d` and generates everything else.
+# ============================================================================
+
+# REQUIRED — your federation identity domain (the <domain> in @user@<domain> handles).
+SOMS_DOMAIN=chat.example.com
+
+# OPTIONAL — the host clients/peers actually CONNECT to (TLS cert name, SRV target). Defaults to
+# SOMS_DOMAIN. Set differently ONLY for SRV delegation (identity stays @user@<SOMS_DOMAIN> while the
+# service is reached at <SOMS_PUBLIC_HOST>:7667). See docs/federation-protocol.md Shape B (§D2).
+# SOMS_PUBLIC_HOST=soms.qifa.io
+
+# REQUIRED for automatic HTTPS — Cloudflare API token with Zone:DNS:Edit on your domain's zone
+# (Cloudflare dashboard → My Profile → API Tokens → Create Token).
+CLOUDFLARE_API_TOKEN=
+
+# OPTIONAL — PostgreSQL password. postgres is internal-only (NOT published); the default is fine for a
+# single-host deploy. This ONE value feeds both the DB and the auto-built DATABASE_URL — set it once.
+POSTGRES_PASSWORD=change-me
+
+# OPTIONAL — initial password for the bootstrap admin (account=admin). The app self-seeds it on first
+# boot; once the admin exists this is ignored. Leave empty to boot without an admin login (set + restart).
+ADMIN_BOOTSTRAP_PASSWORD=
+
+# OPTIONAL — Prisma connection-pool max. Keep (max × app replicas) ≤ PostgreSQL max_connections (100).
+DATABASE_POOL_MAX=10
+
+# ============================================================================
+# TLS certificate DNS-01 provider (Caddy). The default is Cloudflare — set CLOUDFLARE_API_TOKEN above
+# and you're done. For ANY other bundled provider, uncomment CADDY_DNS_DIRECTIVE and set it to that
+# provider's `dns ...` line, plus its credential vars here. {KEY} refs are transcribed from this file
+# into the generated Caddyfile, so init never needs to know a provider's credential shape. The value
+# contains spaces, so you MUST quote it (soms.conf is sourced as shell).
+# Examples (full syntax per module: https://github.com/caddy-dns/<provider>):
+#   Cloudflare (default): CADDY_DNS_DIRECTIVE="dns cloudflare {CLOUDFLARE_API_TOKEN}"
+#   AliDNS (2 vars):      CADDY_DNS_DIRECTIVE="dns alidns {ALICLOUD_ACCESS_KEY} {ALICLOUD_SECRET_KEY}"
+#   AWS Route 53 (env):   CADDY_DNS_DIRECTIVE="dns route53"   (+ AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY below — passed through)
+#   DNSPod (1 var):       CADDY_DNS_DIRECTIVE="dns dnspod {DNSPOD_API_KEY}"
+# ============================================================================
+# CADDY_DNS_DIRECTIVE="dns cloudflare {CLOUDFLARE_API_TOKEN}"
+
+# --- Advanced (optional; all have safe defaults). Any env var the app accepts may be set here and is
+# --- passed through to the app container, e.g.:
+# SOMS_QUOTA_DAILY_MSG_LIMIT=5000
+# LOG_LEVEL=info
+# GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/firebase-sa.json

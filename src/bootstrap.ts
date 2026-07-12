@@ -10,7 +10,7 @@ import fastifyCompress from '@fastify/compress';
 import fastifyMultipart from '@fastify/multipart';
 import fastifyStatic from '@fastify/static';
 import fastifyCookie from '@fastify/cookie';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
@@ -284,69 +284,8 @@ async function registerStaticServing(
     },
   });
 
-  const webRoot = join(process.cwd(), 'public', 'web');
-  if (!existsSync(webRoot)) return; // dev: frontends served by their own dev servers
-
-  const adminRoot = join(process.cwd(), 'public', 'admin');
-
-  // Admin SPA host path. CONVENTION, not a runtime knob — the admin-web build bakes this same
-  // prefix into every asset URL via vite `base: '/admin/'` (admin-web/vite.config.ts; vite requires
-  // the trailing slash, so its base is ADMIN_PREFIX + '/'), and the React Router basename follows
-  // automatically through import.meta.env.BASE_URL. Change this AND the vite base together; never
-  // turn it into an env var. The root web app is served at '/' (no prefix), so it has no counterpart.
-  const ADMIN_PREFIX = '/admin';
-
-  const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
-
-  // Long-cache hashed assets for a year; never cache index.html so new deploys are picked up
-  // immediately. The structural setHeader type accepts both h1 ServerResponse and h2 Http2ServerResponse.
-  const cacheOptions = {
-    maxAge: ONE_YEAR_MS,
-    setHeaders: (
-      res: { setHeader: (name: string, value: string) => void },
-      resourcePath: string,
-    ) => {
-      if (resourcePath.endsWith('index.html')) {
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-      }
-    },
-  };
-
-  // Register admin before the root web mount so the admin prefix is its own scope.
-  await app.register(fastifyStatic, {
-    root: adminRoot,
-    prefix: ADMIN_PREFIX,
-    decorateReply: false,
-    ...cacheOptions,
-  });
-  // Web SPA at root (no prefix, avoids the '/' + '/{*any}' double-slash).
-  await app.register(fastifyStatic, {
-    root: webRoot,
-    decorateReply: false,
-    ...cacheOptions,
-  });
-
-  // SPA fallback for client-side deep links (e.g. /admin/users, /dashboard). Requests to
-  // /api/* and /uploads/* keep a JSON 404 so they don't receive HTML.
-  const webIndex = readFileSync(join(webRoot, 'index.html'));
-  const adminIndex = readFileSync(join(adminRoot, 'index.html'));
-  adapter.setNotFoundHandler((req: FastifyRequest, reply: FastifyReply) => {
-    const url = req.url;
-    if (url.startsWith('/api/') || url.startsWith('/uploads/')) {
-      return reply
-        .code(404)
-        .type('application/json')
-        .send({
-          statusCode: 404,
-          message: `Cannot ${req.method} ${url}`,
-          error: 'Not Found',
-        });
-    }
-    const index = url.startsWith(ADMIN_PREFIX) ? adminIndex : webIndex;
-    return reply
-      .code(200)
-      .header('Cache-Control', 'no-cache, no-store, must-revalidate')
-      .type('text/html')
-      .send(index);
-  });
+  // Frontend static serving (web + admin SPA) moved to Caddy — it serves the built dist via
+  // file_server + try_files SPA fallback in the generated Caddyfile (see docker/init.sh). Fastify is
+  // API-only here (/api/* routes) plus the auth-gated /uploads registered above. (Previously @fastify/static
+  // also mounted the frontend here, registering a not-found handler Fastify rejected as "already set".)
 }

@@ -66,6 +66,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 # Federation S2S signing keypair (Ed25519) — generated on first boot into data/, NEVER tracked
 /data
 
+# Docker deployment config (docker compose launch dir) — holds secrets; soms.conf.example is tracked
+/soms.conf
+
 # Federation e2e compiled entry — tsc output of test/federation-app.main.ts + deps, rebuilt on
 # demand by ensureCompiledEntry (test/federation-harness.ts); never tracked
 /.fed-app-build

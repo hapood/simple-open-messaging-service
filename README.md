@@ -261,8 +261,8 @@ Only **one port** is published: `7667` (HTTPS; `7667/udp` for HTTP/3). Caddy ter
 
 The bundled Caddy ships **76 buildable** DNS-01 providers from `github.com/caddy-dns` — Cloudflare + all the China providers (**AliDNS** `alidns`, **Tencent** `tencentcloud` + `edgeone`, plus `huaweicloud`, `volcengine`, `westcn`) and the other major ones. So switching DNS providers is a **config change, not a rebuild**. (The other caddy-dns modules are excluded at build: archived, no resolvable version, or stuck on the pre-1.0 `libdns` API — notably `dnspod` is unmaintained, so Tencent users use `tencentcloud`/`edgeone`.)
 
-- **Cloudflare (default)**: just set `CLOUDFLARE_API_TOKEN` — the baked Caddyfile uses it as-is.
-- **Any other provider**: edit `./Caddyfile`'s `tls { dns <provider> ... }` block to that provider's syntax + credential env (examples in the Caddyfile header), then uncomment the `- ./Caddyfile:/etc/caddy/Caddyfile:ro` volume in `docker-compose.yml`. Each module's exact Caddyfile syntax is at `https://github.com/caddy-dns/<provider>`.
+- **Cloudflare (default)**: just set `CLOUDFLARE_API_TOKEN` in `soms.conf` — the `init` service generates the Caddyfile from it.
+- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `soms.conf` to that provider's `dns ...` line (quoted — it contains spaces) plus its credential vars; `{KEY}` refs are transcribed into the generated Caddyfile. Examples are in `soms.conf.example`. Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
 
 ### Bring your own reverse proxy (slim image)
 
