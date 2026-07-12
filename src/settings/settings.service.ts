@@ -33,9 +33,9 @@ type VapidEntry = { value: VapidConfig | null; fetchedAt: number };
  * keys immediately; other instances pick them up within TTL via the interval. VAPID rotates rarely, so
  * ≤30s cross-instance staleness is acceptable (Redis pub/sub exists if faster coherence is ever needed).
  *
- * One-time env→DB seed: on first boot, if the DB has no VAPID row but VAPID_* env vars are set, we import
- * them once (preserving existing subscribers — no forced re-subscribe) and env is then dead. DB presence
- * is the single source of truth.
+ * Single source of truth: the DB. There is NO env fallback — VAPID_* env vars are never read (a fresh
+ * deploy starts with Web Push disabled until an admin generates a keypair in the console). Bootstrap/
+ * identity config (DATABASE_URL, SOMS_DOMAIN) still belongs in env — it is needed before the app/DB are up.
  *
  * Threat model: the VAPID private key is stored plaintext. The DB is already the trust root (password
  * hashes, refresh-token hashes, per-device push p256dh/auth keys). A VAPID-key compromise only lets an
@@ -111,27 +111,13 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** Reload the cache from DB (single-flight: concurrent callers share one DB read). On first boot, if no
-   *  DB row exists but VAPID_* env is set, seed the DB from env (one-time import). */
+  /** Reload the cache from DB (single-flight: concurrent callers share one DB read). No env fallback —
+   *  VAPID is DB-only. */
   async refresh(): Promise<void> {
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       try {
-        let row = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
-        if (!row) {
-          const seeded = this.seedFromEnv();
-          if (seeded) {
-            // upsert with an empty update: a concurrent seeding boot (multi-instance first start) is a
-            // no-op rather than a clobber — a seeded row is sticky and never overwritten by a later boot.
-            await this.prisma.systemSetting.upsert({
-              where: { key: VAPID_KEY },
-              create: { key: VAPID_KEY, value: JSON.stringify(seeded) },
-              update: {},
-            });
-            row = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
-            this.logger.log('VAPID imported from VAPID_* env into DB; env is no longer read');
-          }
-        }
+        const row = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
         this.entry = {
           value: row ? this.parseVapid(row.value) : null,
           fetchedAt: Date.now(),
@@ -222,17 +208,5 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     }
     this.logger.warn('stored VAPID row is malformed — treating Web Push as unconfigured');
     return null;
-  }
-
-  /** Read VAPID_* env into a VapidConfig, or null if the required pair is absent. */
-  private seedFromEnv(): VapidConfig | null {
-    const publicKey = process.env.VAPID_PUBLIC_KEY?.trim();
-    const privateKey = process.env.VAPID_PRIVATE_KEY?.trim();
-    if (!publicKey || !privateKey) return null;
-    return {
-      publicKey,
-      privateKey,
-      subject: process.env.VAPID_SUBJECT?.trim() || DEFAULT_SUBJECT,
-    };
   }
 }
