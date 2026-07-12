@@ -2,7 +2,7 @@
 
 This document is the target design baseline for the SOMS **backend API and frontend-backend interaction protocol stack**, used for team alignment and subsequent incremental implementation. Based on a review of the existing code (5 backend controllers, `EventGateway`, `AuthService`, and the frontend `AuthInterceptor` / `WebsocketService`), it proposes a layered target contract, an error code system, a WS event catalog, and an evolution roadmap.
 
-- **Status**: P0/P1 completed and verified; real-time communication was migrated from WebSocket to **SSE** on 2026-06-30 (§4.5 / §5.5 / §Six P2 have been rewritten accordingly); this document only retains the to-do items (P2 increments / P2+ / P3 + ESM side task). Last updated 2026-07-01.
+- **Status**: P0/P1/P2 completed and verified; real-time communication was migrated from WebSocket to **SSE** on 2026-06-30 (§4.5 / §5.5 / §Six P2 have been rewritten accordingly); this document only retains the to-do items (P2+ / P3 + ESM side task). Last updated 2026-07-12.
 - **Scope**: HTTP APIs, data contracts, authentication, real-time communication, frontend-backend coordination
 - **Goal**: Under the positioning of "concise and easy for third-party applications to integrate", round out the contracts, correctness, and reliability
 
@@ -106,7 +106,7 @@ SOMS's core flows (registration/login, friends, P2P/group threads, message send/
 5. **Ordering and integrity**: While a single SSE connection stays alive, messages arrive **strictly ordered and intact** — guaranteed by the underlying TCP (the server's `write` order is the client's receipt order; the byte stream is reliably reassembled). The SSE layer needs no self-added `seq`; this is exactly the complexity saved by the migration.
 6. **Reconnection and resumption**: The SSE stream itself does not replay history (the server does not consume `Last-Event-ID`). Messages during a disconnect (including the ≤25s false-dead window) will be lost; after a successful reconnect the frontend emits a `reconnect$` signal, and each thread does an HTTP incremental catch-up by the `newestMsgId` cursor (`refillNewer`). Multiple connections of the same user are each individually ordered; ordering across connections is not guaranteed.
 7. **Forced logout**: All-device logout / password change / admin kick-out triggers the `auth.sessions-invalidated` event → `SseService` pushes `FORCE_LOGOUT` to all of that user's connections and immediately disconnects.
-8. **Extended events** (all downstream): `USER_PRESENCE` (to be implemented), `NOTIFY` (**implemented**: a friend request triggers `NotifyService.recordFriendRequest` to atomically write a row + light up the badge, and `SseService.onNotify` pushes it in real time; the frontend `home` lights up the unread badge upon receipt; see [§Six P2](#p2--real-time-experience-and-reliability)). Note that `USER_TYPING` is a **client upstream** event and cannot be carried by SSE; a new HTTP endpoint is required.
+8. **Extended events** (all downstream): `NOTIFY` (**implemented**: a friend request triggers `NotifyService.recordFriendRequest` to atomically write a row + light up the badge, and `SseService.onNotify` pushes it in real time; the frontend `home` lights up the unread badge upon receipt; see [§Six P2](#p2--real-time-experience-and-reliability)). `USER_PRESENCE` / `USER_TYPING` were **removed from the roadmap** on 2026-07-12 (see P2) — not a committed feature.
 
 ### 4.6 Frontend-Backend Coordination
 
@@ -221,10 +221,9 @@ Authentication is not in the frame — it goes through HTTP: if `JwtAuthGuard` f
 | --- | --- | --- | --- |
 | `NEW_MESSAGE` | S→C | `{ threadId, id, content, contentType, createdAt, ... }` (full message body, already serialized) | The other party / a group member sent a new message; the frontend can render directly upon receipt, no secondary fetch needed. Frame `id` = message id |
 | `FORCE_LOGOUT` | S→C | `{ event:'FORCE_LOGOUT', status:0, message:<reason> }` | All-device logout / password change / admin kick-out; the frontend disconnects + forces re-login |
-| `USER_PRESENCE` | S→C (to be implemented) | `{ userId, online }` | Presence |
 | `NOTIFY` | S→C (implemented) | `{ event:'NOTIFY', type:'FRIEND_REQUEST', fromUserId }` | Triggered by a friend request: atomically writes the `Notify` row + lights up the `hasUrFriendReq` badge + real-time SSE push (`SseService.onNotify`) |
 
-> **Upstream constraint**: SSE is unidirectional; the client does not send business messages to the server. `USER_TYPING` (typing) and other upstream traffic all go through HTTP `POST` (endpoint to be added). The WS-era `@SubscribeMessage` upstream channel was deleted with the migration.
+> **Upstream constraint**: SSE is unidirectional; the client does not send business messages to the server. Any future upstream traffic goes through HTTP `POST` — the WS-era `@SubscribeMessage` upstream channel was deleted with the migration. (`USER_TYPING` / `USER_PRESENCE` were removed from the roadmap on 2026-07-12 — see P2.)
 
 ---
 
@@ -243,19 +242,19 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 > **P1 Side Task (Engineering Infrastructure) — Whole-backend ESM Conversion** ✅ **Completed** (2026-07, branch `refactor/cjs-to-esm`). What landed: `tsconfig` (`module/moduleResolution: NodeNext`, `target ES2022`, `esModuleInterop: true`, `useDefineForClassFields: false` — the latter must be explicitly false, otherwise ES2022 defaults to true and breaks Nest property injection + the `@nestjs/swagger` metadata plugin) + `package.json` `type:"module"` + repo-wide relative imports patched with `.js` (codemod 148 spots) + 5 CJS-isms converted to default imports (`compression`/`sharp`/`argon2`×2/`dayjs`). **Pre-flight test net added**: first built an auth e2e smoke (register→login→guarded, `soms_test` isolated DB), green under CJS as a regression anchor, still green after ESM. **Toolchain**: dev runs `tsx` (ts-node ESM is deprecated), tests switched to `Vitest` (native ESM). **Root-cause payoff**: Prisma 7 `generate` emits an ESM client under NodeNext; Node 24 module-detection no longer misjudges; the Dockerfile's `COPY tsconfig` ordering is preserved (`generate` still needs to read `module`), but the CJS-avoidance pin for node 24.16 was dropped to `node:24`. The `require("@nestjs/swagger")` injected by the `@nestjs/swagger` CLI plugin is emitted by tsc as a createRequire-based `__require`, which runs fine under ESM. See the memory `prisma-generate-tsconfig-order`.
 
 
-### P2 — Real-Time Experience and Reliability
+### P2 — Real-Time Experience and Reliability ✅ Completed
 
-> Reconciliation after the 2026-06-30 WS→SSE migration: the original first two P2 items (WS heartbeat / seq catch-up) were meant to fix WS reliability, which SSE now achieves more simply; the latter two (presence · Notify) are pure incremental features, and because SSE is unidirectional the upstream portion must go through HTTP.
+> Reconciliation after the 2026-06-30 WS→SSE migration: the original first two P2 items (WS heartbeat / seq catch-up) were meant to fix WS reliability, which SSE now achieves more simply; Notify is a pure incremental feature (and because SSE is unidirectional, any future upstream leg would go through HTTP).
 > On 2026-06-30 read receipts were removed from the roadmap (consistent with `docs/chat-message-list-design.md`'s "read receipts: not doing it"); the `UserMessageThread.lastRead` field remains as an unused dead field (not migrated for now).
+> On 2026-07-12 typing / presence (`USER_TYPING` / `USER_PRESENCE`) were removed from the roadmap — a deliberate non-goal, consistent with the minimalist IM positioning (no read receipts, no presence indicators). The three remaining P2 items are all landed; P2 is complete.
 
 | Content | Status | Affected | Acceptance |
 | --- | --- | --- | --- |
 | Heartbeat and liveness detection | ✅ SSE landed | `src/gateway/sse.service.ts` | `: ping @25s` + `write` failure for liveness; false-dead connections cleaned within ≤25s (exceeds the original 90s target) |
 | Reconnect catch-up | ✅ SSE landed | Frontend `websocket.service.ts` (`reconnect$` + `refillNewer`) | After reconnect, the messages missed during the outage are caught up via HTTP by the `newestMsgId` cursor |
-| Typing / presence | ⏳ TODO | New HTTP upstream endpoint (typing) + SSE downstream event (`USER_PRESENCE`) + frontend component | Presence refreshes in real time. **Note**: SSE is unidirectional; typing must go through HTTP POST and can no longer use `@SubscribeMessage` |
 | Notify integration | ✅ Landed | `notify.service.ts` (`recordFriendRequest` atomically writes a row + lights the badge), `controller/notify.controller.ts` (`mark-friend-req-read` clears the badge), `gateway/sse.service.ts` (`onNotify` real-time push), frontend `home.component.ts` (clears the badge on `NOTIFY`) | New friend request: atomically writes the `Notify` row + lights up the `hasUrFriendReq` badge + real-time SSE push of `NOTIFY`; after the user views it, `mark-friend-req-read` clears the badge |
 
-> **Next focus of work** = P2 presence / typing (**Notify already landed**): under unidirectional SSE, typing requires a new HTTP upstream endpoint + a `USER_PRESENCE` downstream event + a frontend component; this is the main gap in real-time experience after the SSE migration, and the preferred follow-up once the current branch `refactor/sse-token` merges into `dev`.
+> With typing/presence removed, all P2 items are landed. **Next roadmap work** = P2+ (friend-domain feature gaps) and P3 (engineering/production readiness) below.
 
 ### P2+ — Friend Domain Feature Completion (Product Alignment)
 
