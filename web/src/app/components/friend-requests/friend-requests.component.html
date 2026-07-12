@@ -68,7 +68,7 @@
               @for (u of localResults(); track u.id) {
                 <button class="result-row" type="button" (click)="pickLocalUser(u)">
                   <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="u.name"
-                      [src]="u.avatar"></app-user-avatar></div>
+                      [identityId]="u.id" [src]="u.avatar"></app-user-avatar></div>
                   <div class="result-meta">
                     <div class="user-name">{{displayUserName(u)}}</div>
                     @if(u.isForeigner){<app-federated-badge class="card-fed" [domain]="u.domain"></app-federated-badge>}
@@ -80,7 +80,7 @@
             <div class="user-card">
               <div class="user-main">
                 <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="userData()!.name"
-                    [src]="userData()!.avatar"></app-user-avatar></div>
+                    [identityId]="userData()!.id" [src]="userData()!.avatar"></app-user-avatar></div>
                 <div class="user-meta">
                   <div class="user-name">{{displayUserName(userData()!)}}</div>
                   @if(userData()!.isForeigner){<app-federated-badge class="card-fed" [domain]="userData()!.domain"></app-federated-badge>}
@@ -120,7 +120,7 @@
         @for(req of pendingReqList();track req.id){
         <div class="pending-row">
           <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
-              [src]="req.avatar"></app-user-avatar></div>
+              [identityId]="req.peerId" [src]="req.avatar"></app-user-avatar></div>
           <div class="pending-meta">
             <div class="user-name">{{displayUserName(req)}}</div>
             @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}
@@ -158,7 +158,7 @@
         @for(req of sentReqList();track req.id){
         <div class="pending-row">
           <div class="user-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="req.name ?? ''"
-              [src]="req.avatar"></app-user-avatar></div>
+              [identityId]="req.peerId" [src]="req.avatar"></app-user-avatar></div>
           <div class="pending-meta">
             <div class="user-name">{{displayUserName(req)}}</div>
             @if(req.isForeigner){<app-federated-badge class="pending-fed" [domain]="req.domain"></app-federated-badge>}

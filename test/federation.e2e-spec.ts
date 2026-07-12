@@ -264,6 +264,70 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     expect(after).toBe(before);
   });
 
+  it('GET /s2s/messages/before — backward paging (serve-only path; driven via the test probe)', async () => {
+    // /messages/before is the BACKWARD twin of /messages. SOMS is forward-only (no internal caller), so
+    // drive it directly: appB's test probe signs a GET as appB → appA serves alice's messages with
+    // originSeq < beforeSeq, OLDEST-FIRST (desc query + reverse). Seeds 3 fresh alice→bob messages for a
+    // deterministic page, then asserts the /before-specific delta vs the e2e'd forward serve: the `<`
+    // filter, the desc→reverse oldest-first ordering, hasMore (both ways), latestSeq, + the
+    // beforeSeq<0 (no-upper-bound) branch. (Per design-review B3: the shared gate/query/message-map is
+    // covered by the forward e2e; this covers only the backward delta.)
+    const threadId = await alicesThreadIdOnA();
+    for (const c of ['mb-1', 'mb-2', 'mb-3']) {
+      const r = await request(appA.baseUrl)
+        .post('/api/v1/send-message')
+        .set('Authorization', `Bearer ${tokenA}`)
+        .send({ threadId, content: c, contentType: 'PURE_TEXT' });
+      expect(r.body.code).toBe(BusinessCode.OK);
+    }
+    // alice's messages on appA (the serving side), originSeq ascending. Includes the 3 seeded + any from
+    // earlier Step-2 tests — all are < (max+1), so the assertions hold regardless of the prior count.
+    const rows = await appA.prisma.message.findMany({
+      where: { threadId, creator: aliceLocalIdA },
+      orderBy: { originSeq: 'asc' },
+      select: { originSeq: true },
+    });
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    const allSeqs = rows.map((r) => r.originSeq ?? 0);
+    const maxSeq = allSeqs[allSeqs.length - 1];
+
+    // Drive appA's /s2s/messages/before as appB (the requester) via the test probe.
+    const before = async (beforeSeq: number, take: number) =>
+      (
+        await fetch(
+          `http://127.0.0.1:${appB.port}/api/v1/test/signed-s2s-get?peerDomain=${DOM_A}&path=${encodeURIComponent(
+            `/api/v1/s2s/messages/before?fromAccount=alice&fromDomain=${DOM_A}&toAccount=bob&toDomain=${DOM_B}&beforeSeq=${beforeSeq}&take=${take}`,
+          )}`,
+        ).then((r) => r.json())
+      ) as {
+        status: number;
+        body: {
+          messages: { originSeq: number }[];
+          latestSeq: number;
+          hasMore: boolean;
+        };
+      };
+
+    // (1) beforeSeq < 0 → no upper bound: every message, OLDEST-FIRST (the desc→reverse output — a
+    //     missing reverse would surface as descending), hasMore false, latestSeq = alice's MAX originSeq.
+    const pageAll = await before(-1, 50);
+    expect(pageAll.status).toBe(200);
+    expect(pageAll.body.messages.map((m) => m.originSeq)).toEqual(allSeqs);
+    expect(pageAll.body.hasMore).toBe(false);
+    expect(pageAll.body.latestSeq).toBe(maxSeq);
+
+    // (2) beforeSeq = maxSeq + 1, take 2 → the 2 highest ([secondMax, max], oldest-first), hasMore true
+    //     (≥3 messages sit below maxSeq+1). Confirms the strict `<` filter + subset paging + hasMore.
+    const pageTwo = await before(maxSeq + 1, 2);
+    expect(pageTwo.status).toBe(200);
+    expect(pageTwo.body.messages.map((m) => m.originSeq)).toEqual([
+      allSeqs[allSeqs.length - 2],
+      maxSeq,
+    ]);
+    expect(pageTwo.body.hasMore).toBe(true);
+    expect(pageTwo.body.latestSeq).toBe(maxSeq);
+  }, 30_000);
+
   it('Step 2: pull-on-open recovers a message missing on the peer (resilience backstop)', async () => {
     // alice sends; the push delivers it to appB (stored under alice's STUB as the creator — appB's own
     // copy in its own thread, distinct from appA's copy in appA's thread, even though both apps share

@@ -3,7 +3,7 @@ import { Subject, Subscription, filter } from 'rxjs';
 import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoService } from '@jsverse/transloco';
 import { WebsocketService } from './websocket.service';
-import { ConversationListService } from './conversation-list.service';
+import { ThreadRepository } from './thread-store.service';
 import { UserService } from './user.service';
 
 /**
@@ -39,8 +39,8 @@ const GROUP_EVENTS = new Set<string>([
  * that kept group chat from feeling "live" (previously these frames were forwarded to `eventSubject`
  * but only `NEW_MESSAGE` was consumed, so every group event was silently dropped).
  *
- * - GROUP_UPDATED → {@link ConversationListService.applyGroupUpdate} so the rename / new avatar land in
- *   the conversation list (and any view reading the shared store) in real time.
+ * - GROUP_UPDATED → {@link ThreadRepository.applyGroupUpdate} so the rename / new avatar land in the
+ *   conversation list (and any view reading the shared store) in real time.
  * - A membership/role event targeting THIS user → self effect only:
  *     • my JOIN  → no list work (the thread-add is driven by THREAD_REVISION_UPDATED)
  *     • my ROLE  → update my role on the item + toast ("You are now …")
@@ -49,13 +49,16 @@ const GROUP_EVENTS = new Set<string>([
  *   GroupInfoComponent for that group reloads its roster. The conversation-list item itself is
  *   unaffected (it shows the thread, not its members).
  *
+ * The DATA effects (applyGroupUpdate / applyRole) land in the DB-layer {@link ThreadRepository}; the
+ * CONTROL effects (toasts, rosterChanged$) stay here in the UI layer — the 3-tier rule covers data only.
+ *
  * Root singleton, subscribes in its constructor (mirrors how WebsocketService self-starts). It must be
  * injected for the lifetime of the app — HomeComponent injects it.
  */
 @Injectable({ providedIn: 'root' })
 export class GroupEventService implements OnDestroy {
   private readonly ws = inject(WebsocketService);
-  private readonly convList = inject(ConversationListService);
+  private readonly threadRepo = inject(ThreadRepository);
   private readonly userService = inject(UserService);
   private readonly snackBar = inject(MatSnackBar);
   private readonly transloco = inject(TranslocoService);
@@ -74,14 +77,14 @@ export class GroupEventService implements OnDestroy {
 
   private handle(event: string, p: GroupEventPayload): void {
     if (event === 'GROUP_UPDATED') {
-      this.convList.applyGroupUpdate(p.threadId, { name: p.name, description: p.description, avatar: p.avatar });
+      this.threadRepo.applyGroupUpdate(p.threadId, { name: p.name, description: p.description, avatar: p.avatar });
       return;
     }
     const me = this.userService.sessionProfile()?.id;
     const targetsMe = p.userId != null && p.userId === me;
     // Resolve the display name BEFORE any toast, so a self-kick / role-change toast can read it.
     const groupName =
-      this.convList.items().find((t) => t.threadId === p.threadId)?.group?.name
+      this.threadRepo.items().find((t) => t.threadId === p.threadId)?.group?.name
       ?? this.transloco.translate('errors.theGroup');
     if (targetsMe) {
       // Thread-list add/delete on MY list is driven by the THREAD_REVISION_UPDATED delta
@@ -94,7 +97,7 @@ export class GroupEventService implements OnDestroy {
           break;
         case 'GROUP_ROLE_CHANGED':
           if (p.role) {
-            this.convList.applyRole(p.threadId, p.role);
+            this.threadRepo.applyRole(p.threadId, p.role);
             const roleLabel = this.transloco.translate('errors.role.' + p.role.toLowerCase());
             this.toast(this.transloco.translate('errors.nowRole', { role: roleLabel, group: groupName }));
           }

@@ -8,6 +8,7 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { ContentType, GroupRole } from '../prisma/generated/client.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -92,7 +93,7 @@ export class GroupController {
   @ApiOperation({ summary: 'Create a group and invite the given friends (invite token per friend)' })
   @ApiResultResponse(CreateGroupResponseDto)
   async createNewGroup(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: CreateGroupDto,
   ): Promise<ApiResult> {
     const owner = req.user.userId;
@@ -225,7 +226,7 @@ export class GroupController {
   @Post('group/invite')
   @ApiOperation({ summary: 'Invite friends to the group (invite token written to each P2P thread)' })
   async inviteUsers(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: InviteGroupDto,
   ): Promise<ApiResult> {
     const threadId = req.threadAccess!.threadId;
@@ -257,7 +258,7 @@ export class GroupController {
   @ResourceId<GroupIdDto>('groupId')
   @Post('group/sync-meta')
   @ApiOperation({ summary: 'Refresh a federated group meta (roster + identity) if stale (chat-open hook)' })
-  async syncGroupMeta(@Request() req): Promise<ApiResult> {
+  async syncGroupMeta(@Request() req: FastifyRequest): Promise<ApiResult> {
     // Chat-open hook: lazily pull the group meta from the origin when the mirror's revision is stale
     // (same shape as sync-peer-profile). A local group / when we are the origin is a no-op.
     void this.federationService.syncGroupMetaIfStale(req.threadAccess!.threadId);
@@ -276,7 +277,7 @@ export class GroupController {
   @Post('group/info')
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
-  async getGroupInfo(@Request() req): Promise<ApiResult> {
+  async getGroupInfo(@Request() req: FastifyRequest): Promise<ApiResult> {
     // Membership already enforced by ThreadAccessGuard. Build GroupResponseDto from the `!`-User
     // (identity) + the Group row (ownerId + updatedAt). The roster is NOT loaded here — it has its own
     // /group/members endpoint; group info carries only identity + owner + revision timestamps.
@@ -307,7 +308,7 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @Post('group/members')
   @ApiOperation({ summary: 'Batch fetch group rosters (members only; caller membership filtered)' })
-  async getMembers(@Request() req, @Body() dto: GroupMembersBatchDto): Promise<ApiResult> {
+  async getMembers(@Request() req: FastifyRequest, @Body() dto: GroupMembersBatchDto): Promise<ApiResult> {
     const me = req.user.userId;
     const rows = await this.participantService.getRosters(dto.threadIds);
     // Group by threadId; keep only threads where the caller is an active member (roster contains me).
@@ -348,7 +349,7 @@ export class GroupController {
   @ResourceId<GroupIdDto>('groupId')
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
-  async leaveGroup(@Request() req, @Body() _dto: GroupIdDto): Promise<ApiResult> {
+  async leaveGroup(@Request() req: FastifyRequest, @Body() _dto: GroupIdDto): Promise<ApiResult> {
     const threadId = req.threadAccess!.threadId;
     const { participant } = req.threadAccess!;
     await this.groupService.leaveGroup({
@@ -375,7 +376,7 @@ export class GroupController {
   @Post('group/kick')
   @ApiOperation({ summary: 'Kick a member (owner/admin, must outrank target)' })
   async kickMember(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: KickGroupDto,
   ): Promise<ApiResult> {
     const threadId = req.threadAccess!.threadId;
@@ -403,7 +404,7 @@ export class GroupController {
   @Post('group/transfer')
   @ApiOperation({ summary: 'Transfer ownership to a member (owner only)' })
   async transferOwnership(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: TransferGroupDto,
   ): Promise<ApiResult> {
     const threadId = req.threadAccess!.threadId;
@@ -427,7 +428,7 @@ export class GroupController {
   @Post('group/set-role')
   @ApiOperation({ summary: "Set a member's role to ADMIN/MEMBER (owner only)" })
   async setRole(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: SetRoleGroupDto,
   ): Promise<ApiResult> {
     const threadId = req.threadAccess!.threadId;
@@ -450,7 +451,7 @@ export class GroupController {
   @Post('group/update')
   @ApiOperation({ summary: 'Update group name/avatar (admin+)' })
   async updateGroup(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: UpdateGroupDto,
   ): Promise<ApiResult> {
     const threadId = req.threadAccess!.threadId;

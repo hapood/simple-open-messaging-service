@@ -19,25 +19,25 @@ import {
 
 export class UserResponseDto {
   @ApiProperty({ example: 1 })
-  id: number;
+  id!: number;
 
   @ApiProperty({ example: 'alice', description: 'Login unique name' })
-  account: string;
+  account!: string;
 
   @ApiProperty({ example: 'Alice', description: 'Display name' })
-  name: string;
+  name!: string;
 
   @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
-  avatar: string;
+  avatar!: string;
 
   @ApiProperty({
     example: 'Hey there! I am using SOMS.',
     description: 'Bio (about)',
   })
-  bio: string;
+  bio!: string;
 
   @ApiProperty({ example: false, description: 'Whether an external user' })
-  isForeigner: boolean;
+  isForeigner!: boolean;
 
   @ApiProperty({ example: 'example.com', description: 'Domain (nullable)' })
   domain?: string;
@@ -46,22 +46,22 @@ export class UserResponseDto {
     example: 1_700_000_000_000,
     description: 'Created at (ms timestamp)',
   })
-  createdAt: number;
+  createdAt!: number;
 
   @ApiProperty({
     example: 1_700_000_000_000,
     description: 'Updated at (ms timestamp)',
   })
-  updatedAt: number;
+  updatedAt!: number;
 
   @ApiProperty({
     example: 3,
     description: 'Profile revision (name/avatar/bio). The federation + chat-open staleness cursor.',
   })
-  profileRev: number;
+  profileRev!: number;
 
   @ApiProperty({ example: false })
-  isDeleted: boolean;
+  isDeleted!: boolean;
 
   // SELF-ONLY: whether the caller has unread friend requests. Populated solely by the self-profile
   // read; every other response builder must leave it unset so the badge never leaks to other clients.
@@ -91,28 +91,28 @@ export class MessageResponseDto {
       'Per-thread monotonic seq (0-indexed) — the message ordering key + identity. Allocated per-thread ' +
       '(NOT global): its deltas reveal only THIS thread volume, never server-wide throughput.',
   })
-  seq: number;
+  seq!: number;
 
   @ApiProperty({ enum: ContentType, description: 'Content type' })
-  contentType: ContentType;
+  contentType!: ContentType;
 
   @ApiProperty({ example: 'hello', description: 'Message content' })
-  content: string;
+  content!: string;
 
   @ApiProperty({ example: 12, description: 'Owning thread id' })
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: 1, description: 'Sender userId' })
-  creator: number;
+  creator!: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
-  createdAt: number;
+  createdAt!: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
-  updatedAt: number;
+  updatedAt!: number;
 
   @ApiProperty({ example: false })
-  isDeleted: boolean;
+  isDeleted!: boolean;
 
   @ApiProperty({
     required: false,
@@ -125,34 +125,34 @@ export class MessageResponseDto {
 
 export class GroupResponseDto {
   @ApiProperty({ example: 12 })
-  id: number;
+  id!: number;
 
   @ApiProperty({ example: 'dev-team', description: 'Group name' })
-  name: string;
+  name!: string;
 
   @ApiProperty({ example: 1, description: 'Owner userId' })
-  ownerId: number;
+  ownerId!: number;
 
   @ApiProperty({
     example: 'https://.../g.png',
     description: 'Group avatar URL',
   })
-  avatar: string;
+  avatar!: string;
 
   @ApiProperty({
     example: 'Frontend team sync',
     description: 'Group description / intro',
   })
-  description: string;
+  description!: string;
 
   @ApiProperty({ example: 12, description: 'Group message thread id' })
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
-  createdAt: number;
+  createdAt!: number;
 
   @ApiProperty({ example: 1_700_000_000_000 })
-  updatedAt: number;
+  updatedAt!: number;
 }
 
 /**
@@ -165,17 +165,17 @@ export class ConversationItemDto {
     example: 1,
     description: "This user's ThreadParticipant row id",
   })
-  id: number;
+  id!: number;
 
   @ApiProperty({
     example: 12,
     description:
       'Conversation (MessageThread) id — the key for send-message / query-messages',
   })
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ enum: MessageThreadType, description: 'Conversation type' })
-  type: MessageThreadType;
+  type!: MessageThreadType;
 
   @ApiProperty({
     example: 42,
@@ -196,7 +196,7 @@ export class ConversationItemDto {
     description:
       'Unread message count for the caller (messages newer than their lastReadSeq). 0 when caught up.',
   })
-  unreadCount: number;
+  unreadCount!: number;
 
   @ApiProperty({
     example: 'hi group',
@@ -234,14 +234,14 @@ export class ConversationItemDto {
     description:
       'Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).',
   })
-  muted: boolean;
+  muted!: boolean;
 
   @ApiProperty({
     example: false,
     description:
       'Whether the caller has pinned this conversation to the top of their list.',
   })
-  pinned: boolean;
+  pinned!: boolean;
 
   @ApiProperty({
     example: 1_700_000_000_000,
@@ -296,26 +296,26 @@ export class ConversationItemDto {
  */
 export class SkippedInviteDto {
   @ApiProperty({ example: 7 })
-  userId: number;
+  userId!: number;
 
   @ApiProperty({ example: 'not a friend or no conversation' })
-  reason: string;
+  reason!: string;
 }
 
 export class CreateGroupResponseDto {
   @ApiProperty({ example: 12, description: 'Group message thread id' })
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: 12, description: 'Group id' })
-  groupId: number;
+  groupId!: number;
 
   /** Friend user ids who were successfully sent a GROUP_INVITE at creation. */
   @ApiProperty({ type: [Number], example: [3, 7] })
-  invited: number[];
+  invited!: number[];
 
   /** Friends who could not be invited (not a friend / no P2P thread / write failure). */
   @ApiProperty({ type: SkippedInviteDto, isArray: true })
-  skipped: SkippedInviteDto[];
+  skipped!: SkippedInviteDto[];
 }
 
 /**
@@ -326,29 +326,29 @@ export class CreateGroupResponseDto {
  */
 export class GroupMemberDto {
   @ApiProperty({ example: 7 })
-  userId: number;
+  userId!: number;
 
   @ApiProperty({ example: 'alice', description: 'Login unique name' })
-  account: string;
+  account!: string;
 
   @ApiProperty({ example: 'Alice', description: 'Display name' })
-  name: string;
+  name!: string;
 
   @ApiProperty({ example: 'https://.../a.webp', description: 'Avatar URL' })
-  avatar: string;
+  avatar!: string;
 
   @ApiProperty({ enum: GroupRole, description: 'Member role in this group' })
-  role: GroupRole;
+  role!: GroupRole;
 
   @ApiProperty({
     example: 1_700_000_000_000,
     description: 'Joined at (ms timestamp)',
   })
-  joinedAt: number;
+  joinedAt!: number;
 
   @ApiProperty({
     example: false,
     description: 'Whether this member is the group owner',
   })
-  isOwner: boolean;
+  isOwner!: boolean;
 }

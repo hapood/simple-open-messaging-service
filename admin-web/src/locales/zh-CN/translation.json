@@ -484,6 +484,67 @@
     "empty": "无群组",
     "local": "本地"
   },
+  "settings": {
+    "title": "设置",
+    "desc": "运维管理的运行时配置（VAPID、FCM 状态、服务器身份）。",
+    "identity": {
+      "title": "服务器身份",
+      "desc": "本服务器的公开域名——联邦身份（@user@domain）。",
+      "set": "已设置",
+      "unset": "未设置",
+      "envNote": "通过 SOMS_DOMAIN 环境变量设置（只读）。"
+    },
+    "vapid": {
+      "title": "Web Push（VAPID）",
+      "desc": "向浏览器推送服务认证本服务器的 VAPID 密钥对。存储于数据库，启用/轮换无需重新部署。",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "subject": "联系地址（subject）",
+      "subjectPlaceholder": "mailto:admin@example.com（可选——默认 mailto:noreply@soms.local）",
+      "publicKey": "公钥",
+      "privateKey": "私钥",
+      "privateHidden": "私钥：已设置（隐藏——只写）",
+      "updatedAt": "更新于",
+      "rotationWarning": "生成或更改密钥对会使现有的 Web Push 订阅失效——浏览器需要重新订阅。",
+      "generate": "生成密钥对",
+      "pasteExisting": "粘贴已有密钥对",
+      "regenerate": "重新生成",
+      "clear": "清除",
+      "save": "保存密钥对",
+      "clearSuperOnly": "清除需要超级管理员",
+      "adminOnly": "编辑需要管理员及以上",
+      "generated": "已生成新的 VAPID 密钥对",
+      "saved": "VAPID 密钥对已保存",
+      "cleared": "VAPID 密钥对已移除——Web Push 已禁用",
+      "copied": "已复制",
+      "copyFailed": "复制失败"
+    },
+    "fcm": {
+      "title": "FCM（Android / iOS）",
+      "desc": "用于原生应用的 Firebase 云消息传输。",
+      "configured": "已配置",
+      "notConfigured": "未配置",
+      "envNote": "通过 GOOGLE_APPLICATION_CREDENTIALS（文件方式）配置——不在此处编辑。"
+    },
+    "health": {
+      "title": "健康检测",
+      "desc": "校验已配置的 VAPID 密钥对（确定性检测，无网络）。如需实测投递，请使用 Push 页面的测试推送。",
+      "run": "运行检测",
+      "rerun": "重新检测",
+      "configured": "VAPID 配置已存储",
+      "publicKeyValid": "公钥是有效的 P-256 点",
+      "privateKeyValid": "私钥是有效的 32 字节标量",
+      "pairMatches": "公钥与私钥匹配",
+      "subjectValid": "subject 是有效的 mailto/https URL",
+      "fcmConfigured": "FCM 传输已配置",
+      "webPushConfigured": "Web Push 就绪",
+      "domain": "域名：",
+      "toast": {
+        "ok": "VAPID 配置健康",
+        "hasIssues": "VAPID 配置存在问题——见详情"
+      }
+    }
+  },
   "notFound": {
     "code": "404",
     "desc": "页面不存在",
@@ -501,7 +562,8 @@
       "rateLimited": "请求过于频繁，请稍候",
       "refreshReuse": "登录状态已变更，请重新登录",
       "sessionRevoked": "登录会话已结束，请重新登录",
-      "internal": "出错了"
+      "internal": "出错了",
+      "vapidInvalid": "VAPID 密钥对无效（格式错误或不匹配）"
     }
   }
 }

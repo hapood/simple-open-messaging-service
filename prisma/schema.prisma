@@ -632,3 +632,14 @@ model S2SFriendOpSeen {
 
   @@id([origin, opId])
 }
+
+/// Generic key→value store for admin-managed runtime settings. The typed SettingsService
+/// (src/settings/settings.service.ts) is the facade over this raw table. Holds operator-configured
+/// values that are optional, runtime-toggleable, and UI-managed — e.g. the Web Push VAPID keypair
+/// (key='vapid', value=JSON {publicKey, privateKey, subject}). NOT for bootstrap/identity config
+/// (DATABASE_URL, SOMS_DOMAIN) — those stay in env, read before the app/DB are up.
+model SystemSetting {
+  key       String   @id @db.VarChar(63)
+  value     String   @db.Text
+  updatedAt DateTime @updatedAt
+}

@@ -20,6 +20,7 @@ import { PushModule } from './push/push.module.js';
 import { UserBlockModule } from './user-block/user-block.module.js';
 import { FederationModule } from './federation/federation.module.js';
 import { PrismaModule } from './prisma.module.js';
+import { SettingsModule } from './settings/settings.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
 import { HealthController } from './controller/health.controller.js';
@@ -48,6 +49,7 @@ import { ThreadRevisionModule } from './thread-revision/thread-revision.module.j
     UserBlockModule,
     FederationModule,
     PrismaModule,
+    SettingsModule,
     MessageFanoutModule,
     ThreadRevisionModule,
   ],

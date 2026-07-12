@@ -40,11 +40,17 @@
           },
           "configurations": {
             "production": {
+              "fileReplacements": [
+                {
+                  "replace": "src/app/dev-tools.ts",
+                  "with": "src/app/dev-tools.prod.ts"
+                }
+              ],
               "budgets": [
                 {
                   "type": "initial",
-                  "maximumWarning": "1MB",
-                  "maximumError": "2MB"
+                  "maximumWarning": "2.3MB",
+                  "maximumError": "2.7MB"
                 },
                 {
                   "type": "anyComponentStyle",

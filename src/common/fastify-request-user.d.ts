@@ -6,9 +6,16 @@ import type { MessageThreadType, ThreadParticipant } from '../prisma/generated/c
 
 declare module 'fastify' {
   interface FastifyRequest {
-    user?: {
-      userId?: number;
+    // Required on guarded routes: every auth guard (JwtAuthGuard / LocalAuthGuard / AdminAuthGuard /
+    // the /uploads preHandler / notification-token guard) populates `user` before the handler runs, so a
+    // controller reading `req.user.userId` is always in a context where it is set. Typed as the C-end
+    // principal `{ userId }` (the dominant shape) with adminId/role optional for the admin console,
+    // which reads those via casts rather than `req.user.userId`. The index signature absorbs the
+    // richer objects some guards attach (e.g. LocalStrategy's LoginAuthInfo — cast at the read site).
+    user: {
+      userId: number;
       adminId?: number;
+      role?: string;
       [key: string]: unknown;
     };
     /**
@@ -17,9 +24,10 @@ declare module 'fastify' {
      * where the `groupId` value IS the threadId now that groups are `!`-User threads). Holds the
      * resolved thread id + type + the caller's ACTIVE ThreadParticipant (membership + role). Present
      * iff the guard ran and the caller is a current member; the controller + RolesGuard read it
-     * instead of re-querying. P2P and GROUP routes share one access shape.
+     * instead of re-querying. P2P and GROUP routes share one access shape. Required on the guarded
+     * routes that read it (every such route is behind ThreadAccessGuard, which populates it).
      */
-    threadAccess?: {
+    threadAccess: {
       threadId: number;
       /** P2P vs GROUP — resolved by the guard so message routes can branch (e.g. block-filter scoping
        *  applies to P2P only; group threads leave blocked members' messages visible). */

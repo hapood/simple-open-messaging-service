@@ -1,257 +1,257 @@
-# 聊天消息列表设计规范（移动端 · 1v1）
+# Chat Message List Design Specification (Mobile · 1v1)
 
-本文档固化 SOMS **移动端一对一聊天「消息列表」**的视觉与布局设计规范，作为前端实现（`MsgGroupComponent` 及其外围）的单一事实源。所有数值、结构、配色以本文档为准。
+This document codifies the visual and layout design specification for SOMS's **mobile 1-to-1 chat "message list"**, serving as the single source of truth for the frontend implementation (`MsgGroupComponent` and its surrounding code). All values, structure, and colors are governed by this document.
 
-> **状态**：已在虚拟滚动 playground（`/playground/chatbox-a`）中验证；待 phase-4 落地为真实消息组件。关键设计的演进见文末[决策记录](#决策记录)。
+> **Status**: Verified in the virtual scroll playground (`/playground/chatbox-a`); pending phase-4 to land as the real message component. See the [Decision Record](#decision-record) at the end for the evolution of key design decisions.
 
-## 目录
+## Table of Contents
 
-- [1. 设计风格](#1-设计风格)
-- [2. 消息行结构](#2-消息行结构)
-- [3. 气泡](#3-气泡)
-- [4. 头像](#4-头像)
-- [5. 名字标签](#5-名字标签)
-- [6. 尾尖 handle](#6-尾尖-handle)
-- [7. 时间戳与日期分隔](#7-时间戳与日期分隔)
-- [8. 色彩与明暗主题](#8-色彩与明暗主题)
-- [9. 尺寸与间距汇总](#9-尺寸与间距汇总)
-- [10. 分组规则](#10-分组规则)
-- [11. 桌面端差异](#11-桌面端差异)
-- [12. 明确不做的事](#12-明确不做的事)
-- [13. 参考实现](#13-参考实现)
-- [14. 滚动架构](#14-滚动架构相对滚动)
-- [决策记录](#决策记录)
+- [1. Design Style](#1-design-style)
+- [2. Message Row Structure](#2-message-row-structure)
+- [3. Bubble](#3-bubble)
+- [4. Avatar](#4-avatar)
+- [5. Name Label](#5-name-label)
+- [6. Tail Tip Handle](#6-tail-tip-handle)
+- [7. Timestamp and Date Separator](#7-timestamp-and-date-separator)
+- [8. Color and Light/Dark Theme](#8-color-and-lightdark-theme)
+- [9. Size and Spacing Summary](#9-size-and-spacing-summary)
+- [10. Grouping Rules](#10-grouping-rules)
+- [11. Desktop Differences](#11-desktop-differences)
+- [12. Explicitly Out of Scope](#12-explicitly-out-of-scope)
+- [13. Reference Implementation](#13-reference-implementation)
+- [14. Scroll Architecture](#14-scroll-architecturerelative-scroll)
+- [Decision Record](#decision-record)
 
 ---
 
-## 1. 设计风格
+## 1. Design Style
 
-- **WhatsApp 风**（已弃 iMessage / Telegram）：浅色填充气泡、小圆角、每条气泡内嵌右下时间戳、组首带头像 + 尾尖指向头像。
-- **头像为微信式方形**（8px 圆角，非圆形）。
-- **业界对齐**：消息头像 **40px**（WhatsApp / 微信 / Telegram / Discord / Material Design 规范均 ~40px）。
-- 整体消费项目设计 token（`--app-*`，定义见 [`web/src/app/assets/_tokens.scss`](../web/src/app/assets/_tokens.scss)）；气泡色等 IM 语义色按本规范硬编码。
+- **WhatsApp style** (iMessage / Telegram abandoned): light-filled bubbles, small rounded corners, a timestamp embedded at the bottom-right of each bubble, group heads carry an avatar + a tail tip pointing at the avatar.
+- **Avatars are WeChat-style squares** (8px corner radius, not circular).
+- **Industry alignment**: message avatars are **40px** (WhatsApp / WeChat / Telegram / Discord / Material Design specs are all ~40px).
+- Consumes the project's design tokens (`--app-*`, defined in [`web/src/app/assets/_tokens.scss`](../web/src/app/assets/_tokens.scss)); IM semantic colors such as bubble colors are hardcoded per this spec.
 
-## 2. 消息行结构
+## 2. Message Row Structure
 
-每条消息是一个 flex 行（`.pg-msg-row`），头像与「名字 + 气泡」列（`.pg-col`）为兄弟元素：
+Each message is a flex row (`.pg-msg-row`), with the avatar and the "name + bubble" column (`.pg-col`) as siblings:
 
 ```
-他方消息（avatar 在左）            self 消息（avatar 在右）
+Other's messages (avatar on left)   self messages (avatar on right)
 ┌─────────────────────────────┐    ┌─────────────────────────────┐
-│ [头像] [gap] [ col ]         │    │ [ col ] [gap] [头像]         │
-│  40px   8px  ┌ name(仅他方)  │    │  name 无      ┐              │
+│ [avatar] [gap] [ col ]       │    │ [ col ] [gap] [avatar]       │
+│  40px   8px  ┌ name(other)   │    │  no name      ┐              │
 │              └ bubble        │    │  bubble       │ 40px         │
 │ justify-content: flex-start  │    │ justify-content: flex-end    │
 └─────────────────────────────┘    └─────────────────────────────┘
 
-col = flex-column：[名字?(仅他方组首)] → [气泡(内嵌右下时间戳)]
+col = flex-column: [name?(other group-head only)] → [bubble(embedded bottom-right timestamp)]
 ```
 
-布局规则：
+Layout rules:
 
-- 行 `display:flex`；他方 `justify-content:flex-start`、self `justify-content:flex-end`。
-- 组首（`isShowHead`）行才挂头像；**组内行不重复头像**，但 col 用 margin 让出头像列，使组内气泡与组首气泡的边沿对齐。
-- 头像 `align-self:flex-start`，**贴该行顶部、与组首第一条消息上沿对齐**。
+- Row `display:flex`; other side `justify-content:flex-start`, self `justify-content:flex-end`.
+- Only the group-head row (`isShowHead`) mounts an avatar; **intra-group rows do not repeat the avatar**, but the col uses margin to yield the avatar column so that intra-group bubble edges align with the group-head bubble edge.
+- Avatar `align-self:flex-start`, **hugging the row's top, aligned with the top edge of the group head's first message**.
 
-## 3. 气泡
+## 3. Bubble
 
-| 属性 | 值 |
+| Property | Value |
 | --- | --- |
-| `min-height` | `40px`（短消息「好」「ok」不瘪，纯 UI 参数，与虚拟滚动高度计算无关） |
-| `padding` | `6px 10px`（右下时间戳由「影子占位」动态让出，见 [§7](#7-时间戳与日期分隔)） |
-| 字号 / 行高 | `14.2px / 1.4`，`white-space:pre-wrap; word-break:break-word` |
-| `max-width`（移动） | `calc(100% - 104px)`（两侧各让一个头像列 48×2 + 8 余量，防最长气泡碰到对方头像） |
+| `min-height` | `40px` (so short messages like "hi" / "ok" don't collapse; pure UI parameter, unrelated to virtual scroll height computation) |
+| `padding` | `6px 10px` (bottom-right timestamp is dynamically yielded by the "shadow placeholder", see [§7](#7-timestamp-and-date-separator)) |
+| Font size / line height | `14.2px / 1.4`, `white-space:pre-wrap; word-break:break-word` |
+| `max-width` (mobile) | `calc(100% - 104px)` (yields one avatar column on each side, 48×2 + 8 margin, preventing the longest bubble from touching the other's avatar) |
 | `box-shadow` | `0 1px 0.5px rgba(0,0,0,.13)` |
 
-**圆角按组位**（`pg-head` / `pg-mid` / `pg-tail`）非对称——组首靠头像侧顶角大、贴邻侧小；组尾反向；组中两侧小：
+**Border radius is asymmetric by group position** (`pg-head` / `pg-mid` / `pg-tail`) — the group head has a large top corner on the avatar side and a small one on the adjacent side; the group tail is reversed; the group middle is small on both sides:
 
-| 组位 | class | 左上 / 右上 | 左下 / 右下 | 说明 |
+| Group position | class | top-left / top-right | bottom-left / bottom-right | Notes |
 | --- | --- | --- | --- | --- |
-| 组首 | `pg-head` | 10 / 10* | 3 / 3 | 头像侧顶角收尖 3px 接尾尖（见他方行注） |
-| 组中 | `pg-mid` | 3 / 3 | 3 / 3 | |
-| 组尾 | `pg-tail` | 3 / 3 | 10 / 10 | |
+| Group head | `pg-head` | 10 / 10* | 3 / 3 | Avatar-side top corner tapers to 3px to meet the tail tip (see the other-row note) |
+| Group middle | `pg-mid` | 3 / 3 | 3 / 3 | |
+| Group tail | `pg-tail` | 3 / 3 | 10 / 10 | |
 
-> *组首顶角收尖：**他方**左上角 3px（尾尖在顶角）；**self** 因尾尖下移、右上角保持 10px（见 [§6](#6-尾尖-handle)）。单条消息（独占一组）使用 `head` 样式。
+> *Group-head top corner taper: **other** top-left is 3px (the tail tip sits at the top corner); **self** keeps top-right at 10px because the tail tip is shifted down (see [§6](#6-tail-tip-handle)). A standalone message (occupying its own group) uses the `head` style.
 
-## 4. 头像
+## 4. Avatar
 
-| 属性 | 值 |
+| Property | Value |
 | --- | --- |
-| 尺寸 | **40 × 40 px**（业界规范） |
-| 圆角 | `8px`（微信式方形） |
-| 出现时机 | **双方组首（`isShowHead`）都显**——self 在右、other 在左（对称设计）；组内不重复 |
-| 垂直对齐 | `align-self:flex-start`，贴组首消息上沿 |
-| 字号（首字母/字） | `16px`，weight 600，白色 |
-| self 底色 | `#25D366` |
-| other 底色 | `#C7C7CC`（暗色 `#37424a`） |
-| header 头像 | 可更小（`32px`）——header 更密集，且 48px 高的 header 装不下 40px；与消息头像大小不一属正常 |
+| Size | **40 × 40 px** (industry standard) |
+| Corner radius | `8px` (WeChat-style square) |
+| When shown | **Both sides' group heads (`isShowHead`) show** — self on the right, other on the left (symmetric design); not repeated within a group |
+| Vertical alignment | `align-self:flex-start`, hugging the top of the group-head message |
+| Font size (initial/character) | `16px`, weight 600, white |
+| self background | `#25D366` |
+| other background | `#C7C7CC` (`#37424a` in dark) |
+| header avatar | may be smaller (`32px`) — the header is denser, and a 48px-tall header cannot fit 40px; differing from the message avatar size is normal |
 
-**组内行让位**：col `margin-left/right: 48px`（= 40 头像 + 8 间距），使组内气泡边沿与组首气泡对齐；组首 col 仅留 8px 与头像间距。
+**Intra-group row yielding**: col `margin-left/right: 48px` (= 40 avatar + 8 gap), so intra-group bubble edges align with the group-head bubble; the group-head col leaves only an 8px gap to the avatar.
 
-## 5. 名字标签
+## 5. Name Label
 
-- **仅他方组首显发送者名字**；**self 默认不署名**（业界规范：自己发的消息不署名，WhatsApp / 微信 / Telegram / iMessage / Discord / Slack 均如此）。
-- 不学 WhatsApp 1v1 把他方名字也省了——保留他方名字以兼容群聊场景（群聊里他方名字用于区分多人）。
-- 名字**与气泡边沿对齐**（不缩进）：`font-size:11px; font-weight:600; color:var(--app-text-muted); margin:0 0 2px`。
+- **Only the other side's group head shows the sender's name**; **self is unnamed by default** (industry convention: one's own messages are unsigned — WhatsApp / WeChat / Telegram / iMessage / Discord / Slack all do this).
+- Does not mimic WhatsApp 1v1 in also omitting the other side's name — the other side's name is retained to stay compatible with group-chat scenarios (where the other side's name distinguishes multiple people).
+- Name is **aligned with the bubble edge** (no indent): `font-size:11px; font-weight:600; color:var(--app-text-muted); margin:0 0 2px`.
 
-> 隐藏 self 名字的连带影响：self 气泡上移到行顶（无名字行），导致尾尖需下移——见 [§6](#6-尾尖-handle)。
+> Knock-on effect of hiding the self name: the self bubble moves up to the row top (no name row), so the tail tip must be shifted down — see [§6](#6-tail-tip-handle).
 
-## 6. 尾尖 handle
+## 6. Tail Tip Handle
 
-组首气泡带一个三角 handle 指向各自头像。两侧**机制不同、落点一致**（都指向头像中上部、绝对高度 ~15px 对齐）：
+The group-head bubble carries a triangular handle pointing at its respective avatar. The two sides **use different mechanisms but land at the same point** (both point at the upper-middle of the avatar, aligned at an absolute height of ~15px):
 
-| 侧 | 位置 | 顶角处理 | 原因 |
+| Side | Position | Top corner treatment | Reason |
 | --- | --- | --- | --- |
-| 他方 | 气泡**顶角**（`top:0`） | 头像侧顶角收尖 3px 接尾尖 | 他方有名字，气泡下沉到 ~15px，顶角正好对着头像中上部 |
-| self | **下移到头像垂直中线**（`top:13px ≈ 40/2−7`） | 顶角保持圆角 10px | self 无名字、气泡贴行顶，顶角在最上方，尾尖需下移才能对齐他方、指向头像中部 |
+| other | Bubble **top corner** (`top:0`) | Avatar-side top corner tapers 3px to meet the tail tip | The other side has a name, the bubble sinks to ~15px, and the top corner faces the avatar's upper-middle |
+| self | **Shifted down to the avatar's vertical center** (`top:13px ≈ 40/2−7`) | Top corner keeps a 10px radius | Self has no name and the bubble hugs the row top, so the top corner is at the very top; the tail tip must shift down to align with the other side and point at the avatar's middle |
 
-**实现：CSS border 三角（非对称 border-width）**
+**Implementation: CSS border triangle (asymmetric border-width)**
 
 ```scss
-.pg-bubble.pg-head::before {                 // 尾尖基类
+.pg-bubble.pg-head::before {                 // tail tip base class
   content: ''; position: absolute;
   border-style: solid; border-color: transparent;
 }
-// 他方：◀ 指左（头像在左），尾尖在顶角
+// other: ◀ points left (avatar on left), tail tip at top corner
 .pg-bubble.pg-head.pg-other::before {
   left: -7px; top: 0;
-  border-width: 7px 7px 7px 0;               // 关键：左 border=0 → 整个伪元素即三角，探出气泡左沿
-  border-right-color: #FFFFFF;               // = other 气泡色（暗色改 #202c33）
+  border-width: 7px 7px 7px 0;               // key: left border=0 → the entire pseudo-element becomes the triangle, protruding past the bubble's left edge
+  border-right-color: #FFFFFF;               // = other bubble color (dark mode: #202c33)
 }
-// self：▶ 指右（头像在右），尾尖下移到头像中线
+// self: ▶ points right (avatar on right), tail tip shifts down to avatar's center line
 .pg-bubble.pg-head.pg-self::before {
   right: -7px; top: 13px;
-  border-width: 7px 0 7px 7px;               // 关键：右 border=0 → 三角填满，探出气泡右沿
-  border-left-color: #DCF8C6;                // = self 气泡色（暗色改 #005c4b）
+  border-width: 7px 0 7px 7px;               // key: right border=0 → the entire pseudo-element becomes the triangle, protruding past the bubble's right edge
+  border-left-color: #DCF8C6;                // = self bubble color (dark mode: #005c4b)
 }
 ```
 
-> **务必用非对称 `border-width`**（头像侧为 0）。若四边等宽 `border:7px solid transparent` 再染一边，伪元素会是 14px 宽，三角落在**同色气泡内部**（x∈[0,7]）→ 完全看不见。这是该方案唯一已知陷阱。
+> **You must use asymmetric `border-width`** (0 on the avatar side). If you use equal-width `border:7px solid transparent` and then color one side, the pseudo-element will be 14px wide and the triangle lands **inside the same-color bubble** (x∈[0,7]) → completely invisible. This is the only known pitfall of this approach.
 
-> **尾尖颜色必须与气泡背景一致**（亮 / 暗色不同），否则露馅。已读、悬停等状态若改变气泡色，须同步改尾尖色。
+> **The tail-tip color must match the bubble background** (differing between light / dark), or it will be exposed. If states such as read or hover change the bubble color, the tail-tip color must be updated in lockstep.
 
-## 7. 时间戳与日期分隔
+## 7. Timestamp and Date Separator
 
-- **时间戳**：WhatsApp 式，**每条气泡右下角内嵌**（不按组、每条都显）。`position:absolute; right:10px; bottom:4px; font-size:11px; white-space:nowrap`。亮色 `rgba(0,0,0,.45)`、暗色 `rgba(233,237,239,.5)`。**文案恒为 `HH:mm`**——WhatsApp 不在气泡上显日期（避免长串压正文），日期/年份上下文全交由日期分隔行承载。
-  - **防与正文重叠 —— WhatsApp「影子占位法」**：正文 `<p>` 末尾追加一个 `visibility:hidden` 的「影子时间戳」（与可见时间**同文同字号** → 同宽度），逼末行正文让出右下角；可见时间 `position:absolute` 贴右下、叠在影子占位上。气泡 `padding-right` 因此**不再固定留白**（仅 `10px`）——影子按时间实际宽度占位。机制：末行 + 影子放得下 → 影子居末行右侧、时间叠上；放不下 → 影子独占新行、时间落该行，正文永不侵入时间区。
-- **日期分隔**：居中 pill，纵向留白用 `padding:14px 0`（**不可用 `margin`**——内核用 `offsetHeight` 测高不含 margin，而 margin 会把绝对定位的行下推、却不计入高度，导致与下方气泡重叠遮挡；曾见的 pg-date 被气泡遮挡 bug 即此）。span `font-size:11px; font-weight:500; padding:3px 12px; border-radius:9999px`。底色亮 `rgba(0,0,0,.06)` / 暗 `#182229`，文字 `--app-text-faint`。**文案相对「现在」分级**（WhatsApp 惯例）：今天 → `今天`；昨天 → `昨天`；本周(今往前 2–6 天) → `周X`；今年更早 → `M月D日`；跨年 → `YYYY年M月D日`。
+- **Timestamp**: WhatsApp-style, **embedded at the bottom-right of every bubble** (not per-group; shown on each). `position:absolute; right:10px; bottom:4px; font-size:11px; white-space:nowrap`. Light `rgba(0,0,0,.45)`, dark `rgba(233,237,239,.5)`. **The text is always `HH:mm`** — WhatsApp does not show dates on bubbles (avoiding long strings that crowd the body); all date / year context is delegated to the date separator row.
+  - **Preventing overlap with the body — WhatsApp's "shadow placeholder" method**: a `visibility:hidden` "shadow timestamp" (same text and same font size as the visible time → same width) is appended at the end of the body `<p>`, forcing the last line of the body to yield the bottom-right corner; the visible time is `position:absolute` pinned to the bottom-right, overlapping the shadow placeholder. The bubble's `padding-right` therefore **no longer reserves a fixed gutter** (only `10px`) — the shadow occupies space according to the time's actual width. Mechanism: if the last line + shadow fit → the shadow sits at the end of the last line and the time overlays it; if they don't fit → the shadow occupies a new line and the time lands on that line; the body never intrudes into the time region.
+- **Date separator**: a centered pill, with vertical whitespace via `padding:14px 0` (**`margin` must not be used** — the kernel measures height with `offsetHeight` which excludes margin, whereas margin pushes down the absolutely-positioned row without being counted toward height, causing overlap/occlusion with the bubble below; a previously-seen bug where pg-date was occluded by a bubble was caused by exactly this). span `font-size:11px; font-weight:500; padding:3px 12px; border-radius:9999px`. Background light `rgba(0,0,0,.06)` / dark `#182229`, text `--app-text-faint`. **The text is tiered relative to "now"** (WhatsApp convention): today → `today`; yesterday → `yesterday`; this week (2–6 days before today) → `Wed`; earlier this year → `M-D`; across years → `YYYY-M-D`.
 
-## 8. 色彩与明暗主题
+## 8. Color and Light/Dark Theme
 
-| 用途 | 亮色 | 暗色 |
+| Use | Light | Dark |
 | --- | --- | --- |
-| 聊天区底色 | `#f4f6f9`（`--app-bg`） | `#0b141a` |
-| self 气泡 | `#DCF8C6` | `#005c4b` |
-| other 气泡 | `#FFFFFF` | `#202c33` |
-| 气泡文字 | `#303030` | `#e9edef` |
-| 时间戳 | `rgba(0,0,0,.45)` | `rgba(233,237,239,.5)` |
-| self 头像底 | `#25D366` | `#25D366` |
-| other 头像底 | `#C7C7CC` | `#37424a` |
-| 日期 pill 底 | `rgba(0,0,0,.06)` | `#182229` |
+| Chat-area background | `#f4f6f9` (`--app-bg`) | `#0b141a` |
+| self bubble | `#DCF8C6` | `#005c4b` |
+| other bubble | `#FFFFFF` | `#202c33` |
+| Bubble text | `#303030` | `#e9edef` |
+| Timestamp | `rgba(0,0,0,.45)` | `rgba(233,237,239,.5)` |
+| self avatar background | `#25D366` | `#25D366` |
+| other avatar background | `#C7C7CC` | `#37424a` |
+| Date pill background | `rgba(0,0,0,.06)` | `#182229` |
 
-**主题机制**：语义 token（`--app-bg` / `--app-surface` / `--app-text` 等）解耦明暗，切主题只重定义变量、组件零改动。生产侧用 `[data-theme="dark"]` 重定义 token（[`_tokens.scss`](../web/src/app/assets/_tokens.scss) 已预留占位）；气泡等 IM 硬编码色在暗色块里覆盖。
+**Theme mechanism**: semantic tokens (`--app-bg` / `--app-surface` / `--app-text`, etc.) decouple light/dark, so switching themes only redefines variables with zero component changes. Production redefines tokens under `[data-theme="dark"]` ([`_tokens.scss`](../web/src/app/assets/_tokens.scss) already reserves placeholders); IM hardcoded colors such as bubbles are overridden in the dark block.
 
-## 9. 尺寸与间距汇总
+## 9. Size and Spacing Summary
 
-| 项 | 值 | 备注 |
+| Item | Value | Notes |
 | --- | --- | --- |
-| 消息头像 | `40 × 40` | 业界规范 |
-| 头像圆角 | `8px` | 微信式方形 |
-| 头像 ↔ 气泡 gap | `8px` | |
-| 组内 col 让位 | `48px`（= 40 + 8） | 与组首气泡边沿对齐 |
-| 行 padding | `6px 16px`（`--app-space-4`） | |
-| 气泡 `min-height` | `40px` | 纯 UI，与高度计算无关 |
-| 气泡 padding | `6px 10px` | 右下时间戳由影子占位动态让出 |
-| 气泡字号 | `14.2px / 1.4` | |
-| 气泡 `max-width`（移动） | `calc(100% - 104px)` | 两侧让 48×2 + 8 |
-| 气泡 `max-width`（桌面） | `min(72%, 520px)` | |
-| 尾尖 | `7px` 三角 | 非对称 border-width |
-| self 尾尖 `top` | `13px` | 下移到头像垂直中线 |
-| header 头像 | `32px` | header 更密集 |
+| Message avatar | `40 × 40` | Industry standard |
+| Avatar corner radius | `8px` | WeChat-style square |
+| Avatar ↔ bubble gap | `8px` | |
+| Intra-group col yielding | `48px` (= 40 + 8) | Aligns with group-head bubble edge |
+| Row padding | `6px 16px` (`--app-space-4`) | |
+| Bubble `min-height` | `40px` | Pure UI, unrelated to height computation |
+| Bubble padding | `6px 10px` | Bottom-right timestamp dynamically yielded by shadow placeholder |
+| Bubble font size | `14.2px / 1.4` | |
+| Bubble `max-width` (mobile) | `calc(100% - 104px)` | Yields 48×2 + 8 on both sides |
+| Bubble `max-width` (desktop) | `min(72%, 520px)` | |
+| Tail tip | `7px` triangle | Asymmetric border-width |
+| self tail tip `top` | `13px` | Shifted down to the avatar's vertical center |
+| header avatar | `32px` | Header is denser |
 
-## 10. 分组规则
+## 10. Grouping Rules
 
-复用 [`web/src/app/lib/chat-box/group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts) 的 `classifyGroupFlags`（已带单测）：
+Reuses `classifyGroupFlags` from [`web/src/app/lib/chat-box/group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts) (already unit-tested):
 
-- **同发送者 + 5 分钟窗口**内连续消息归为一组。
-- `isShowHead`：换发送者 / 超过 5 分钟 / 日期分隔后 → 新组首（显头像 + 名字）。
-- `isDateShrink`：与上一条同组 → 合并（不单独显时间、不显头像）。
-- 组位派生：`isShowHead → head`；组内末条（下一条不同组）`→ tail`；组中 `→ mid`。
+- **Same sender + within a 5-minute window** of consecutive messages are grouped together.
+- `isShowHead`: sender changes / exceeds 5 minutes / after a date separator → new group head (shows avatar + name).
+- `isDateShrink`: same group as the previous → merged (no standalone time, no avatar).
+- Group-position derivation: `isShowHead → head`; last item in a group (next item is a different group) `→ tail`; group middle `→ mid`.
 
-## 11. 桌面端差异
+## 11. Desktop Differences
 
-消息列表为响应式，移动端为主。桌面端（宽屏 + 精确指针）差异：
+The message list is responsive and primarily mobile. Desktop (wide screen + precise pointer) differences:
 
-- 气泡 `max-width` 用 `min(72%, 520px)`（移动端用 `calc(100% - 104px)`）。
-- 控制面板为常驻侧栏（移动端为可拖动 FAB + 抽屉）——此为 playground 控件差异，与消息列表视觉规范无关。
+- Bubble `max-width` uses `min(72%, 520px)` (mobile uses `calc(100% - 104px)`).
+- The control panel is a persistent side bar (mobile uses a draggable FAB + drawer) — this is a playground control difference and is unrelated to the message-list visual spec.
 
-## 12. 明确不做的事
+## 12. Explicitly Out of Scope
 
-- **已读回执**：不做。未来若做，走「主动发一条显式带回执的消息」方案，而非隐式每条都带。
-- **self 名字 / self 头像省略**：不省——双方组首都显头像（对称），仅 self 不署名。
-- **气泡描边 / 渐变**：当前为纯色填充 + 阴影。若将来上渐变或描边，尾尖方案需从 border 三角改为 `clip-path`（尾尖从气泡填充切出，天然继承渐变）。
+- **Read receipts**: not done. If added in the future, it will use the "actively send an explicit receipt-bearing message" approach, rather than implicitly attaching one to every message.
+- **self name / self avatar omission**: not omitted — both sides' group heads show avatars (symmetric); only self is unnamed.
+- **Bubble outline / gradient**: currently solid fill + shadow. If gradients or outlines are added in the future, the tail-tip approach must change from a border triangle to `clip-path` (the tail tip is cut from the bubble's fill, inheriting the gradient naturally).
 
-## 13. 参考实现
+## 13. Reference Implementation
 
-- 验证用 playground（手写 DOM，`pg-` 前缀，phase-4 后随真实组件废弃）：
-  - [`web/src/app/pages/chatbox-playground/chatbox-playground.component.ts`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.ts)（`createItemEl` 渲染消息行）
-  - [`...chatbox-playground.component.scss`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.scss)（全部视觉规则）
+- Validation playground (hand-written DOM, `pg-` prefix; to be deprecated along with the real component after phase-4):
+  - [`web/src/app/pages/chatbox-playground/chatbox-playground.component.ts`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.ts) (`createItemEl` renders the message row)
+  - [`...chatbox-playground.component.scss`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.scss) (all visual rules)
   - [`...chatbox-playground.component.html`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.html)
-- 分组逻辑：[`group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts)
-- 设计 token：[`_tokens.scss`](../web/src/app/assets/_tokens.scss)
+- Grouping logic: [`group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts)
+- Design tokens: [`_tokens.scss`](../web/src/app/assets/_tokens.scss)
 
-## 14. 滚动架构（相对滚动）
+## 14. Scroll Architecture (Relative Scroll)
 
-消息列表虚拟滚动采用**相对滚动 + sentinel**，非「绝对定位 + 全局前缀和」。内核实现：[`chat-box-scroller.ts`](../web/src/app/lib/chat-box/chat-box-scroller.ts)。决策背景见[决策记录](#决策记录)。
+The message-list virtual scroll adopts **relative scroll + sentinel**, not "absolute positioning + global prefix sum". Kernel implementation: [`chat-box-scroller.ts`](../web/src/app/lib/chat-box/chat-box-scroller.ts). For the decision background see the [Decision Record](#decision-record).
 
-### 为什么不是绝对定位
+### Why Not Absolute Positioning
 
-绝对定位架构（全局 `tops[]` 前缀和 + `scrollToIndex` 任意跳转 + 精确总高）为「可拖动进度条 / 跳到第 N 条」这类需求设计。1v1 聊天**用不到**：
+The absolute-positioning architecture (global `tops[]` prefix sum + `scrollToIndex` arbitrary jumping + precise total height) is designed for needs like "draggable progress bar / jump to the Nth item". 1-to-1 chat **does not need this**:
 
-- 流式追加（新消息贴底）、向上拉历史（prepend）、收消息跟随、偶尔引用跳转（在已加载范围内）——没有一种需要未挂载 item 的精确位置。
-- 滚动条**全平台隐藏**（[§2](#2-消息行结构) `.pg-viewport` `scrollbar-width:none`），用户靠滚轮/手势，不靠拖动滚动条。
+- Streaming append (new messages pinned to the bottom), pulling history upward (prepend), follow-on-receive, occasional quote jumps (within the already-loaded range) — none of these need the precise position of an unmounted item.
+- The scrollbar is **hidden on all platforms** ([§2](#2-message-row-structure) `.pg-viewport` `scrollbar-width:none`); users rely on wheel / gestures, not on dragging the scrollbar.
 
-故砍掉全局坐标，**只管已挂载区域**。
+So global coordinates are dropped, **managing only the mounted region**.
 
-### 架构
+### Architecture
 
-- **不维护全局 `tops[]`/`heights[]`**：content 用普通文档流（item block 堆叠），原生滚动直接滚文档流（合成器线程 120Hz + 移动 fling）。
-- **双向回收**（视口上下各保留 buffer，默认 1500px）：
-  - 上方挂载不足（向上滚看更早）→ 挂载更早 item 到顶部 + `scrollTop += 其高`（锚点补偿）。
-  - 上方余量过多 → 卸载顶部远端 + `scrollTop -= 其高`（锚点补偿，视觉不跳）。
-  - 下方挂载不足 → 挂载后续 item（DOM append）。
-  - 下方余量过多 → 卸载底部远端（不动 scrollTop，底部不影响上方锚点）。
-- **顶部 sentinel + IntersectionObserver**：滚到当前挂载顶触发 `onLoadMore` 向上加载历史。
-- **贴底**：`scrollTop = scrollHeight - clientHeight`（原生 API，不需要总高度）。
+- **No global `tops[]`/`heights[]` maintained**: content uses normal document flow (item blocks stacked), and native scrolling scrolls the document flow directly (compositor thread at 120Hz + mobile fling).
+- **Bidirectional recycling** (a buffer is reserved above and below the viewport, default 1500px):
+  - Insufficient mounting above (scrolling up to see earlier) → mount earlier items at the top + `scrollTop += their height` (anchor compensation).
+  - Excessive headroom above → unmount the far-top + `scrollTop -= its height` (anchor compensation, no visual jump).
+  - Insufficient mounting below → mount subsequent items (DOM append).
+  - Excessive headroom below → unmount the far-bottom (do not touch scrollTop; the bottom does not affect the upper anchor).
+- **Top sentinel + IntersectionObserver**: scrolling to the current mounted top triggers `onLoadMore` to load history upward.
+- **Pin to bottom**: `scrollTop = scrollHeight - clientHeight` (native API, no total height needed).
 
-### 元素接口化（VsElement）
+### Element Interfacing (VsElement)
 
-每个挂载元素实现 [`VsElement`](../web/src/app/lib/chat-box/chat-box-scroller.ts) 接口，内核只通过它与元素交互，**框架无关**（ng 组件 / 手写 DOM 各自实现）：
+Each mounted element implements the [`VsElement`](../web/src/app/lib/chat-box/chat-box-scroller.ts) interface; the kernel interacts with elements only through it, **framework-agnostic** (ng components / hand-written DOM each implement their own):
 
-| 方法 | 用途 |
+| Method | Use |
 | --- | --- |
-| `estimateHeight()` | 挂载瞬间 / 实测前的占位（prepend 预补偿、首帧稳定、balance 初值） |
-| `onHeightChange(cb)` | 订阅真实高度变动，返回取消订阅；元素内用 ResizeObserver / 图片 load 等。内核收到后「视口上方则锚点补偿」 |
-| `destroy()` | 卸载时清理（断 observer / 销毁 ng view） |
+| `estimateHeight()` | Placeholder at mount instant / before real measurement (prepend pre-compensation, first-frame stability, balance initial value) |
+| `onHeightChange(cb)` | Subscribes to real-height changes, returns an unsubscribe; the element uses ResizeObserver / image load, etc. internally. On receipt, the kernel "applies anchor compensation if above the viewport" |
+| `destroy()` | Cleanup on unmount (disconnect observer / destroy ng view) |
 
-> 两个高度方法**都只在已挂载元素上调**——估算不碰「未挂载 item」（那是绝对定位架构的需求，本架构已废弃）。phase-4 切真实 ng 组件时，仅替换 `createItem` hook 返回的 `VsElement` 实现（组件 ref + 组件 `heightChange` output），**内核一行不改**。
+> Both height methods are **only ever called on mounted elements** — estimation never touches "unmounted items" (that is a need of the absolute-positioning architecture, abandoned here). When phase-4 switches to real ng components, only the `VsElement` implementation returned by the `createItem` hook is replaced (component ref + the component's `heightChange` output), **without changing a single line of the kernel**.
 
-### 代价
+### Cost
 
-- 不支持 `scrollToIndex` 跳到未挂载的任意位置（聊天用不到）。
-- 滚动条全平台隐藏，故不显示「总量进度」（符合聊天场景）。
+- No support for `scrollToIndex` jumping to an arbitrary unmounted position (chat does not need it).
+- The scrollbar is hidden on all platforms, so no "total progress" is shown (fits the chat scenario).
 
-## 决策记录
+## Decision Record
 
-> 记录反复横跳后定下的关键选择，避免后续按「标准 WhatsApp」重做而违背既定偏好。
+> Records the key choices settled after going back and forth, to avoid later redoing things as "standard WhatsApp" and violating established preferences.
 
-- **风格**：iMessage → **WhatsApp**（弃 iMessage / Telegram）。
-- **头像显隐**：自己不显 → **双方组首都显（对称）**。
-- **头像形状**：圆形 → **微信式方形 8px**。
-- **头像尺寸**：32px → **40px（业界规范）**。
-- **名字**：双方都显 → **仅他方显、self 隐藏**（业界规范；保留他方以兼容群聊）。
-- **尾尖**：从「看不见（四边等宽 border 藏进同色气泡）」修复为**非对称 border-width**；隐藏 self 名字后补**self 尾尖下移到头像中线**。
-- **时间戳格式**：先定「气泡按距现在显 `HH:mm` / `MM-DD HH:mm` / `YYYY-MM-DD HH:mm`」→ 嫌跨年串太长，改 **WhatsApp 法：气泡恒 `HH:mm`，日期/年份全放日期分隔行**（`今天`/`昨天`/`周X`/`M月D日`/`YYYY年M月D日` 分级）。
-- **已读回执**：不做。
-- **min-height**：纯 UI 参数（40px），与虚拟滚动 fetch / 高度计算解耦。
-- **滚动架构**：绝对定位 + 全局前缀和 → **相对滚动 + sentinel**（砍 `tops[]`/`heights[]`，元素接口化 `VsElement`，强制 `estimateHeight` + `onHeightChange` 两接口）。理由：聊天流式追加、贴底为主、滚动条全平台隐藏、不跳任意 index → 无需未挂载 item 的精确位置，只管已挂载区域。
+- **Style**: iMessage → **WhatsApp** (abandoning iMessage / Telegram).
+- **Avatar visibility**: self not shown → **both sides' group heads show (symmetric)**.
+- **Avatar shape**: circular → **WeChat-style square 8px**.
+- **Avatar size**: 32px → **40px (industry standard)**.
+- **Name**: both sides shown → **only the other side shown, self hidden** (industry convention; the other side is retained for group-chat compatibility).
+- **Tail tip**: fixed from "invisible (equal-width four-side border hidden inside the same-color bubble)" to **asymmetric border-width**; after hiding the self name, added **self tail tip shifting down to the avatar's center line**.
+- **Timestamp format**: first decided "bubbles show `HH:mm` / `MM-DD HH:mm` / `YYYY-MM-DD HH:mm` by distance from now" → the across-year string was deemed too long, so changed to **the WhatsApp method: bubbles always `HH:mm`, all date/year in the date separator row** (tiered as `today`/`yesterday`/`Wed`/`M-D`/`YYYY-M-D`).
+- **Read receipts**: not done.
+- **min-height**: pure UI parameter (40px), decoupled from virtual-scroll fetch / height computation.
+- **Scroll architecture**: absolute positioning + global prefix sum → **relative scroll + sentinel** (dropping `tops[]`/`heights[]`, interfacing elements via `VsElement`, mandating both `estimateHeight` + `onHeightChange` interfaces). Reason: chat is streaming-append, primarily pin-to-bottom, the scrollbar is hidden on all platforms, and no arbitrary index jumps → no need for the precise position of unmounted items, only managing the mounted region.

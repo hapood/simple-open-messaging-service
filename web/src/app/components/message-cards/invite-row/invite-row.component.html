@@ -22,7 +22,7 @@
       <div class="invite-card">
         <div class="invite-title">{{ 'chat.groupInvitation' | transloco }}</div>
         <div class="invite-group">
-          <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName" [src]="invite().groupAvatar"></app-user-avatar>
+          <app-user-avatar [type]="UserAvatarType.GROUP" [name]="invite().groupName" [identityId]="invite().group" [src]="invite().groupAvatar"></app-user-avatar>
           <span class="invite-name">{{ invite().groupName }}</span>
         </div>
       </div>

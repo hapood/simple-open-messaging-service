@@ -2,7 +2,7 @@
 // forks this twice (appA=aaa.local on DB _a, appB=bbb.local on DB _b). Running each app in a separate
 // process gives each its own V8 isolate — so process-global singletons (Passport's `local` strategy,
 // etc.) are per-app, not cross-app leaks the way the old in-process two-AppModule model was. Each
-// process also has its OWN DATABASE_URL env → its own database. This is how real federation runs.
+// process also has its own DATABASE_URL env → its own database. This is how real federation runs.
 //
 // Config is read from env (set by the harness):
 //   SOMS_DOMAIN / DATABASE_URL / APP_PORT — this app's identity, DB, listen port.
@@ -11,13 +11,61 @@
 // The app prints `FED_APP_READY <port>` on stdout once listening; the harness awaits that. SIGTERM →
 // graceful app.close() (the demote test stops appB this way to force a real ECONNREFUSED on appA).
 import 'dotenv/config';
+import { Controller, Get, Query } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from '../src/app.module.js';
 import { configureApp } from '../src/bootstrap.js';
 import { KeypairService } from '../src/federation/keypair.service.js';
+import { SignatureService } from '../src/federation/signature.service.js';
 import { DiscoveryService } from '../src/federation/discovery.service.js';
 import { TestDiscoveryService, makeInMemoryKeypair } from './federation-harness.js';
+
+/**
+ * Test-only probe (NOT in prod — this is the test subprocess entry): drive a signed S2S GET as THIS app
+ * using its OWN SignatureService + DiscoveryService (the framework's real signing machinery — no
+ * reinvented signing, no key exposure). Lets the e2e exercise SERVE-only endpoints SOMS has no internal
+ * caller for, e.g. GET /s2s/messages/before (backward twin — SOMS is forward-only). The e2e hits
+ * /api/v1/test/signed-s2s-get?peerDomain=...&path=... and this app signs + fetches + relays the upstream
+ * {status, body}. Registered as a proper Nest controller (NOT a raw Fastify route — the raw form raced
+ * Nest's listen-time route finalization + caused intermittent boot failures). SignatureService +
+ * DiscoveryService are @Global-exported by FederationModule, so they inject here. See design-review B3.
+ */
+@Controller('test')
+class TestS2sHookController {
+  constructor(
+    private readonly sig: SignatureService,
+    private readonly discovery: DiscoveryService,
+  ) {}
+
+  @Get('signed-s2s-get')
+  async signedGet(
+    @Query('peerDomain') peerDomain: string,
+    @Query('path') path: string,
+  ): Promise<{ status: number; body: unknown }> {
+    const base = await this.discovery.resolveBase(peerDomain);
+    const url = new URL(`${base}${path}`);
+    const headers = this.sig.signOutbound({
+      method: 'GET',
+      path: url.pathname,
+      authority: url.host,
+      body: '', // GET — content-digest covers sha256("")
+    });
+    const upstream = await fetch(url, {
+      method: 'GET',
+      headers,
+      signal: AbortSignal.timeout(10_000),
+    });
+    const text = await upstream.text();
+    let body: unknown = text;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      /* keep raw text */
+    }
+    return { status: upstream.status, body };
+  }
+}
 
 async function main(): Promise<void> {
   const domain = process.env.SOMS_DOMAIN;
@@ -41,7 +89,10 @@ async function main(): Promise<void> {
     'bbb.local': `http://127.0.0.1:${portB}`,
   };
 
-  const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+  const moduleRef = await Test.createTestingModule({
+    imports: [AppModule],
+    controllers: [TestS2sHookController], // test-only signed-S2S-GET probe (see the class doc)
+  })
     .overrideProvider(KeypairService)
     .useValue(makeInMemoryKeypair(domain))
     .overrideProvider(DiscoveryService)

@@ -1,9 +1,11 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, inject, effect } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, Subscription, of, map, shareReplay } from 'rxjs';
 import { apiPrefix } from './constants';
 import { User, QueryUserThreadParams, ConversationItem, MessageThreadType, Invite, InviteDetail, StandardResponse } from './model'
 import { ThreadDeltaOp } from './thread-delta'
+import { WebdbService } from './webdb.service'
+import { ProfileRepository } from './profile-store.service'
 
 export type { User } from './model'
 
@@ -22,7 +24,31 @@ export class UserService {
   private readonly _threadRevCursor = signal<number | undefined>(undefined)
   readonly threadRevCursor = this._threadRevCursor.asReadonly()
 
+  private readonly webdb = inject(WebdbService)
+  private readonly profileRepo = inject(ProfileRepository)
+  /** The user key whose DB is currently open (or null) — tracks the lifecycle effect below. */
+  private webdbUserKey: string | null = null
+
   constructor(private http: HttpClient) {
+    // Per-user DB lifecycle: open on login, close+delete on logout/switch. UserService owns the session,
+    // so it owns the DB partitioned by sessionProfile().id (WebdbService itself is pure storage).
+    effect(() => {
+      const id = this.sessionProfile()?.id
+      const idKey = id != null ? String(id) : null
+      if (idKey === this.webdbUserKey) return
+      const previous = this.webdbUserKey
+      this.webdbUserKey = idKey
+      if (previous != null) void this.webdb.closeAndDelete(previous)
+      if (idKey != null) void this.webdb.openForUser(idKey)
+    })
+  }
+
+  /** Tear down the in-memory session (logout). Clears sessionProfile → the lifecycle effect closes +
+   *  deletes this user's DB; a fresh ensureProfile() re-fetches on the next login. */
+  clearSession(): void {
+    this.sessionProfile.set(undefined)
+    this._threadRevCursor.set(undefined)
+    this.profileFetch = undefined
   }
 
   /** In-flight profile fetch (dedup): boot calls updateSessionProfile() AND ConversationListService
@@ -49,6 +75,10 @@ export class UserService {
         const u = res.data as User
         this.sessionProfile.set(u)
         this.seedThreadRevCursor(u.threadRevision ?? 0)
+        // Write-through the self profile → IDB + trigger avatar refresh when the path changed.
+        void this.profileRepo.putProfile(`u${u.id}`, 'user', {
+          id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
+        })
         return u
       }),
       shareReplay(1),

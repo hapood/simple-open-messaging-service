@@ -6,7 +6,7 @@
       </button>
 
       <div class="ivd-avatar">
-        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="groupName() || '?'" [src]="groupAvatar()" />
+        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="groupName() || '?'" [identityId]="inviteId()" [src]="groupAvatar()" />
       </div>
 
       <h2 class="ivd-name">{{ groupName() || ('common.unknown' | transloco) }}</h2>

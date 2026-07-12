@@ -1,10 +1,24 @@
 # Self-contained SOMS stack: postgres + one-shot migrate + app.
 #
-#   cp .env.docker.example .env   # then edit .env (passwords, SOMS_DOMAIN)
-#   docker compose up -d
+# Launches directly from environment variables — NO .env file required:
+#
+#   POSTGRES_PASSWORD=secret SOMS_DOMAIN=chat.example.com docker compose up -d
+#
+# Required (must be present in the shell environment — compose fails fast otherwise):
+#   POSTGRES_PASSWORD  PostgreSQL superuser password (DB container + the app's DATABASE_URL)
+#   SOMS_DOMAIN        this server's public domain, the federation identity (@user@<SOMS_DOMAIN>)
+#
+# Optional (safe defaults / auto-generated, omit unless you need to override):
+#   APP_VERSION        image tag (default: dev)
+#   DATABASE_POOL_MAX  Prisma/node-pg pool size (default: 10)
+#   JWT_*_SECRET       unset → auto-generated on first boot into /app/data/jwt-*.key (mode 0600)
+#
+# Optional features (Web Push VAPID_*, FCM GOOGLE_APPLICATION_CREDENTIALS, TLS_CERT/TLS_KEY for h2,
+# LOG_*) are intentionally not wired here — supply them through a compose override file
+# (`docker compose -f docker-compose.yml -f override.yml up -d`) so this file stays a minimal base.
 #
 # First deploy only — seed the bootstrap admin:
-#   docker compose run --rm app node prisma/seed-admin.cjs
+#   docker compose run -e ADMIN_BOOTSTRAP_PASSWORD=... --rm app node prisma/seed-admin.cjs
 
 services:
   postgres:
@@ -14,7 +28,7 @@ services:
     environment:
       POSTGRES_DB: soms
       POSTGRES_USER: timescale
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -51,16 +65,15 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    env_file:
-      - .env
     environment:
-      # Compose computes this: the DB host is the `postgres` service name, not localhost.
+      # Compose computes DATABASE_URL: the DB host is the `postgres` service name, not localhost.
       DATABASE_URL: postgresql://timescale:${POSTGRES_PASSWORD:?}@postgres:5432/soms?schema=public
+      SOMS_DOMAIN: ${SOMS_DOMAIN:?set SOMS_DOMAIN in the environment}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
       APP_VERSION: ${APP_VERSION:-dev}
     volumes:
       - app-uploads:/app/uploads
-      - app-data:/app/data     # S2S Ed25519 keypair (SOMS_S2S_KEY_PATH defaults to ./data/...)
+      - app-data:/app/data     # S2S Ed25519 keypair + auto-generated JWT signing keys (./data/jwt-*.key)
       - app-logs:/app/logs
     ports:
       - "3000:3000"

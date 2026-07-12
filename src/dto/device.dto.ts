@@ -17,14 +17,14 @@ export class RegisterDeviceDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(512)
-  token: string;
+  token!: string;
 
   @ApiProperty({
     enum: PushPlatform,
     description: 'Delivery platform (determines the server-side transport).',
   })
   @IsEnum(PushPlatform)
-  platform: PushPlatform;
+  platform!: PushPlatform;
 
   @ApiProperty({
     required: false,

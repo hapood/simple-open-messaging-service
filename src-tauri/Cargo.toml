@@ -1,7 +1,7 @@
 [package]
-name = "soms-desktop"
+name = "soms-app"
 version = "0.1.0"
-description = "SOMS desktop client (Tauri v2 shell around the Angular consumer client)"
+description = "SOMS cross-platform client (Tauri v2 shell around the Angular consumer client)"
 authors = ["hapood"]
 edition = "2021"
 rust-version = "1.77"
@@ -9,8 +9,8 @@ rust-version = "1.77"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-# `_lib` suffix makes the crate name `soms_desktop_lib`; the main binary calls `soms_desktop_lib::run()`.
-name = "soms_desktop_lib"
+# `_lib` suffix makes the crate name `soms_app_lib`; the main binary calls `soms_app_lib::run()`.
+name = "soms_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]

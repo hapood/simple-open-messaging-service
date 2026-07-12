@@ -22,12 +22,11 @@
  *  an id is registered exactly once — a self-send echo / incoming reply on an empty (just-added-friend) thread
  *  reconciles correctly instead of being deduped away.
  */
-import { firstValueFrom, type Subscription } from 'rxjs';
+import { firstValueFrom, filter, type Subscription } from 'rxjs';
 import dayjs from 'dayjs';
-import { MsgService } from '../../services/message.service';
+import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
-import type { StandardMessage } from '../../services/websocket.service';
 import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
@@ -73,13 +72,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   constructor(
     private readonly conv: ConversationItem,
     private readonly myUserId: number,
-    private readonly msgService: MsgService,
+    private readonly repo: MessageRepository,
     private readonly userService: UserService,
     wsService: WebsocketService,
     live: HttpItemSourceLiveOpts,
   ) {
     this.onSignal = live.onSignal;
-    this.sseSub = wsService.eventSubject.subscribe((msg) => this.onSseEvent(msg));
+    // The DB-layer MessageRepository owns the NEW_MESSAGE SSE: it caches the body, THEN emits liveSignal$,
+    // so this signal arrives AFTER the body is in IDB — the kernel's subsequent getNewer pull reads it from
+    // the cache (no backend round-trip). Filter to THIS thread (one source per open thread).
+    this.sseSub = repo.liveSignal$
+      .pipe(filter((s) => s.threadId === this.conv.threadId))
+      .subscribe((s) => this.onSignal(s.seq));
     // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
     // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
     this.reconnectSub = wsService.reconnect$.subscribe(() => this.onSignal(Number.MAX_SAFE_INTEGER));
@@ -99,14 +103,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (anchorId === -1) {
       // Cap at MAX_PAGE (backend @Max(50)); the kernel top-ups the rest via getOlder. hasMore is
       // authoritative (backend take+1 method), so it alone drives noOlder — the old `list.length < olderCount`
-      // heuristic would falsely signal exhaustion now that take is clamped below olderCount.
+      // heuristic would falsely signal exhaustion now that take is clamped below olderCount. init (skip:0) always
+      // backend-probes via the repo (freshness — SSE does not replay offline messages) + writes through to IDB.
       const take = Math.min(olderCount, MAX_PAGE);
-      const res = await firstValueFrom(
-        this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 0, take, orderBy: 'desc' }),
-      );
-      if (res.code !== 0 || !res.data) return [];
-      const list = [...res.data].reverse(); // desc → ascending (old → new)
-      this.noOlder = !res.hasMore;
+      const { data, hasMore } = await this.repo.queryMessages(this.conv.threadId, { skip: 0, take, orderBy: 'desc' });
+      if (!data || data.length === 0) return [];
+      const list = [...data].reverse(); // desc → ascending (old → new)
+      this.noOlder = !hasMore;
       this.noNewer = true; // anchor is the latest
       await this.ensureProfiles(list);
       const items = this.rawToItems(list);
@@ -126,19 +129,20 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       return items;
     }
     // Real msgId: fetch both directions (jump to a specific message / open conversation from a
-    // notification). take is capped at MAX_PAGE (backend @Max(50)).
+    // notification). take is capped at MAX_PAGE (backend @Max(50)). The older leg (skip:0) backend-probes
+    // for the anchor; the newer leg (skip:1) is cache-first via the repo.
     const olderTake = Math.min(olderCount, MAX_PAGE);
     const newerTake = Math.min(newerCount, MAX_PAGE);
-    const [olderRes, newerRes] = await Promise.all([
-      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' })),
-      firstValueFrom(this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' })),
+    const [olderPage, newerPage] = await Promise.all([
+      this.repo.queryMessages(this.conv.threadId, { skip: 0, take: olderTake, lastSeq: anchorId, orderBy: 'desc' }),
+      this.repo.queryMessages(this.conv.threadId, { skip: 1, take: newerTake, lastSeq: anchorId, orderBy: 'asc' }),
     ]);
-    if (olderRes.code !== 0 || !olderRes.data || olderRes.data.length === 0) return []; // target msgId not found
-    const older = [...olderRes.data].reverse(); // desc → ascending: [older..anchorId] (includes anchorId)
-    const newer = newerRes.code === 0 && newerRes.data ? newerRes.data : []; // already ascending: (anchorId..newer]
+    if (!olderPage.data || olderPage.data.length === 0) return []; // target msgId not found
+    const older = [...olderPage.data].reverse(); // desc → ascending: [older..anchorId] (includes anchorId)
+    const newer = newerPage.data ?? []; // already ascending: (anchorId..newer]
     const list = [...older, ...newer];
-    this.noOlder = !olderRes.hasMore;
-    this.noNewer = !newerRes.hasMore;
+    this.noOlder = !olderPage.hasMore;
+    this.noNewer = !newerPage.hasMore;
     await this.ensureProfiles(list);
     const items = this.rawToItems(list);
     if (items.length > 0) {
@@ -172,12 +176,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   async getOlder(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
     if (this.noOlder) return [];
     const take = Math.min(count, MAX_PAGE);
-    const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastSeq: cursorId, orderBy: 'desc' }),
-    );
-    if (res.code !== 0 || !res.data || res.data.length === 0) { this.noOlder = true; return []; }
-    const list = [...res.data].reverse(); // desc → ascending
-    if (!res.hasMore) this.noOlder = true; // hasMore is authoritative (backend take+1 method); the count heuristic is unsound once take is capped below `count`
+    const { data, hasMore } = await this.repo.queryMessages(this.conv.threadId, { skip: 1, take, lastSeq: cursorId, orderBy: 'desc' });
+    if (!data || data.length === 0) { this.noOlder = true; return []; }
+    const list = [...data].reverse(); // desc → ascending
+    if (!hasMore) this.noOlder = true; // hasMore is authoritative (backend take+1 method, or the cache reached seq 0)
     await this.ensureProfiles(list);
     const items = this.rawToItems(list);
     if (items.length === 0) return [];
@@ -194,12 +196,10 @@ export class HttpItemSource implements CbSource<ChatItemData> {
    *  the whole point: a NEW_MESSAGE arrived, so there IS newer data even though noNewer was true). */
   async getNewer(cursorId: number, count: number): Promise<CbItem<ChatItemData>[]> {
     const take = Math.min(count, MAX_PAGE);
-    const res = await firstValueFrom(
-      this.msgService.queryMessageLog({ threadId: this.conv.threadId, skip: 1, take, lastSeq: cursorId, orderBy: 'asc' }),
-    );
-    if (res.code !== 0 || !res.data || res.data.length === 0) { this.noNewer = true; return []; }
-    const list = [...res.data]; // already ascending (old → new)
-    if (!res.hasMore) this.noNewer = true; // hasMore is authoritative (backend take+1 method)
+    const { data, hasMore } = await this.repo.queryMessages(this.conv.threadId, { skip: 1, take, lastSeq: cursorId, orderBy: 'asc' });
+    if (!data || data.length === 0) { this.noNewer = true; return []; }
+    const list = [...data]; // already ascending (old → new)
+    if (!hasMore) this.noNewer = true; // hasMore is authoritative (backend take+1 method, or the cache reached maxSeenSeq)
     await this.ensureProfiles(list);
     const items = this.rawToItems(list);
     if (items.length === 0) return [];
@@ -208,24 +208,11 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return items;
   }
 
-  /** Inbound SSE NEW_MESSAGE. Signal-only: the body is NOT shaped or cached here. The conversation-list preview
-   *  reads the body in its OWN subscriber (ConversationListService.onNewMessage); the chatbox treats the frame
-   *  purely as "newer data exists for this thread" and fires onSignal — the kernel then pulls from the DB
-   *  (source of truth) via getNewer / init(-1) on the next onMessageSignal. rawToItems runs ONCE, at pull time,
-   *  so the id is registered in knownMsgIds only there — this is what keeps a self-send echo / incoming reply on
-   *  an empty (just-added-friend) thread from being deduped away (the old shape-at-SSE-time pre-registered the
-   *  id, then init(-1)'s rawToItems dropped it → bubble stuck "sending", replies never mounted). */
-  private onSseEvent(msg: StandardMessage): void {
-    if (msg.event !== 'NEW_MESSAGE' || msg.status !== 0 || !msg.data) return;
-    const data = msg.data as Message & { threadId: number };
-    if (data.threadId !== this.conv.threadId) return;
-    this.onSignal(data.seq);
-  }
-
-  /** No-op. The signal-only SSE path caches nothing; live data is pulled from the DB on demand. Kept to satisfy
-   *  the CbSource interface (the kernel's appendLive calls it; production never routes live arrivals through
-   *  appendLive — only through the signal → onMessageSignal → getNewer path — so this is never reached in
-   *  production). The playground's MockItemSource implements a real pushLive for its cursor model. */
+  /** No-op. Live arrivals are signal-only: the DB-layer {@link MessageRepository} caches the NEW_MESSAGE body
+   *  and emits `liveSignal$`, which the constructor pipes to {@link onSignal}; the kernel then pulls the cached
+   *  body via getNewer / init(-1). Kept to satisfy the CbSource interface (the kernel's appendLive calls it;
+   *  production never routes live arrivals through appendLive — only through the signal path — so this is never
+   *  reached in production). The playground's MockItemSource implements a real pushLive for its cursor model. */
   pushLive(_rawItems: CbItem<ChatItemData>[]): void { /* signal-only: no cache */ }
 
   /** In-flight optimistic sends (defensive copy) — the kernel (re)mounts them at the global newest edge. */

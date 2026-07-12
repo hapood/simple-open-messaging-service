@@ -143,7 +143,7 @@ Map<"<fromUser>@<peerDomain>→<toLocalUser>", latestSeq: number>
 Populated by **(a)** receiving a `new-msg-map` push, or **(b)** pulling the peer's outbound map
 (§4.3, one-directional fallback). **Drained** by a successful message-pull (`cursor ≥ latestSeq` →
 remove). Duplicates across push/pull are absorbed by the `originSeq` unique index (idempotent) — the
-user's "推送和拉取重复不担心" invariant.
+user's "push/pull duplication is harmless" invariant.
 
 ---
 
@@ -213,7 +213,7 @@ GET /api/v1/s2s/new-msg-map?take=1000&cursor=<opaque>
 - Loop while `hasMore` (each batch ≤ `take`). Because message-pull is idempotent, push/pull overlap
   (when both directions work) is absorbed by the `originSeq` unique index.
 
-**Decisions (the "你定" knobs):** batch size **1000** entries (~80 B each ≈ 80 KB, under the 1 MiB
+**Decisions (the "your call" knobs):** batch size **1000** entries (~80 B each ≈ 80 KB, under the 1 MiB
 body limit; configurable); per-domain map cap **10 000**; overflow → **evict the older half by
 `generatedAt`** in one shot; debounce flush window **~500 ms**; `hasMore` named for consistency with
 the `/messages` endpoint.
@@ -357,7 +357,7 @@ a different job). Used by:
      - insert Message { creator: aliceStub, threadId, originSeq: <sender's value>, contentType, content,
                         createdAt: new Date(ts), clientMessageId: null }   // receiver leaves clientMessageId NULL
      - SSE onNewMessage(bob, serializeBody({threadId, ...msg}))   // the existing fan-out, to bob
-4. loop: while (lastOriginSeqInBatch < latestSeq && hasMore) pull next batch ("如果没拿到newest就继续请求").
+4. loop: while (lastOriginSeqInBatch < latestSeq && hasMore) pull next batch ("keep requesting until newest is reached").
 5. on cursor ≥ latestSeq → remove the pendingPulls entry (drained).
 ```
 

@@ -17,7 +17,7 @@ export class SendFriendInviteDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  toUserId: number;
+  toUserId!: number;
 
   @ApiProperty({
     required: false,
@@ -36,52 +36,52 @@ export class InviteIdDto {
   @ApiProperty({ example: '123456789', description: 'Invite id (stringified BigInt)' })
   @IsString()
   @IsNotEmpty()
-  inviteId: string;
+  inviteId!: string;
 }
 
 /** Minimal user view embedded on an invite row (the inviter / the recipient). */
 export class InviteUserDto {
-  @ApiProperty() id: number;
-  @ApiProperty() account: string;
-  @ApiProperty() name: string;
-  @ApiProperty() avatar: string;
-  @ApiProperty() domain: string;
-  @ApiProperty() isForeigner: boolean;
+  @ApiProperty() id!: number;
+  @ApiProperty() account!: string;
+  @ApiProperty() name!: string;
+  @ApiProperty() avatar!: string;
+  @ApiProperty() domain!: string;
+  @ApiProperty() isForeigner!: boolean;
 }
 
 /** An invite as returned by /invite/incoming and /invite/outgoing. `expiresAt` (ms) lets the client
  *  render an "expired" prompt when it has passed (the row stays PENDING until a future GC sweep). */
 export class InviteDto {
-  @ApiProperty() id: string;
-  @ApiProperty({ enum: ['FRIEND', 'GROUP'] }) kind: string;
-  @ApiProperty({ type: InviteUserDto }) fromUser: InviteUserDto;
-  @ApiProperty({ type: InviteUserDto }) toUser: InviteUserDto;
+  @ApiProperty() id!: string;
+  @ApiProperty({ enum: ['FRIEND', 'GROUP'] }) kind!: string;
+  @ApiProperty({ type: InviteUserDto }) fromUser!: InviteUserDto;
+  @ApiProperty({ type: InviteUserDto }) toUser!: InviteUserDto;
   @ApiProperty({ required: false }) threadId?: number;
-  @ApiProperty() note: string;
-  @ApiProperty({ enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'] }) status: string;
-  @ApiProperty({ description: 'Expiry (ms epoch). expiresAt < Date.now() → expired.' }) expiresAt: number;
-  @ApiProperty() createdAt: number;
+  @ApiProperty() note!: string;
+  @ApiProperty({ enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'] }) status!: string;
+  @ApiProperty({ description: 'Expiry (ms epoch). expiresAt < Date.now() → expired.' }) expiresAt!: number;
+  @ApiProperty() createdAt!: number;
 }
 
 /** Live invite state for the group-invite dialog (/invite/detail). The dialog renders:
  *  alreadyJoined → "joined"; status != PENDING → "invalid"; expiresAt < Date.now() → "expired"; else → Join. */
 export class InviteDetailDto {
-  @ApiProperty() id: string;
-  @ApiProperty({ enum: ['FRIEND', 'GROUP'] }) kind: string;
-  @ApiProperty({ enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'] }) status: string;
-  @ApiProperty({ description: 'Expiry (ms epoch).' }) expiresAt: number;
-  @ApiProperty() note: string;
+  @ApiProperty() id!: string;
+  @ApiProperty({ enum: ['FRIEND', 'GROUP'] }) kind!: string;
+  @ApiProperty({ enum: ['PENDING', 'ACCEPTED', 'REJECTED', 'REVOKED', 'EXPIRED'] }) status!: string;
+  @ApiProperty({ description: 'Expiry (ms epoch).' }) expiresAt!: number;
+  @ApiProperty() note!: string;
   @ApiProperty({ required: false }) threadId?: number;
-  @ApiProperty() groupName: string;
-  @ApiProperty() groupAvatar: string;
+  @ApiProperty() groupName!: string;
+  @ApiProperty() groupAvatar!: string;
   @ApiProperty({ description: "The group's home domain (our domain for a local group)." })
-  groupDomain: string;
+  groupDomain!: string;
   @ApiProperty({
     description:
       'True iff the group is homed on THIS server (rendered as a "Local server" label; otherwise a globe + domain badge).',
   })
-  groupIsLocal: boolean;
+  groupIsLocal!: boolean;
   @ApiProperty({ description: 'Is the caller already an active member of the target group?' })
-  alreadyJoined: boolean;
-  @ApiProperty({ type: InviteUserDto }) fromUser: InviteUserDto;
+  alreadyJoined!: boolean;
+  @ApiProperty({ type: InviteUserDto }) fromUser!: InviteUserDto;
 }

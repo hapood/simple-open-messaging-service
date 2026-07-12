@@ -6,6 +6,10 @@ import { fileURLToPath, URL } from 'node:url'
 // https://vite.dev/config/
 export default defineConfig(({ command }) => ({
   // Prod is served under /admin/ (single-image, path-prefix deploy); dev stays at root for the vite dev server.
+  // CONVENTION, not configuration — this prefix mirrors the server's ADMIN_PREFIX mount point
+  // ('/admin') in src/bootstrap.ts (registerStaticServing); vite requires the trailing slash, hence
+  // '/admin/'. The React Router basename reads import.meta.env.BASE_URL, so it tracks this value
+  // automatically. Keep the two in sync; do not parameterize.
   base: command === 'build' ? '/admin/' : '/',
   plugins: [react(), tailwindcss()],
   resolve: {

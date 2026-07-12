@@ -1,129 +1,84 @@
-import { Injectable, inject, signal } from '@angular/core';
-import { filter, firstValueFrom, forkJoin, map, catchError, of, switchMap, Subscription } from 'rxjs';
-import { TranslocoService } from '@jsverse/transloco';
+import { Injectable, inject } from '@angular/core';
 import { UserService } from './user.service';
-import { WebsocketService } from './websocket.service';
-import { ConversationItem, User } from './model';
-import { planDelta } from './thread-delta';
-import { toFriendlyHttpError } from './http-error';
+import { ThreadRepository } from './thread-store.service';
+import { User } from './model';
+
+export { ConversationLoadStatus } from './thread-store.service';
 
 /**
- * Shared conversation-list store: the single client-side source of truth for the chat list, so that
- * the list view, thread-open (mark-read), and realtime SSE updates all mutate the same signal.
+ * UI-layer facade over {@link ThreadRepository} — the thin view-state + write-orchestration layer for the
+ * conversation list. The DB-layer data (items, load status, SSE handling, IDB persistence, boot-from-cache)
+ * lives in {@link ThreadRepository}; this service is what the ~20 UI injectors talk to, so its public
+ * signal/method surface is preserved byte-for-byte (zero call-site changes).
  *
- * - `items` / `status` / `error`: the list state, loaded from `query-thread/valid` (server-authoritative;
- *   sorted recent-first by the backend). The thread-list component is a thin view over these.
- * - `openThreadId`: the conversation currently being viewed. Drives two things: the active-row
- *   highlight, and the "don't badge a thread the user is already looking at" rule in onNewMessage.
- * - `open(id)` / `close()`: set/clear the open thread; opening fires mark-read on the server and
- *   optimistically clears the local unread badge (the two converge once the server responds).
- * - `onNewMessage(msg)`: applies an inbound NEW_MESSAGE SSE frame — refresh preview/at/senderId,
- *   bump the thread to the top, and increment unread unless it's the open thread.
- *
- * The list preview derivation (previewFor) mirrors the backend derivePreview() — kept in sync manually.
+ * What stays HERE (and ONLY here) is the WRITE orchestration the 3-tier contract forbids from the DB layer:
+ *  - {@link open}: sets the open thread on the repo (for unread suppression), optimistically clears the
+ *    badge, fires the `markRead` POST (a write — bypasses the DB layer), and nudges a peer-profile refresh.
+ *  - {@link close}: clears the open thread.
+ * The `markRead` write is the reason this facade exists: the DB layer never POSTs. Everything else delegates.
  */
-
-/** Load status as a const object so it can be used as a VALUE in templates (LoadStatus.READY) and as a TYPE. */
-export const ConversationLoadStatus = {
-  LOADING: 'LOADING',
-  READY: 'READY',
-  ERROR: 'ERROR',
-} as const;
-export type ConversationLoadStatus =
-  (typeof ConversationLoadStatus)[keyof typeof ConversationLoadStatus];
-
 @Injectable({ providedIn: 'root' })
 export class ConversationListService {
+  private readonly repo = inject(ThreadRepository);
   private readonly userService = inject(UserService);
-  private readonly transloco = inject(TranslocoService);
-  private readonly ws = inject(WebsocketService);
 
-  private readonly _items = signal<ConversationItem[]>([]);
-  readonly items = this._items.asReadonly();
+  // ── delegated data signals (the same references the repo owns) ──
+  readonly items = this.repo.items;
+  readonly status = this.repo.status;
+  readonly error = this.repo.error;
+  readonly openThreadId = this.repo.openThreadId;
+  readonly topInserted = this.repo.topInserted;
 
-  private readonly _status = signal<ConversationLoadStatus>('LOADING');
-  readonly status = this._status.asReadonly();
-
-  private readonly _error = signal('');
-  readonly error = this._error.asReadonly();
-
-  private readonly _openThreadId = signal<number | undefined>(undefined);
-  readonly openThreadId = this._openThreadId.asReadonly();
-
-  /** A thread promoted to index 0 on the most recent update (and to be FLIP-animated by the list),
-   *  or null. Set in applyItems when a top-insert was requested; the list clears it after animating. */
-  private readonly _topInserted = signal<number | null>(null);
-  readonly topInserted = this._topInserted.asReadonly();
-  /** Explicit thread to force-top on the next applyItems (set by markTopOnNextUpdate). */
-  private _pendingTopId: number | null = null;
-
-  /** Single-flight + tail-coalesce for THREAD_REVISION_UPDATED (mirrors onmessagesignal-single-flight):
-   *  while a delta pull is in-flight, the latest incoming revision is stashed as the tail; on
-   *  completion the tail is pulled `(cursor, tail]`, collapsing a signal burst into ranged pulls. */
-  private _deltaInFlight = false;
-  private _pendingTailRev: number | undefined;
-
-  /** Per-thread high-water-mark of the newest message id applied via onNewMessage. Guards against SSE
-   *  redelivery (e.g. a frame duplicated across a reconnect) double-bumping the unread badge: if an
-   *  inbound event's id isn't strictly newer than the last one applied for that thread, it's discarded
-   *  before touching the list. BigInt ids are monotonic same-length numeric strings per thread, so
-   *  lexicographic compare on equal length is exact (mirrors SomsSecureStore.advanceCursor). Not seeded
-   *  from the loaded list (items carry lastReadMsgId, not lastMessageId) — so the first live event after
-   *  a reload passes, which is correct (it IS new to the in-memory state); only same/older duplicates
-   *  are blocked. */
-  private readonly lastSeenMsgId = new Map<number, string>();
-
-  constructor() {
-    // Multi-device sync for per-user thread settings (mute/pin/clear): the server fans a THREAD_META
-    // frame to the caller's OTHER connections on each change, so this device patches the affected row
-    // and re-sorts without a full reload. Mirrors how onReadCursor keeps the unread badge in sync.
-    this.ws.eventSubject
-      .pipe(filter((m) => m.event === 'THREAD_META'))
-      .subscribe((m) => {
-        const d = (m.data ?? {}) as {
-          threadId?: number;
-          muted?: boolean;
-          pinned?: boolean;
-          pinnedAt?: number | null;
-          clearedAt?: number | null;
-          alias?: string | null;
-        };
-        if (d.threadId === undefined) return;
-        this.applyThreadMeta(d.threadId, {
-          muted: d.muted,
-          pinned: d.pinned,
-          pinnedAt: d.pinnedAt,
-          clearedAt: d.clearedAt,
-          alias: d.alias,
-        });
-      });
-
-    // Realtime peer profile refresh: when a friend changes avatar/name/bio — a local self-edit pushed
-    // straight away, or a federated stub re-localized on THIS server (the catch-up path) — the server
-    // fans the FULL fresh profile here. Patch the matching P2P row by peerUser.id; the message header +
-    // avatar read peerUser via computed, so they refresh automatically. Payload shape == thread-list
-    // peerUser (full User row), so a wholesale replace stays consistent with updatePeerUser.
-    this.ws.eventSubject
-      .pipe(filter((m) => m.event === 'PEER_PROFILE_UPDATED' && m.data !== undefined))
-      .subscribe((m) => {
-        const u = m.data as unknown as User;
-        if (typeof u?.id !== 'number') return;
-        this.updatePeerByUserId(u.id, u);
-      });
-
-    // Thread-list versioning: a THREAD_REVISION_UPDATED { revision } signal fires on every thread
-    // add/delete (friend approve, group create/join, leave, kick, unfriend). Pull the ranged delta
-    // (cursor, revision] and apply — DELETE removes locally (O(1)), ADD fetches the single new thread
-    // (getThreadInfo) + inserts with a FLIP. Replaces the former FRIEND_APPROVED/FRIEND_DELETED →
-    // load() fanout on the NOTIFY path (the delta handler owns thread-list add/delete now).
-    this.ws.eventSubject
-      .pipe(filter((m) => m.event === 'THREAD_REVISION_UPDATED' && m.data !== undefined))
-      .subscribe((m) => this.onThreadRevisionUpdated((m.data as { revision: number }).revision));
+  /** Load (or force-refresh) the conversation list. Delegates to the repo's boot-from-cache + snapshot. */
+  load(opts?: { force?: boolean }) {
+    this.repo.load(opts);
   }
 
-  /** Patch per-user thread metadata (mute/pin/clear/block) on a row, then re-sort so pin/unpin reorders
-   *  it live. Only defined fields are applied. Called from the THREAD_META SSE handler (multi-device)
-   *  and from local optimistic actions (mute/pin toggle, block/unblock). */
+  /**
+   * Mark a thread as open (selected); advance its read cursor on the server and clear the badge
+   * optimistically. The HTTP mark-read is fired ONLY when the thread actually has unread messages (re-opening
+   * an already-read conversation is a server-side no-op whose request would burn the per-IP throttle budget).
+   * The request is fire-and-forget: a 429 or network failure is swallowed — the cursor converges on the next
+   * open() or the READ_CURSOR SSE echo. The P2P peer profile is lazily refreshed (repo refresh backstop).
+   *
+   * This is the sole WRITE path through the facade — `markRead` POSTs directly to the backend (writes bypass
+   * the DB layer); the badge clear + open-thread state are repo mutations driven by this UI action.
+   */
+  open(threadId: number) {
+    const prev = this.repo.openThreadId();
+    this.repo.setOpenThread(threadId);
+    if (threadId === prev) return;
+    const item = this.repo.items().find((t) => t.threadId === threadId);
+    if ((item?.unreadCount ?? 0) > 0) {
+      this.repo.clearUnread(threadId);
+      this.userService.markRead({ threadId }).subscribe({
+        error: () => {
+          /* fire-and-forget — cursor converges on next open() / READ_CURSOR echo */
+        },
+      });
+    }
+    // P2P peer (local OR federated): lazily refresh avatar/name/bio if it changed since the list snapshot.
+    this.repo.refreshPeerOnOpen(threadId);
+  }
+
+  /** Clear the open thread (chat-pane unmounted / mobile popup closed). */
+  close() {
+    this.repo.setOpenThread(undefined);
+  }
+
+  // ── delegated data mutations (the repo owns IDB write-through + SSE-derived ordering) ──
+
+  /** Clear the `topInserted` pulse after the list has played its enter/FLIP animation. */
+  clearTopInserted(): void {
+    this.repo.clearTopInserted();
+  }
+
+  /** Force `threadId` to index 0 on the next update so the row animates in. */
+  markTopOnNextUpdate(threadId: number): void {
+    this.repo.markTopOnNextUpdate(threadId);
+  }
+
+  /** Patch per-user thread metadata (mute/pin/clear/block/alias); called from local optimistic actions. */
   applyThreadMeta(
     threadId: number,
     patch: {
@@ -135,399 +90,26 @@ export class ConversationListService {
       alias?: string | null;
     },
   ): void {
-    this._items.update((list) => {
-      const idx = list.findIndex((t) => t.threadId === threadId);
-      if (idx === -1) return list;
-      const next = list.slice();
-      next[idx] = { ...next[idx], ...patch };
-      next.sort(byPinRank);
-      return next;
-    });
+    this.repo.applyThreadMeta(threadId, patch);
   }
 
-  /** Tracks the in-flight snapshot load so a force refresh (reconnect) can cancel + restart it. */
-  private loadSub?: Subscription;
-
-  /** Fetch the conversation list from the server (authoritative state), pinned to the current
-   *  thread-revision cursor. Self-seeds the cursor via ensureProfile() first so the snapshot is not
-   *  taken at the pre-seed revision 0 (which would include soft-left threads). */
-  load(opts?: { force?: boolean }) {
-    // A non-force call while a load is already in-flight is a no-op (redundant trigger — e.g.
-    // onNewMessage firing during boot). A force call (reconnect) cancels the in-flight load and
-    // restarts: the snapshot must use ONE consistent cursor across all its pages, so a cursor change
-    // mid-flight (force re-seed to the server's current threadRevision) invalidates the in-flight paging.
-    if (!opts?.force && this._status() === 'LOADING') return;
-    this.loadSub?.unsubscribe();
-    this._status.set('LOADING');
-    this._error.set('');
-    this.loadSub = this.userService
-      .ensureProfile({ force: opts?.force })
-      .pipe(switchMap(() => this.userService.queryAllUserThreads()))
-      .subscribe({
-        // Page through the full thread set (query-thread/valid is @Max(50) per request) so client-side
-        // folder filtering sees every conversation, not just the first page.
-        next: (items) => this.applyItems(items),
-        error: (err) => this.failLoad(err),
-      });
-  }
-
-  private failLoad(err: unknown): void {
-    this._error.set(toFriendlyHttpError(err, this.transloco.translate('errors.networkError')));
-    this._status.set('ERROR');
-  }
-
-  /** Force `threadId` to index 0 on the next update and emit `topInserted` so the row animates in.
-   *  Use when the caller knows the new id (group join SSE, group create response). */
-  markTopOnNextUpdate(threadId: number): void {
-    this._pendingTopId = threadId;
-  }
-
-  /** Clear the `topInserted` pulse after the list has played its enter/FLIP animation. */
-  clearTopInserted(): void {
-    this._topInserted.set(null);
-  }
-
-  /** Resolve the ConversationItem for a thread the caller knows exists, waiting for a reload if it is
-   *  not yet in the list (up to `timeoutMs`). Used by the join hero transition so the overlay's
-   *  MessageThreadComponent can init its kernel with a real item instead of a hand-rolled stub. */
-  async ensureThread(threadId: number, timeoutMs = 2000): Promise<ConversationItem | undefined> {
-    const found = this._items().find((t) => t.threadId === threadId);
-    if (found) return found;
-    if (this._status() === 'READY') this.load();
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 80));
-      const it = this._items().find((t) => t.threadId === threadId);
-      if (it) return it;
-    }
-    return undefined;
-  }
-
-  private applyItems(items: ConversationItem[]): void {
-    // Server returns the page already pin-first-ordered, but sort defensively so the in-memory order
-    // matches byPinRank exactly (the server and this comparator are kept in lockstep). An explicit
-    // topId (markTopOnNextUpdate — a just-created/joined thread, or a delta ADD) is promoted
-    // to index 0 ON TOP of the pin tier, so the user sees their new thread immediately.
-    const sorted = [...items].sort(byPinRank);
-    const topId = this.resolveTopId(items);
-    const ordered = topId != null ? moveToTop(sorted, topId) : sorted;
-    this._items.set(ordered);
-    this._status.set('READY');
-    if (topId != null) this._topInserted.set(topId);
-  }
-
-  /** Determine which thread (if any) to promote to index 0 on this update, consuming the pending
-   *  flag. The only top-insert mechanism now is an explicit id (markTopOnNextUpdate) — friend
-   *  add/delete is driven by the THREAD_REVISION_UPDATED delta, which carries the threadId, so the
-   *  former fuzzy "first newly-appearing thread" path is obsolete. */
-  private resolveTopId(items: ConversationItem[]): number | undefined {
-    let topId: number | undefined;
-    if (this._pendingTopId != null && items.some((t) => t.threadId === this._pendingTopId)) {
-      topId = this._pendingTopId;
-    }
-    this._pendingTopId = null;
-    return topId;
-  }
-
-  /** Mark a thread as open (selected); advance its read cursor on the server and clear the badge
-   *  optimistically. The HTTP mark-read is fired ONLY when the thread actually has unread messages:
-   *  re-opening an already-read conversation (common — the user revisits a thread) is a server-side
-   *  no-op whose request would still burn the per-IP throttle budget, so skipping it keeps mark-read
-   *  volume proportional to real unread state. It also makes the call loop-proof — after the first fire
-   *  clears the badge to 0, any re-entrant open() (effect re-run, close→reopen lag on mobile) is a
-   *  no-op until a NEW_MESSAGE bumps unread again. The request is fire-and-forget: a 429 (rate-limited)
-   *  or network failure is swallowed rather than surfacing as an uncaught HttpErrorResponse — the
-   *  cursor converges on the next open() or the READ_CURSOR SSE echo. */
-  open(threadId: number) {
-    const prev = this._openThreadId();
-    this._openThreadId.set(threadId);
-    if (threadId === prev) return;
-    const item = this._items().find((t) => t.threadId === threadId);
-    if ((item?.unreadCount ?? 0) > 0) {
-      this.clearUnread(threadId);
-      this.userService.markRead({ threadId }).subscribe({
-        error: () => {
-          /* fire-and-forget — cursor converges on next open() / READ_CURSOR echo */
-        },
-      });
-    }
-    // P2P peer (local OR federated): lazily refresh avatar/name/bio if it changed since the list
-    // snapshot. Fire-and-forget (chat-open is never blocked); the server short-circuits with data:null
-    // when updatedAt is unchanged — one cheap lookup, no signal churn, no re-render. The returned User
-    // flows into the item → header/avatar refresh. This is the pull backstop behind the
-    // PEER_PROFILE_UPDATED push: it covers reconnects / missed pushes / federated laziness.
-    if (item && item.type === 'P2P' && item.peerUser) {
-      this.userService
-        .syncPeerProfile({ userId: item.peerUser.id, sinceUpdatedAt: item.peerUser.updatedAt })
-        .subscribe({
-          next: (res) => {
-            if (res.code === 0 && res.data) this.updatePeerUser(threadId, res.data);
-          },
-          error: () => {
-            /* best-effort — keep the cached profile on a transient outage */
-          },
-        });
-    }
-  }
-
-  /** Replace a P2P item's peerUser (avatar/name/bio) after a federated profile sync. No-op for groups / absent
-   *  items. The message header + avatar read peerUser via computed, so they refresh automatically. */
+  /** Replace a P2P item's peerUser (avatar/name/bio) after a profile sync. */
   updatePeerUser(threadId: number, user: User): void {
-    this._items.update((list) =>
-      list.map((t) => (t.threadId === threadId && t.type === 'P2P' ? { ...t, peerUser: user } : t)),
-    );
+    this.repo.updatePeerUser(threadId, user);
   }
 
-  /** Replace a P2P item's peerUser by the peer's userId — the PEER_PROFILE_UPDATED push carries a userId,
-   *  not a threadId. No-op for groups / absent items. Same computed-driven refresh as updatePeerUser. */
-  updatePeerByUserId(userId: number, user: User): void {
-    this._items.update((list) =>
-      list.map((t) =>
-        t.type === 'P2P' && t.peerUser.id === userId ? { ...t, peerUser: user } : t,
-      ),
-    );
-  }
-
-  /** Clear the open thread (chat-pane unmounted / mobile popup closed). */
-  close() {
-    this._openThreadId.set(undefined);
-  }
-
-  // ── live group-lifecycle updates (driven by GroupEventService from the GROUP_* SSE events) ──
-
-  /** Apply a rename / avatar / description change from a GROUP_UPDATED event (live list + header refresh). */
+  /** Apply a rename / avatar / description change from a GROUP_UPDATED event. */
   applyGroupUpdate(threadId: number, patch: { name?: string; description?: string; avatar?: string }): void {
-    this._items.update((list) =>
-      list.map((t) => {
-        if (t.threadId !== threadId || !t.group) return t;
-        const group = { ...t.group };
-        if (patch.name !== undefined) group.name = patch.name;
-        if (patch.description !== undefined) group.description = patch.description;
-        if (patch.avatar !== undefined) group.avatar = patch.avatar;
-        return { ...t, group };
-      }),
-    );
+    this.repo.applyGroupUpdate(threadId, patch);
   }
 
   /** Apply my own role change from a GROUP_ROLE_CHANGED event targeting me. */
   applyRole(threadId: number, role: 'OWNER' | 'ADMIN' | 'MEMBER'): void {
-    this._items.update((list) =>
-      list.map((t) => (t.threadId === threadId ? { ...t, role } : t)),
-    );
+    this.repo.applyRole(threadId, role);
   }
 
-  /** Drop a thread (self-kick / self-left). */
+  /** Drop a thread (self-kick / self-left / unfriend). */
   removeThread(threadId: number): void {
-    this._items.update((list) => list.filter((t) => t.threadId !== threadId));
-    if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
-  }
-
-  /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
-   *  applyItems' FLIP: if `_pendingTopId` matches (set by markTopOnNextUpdate for a just-added
-   *  thread), force-top it + emit `topInserted` so the list animates the enter. Idempotent — an item
-   *  already present (the delta raced with a concurrent load, or a re-add of an active thread) is
-   *  updated in place rather than duplicated. */
-  private upsertThread(item: ConversationItem): void {
-    this._items.update((list) => {
-      const idx = list.findIndex((t) => t.threadId === item.threadId);
-      const base = list.slice();
-      if (idx === -1) base.unshift(item);
-      else base[idx] = item;
-      const sorted = base.sort(byPinRank);
-      return this._pendingTopId === item.threadId ? moveToTop(sorted, item.threadId) : sorted;
-    });
-    if (this._pendingTopId === item.threadId) {
-      this._topInserted.set(item.threadId);
-      this._pendingTopId = null;
-    }
-    this._status.set('READY');
-  }
-
-  private clearUnread(threadId: number) {
-    this._items.update((list) =>
-      list.map((t) =>
-        t.threadId === threadId ? { ...t, unreadCount: 0 } : t,
-      ),
-    );
-  }
-
-  /**
-   * Apply an inbound NEW_MESSAGE SSE frame. Refreshes preview/at/senderId and bumps the thread to the
-   * top; increments unread unless it is the currently-open thread OR the caller's own message (the
-   * sender's own message is never unread — the server advances their read cursor on send, and this
-   * mirrors that so a background tab's badge stays consistent). If the thread isn't in the list yet
-   * (a brand-new conversation), reloads to fetch it from the server.
-   */
-  onNewMessage(msg: {
-    threadId: number;
-    id: string;
-    contentType: string;
-    content: string;
-    creator: number;
-    createdAt: number;
-  }) {
-    // High-water-mark guard: discard a redelivered/out-of-order event whose id isn't strictly newer
-    // than the last one applied for this thread. SSE can re-emit a frame across a reconnect, and
-    // without this the same message would double-bump the unread badge and overwrite the preview twice.
-    const prev = this.lastSeenMsgId.get(msg.threadId);
-    if (prev !== undefined && !isMsgNewer(msg.id, prev)) return;
-    this.lastSeenMsgId.set(msg.threadId, msg.id);
-
-    const preview = previewFor(msg.contentType, msg.content, this.transloco);
-    const open = this._openThreadId();
-    const mine = msg.creator === this.userService.sessionProfile()?.id;
-    let existed = false;
-    this._items.update((list) => {
-      const idx = list.findIndex((t) => t.threadId === msg.threadId);
-      if (idx === -1) return list;
-      existed = true;
-      const item = list[idx];
-      // Open thread → 0 (the user is viewing it). Own message in a closed thread → unchanged (the
-      // sender's own message is never unread; the server advances their cursor on send). Someone
-      // else's message in a closed thread → +1.
-      let unread: number;
-      if (open === msg.threadId) unread = 0;
-      else if (mine) unread = item.unreadCount ?? 0;
-      else unread = (item.unreadCount ?? 0) + 1;
-      const updated: ConversationItem = {
-        ...item,
-        lastMessagePreview: preview,
-        lastMessageAt: msg.createdAt,
-        lastMessageSenderId: msg.creator,
-        // A live NEW_MESSAGE can't resolve a group sender's display name cheaply, so drop any stale
-        // name on group threads (own messages prefix "You:" via senderId===me; incoming go bare until
-        // the next full reload re-hydrates the name). P2P names are never used by the preview.
-        lastMessageSenderName:
-          item.type === 'GROUP' ? null : item.lastMessageSenderName,
-        unreadCount: unread,
-      };
-      // Re-sort by pin rank instead of unconditionally unshifting to index 0: a new message must NOT
-      // displace a pinned thread (pinned stay top; the updated thread rises only to the top of its
-      // tier — pinned if pinned, else the head of the unpinned tier).
-      const next = list.slice();
-      next[idx] = updated;
-      next.sort(byPinRank);
-      return next;
-    });
-    if (!existed) this.load();
-  }
-
-  /**
-   * Apply a THREAD_REVISION_UPDATED { revision } signal: pull the ranged delta (cursor, revision]
-   * and merge — DELETE drops the thread locally (O(1), no reload), ADD fetches the single new thread
-   * (getThreadInfo) + inserts with a FLIP. The cursor advances to `revision` after the merge.
-   * Single-flight + tail-coalesce: a burst of signals collapses into one ranged pull per in-flight
-   * window (the ranged query covers everything between cursor and the latest revision, so coalescing
-   * is lossless even under out-of-order SSE delivery).
-   */
-  onThreadRevisionUpdated(toRev: number): void {
-    if (this._deltaInFlight) {
-      this._pendingTailRev = toRev;
-      return;
-    }
-    void this.pullDelta(toRev);
-  }
-
-  private async pullDelta(toRev: number): Promise<void> {
-    const cursor = this.userService.threadRevCursor();
-    // Cursor undefined = boot hasn't seeded yet (load() is still fetching /user/my-profile). Drop the
-    // signal — the boot snapshot at the seeded revision will reflect the current state, and the cursor
-    // is advanced past this signal once seeded.
-    if (cursor === undefined) return;
-    // Already applied (our own action echoed back, or a coalesced tail already covered). No-op.
-    if (toRev <= cursor) return;
-    this._deltaInFlight = true;
-    try {
-      const res = await firstValueFrom(
-        this.userService.queryThreadDelta({ fromRevision: cursor, toRevision: toRev }),
-      );
-      if (res.code === 0) {
-        const plan = planDelta(cursor, toRev, res.data ?? []);
-        // Apply DELETEs first (local, instant). ADDs are fetched in parallel; we await them BEFORE
-        // advancing the cursor so a later DELETE of a just-added thread sees the insert (no stale
-        // re-insert from a racing fetch resolving after the removal).
-        for (const id of plan.removeIds) this.removeThread(id);
-        if (plan.addIds.length > 0) {
-          const fetches = plan.addIds.map((id) => {
-            this.markTopOnNextUpdate(id); // precise FLIP — the delta carries the threadId
-            return this.userService.getThreadInfo({ threadId: id }).pipe(
-              map((r) => (r.code === 0 && r.data ? r.data : null)),
-              catchError(() => of(null)), // a failed fetch is skipped, not fatal to the batch
-            );
-          });
-          const items = await firstValueFrom(forkJoin(fetches));
-          for (const item of items) if (item) this.upsertThread(item);
-        }
-        this.userService.advanceThreadRevCursor(plan.nextCursor);
-      }
-    } finally {
-      this._deltaInFlight = false;
-      const tail = this._pendingTailRev;
-      this._pendingTailRev = undefined;
-      // If signals arrived while in-flight, pull (cursor, tail] — the cursor has advanced to toRev,
-      // so this covers only the genuinely-newer portion.
-      if (tail !== undefined && tail > (this.userService.threadRevCursor() ?? -Infinity)) {
-        void this.pullDelta(tail);
-      }
-    }
-  }
-}
-
-/** Strict "is `id` newer than `prevId`" — BigInt message ids are monotonic same-length numeric
- *  strings within a thread, so longer = newer; equal length → lexicographic. Mirrors the Kotlin
- *  `SomsSecureStore.advanceCursor` comparison so client and native agree on ordering. */
-function isMsgNewer(id: string, prevId: string): boolean {
-  return id.length > prevId.length || (id.length === prevId.length && id > prevId);
-}
-
-/** Return a new array with the first item matching `threadId` moved to index 0 (no-op if absent or
- *  already first). Used by applyItems to force-top a just-joined/created thread. */
-function moveToTop<T extends { threadId: number }>(items: T[], threadId: number): T[] {
-  const idx = items.findIndex((t) => t.threadId === threadId);
-  if (idx <= 0) return items;
-  const next = items.slice();
-  const [moved] = next.splice(idx, 1);
-  next.unshift(moved);
-  return next;
-}
-
-/**
- * Pin-aware conversation-list rank comparator — the SINGLE source of truth for client-side ordering,
- * kept in lockstep with the backend's query-thread/valid ORDER BY. Pinned tier first (most-recently-
- * pinned first via pinnedAt desc); then unpinned recent-first by lastMessageAt; empty threads sink;
- * threadId breaks ties deterministically. Used by applyItems (reload), onNewMessage (live bump), and
- * applyThreadMeta (pin/unpin reorder).
- */
-function byPinRank(a: ConversationItem, b: ConversationItem): number {
-  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-  if (a.pinned) {
-    const ta = a.pinnedAt ?? -Infinity;
-    const tb = b.pinnedAt ?? -Infinity;
-    return tb - ta || a.threadId - b.threadId;
-  }
-  const la = a.lastMessageAt ?? -Infinity;
-  const lb = b.lastMessageAt ?? -Infinity;
-  return lb - la || a.threadId - b.threadId;
-}
-
-/** Derive the short list preview by content type — mirrors backend derivePreview (keep in sync). The
- *  tag strings are localized via `t`; the backend's own denormalized preview is English (a separate,
- *  backend-side i18n concern), so this only localizes live/client-derived previews. */
-export function previewFor(contentType: string, content: string, t: { translate: (k: string) => string }): string {
-  switch (contentType) {
-    case 'PURE_TEXT':
-      return content.replace(/\s+/g, ' ').trim().slice(0, 200);
-    case 'IMAGE':
-      return t.translate('chat.preview.photo');
-    case 'INVITE':
-      return t.translate('chat.preview.invite');
-    case 'VIDEO':
-      return t.translate('chat.preview.video');
-    case 'FILE':
-      return t.translate('chat.preview.file');
-    case 'AUDIO':
-      return t.translate('chat.preview.voice');
-    default:
-      return content.slice(0, 200);
+    this.repo.removeThread(threadId);
   }
 }

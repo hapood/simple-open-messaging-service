@@ -11,7 +11,7 @@ import {
   HttpStatus,
   HttpCode,
 } from '@nestjs/common';
-import type { FastifyReply } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -65,15 +65,20 @@ export class AuthController {
   // whitelisted through the global ValidationPipe.
   @ApiBody({ type: LoginDto })
   async login(
-    @Request() req,
+    // LocalAuthGuard attaches the LoginAuthInfo LocalStrategy returns (richer than the C-end
+    // `{ userId }` principal on FastifyRequest.user). Narrowing the param type — an intersection with
+    // `{ user: LoginAuthInfo }` — expresses that at this route boundary, so the handler reads
+    // status/account/userId with no cast and no non-null assertion.
+    @Request() req: FastifyRequest & { user: LoginAuthInfo },
     @Body() body: LoginDto,
     @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
-    const authInfo: LoginAuthInfo = req.user;
+    const authInfo = req.user;
     if (authInfo.status === 0) {
-      const tokens = await this.authService.login(authInfo.userId, {
+      // status 0 (success) implies userId is set — see LocalStrategy.validate.
+      const tokens = await this.authService.login(authInfo.userId!, {
         device: body.device,
         userAgent,
         ip,
@@ -201,7 +206,7 @@ export class AuthController {
   @Post('auth/logout-all')
   @ApiOperation({ summary: 'Logout all devices (revoke every session + bump tokenVersion)' })
   async logoutAll(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     await this.authService.invalidateAllSessions(req.user.userId, 'all_devices');
@@ -216,7 +221,7 @@ export class AuthController {
   @Post('auth/change-password')
   @ApiOperation({ summary: 'Change password (revoke all other sessions; reissue tokens for the current device)' })
   async changePassword(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: ChangePasswordDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
@@ -243,7 +248,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/sessions')
   @ApiOperation({ summary: "List the current user's active sessions" })
-  async sessions(@Request() req): Promise<ApiResult> {
+  async sessions(@Request() req: FastifyRequest): Promise<ApiResult> {
     return {
       code: BusinessCode.OK,
       message: 'success',
@@ -257,7 +262,7 @@ export class AuthController {
   @Post('auth/revoke-session')
   @ApiOperation({ summary: 'Revoke a single session (by jti, belonging to the current user)' })
   async revokeSession(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: RevokeSessionDto,
   ): Promise<ApiResult> {
     await this.authService.revokeSession(req.user.userId, dto.jti, dto.accessJti);
@@ -275,7 +280,7 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @Post('auth/notification-token')
   @ApiOperation({ summary: 'Issue a long-lived notification token for the background poller' })
-  async issueNotificationToken(@Request() req): Promise<ApiResult> {
+  async issueNotificationToken(@Request() req: FastifyRequest): Promise<ApiResult> {
     const notificationToken = await this.notificationTokens.issue(req.user.userId);
     return { code: BusinessCode.OK, message: 'success', data: { notificationToken } };
   }

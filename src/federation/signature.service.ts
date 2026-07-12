@@ -37,6 +37,9 @@ export interface OutboundSignatureHeaders {
   'content-digest': string;
   'signature-input': string;
   signature: string;
+  // Index signature: these headers are a plain string→string map, so the object can be passed
+  // directly to fetch()'s HeadersInit (Record<string, string>) without a cast.
+  [key: string]: string;
 }
 
 /** Content-Digest value: sha-256=<base64(sha256(body))> (RFC 9530). */

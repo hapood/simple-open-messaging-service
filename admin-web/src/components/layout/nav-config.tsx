@@ -97,7 +97,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/audit', key: 'audit', icon: ClipboardList },
       { to: '/admins', key: 'admins', icon: UserCog },
       { to: '/logs', key: 'logs', icon: ScrollText },
-      { to: '/settings', key: 'settings', icon: Settings, disabled: true },
+      { to: '/settings', key: 'settings', icon: Settings },
     ],
   },
 ]

@@ -59,7 +59,7 @@ export class MessageFanoutService {
     const threadId = message.threadId;
     // serializeBody converts BigInt→string / Date→ms — the same shape as the HTTP response, so the
     // client renders the SSE frame directly without a second query-messages.
-    const msgData = serializeBody({ threadId, ...message });
+    const msgData = serializeBody({ ...message });
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const participants =
       await this.participantService.getActiveParticipantUserIds(threadId);

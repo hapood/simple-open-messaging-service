@@ -25,7 +25,7 @@ import { LanguageService } from '../../../services/language.service';
         <button class="rail-btn avatar" (click)="editProfile()"
           [title]="'nav.editProfileAria' | transloco" [attr.aria-label]="'nav.editProfileAria' | transloco">
           <app-user-avatar [type]="UserAvatarType.SELF" [name]="sessionProfile()?.name || 'SOMS'"
-            [src]="sessionProfile()?.avatar" />
+            [identityId]="sessionProfile()?.id" [src]="sessionProfile()?.avatar" />
         </button>
         <button class="rail-btn" (click)="friendRequests()"
           [title]="'nav.friendRequests' | transloco" [attr.aria-label]="'nav.friendRequests' | transloco">

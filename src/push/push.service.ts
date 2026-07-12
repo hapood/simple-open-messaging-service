@@ -4,6 +4,7 @@ import { getMessaging, type Messaging, type Message } from 'firebase-admin/messa
 import webpush from 'web-push';
 import { PrismaService } from '../prisma.service.js';
 import { SseService } from '../gateway/sse.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { RegisterDeviceDto } from '../dto/device.dto.js';
 
 /**
@@ -19,21 +20,23 @@ import { RegisterDeviceDto } from '../dto/device.dto.js';
  *  - ANDROID / IOS → firebase-admin `sendEach` (data-only, high priority).
  *  - WEB           → `web-push` lib (standard Web Push + VAPID), payload is the JSON-stringified signal.
  *
- * Degradation: each transport is independently gated on its env config — GOOGLE_APPLICATION_CREDENTIALS
- * for FCM, VAPID_* for Web Push. Either missing → that transport no-ops (the other still works; both
- * missing → SSE-only, the local/dev path).
+ * Degradation: each transport is independently gated on its own config — GOOGLE_APPLICATION_CREDENTIALS
+ * (env) for FCM, the DB-backed VAPID keypair (SettingsService, admin-managed) for Web Push. Either missing
+ * → that transport no-ops (the other still works; both missing → SSE-only, the local/dev path).
  */
 @Injectable()
 export class PushService {
   private readonly logger = new Logger(PushService.name);
   private readonly messaging: Messaging | null;
-  private readonly webPushEnabled: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly sse: SseService,
+    private readonly settings: SettingsService,
   ) {
-    // FCM: applicationDefault() reads the service-account JSON at GOOGLE_APPLICATION_CREDENTIALS.
+    // FCM: applicationDefault() reads the service-account JSON at GOOGLE_APPLICATION_CREDENTIALS. FCM is
+    // a file-path credential (a whole service-account JSON), so it stays env/file-based — NOT admin-UI
+    // managed like VAPID.
     if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
       const app = getApps().length
         ? getApp()
@@ -44,20 +47,10 @@ export class PushService {
       this.messaging = null;
       this.logger.warn('GOOGLE_APPLICATION_CREDENTIALS unset — FCM dispatch disabled');
     }
-    // Web Push: setVapidDetails is module-global; call once. VAPID_SUBJECT should be a mailto: or URL
-    // contact (per RFC 8292) — the push service surfaces it to the subscriber for identity.
-    if (process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY) {
-      webpush.setVapidDetails(
-        process.env.VAPID_SUBJECT ?? 'mailto:noreply@soms.local',
-        process.env.VAPID_PUBLIC_KEY,
-        process.env.VAPID_PRIVATE_KEY,
-      );
-      this.webPushEnabled = true;
-      this.logger.log('Web Push initialized from VAPID_* keys');
-    } else {
-      this.webPushEnabled = false;
-      this.logger.warn('VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY unset — Web Push dispatch disabled');
-    }
+    // Web Push: VAPID keys are now DB-backed (SettingsService, admin-managed) and passed PER SEND as the
+    // vapidDetails option (see sendWebPush) — NOT the module-global setVapidDetails. Nothing to init here:
+    // settings.isWebPushConfigured is the runtime gate, and an admin key rotation takes effect on the next
+    // send with no restart.
   }
 
   /** Upsert a registration token for the authenticated user. `token` is globally unique (one row per
@@ -92,6 +85,26 @@ export class PushService {
   async unregisterToken(userId: number, token: string): Promise<void> {
     await this.prisma.pushToken.deleteMany({
       where: { token, userId },
+    });
+  }
+
+  /** Send one Web Push notification, passing the VAPID details PER CALL from SettingsService (NOT the
+   *  module-global setVapidDetails). Reading the (DB-backed) keypair on each send means an admin rotation
+   *  takes effect immediately on the next send, with no restart and no event wiring. Throws if Web Push is
+   *  not configured (the caller decides how to surface that); otherwise rethrows web-push's error, which
+   *  carries `.statusCode` (404/410 = subscription gone). */
+  private async sendWebPush(
+    sub: { endpoint: string; keys: { p256dh: string; auth: string } },
+    payload: string,
+  ): Promise<void> {
+    const vapid = this.settings.getVapid();
+    if (!vapid) throw new Error('Web Push not configured');
+    await webpush.sendNotification(sub, payload, {
+      vapidDetails: {
+        subject: vapid.subject,
+        publicKey: vapid.publicKey,
+        privateKey: vapid.privateKey,
+      },
     });
   }
 
@@ -171,14 +184,15 @@ export class PushService {
         }
       }
 
-      // Web Push path (browser/PWA). sendNotification throws on failure → 404/410 = subscription
-      // expired/gone (prune), anything else is transient.
-      if (webSubs.length > 0 && this.webPushEnabled) {
+      // Web Push path (browser/PWA). VAPID is read per send from SettingsService (DB-backed,
+      // admin-managed), so the gate is whether a keypair is configured. sendWebPush throws on failure →
+      // 404/410 = subscription expired/gone (prune), anything else is transient.
+      if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
         const payload = JSON.stringify(data);
         await Promise.all(
           webSubs.map(async (s) => {
             try {
-              await webpush.sendNotification(
+              await this.sendWebPush(
                 { endpoint: s.token, keys: { p256dh: s.webP256dh!, auth: s.webAuth! } },
                 payload,
               );
@@ -210,9 +224,9 @@ export class PushService {
   get fcmConfigured(): boolean {
     return this.messaging !== null;
   }
-  /** Web Push transport configured (VAPID_* keys set). */
+  /** Web Push transport configured (a VAPID keypair is set in the settings DB). */
   get webPushConfigured(): boolean {
-    return this.webPushEnabled;
+    return this.settings.isWebPushConfigured;
   }
 
   /** Admin: paginated device-token list with the owning user's id + account, optional fuzzy search
@@ -272,8 +286,7 @@ export class PushService {
     const isWeb = !!row.webP256dh && !!row.webAuth;
     try {
       if (isWeb) {
-        if (!this.webPushEnabled) return { ok: false, error: 'Web Push not configured' };
-        await webpush.sendNotification(
+        await this.sendWebPush(
           { endpoint: row.token, keys: { p256dh: row.webP256dh!, auth: row.webAuth! } },
           JSON.stringify({ type: 'admin-test', title, body }),
         );

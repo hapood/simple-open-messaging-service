@@ -22,6 +22,8 @@ enum AddTabStatus {
 // (fromUser for incoming, toUser for outgoing), so no separate profile lookup is needed.
 type PendingReq = {
   id: string
+  /** The peer user's numeric id — the avatar cache identity (the invite `id` is NOT a user id). */
+  peerId?: number
   name?: string
   avatar?: string
   account?: string
@@ -300,6 +302,7 @@ export class FriendRequestsComponent implements OnDestroy {
   private toPendingReq(inv: Invite, peer: Invite['fromUser']): PendingReq {
     return {
       id: inv.id,
+      peerId: peer.id,
       name: peer.name,
       avatar: peer.avatar,
       account: peer.account,

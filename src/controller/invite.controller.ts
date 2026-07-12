@@ -8,6 +8,7 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyRequest } from 'fastify';
 import { UserService } from '../user/user.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
@@ -52,7 +53,7 @@ export class InviteController {
   @Post('invite/friend')
   @ApiOperation({ summary: 'Send a friend invite (federated targets delivered via S2S automatically)' })
   async sendFriendInvite(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: SendFriendInviteDto,
   ): Promise<ApiResult> {
     const me = req.user.userId;
@@ -145,7 +146,7 @@ export class InviteController {
   @Post('invite/accept')
   @ApiOperation({ summary: 'Accept an invite by id (friend → P2P thread; group → join as MEMBER)' })
   async acceptInvite(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: InviteIdDto,
   ): Promise<ApiResult> {
     let res;
@@ -223,7 +224,7 @@ export class InviteController {
   @HttpCode(HttpStatus.OK)
   @Post('invite/reject')
   @ApiOperation({ summary: 'Reject an incoming invite' })
-  async rejectInvite(@Request() req, @Body() dto: InviteIdDto): Promise<ApiResult> {
+  async rejectInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<ApiResult> {
     try {
       await this.inviteService.rejectInvite(dto.inviteId, req.user.userId);
     } catch (e) {
@@ -238,7 +239,7 @@ export class InviteController {
   @HttpCode(HttpStatus.OK)
   @Post('invite/revoke')
   @ApiOperation({ summary: 'Revoke my own outgoing invite' })
-  async revokeInvite(@Request() req, @Body() dto: InviteIdDto): Promise<ApiResult> {
+  async revokeInvite(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<ApiResult> {
     try {
       await this.inviteService.revokeInvite(dto.inviteId, req.user.userId);
     } catch (e) {
@@ -254,7 +255,7 @@ export class InviteController {
   @Post('invite/incoming')
   @ApiOperation({ summary: 'List incoming pending friend invites (last 7 days, ≤200, friends filtered out)' })
   @ApiResultResponse(InviteDto, true)
-  async listIncoming(@Request() req): Promise<ApiResult> {
+  async listIncoming(@Request() req: FastifyRequest): Promise<ApiResult> {
     const me = req.user.userId;
     const [rows, friendIds] = await Promise.all([
       this.inviteService.listIncoming(me),
@@ -272,7 +273,7 @@ export class InviteController {
   @Post('invite/outgoing')
   @ApiOperation({ summary: 'List my outgoing pending friend invites (last 7 days, ≤200, friends filtered out)' })
   @ApiResultResponse(InviteDto, true)
-  async listOutgoing(@Request() req): Promise<ApiResult> {
+  async listOutgoing(@Request() req: FastifyRequest): Promise<ApiResult> {
     const me = req.user.userId;
     const [rows, friendIds] = await Promise.all([
       this.inviteService.listOutgoing(me),
@@ -289,7 +290,7 @@ export class InviteController {
   @Post('invite/detail')
   @ApiOperation({ summary: 'Live invite state for the group-invite dialog (validity / already-joined)' })
   @ApiResultResponse(InviteDetailDto)
-  async getInviteDetail(@Request() req, @Body() dto: InviteIdDto): Promise<ApiResult> {
+  async getInviteDetail(@Request() req: FastifyRequest, @Body() dto: InviteIdDto): Promise<ApiResult> {
     try {
       const data = await this.inviteService.getInviteDetail(dto.inviteId, req.user.userId);
       return { code: BusinessCode.OK, message: 'successful', data };
@@ -304,7 +305,7 @@ export class InviteController {
   @HttpCode(HttpStatus.OK)
   @Post('invite/mark-read')
   @ApiOperation({ summary: 'Clear the friend-request unread badge' })
-  async markRead(@Request() req): Promise<ApiResult> {
+  async markRead(@Request() req: FastifyRequest): Promise<ApiResult> {
     await this.inviteService.markRead(req.user.userId);
     return { code: BusinessCode.OK, message: 'successful' };
   }

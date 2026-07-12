@@ -22,6 +22,8 @@ function localizedBizMessage(code: number): string | null {
       return i18n.t('errors.biz.rateLimited')
     case CODE.REFRESH_REUSE_DETECTED:
       return i18n.t('errors.biz.refreshReuse')
+    case CODE.VAPID_INVALID:
+      return i18n.t('errors.biz.vapidInvalid')
     default:
       return null
   }

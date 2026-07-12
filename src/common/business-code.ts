@@ -9,6 +9,7 @@
  * - 40xxx   group domain
  * - 50xxx   federation S2S (peer not trusted / bad signature / binding violation / duplicate /
  *           unsupported type / key-fetch failed / malformed)
+ * - 60xxx   admin settings (VAPID keypair validation)
  *
  * Convention (see protocol-plan §5.2): business outcomes always return HTTP 200 + a business code;
  * only the protocol/system layer — unauthenticated(401) / not-found(404) / conflict(409) /
@@ -67,4 +68,7 @@ export enum BusinessCode {
                                         // entry (softLeaveMember + bump group meta) WITHOUT demoting the peer —
                                         // a business outcome, not a protocol failure (the 200 already ran
                                         // markContactSuccess in getSigned)
+
+  // 60xxx settings (admin-managed runtime config)
+  VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)
 }

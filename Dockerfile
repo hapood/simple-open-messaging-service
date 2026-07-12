@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1
 
 # Single image: builds web + admin-web + server, then runs the server, which also serves the
-# frontends same-origin via @nestjs/serve-static (web at /, admin at /admin/).
+# frontends same-origin via @fastify/static in src/bootstrap.ts (web at /, admin at /admin/).
 
-# Base images. Override via --build-arg if Docker Hub is unreachable, e.g. behind a CN mirror:
-#   --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:22-bookworm-slim \
-#   --build-arg NODE_IMAGE_FULL=docker.m.daocloud.io/library/node:22-bookworm
+# Base image — used by all four stages (web-build, admin-build, server-build, runtime). Override via
+# the NODE_IMAGE env var (consumed by scripts/build-image.sh) if Docker Hub is unreachable:
+#   NODE_IMAGE=docker.m.daocloud.io/library/node:24-bookworm-slim ./scripts/build-image.sh
 # Node 24 slim. The project is ESM-native now, so the former 24.16 pin (a workaround for a
 # CJS/Prisma module-detection regression) is no longer needed — track the latest 24.x.
 ARG NODE_IMAGE=node:24-bookworm-slim
@@ -14,7 +14,10 @@ ARG NODE_IMAGE=node:24-bookworm-slim
 FROM ${NODE_IMAGE} AS web-build
 WORKDIR /build
 COPY web/package.json web/package-lock.json ./web/
-RUN cd web && npm ci
+# BuildKit cache mount shares the npm tarball cache across the web/admin/server stages (cacache is
+# content-addressed, so concurrent access from parallel stages is safe) and across rebuilds.
+RUN --mount=type=cache,target=/root/.npm \
+    cd web && npm ci
 COPY web ./web
 RUN cd web && npm run build
 
@@ -22,7 +25,8 @@ RUN cd web && npm run build
 FROM ${NODE_IMAGE} AS admin-build
 WORKDIR /build
 COPY admin-web/package.json admin-web/package-lock.json ./admin-web/
-RUN cd admin-web && npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    cd admin-web && npm ci
 COPY admin-web ./admin-web
 RUN cd admin-web && npm run build
 
@@ -38,7 +42,8 @@ WORKDIR /build
 # project now ESM-native this is the natural state, not a CJS workaround.
 COPY package.json package-lock.json prisma.config.ts tsconfig.json tsconfig.build.json nest-cli.json ./
 COPY prisma ./prisma
-RUN npm ci
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
 COPY src ./src
 RUN npm run build
 # Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.

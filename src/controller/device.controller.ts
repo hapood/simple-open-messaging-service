@@ -10,6 +10,7 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyRequest } from 'fastify';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { ApiResult } from '../common/api-result.js';
@@ -39,7 +40,7 @@ export class DeviceController {
   @Post('devices/register')
   @ApiOperation({ summary: 'Register/refresh an FCM push token for the logged-in user' })
   async register(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: RegisterDeviceDto,
   ): Promise<ApiResult> {
     await this.pushService.registerToken(req.user.userId, dto);
@@ -50,7 +51,7 @@ export class DeviceController {
   @HttpCode(HttpStatus.OK)
   @Delete('devices/register/:token')
   @ApiOperation({ summary: 'Unregister an FCM push token (called on logout)' })
-  async unregister(@Request() req, @Param('token') token: string): Promise<ApiResult> {
+  async unregister(@Request() req: FastifyRequest, @Param('token') token: string): Promise<ApiResult> {
     await this.pushService.unregisterToken(req.user.userId, token);
     return { code: BusinessCode.OK, message: 'successful' };
   }

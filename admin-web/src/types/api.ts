@@ -425,3 +425,52 @@ export interface GroupListResult {
   list: GroupRow[]
   total: number
 }
+
+// ── Settings (POST /admin/settings/*) ────────────────────────────────────────
+/** Stored VAPID config as seen by the admin read view. privateKey is intentionally absent (write-only). */
+export interface VapidDescriptor {
+  configured: boolean
+  subject?: string
+  publicKey?: string
+  updatedAt?: number
+}
+
+/** Response of /admin/settings/notifications — the Settings page's read model. */
+export interface NotificationSettings {
+  vapid: VapidDescriptor
+  fcmConfigured: boolean
+  somsDomain: string
+}
+
+/** Deterministic VAPID health-check report (POST /admin/settings/health-check). */
+export interface VapidHealthReport {
+  configured: boolean
+  publicKeyValid: boolean
+  privateKeyValid: boolean
+  pairMatches: boolean
+  subjectValid: boolean
+  fcmConfigured: boolean
+  webPushConfigured: boolean
+  somsDomain: string
+  errors: string[]
+}
+
+/** Result of generate / save — publicKey + subject (never privateKey). */
+export interface VapidMutationResult {
+  configured: boolean
+  subject: string
+  publicKey: string
+}
+
+/** Paste-an-existing-keypair payload. */
+export interface SaveVapidPayload {
+  subject: string
+  publicKey: string
+  privateKey: string
+}
+
+/** Generate payload — subject is optional. */
+export interface GenerateVapidPayload {
+  subject?: string
+}
+

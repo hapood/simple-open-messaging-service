@@ -76,7 +76,7 @@ export class UserController {
   @Post('user/my-profile')
   @ApiOperation({ summary: 'Get the current user profile' })
   @ApiResultResponse(UserResponseDto)
-  async getMyProfile(@Request() req): Promise<ApiResult> {
+  async getMyProfile(@Request() req: FastifyRequest): Promise<ApiResult> {
     // findSelfProfile keeps the self-only hasUrFriendReq badge (the source of truth for the
     // friend-request badge) and omits hashPwd. Every other user read uses findUniqueUser/queryUsers,
     // which omit BOTH — so the badge only ever appears here, never on another user's data.
@@ -138,7 +138,7 @@ export class UserController {
   @ApiOperation({ summary: 'Update the current user display name / bio (account is immutable)' })
   @ApiResultResponse(UserResponseDto)
   async updateProfile(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: UpdateProfileDto,
   ): Promise<ApiResult> {
     const data = await this.userService.updateProfile(req.user.userId, dto);
@@ -155,7 +155,7 @@ export class UserController {
   @ApiOperation({ summary: 'List active conversations (includes peer user/group info)' })
   @ApiResultResponse(ConversationItemDto, true)
   async queryValidThread(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: QueryValidThreadDto,
   ): Promise<ApiResult> {
     const me = req.user.userId;
@@ -326,7 +326,7 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/delta')
   @ApiOperation({ summary: 'Fetch thread-list ADD/DELETE deltas (from excl, to incl)' })
-  async queryThreadDelta(@Request() req, @Body() dto: ThreadDeltaDto): Promise<ApiResult> {
+  async queryThreadDelta(@Request() req: FastifyRequest, @Body() dto: ThreadDeltaDto): Promise<ApiResult> {
     const me = req.user.userId;
     const data = await this.threadRevisionService.queryDelta(me, dto.fromRevision, dto.toRevision);
     return { code: BusinessCode.OK, message: 'successful', data: serializeBody(data) };
@@ -338,7 +338,7 @@ export class UserController {
   @Post('user/delete-friend')
   @ApiOperation({ summary: 'Unfriend — end a P2P conversation (mutual)' })
   async deleteFriend(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
     const me = req.user.userId;
@@ -375,7 +375,7 @@ export class UserController {
     summary:
       'Block / unblock a user (P2P). Independent of friendship; the message path drops delivery + hides their messages.',
   })
-  async setBlock(@Request() req, @Body() dto: BlockDto): Promise<ApiResult> {
+  async setBlock(@Request() req: FastifyRequest, @Body() dto: BlockDto): Promise<ApiResult> {
     if (req.user.userId === dto.userId) {
       return { code: BusinessCode.FRIEND_SELF, message: 'can not block self' };
     }
@@ -513,7 +513,7 @@ export class UserController {
       'Refresh a peer profile if stale (chat-open / profile-panel-open hook). Federated: probes the peer /revision and re-pulls avatar/name/bio only when newer; local: authoritative in-DB. ACK-only — returns no payload; pass sinceProfileRev so a stale local peer is pushed a PEER_PROFILE_UPDATED signal to pull.',
   })
   @ApiResultResponse(UserResponseDto)
-  async syncPeerProfile(@Request() req, @Body() dto: SyncPeerProfileDto): Promise<ApiResult> {
+  async syncPeerProfile(@Request() req: FastifyRequest, @Body() dto: SyncPeerProfileDto): Promise<ApiResult> {
     // Chat-open / profile-panel-open staleness hook. Federated: probe the peer's /revision; if newer than
     // the stub's remoteProfileRev, re-pull + re-localize avatar/name/bio (no-op for local users). Runs
     // ASYNC — the response returns immediately; a re-localized stub fans a PEER_PROFILE_UPDATED signal on
@@ -539,7 +539,7 @@ export class UserController {
   @ApiOperation({ summary: 'Get conversation details (includes peer user/group)' })
   @ApiResultResponse(ConversationItemDto)
   async queryUserThreadInfo(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: ThreadIdDto,
   ): Promise<ApiResult> {
     const me = req.user.userId;

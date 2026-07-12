@@ -25,10 +25,10 @@ export class ApiResult<T = unknown> {
     description:
       '0 = success; non-zero = business error code, segmented by domain: 10xxx general (10000 validation / 10001 not-found / 10002 already-exists / 10003 unauthenticated / 10005 rate-limited), 20xxx friends & sessions, 30xxx messages, 40xxx groups. See BusinessCode.',
   })
-  code: number;
+  code!: number;
 
   @ApiProperty({ example: 'successful', description: 'Human-readable status message' })
-  message: string;
+  message!: string;
 
   /**
    * Stable, dotted i18n key for this message (e.g. 'friend.msg.sent'). Clients that support i18n

@@ -23,13 +23,13 @@ export class SendMessageDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: 'hello', description: 'Message content' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(5000, { message: 'content must be at most 5000 characters' })
-  content: string;
+  content!: string;
 
   // Client-authorable content types ONLY. The other schema values are server-side and must never
   // be settable by a client:
@@ -102,21 +102,21 @@ export class SendMediaDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({
     enum: ['IMAGE', 'FILE', 'VIDEO', 'AUDIO'],
     description: 'Media content type being staged (PURE_TEXT uses /send-message directly).',
   })
   @IsIn(['IMAGE', 'FILE', 'VIDEO', 'AUDIO'])
-  contentType: ContentType;
+  contentType!: ContentType;
 
   @ApiProperty({
     description:
       'Client-generated UUID identifying this staged send. The same value is sent on the subsequent upload to promote it; retrying the stage is idempotent.',
   })
   @IsUUID()
-  clientMessageId: string;
+  clientMessageId!: string;
 
   @ApiProperty({
     required: false,
@@ -134,7 +134,7 @@ export class QueryMessagesDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({
     example: 1,
@@ -145,14 +145,14 @@ export class QueryMessagesDto {
   @IsInt()
   @Min(0)
   @Max(1)
-  skip: number;
+  skip!: number;
 
   @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(50, { message: 'take must be at most 50' })
-  take: number;
+  take!: number;
 
   @ApiProperty({
     required: false,
@@ -170,7 +170,7 @@ export class QueryMessagesDto {
     description: 'Sort direction',
   })
   @IsIn(['desc', 'asc'])
-  orderBy: 'desc' | 'asc';
+  orderBy!: 'desc' | 'asc';
 }
 
 /**
@@ -182,7 +182,7 @@ export class MarkReadDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({
     required: false,
@@ -202,11 +202,11 @@ export class SetMutedDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: true, description: 'true = mute (suppress notifications), false = unmute' })
   @IsBoolean()
-  muted: boolean;
+  muted!: boolean;
 }
 
 /** Toggle pin for a conversation (the caller's ThreadParticipant row). */
@@ -215,11 +215,11 @@ export class SetPinnedDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: true, description: 'true = pin to top, false = unpin' })
   @IsBoolean()
-  pinned: boolean;
+  pinned!: boolean;
 }
 
 /** Per-user "clear chat history": hides all messages up to now for the caller (peer's copy untouched). */
@@ -228,7 +228,7 @@ export class ClearHistoryDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 }
 
 /** Set a per-user alias/remark for a conversation — a nickname that overrides the peer's handle
@@ -239,7 +239,7 @@ export class SetAliasDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({
     required: false,
@@ -263,13 +263,13 @@ export class SearchMessagesDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 
   @ApiProperty({ example: 'hello', description: 'Search keyword (substring, case-insensitive)' })
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
-  keyword: string;
+  keyword!: string;
 
   @ApiProperty({
     example: 20,
@@ -279,7 +279,7 @@ export class SearchMessagesDto {
   @IsInt()
   @Min(1)
   @Max(50, { message: 'take must be at most 50' })
-  take: number;
+  take!: number;
 
   @ApiProperty({
     required: false,

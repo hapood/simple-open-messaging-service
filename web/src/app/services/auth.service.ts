@@ -6,6 +6,7 @@ import { apiPrefix } from './constants';
 import { isTauri, tauriInvoke } from './runtime';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
+import { UserService } from './user.service';
 import { uuid } from '../lib/uuid';
 
 const REFRESH_TOKEN = 'refresh_token',
@@ -53,6 +54,7 @@ export class AuthService {
     private routeService: RouteService,
     private push: PushService,
     private webPush: WebPushService,
+    private userService: UserService,
   ) {
     // Keep the access token (and thus the media cookie) fresh when the tab is foregrounded after
     // being idle long enough that the 15m token has likely expired. Guarded by a refresh-token check
@@ -202,6 +204,8 @@ export class AuthService {
       // Web Push (browser/PWA) — unsubscribe + unregister the endpoint. No-op in the Tauri shell.
       void this.webPush.unregister()
       this.clearToken()
+      // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
+      this.userService.clearSession()
       return this.http.post<{ code: number; message: string }>(`${apiPrefix}/auth/logout`, {
         refreshToken
       })

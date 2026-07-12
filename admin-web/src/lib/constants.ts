@@ -9,6 +9,7 @@ export const CODE = {
   FORBIDDEN: 10004,
   RATE_LIMITED: 10005,
   REFRESH_REUSE_DETECTED: 10006,
+  VAPID_INVALID: 60001,
 } as const
 
 // Admin refresh-token persistence key (physically isolated from the C-end 'refresh_token' to avoid same-origin key collision)

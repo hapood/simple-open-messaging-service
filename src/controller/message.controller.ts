@@ -8,6 +8,7 @@ import {
   HttpCode,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { ContentType, Prisma } from '../prisma/generated/client.js';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
@@ -60,7 +61,7 @@ export class MessageController {
   @ApiOperation({ summary: 'Send a message (unified for P2P and group)' })
   @ApiResultResponse(MessageResponseDto)
   async sendMessage(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: SendMessageDto,
   ): Promise<ApiResult> {
     // Membership is resolved by ThreadAccessGuard (throws THREAD_NOT_FOUND for non-participants);
@@ -128,7 +129,7 @@ export class MessageController {
   @Post('send-media')
   @ApiOperation({ summary: 'Stage a media message (before upload); promoted on POST /upload*' })
   @ApiResultResponse(MessageResponseDto)
-  async sendMedia(@Request() req, @Body() dto: SendMediaDto): Promise<ApiResult> {
+  async sendMedia(@Request() req: FastifyRequest, @Body() dto: SendMediaDto): Promise<ApiResult> {
     const meta: Record<string, unknown> = {};
     if (dto.meta?.w !== undefined) meta.w = dto.meta.w;
     if (dto.meta?.h !== undefined) meta.h = dto.meta.h;
@@ -153,7 +154,7 @@ export class MessageController {
   })
   @ApiResultResponse(MessageResponseDto, true)
   async queryMessages(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: QueryMessagesDto,
   ): Promise<ApiResult> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
@@ -200,7 +201,7 @@ export class MessageController {
     summary: 'Look up the P2P thread by peer userId (friends only)',
   })
   async getThreadByUserId(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: UserIdDto,
   ): Promise<ApiResult> {
     // A friend relationship == an active P2P thread shared by both. No thread → THREAD_NOT_FOUND,
@@ -228,7 +229,7 @@ export class MessageController {
   @ApiOperation({
     summary: 'Mark a conversation read (advances the per-user read cursor)',
   })
-  async markRead(@Request() req, @Body() dto: MarkReadDto): Promise<ApiResult> {
+  async markRead(@Request() req: FastifyRequest, @Body() dto: MarkReadDto): Promise<ApiResult> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
     // participant row is on req.threadAccess.participant.
     // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
@@ -286,7 +287,7 @@ export class MessageController {
     summary:
       'Mute / unmute a conversation (suppresses notifications, not delivery)',
   })
-  async setMuted(@Request() req, @Body() dto: SetMutedDto): Promise<ApiResult> {
+  async setMuted(@Request() req: FastifyRequest, @Body() dto: SetMutedDto): Promise<ApiResult> {
     await this.participantService.setMuted(
       req.user.userId,
       dto.threadId,
@@ -314,7 +315,7 @@ export class MessageController {
     summary: 'Pin / unpin a conversation (pinned-first ordering)',
   })
   async setPinned(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: SetPinnedDto,
   ): Promise<ApiResult> {
     const updated = await this.participantService.setPinned(
@@ -347,7 +348,7 @@ export class MessageController {
       'Clear chat history for me (hides all messages up to now; peer copy untouched)',
   })
   async clearHistory(
-    @Request() req,
+    @Request() req: FastifyRequest,
     @Body() dto: ClearHistoryDto,
   ): Promise<ApiResult> {
     const updated = await this.participantService.clearHistory(
@@ -375,7 +376,7 @@ export class MessageController {
     summary:
       'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
   })
-  async setAlias(@Request() req, @Body() dto: SetAliasDto): Promise<ApiResult> {
+  async setAlias(@Request() req: FastifyRequest, @Body() dto: SetAliasDto): Promise<ApiResult> {
     const updated = await this.participantService.setAlias(
       req.user.userId,
       dto.threadId,

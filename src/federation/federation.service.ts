@@ -2482,7 +2482,7 @@ export class FederationService implements OnModuleDestroy {
     // Excludes the sender (creatorId) — for a pulled message the creator is a foreign stub, absent from
     // the local recipient set anyway. P2P → the single recipient; GROUP → every local member. Strips the
     // internal BigInt id (a throughput side-channel).
-    const msgData = serializeBody({ threadId, ...stripMessageId(created) });
+    const msgData = serializeBody({ ...stripMessageId(created) });
     for (const uid of recipients) {
       if (uid !== creatorId) this.sse.onNewMessage(uid, msgData);
     }

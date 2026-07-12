@@ -17,10 +17,15 @@ import { Observable } from 'rxjs';
  * 返回的是已转换的 plain object —— BigInt/Date 均已变成原语，
  * 后续 NestJS/Express 的 `res.json` 不会再因 BigInt 抛 `Do not know how to serialize a BigInt`。
  */
-export function serializeBody(
-  value: unknown,
-  seen: WeakSet<object> = new WeakSet(),
-): unknown {
+// Public serializer: preserves the input's static type. BigInt/Date conversion is a runtime transform
+// only — the property shape is unchanged — so the generic `<T>(value: T): T` lets callers receive a
+// typed result (e.g. the SSE/push `msgData`) instead of `unknown`. The recursive walk lives in
+// serializeImpl (returns `unknown`); a single boundary cast reconciles the two.
+export function serializeBody<T>(value: T): T {
+  return serializeImpl(value, new WeakSet<object>()) as T;
+}
+
+function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
   if (value === null || value === undefined) {
     return value;
   }
@@ -41,7 +46,7 @@ export function serializeBody(
   seen.add(value as object);
 
   if (Array.isArray(value)) {
-    return value.map((item) => serializeBody(item, seen));
+    return value.map((item) => serializeImpl(item, seen));
   }
 
   // 仅遍历「普通对象」(plain object)；类实例 / Map / Set / Buffer / TypedArray 等原样返回，
@@ -53,7 +58,7 @@ export function serializeBody(
 
   const result: Record<string, unknown> = {};
   for (const key of Object.keys(value)) {
-    result[key] = serializeBody((value as Record<string, unknown>)[key], seen);
+    result[key] = serializeImpl((value as Record<string, unknown>)[key], seen);
   }
   return result;
 }

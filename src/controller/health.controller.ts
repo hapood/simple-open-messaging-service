@@ -8,16 +8,16 @@ import { Throttle, ThrottleGuard } from '../auth/throttle.guard.js';
 /** Payload of GET /api/v1/health. */
 export class HealthResponseDto {
   @ApiProperty({ example: 'ok', description: 'Liveness marker — always "ok" on a 200 response.' })
-  status: string;
+  status!: string;
 
   @ApiProperty({ example: '0.1.0', description: 'Server version (from package.json).' })
-  version: string;
+  version!: string;
 
   @ApiProperty({
     example: 1720000000000,
     description: 'Server time as unix epoch milliseconds (lets a client sanity-check clock skew too).',
   })
-  time: number;
+  time!: number;
 }
 
 /**

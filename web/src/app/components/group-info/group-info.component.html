@@ -17,7 +17,7 @@
     <div class="identity">
       @if (editing()) {
         <label class="avatar-edit">
-          <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [src]="avatarUrl()"></app-user-avatar>
+          <app-user-avatar [type]="UserAvatarType.GROUP" name="?" [identityId]="group()?.id" [src]="avatarUrl()"></app-user-avatar>
           <span class="avatar-hint">{{ 'group.changeAvatarHint' | transloco }}</span>
           <input type="file" accept="image/*" hidden (change)="pickAvatar($any($event.target))" />
         </label>
@@ -26,7 +26,7 @@
         <textarea class="desc-input" rows="2" [maxlength]="DESC_MAX" [ngModel]="descEdit()"
           (ngModelChange)="descEdit.set($event)" [placeholder]="'group.groupDescPlaceholder' | transloco"></textarea>
       } @else {
-        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="group()?.name ?? ''" [src]="avatarUrl()"></app-user-avatar>
+        <app-user-avatar [type]="UserAvatarType.GROUP" [name]="group()?.name ?? ''" [identityId]="group()?.id" [src]="avatarUrl()"></app-user-avatar>
         <div class="name">{{ group()?.name }}</div>
         @if (group()?.description) {
           <div class="group-desc">{{ group()?.description }}</div>
@@ -53,7 +53,7 @@
       @for (m of roster(); track m.userId) {
         <div class="member">
           <div class="member-main">
-            <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.name" [src]="m.avatar"></app-user-avatar>
+            <app-user-avatar [type]="UserAvatarType.OTHER" [name]="m.name" [identityId]="m.userId" [src]="m.avatar"></app-user-avatar>
             <div class="member-info">
               <span class="member-name">{{ m.name }}@if (m.userId === myUserId()) { {{ 'common.you' | transloco }}}</span>
               <span class="role-badge" [class.owner]="m.role === 'OWNER'" [class.admin]="m.role === 'ADMIN'">{{ roleName(m.role) }}</span>

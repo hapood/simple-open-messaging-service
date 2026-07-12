@@ -16,7 +16,7 @@
   this basis.)
 - **Unified exclusion invariant:** every `/messages` pull serves the conversation **excluding the
   requester's own server's authors** (`toDomain` / signer = self). Single-chat is per-author so it
-  never returns self; group all-senders must also exclude self (see §2). This is the part of "统一"
+  never returns self; group all-senders must also exclude self (see §2). This is the part of "unification"
   that is achievable and is now done.
 - **Param model the user wants (requester-perspective):**
   `fromAccount` = author whose messages to pull · `toAccount` = the requester's user ·
@@ -39,7 +39,7 @@
   - Files: `src/federation/federation.service.ts` (serveOutboundMessagesGroup + doc comment),
     `docs/federation-s2s-api.md` (two lines noting all-senders excludes self).
 
-## 3. DEFERRED — message API (the remaining "乱")
+## 3. DEFERRED — message API (the remaining "mess")
 
 - [x] **Cursor "unification" — RETRACTED (non-issue, misframed).** Originally flagged "two number
   spaces (thread-seq vs originSeq) + two pagination strategies (PAGE vs JUMP) on one endpoint." Both
@@ -118,7 +118,13 @@
 - **B3 — RESOLVED (extended, not removed).** `/messages/before` was P2P-only + dead (SOMS forward-only).
   Decision: keep + extend to groups for full A1 symmetry. Now 3 shapes (P2P + group all-senders +
   group per-author w/ the HTTP 410 leave signal), mirroring `/messages`. SOMS still has no internal
-  backward caller, so the group legs are symmetric-by-construction but not e2e-exercised.
+  backward caller, so the group legs are symmetric-by-construction. The /before-specific delta (the
+  `lt:beforeSeq` filter + `desc→reverse` oldest-first ordering + the `beforeSeq<0` no-bound branch) is
+  e2e'd via a test-only signed-S2S-GET probe (`TestS2sHookController` in `federation-app.main.ts` — drives
+  appA's `/messages/before` as appB using appB's OWN SignatureService; no consumer trigger reaches /before
+  since SOMS is forward-only): asserts oldest-first paging, the strict `<` filter, hasMore (both ways),
+  latestSeq, + the `beforeSeq<0` branch. The gate/query/message-map/410 are shared with the forward serve
+  (covered by Step 2 + Step 3). The probe is reusable for any future serve-only endpoint.
 - **C1 — RETRACTED (investigation overturned the premise; same family as B2).** The "implicit
   liveness write in reads" is benign bookkeeping on an **observability-only** field, and the explicit
   signal C1 asks for already exists.

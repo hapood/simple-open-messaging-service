@@ -46,7 +46,7 @@
             @if (thread.type === 'P2P') {
               <div class="thread-avatar">
                 <app-user-avatar [type]="UserAvatarType.OTHER" [name]="displayName(thread)"
-                  [src]="thread.peerUser.avatar"></app-user-avatar>
+                  [identityId]="thread.peerUser.id" [src]="thread.peerUser.avatar"></app-user-avatar>
               </div>
               <div class="thread-info">
                 <div class="thread-row">
@@ -71,7 +71,7 @@
             } @else {
               <div class="thread-avatar">
                 <app-user-avatar [type]="UserAvatarType.GROUP" [name]="displayName(thread)"
-                  [src]="thread.group.avatar"></app-user-avatar>
+                  [identityId]="thread.group.id" [src]="thread.group.avatar"></app-user-avatar>
               </div>
               <div class="thread-info">
                 <div class="thread-row">

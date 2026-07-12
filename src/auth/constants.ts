@@ -1,15 +1,20 @@
-import { requireEnv } from '../common/env.js';
+import { reportGeneratedJwtSecrets, resolveJwtSecret } from './jwt-secret.js';
 
 export const jwtConstants = {
-  // access_token 签名/校验密钥（JwtModule、JwtStrategy、WebSocket 网关均用此）
-  accessSecret: requireEnv('JWT_ACCESS_SECRET'),
-  // refresh_token 签名/校验密钥（仅 AuthService 使用，与 access 分离）
-  refreshSecret: requireEnv('JWT_REFRESH_SECRET'),
-  // admin JWT 独立密钥（admin 控制台专用，与用户体系物理隔离）
-  adminSecret: requireEnv('JWT_ADMIN_SECRET'),
-  // 过期时长集中于此（避免散落的魔法字符串/数字）。as const 收窄成字面量以匹配 jwt expiresIn 的 StringValue 类型。
+  // access_token signing/verification secret (JwtModule, JwtStrategy, WebSocket gateway).
+  accessSecret: resolveJwtSecret('JWT_ACCESS_SECRET', 'jwt-access.key'),
+  // refresh_token signing/verification secret (AuthService only; kept separate from access).
+  refreshSecret: resolveJwtSecret('JWT_REFRESH_SECRET', 'jwt-refresh.key'),
+  // admin-console JWT secret (physically isolated from the user system).
+  adminSecret: resolveJwtSecret('JWT_ADMIN_SECRET', 'jwt-admin.key'),
+  // TTLs centralized here to avoid scattered magic strings/numbers. `as const` narrows to literals
+  // so they satisfy the jwt expiresIn StringValue type.
   accessTtl: '15m' as const,
   accessTtlSec: 15 * 60,
   refreshTtlDays: '14d' as const,
   refreshTtlMs: 14 * 24 * 60 * 60 * 1000,
 };
+
+// Emit one operational warning if any secret was auto-generated this boot (no-op otherwise). Run at
+// module load so first-boot generation is reported before the app finishes bootstrapping.
+reportGeneratedJwtSecrets();

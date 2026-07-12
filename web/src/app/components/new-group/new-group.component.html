@@ -24,7 +24,7 @@
           <div class="chip">
             <span class="chip-avatar">
               <app-user-avatar [type]="UserAvatarType.OTHER" [name]="item.peerUser.name"
-                [src]="item.peerUser.avatar"></app-user-avatar>
+                [identityId]="item.peerUser.id" [src]="item.peerUser.avatar"></app-user-avatar>
             </span>
             <span class="chip-name">{{ item.peerUser.name }}</span>
             <button class="chip-x" type="button" (click)="removeMember(item)" [attr.aria-label]="'common.remove' | transloco">

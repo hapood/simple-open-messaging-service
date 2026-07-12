@@ -14,6 +14,7 @@ import type { FastifyRequest, FastifyReply } from 'fastify';
 import { NotificationTokenGuard } from '../auth/notification-token.guard.js';
 import { SseService } from '../gateway/sse.service.js';
 import { NotificationQueryService } from '../notification/notification-query.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 
@@ -39,11 +40,13 @@ export class NotificationController {
   constructor(
     private readonly notifQuery: NotificationQueryService,
     private readonly sseService: SseService,
+    private readonly settings: SettingsService,
   ) {}
 
-  /** Public: the VAPID public key the browser needs to subscribe via PushManager.subscribe. Public
-   *  (VAPID public keys are safe to expose), unauthenticated, single source of truth — avoids drifting
-   *  between a hardcoded client constant and the backend's configured VAPID_PRIVATE_KEY. */
+  /** Public: the VAPID public key the browser needs to subscribe via PushManager.subscribe. Public (VAPID
+   *  public keys are safe to expose), unauthenticated, single source of truth — read from the DB-backed
+   *  SettingsService (admin-managed), so it always matches the keypair actually used to send. Empty string
+   *  when Web Push is not configured (the browser simply won't subscribe). */
   @HttpCode(HttpStatus.OK)
   @Get('notifications/vapid-key')
   @ApiOperation({ summary: 'VAPID public key for Web Push subscription (browser)' })
@@ -51,7 +54,7 @@ export class NotificationController {
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: { publicKey: process.env.VAPID_PUBLIC_KEY ?? '' },
+      data: { publicKey: this.settings.getVapid()?.publicKey ?? '' },
     };
   }
 
@@ -59,7 +62,7 @@ export class NotificationController {
   @HttpCode(HttpStatus.OK)
   @Post('notifications/missed')
   @ApiOperation({ summary: 'Threads with unread messages + display names (background poller)' })
-  async missed(@Request() req): Promise<ApiResult> {
+  async missed(@Request() req: FastifyRequest): Promise<ApiResult> {
     const data = await this.notifQuery.buildUnreadSnapshot(req.user.userId as number);
     return { code: BusinessCode.OK, message: 'successful', data };
   }

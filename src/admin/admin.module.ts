@@ -3,6 +3,7 @@ import { APP_INTERCEPTOR } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { AdminController } from './admin.controller.js';
+import { AdminSettingsController } from './admin-settings.controller.js';
 import { AdminFederationController } from './admin-federation.controller.js';
 import { MediaAssetGcController } from './media-asset-gc.controller.js';
 import { DashboardController } from './dashboard.controller.js';
@@ -43,7 +44,7 @@ import { RedisModule } from '../redis/redis.module.js';
     // RedisService 供 ThrottleGuard 计数（admin/login 失败限流）。
     RedisModule,
   ],
-  controllers: [AdminController, AdminFederationController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController],
+  controllers: [AdminController, AdminSettingsController, AdminFederationController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController],
   providers: [
     AdminAuthService,
     AdminJwtStrategy,

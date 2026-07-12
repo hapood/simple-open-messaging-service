@@ -1,5 +1,4 @@
 import { Routes } from '@angular/router';
-import { isDevMode } from '@angular/core';
 import { HomeComponent } from './pages/home/home.component';
 import { LoginPageComponent } from './pages/login-page/login-page.component';
 import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.component';
@@ -8,6 +7,7 @@ import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.co
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
 import { authGuard, guestGuard } from './auth.guard';
 import { isTauri } from './services/runtime';
+import { devRoutes } from './dev-tools';
 
 export const routes: Routes = [
   // App shell. NavStateMachineService drives chat/aside state — there are NO app-nav child routes and NO
@@ -30,20 +30,8 @@ export const routes: Routes = [
     canMatch: [() => isTauri()],
   },
   { path: 'forbidden', component: ForbiddenPageComponent },
-  // Dev-only kernel test rig (count/latency/edge/threshold knobs driving the real chat kernel against MockItemSource).
-  // Lazy `loadComponent` keeps the playground + MockItemSource out of the main bundle; `canMatch` isDevMode makes a
-  // production build never match the route — a prod request for /playground/* falls through to '**' (404). Same
-  // dynamic-import + isDevMode pattern used for eruda in main.ts.
-  {
-    path: 'playground/chatbox-a',
-    loadComponent: () => import('./pages/chatbox-playground/chatbox-playground.component').then((m) => m.ChatboxPlaygroundComponent),
-    canMatch: [() => isDevMode()],
-    data: { useNativeAnchor: true },
-  },
-  {
-    path: 'playground/chatbox-b',
-    loadComponent: () => import('./pages/chatbox-playground/chatbox-playground.component').then((m) => m.ChatboxPlaygroundComponent),
-    canMatch: [() => isDevMode()],
-  },
+  // Dev-only routes (chatbox playground rig) come from dev-tools.ts, which the prod build swaps for
+  // dev-tools.prod.ts (empty devRoutes) — so the playground chunk is not emitted in prod. See dev-tools.ts.
+  ...devRoutes,
   { path: '**', component: PageNotFoundComponent },
 ];

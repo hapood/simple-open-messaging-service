@@ -16,10 +16,14 @@
     "baseUrl": "./",
     "incremental": true,
     "skipLibCheck": true,
-    "strictNullChecks": false,
-    "noImplicitAny": false,
-    "strictBindCallApply": false,
-    "forceConsistentCasingInFileNames": false,
-    "noFallthroughCasesInSwitch": false
+    // Full strict mode. `strict` enables the whole family (strictNullChecks, noImplicitAny,
+    // strictBindCallApply, strictPropertyInitialization, strictFunctionTypes, noImplicitThis,
+    // alwaysStrict, useUnknownInCatchVariables); no individual flag is turned back off. DTO class
+    // properties (populated at runtime by class-transformer via the global ValidationPipe) carry the
+    // `!` definite-assignment assertion rather than disabling strictPropertyInitialization, so the
+    // init check still guards every non-DTO class. The previous per-flag falses are removed.
+    "strict": true,
+    "forceConsistentCasingInFileNames": true,
+    "noFallthroughCasesInSwitch": true
   }
 }

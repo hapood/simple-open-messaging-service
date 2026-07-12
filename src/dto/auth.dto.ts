@@ -21,12 +21,12 @@ export class LoginDto {
   @Transform(({ value }) => normalizeAccount(value))
   @IsString()
   @IsNotEmpty()
-  account: string;
+  account!: string;
 
   @ApiProperty({ example: 'P@ssw0rd', description: 'Password' })
   @IsString()
   @IsNotEmpty()
-  password: string;
+  password!: string;
 
   @ApiProperty({
     required: false,
@@ -55,7 +55,7 @@ export class RegisterDto {
   @Matches(USER_ACCOUNT_RE, {
     message: 'account must be 3-31 chars: letters + digits + dots, start with a letter (no leading/trailing/consecutive dots)',
   })
-  account: string;
+  account!: string;
 
   // Display name is the primary identity shown everywhere (lists, headers, avatars). Lenient on charset
   // — any visible unicode incl. CJK/emoji — but required + length-capped (see IsDisplayName).
@@ -65,7 +65,7 @@ export class RegisterDto {
   })
   @IsDisplayName()
   @IsNotEmpty()
-  name: string;
+  name!: string;
 
   // 6-20 chars, allowed [a-zA-Z0-9.@!#$%^&*()] (original pwdRegex)
   @ApiProperty({
@@ -75,7 +75,7 @@ export class RegisterDto {
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
     message: 'password must be 6-20 chars of allowed set',
   })
-  password: string;
+  password!: string;
 }
 
 /** refresh token input: shared by renew-access / renew-refresh. */
@@ -86,7 +86,7 @@ export class RefreshTokenDto {
   })
   @IsString()
   @IsNotEmpty()
-  refreshToken: string;
+  refreshToken!: string;
 
   @ApiProperty({
     required: false,
@@ -106,7 +106,7 @@ export class LogoutDto {
   })
   @IsString()
   @IsNotEmpty()
-  refreshToken: string;
+  refreshToken!: string;
 
   @ApiProperty({
     required: false,
@@ -124,7 +124,7 @@ export class ChangePasswordDto {
   @ApiProperty({ example: 'OldP@ss1', description: 'Current password' })
   @IsString()
   @IsNotEmpty()
-  oldPassword: string;
+  oldPassword!: string;
 
   @ApiProperty({
     example: 'NewP@ss2',
@@ -133,7 +133,7 @@ export class ChangePasswordDto {
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
     message: 'newPassword must be 6-20 chars of allowed set',
   })
-  newPassword: string;
+  newPassword!: string;
 }
 
 /** Revoke a single session. */
@@ -144,7 +144,7 @@ export class RevokeSessionDto {
   })
   @IsString()
   @IsNotEmpty()
-  jti: string;
+  jti!: string;
 
   @ApiProperty({
     required: false,

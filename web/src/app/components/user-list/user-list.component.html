@@ -2,7 +2,7 @@
   <div class="thread-item" (click)="onUsrTrdClick(thread)">
     <div class="thread-avatar">
       <app-user-avatar [type]="UserAvatarType.OTHER" [name]="thread.peerUser.account"
-        [src]="thread.peerUser.avatar"></app-user-avatar>
+        [identityId]="thread.peerUser.id" [src]="thread.peerUser.avatar"></app-user-avatar>
       @if (thread.selected === true) {
         <span class="check" aria-hidden="true">
           <app-icon [type]="AppIconType.CHECK" [style]="{ width: '13px', height: '13px' }"></app-icon>

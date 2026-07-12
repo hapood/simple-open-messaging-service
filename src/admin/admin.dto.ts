@@ -8,12 +8,12 @@ export class AdminLoginDto {
   @ApiProperty({ example: 'admin', description: 'Admin account' })
   @IsString()
   @IsNotEmpty()
-  account: string;
+  account!: string;
 
   @ApiProperty({ example: 'P@ssw0rd', description: 'Password' })
   @IsString()
   @IsNotEmpty()
-  password: string;
+  password!: string;
 }
 
 /** Admin refresh input (shared by renew-access / logout). */
@@ -21,7 +21,7 @@ export class AdminRefreshDto {
   @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...', description: 'refresh token' })
   @IsString()
   @IsNotEmpty()
-  refreshToken: string;
+  refreshToken!: string;
 }
 
 /** User list input (pagination + search). */
@@ -53,7 +53,7 @@ export class AdminResetPasswordDto {
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
     message: 'newPassword must be 6-20 chars of allowed set',
   })
-  newPassword: string;
+  newPassword!: string;
 }
 
 /** Unban input (IP and/or account; at least one must be provided). */
@@ -94,12 +94,12 @@ export class AdminPushTestDto {
   @ApiProperty({ example: 42, description: 'PushToken id' })
   @Type(() => Number)
   @IsNumber()
-  id: number;
+  id!: number;
 
   @ApiProperty({ example: 'Test', description: 'Notification title' })
   @IsString()
   @IsNotEmpty()
-  title: string;
+  title!: string;
 
   @ApiProperty({ required: false, example: 'sent from admin console', description: 'Notification body (optional)' })
   @IsOptional()
@@ -266,18 +266,18 @@ export class AdminCreateDto {
   @ApiProperty({ example: 42, description: 'Id of the User to promote' })
   @Type(() => Number)
   @IsInt()
-  userId: number;
+  userId!: number;
 
   @ApiProperty({ enum: AdminRole, description: 'Initial role' })
   @IsIn([AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.VIEWER])
-  role: AdminRole;
+  role!: AdminRole;
 }
 
 /** Change an admin's role. */
 export class AdminSetRoleDto {
   @ApiProperty({ enum: AdminRole })
   @IsIn([AdminRole.SUPER_ADMIN, AdminRole.ADMIN, AdminRole.VIEWER])
-  role: AdminRole;
+  role!: AdminRole;
 }
 
 /** Apply one action to many users at once. Each affected user is processed through the same path as
@@ -286,11 +286,11 @@ export class AdminUserBatchDto {
   @ApiProperty({ type: [Number], example: [3, 7], description: 'User ids to act on' })
   @IsArray()
   @IsInt({ each: true })
-  ids: number[];
+  ids!: number[];
 
   @ApiProperty({ enum: ['disable', 'enable', 'force-logout'] })
   @IsIn(['disable', 'enable', 'force-logout'])
-  action: 'disable' | 'enable' | 'force-logout';
+  action!: 'disable' | 'enable' | 'force-logout';
 }
 
 /** Groups/threads list query (type=GROUP threads; fuzzy search over the group name/account). */

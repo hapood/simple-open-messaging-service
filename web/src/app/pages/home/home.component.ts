@@ -3,7 +3,7 @@ import { Subscription, filter } from 'rxjs';
 import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
-import { ConversationListService } from '../../services/conversation-list.service';
+import { ThreadRepository } from '../../services/thread-store.service';
 import { GroupEventService } from '../../services/group-event.service';
 import { HomeShellComponent } from '../../components/home-shell/home-shell.component';
 import { IndicatorSlotComponent } from '../../components/indicator-slot/indicator-slot.component';
@@ -35,9 +35,12 @@ export class HomeComponent implements OnInit, OnDestroy {
   private readonly userService = inject(UserService);
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
-  private readonly convList = inject(ConversationListService);
-  // Injected to instantiate the root singleton that routes the GROUP_* SSE events to the
-  // conversation list / open roster / affected user (the service self-subscribes in its constructor).
+  // Injected to instantiate the DB-layer root singletons that self-subscribe to the SSE stream in their
+  // constructors: ThreadRepository routes the thread-list data events (NEW_MESSAGE / THREAD_META /
+  // THREAD_REVISION_UPDATED / PEER_PROFILE_UPDATED + reconnect refresh); GroupEventService routes the
+  // GROUP_* control events (toasts / roster reload). Injecting them here guarantees their subscriptions
+  // are alive for the whole home-route session regardless of which child panes are mounted.
+  private readonly threadRepo = inject(ThreadRepository);
   private readonly groupEvents = inject(GroupEventService);
 
   private readonly subs: Subscription[] = [];
@@ -54,8 +57,8 @@ export class HomeComponent implements OnInit, OnDestroy {
     // Friend-lifecycle notifications ride the generic NOTIFY event, discriminated by `data.type`:
     //  - FRIEND_REQUEST: an incoming request armed the unread badge → refetch the profile.
     //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by the
-    //    THREAD_REVISION_UPDATED delta handler (ConversationListService — fetches the new thread with
-    //    a precise FLIP, or removes locally), so the NOTIFY is a no-op for these.
+    //    THREAD_REVISION_UPDATED delta handler (ThreadRepository — fetches the new thread with a
+    //    precise FLIP, or removes locally), so the NOTIFY is a no-op for these.
     this.subs.push(
       this.wsService.eventSubject
         .pipe(filter((m) => m.event === 'NOTIFY'))
@@ -64,22 +67,6 @@ export class HomeComponent implements OnInit, OnDestroy {
           if (t === 'FRIEND_APPROVED' || t === 'FRIEND_DELETED') return;
           this.userService.updateSessionProfile();
         }),
-    );
-    // Live conversation list: an incoming message refreshes that thread's preview + bumps unread
-    // (unless it's the thread the user is currently viewing). On reconnect, the server (source of
-    // truth) is re-read — the SSE stream does not replay frames missed during the disconnect.
-    this.subs.push(
-      this.wsService.eventSubject
-        .pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.data !== undefined))
-        .subscribe((m) => this.convList.onNewMessage(m.data)),
-    );
-    this.subs.push(
-      this.wsService.reconnect$.subscribe(() => {
-        // Force-reload: re-seed the thread-revision cursor from the server's current threadRevision
-        // (any add/delete missed during the disconnect) and re-snapshot at that fresh revision,
-        // cancelling any in-flight load so the snapshot pins the new cursor consistently.
-        this.convList.load({ force: true });
-      }),
     );
   }
 

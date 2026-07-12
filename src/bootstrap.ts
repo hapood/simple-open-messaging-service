@@ -150,21 +150,30 @@ export async function configureApp(
   app.useGlobalInterceptors(new SerializeInterceptor());
 
   // Global route prefix. All HTTP endpoints (incl. SSE /events) live under /api/v1 (must be set
-  // before Swagger createDocument so doc paths include it). Swagger UI mounts at /api/v1/docs.
-  // .well-known/soms is excluded — it must be served at the bare path per RFC 8615 (peers fetch it
-  // without knowing our /api/v1 prefix).
+  // before Swagger createDocument so doc paths include it). The interactive docs mount at
+  // /api/v1/docs in non-production only — see the gate below. .well-known/soms is excluded — it must
+  // be served at the bare path per RFC 8615 (peers fetch it without knowing our /api/v1 prefix).
   app.setGlobalPrefix('api/v1', {
     exclude: [{ path: '.well-known/soms', method: RequestMethod.GET }],
   });
 
-  const config = new DocumentBuilder()
-    .setTitle('Simple Open Chat API')
-    .setDescription('Third-party IM integration API (P1a contract layer)')
-    .setVersion('1.0')
-    .addBearerAuth()
-    .build();
-  const document = SwaggerModule.createDocument(app, config);
-  SwaggerModule.setup('api/v1/docs', app, document);
+  // Interactive API docs (Swagger UI at /api/v1/docs, spec at /api/v1/docs-json). The UI is a
+  // live "try-it-now" console, so it is NOT mounted in production by default — it would let anyone
+  // probe the API surface from the public internet. Dev and staging keep it; an operator can opt a
+  // specific prod instance back in with SWAGGER_ENABLED=true (e.g. behind a protected reverse proxy).
+  // The web client's `gen:api` script runs against the dev server, so API-type generation is unaffected.
+  const swaggerEnabled =
+    process.env.NODE_ENV !== 'production' || process.env.SWAGGER_ENABLED === 'true';
+  if (swaggerEnabled) {
+    const config = new DocumentBuilder()
+      .setTitle('Simple Open Chat API')
+      .setDescription('Third-party IM integration API (P1a contract layer)')
+      .setVersion('1.0')
+      .addBearerAuth()
+      .build();
+    const document = SwaggerModule.createDocument(app, config);
+    SwaggerModule.setup('api/v1/docs', app, document);
+  }
 
   await registerStaticServing(app, adapter);
 }
@@ -279,6 +288,14 @@ async function registerStaticServing(
   if (!existsSync(webRoot)) return; // dev: frontends served by their own dev servers
 
   const adminRoot = join(process.cwd(), 'public', 'admin');
+
+  // Admin SPA host path. CONVENTION, not a runtime knob — the admin-web build bakes this same
+  // prefix into every asset URL via vite `base: '/admin/'` (admin-web/vite.config.ts; vite requires
+  // the trailing slash, so its base is ADMIN_PREFIX + '/'), and the React Router basename follows
+  // automatically through import.meta.env.BASE_URL. Change this AND the vite base together; never
+  // turn it into an env var. The root web app is served at '/' (no prefix), so it has no counterpart.
+  const ADMIN_PREFIX = '/admin';
+
   const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 
   // Long-cache hashed assets for a year; never cache index.html so new deploys are picked up
@@ -295,10 +312,10 @@ async function registerStaticServing(
     },
   };
 
-  // Register admin before the root web mount so the /admin prefix is its own scope.
+  // Register admin before the root web mount so the admin prefix is its own scope.
   await app.register(fastifyStatic, {
     root: adminRoot,
-    prefix: '/admin',
+    prefix: ADMIN_PREFIX,
     decorateReply: false,
     ...cacheOptions,
   });
@@ -325,7 +342,7 @@ async function registerStaticServing(
           error: 'Not Found',
         });
     }
-    const index = url.startsWith('/admin') ? adminIndex : webIndex;
+    const index = url.startsWith(ADMIN_PREFIX) ? adminIndex : webIndex;
     return reply
       .code(200)
       .header('Cache-Control', 'no-cache, no-store, must-revalidate')

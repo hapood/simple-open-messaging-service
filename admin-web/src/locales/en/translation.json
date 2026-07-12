@@ -484,6 +484,67 @@
     "empty": "No groups",
     "local": "local"
   },
+  "settings": {
+    "title": "Settings",
+    "desc": "Operator-managed runtime configuration (VAPID, FCM status, server identity).",
+    "identity": {
+      "title": "Server identity",
+      "desc": "This server's public domain — the federation identity (@user@domain).",
+      "set": "set",
+      "unset": "unset",
+      "envNote": "Set via SOMS_DOMAIN env (read-only)."
+    },
+    "vapid": {
+      "title": "Web Push (VAPID)",
+      "desc": "The VAPID keypair authenticating this server to browser push services. Stored in the database; enabling/rotating requires no redeploy.",
+      "configured": "configured",
+      "notConfigured": "not configured",
+      "subject": "Contact (subject)",
+      "subjectPlaceholder": "mailto:admin@example.com (optional — defaults to mailto:noreply@soms.local)",
+      "publicKey": "Public key",
+      "privateKey": "Private key",
+      "privateHidden": "Private key: set (hidden — write-only)",
+      "updatedAt": "Updated",
+      "rotationWarning": "Generating or changing the keypair breaks existing Web Push subscriptions — browsers must re-subscribe.",
+      "generate": "Generate keypair",
+      "pasteExisting": "Paste existing keypair",
+      "regenerate": "Regenerate",
+      "clear": "Clear",
+      "save": "Save keypair",
+      "clearSuperOnly": "Clearing requires Super Admin",
+      "adminOnly": "Editing requires Admin+",
+      "generated": "New VAPID keypair generated",
+      "saved": "VAPID keypair saved",
+      "cleared": "VAPID keypair removed — Web Push disabled",
+      "copied": "Copied",
+      "copyFailed": "Copy failed"
+    },
+    "fcm": {
+      "title": "FCM (Android / iOS)",
+      "desc": "Firebase Cloud Messaging transport for native apps.",
+      "configured": "configured",
+      "notConfigured": "not configured",
+      "envNote": "Configured via GOOGLE_APPLICATION_CREDENTIALS (file-based) — not editable here."
+    },
+    "health": {
+      "title": "Health check",
+      "desc": "Validate the configured VAPID keypair (deterministic, no network). For live delivery, use the test push on the Push page.",
+      "run": "Run check",
+      "rerun": "Re-run",
+      "configured": "VAPID config stored",
+      "publicKeyValid": "Public key is a valid P-256 point",
+      "privateKeyValid": "Private key is a valid 32-byte scalar",
+      "pairMatches": "Public key matches private key",
+      "subjectValid": "Subject is a valid mailto/https URL",
+      "fcmConfigured": "FCM transport configured",
+      "webPushConfigured": "Web Push ready",
+      "domain": "Domain:",
+      "toast": {
+        "ok": "VAPID config is healthy",
+        "hasIssues": "VAPID config has issues — see details"
+      }
+    }
+  },
   "notFound": {
     "code": "404",
     "desc": "Page not found",
@@ -501,7 +562,8 @@
       "rateLimited": "Too many requests, please wait",
       "refreshReuse": "Session changed, please sign in again",
       "sessionRevoked": "Session ended, please sign in again",
-      "internal": "Something went wrong"
+      "internal": "Something went wrong",
+      "vapidInvalid": "VAPID keypair is invalid (malformed or mismatched)"
     }
   }
 }

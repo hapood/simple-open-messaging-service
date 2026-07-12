@@ -25,7 +25,7 @@ export class CreateGroupDto {
   @ApiProperty({ example: 'dev-team', description: 'Group name (≤31 chars)' })
   @IsString()
   @MaxLength(31, { message: 'group name must less than 32 characters' })
-  name: string;
+  name!: string;
 
   @ApiProperty({
     required: false,
@@ -81,13 +81,13 @@ export class InviteGroupDto {
   @ArrayMinSize(1)
   @IsInt({ each: true })
   @Type(() => Number)
-  userIds: number[];
+  userIds!: number[];
 
   @ApiProperty({ example: 12, description: 'Group id' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  groupId: number;
+  groupId!: number;
 }
 
 /** Shared by group/info, group/members, group/leave — any group route keyed only by groupId. */
@@ -96,7 +96,7 @@ export class GroupIdDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  groupId: number;
+  groupId!: number;
 }
 
 /** Body for /group/members (batch) — fetch rosters for multiple group threads in one request. The
@@ -107,7 +107,7 @@ export class GroupMembersBatchDto {
   @IsArray()
   @IsInt({ each: true })
   @ArrayMinSize(1)
-  threadIds: number[];
+  threadIds!: number[];
 }
 
 export class KickGroupDto {
@@ -115,13 +115,13 @@ export class KickGroupDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  groupId: number;
+  groupId!: number;
 
   @ApiProperty({ example: 7, description: 'Member to remove' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userId: number;
+  userId!: number;
 }
 
 export class TransferGroupDto {
@@ -129,13 +129,13 @@ export class TransferGroupDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  groupId: number;
+  groupId!: number;
 
   @ApiProperty({ example: 7, description: 'Active member to promote to owner' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  toUserId: number;
+  toUserId!: number;
 }
 
 export class SetRoleGroupDto {
@@ -143,18 +143,18 @@ export class SetRoleGroupDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  groupId: number;
+  groupId!: number;
 
   @ApiProperty({ example: 7, description: 'Member whose role is changed' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userId: number;
+  userId!: number;
 
   /** ADMIN or MEMBER only — ownership changes go through group/transfer. OWNER is rejected. */
   @ApiProperty({ enum: GroupRole, example: GroupRole.ADMIN, description: 'New role (ADMIN | MEMBER)' })
   @IsEnum(GroupRole)
-  role: GroupRole;
+  role!: GroupRole;
 }
 
 export class UpdateGroupDto {
@@ -162,7 +162,7 @@ export class UpdateGroupDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  groupId: number;
+  groupId!: number;
 
   @ApiProperty({ required: false, example: 'dev-team', description: 'New group name (≤31 chars)' })
   @IsString()

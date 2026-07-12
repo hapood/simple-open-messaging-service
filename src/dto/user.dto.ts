@@ -27,7 +27,7 @@ export class UserIdDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userId: number;
+  userId!: number;
 }
 
 /** Body for /user/sync-peer-profile (chat-open + profile-panel-open staleness probe). `sinceProfileRev`
@@ -54,11 +54,11 @@ export class BlockDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  userId: number;
+  userId!: number;
 
   @ApiProperty({ example: true, description: 'true = block, false = unblock' })
   @IsBoolean()
-  block: boolean;
+  block!: boolean;
 }
 
 export class ThreadIdDto {
@@ -66,7 +66,7 @@ export class ThreadIdDto {
   @Type(() => Number)
   @IsInt()
   @Min(1)
-  threadId: number;
+  threadId!: number;
 }
 
 /** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
@@ -77,7 +77,7 @@ export class UserResolveDto {
   @ApiProperty({ example: 'alice', description: "Account (a local account, or the peer user's account)" })
   @IsString()
   @IsNotEmpty()
-  account: string;
+  account!: string;
 
   @ApiProperty({ required: false, example: 'bbb.com', description: 'Peer domain. Omitted/empty = local lookup.' })
   @IsOptional()
@@ -94,7 +94,7 @@ export class UserSearchDto {
   @IsString()
   @IsNotEmpty()
   @MinLength(2, { message: 'q must be at least 2 chars' })
-  q: string;
+  q!: string;
 
   @ApiProperty({ required: false, example: 0, description: 'Records to skip (optional)' })
   @IsOptional()
@@ -123,7 +123,7 @@ export class PeerTrustStatusDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(63)
-  domain: string;
+  domain!: string;
 }
 
 /**
@@ -161,7 +161,7 @@ export class QueryUsersDto {
   @IsArray()
   @ArrayMaxSize(100, { message: 'must less than 100 userIds per query' })
   @IsInt({ each: true })
-  userIds: number[];
+  userIds!: number[];
 }
 
 export class QueryValidThreadDto {
@@ -172,14 +172,14 @@ export class QueryValidThreadDto {
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  skip: number;
+  skip!: number;
 
   @ApiProperty({ example: 20, description: 'Number of records to take (1-50)' })
   @Type(() => Number)
   @IsInt()
   @Min(1)
   @Max(50, { message: 'take must be at most 50' })
-  take: number;
+  take!: number;
 
   @ApiProperty({
     required: false,
@@ -210,7 +210,7 @@ export class QueryValidThreadDto {
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  revision: number;
+  revision!: number;
 }
 
 /** Body for /user/query-thread/delta — pull ADD/DELETE deltas in (fromRevision, toRevision]
@@ -220,12 +220,12 @@ export class ThreadDeltaDto {
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  fromRevision: number;
+  fromRevision!: number;
 
   @ApiProperty({ example: 5, description: 'To revision (inclusive)' })
   @Type(() => Number)
   @IsInt()
   @Min(0)
-  toRevision: number;
+  toRevision!: number;
 }
 

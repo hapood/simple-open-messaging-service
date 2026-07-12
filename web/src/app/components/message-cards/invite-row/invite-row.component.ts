@@ -49,6 +49,8 @@ export class InviteRowComponent implements OnInit {
     groupAvatar?: string;
     groupDomain?: string;
     groupIsLocal?: boolean;
+    /** The group `!account` — a globally-unique ULID; the avatar cache identity (no numeric id on a card). */
+    group?: string;
   }>({ groupName: '' });
 
   private readonly inviteDetail = inject(InviteDetailService);
@@ -62,6 +64,7 @@ export class InviteRowComponent implements OnInit {
     groupAvatar?: string;
     groupDomain?: string;
     groupIsLocal?: boolean;
+    group?: string;
   } {
     try {
       const obj = JSON.parse(content) as Record<string, unknown>;
@@ -70,6 +73,7 @@ export class InviteRowComponent implements OnInit {
         groupAvatar: obj['groupAvatar'] as string | undefined,
         groupDomain: obj['groupDomain'] as string | undefined,
         groupIsLocal: obj['groupIsLocal'] as boolean | undefined,
+        group: obj['group'] as string | undefined,
       };
     } catch {
       return { groupName: '' };
