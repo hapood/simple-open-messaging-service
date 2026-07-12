@@ -5,17 +5,19 @@ import { ThemeService } from '../../services/theme.service';
 import { LanguageService } from '../../services/language.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
+import { WebPushService } from '../../services/web-push.service';
 import { isAndroid, isTauri } from '../../services/runtime';
 import { appVersion } from '../../version';
 import { SettingsAppearanceComponent } from './settings-appearance.component';
 import { SettingsLanguageComponent } from './settings-language.component';
 import { SettingsMediaComponent } from './settings-media.component';
 import { SettingsPushComponent } from './settings-push.component';
+import { SettingsNotificationsComponent } from './settings-notifications.component';
 import { SettingsAboutComponent } from './settings-about.component';
 
 /** Identifiers for the Settings categories (drives the aside-stack `params.category` on mobile, and the
  *  local selection signal in the desktop/tablet dialog). */
-export type SettingsCategoryId = 'appearance' | 'language' | 'media' | 'push' | 'about';
+export type SettingsCategoryId = 'appearance' | 'language' | 'media' | 'push' | 'notifications' | 'about';
 
 /**
  * One row on the Settings category list. `summary`/`visible` close over the injected preference services
@@ -43,6 +45,7 @@ export interface SettingsCategoryDeps {
   readonly language: LanguageService;
   readonly mediaSize: MediaSizeThresholdService;
   readonly bgSync: BackgroundSyncService;
+  readonly webPush: WebPushService;
   readonly transloco: TranslocoService;
 }
 
@@ -72,6 +75,13 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
     return d.transloco.translate(
       d.bgSync.fcmStatus().hasToken ? 'settings.fcmActive' : 'settings.fcmUnavailable',
     );
+  };
+  const notifSummary = (): string => {
+    void d.language.lang();
+    const p = d.webPush.permission();
+    if (p === 'granted') return d.transloco.translate('settings.notifOn');
+    if (p === 'unsupported') return d.transloco.translate('settings.notifUnavailable');
+    return d.transloco.translate('settings.notifOff'); // 'default' | 'denied'
   };
 
   return [
@@ -109,6 +119,17 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
       summary: pushSummary,
       component: SettingsPushComponent,
       visible: () => isTauri() && isAndroid(),
+      order: 3,
+    },
+    {
+      // Browser build only (PC browser + iOS PWA). Android uses FCM (the `push` category above); the
+      // Tauri desktop shell posts via window.__TAURI__.notification with no browser permission needed.
+      id: 'notifications',
+      icon: AppIconType.NOTIFICATIONS,
+      titleKey: 'settings.notifications',
+      summary: notifSummary,
+      component: SettingsNotificationsComponent,
+      visible: () => !isTauri(),
       order: 3,
     },
     {

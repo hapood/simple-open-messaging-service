@@ -1,4 +1,4 @@
-import { Injectable, inject } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { TranslocoService } from '@jsverse/transloco';
 import { apiPrefix } from './constants';
@@ -25,16 +25,33 @@ export class WebPushService {
   /** The endpoint currently registered with the backend (null = not subscribed). */
   private registeredEndpoint: string | null = null;
 
-  /** Wire up at app boot (AppComponent), after a session is restored. No-op when unsupported. */
+  /** Current browser notification permission, or `'unsupported'` when the Notification API is absent
+   *  (an insecure origin — plain HTTP that isn't localhost — or an old browser; there the whole
+   *  feature is inert, no permission to request). Reactive so the Settings toggle + category summary
+   *  update live as the user grants/revokes. */
+  readonly permission = signal<NotificationPermission | 'unsupported'>(
+    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
+  );
+
+  /** Wire up at app boot (AppComponent), after a session is restored. No-op when unsupported.
+   *  Does NOT request permission here — a boot-time request has no user gesture and is silently
+   *  blocked by Chrome/Edge; permission requests happen only via {@link enable} (the Settings toggle,
+   *  user-clicked). Here we only re-subscribe Web Push when permission is ALREADY granted. */
   async init(): Promise<void> {
     if (isTauri()) return; // Android/desktop shells use other channels.
+    this.refreshPermission();
+    // Re-sync when the user returns to the tab — they may have flipped the site permission in the
+    // browser's site settings while away (the app can't observe that change otherwise).
+    window.addEventListener('focus', () => this.refreshPermission(), { passive: true });
     if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('showNotification' in window)) {
-      return; // unsupported — silent (no toast; the user didn't ask for anything yet)
+      return; // no Web Push surface — in-tab Notification (UnreadAttentionService) may still work.
     }
-    try {
-      await this.subscribeAndRegister();
-    } catch (e) {
-      // subscribeAndRegister already toasted a specific cause; this is the catch-all.
+    if (this.permission() === 'granted') {
+      try {
+        await this.subscribeAndRegister();
+      } catch (e) {
+        // subscribeAndRegister already toasted a specific cause; this is the catch-all.
+      }
     }
   }
 
@@ -42,10 +59,13 @@ export class WebPushService {
   async onLogin(): Promise<void> {
     if (isTauri()) return;
     if (this.registeredEndpoint) return; // already subscribed
-    try {
-      await this.subscribeAndRegister();
-    } catch (e) {
-      /* toasted inside */
+    this.refreshPermission();
+    if (this.permission() === 'granted') {
+      try {
+        await this.subscribeAndRegister();
+      } catch (e) {
+        /* toasted inside */
+      }
     }
   }
 
@@ -69,21 +89,45 @@ export class WebPushService {
     }
   }
 
-  /** The full subscribe flow: ensure permission → register the SW → fetch VAPID key → subscribe →
-   *  POST to /devices/register. Each failure surfaces a specific translated toast + returns. */
-  private async subscribeAndRegister(): Promise<void> {
-    // 1. Permission.
-    if (Notification.permission === 'default') {
-      const perm = await Notification.requestPermission();
-      if (perm !== 'granted') {
-        this.toast.warn(this.t('push.permissionDenied'));
-        return;
-      }
-    } else if (Notification.permission === 'denied') {
+  /** User-clicked permission request (the Settings → Notifications toggle). Requests browser
+   *  notification permission — only meaningful from the `'default'` state, which is the only state the
+   *  toggle is clickable in — and, on grant, (re)subscribes Web Push so closed-tab delivery works too.
+   *  Returns the resulting permission. MUST be called from a click handler: modern browsers block
+   *  `Notification.requestPermission()` outside a user gesture (why {@link init} doesn't request). */
+  async enable(): Promise<NotificationPermission | 'unsupported'> {
+    if (typeof Notification === 'undefined') return 'unsupported';
+    // The toggle is only clickable from 'default', but guard for direct callers anyway.
+    const perm =
+      Notification.permission === 'default'
+        ? await Notification.requestPermission()
+        : Notification.permission;
+    this.permission.set(perm);
+    if (perm !== 'granted') {
       this.toast.warn(this.t('push.permissionDenied'));
-      return;
+      return perm;
     }
-    // 2. Register the push SW (scope '/push/' — ngsw owns '/').
+    try {
+      await this.subscribeAndRegister();
+    } catch (e) {
+      /* toasted inside */
+    }
+    return perm;
+  }
+
+  /** Re-read `Notification.permission` into the signal — called on init and on window focus (the user
+   *  may have changed the site permission in browser settings while the tab was in the background). */
+  private refreshPermission(): void {
+    if (typeof Notification !== 'undefined') this.permission.set(Notification.permission);
+  }
+
+  /** Register the push SW → fetch VAPID key → subscribe → POST to /devices/register. Each failure
+   *  surfaces a specific translated toast + returns. Assumes permission is ALREADY `'granted'` (the
+   *  request lives in {@link enable}); no-ops when the browser lacks the Web Push surface (in-tab
+   *  Notification via UnreadAttentionService may still work without it). */
+  private async subscribeAndRegister(): Promise<void> {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
+    // 1. Register the push SW (scope '/push/' — ngsw owns '/').
     let reg: ServiceWorkerRegistration;
     try {
       reg = await navigator.serviceWorker.register('./push/sw-push.js', { scope: './push/' });
@@ -91,13 +135,13 @@ export class WebPushService {
       this.toast.warn(this.t('push.subscribeFailed'));
       return;
     }
-    // 3. VAPID public key (single source of truth = backend env).
+    // 2. VAPID public key (single source of truth = backend env).
     const publicKey = await this.fetchVapidKey();
     if (!publicKey) {
       this.toast.warn(this.t('push.subscribeFailed'));
       return;
     }
-    // 4. Subscribe (re-use an existing subscription if one exists — idempotent).
+    // 3. Subscribe (re-use an existing subscription if one exists — idempotent).
     let sub: PushSubscription;
     try {
       sub =
@@ -110,7 +154,7 @@ export class WebPushService {
       this.toast.warn(this.t('push.subscribeFailed'));
       return;
     }
-    // 5. Register with the backend (idempotent upsert on endpoint).
+    // 4. Register with the backend (idempotent upsert on endpoint).
     if (sub.endpoint === this.registeredEndpoint) return;
     this.http
       .post<{ code: number }>(`${apiPrefix}/devices/register`, {
