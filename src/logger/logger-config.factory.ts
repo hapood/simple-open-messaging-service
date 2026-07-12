@@ -1,3 +1,4 @@
+import { RequestMethod } from '@nestjs/common';
 import type { Params } from 'nestjs-pino';
 import { buildPino } from './pino-factory.js';
 import { logStreamStore } from './log-stream-store.js';
@@ -25,6 +26,16 @@ type ReqLike = {
  */
 export function buildLoggerParams(): Params {
   return {
+    // nestjs-pino's default mounts the pino-http middleware on `forRoutes({ path: '*', method: ALL })`.
+    // Under our global prefix `api/v1`, Nest expands that bare `*` into `/api/v1/*`, which the Fastify
+    // adapter then hands to path-to-regexp — and v8 (Fastify 5 / find-my-way 9) rejects the unnamed
+    // wildcard. Nest's LegacyRouteConverter catches it, auto-converts `*` → `{*path}`, and logs a WARN
+    // per middleware at startup (twice — pino-http applies two middlewares to this one route). Supplying
+    // the v8 named-wildcard form directly is the same path Nest would convert `*` into, so matching is
+    // identical (still every /api/v1 request; /uploads, /.well-known, and the SPA already bypass Nest's
+    // middleware chain via raw Fastify hooks) — it just skips the warning. This is what upstream
+    // nestjs-pino ought to ship as its default; remove this override if it ever does.
+    forRoutes: [{ path: '/*path', method: RequestMethod.ALL }],
     pinoHttp: {
       logger: buildPino(logStreamStore),
       // Severity by outcome: a thrown error or 5xx → error; 4xx → warn; otherwise info.

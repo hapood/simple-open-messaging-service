@@ -196,7 +196,7 @@ async function registerStaticServing(
   app: NestFastifyApplication,
   adapter: FastifyAdapter,
 ) {
-  const uploadsDir = join(process.cwd(), 'uploads');
+  const uploadsDir = join(process.cwd(), 'data', 'uploads');
   // @fastify/static throws at registration if root is missing; ensure it exists (matches the
   // lazy mkdir UploadService.ensureDir already does for the write path).
   mkdirSync(uploadsDir, { recursive: true });

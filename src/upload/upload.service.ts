@@ -114,7 +114,7 @@ export type ConsumedMedia =
  */
 @Injectable()
 export class UploadService {
-  readonly uploadDir = join(process.cwd(), 'uploads');
+  readonly uploadDir = join(process.cwd(), 'data', 'uploads');
 
   constructor(private readonly mediaAsset: MediaAssetService) {}
 

@@ -24,8 +24,11 @@ import { BusinessException } from './business.exception.js';
  * - ValidationPipe's BadRequestException (field-level message array) → HTTP 200 + VALIDATION_FAILED
  * - Other HttpException → keeps its HTTP status; code is mapped from the status to the 10xxx segment
  * - Known Prisma errors: P2002 (unique conflict) → 409/ALREADY_EXISTS, P2025 (record not found) → 404/NOT_FOUND
- * - Any other unknown exception → 500/INTERNAL; the original message is logged server-side only
- *   (structured logging + traceId is P3 work)
+ * - Any other unknown exception → 500/INTERNAL; the original message is logged server-side only (pino
+ *   structured logs, correlated per-request via the X-Request-Id response header). Surfacing a traceId
+ *   field in the response *body* was considered and rejected as unnecessary for a self-hosted service —
+ *   the header + logs already bridge a client report to its server logs, and federation cross-server
+ *   correlation keys off messageId/originSeq (see docs/protocol-plan.md §P3).
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {

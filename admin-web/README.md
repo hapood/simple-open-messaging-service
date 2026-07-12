@@ -55,9 +55,9 @@ npm run lint --prefix admin-web    # oxlint
   Override with `VITE_API_BASE` only for non-proxy deployments; the default works
   for dev and same-origin production.
 - **Path alias:** `@` → `src/`.
-- **Admin bootstrap:** create the initial admin account on the API side with
-  `node prisma/seed-admin.cjs` (reads `ADMIN_BOOTSTRAP_PASSWORD`), then log in
-  here.
+- **Admin bootstrap:** the API self-seeds the initial admin (`account=admin`) on startup from
+  `ADMIN_BOOTSTRAP_PASSWORD` when none exists — no manual step. For local dev, `node prisma/seed-admin.cjs`
+  does the same via dotenv. Then log in here.
 
 ## Project layout
 

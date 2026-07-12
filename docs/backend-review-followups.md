@@ -36,10 +36,12 @@ fine with a global JWT guard by overriding on their routes.
 
 ### Boot DB connection retry + healthcheck
 `PrismaService.onModuleInit` calls `$connect()` once (`src/prisma.service.ts`); a transiently-unavailable
-PostgreSQL at boot rejects and the process exits with no backoff. There is also no container healthcheck
-or restart policy (Dockerfile only, no compose).
-**Fix:** add a bounded retry loop around `$connect()` (e.g. 5 attempts × exponential backoff), and pair
-with a container healthcheck + `restart: always` so an orchestrator re-loops until PG is up.
+PostgreSQL at boot rejects and the process exits with no backoff. (A container healthcheck + restart
+policy now exist — `HEALTHCHECK` in the Dockerfile and `restart: unless-stopped` + `init: true` in
+docker-compose.yml — so the orchestrator re-loops the whole container, but the app itself has no
+connect-time retry.)
+**Fix:** add a bounded retry loop around `$connect()` (e.g. 5 attempts × exponential backoff) so a
+transiently-down PG is tolerated within one boot rather than only via container restart.
 
 ### Prisma query logging
 `PrismaService` passes no `log:` config — an operational blind spot for slow queries and N+1 detection in

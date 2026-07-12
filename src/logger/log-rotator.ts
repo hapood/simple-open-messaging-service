@@ -28,7 +28,12 @@ import { optionalIntEnv } from '../common/env.js';
  * exit hook is the reliable flush point).
  */
 
-const LOG_DIR = process.env.LOG_DIR ?? join(process.cwd(), 'logs');
+// Conventional fixed location (NOT operator-facing config): <cwd>/data/logs. In the Docker image
+// (cwd=/app) this is /app/data/logs — inside the unified persistent app-data volume (alongside the
+// S2S/JWT keys and Caddy state), so logs survive container restart/recreate. In dev (cwd=repo) it is
+// ./data/logs. The LOG_DIR env override is kept ONLY as an internal/test escape hatch (test/setup-env
+// redirects forks to a tmpdir) — operators never need to set it.
+const LOG_DIR = process.env.LOG_DIR ?? join(process.cwd(), 'data', 'logs');
 const MAX_SIZE = optionalIntEnv('LOG_FILE_MAX_SIZE', 50 * 1024 * 1024); // 50 MB
 const RETENTION_DAYS = optionalIntEnv('LOG_FILE_RETENTION', 7);
 const CHECK_INTERVAL_MS = 30_000;

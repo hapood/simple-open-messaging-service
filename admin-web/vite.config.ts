@@ -4,13 +4,15 @@ import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
 // https://vite.dev/config/
-export default defineConfig(({ command }) => ({
-  // Prod is served under /admin/ (single-image, path-prefix deploy); dev stays at root for the vite dev server.
+export default defineConfig(() => ({
+  // Served under /admin/ in BOTH dev and prod — the dev access path is identical to the single-image
+  // prod deploy (src/bootstrap.ts ADMIN_PREFIX = '/admin'), and the web dev server
+  // (web/proxy.conf.json) reverse-proxies /admin to this vite server so asset URLs line up.
   // CONVENTION, not configuration — this prefix mirrors the server's ADMIN_PREFIX mount point
   // ('/admin') in src/bootstrap.ts (registerStaticServing); vite requires the trailing slash, hence
   // '/admin/'. The React Router basename reads import.meta.env.BASE_URL, so it tracks this value
   // automatically. Keep the two in sync; do not parameterize.
-  base: command === 'build' ? '/admin/' : '/',
+  base: '/admin/',
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {

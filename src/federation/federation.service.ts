@@ -2004,9 +2004,10 @@ export class FederationService implements OnModuleDestroy {
         HttpStatus.NOT_FOUND,
       );
     }
-    // Resolve uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
+    // Resolve data/uploads/shards/<aa>/<bb>/<digest>.<ext> (ext via glob — not stored on the row).
     const shardDir = join(
       process.cwd(),
+      'data',
       'uploads',
       'shards',
       digest.slice(0, 2),

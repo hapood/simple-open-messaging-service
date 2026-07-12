@@ -19,6 +19,7 @@ A concise instant messaging (IM) service that provides a user system, friend/gro
 - [Architecture and Design](#architecture-and-design)
 - [API and Real-Time Communication Quick Reference](#api-and-real-time-communication-quick-reference)
 - [Development Commands](#development-commands)
+- [Deployment (Docker)](#deployment-docker)
 - [Project Status](#project-status)
 - [More Documentation](#more-documentation)
 
@@ -215,6 +216,57 @@ npm start --prefix web          # Development server (ng serve)
 npm run build --prefix web      # Production build
 npm test --prefix web           # Karma tests
 ```
+
+## Deployment (Docker)
+
+The project ships as a single self-contained Docker stack: PostgreSQL + migration runner + the app, behind a Caddy TLS edge. Two image variants are built from one `Dockerfile`:
+
+| Tag | Variant | Contents | Public port |
+| --- | --- | --- | --- |
+| `soms:<ver>` / `soms:latest` | **full** | app **+ Caddy** bundled in one container | `7667` (HTTPS) |
+| `soms:<ver>-slim` / `soms:slim` | **slim** | app only | `3000` (HTTP, for your own reverse proxy) |
+
+The **full** variant is the default/simple path: one container runs the node origin on `:3000` and Caddy (TLS termination + reverse proxy) on `:7667`, supervised fail-fast by `docker/entrypoint.sh`. The **slim** variant is for operators who already run their own reverse proxy and only want the app.
+
+### Build
+
+```bash
+./scripts/build-image.sh        # release flow: builds BOTH variants (full + slim), tags soms:latest + soms:slim
+# or, for local dev — yields the FULL image (the tag compose runs):
+docker build -t soms:latest .
+# slim only:
+docker build --target runtime -t soms:slim .
+```
+
+`docker compose up` does **not** build the app image — it fails fast if it is missing. Build it first (`./scripts/build-image.sh` tags `soms:latest`); compose runs that tag. Override `NODE_IMAGE` (Docker Hub mirror) and `GOPROXY` (Go modules for the Caddy plugin) for restricted networks — see `scripts/build-image.sh`.
+
+### Run (all-in-one, full image)
+
+```bash
+SOMS_DOMAIN=chat.example.com \
+CLOUDFLARE_API_TOKEN=... \
+docker compose up -d
+```
+
+Required environment (compose fails fast if missing): `SOMS_DOMAIN` — your public domain / federation identity (`@user@<SOMS_DOMAIN>`). `POSTGRES_PASSWORD` ships a working default (postgres is internal-only — not published); set it to override. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (a token with **Zone:DNS:Edit** on the `SOMS_DOMAIN` zone) — see [DNS provider](#dns-provider-certificate-signing) below for other providers. `ADMIN_BOOTSTRAP_PASSWORD` is optional — see the bootstrap-admin note below.
+
+Only **one port** is published: `7667` (HTTPS; `7667/udp` for HTTP/3). Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Web UI, API, SSE, and federation S2S all ride on `7667`. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
+
+- **First-run certs**: Caddy issues the Let's Encrypt certificate via Let's Encrypt **DNS-01** on startup (no ports 80/443 needed). This takes ~10–60s; until then HTTPS returns a TLS error. Watch `docker compose logs -f app` for `certificate obtained successfully`. Issued certs persist in the `app-data` volume (under `/app/data/caddy`) across restarts, so they are not re-issued.
+- **Persistent state** lives under one volume (`app-data` → `/app/data`): S2S + JWT keys, app logs (`data/logs/soms.log`, own rotation), Caddy state (`data/caddy`), and uploads (`data/uploads`). Postgres keeps its own dedicated `pgdata` volume (it requires exclusive ownership of its data dir).
+- **Bootstrap admin** is self-seeded by the app on startup: on every boot it creates `account=admin` from `ADMIN_BOOTSTRAP_PASSWORD` if no admin exists yet (a no-op once one does) — no separate seed container, no manual `docker compose run`. If `ADMIN_BOOTSTRAP_PASSWORD` is left empty, the app still boots but logs a WARN and the `/admin` console has no login until you set it and restart. Log in to `/admin` with `admin` + the password.
+- **HTTP/2**: clients negotiate h2 (and h3 over UDP) with Caddy on `7667`. The origin leg to node is HTTP/1.1 (a loopback hop inside the container).
+
+### DNS provider (certificate signing)
+
+The bundled Caddy ships **76 buildable** DNS-01 providers from `github.com/caddy-dns` — Cloudflare + all the China providers (**AliDNS** `alidns`, **Tencent** `tencentcloud` + `edgeone`, plus `huaweicloud`, `volcengine`, `westcn`) and the other major ones. So switching DNS providers is a **config change, not a rebuild**. (The other caddy-dns modules are excluded at build: archived, no resolvable version, or stuck on the pre-1.0 `libdns` API — notably `dnspod` is unmaintained, so Tencent users use `tencentcloud`/`edgeone`.)
+
+- **Cloudflare (default)**: just set `CLOUDFLARE_API_TOKEN` — the baked Caddyfile uses it as-is.
+- **Any other provider**: edit `./Caddyfile`'s `tls { dns <provider> ... }` block to that provider's syntax + credential env (examples in the Caddyfile header), then uncomment the `- ./Caddyfile:/etc/caddy/Caddyfile:ro` volume in `docker-compose.yml`. Each module's exact Caddyfile syntax is at `https://github.com/caddy-dns/<provider>`.
+
+### Bring your own reverse proxy (slim image)
+
+Use the slim image and run it behind your own nginx/Caddy/Traefik. The app speaks plain HTTP/1.1 on `:3000`; terminate TLS at your edge and forward to it. The full image's Caddy is not present in slim.
 
 ## Project Status
 

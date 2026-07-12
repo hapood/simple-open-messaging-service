@@ -56,11 +56,16 @@ const REDACT_PATHS = [
 /**
  * Build the single process-wide pino logger: a multistream fanning out to
  *  - stdout (pino-pretty colorized in dev, raw newline-delimited JSON in prod)
- *  - a rotating file (logs/soms.log + dated archives; see log-rotator)
+ *  - a rotating file (data/logs/soms.log + dated archives; see log-rotator) — the persisted record
  *  - the in-process LogStreamStore (ring buffer + live SSE fan-out)
  * The multistream is in-process (NOT a worker transport) so the store can reach live SSE sockets.
  * pino serializes each record once (applying formatters + redact) and writes the identical line to
  * every stream, so the file, stdout, and the live viewer all carry the same structured record.
+ *
+ * The file is ALWAYS on — SOMS keeps its own log (own rotation + retention), not Docker's stdout
+ * capture. In the Docker image it lives under the persistent /app/data volume (data/logs/soms.log), so
+ * it survives container restart/recreate. stdout stays on too as a live mirror for `docker compose logs`
+ * and boot/crash diagnostics.
  */
 export function buildPino(store: LogStreamStore): pino.Logger {
   const level = resolvePinoLevel(process.env.LOG_LEVEL);

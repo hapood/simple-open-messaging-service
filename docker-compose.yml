@@ -1,43 +1,66 @@
-# Self-contained SOMS stack: postgres + one-shot migrate + app + Caddy (TLS edge).
+# SOMS all-in-one stack: postgres + one-shot migrate + app (the full image bundles the app + Caddy TLS
+# edge behind a single published port, 7667).
 #
-# compose only RUNS images — it does NOT build the app image. Build it first, out-of-band:
-#   ./scripts/build-image.sh        # release flow: soms:<package version> + soms:latest
-#   docker build -t soms:dev .      # or, for local dev
-# then set APP_VERSION to the tag you built (default: dev). With no `build:` block on the app
-# service, `up` fails fast if the image is missing instead of silently running a long multi-stage
-# build. The caddy image, by contrast, IS built by compose (a local xcaddy artifact with no
-# registry build path — see Dockerfile.caddy).
+# Quick start — edit the REQUIRED values in the DEPLOYMENT CONFIG block just below, then:
+#   docker compose up -d
+# First-run Let's Encrypt DNS-01 cert issuance takes 10–60s — watch for "certificate obtained
+# successfully" in `docker compose logs -f app`.
 #
-# Launches directly from environment variables — NO .env file required:
-#
-#   POSTGRES_PASSWORD=secret SOMS_DOMAIN=chat.example.com \
-#   CLOUDFLARE_API_TOKEN=... docker compose up -d
-#
-# Only ONE port is published: 7667 (HTTPS) — web UI + API + SSE + federation S2S all ride on it.
-# Caddy terminates TLS (auto-issued + auto-renewed via Let's Encrypt DNS-01 through Cloudflare, so
-# no ports 80/443 are needed) and reverse-proxies to the app over plain HTTP/1.1.
-#
-# Required (must be present in the shell environment — compose fails fast otherwise):
-#   POSTGRES_PASSWORD       PostgreSQL superuser password (DB container + the app's DATABASE_URL)
-#   SOMS_DOMAIN             this server's public domain, the federation identity (@user@<SOMS_DOMAIN>)
-#   CLOUDFLARE_API_TOKEN    Cloudflare API token with Zone:DNS:Edit on the SOMS_DOMAIN zone
-#
-# Optional (safe defaults / auto-generated, omit unless you need to override):
-#   APP_VERSION             image tag (default: dev)
-#   DATABASE_POOL_MAX       Prisma/node-pg pool size (default: 10)
-#   JWT_*_SECRET            unset → auto-generated on first boot into /app/data/jwt-*.key (mode 0600)
-#
-# The DNS provider is Cloudflare by example. To use another, edit BOTH Dockerfile.caddy (the xcaddy
-# --with plugin import) and Caddyfile (the `dns` line + env var), and set the matching credential
-# env on the caddy service below. The app stays plain HTTP/1.1 — do NOT set TLS_CERT/TLS_KEY
-# (Caddy is the TLS edge; the app was designed for this topology, see src/main.ts).
-#
-# Optional features (Web Push VAPID_*, FCM GOOGLE_APPLICATION_CREDENTIALS, LOG_*) are intentionally
-# not wired here — supply them through a compose override file
-# (`docker compose -f docker-compose.yml -f override.yml up -d`) so this file stays a minimal base.
-#
-# First deploy only — seed the bootstrap admin:
-#   docker compose run -e ADMIN_BOOTSTRAP_PASSWORD=... --rm app node prisma/seed-admin.cjs
+# The bootstrap admin (account=admin) is self-seeded by the app on startup — no manual step and no
+# separate seed container. The app checks on every boot and creates the admin from ADMIN_BOOTSTRAP_PASSWORD
+# if none exists yet (idempotent no-op once it does).
+
+# ============================================================================
+# DEPLOYMENT CONFIG — edit the per-deploy values below, then `docker compose up -d`.
+# Every value and mount is defined once in this block; the services below only reference them by name.
+# This file is tracked in git and ships PLACEHOLDERS only (no secrets). After you fill in your real
+# values locally, hide your edits from git so they're never committed back:
+#   git update-index --skip-worktree docker-compose.yml      # reverse with --no-skip-worktree
+# ============================================================================
+x-config:
+  # --- Per-deploy values (edit these) ---
+  # REQUIRED — your federation IDENTITY domain: the <domain> in @user@<domain> handles and the keyId in
+  # /.well-known/soms. This is the address peers look up (SRV _soms._tcp.<soms_domain>), NOT necessarily
+  # the host they connect to — see soms_public_host. Immutable once users exist (renaming orphans peers).
+  soms_domain: &soms_domain chat.example.com
+
+  # REQUIRED — the hostname clients/browsers/peers actually CONNECT to (SRV target, TLS cert name, Caddy
+  # bind). For the common single-domain case set this = soms_domain. Set a DIFFERENT host only for SRV
+  # delegation: identity stays @user@<soms_domain> while the service is reached at <soms_public_host>:7667
+  # (e.g. soms_domain=example.com + soms_public_host=soms.example.com, with SRV _soms._tcp.example.com → soms.example.com:7667).
+  # See docs/federation-protocol.md Shape B (§D2).
+  soms_public_host: &soms_public_host chat.example.com
+
+  # REQUIRED for automatic HTTPS — a Cloudflare API token with Zone:DNS:Edit on your domain's zone
+  # (Cloudflare dashboard → My Profile → API Tokens → Create Token). Leave empty ONLY if you bring your
+  # own cert or switch DNS providers (then also edit ./Caddyfile's tls block and uncomment its bind-mount
+  # on the app service below — no rebuild needed). See ./Caddyfile for the bundled provider list.
+  cloudflare_api_token: &cf_token ""
+
+  # OPTIONAL — PostgreSQL password. postgres is NOT published (compose-internal only); the default
+  # (change-me) is fine for a single-host deploy. To use a different password, set POSTGRES_PASSWORD in
+  # your environment or .env — it flows into the DB AND into database_url (auto-generated, bottom of this
+  # block) in one shot. Do NOT hand-edit the `change-me` text or the `${ … }` wrapper here: change-me is
+  # only the fallback default, and changing it here alone would desync from database_url below.
+  postgres_password: &pg_pw ${POSTGRES_PASSWORD:-change-me}
+
+  # OPTIONAL — Prisma connection-pool max. Keep (max × app replicas) ≤ PostgreSQL max_connections (100).
+  database_pool_max: &pool_max 10
+
+  # OPTIONAL — initial password for the bootstrap admin (account=admin). The app self-seeds it on startup
+  # when no admin exists; once one exists this is ignored. Ships EMPTY on purpose — no placeholder password
+  # is ever auto-applied. If left empty on a system with no admin, the app boots normally but logs a WARN
+  # (the admin console has no login until you set this and restart).
+  admin_bootstrap_password: &admin_pw ""
+
+  # --- Fixed topology (same in every deploy; no need to edit) ---
+  # app's unified persistent root: S2S + JWT keys, app logs (data/logs), Caddy state (data/caddy), uploads
+  appdata_mount: &appdata_mount app-data:/app/data
+  # PostgreSQL data directory (the chat database).
+  pgdata_mount: &pgdata_mount pgdata:/var/lib/postgresql/data
+
+  # --- DO NOT EDIT — derived from POSTGRES_PASSWORD above; shared by `migrate` and `app`. ---
+  database_url: &db_url postgresql://timescale:${POSTGRES_PASSWORD:-change-me}@postgres:5432/soms?schema=public
 
 services:
   postgres:
@@ -45,9 +68,9 @@ services:
     environment:
       POSTGRES_DB: soms
       POSTGRES_USER: timescale
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in the environment}
+      POSTGRES_PASSWORD: *pg_pw
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      - *pgdata_mount
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U timescale -d soms"]
       interval: 5s
@@ -55,82 +78,45 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # One-shot migration runner. Reuses the app image (prisma CLI + migrations + config already baked
-  # in), applies pending migrations idempotently, then exits 0. Runs on every `up` but is a sub-second
-  # no-op when nothing is pending — `prisma migrate deploy` is idempotent via the _prisma_migrations
-  # table, and the existing manual `migrate resolve --applied` history keeps that table in sync.
+  # Reuses the app image (prisma CLI + migrations baked in) and applies pending migrations, then exits 0.
+  # `prisma migrate deploy` is idempotent, so re-running `up` is a sub-second no-op when nothing is pending.
   migrate:
-    image: soms:${APP_VERSION:-dev}
+    image: soms:latest
     depends_on:
       postgres:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql://timescale:${POSTGRES_PASSWORD:?}@postgres:5432/soms?schema=public
+      DATABASE_URL: *db_url
     command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
     restart: "no"
 
   app:
-    # compose only RUNS this image — it is NOT built here. Build it out-of-band first
-    # (./scripts/build-image.sh for a release tag, or `docker build -t soms:dev .` for local dev),
-    # then set APP_VERSION to the tag you built. No `build:` block means `up` fails fast if the image
-    # is missing instead of silently kicking off a long multi-stage build.
-    image: soms:${APP_VERSION:-dev}
-    # The app does NOT start until postgres is healthy AND migrate has exited 0 — a failed migration
-    # keeps the app down with a visible error rather than booting half-schema.
+    image: soms:latest
+    # App waits for postgres healthy AND migrate to exit 0 — a failed migration keeps it down rather than
+    # booting half-schema. (Admin self-seeding happens inside the app on startup, not as a compose dep.)
     depends_on:
       postgres:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+    init: true              # tini PID 1: reaps zombies, forwards SIGTERM to the entrypoint supervisor
+    stop_grace_period: 15s
     environment:
-      # Compose computes DATABASE_URL: the DB host is the `postgres` service name, not localhost.
-      DATABASE_URL: postgresql://timescale:${POSTGRES_PASSWORD:?}@postgres:5432/soms?schema=public
-      SOMS_DOMAIN: ${SOMS_DOMAIN:?set SOMS_DOMAIN in the environment}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-10}
-      APP_VERSION: ${APP_VERSION:-dev}
+      DATABASE_URL: *db_url
+      SOMS_DOMAIN: *soms_domain
+      SOMS_PUBLIC_HOST: *soms_public_host
+      DATABASE_POOL_MAX: *pool_max
+      CLOUDFLARE_API_TOKEN: *cf_token
+      ADMIN_BOOTSTRAP_PASSWORD: *admin_pw
     volumes:
-      - app-uploads:/app/uploads
-      - app-data:/app/data     # S2S Ed25519 keypair + auto-generated JWT signing keys (./data/jwt-*.key)
-      - app-logs:/app/logs
-    # Port 3000 is NOT published — Caddy (service below) is the only public entry, on 7667. The app
-    # stays plain HTTP/1.1: do NOT set TLS_CERT/TLS_KEY here; Caddy terminates TLS at the edge and
-    # the origin leg is h1.1, the mode the app was designed for (see src/main.ts). Re-add a temporary
-    # `ports: ["3000:3000"]` only for local debugging, never in production.
-    restart: unless-stopped
-
-  # Caddy TLS edge. Builds the custom image (Dockerfile.caddy = xcaddy + Cloudflare DNS-01 plugin),
-  # publishes a single port 7667, and reverse-proxies to app:3000. Certs are issued/renewed via
-  # DNS-01 so no ports 80/443 are exposed. See Caddyfile for the routing + provider swap notes.
-  caddy:
-    build:
-      context: .
-      dockerfile: Dockerfile.caddy
-      args:
-        # Go module proxy for xcaddy. Override for restricted networks — e.g. set
-        # GOPROXY=https://goproxy.cn,direct in the environment (or .env) for China.
-        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
-    image: soms-caddy:${APP_VERSION:-dev}
-    depends_on:
-      app:
-        condition: service_started
-    environment:
-      SOMS_DOMAIN: ${SOMS_DOMAIN:?set SOMS_DOMAIN in the environment}
-      # Cloudflare API token with Zone:DNS:Edit on the SOMS_DOMAIN zone. Swap this env (and the
-      # `dns` line in Caddyfile + the plugin in Dockerfile.caddy) to use another DNS provider.
-      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN (Cloudflare Zone:DNS:Edit token)}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data       # ACME account + issued certs — MUST persist (avoids re-issue rate limits)
-      - caddy_config:/config   # Caddy autosave config
+      - *appdata_mount
+      # Uncomment to override the baked Caddyfile (REQUIRED for any non-Cloudflare DNS provider):
+      # - ./Caddyfile:/etc/caddy/Caddyfile:ro
     ports:
-      - "7667:7667"      # HTTPS — web UI + API + SSE + federation S2S, the only public port
-      - "7667:7667/udp"  # HTTP/3 (QUIC); drop this line if you don't want h3
+      - "7667:7667"      # HTTPS — web UI + API + SSE + federation S2S
+      - "7667:7667/udp"  # HTTP/3 (QUIC); drop this line to disable h3
     restart: unless-stopped
 
 volumes:
   pgdata:
-  app-uploads:
   app-data:
-  app-logs:
-  caddy_data:
-  caddy_config:

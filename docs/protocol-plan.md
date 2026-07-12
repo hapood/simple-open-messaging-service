@@ -58,7 +58,7 @@ SOMS's core flows (registration/login, friends, P2P/group threads, message send/
 - **Contract first**: OpenAPI as the single source of truth; frontend types generated from it.
 - **Semantic correctness**: HTTP status codes reflect transport/auth/parameter-layer results; business codes carry the fine-grained business outcome.
 - **Incremental evolution**: Preserve the existing `{status,message,data}` envelope mental model; iterate in tiers; no big-bang rewrite.
-- **Observable, debuggable**: Unified exception exit + structured logging + traceId.
+- **Observable, debuggable**: Unified exception exit + structured logging + per-request correlation (the `X-Request-Id` header).
 
 ---
 
@@ -83,7 +83,7 @@ SOMS's core flows (registration/login, friends, P2P/group threads, message send/
 ### 4.3 Exceptions and Observability
 
 1. **Global `ExceptionFilter`**: All exceptions (including uncaught ones) are uniformly converted to `ApiResult` + the correct HTTP code; never leak stacks.
-2. **Structured logging** (`nest-winston` / `pino`) + inject a `traceId` per request, and write it into `ApiResult.traceId`.
+2. **Structured logging** (`pino`) with a per-request id (Fastify's `request.id`, echoed as the `X-Request-Id` response header). ✅ Landed. (A `traceId` field in the response *body* was later rejected as unnecessary — see §P3.)
 3. **Health check** `GET /api/v1/health` (including DB connectivity), for deployment probes.
 
 ### 4.4 Authentication and Security
@@ -126,7 +126,6 @@ interface ApiResult<T = unknown> {
   code: number;        // 0 = success; non-0 = business error code (stable, enumerable)
   message: string;
   data?: T;
-  traceId?: string;    // for debugging
 }
 ```
 
@@ -286,8 +285,8 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 
 | Content | Affected Files | Acceptance |
 | --- | --- | --- |
-| Structured logging + traceId (including a traceId field in the response envelope) | Global middleware/interceptor, `api-result.ts`, `exception.filter.ts` | Logs carry traceId to correlate requests; the response envelope injects a traceId (benchmarked against WhatsApp `fbtrace_id`) for the client to attach on error reports and the server to look up logs by |
-| Structured `details` field in the response envelope | `api-result.ts`, `exception.filter.ts` | Additional data such as rate-limit info (`bannedUntil`/`retry_after`) goes through `details`, benchmarked against Telegram `parameters` / WhatsApp `error_data`; P1b temporarily puts it in `data` |
+| Structured logging + per-request correlation | `bootstrap.ts`, `main.ts` (Fastify `request.id` + pino), `exception.filter.ts` | ✅ **Landed**: pino structured logging; Fastify mints a UUID per request (honoring an inbound `X-Request-Id`), echoed as the `X-Request-Id` response header and carried in pino logs — an operator correlates a client-reported header value straight to its logs. ❌ **Rejected**: a `traceId` field in the response *body* (the WhatsApp `fbtrace_id` pattern). Unnecessary for a self-hosted service: the operator who receives a bug report is the same one with log access (the header already bridges report → logs), federation cross-server correlation keys off `messageId`/`originSeq` (not HTTP `request.id`, which is per-hop), and duplicating the id into `{code, message, data}` would bloat every success response for a payoff realized only on errors. |
+| Structured `data` payload on business errors | `api-result.ts`, `exception.filter.ts` | ✅ **Landed**: `BusinessException` carries a structured `data` payload surfaced on the envelope (e.g. a quota hit's `{category, limit, retryAfter}`) — `data` itself is the structured-details channel; the earlier "P1b temporarily puts it in `data`" became the permanent design, so no separate `details` field was added. |
 | Health check | New controller | `/api/v1/health` returns DB status |
 | Login rate limiting (shared storage + tiered response) | `src/auth/local.strategy.ts` → `@nestjs/throttler` / `rate-limiter-flexible` + Redis | **Landed (in-process memory)**: sliding window (15min) + dual dimensions of IP/account (account) + `trust proxy` for the real IP + graduated banning (30min/3h/24h ladder, see `local.strategy.ts`). **P3 TODO**: ① multi-instance shared storage (Redis; current in-process state is lost on restart and each replica counts separately); ② tiered response (CAPTCHA / added delay / notify the account owner, replacing pure hard bans); ③ gentler ban durations and refined thresholds (24h is currently too long and risks account-lockout DoS); ④ ban observability (structured logging/alerting); ⑤ coverage of renewal/send-message and other endpoints |
 | File upload (large files / object storage) | `src/upload/*` (chat image upload + avatar `sharp` multi-size rewrite **already landed**) | **Landed**: chat image + avatar upload, returning `/uploads/...` URLs (chat images skip `sharp` to preserve GIF quality; avatars go through `sharp`); **TODO**: large-file chunking / object storage, rate limiting / concurrent memory / orphan cleanup (see the image-upload security roadmap) |
