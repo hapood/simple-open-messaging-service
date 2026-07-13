@@ -1,6 +1,6 @@
 :host {
-  // 宿主可覆盖的排版变量。CSS 变量穿透 ViewEncapsulation：落在品牌渐变面板
-  // （auth-brand 白字）上只需在宿主设 --bl-*-color，无需 ::ng-deep。
+  // Typography variables overridable by the host. CSS variables pass through ViewEncapsulation:
+  // on the brand-gradient panel (auth-brand white text) just set --bl-*-color on the host — no ::ng-deep needed.
   --bl-word: 32px;
   --bl-tag: 14px;
   --bl-word-color: var(--app-text);
@@ -17,7 +17,7 @@
 .bl-mark {
   display: block;
   margin: 0 auto 16px;
-  // 宿主可覆盖：落在品牌渐变面板上需投影分层（auth-brand），白底主区则保持 none
+  // Host-overridable: on the brand-gradient panel requires a drop-shadow layer (auth-brand); keep none on the white-background main area
   filter: var(--bl-mark-filter, none);
 }
 

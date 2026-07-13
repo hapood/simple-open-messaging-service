@@ -4,16 +4,18 @@ import { assetUrl } from '../../services/runtime'
 import { AvatarRepository } from '../../services/avatar-cache.service'
 
 /**
- * 首字母头像（业界最佳实践配色）。
+ * Initial-letter avatar (industry best-practice palette).
  *
- * 占位 SVG 已移除——改为取名字首字符居中显示，底色：
- *  · SELF：固定品牌绿（呼应 self 气泡，一眼可辨「自己」）。
- *  · OTHER / GROUP：基于名字哈希的确定性调色板（同一对象颜色稳定、不同对象易区分，
- *    对标 Telegram / Google Messages / Slack）。调色板取 Material 深色阶，与白字对比达 WCAG AA。
+ * The placeholder SVG has been removed — instead the first character of the name is centered, with a background color:
+ *  · SELF: fixed brand green (echoes the self bubble, instantly recognizable as "you").
+ *  · OTHER / GROUP: a name-hashed deterministic palette (stable color per object, easy to distinguish across
+ *    objects, on par with Telegram / Google Messages / Slack). The palette uses Material dark shades, reaching
+ *    WCAG AA contrast against white text.
  *
- * 方圆角（微信式，rx=20% → 40px 容器下 8px，与聊天内 .msg-avatar 一致）+ SVG viewBox：
- * 字号在 viewBox 内固定、随容器自动缩放（44~56px 列表/抽屉通吃），不依赖父容器尺寸或
- * 裁剪——各调用点零布局改动（nav-drawer/icon-rail 容器须去掉强制圆形的 overflow/border-radius）。
+ * Rounded square (WeChat-style, rx=20% → 8px under a 40px container, matching .msg-avatar in chats) + SVG
+ * viewBox: the font size is fixed within the viewBox and scales with the container (44–56px covers both lists
+ * and drawers), independent of the parent's size or clipping — zero layout changes at call sites (nav-drawer /
+ * icon-rail containers must drop the forced-circular overflow/border-radius).
  *
  * Avatar bytes are read ONLY from the DB layer ({@link AvatarRepository} → IndexedDB), keyed by stable
  * identity (`identityId` + `type`), never by URL. On a cache miss the repository fetches + caches; on a
@@ -39,8 +41,8 @@ export class UserAvatarComponent {
 
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER)
   readonly name = input<string>('')
-  /** 真实头像图 URL（可选）。A server path (`/uploads/...`) is read from the DB by {@link identityId};
-   *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → 首字母 fallback. */
+  /** Optional real avatar image URL. A server path (`/uploads/...`) is read from the DB by {@link identityId};
+   *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → initial-letter fallback. */
   readonly src = input<string | undefined | null>(undefined)
   /** Stable identity of the user/group this avatar depicts — the IDB cache key (combined with {@link
    *  type}: GROUP → `g<id>`, else `u<id>`). Usually the numeric id; for a group known only by its
@@ -49,7 +51,7 @@ export class UserAvatarComponent {
   readonly identityId = input<number | string | undefined | null>(undefined)
   readonly UserAvatarType = UserAvatarType
 
-  /** 图片加载失败（损坏/404）→ 回退首字母。src/identity 变化时重置，以重试新图。 */
+  /** Image load failure (corrupt/404) → fall back to the initial letter. Reset on src/identity change to retry the new image. */
   readonly imgFailed = signal(false)
 
   /** The DB-backed blob URL for a server avatar (empty until resolved, or for local-preview/no-avatar). */
@@ -106,10 +108,10 @@ export class UserAvatarComponent {
     return this.type() === UserAvatarType.GROUP ? `g${id}` : `u${id}`
   })
 
-  /** 是否渲染真实图片（有有效 src 且未失败）。 */
+  /** Whether to render the real image (valid src present and not failed). */
   readonly showImage = computed(() => !!this.imgSrc() && !this.imgFailed())
 
-  /** 首字符（中文取首字、英文取首字母大写）；空名 fallback '?'。 */
+  /** First character (Chinese: first character; English: first letter uppercased); empty-name fallback '?'. */
   readonly initial = computed(() => {
     const n = (this.name() ?? '').trim()
     return n.length > 0 ? n.charAt(0).toUpperCase() : '?'

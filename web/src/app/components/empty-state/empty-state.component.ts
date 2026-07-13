@@ -4,9 +4,9 @@ import { MatButtonModule } from '@angular/material/button';
 export type EmptyStateTone = 'default' | 'error';
 
 /**
- * 通用空 / 加载 / 错误占位：图标（content projection）+ 标题 + 副标题 + 可选 CTA。
- * 样式提取自 friend-requests 的 .state-hint。图标槽不投影时自动隐藏（:empty）。
- * 投影进来的 SVG 带消费者自身的 encapsulation，尺寸由消费者在模板里自带。
+ * Generic empty / loading / error placeholder: icon (content projection) + title + subtitle + optional CTA.
+ * Styling extracted from friend-requests's .state-hint. The icon slot auto-hides when nothing is projected (:empty).
+ * Projected SVGs carry the consumer's own encapsulation; their size is provided by the consumer in its template.
  */
 @Component({
   selector: 'app-empty-state',
@@ -17,9 +17,9 @@ export type EmptyStateTone = 'default' | 'error';
 export class EmptyStateComponent {
   readonly title = input.required<string>()
   readonly subtitle = input('')
-  /** error 变体：标题染 --app-danger */
+  /** error variant: title is tinted with --app-danger */
   readonly tone = input<EmptyStateTone>('default')
-  /** CTA 文案，非空才渲染按钮 */
+  /** CTA label; the button renders only when non-empty */
   readonly ctaLabel = input('')
   readonly ctaClick = output<void>()
 }

@@ -1,7 +1,7 @@
--- Unified daily-quota counters (local SOMS_DOMAIN node + each federated peer domain).
--- `date` is a UTC calendar day → the budget resets automatically at 00:00 UTC (no cron).
--- The atomic increment is an INSERT … ON CONFLICT DO UPDATE … RETURNING count in QuotaService.tick.
--- See docs/federation-quotas.md + src/quota/quota.service.ts.
+-- Unified daily-quota counters: one row per (node, UTC day, category). A node is a domain — the
+-- local SOMS_DOMAIN (all local users share one bucket) or a federated peer domain. `date` is a UTC
+-- calendar day, so the budget resets at 00:00 UTC with no cron. QuotaService.tick increments via
+-- INSERT … ON CONFLICT DO UPDATE … RETURNING count (exact, not ±1).
 
 CREATE TABLE "QuotaDailyUsage" (
     "domain" VARCHAR(63) NOT NULL,

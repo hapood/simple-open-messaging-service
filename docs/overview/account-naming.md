@@ -215,7 +215,7 @@ CHECK constraint only enforces the `!`/`isGroup` consistency, not the user chars
 ## 9. Related / supersedes
 
 - Supersedes the `thr_<rand>@<origin-domain>` **federated thread-id** form for groups described in
-  `docs/federation-step3-design.md`. Canonical group identity is now the `!`-sigil account (§3.2);
+  `docs/roadmap/federation-step3-design.md`. Canonical group identity is now the `!`-sigil account (§3.2);
   when federated groups are built, align Step 3's thread identity to this scheme rather than keeping
   two conventions.
-- Cross-referenced from `docs/federation-protocol.md` §3.1 (federated identifiers).
+- Cross-referenced from `docs/overview/federation-protocol.md` §3.1 (federated identifiers).

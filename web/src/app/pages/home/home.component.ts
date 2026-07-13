@@ -47,11 +47,12 @@ export class HomeComponent implements OnInit, OnDestroy {
 
   ngOnInit() {
     this.userService.updateSessionProfile();
-    // 必须 subscribe：HttpClient.post 是冷 Observable，不订阅不会发请求。
-    // 启动即 renew-access 取新 access token（旧 token 可能将过期）；拦截器无 token 时也会主动 renew，
-    // 但这里先订阅可让首个受保护请求免去多等一次往返，避免启动初期的请求排队。
+    // Must subscribe: HttpClient.post is a cold Observable; without a subscription the request is never sent.
+    // Renew access on startup to obtain a fresh access token (the old one may be near expiry); the interceptor
+    // also renews proactively when no token is present, but subscribing here lets the first protected request
+    // skip an extra round-trip and avoids request queuing early in startup.
     this.authService.renewAccessToken().subscribe();
-    // 单例 constructor 不会在登出后重登时再跑，需在此重连 WS
+    // The singleton constructor does not re-run on re-login after logout, so reconnect WS here.
     this.wsService.connect();
 
     // Friend-lifecycle notifications ride the generic NOTIFY event, discriminated by `data.type`:

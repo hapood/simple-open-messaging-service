@@ -1,22 +1,24 @@
 /**
- * ChatBoxScrollerAnchor（方案 A：借浏览器锚定）单元测试 —— array index-based。
+ * ChatBoxScrollerAnchor (Plan A: browser-anchor-assisted) unit tests — array index-based.
  *
- * 重点验方案 A 与 B 的关键区别：loadOlder（顶部 prepend）/ 上方变化时内核**不写 scrollTop**
- *（交浏览器 overflow-anchor）。mock 环境无浏览器锚定，故断言「scrollTop 未被内核改动」即证明未补偿。
+ * Focuses on the key difference between Plan A and B: on loadOlder (top prepend) / above-fold changes the
+ * kernel does NOT write scrollTop (delegated to browser overflow-anchor). The mock environment has no
+ * browser anchoring, so asserting "scrollTop is not mutated by the kernel" proves no compensation.
  *
- * mock source 用 numeric msgId 游标（0..N-1，0 最老），不再连续抽象 id —— 验证内核 index 与 source id 解耦。
+ * The mock source uses a numeric msgId cursor (0..N-1, 0 = oldest), not a contiguous abstract id — verifying
+ * the kernel index is decoupled from the source id.
  */
 import { ChatBoxScrollerAnchor, CbElement, CbItem } from './chat-box-scroller-anchor';
 import type { CbSource } from './cb-source';
 
-/** content 子元素 offsetHeight 之和（验 totalH）。 */
+/** Sum of content children offsetHeight (verifies totalH). */
 function sumChildrenHeight(el: HTMLElement): number {
   let s = 0;
   for (const c of Array.from(el.children)) s += (c as HTMLElement).offsetHeight || 0;
   return s;
 }
 
-/** 可控 hooks：createItem(item)，每项高度固定。不依赖 id 数值（item.id 是 numeric msgId）。 */
+/** Controllable hooks: createItem(item) with a fixed per-item height. Does not depend on id value (item.id is a numeric msgId). */
 function controllableHooks(itemHeight = 100): { hooks: { createItem: (item: CbItem<number>, prev: CbItem<number> | null) => CbElement<number> } } {
   return {
     hooks: {
@@ -67,7 +69,7 @@ function pendingSource(total: number, pending: CbItem<number>[]): CbSource<numbe
   return { ...fakeSource(total), getPending: () => pending.slice() };
 }
 
-/** Fake source：N 条 msg（0 最老 .. N-1 最新）。游标 getOlder/getNewer，升序返回。 */
+/** Fake source: N msgs (0 = oldest .. N-1 = newest). Cursors getOlder/getNewer, returned in ascending order. */
 function fakeSource(N: number): CbSource<number> & { gets: () => number; newers: () => number } {
   const itemAt = (i: number): CbItem<number> | undefined => {
     if (i < 0 || i >= N) return undefined;
@@ -99,7 +101,7 @@ function fakeSource(N: number): CbSource<number> & { gets: () => number; newers:
   return Object.assign(src, { gets: () => gets, newers: () => newers });
 }
 
-/** 可控 init 的 source：init 返回手动 resolve 的 Promise（测连续跳转 gen 超越）。 */
+/** Source with controllable init: init returns a manually-resolved Promise (to test consecutive-jump gen supersession). */
 function controllableInitSource(N: number): CbSource<number> & {
   resolveInit: (items: CbItem<number>[]) => void; initPending: () => number; batchAround: (k: number) => CbItem<number>[];
 } {
@@ -129,10 +131,10 @@ function controllableInitSource(N: number): CbSource<number> & {
   });
 }
 
-/** 排空微任务（openAround/fillAround 多跳 async）。 */
+/** Drain microtasks (openAround/fillAround are multi-hop async). */
 async function flush(n = 30): Promise<void> { for (let i = 0; i < n; i++) await Promise.resolve(); }
 
-/** 可控 source：getOlder 返回手动 resolve 的 Promise，测「getOlder 在途」时改 scrollTop（fling 反向）。 */
+/** Controllable source: getOlder returns a manually-resolved Promise, to test modifying scrollTop while "getOlder in flight" (reverse fling). */
 function controllableSource(N: number): CbSource<number> & {
   gets: () => number; resolveOlder: (items?: CbItem<number>[]) => void; isPending: () => boolean;
 } {
@@ -151,7 +153,7 @@ function controllableSource(N: number): CbSource<number> & {
   let gets = 0;
   const src: CbSource<number> = {
     init: async (_r, older) => slice(N - older, N),
-    // 普通 function return Promise（不用 async，避免多一层 thenable assimilation microtask 阻塞测试 flush）
+    // Plain function returning a Promise (not async — avoids an extra thenable-assimilation microtask that would block the test flush)
     getOlder: function (cursorId: number, count: number): Promise<CbItem<number>[]> {
       gets++; const k = cursorId; pendingRange = { lo: k - count, hi: k };
       return new Promise(resolve => { resolver = (items?: CbItem<number>[]) => resolve(items ?? slice(pendingRange.lo, pendingRange.hi)); });
@@ -168,7 +170,7 @@ function controllableSource(N: number): CbSource<number> & {
   });
 }
 
-describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
+describe('ChatBoxScrollerAnchor (Plan A · array index)', () => {
   let viewport: HTMLDivElement;
   let content: HTMLDivElement;
   let scroller: ChatBoxScrollerAnchor<number> | undefined;
@@ -198,18 +200,18 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     (globalThis as { ngDevMode?: unknown }).ngDevMode = savedNgDev;
   });
 
-  it('init 取最新一批、贴底、窗口边界 msgId 正确', async () => {
+  it('init takes the newest batch, pins to bottom, window boundary msgIds are correct', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     const info = scroller.getInfo();
-    expect(info.mounted).toBe(100);          // initBatch=100（100×100px=10000 > threshold 6000，不补批）
-    expect(info.oldestId).toBe(400);      // 这批最老
-    expect(info.newestId).toBe(499);      // 锚点=最新
+    expect(info.mounted).toBe(100);          // initBatch=100 (100×100px=10000 > threshold 6000, no refill)
+    expect(info.oldestId).toBe(400);      // oldest in this batch
+    expect(info.newestId).toBe(499);      // anchor = newest
     expect(info.atBottom).toBe(true);
   });
 
-  it('方案 A：loadOlder 后 scrollTop【不被内核补偿】（与 B 的关键区别）', async () => {
+  it('Plan A: after loadOlder scrollTop is NOT compensated by the kernel (key difference from B)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -218,22 +220,22 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     viewport.dispatchEvent(new Event('scroll'));
     await Promise.resolve(); // flush loadOlder
     await Promise.resolve();
-    // 方案 A 不补偿：scrollTop 仍为滚到时的值（未被 += 新挂高度）
+    // Plan A does not compensate: scrollTop stays at the scrolled value (no += newly mounted height)
     expect(viewport.scrollTop).toBe(stBefore);
   });
 
-  it('measurePending 移除挂载元素 cb-pending', async () => {
+  it('measurePending removes the cb-pending class from mounted elements', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
     expect(content.querySelectorAll('.cb-pending').length).toBe(0);
   });
 
-  // ── 阶段0：noOlder absorb 时机（revalidate 通过后才吸收，方案 A 同修）──
+  // ── Phase 0: noOlder absorb timing (absorb only after revalidate passes; Plan A fixed alike) ──
 
-  it('阶段0：fling 反向时含 oldest 边界批不挂 → noOlder 不锁死、回顶仍能 getOlder', async () => {
+  it('Phase 0: reverse fling skips mounting the oldest-boundary batch → noOlder is not locked, getOlder still fires on return to top', async () => {
     const { hooks } = controllableHooks();
-    const src = controllableSource(120); // init 100 → 第一次 getOlder 返回 m-0..m-19（含 oldest=m-0）
+    const src = controllableSource(120); // init 100 → first getOlder returns m-0..m-19 (includes oldest=m-0)
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
     await scroller.init();
     expect(scroller.getInfo().noOlder).toBe(false);
@@ -243,14 +245,14 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     await Promise.resolve();
     expect(src.isPending()).toBe(true);
 
-    // fling 反向：离开顶边缘 + 方向 down
+    // reverse fling: leave the top edge + direction down
     viewport.scrollTop = 2000;
     viewport.dispatchEvent(new Event('scroll'));
     await Promise.resolve();
 
     src.resolveOlder();
     await Promise.resolve();
-    expect(scroller.getInfo().noOlder).toBe(false); // 修前会被锁 true（bug）
+    expect(scroller.getInfo().noOlder).toBe(false); // before the fix this got locked to true (bug)
 
     const getsBefore = src.gets();
     viewport.scrollTop = 0;
@@ -259,9 +261,9 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(src.gets()).toBeGreaterThan(getsBefore);
   });
 
-  // ── 阶段1：骨架 item（cb-ghost，方案 A 同；不补偿 scrollTop）──
+  // ── Phase 1: skeleton item (cb-ghost, Plan A alike; does not compensate scrollTop) ──
 
-  it('阶段1：init 后顶部 mounted[0] 显 cb-ghost（未到最老），且仅一条', async () => {
+  it('Phase 1: after init the top mounted[0] shows cb-ghost (not yet at oldest), and exactly one', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -270,7 +272,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(content.querySelectorAll('.cb-ghost').length).toBe(1);
   });
 
-  it('阶段1：滚到全局最老（noOlder）→ cb-ghost 消失', async () => {
+  it('Phase 1: scroll to the global oldest (noOlder) → cb-ghost disappears', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(120) });
     await scroller.init();
@@ -283,7 +285,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(content.querySelectorAll('.cb-ghost').length).toBe(0);
   });
 
-  it('loadOlder 截最新端 → noNewer 重置 false（loadNewer 可加载回，修向下滚/定位底部卡住）', async () => {
+  it('loadOlder truncates the newest edge → noNewer resets to false (loadNewer can load it back; fixes scroll-down/bottom-pin stuck)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -294,7 +296,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(scroller.getInfo().noNewer).toBe(false);
   });
 
-  it('destroy 清空挂载', async () => {
+  it('destroy clears all mounts', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -302,9 +304,9 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(content.children.length).toBe(0);
   });
 
-  // ── 跳转到指定 id（方案 A 与 B 跳转路径同构：openAround/fillAround/positionMounted 一致）──
+  // ── Jump to a specific id (Plan A and B jump paths are isomorphic: openAround/fillAround/positionMounted identical) ──
 
-  it('scrollToIndex 已挂载 → 按 anchor 定位（top/center/bottom）', async () => {
+  it('scrollToIndex already mounted → positioned by anchor (top/center/bottom)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -316,7 +318,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(viewport.scrollTop).toBe(4500);
   });
 
-  it('init({startMsgId}) 中段 → 双向窗口围绕目标、居中（无 fill）', async () => {
+  it('init({startMsgId}) mid-range → two-sided window around the target, centered (no fill)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 2500, anchor: 'center' });
@@ -328,7 +330,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(viewport.scrollTop).toBe(4650);
   });
 
-  it('scrollToIndex 未挂载 → 重置窗口围绕 id（re-seed）、目标挂载并居中', async () => {
+  it('scrollToIndex not mounted → re-seed window around id; target mounted and centered', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init();
@@ -367,7 +369,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(viewport.scrollTop).toBe(750);
   });
 
-  it('近最旧跳转 → noOlder、上方不足 threshold/2 → 下方补偿到 threshold', async () => {
+  it('jump near the oldest → noOlder; above-side under threshold/2 → below-side compensates up to threshold', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 5, anchor: 'center' });
@@ -378,7 +380,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
   });
 
-  it('近最新跳转 → noNewer、下方不足 threshold/2 → 上方补偿到 threshold', async () => {
+  it('jump near the newest → noNewer; below-side under threshold/2 → above-side compensates up to threshold', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 4995, anchor: 'center' });
@@ -389,7 +391,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
   });
 
-  it('极小会话跳转 → 两侧均到界、totalH<threshold、直接渲染', async () => {
+  it('jump in a tiny conversation → both sides hit the boundary, totalH<threshold, rendered directly', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(30) });
     await scroller.init({ startMsgId: 15, anchor: 'center' });
@@ -399,7 +401,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(info.mounted).toBe(30);
   });
 
-  it('短 item 跳转 → fill 循环向两侧补到 threshold/2', async () => {
+  it('jump with short items → fill loop extends both sides up to threshold/2', async () => {
     const { hooks } = controllableHooks(10);
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(5000) });
     await scroller.init({ startMsgId: 2500, anchor: 'center' });
@@ -407,7 +409,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(sumChildrenHeight(content)).toBeGreaterThanOrEqual(6000);
   });
 
-  it('scrollToIndex highlight → 目标行加 cb-jump-highlight', async () => {
+  it('scrollToIndex highlight → adds cb-jump-highlight to the target row', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -416,7 +418,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(el?.classList.contains('cb-jump-highlight')).toBe(true);
   });
 
-  // ── 补覆盖：scrollToTop / refresh / loadNewer（向下加载）/ openAround 边界 / gen 超越 ──
+  // ── Coverage: scrollToTop / refresh / loadNewer (load downward) / openAround boundary / gen supersession ──
 
   it('scrollToTop → scrollTop=0', async () => {
     const { hooks } = controllableHooks();
@@ -427,7 +429,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(viewport.scrollTop).toBe(0);
   });
 
-  it('refresh → 重测 vh + balance，不抛错、窗口仍可用', async () => {
+  it('refresh → re-measures vh + balance; does not throw, window stays usable', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();
@@ -436,24 +438,24 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(viewport.scrollTop).toBeGreaterThanOrEqual(0);
   });
 
-  it('向下滚到底边缘 → loadNewer 触发 getNewer、newestId 向最新推进', async () => {
+  it('scroll down to the bottom edge → loadNewer triggers getNewer; newestId advances toward newest', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
-    await scroller.init(); // 贴底、noNewer=true
-    viewport.scrollTop = 0; // 向上滚 → loadOlder → trimNewer → noNewer=false
+    await scroller.init(); // pinned to bottom, noNewer=true
+    viewport.scrollTop = 0; // scroll up → loadOlder → trimNewer → noNewer=false
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
     expect(scroller.getInfo().noNewer).toBe(false);
     const newestBefore = scroller.getInfo().newestId!;
-    viewport.scrollTop = content.scrollHeight - 600; // 贴底 → loadNewer
+    viewport.scrollTop = content.scrollHeight - 600; // pin to bottom → loadNewer
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
     expect(src.newers()).toBeGreaterThan(0);
     expect(scroller.getInfo().newestId!).toBeGreaterThan(newestBefore);
   });
 
-  it('openAround：source 返回不含目标的批 → 安全 no-op（不挂载、不崩溃）', async () => {
+  it('openAround: source returns a batch that does not contain the target → safe no-op (no mount, no crash)', async () => {
     const { hooks } = controllableHooks();
     const src: CbSource<number> = {
       init: async () => [{ id: 1, data: 1 }, { id: 2, data: 2 }],
@@ -466,24 +468,24 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(scroller.getInfo().mounted).toBe(0);
   });
 
-  it('连续两次跳转 → gen 守卫：在途的第一次被丢弃，最终窗口围绕第二次', async () => {
+  it('two consecutive jumps → gen guard: the in-flight first one is dropped, the final window centers on the second', async () => {
     const { hooks } = controllableHooks();
     const src = controllableInitSource(5000);
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
-    scroller.scrollToIndex(100, 'center'); // openAround#1（gen=1）
-    scroller.scrollToIndex(200, 'center'); // openAround#2（++gen=2）
+    scroller.scrollToIndex(100, 'center'); // openAround#1 (gen=1)
+    scroller.scrollToIndex(200, 'center'); // openAround#2 (++gen=2)
     expect(src.initPending()).toBe(2);
-    src.resolveInit(src.batchAround(100)); // #1 → gen≠ → 丢弃
-    src.resolveInit(src.batchAround(200)); // #2 → 挂 151..250
+    src.resolveInit(src.batchAround(100)); // #1 → gen mismatch → dropped
+    src.resolveInit(src.batchAround(200)); // #2 → mounts 151..250
     await flush();
     const info = scroller.getInfo();
     expect(info.oldestId).toBe(151);
     expect(info.newestId).toBe(250);
   });
 
-  // ── insertAfter：中段插入（不触发 balance；方案 A 不补偿 scrollTop —— 与 B 的关键区别）──
+  // ── insertAfter: mid-range insert (does not trigger balance; Plan A does not compensate scrollTop — key difference from B) ──
 
-  it('insertAfter 未挂载 id → no-op（返回 false、不挂载、不加载）', async () => {
+  it('insertAfter unmounted id → no-op (returns false, no mount, no load)', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
@@ -497,7 +499,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(src.newers()).toBe(0);
   });
 
-  it('insertAfter 中段 → 挂到 idx+1 正确 DOM 位（target 与后继之间）', async () => {
+  it('insertAfter mid-range → mounts at the correct DOM position idx+1 (between target and successor)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init(); // m-400..m-499
@@ -512,7 +514,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(ids[i + 2]).toBe('451');
   });
 
-  it('insertAfter 用新 prev 重建后继；新项以 target 为 prev 仅创建一次', async () => {
+  it('insertAfter rebuilds the successor with the new prev; the new item is created once with target as prev', async () => {
     const calls: { id: number; prev: number | null }[] = [];
     const hooks = {
       createItem: (item: CbItem<number>, prev: CbItem<number> | null): CbElement<number> => {
@@ -530,39 +532,39 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(ins.length).toBe(1);
     expect(ins[0].prev).toBe(450);
     const succ = calls.filter(c => c.id === 451);
-    expect(succ.length).toBe(2);         // init 挂载 + rebuild
-    expect(succ[1].prev).toBe(-1);    // 用新 prev 重建
+    expect(succ.length).toBe(2);         // init mount + rebuild
+    expect(succ[1].prev).toBe(-1);    // rebuilt with the new prev
   });
 
-  it('方案 A：insertAfter 即便在视口上方也不补偿 scrollTop（浏览器 overflow-anchor 负责；mock 下即「未改动」）', async () => {
+  it('Plan A: insertAbove does not compensate scrollTop even above the fold (browser overflow-anchor owns it; under mock this means "unchanged")', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
-    await scroller.init(); // 贴底（scrollTop=9400）；m-400（top 0）在视口上方
+    await scroller.init(); // pinned to bottom (scrollTop=9400); m-400 (top 0) is above the fold
     const stBefore = viewport.scrollTop;
     const ok = scroller.insertAfter(400, { id: -1, data: -1 });
     expect(ok).toBe(true);
-    expect(viewport.scrollTop).toBe(stBefore); // 方案 A 不补偿（与 B 的 +=100 区别）
-    expect(src.gets()).toBe(0);                 // 不触发 balance
+    expect(viewport.scrollTop).toBe(stBefore); // Plan A does not compensate (unlike B's +=100)
+    expect(src.gets()).toBe(0);                 // does not trigger balance
     expect(src.newers()).toBe(0);
   });
 
-  it('游标守卫：transient 到达末尾不污染 loadNewer（不误锁 noNewer）', async () => {
+  it('cursor guard: a transient reaching the tail does not pollute loadNewer (does not falsely lock noNewer)', async () => {
     const { hooks } = controllableHooks();
     const src = fakeSource(500);
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: src });
     await scroller.init();
-    viewport.scrollTop = 0; // 向上滚 → trimNewer → noNewer=false
+    viewport.scrollTop = 0; // scroll up → trimNewer → noNewer=false
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
     expect(scroller.getInfo().noNewer).toBe(false);
     const tailId = scroller.getInfo().newestId!;
-    const ok = scroller.insertAfter(tailId, { id: -1, data: -1 }); // transient 成新末
+    const ok = scroller.insertAfter(tailId, { id: -1, data: -1 }); // transient becomes the new tail
     expect(ok).toBe(true);
     expect(scroller.getInfo().newestId).toBe(-1);
     // drain the cb-enter so the checkpoint is not deferred when scrolling to the bottom edge
     content.querySelector<HTMLElement>('[data-cb-id="-1"]')?.dispatchEvent(new Event('animationend'));
-    viewport.scrollTop = content.scrollHeight - 600; // 滚到底边缘 → loadNewer
+    viewport.scrollTop = content.scrollHeight - 600; // scroll to the bottom edge → loadNewer
     viewport.dispatchEvent(new Event('scroll'));
     await flush();
     expect(src.newers()).toBeGreaterThan(0);                      // getNewer called with the real cursor (skipped the transient)
@@ -572,7 +574,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(content.querySelector(`[data-cb-id="${tailId + 1}"]`)).not.toBeNull();
   });
 
-  // ── Phase A/B/C (方案 A mirror): enter animation, transient-safe trim, settle, removeItem (no scrollTop compensation) ──
+  // ── Phase A/B/C (Plan A mirror): enter animation, transient-safe trim, settle, removeItem (no scrollTop compensation) ──
 
   /** Dispatch animationend on a host (drain cb-enter/cb-leave synchronously in tests). */
   function animEnd(id: string): void {
@@ -727,7 +729,7 @@ describe('ChatBoxScrollerAnchor（方案 A · array index）', () => {
     expect(scroller.getInfo().mounted).toBe(mountedBefore - 1);
   });
 
-  it('Phase C (方案 A): removeItem does NOT compensate scrollTop (browser overflow-anchor owns the viewport)', async () => {
+  it('Phase C (Plan A): removeItem does NOT compensate scrollTop (browser overflow-anchor owns the viewport)', async () => {
     const { hooks } = controllableHooks();
     scroller = new ChatBoxScrollerAnchor<number>({ viewport, content, hooks, source: fakeSource(500) });
     await scroller.init();

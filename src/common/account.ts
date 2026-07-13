@@ -3,7 +3,7 @@ import { monotonicFactory } from 'ulid';
 import { Prisma } from '../prisma/generated/client.js';
 
 /**
- * Account grammar — the single source of truth is docs/account-naming.md. This module is the code
+ * Account grammar — single source of truth. This module is the code
  * counterpart: every site that creates, validates, normalizes, or mints an account string goes through
  * here. The spec is authoritative; if code and spec disagree, fix the code.
  *
@@ -17,8 +17,8 @@ import { Prisma } from '../prisma/generated/client.js';
 
 /** User account: starts with a letter, then letters/digits, dot-separated. The `(\.[a-z0-9]+)*` shape
  *  enforces no leading/trailing/consecutive dot. 3–31 chars (VarChar(31) is the hard ceiling). Digits are
- *  allowed; the `!` group sigil remains un-spoofable because `!` is neither a letter nor a digit
- *  (docs/account-naming.md §2.1). `/i` only matches — case is normalized on write. */
+ *  allowed; the `!` group sigil remains un-spoofable because `!` is neither a letter nor a digit.
+ *  `/i` only matches — case is normalized on write. */
 export const USER_ACCOUNT_RE = /^(?=.{3,31}$)[a-z][a-z0-9]*(\.[a-z0-9]+)*$/i;
 
 /** Group account: `!` + 2–30 chars of `[a-z0-9]` (total 3–31). The recommended body is a 26-char ULID. */
@@ -63,7 +63,7 @@ export function mintUlid(): string {
 }
 
 /** A group account = `!` + a fresh ULID. The CALLER wraps the row create in a regenerate-on-P2002 loop
- *  (docs/account-naming.md §3.3) — multi-process same-ms draws can still collide at the unique index, so
+ *  — multi-process same-ms draws can still collide at the unique index, so
  *  the loop is a real (if probabilistically rare) safety net, not a digit-suffix retreat. */
 export function mintGroupAccount(): string {
   const account = '!' + mintUlid();

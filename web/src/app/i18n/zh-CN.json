@@ -236,6 +236,11 @@
       "file": "[文件]",
       "voice": "[语音消息]"
     },
+    "mediaCount": {
+      "image": "{count, plural, other {# 图}}",
+      "video": "{count, plural, other {# 视频}}",
+      "audio": "{count, plural, other {# 音频}}"
+    },
     "menuViewInfo": "查看资料",
     "menuSearch": "搜索",
     "menuMute": "静音通知",

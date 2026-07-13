@@ -8,7 +8,7 @@ import { IS_PUBLIC } from '../common/public.decorator.js';
  * by default; a handler/controller opts out with `@Public()` (read via Reflector.getAllAndOverride over
  * `[handler, class]`, so a class-level `@Public()` covers every method on it). Secure-by-default: a route
  * added without any decorator is authenticated, never silently public — closing the "forgot @UseGuards"
- * structural risk flagged in docs/backend-review-followups.md.
+ * structural risk.
  *
  * Public routes that carry another auth mechanism (admin JWT / s2s signature / notification token) are
  * marked `@Public()` so this guard skips them and their own route-scoped guard runs instead.

@@ -12,7 +12,7 @@
 
 .ua.img {
   object-fit: cover;
-  border-radius: 20%; // 匹配首字母 SVG 的 rect rx=20% 方圆角，真实图也圆角
+  border-radius: 20%; // Matches the rx=20% rounded corners of the initial-letter SVG; real images stay rounded too
 }
 
 .ua text {

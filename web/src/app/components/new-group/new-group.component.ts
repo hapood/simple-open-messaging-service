@@ -35,7 +35,7 @@ export class NewGroupComponent {
   readonly AppIconType = AppIconType
   readonly UserAvatarType = UserAvatarType
   readonly NAME_MAX = 31
-  /** Max length of the optional group description (群简介). */
+  /** Max length of the optional group description. */
   readonly DESC_MAX = 240
 
   /** Wizard step: 1 = pick members, 2 = name + avatar. */
@@ -49,7 +49,7 @@ export class NewGroupComponent {
 
   /** Group name — user-entered on step 2 (never prefilled); required, must be non-empty. */
   readonly name = signal('')
-  /** Optional group description (群简介) — also entered on step 2. */
+  /** Optional group description — also entered on step 2. */
   readonly description = signal('')
 
   selectedDict = signal<Record<number, boolean | undefined>>({})

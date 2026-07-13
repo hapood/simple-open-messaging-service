@@ -17,7 +17,7 @@ const fromB64 = (s: string): Uint8Array => Uint8Array.from(Buffer.from(s, 'base6
 /**
  * Owns this server's S2S signing identity: one Ed25519 keypair, generated on first boot and
  * persisted to disk (SOMS_S2S_KEY_PATH). The DKIM-equivalent application-layer signing key
- * (the TLS cert is a separate transport-layer concern — see docs/federation-protocol.md §5.1).
+ * (the TLS cert is a separate transport-layer concern).
  *
  * The private key MUST be backed up. Losing it = losing this server's identity: every peer has
  * trusted the OLD public key (fetched from our .well-known), so a new key cannot be proven a

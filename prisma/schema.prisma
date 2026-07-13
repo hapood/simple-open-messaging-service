@@ -21,24 +21,21 @@ model User {
   avatar             String              @default("") // avatar path /uploads/... (folded from UserExtra.avatar)
   bio                String              @default("") @db.VarChar(255) // (folded from UserExtra.bio)
   isForeigner        Boolean
-  isGroup            Boolean             @default(false) // true iff a "!"-sigil group identity row (not a person); grammar-enforced sigil, kept consistent with a CHECK constraint (account LIKE '!%') = isGroup. See docs/account-naming.md.
-  // Domain: "local" for users homed on THIS server, <peer-domain> for federated stubs. Non-null +
-  // the @@unique([account, domain]) below enforce both local-user and stub uniqueness (a standalone
-  // account @unique would block a foreign stub sharing an account with a local user). The federated
-  // address/display use the real config.domain at runtime; "local" is an internal sentinel only
-  // (MessageThread itself carries no federation columns in Step 1 — each server owns its own thread).
+  isGroup            Boolean             @default(false) // true iff a "!"-sigil group identity row (not a person). Mirrors the account grammar; a CHECK keeps them consistent (account LIKE '!%' ⟺ isGroup).
+  // "local" for users on THIS server; <peer-domain> for a federated stub. The compound
+  // @@unique([account, domain]) below enforces BOTH local and stub uniqueness (a plain account
+  // @unique would block a foreign stub sharing a local account). "local" is an internal sentinel —
+  // never displayed; the real config.domain is used at runtime.
   domain             String              @default("local") @db.VarChar(63)
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   isDeleted          Boolean             @default(false)
   tokenVersion       Int                 @default(0) // bumping this invalidates ALL of the user's access tokens (all-device logout / password change / force-kick)
   hasUrFriendReq     Boolean             @default(false) // unread friend-request badge (folded from userNotiBox). SELF-ONLY in responses — builders must omit it for non-self.
-  // Profile revision (name/avatar/bio changes). On the ORIGIN this is the authoritative counter bumped
-  // on every profile edit (updateProfile / updateAvatar / updateGroup); on a federated STUB it is the
-  // mirror's cursor (remoteProfileRev) capturing the origin's profileRev at last localization. The
-  // chat-open staleness probe (GET /api/v1/s2s/users/:account/revision) compares the origin's current
-  // profileRev against remoteProfileRev; a newer origin value triggers a re-pull + re-localize.
-  // Null remoteProfileRev = stub not yet localized. See docs/federation-protocol.md (avatar federation).
+  // Profile revision (name/avatar/bio). On the ORIGIN, bumped on every profile edit (authoritative).
+  // On a federated STUB, remoteProfileRev holds the origin's profileRev at last localization — the
+  // chat-open probe compares the two and re-pulls when the origin is newer. Null remoteProfileRev =
+  // stub not yet localized.
   profileRev         Int                 @default(0)
   remoteProfileRev   Int?
   // Thread-list revision (per-user, monotonic). Bumped on every thread add/delete (friend approve,
@@ -116,21 +113,19 @@ model NotificationToken {
   @@index([userId])
 }
 
-// Group-exclusive state (re-introduced 2026-07): the group's IDENTITY (name/avatar/bio) stays on the
-// "!"-sigil User row (isGroup=true) since it shares the profile shape with human users; this table holds
-// only group-exclusive fields the User row must not carry — owner + roster revision (the federation pull
-// cursor). profile revision lives on User.profileRev / User.remoteProfileRev (identity is shared).
-// See docs/account-naming.md, docs/federation-protocol.md.
+// Group-exclusive state. The group's identity (name/avatar/bio) lives on its "!"-sigil User row (shared
+// profile shape); this table holds only owner + roster revision (the federation pull cursor). Identity
+// revision is on User.profileRev.
 model Group {
   id              Int      @id @default(autoincrement())
   groupUserId     Int      @unique // → User.id (!-sigil identity row); 1:1 with the GROUP thread
   ownerId         Int // group owner (denormalized from ThreadParticipant role=OWNER for fast lookup)
-  // Origin roster revision — bumped on every member/role change (join/leave/kick/role/transfer). The
-  // federation roster probe (GET /api/v1/s2s/group/:account/roster-revision) compares this against the
-  // mirror's remoteRosterRev to decide whether to re-pull the roster. Symmetric with User.profileRev.
+  // Origin roster revision — bumped on every member/role change. The federation roster probe compares
+  // this against the mirror's remoteRosterRev and re-pulls the roster when newer. Symmetric with
+  // User.profileRev.
   rosterRev       Int      @default(0)
-  // Mirror's remote roster revision cursor (the origin's rosterRev last pulled). Null for local origin
-  // groups (their own rosterRev is authoritative). Symmetric with User.remoteProfileRev.
+  // Mirror's cursor: the origin rosterRev last pulled. Null for the local origin (its own rosterRev is
+  // authoritative). Symmetric with User.remoteProfileRev.
   remoteRosterRev Int?
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -153,15 +148,15 @@ enum ThreadRevisionDirection {
 /// is a redundant current-state flag for fast "active threads" queries (WHERE direction=ADD AND
 /// isDelete=false) — snapshot(revision=R) still uses the revision columns for historical accuracy.
 model ThreadRevision {
-  id        BigInt                @id @default(autoincrement())
+  id        BigInt                  @id @default(autoincrement())
   userId    Int
   threadId  Int
   direction ThreadRevisionDirection
   revision  Int
-  isDelete  Boolean               @default(false) // ADD row only: current soft-delete state (fast active-threads query)
-  createdAt DateTime              @default(now())
+  isDelete  Boolean                 @default(false) // ADD row only: current soft-delete state (fast active-threads query)
+  createdAt DateTime                @default(now())
 
-  user   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user   User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   thread MessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
 
   @@unique([userId, threadId, direction]) // one ADD + one DELETE per (user, thread)
@@ -223,16 +218,13 @@ model ThreadParticipant {
   @@index([userId, pinned]) // pinned-first conversation list per user
 }
 
-/// A friend-add or group-invite request — the single home for invites of all kinds (uniform shape).
-/// kind=FRIEND: one user asking another to be friends (threadId null; the P2P thread is minted on
-/// accept). kind=GROUP: a member inviting a friend into a group thread (threadId = target group).
-/// Delivered to `toUserId` and accepted by sending the invite id back as a payload.
+/// A friend-add or group-invite (uniform shape; the single home for both). FRIEND: threadId null (the
+/// P2P thread is minted on accept); GROUP: threadId = target group. Accepted by sending the invite id.
 ///
-/// Duplicate = new overwrites old (upsert-on-P2002, keyed by the migration's partial unique indexes):
-/// FRIEND dedupes on (from, to); GROUP dedupes on (to, thread) regardless of inviter — so a second
-/// admin inviting the same friend to the same group refreshes the existing PENDING row in place.
-/// Expiry (7d) is validated at accept time; rows are never hard-deleted. `origin`/`originId` carry the
-/// minting server for cross-server delivery dedup (local invites use our domain + a ULID).
+/// Duplicates overwrite in place (upsert-on-P2002 via partial unique indexes): FRIEND on (from, to),
+/// GROUP on (to, thread) regardless of inviter — a second admin inviting the same friend to the same
+/// group refreshes the PENDING row. 7d expiry validated at accept time; rows are never hard-deleted.
+/// `origin`/`originId` carry the minting server for cross-server delivery dedup.
 model Invite {
   id         BigInt       @id @default(autoincrement())
   kind       InviteKind
@@ -257,9 +249,8 @@ model Invite {
   @@index([kind, threadId, toUserId, status]) // GROUP dedup + roster queries
 }
 
-/// One-way block independent of the Friendship state machine. Blocking survives an unfriend (and applies
-/// to strangers), so it is NOT modeled as a FriendshipStatus — that would conflate with the friend
-/// lifecycle and reveal/lose state on befriend again. Exactly one row per (blocker, blocked) direction;
+/// One-way block, independent of friendship (survives an unfriend; applies to strangers too — hence not
+/// a FriendshipStatus, which would conflate lifecycles). Exactly one row per (blocker, blocked) direction;
 /// mutual block = two rows. The message path consults this to drop fan-out and filter query-messages.
 model UserBlock {
   id        Int      @id @default(autoincrement())
@@ -279,36 +270,30 @@ model MessageThread {
   createdAt DateTime          @default(now())
   updatedAt DateTime          @updatedAt
 
-  // Per-thread last-allocated Message.seq (-1 = no messages yet; first message → 0). The atomic counter
-  // backing seq allocation: `UPDATE SET curSeq = curSeq + 1 RETURNING curSeq` inside the message-create
-  // tx serializes per-thread sends (a brief wait, never an error) and keeps curSeq == MAX(seq) by
-  // construction, so it doubles as the authoritative "latest seq" without a separate aggregate.
+  // Last-allocated Message.seq for this thread (-1 = no messages yet). The atomic counter backing seq
+  // allocation: `UPDATE curSeq = curSeq + 1 RETURNING curSeq` inside the message-create tx serializes
+  // per-thread sends and keeps curSeq == MAX(seq), so it also serves as "latest seq" with no aggregate.
   curSeq Int @default(-1)
 
-  // Federation pull cursor: the REMOTE server's thread seq this server has pulled up to. Seeded by the
-  // `sinceSeq` carried in the invite/invite-accept at friend-approve / group-accept (-1 = nothing yet,
-  // = the head), and advanced to the response `latestSeq` after each successful pull. Used by BOTH 1:1
-  // (the peer's thread seq pulled) and a GROUP mirror (the origin's thread seq pulled) — the unified
-  // "how far have I caught up" cursor. Stored (not derived from rows) because a freshly-joined member has
-  // no local rows yet — derivation would give -1 (full-pull) instead of the seeded `sinceSeq` start.
-  // `originSeq` (per-author, on Message) remains the dedup key + the origin's per-author hub-leg cursor.
+  // Federation pull cursor: the REMOTE thread seq this server has pulled up to. Seeded by the invite's
+  // `sinceSeq` (-1 = nothing yet), advanced to the response `latestSeq` after each pull. Stored (not
+  // derived) because a freshly-joined member has no local rows — derivation would wrongly force a
+  // full-pull instead of resuming from `sinceSeq`. Message.originSeq remains the per-author dedup key.
   pullUntil Int @default(-1)
 
-  // Denormalized "last message" read-cache for the conversation list (the hottest read path).
-  // NO foreign keys: these are derived from Message at write time (writeMsgToThread updates them in
-  // the same tx as the Message insert); the source of truth — Message.seq / creator / createdAt — keeps
-  // its FKs. Nullable: empty threads (no messages yet) stay NULL. lastMessageSeq is the Int cursor
-  // (not the unread watermark, which is per-participant on ThreadParticipant.lastReadSeq).
+  // Denormalized "last message" cache for the conversation list (hot read path). No FKs — written in
+  // the same tx as the Message; the source of truth (Message.seq/creator/createdAt) keeps its FKs.
+  // Nullable for empty threads. lastMessageSeq is the cursor, NOT the unread watermark (that's per-
+  // participant on ThreadParticipant.lastReadSeq).
   lastMessageSeq      Int?
   lastMessagePreview  String?   @db.VarChar(255)
   lastMessageSenderId Int?
   lastMessageAt       DateTime?
 
-  // The "!"-sigil User row that CARRIES this GROUP conversation's identity (name/avatar/bio). Non-null
-  // iff type=GROUP; null for P2P. @unique enforces ONE thread per group-User (replaces the former
-  // fedGroupAccount @unique — the federated group's `!account` is now read via groupUser.account, and
-  // the origin domain via groupUser.domain). onDelete: Cascade (deleting the group-user deletes the
-  // thread). The Group row (owner + roster revision) is reached via groupUser.group. See docs/account-naming.md.
+  // The "!"-sigil User row carrying this GROUP thread's identity (name/avatar/bio). Non-null iff
+  // type=GROUP; null for P2P. @unique → one thread per group-User. Cascade-deletes with the group-user.
+  // The federated `!account`/origin domain are read via groupUser.account/domain; owner + roster rev
+  // via groupUser.group.
   groupUserId       Int?                @unique
   groupUser         User?               @relation("GroupUser", fields: [groupUserId], references: [id], onDelete: Cascade)
   ThreadParticipant ThreadParticipant[]
@@ -331,18 +316,14 @@ enum ContentType {
 }
 
 model Message {
-  // INTERNAL global surrogate PK. NEVER exposed to clients or federation: a global autoincrement is a
-  // cross-conversation throughput side-channel (deltas between two messages in thread T reveal server-wide
-  // volume, including threads the observer is not in). It exists only as the storage identity + the
-  // MediaMessage FK target. All external surfaces (HTTP/SSE/federation) carry `seq`, never `id` — the
-  // response layer omits it (see MessageService.queryMessages / writeMsgToThread return shaping).
+  // INTERNAL surrogate PK, NEVER exposed (omitted from HTTP/SSE/federation, which carry `seq`). A global
+  // autoincrement would leak cross-conversation throughput (deltas reveal server-wide volume), so it
+  // exists only as storage identity + the MediaMessage FK target.
   id               BigInt        @id @default(autoincrement())
-  // Per-thread monotonic sequence (0-INDEXED: first message in a thread is seq 0). Allocated atomically
-  // from MessageThread.curSeq (UPDATE curSeq = curSeq + 1 RETURNING) inside the message-create tx, so it
-  // is gapless modulo rollback/delete and needs no retry loop. This is the EXTERNAL ordering key + the
-  // frontend's message identity (keyset cursor, read watermark) — its deltas reveal only THIS thread's
-  // volume. Each server assigns its OWN per-thread seq; a receiver re-seqs every pulled message into its
-  // local space (see originSeq for the cross-server value). See docs/federation-s2s-api.md.
+  // Per-thread monotonic seq (0-indexed), allocated atomically from curSeq inside the message-create tx
+  // → gapless modulo rollback/delete, no retry loop. The EXTERNAL ordering key + frontend message
+  // identity (keyset cursor, read watermark); deltas reveal only THIS thread's volume. Each server
+  // assigns its OWN seq; a receiver re-seqs pulled messages into its local space (see originSeq).
   seq              Int
   contentType      ContentType
   content          String
@@ -357,19 +338,15 @@ model Message {
   // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
   clientMessageId  String?       @unique @db.VarChar(36)
-  // The ORIGINATING server's per-thread seq for this message — the cross-server federation value. On the
-  // origin (a locally-authored message) it equals `seq`; a RECEIVER copies it verbatim from the pulled
-  // payload (so the SAME value lives on both sides) while allocating its own local `seq`. This is the
-  // federation dedup key + per-(thread, sender) pull cursor: the receiver tracks MAX(originSeq) per
-  // (thread, creator) and pulls originSeq > cursor — no cross-server sequence-space consistency is
-  // required (each side keeps its own seq; the peer's is stored here). Nullable: legacy rows only;
-  // every post-migration row is populated (== seq locally, copied remotely).
+  // The ORIGINATING server's per-thread seq — the cross-server value. Equals `seq` on the origin; a
+  // receiver copies it verbatim while allocating its own local `seq` (same value on both sides). The
+  // federation dedup key + per-(thread, sender) pull cursor (receiver pulls originSeq > MAX). Each side
+  // keeps its own seq; no cross-server sequence-space consistency is needed. Null = legacy rows only.
   originSeq        Int?
-  // The SENDER server's allocation time, copied verbatim from the pulled payload's `ts`. The receiver's
-  // own `createdAt` (local now() at pull time) is the ARRIVAL time — what the chatbox displays and what
-  // orders the conversation list. This column is the origin-faithful time, stored for future use
-  // (quota day-bucketing, audit, optional origin-faithful ordering) and NEVER displayed. Nullable: null
-  // for locally-authored messages (their own createdAt IS the origin time) and for pre-Step-2 legacy rows.
+  // The SENDER server's allocation time (copied from the pulled payload's `ts`). NEVER displayed — the
+  // chatbox + conversation list use the receiver's `createdAt` (local arrival time). Stored for future
+  // use (quota day-bucketing, audit). Null for locally-authored messages (their createdAt IS the origin
+  // time) and pre-Step-2 legacy rows.
   originServerTime DateTime?
 
   mediaMessages MediaMessage[] // per-object media authz index (digest → thread)
@@ -381,19 +358,12 @@ model Message {
   @@index([threadId, creator, originSeq]) // federation pull query + MAX(cursor) derivation
 }
 
-/// Content-addressed media asset (chat images / files / video / audio). One physical file per unique
-/// sha256 digest at uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>; `refs` is a
-/// denormalized reference count bumped on every upload (a dedup hit lands on the same row and
-/// increments refs) and decremented by a future message-delete path; the GC sweep reclaims the file
-/// + row when refs reaches 0. Avatars are NOT tracked here — they keep the legacy
-/// uploads/<base>-<size>.webp multi-size sharp pipeline. There is no FK to Message: Message.content
-/// is an opaque JSON string and the URL embeds the digest, so the link is by-value. Internal only —
-/// never surfaced in API responses (the upload routes derive {url,size,...} from the write).
-///
-/// Only the reference count + audit columns live here. The on-disk extension and MIME are NOT stored:
-/// the extension is recoverable from the filename (<digest>.<ext>), MIME is mapped by @fastify/static
-/// from the extension at serving time, and the upload response gets its MIME from the request (not
-/// from this row). Storing them would be pure redundancy. The GC path globs <digest>.* to unlink.
+/// Content-addressed media asset (chat images/files/video/audio). One file per sha256 digest at
+/// uploads/shards/<digest[0:2]>/<digest[2:4]>/<digest>.<ext>; `refs` is a denormalized refcount
+/// (bumped on upload/dedup, decremented on message-delete; GC reclaims at refs=0). Avatars are NOT
+/// tracked here — they keep the uploads/<base>-<size>.webp sharp pipeline. No FK to Message: the URL
+/// embeds the digest, so the link is by-value. Internal only — never in API responses. Extension +
+/// MIME are not stored (recoverable from the filename / set by @fastify/static at serving time).
 model MediaAsset {
   digest    String   @id @db.VarChar(64) // sha256 hex (64 chars); also the on-disk filename stem
   bytes     BigInt // file size (BigInt: video cap 100MB; Int would overflow beyond ~2GB). Audit/monitoring only.
@@ -403,16 +373,11 @@ model MediaAsset {
   @@index([refs]) // GC sweep: WHERE refs <= 0
 }
 
-// Per-object media authorization index. The /uploads/shards/* gate answers "is this user allowed to read
-// this digest?" with one indexed EXISTS over this table joined to ThreadParticipant. Written atomically
-// at send time for every IMAGE/FILE/VIDEO/AUDIO message (one row per distinct digest a message references).
-// threadId is denormalized from Message so the gate skips a JOIN to Message. Never returned in API responses.
-// Per-object media authorization index. The /uploads/shards/* gate answers "is this user allowed to read
-// this digest?" with one indexed EXISTS over this table joined to ThreadParticipant. 1:1 with a
-// media-bearing Message: ONE message carries exactly ONE image/file/video/audio (albums are a FRONTEND
-// grouping of consecutive single-image messages, never one message with many), so the Message PK IS this
-// row's identity — messageId is the sole @id (no surrogate, no digest in the PK). Written at send time;
-// threadId is denormalized from Message so the gate skips a JOIN. Never returned in API responses.
+// Per-object media authorization index. The /uploads/shards/* gate answers "may this user read this
+// digest?" with one indexed EXISTS over this table joined to ThreadParticipant. 1:1 with a media-bearing
+// Message (one image/file/video/audio per message; albums are a FRONTEND grouping of consecutive
+// single-image messages) → messageId is the sole @id. Written at send time; threadId is denormalized so
+// the gate skips a JOIN to Message. Never returned in API responses.
 model MediaMessage {
   messageId BigInt   @id // == Message.id; the row's sole identity (1:1 with a media-bearing message)
   threadId  Int // denormalized from Message (the /uploads gate skips a JOIN to Message)
@@ -426,21 +391,16 @@ model MediaMessage {
   @@index([threadId])
 }
 
-/// In-flight media send/localize staging. A media message is NOT committed as a Message until its bytes
-/// are confirmed — uploaded (local) or localized (federated). Until then only this row exists: no Message,
-/// no seq, nothing visible in the thread. On success the row is deleted as the real Message+MediaMessage
-/// are created atomically (promote). On failure it is marked `failed` and left (no auto-retry).
+/// In-flight media staging. A media message is NOT committed as a Message until its bytes are confirmed
+/// (uploaded locally / localized federated); until then only this row exists — no Message, no seq, nothing
+/// visible. On success it's deleted as the real Message+MediaMessage are created atomically (promote); on
+/// failure it's marked `failed` (no auto-retry). Created BEFORE the file write so a crash always leaves an
+/// attributable record for the GC (stale pending row + its file/asset), never an unattributed orphan.
 ///
-/// Created BEFORE the file write on both paths, so a crash between "intent recorded" and "bytes
-/// confirmed" always leaves an attributable record: a stale `pending` row (age > GC TTL) + its linked
-/// file/asset is reclaimable by the GC — never the unattributed orphan the old upload-then-send order
-/// produced. `digest` is set once the bytes land and links the staging record to its MediaAsset/file.
-///
-/// LOCAL: clientMessageId is the optimistic-send idempotency key (originSeq NULL). The staged `content`
-/// holds only client-probed display metadata (w/h, duration); the CAS url is injected at promote from
-/// the server's own saveCas digest, so the real Message.content URL is never client-supplied.
-/// FEDERATED: originSeq (+originDomain/originServerTime) is the pull dedup key mirroring Message's
-/// @@unique([threadId, creator, originSeq]); content holds the pulled payload verbatim.
+/// LOCAL: clientMessageId is the optimistic-send idempotency key; `content` holds client-probed display
+/// metadata only (the CAS url is injected at promote → never client-supplied). FEDERATED: originSeq
+/// (+originDomain/originServerTime) is the pull dedup key (mirrors Message's unique); `content` is the
+/// pulled payload verbatim.
 model PendingMedia {
   id               BigInt      @id @default(autoincrement())
   threadId         Int
@@ -487,14 +447,9 @@ model RefreshToken {
   @@index([familyId])
 }
 
-/// Admin profile, LINKED to a User (single account namespace — no user/admin name collision possible).
-/// Identity (account name + password) lives on the linked User; this row holds only admin-specific state
-/// (enabled flag, last login, admin refresh-tokens). Admin login authenticates the linked User's password,
-/// then issues an admin session. Admin auth stays physically isolated from user auth (separate
-/// AdminRefreshToken + adminSecret + scope:'admin') — breach isolation is preserved.
-/// Admin role tiers (RBAC). SUPER_ADMIN = all powers (default — the existing seed admin keeps full
-/// access); ADMIN = everyday operations; VIEWER = read-only (list/view endpoints carry no @Roles, so
-/// VIEWER passes AdminAuthGuard but every mutating endpoint is gated to SUPER_ADMIN / ADMIN).
+/// Admin RBAC tiers. SUPER_ADMIN = all powers (default; the seed admin keeps full access); ADMIN =
+/// everyday operations; VIEWER = read-only (passes AdminAuthGuard on list/view endpoints, but every
+/// mutating endpoint is gated to SUPER_ADMIN / ADMIN).
 enum AdminRole {
   SUPER_ADMIN
   ADMIN
@@ -565,20 +520,18 @@ model AdminActionLog {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Federation (S2S). See docs/federation-protocol.md. Added 2026-07-07.
+// Federation (S2S). Added 2026-07-07.
 // Trust model: FederatedPeer is a DOMAIN ALLOW-LIST only (no key pinning); signing
 // keys are fetched from each peer's /.well-known/soms over HTTPS and cached (S2SKeyCache).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// A peer server we may federate with. The CURRENT-STATE row of the trust lifecycle (the append-only
-/// transition history lives in FederatedPeerEvent). PURE DOMAIN ALLOW-LIST (trust data only — NOT keys,
-/// NOT inbox URL; those are fetched from <domain>/.well-known/soms and cached by DiscoveryService).
+/// A peer server we may federate with — the CURRENT-STATE row of the trust lifecycle (append-only history
+/// is in FederatedPeerEvent). PURE DOMAIN ALLOW-LIST: trust data only — NOT keys or inbox URL (those are
+/// fetched from <domain>/.well-known/soms and cached by DiscoveryService).
 ///
-/// trustLevel state machine: `pending` (seen but init not yet ok) → `trusted` (mutual trust via init)
-/// → `demoted` (a trusted peer failed a signed op: cert/key change, server reset, unreachable — it
-/// leaves active trust and re-handshakes on next contact, self-healing). `blocked` is an admin intent
-/// that forbids federation (ensurePeerTrusted refuses to re-handshake; the inbound guard rejects it).
-/// Lifecycle audit columns capture the trust→loss process for the admin timeline view.
+/// trustLevel: pending → trusted (mutual trust via init) → demoted (a signed op failed: cert/key change,
+/// server reset, unreachable — re-handshakes on next contact, self-healing). blocked = admin intent that
+/// forbids federation (ensurePeerTrusted refuses to re-handshake; the inbound guard rejects it).
 model FederatedPeer {
   domain        String    @id @db.VarChar(63) // e.g. other.com
   trustLevel    String    @default("pending") @db.VarChar(15) // pending | trusted | demoted | blocked
@@ -591,8 +544,7 @@ model FederatedPeer {
   demotionCount Int       @default(0) // how many times demoted — a flakiness signal
   blockedAt     DateTime? // admin block time
 
-  // Per-peer daily-quota overrides (null = use the global default from loadQuotaConfig). Set from the
-  // admin Quotas page. See docs/federation-quotas.md + the unified QuotaService (src/quota/).
+  // Per-peer daily-quota overrides (null = use the global default). Set from the admin Quotas page.
   dailyMsgLimit       Int? // messages/day this peer may pull from us
   dailyImageLimit     Int? // image media items/day
   dailyLargeFileLimit Int? // video/large-file media items/day
@@ -604,11 +556,10 @@ model FederatedPeer {
   @@index([lastSuccessAt]) // "stale / never-heard-from" peers sweep
 }
 
-/// Append-only trust-lifecycle event log — one row per state transition, the source of the admin
-/// "trust → connection-loss" timeline. Decoupled from FederatedPeer (NO foreign key) so the history
-/// survives any future peer-row state change and can't trigger cascade deletes; `domain` is a plain
-/// indexed string. Low volume by design: only transitions are logged (discovered/trusted/demoted/
-/// blocked/unblocked), not every signed op (per-op liveness is the cheap lastSuccessAt UPDATE above).
+/// Append-only trust-lifecycle log — one row per state transition (discovered/trusted/demoted/blocked/
+/// unblocked), the source of the admin timeline. Decoupled from FederatedPeer (NO FK; `domain` is a plain
+/// string) so history survives any peer-row change and can't cascade-delete. Low volume: only transitions
+/// are logged, not every signed op (per-op liveness is the cheap lastSuccessAt UPDATE on FederatedPeer).
 model FederatedPeerEvent {
   id        BigInt   @id @default(autoincrement())
   domain    String   @db.VarChar(63)
@@ -641,14 +592,13 @@ model S2SFriendOpSeen {
   @@id([origin, opId])
 }
 
-/// Unified daily-quota counters. One row per (node, day, category). A "node" is a domain: the local
-/// server's own SOMS_DOMAIN (the aggregate local bucket — all local users share it) OR a federated peer
-/// domain. `date` is a UTC calendar day, so the budget resets automatically at 00:00 UTC (yesterday's
-/// row is simply not today's — no cron). The atomic increment is an `INSERT … ON CONFLICT DO UPDATE
-/// … RETURNING count` in QuotaService.tick (exact, not ±1). See docs/federation-quotas.md.
+/// Unified daily-quota counters — one row per (node, UTC day, category). A node is a domain: the local
+/// SOMS_DOMAIN (one aggregate bucket shared by all local users) or a federated peer domain. `date` is a
+/// UTC calendar day, so the budget resets at 00:00 UTC with no cron. QuotaService.tick increments via
+/// INSERT … ON CONFLICT DO UPDATE … RETURNING count (exact, not ±1).
 model QuotaDailyUsage {
   domain   String   @db.VarChar(63) // SOMS_DOMAIN (local node) OR a peer domain
-  date     DateTime @db.Date        // UTC calendar day
+  date     DateTime @db.Date // UTC calendar day
   category String   @db.VarChar(15) // messages | images | largeFiles | requests
   count    Int      @default(0)
 

@@ -156,7 +156,7 @@ interface ApiResult<T = unknown> {
 | `40xxx` | Group domain | `40001` not a group member / `40002` cannot invite non-friend / `40003` invalid invite token |
 
 > Principle: the HTTP code answers "does the protocol/system layer hold"; the business `code` answers "what is the business result". The two do not conflict.
-> P1b landed: 19 business failure points renumbered per the table above (see [docs/api.md](./api.md) "Business Error Codes" section).
+> P1b landed: 19 business failure points renumbered per the table above (see [docs/api/api.md](../api/api.md) "Business Error Codes" section).
 
 ### 5.3 Authentication and Security Contract
 
@@ -244,7 +244,7 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 ### P2 — Real-Time Experience and Reliability ✅ Completed
 
 > Reconciliation after the 2026-06-30 WS→SSE migration: the original first two P2 items (WS heartbeat / seq catch-up) were meant to fix WS reliability, which SSE now achieves more simply; Notify is a pure incremental feature (and because SSE is unidirectional, any future upstream leg would go through HTTP).
-> On 2026-06-30 read receipts were removed from the roadmap (consistent with `docs/chat-message-list-design.md`'s "read receipts: not doing it"); the `UserMessageThread.lastRead` field remains as an unused dead field (not migrated for now).
+> On 2026-06-30 read receipts were removed from the roadmap (consistent with `docs/overview/chat-message-list-design.md`'s "read receipts: not doing it"); the `UserMessageThread.lastRead` field remains as an unused dead field (not migrated for now).
 > On 2026-07-12 typing / presence (`USER_TYPING` / `USER_PRESENCE`) were removed from the roadmap — a deliberate non-goal, consistent with the minimalist IM positioning (no read receipts, no presence indicators). The three remaining P2 items are all landed; P2 is complete.
 
 | Content | Status | Affected | Acceptance |
@@ -297,12 +297,12 @@ Swagger (`/api/v1/docs`), `/api/v1` version prefix, HTTP status code alignment, 
 
 | Refactor Point | Files |
 | --- | --- |
-| Version prefix + CORS + serialization interceptor + helmet + global pipe/filter | [src/main.ts](../src/main.ts), [src/app.module.ts](../src/app.module.ts) |
+| Version prefix + CORS + serialization interceptor + helmet + global pipe/filter | [src/main.ts](../../src/main.ts), [src/app.module.ts](../../src/app.module.ts) |
 | Exception filter | New `src/common/exception.filter.ts` |
-| DTOs and validation | [src/controller/*](../src/controller/), new `src/common/dto/` |
-| Response envelope consolidation | [src/model.ts](../src/model.ts), [src/controller/utils.ts](../src/controller/utils.ts) |
-| Persist refresh to DB + bug fixes + secrets | [src/auth/auth.service.ts](../src/auth/auth.service.ts), [src/auth/constants.ts](../src/auth/constants.ts), [src/controller/auth.controller.ts](../src/controller/auth.controller.ts), [prisma/schema.prisma](../prisma/schema.prisma) |
-| SSE downstream (auth / heartbeat / push / liveness / forced logout) | [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts) |
-| File upload | [src/upload/](../src/upload/) (`upload.controller` + `upload.service`; chat image upload implemented; avatar `sharp` multi-size rewrite shares `src/upload/`) |
-| Frontend renewal single-flight + SSE reconnect backoff | [web/src/app/auth.interceptor.ts](../web/src/app/auth.interceptor.ts), [web/src/app/services/auth.service.ts](../web/src/app/services/auth.service.ts), [web/src/app/services/websocket.service.ts](../web/src/app/services/websocket.service.ts) (filename kept; internals switched to `@microsoft/fetch-event-source`) |
-| Frontend type generation | [web/](../web/) (new openapi-typescript pipeline) |
+| DTOs and validation | [src/controller/*](../../src/controller/), new `src/common/dto/` |
+| Response envelope consolidation | [src/common/api-result.ts](../../src/common/api-result.ts), [src/common/serialize.interceptor.ts](../../src/common/serialize.interceptor.ts) |
+| Persist refresh to DB + bug fixes + secrets | [src/auth/auth.service.ts](../../src/auth/auth.service.ts), [src/auth/constants.ts](../../src/auth/constants.ts), [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts), [prisma/schema.prisma](../../prisma/schema.prisma) |
+| SSE downstream (auth / heartbeat / push / liveness / forced logout) | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts) |
+| File upload | [src/upload/](../../src/upload/) (`upload.controller` + `upload.service`; chat image upload implemented; avatar `sharp` multi-size rewrite shares `src/upload/`) |
+| Frontend renewal single-flight + SSE reconnect backoff | [web/src/app/auth.interceptor.ts](../../web/src/app/auth.interceptor.ts), [web/src/app/services/auth.service.ts](../../web/src/app/services/auth.service.ts), [web/src/app/services/websocket.service.ts](../../web/src/app/services/websocket.service.ts) (filename kept; internals switched to `@microsoft/fetch-event-source`) |
+| Frontend type generation | [web/](../../web/) (new openapi-typescript pipeline) |

@@ -10,7 +10,7 @@ describe('PageNavgatorComponent', () => {
   beforeEach(async () => {
     await TestBed.configureTestingModule({
       imports: [PageNavgatorComponent],
-      // 应用是 zoneless（不加载 Zone.js）；spec 走 createComponent 必须显式提供 zoneless，否则 NG0908。
+      // The app is zoneless (Zone.js is not loaded); specs using createComponent must explicitly provide zoneless change detection, otherwise NG0908.
       providers: [provideZonelessChangeDetection()],
     }).compileComponents();
 

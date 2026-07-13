@@ -32,7 +32,7 @@ interface StandardResponse<T = any> {
 
 ### Business Error Codes
 
-Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitions are in [`src/common/business-code.ts`](../src/common/business-code.ts) `BusinessCode` enum:
+Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitions are in [`src/common/business-code.ts`](../../src/common/business-code.ts) `BusinessCode` enum:
 
 | Segment | Meaning | Primary codes |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 
 ## Authentication API
 
-> Controller: [src/controller/auth.controller.ts](../src/controller/auth.controller.ts)
+> Controller: [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts)
 
 ### POST `/auth/login` — Login
 
@@ -119,13 +119,13 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 - **Request body**: `{ jti: string, accessJti?: string }` (`jti` must belong to the current user)
 - **Behavior**: revokes the specified refresh (by `jti`); if `accessJti` is provided, also blacklists the current access.
 
-> Session hardening details (revocable access, tokenVersion, family-based refresh + reuse detection, in-process KV, WS coordination) are in [architecture.md → Authentication](./architecture.md#认证机制).
+> Session hardening details (revocable access, tokenVersion, family-based refresh + reuse detection, in-process KV, WS coordination) are in [architecture.md → Authentication](../overview/architecture.md#authentication-mechanism).
 
 ---
 
 ## User API
 
-> Controller: [src/controller/user.controller.ts](../src/controller/user.controller.ts)
+> Controller: [src/controller/user.controller.ts](../../src/controller/user.controller.ts)
 
 ### POST `/user/register` — Register
 
@@ -181,7 +181,7 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 - **Request body**: `{ userId: number }` (target user)
 - **Response `code`**: `0` request sent (covers first send / already friends / re-initiate / counterpart already requested and a direct connection is established / do not disturb); `20001` adding self as friend; `20002` unknown state-machine state
 - **Internal state machine**: `makeFriendRequest` returns status `0/1/2/3/5` driving the above behavior, not directly reflected in the response `code`
-- **See**: [architecture.md → Friend Request State Machine](./architecture.md#好友请求状态机)
+- **See**: [architecture.md → Friend Request State Machine](../overview/architecture.md#friend-request-state-machine)
 
 ### POST `/user/approve-friend-request` — Accept friend request
 
@@ -226,7 +226,7 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 
 ## Message API
 
-> Controller: [src/controller/message.controller.ts](../src/controller/message.controller.ts)
+> Controller: [src/controller/message.controller.ts](../../src/controller/message.controller.ts)
 
 ### POST `/send-message` — Send message
 
@@ -252,7 +252,7 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 
 ## Group API
 
-> Controller: [src/controller/group.controller.ts](../src/controller/group.controller.ts)
+> Controller: [src/controller/group.controller.ts](../../src/controller/group.controller.ts)
 
 ### POST `/group/create` — Create group
 
@@ -293,7 +293,7 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 
 ## File API
 
-> Controller: [src/upload/upload.controller.ts](../src/upload/upload.controller.ts) · Service: [src/upload/upload.service.ts](../src/upload/upload.service.ts)
+> Controller: [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) · Service: [src/upload/upload.service.ts](../../src/upload/upload.service.ts)
 
 ### POST `/upload` — Upload image (chat album)
 
@@ -312,7 +312,7 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 
 ## Admin API
 
-> Controller: [src/admin/admin.controller.ts](../src/admin/admin.controller.ts) · Service: [src/admin/admin-auth.service.ts](../src/admin/admin-auth.service.ts)
+> Controller: [src/admin/admin.controller.ts](../../src/admin/admin.controller.ts) · Service: [src/admin/admin-auth.service.ts](../../src/admin/admin-auth.service.ts)
 
 Admin auth uses a **separate JWT system** (its own `adminSecret` + `scope: 'admin'` claim, guarded by
 `AdminAuthGuard`) — admin sessions/tokens stay physically isolated from user sessions. Identity,
@@ -406,7 +406,7 @@ endpoints except `admin/login` / `admin/renew-access` require `Authorization: Be
 
 ## SSE Events
 
-> Endpoint: [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts) · `GET /api/v1/events` (`text/event-stream`, on the same port 3000 as HTTP)
+> Endpoint: [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts) · `GET /api/v1/events` (`text/event-stream`, on the same port 3000 as HTTP)
 
 ### Connection and Authentication
 

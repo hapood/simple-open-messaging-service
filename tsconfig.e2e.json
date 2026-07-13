@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "./.fed-app-build",
+    "outDir": "./.e2e-build",
     "rootDir": ".",
     "noEmit": false,
     "declaration": false,

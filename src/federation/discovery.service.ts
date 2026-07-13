@@ -15,7 +15,6 @@ interface WellKnownDoc {
 /**
  * Resolves peer servers: SRV `_soms._tcp.<domain>` (host:port, fallback https://<domain>) → fetch
  * `.well-known/soms` over HTTPS → cache the peer's signing keys in S2SKeyCache (TTL, JWKS-style).
- * See docs/federation-protocol.md §3.2 + §5.1 + §6.4.
  *
  * Key cache: fetch-on-`keyId`-miss + TTL. A proactive refresh worker re-fetches every
  * communicated-with peer's keys each TTL window so rotation is picked up without inbound traffic.

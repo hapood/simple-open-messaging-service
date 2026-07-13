@@ -3,7 +3,7 @@
 **Status:** planned, not yet implemented. This doc is the implementation TODO + the key technical
 knowledge that justifies it, so the decision is not re-litigated later.
 
-**Supersedes part of** [`src-tauri/FCM_ANDROID_PATCH.md`](../src-tauri/FCM_ANDROID_PATCH.md) §Prerequisites
+**Supersedes part of** [`src-tauri/FCM_ANDROID_PATCH.md`](../../src-tauri/FCM_ANDROID_PATCH.md) §Prerequisites
 step 2 (the "drop `google-services.json` at build time" model) **for Android only**. Web Push and the
 backend service-account path are unchanged.
 
@@ -181,7 +181,7 @@ self-hosting guide:
 
 ## References
 
-- [`src-tauri/FCM_ANDROID_PATCH.md`](../src-tauri/FCM_ANDROID_PATCH.md) — current build-time Firebase
+- [`src-tauri/FCM_ANDROID_PATCH.md`](../../src-tauri/FCM_ANDROID_PATCH.md) — current build-time Firebase
   integration (the parts this supersedes for Android).
 - `src/push/push.service.ts:37` — backend `firebase-admin` init from `GOOGLE_APPLICATION_CREDENTIALS`
   (unchanged).

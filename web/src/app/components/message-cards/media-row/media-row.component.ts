@@ -11,8 +11,8 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
 /**
  * Unified media message row (IMAGE / VIDEO / AUDIO).
  *
- * Single media = 图区 + bottom meta bar; album (multi-cell) = pure grid (no meta bar).
- * 图区 per kind: image→background-image, video→<video preload=metadata> first frame (decode error→
+ * Single media = media area + bottom meta bar; album (multi-cell) = pure grid (no meta bar).
+ * Media area per kind: image→background-image, video→<video preload=metadata> first frame (decode error→
  * gray placeholder), audio→gray placeholder cell. Video/audio carry a centered ▶ + a bottom-left
  * duration badge overlay; only image cells are click-to-open-gallery (video/audio interaction is
  * deferred — onCellClick is a no-op for them).

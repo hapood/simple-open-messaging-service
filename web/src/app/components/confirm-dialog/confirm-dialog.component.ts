@@ -57,7 +57,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
       text-align: center;
     }
 
-    /* Large tinted glyph circle — the "瞩目" focal point that reads as a warning at a glance. Brand tint
+    /* Large tinted glyph circle — the focal point that reads as a warning at a glance. Brand tint
        by default; the danger variant flips to the danger token (red). */
     .badge {
       display: flex;

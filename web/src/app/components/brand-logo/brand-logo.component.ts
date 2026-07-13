@@ -1,12 +1,14 @@
 import { Component, input } from '@angular/core';
 
 /**
- * 品牌 logo 单一事实源：mark（蓝底白气泡 SVG）+ wordmark「SOMS」+ 可选 tagline。
- * 从 auth-brand 提取，供 auth 页品牌面板与 chat-pane 空态共用，避免两处 SVG 副本漂移。
+ * Single source of truth for the brand logo: mark (blue-background white-bubble SVG) + "SOMS" wordmark + optional tagline.
+ * Extracted from auth-brand and shared by the auth-page brand panel and the chat-pane empty state, so the two
+ * SVG copies cannot drift.
  *
- * mark 底色硬编码 #2196f3（与 favicon 一致，是有意为之的品牌固定色，非主题变量）；
- * 文字色/字号通过 CSS 变量暴露（--bl-word / --bl-tag / --bl-*-color），落在品牌渐变面板
- * （auth-brand 白字）上的覆盖只需在宿主设这几个变量，无需 ::ng-deep。
+ * The mark's background color is hardcoded #2196f3 (matches the favicon — an intentional fixed brand color, not a
+ * theme variable). Text color/size are exposed via CSS variables (--bl-word / --bl-tag / --bl-*-color); overriding
+ * them on the brand-gradient panel (auth-brand white text) only requires setting these variables on the host — no
+ * ::ng-deep needed.
  */
 @Component({
   selector: 'app-brand-logo',
@@ -15,10 +17,10 @@ import { Component, input } from '@angular/core';
   styleUrl: './brand-logo.component.scss',
 })
 export class BrandLogoComponent {
-  /** logo mark 的 px 尺寸 */
+  /** Size of the logo mark in px */
   readonly size = input(64)
-  /** 是否显示「SOMS」文字 */
+  /** Whether to show the "SOMS" wordmark */
   readonly wordmark = input(true)
-  /** wordmark 下方的副标题（纯文本） */
+  /** Subtitle below the wordmark (plain text) */
   readonly tagline = input('')
 }

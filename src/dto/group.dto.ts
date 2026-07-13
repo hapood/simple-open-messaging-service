@@ -36,7 +36,7 @@ export class CreateGroupDto {
   @IsOptional()
   avatar?: string;
 
-  /** Group description / intro (群简介) — shown as the subtitle under the name in the chat header. */
+  /** Group description / intro — shown as the subtitle under the name in the chat header. */
   @ApiProperty({
     required: false,
     example: 'Frontend team sync',

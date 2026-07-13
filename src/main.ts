@@ -45,7 +45,7 @@ async function bootstrap() {
           // so large image/file uploads are unaffected. 1 MiB comfortably fits the largest legit
           // JSON body — an S2S friend-request/approve payload carrying a ~55 KiB base64 avatar
           // (512×512 webp) inline — and acts as a hard anti-OOM ceiling against a peer shipping
-          // an oversized payload. See docs/federation-protocol.md (avatar federation).
+          // an oversized payload.
           bodyLimit: 1_048_576,
         }
       : {

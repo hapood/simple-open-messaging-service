@@ -98,7 +98,7 @@ export class UserService implements OnModuleInit {
   }
 
   addUser(params: { account: string; name: string; hashPwd: string }) {
-    const account = normalizeAccount(params.account); // case-insensitive (docs/account-naming.md §4)
+    const account = normalizeAccount(params.account); // case-insensitive
     // Defense-in-depth at the single creation choke point: RegisterDto's @Matches guards the HTTP path,
     // but addUser is also reachable from internal/admin/test callers — enforce the USER grammar here so an
     // illegal account can never reach the DB regardless of caller. (A `!`-group account is rejected too —

@@ -6,25 +6,25 @@ import {
 } from '@nestjs/common';
 
 /**
- * 进程内 KV store（替代 Redis）：access-token jti 黑名单、tokenVersion 缓存、限流计数。
+ * In-process KV store (replaces Redis): access-token jti blacklist, tokenVersion cache, rate-limit counters.
  *
- * 单实例部署够用；接口对齐 Redis（setex/get/del/existsKey/incrWithExpire），
- * 未来要多实例时把内部实现换成 ioredis 即可，调用方不动。
+ * Sufficient for single-instance deployment; the interface mirrors Redis (setex/get/del/existsKey/incrWithExpire),
+ * so for multi-instance deployments only the internal implementation needs to swap to ioredis — callers stay unchanged.
  *
- * 简单定时清理过期 key（仿 auth.service.cleanupExpiredRefreshTokens 的 setInterval 模式）。
- * 重启丢失：jti 黑名单丢失意味着已登出的单 token 在剩余寿命(≤15min)内复活——小规模可接受；
- * tokenVersion 缓存丢失无害（回查 DB，正确性在 DB）。
+ * Periodically cleans up expired keys (mirrors the setInterval pattern in auth.service.cleanupExpiredRefreshTokens).
+ * Loss on restart: losing the jti blacklist means a logged-out single token revives for its remaining lifetime (≤15min) — acceptable at small scale;
+ * losing the tokenVersion cache is harmless (falls back to DB lookup, correctness lives in the DB).
  */
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(RedisService.name);
   private readonly store = new Map<string, { val: string; expireAt: number }>();
   private cleanupTimer: NodeJS.Timeout | undefined;
-  /** 内存版恒为 true（保留 enabled 字段使调用方 `if(redis.enabled)` 逻辑零改动）。 */
+  /** The in-memory version is always true (the enabled field is retained so callers' `if(redis.enabled)` logic stays unchanged). */
   readonly enabled = true;
 
   async onModuleInit() {
-    // 每 5 分钟清理过期 key
+    // clean up expired keys every 5 minutes
     this.cleanupTimer = setInterval(() => this.cleanup(), 5 * 60 * 1000);
   }
 
@@ -61,7 +61,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return n;
   }
 
-  /** 固定窗口计数器：INCR + 首次 EXPIRE，返回当前计数（限流 / 暴力封禁用）。 */
+  /** Fixed-window counter: INCR + first-time EXPIRE, returns the current count (used for rate limiting / brute-force blocking). */
   async incrWithExpire(key: string, ttlSec: number): Promise<number> {
     const cur = await this.get(key);
     const next = (cur ? Number(cur) : 0) + 1;
@@ -69,14 +69,14 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return next;
   }
 
-  /** 键是否存在（access jti 黑名单用，布尔）。 */
+  /** Whether a key exists (used for the access jti blacklist; returns a boolean). */
   async existsKey(...keys: string[]): Promise<boolean> {
     const now = Date.now();
     for (const k of keys) {
       const e = this.store.get(k);
       if (e) {
         if (e.expireAt > now) return true;
-        this.store.delete(k); // 过期清
+        this.store.delete(k); // expired — clean up
       }
     }
     return false;

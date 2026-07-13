@@ -1,6 +1,6 @@
 @use "../../assets/utils.scss" as *;
 
-// 局部别名指向全局 token（var()）。改主题/深色模式只动 _tokens.scss，此处零改动。
+// Local aliases pointing to global tokens (var()). To change theme/dark mode, edit only _tokens.scss — zero changes here.
 $primary: var(--app-brand);
 $border: var(--app-border);
 $muted: var(--app-text-muted);
@@ -105,8 +105,8 @@ $danger: var(--app-danger);
   display: flex;
   flex-direction: column;
 
-  // [hidden] 绑定需压过本规则的 display:flex（类选择器特异性高于 UA 的 [hidden]{display:none}）。
-  // 用属性选择器 .tab-pane[hidden] 提升特异性，免 !important。
+  // The [hidden] binding must override this rule's display:flex (class selector specificity exceeds the UA [hidden]{display:none}).
+  // Use the attribute selector .tab-pane[hidden] to raise specificity, avoiding !important.
   &[hidden] {
     display: none;
   }

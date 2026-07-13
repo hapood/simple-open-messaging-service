@@ -21,7 +21,7 @@ import { QuotaService } from '../quota/quota.service.js';
 
 /**
  * Admin Quotas endpoints — the operator surface for the unified daily-quota system (see
- * docs/federation-quotas.md + src/quota/quota.service.ts). Lists every quota NODE (the local server's
+ * src/quota/quota.service.ts). Lists every quota NODE (the local server's
  * own SOMS_DOMAIN plus each federated peer) with today's usage + per-category limits, and sets a node's
  * per-category overrides (null = use the global default). Reads are any admin; writes are SUPER_ADMIN
  * only — mirroring AdminFederationController's block/unblock gate.

@@ -12,7 +12,7 @@ import { BusinessCode } from '../common/business-code.js';
  * Unified daily-quota enforcement for BOTH the local server (one aggregate bucket keyed by SOMS_DOMAIN
  * — all local users share it) and each federated peer (one bucket per peer domain). A "node" is just a
  * domain; the local node is the server's own SOMS_DOMAIN, peer nodes are their domains. One counter
- * table (QuotaDailyUsage, keyed domain+UTC-date+category) covers both. See docs/federation-quotas.md.
+ * table (QuotaDailyUsage, keyed domain+UTC-date+category) covers both.
  *
  * Four categories, enforced at the point where the data crosses our boundary:
  *  - `requests` — inbound friend ops (federation S2S POST) + outbound friend requests (local). Anti-spam.

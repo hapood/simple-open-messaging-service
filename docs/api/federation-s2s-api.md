@@ -6,7 +6,7 @@
 > **messaging** via the origin-hub; group-invite chat card visibility; leave). The GROUP invite carries
 > `sinceSeq` (origin curSeq at invite time) so a new member seeds `pullUntil` and starts from invite-time,
 > not full history. **Deferred:** a durable active-liveness leave backstop, group rename/avatar push, the
-> frontend card/account-resolution adaptation. See `docs/federation-step3-design.md`.
+> frontend card/account-resolution adaptation. See `docs/roadmap/federation-step3-design.md`.
 >
 > **Global prefix:** every path is `/api/v1/s2s/...` (`bootstrap.ts`). **Auth:** all endpoints are
 > RFC9421 signature-guarded + trusted-peer-gated by `S2sSignatureGuard` **except `init`** (which *is*
@@ -191,4 +191,4 @@ adaptation (resolve by account) is the remaining consumer-side work.
 - **Frontend** — the invite-row card + invite-detail dialog still read the legacy `{fromUserId, groupUserId,
   inviteId}` shape; adapt them to the account-based `{from, group}` card.
 - **Group rename/avatar/description push** — the lazy meta-pull already covers identity; a push is optional.
-- **Quota hooks** (`docs/federation-quotas.md`) on the group message backfill.
+- **Quota hooks** (`docs/roadmap/federation-quotas.md`) on the group message backfill.

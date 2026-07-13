@@ -12,14 +12,14 @@ import { RedisService } from '../redis/redis.service.js';
 
 export const THROTTLE_KEY = 'throttle';
 
-/** 端点限流配置：limit 次 / ttlSec 秒。未标注的端点 guard 直接放行。 */
+/** Endpoint rate-limit config: limit requests per ttlSec seconds. Unannotated endpoints are passed through by the guard. */
 export const Throttle = (limit = 30, ttlSec = 60) =>
   SetMetadata(THROTTLE_KEY, { limit, ttlSec });
 
 /**
- * 简单固定窗口限流（进程内 KV store 计数）：键 = rl:<路径>:<IP>。
- * 超限抛 429 → AllExceptionsFilter 映射为 RATE_LIMITED(10005)。
- * 用于鉴权敏感端点（renew-access、renew-refresh、logout、change-password）防刷。
+ * Simple fixed-window rate limiter (in-process KV store counter): key = rl:<path>:<IP>.
+ * Throws 429 when exceeded → AllExceptionsFilter maps it to RATE_LIMITED(10005).
+ * Used to protect auth-sensitive endpoints (renew-access, renew-refresh, logout, change-password) against abuse.
  */
 @Injectable()
 export class ThrottleGuard implements CanActivate {
@@ -33,7 +33,7 @@ export class ThrottleGuard implements CanActivate {
       THROTTLE_KEY,
       ctx.getHandler(),
     );
-    if (!cfg) return true; // 未标 @Throttle 的端点不限流
+    if (!cfg) return true; // endpoints not annotated with @Throttle are not rate-limited
     // FastifyRequest exposes `.ip` (resolves the real client IP via the adapter's trustProxy),
     // but has no `.socket`/`.path` — fall back to the raw Node socket and derive the path from
     // `.url` (Express's `.path` does not exist here).

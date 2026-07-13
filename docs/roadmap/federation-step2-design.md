@@ -10,10 +10,10 @@
 > pull-on-open + slow poll. **Deferred** (§9): read receipts/presence/typing,
 > history backfill as a feature (Step 2.5), and a durable outbox (only if a future tier
 > needs transactional delivery). Per-peer quotas are now **BUILT** (unified local + peers — see
-> `docs/federation-quotas.md`). Edit/delete is a **non-goal** (§9, not deferred); federated groups shipped
+> `docs/roadmap/federation-quotas.md`). Edit/delete is a **non-goal** (§9, not deferred); federated groups shipped
 > in Step 3. This is
 > the authoritative Step 2 design; it **supersedes** the outbox-push/backfill prose retained in
-> `docs/federation-protocol.md` §6.2 / §8 / §9.2 (kept there as rejected-alternative rationale).
+> `docs/overview/federation-protocol.md` §6.2 / §8 / §9.2 (kept there as rejected-alternative rationale).
 > **Scope:** cross-server **1:1 text + media**. **Out of scope:** edit/delete propagation (**non-goal**
 > — the origin cannot mutate receiver-local data once delivered; §9), presence/typing (v0.2,
 > best-effort/ephemeral), read receipts (v0.2, a separate deferred item — §10), federated **groups** + shared
@@ -484,7 +484,7 @@ a user action.
 
 ## 6. Quota hook points
 
-Now **BUILT** per `docs/federation-quotas.md` (unified local + peers). The pull model makes quota a
+Now **BUILT** per `docs/roadmap/federation-quotas.md` (unified local + peers). The pull model makes quota a
 **receiver-inbound** concern naturally:
 
 - **Pull response (`GET /messages`)** — the sender's server counts the batch toward the requester
@@ -498,7 +498,7 @@ Now **BUILT** per `docs/federation-quotas.md` (unified local + peers). The pull 
 
 Step 2 v0.1 deliberately exposed the quota hooks (response truncation points, 429/413 codes) without
 the enforcement, so quotas could bolt on without an API change — and they since have: the unified
-per-node quota system is **BUILT** (`docs/federation-quotas.md`), and these Step-2 endpoints now enforce
+per-node quota system is **BUILT** (`docs/roadmap/federation-quotas.md`), and these Step-2 endpoints now enforce
 ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaService`.
 
 ---
@@ -532,7 +532,7 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
 > profile tests — no regressions. A lost push now self-heals via sweep + pull-on-open + slow poll.
 > Bug fixed during e2e: `drainPendingPulls` spun on a persistently failing pull (now progress-gated).
 > **Open work is the §9 deferrals** (read receipts/presence/typing, history backfill = Step 2.5, per-peer
-> quotas — design ready at `docs/federation-quotas.md`). Edit/delete is a non-goal (§9); federated groups
+> quotas — design ready at `docs/roadmap/federation-quotas.md`). Edit/delete is a non-goal (§9); federated groups
 > shipped in Step 3.
 
 1. **Schema migration** — add `Message.originSeq Int?` + `@@unique([threadId, creator, originSeq])` +
@@ -594,7 +594,7 @@ ingest-side (`requests` / `messages` / `images` / `largeFiles`) via `QuotaServic
   the channel is undecided. `receipt` type reserved in `federation-protocol.md` §10.
 - **[BUILT in Step 3] Federated groups** — the generalization landed in Step 3: a group is a `!`-User
   addressed by account (never a cross-server thread id, per §3.1), and the pull model generalizes to N
-  foreign senders (the origin-hub aggregates per-author). See `docs/federation-step3-design.md`.
+  foreign senders (the origin-hub aggregates per-author). See `docs/roadmap/federation-step3-design.md`.
 - **History backfill as a feature** — Step 2.5; it IS the `/messages?after=0` endpoint (no new code,
   just a UI affordance + a bulk quota).
 - **Restart-resilient hints** — the in-memory map is volatile; pull-on-open (§4.4) is the floor. If a

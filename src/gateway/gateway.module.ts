@@ -7,7 +7,7 @@ import { SseService } from './sse.service.js';
   imports: [EventEmitterModule],
   controllers: [EventsController],
   providers: [SseService],
-  // SseService 供 MessageController 推送新消息、AdminController 观测在线连接。
+  // SseService is consumed by MessageController to push new messages and by AdminController to observe online connections.
   exports: [SseService],
 })
 export class GatewayModule {}

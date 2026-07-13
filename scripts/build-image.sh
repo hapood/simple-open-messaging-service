@@ -1,51 +1,31 @@
 #!/bin/sh
-# Build SOMS in two layers:
-#   1. soms-base:latest  — node + the xcaddy-compiled Caddy (76 DNS providers). Rebuilt only when Caddy,
-#      a provider, or the node base bumps; otherwise BuildKit cache makes it a near-instant no-op.
-#      (Dockerfile.base)
-#   2. soms:latest        — the app image, FROM soms-base. Fast: never re-runs xcaddy. (Dockerfile)
-#
-# Release flow: npm version patch && git push --tags && ./scripts/build-image.sh
-#
-# Network: the Dockerfiles use the OFFICIAL npm/apt/Go registries (no CN mirrors). To build from behind
-# a restricted network, export the standard proxy vars in your shell — they are forwarded verbatim
-# (bare --build-arg pulls each from the local env; unset = direct):
-#   export HTTPS_PROXY=http://192.168.88.8:8080   # your LAN/VPN proxy
+# Build soms:latest — the app image (FROM soms-base). If soms-base:latest is missing locally, this
+# auto-calls ./scripts/build-base.sh to build it first. To REFRESH the base (Caddy / DNS provider /
+# node bumped), run ./scripts/build-base.sh yourself.
 #   ./scripts/build-image.sh
-# The base-image pull (Docker Hub) additionally needs the Docker DAEMON configured with the proxy
-# (~/.docker/config.json "proxies" or systemd). If that's not possible, override NODE_IMAGE:
-#   NODE_IMAGE=docker.m.daocloud.io/library/node:24-bookworm-slim ./scripts/build-image.sh
-# The base layer's xcaddy fetches Go modules via GOPROXY (default proxy.golang.org); override for CN:
-#   GOPROXY=https://goproxy.cn,direct ./scripts/build-image.sh
 #
-# --pull is on by default so release builds pick up base-image security updates. Set PULL=0 for an
-# air-gapped rebuild against already-pulled bases (skips the registry round-trip).
-#
-# BuildKit is required: the Dockerfiles use RUN --mount=type=cache. Default builder on Docker 23+;
-# DOCKER_BUILDKIT=1 is set defensively for older daemons.
+# Network: the compile stages (web/admin/server) use OFFICIAL npm/apt via the Docker client proxy
+# (~/.docker/config.json "proxies", auto-injected into build containers). --network=host reaches the
+# host's clash (127.0.0.1:7890) — build containers have their own loopback, so they must share the
+# host net. NODE_IMAGE overrides the compile-stage base if Docker Hub is unreachable.
 set -e
 export DOCKER_BUILDKIT=1
 
 VER=$(node -p "require('./package.json').version")
 NODE_IMAGE="${NODE_IMAGE:-node:24-bookworm-slim}"
-GOPROXY="${GOPROXY:-https://proxy.golang.org,direct}"
-# `if` form (not `[ ] && cmd`) so PULL=0 doesn't trip set -e on the failing test.
-PULL_FLAG=""
-if [ "${PULL:-1}" = "1" ]; then
-  PULL_FLAG="--pull"
+
+# Auto-build the base if it's missing (first build, or after `docker rmi soms-base`). build-base.sh
+# inherits this script's env (NODE_IMAGE, PULL, proxy vars), so overrides pass through.
+if ! docker image inspect soms-base:latest >/dev/null 2>&1; then
+  echo "soms-base:latest not found locally — building it first (./scripts/build-base.sh)…"
+  "$(dirname "$0")"/build-base.sh
 fi
 
-echo "building soms-base:latest (base: $NODE_IMAGE, goproxy: $GOPROXY, pull: ${PULL:-1}) — node + caddy (xcaddy)…"
-# shellcheck disable=SC2086 # PULL_FLAG is intentionally unquoted: "" when PULL=0, "--pull" otherwise.
-docker build $PULL_FLAG -f Dockerfile.base -t soms-base:latest \
-  --build-arg NODE_IMAGE="$NODE_IMAGE" \
-  --build-arg GOPROXY="$GOPROXY" \
-  --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \
-  --build-arg http_proxy --build-arg https_proxy --build-arg no_proxy .
-
-echo "building soms:$VER (base: $NODE_IMAGE, FROM soms-base:latest, pull: ${PULL:-1}, also tagged latest) — app…"
+echo "building soms:$VER (FROM soms-base:latest, also tagged latest) — app…"
 # shellcheck disable=SC2086
-docker build $PULL_FLAG \
+# No --pull: soms-base:latest is LOCAL (built by build-base.sh) — --pull would try the registry and
+# 403 (soms-base isn't published). The node base for the compile stages is already local/cached.
+docker build --network=host \
   --build-arg APP_VERSION="$VER" \
   --build-arg NODE_IMAGE="$NODE_IMAGE" \
   --build-arg SOMS_BASE=soms-base:latest \
@@ -53,6 +33,4 @@ docker build $PULL_FLAG \
   --build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
   -t soms:"$VER" -t soms:latest .
 
-echo "done:"
-echo "  soms-base:latest            (node + caddy + 76 DNS providers — rebuild only when these bump)"
-echo "  soms:$VER, soms:latest      (app + caddy, port 7667)"
+echo "done: soms:$VER, soms:latest (app + caddy, port 7667)"

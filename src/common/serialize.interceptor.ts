@@ -8,14 +8,14 @@ import { map } from 'rxjs/operators';
 import { Observable } from 'rxjs';
 
 /**
- * 递归序列化响应体：`BigInt → string`、`Date → 毫秒时间戳(number)`。
+ * Recursively serializes the response body: `BigInt → string`, `Date → millisecond timestamp (number)`.
  *
- * 接管并替代两处历史 hack：
- *  - 原 `main.ts` 的 `Date.prototype.toJSON` 全局覆盖（进程级副作用，已移除）；
- *  - 原 `convertBigIntId`（只转顶层 `id` 且返回 void，漏嵌套字段如 `lastRead`）。
+ * Takes over and replaces two historical hacks:
+ *  - the former `Date.prototype.toJSON` global override in `main.ts` (process-level side effect, removed);
+ *  - the former `convertBigIntId` (only converted the top-level `id` and returned void, missing nested fields like `lastRead`).
  *
- * 返回的是已转换的 plain object —— BigInt/Date 均已变成原语，
- * 后续 NestJS/Express 的 `res.json` 不会再因 BigInt 抛 `Do not know how to serialize a BigInt`。
+ * Returns the converted plain object — BigInt/Date have become primitives,
+ * so the subsequent NestJS/Express `res.json` will no longer throw `Do not know how to serialize a BigInt`.
  */
 // Public serializer: preserves the input's static type. BigInt/Date conversion is a runtime transform
 // only — the property shape is unchanged — so the generic `<T>(value: T): T` lets callers receive a
@@ -36,10 +36,10 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
     return value.getTime();
   }
   if (typeof value !== 'object') {
-    return value; // number/string/boolean/symbol 原样
+    return value; // number/string/boolean/symbol returned as-is
   }
 
-  // 循环引用防御（Prisma 数据无环，纯防御）：已见对象返回原引用，避免爆栈。
+  // Circular reference defense (Prisma data is acyclic, purely defensive): already-seen objects return the original reference to avoid stack overflow.
   if (seen.has(value as object)) {
     return value;
   }
@@ -49,8 +49,8 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
     return value.map((item) => serializeImpl(item, seen));
   }
 
-  // 仅遍历「普通对象」(plain object)；类实例 / Map / Set / Buffer / TypedArray 等原样返回，
-  // 避免误处理 Prisma 之外的容器类型。
+  // Only traverse "plain objects"; class instances / Map / Set / Buffer / TypedArray etc. are returned as-is,
+  // to avoid mishandling container types beyond Prisma.
   const proto = Object.getPrototypeOf(value);
   if (proto !== null && proto !== Object.prototype) {
     return value;
@@ -64,9 +64,9 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
 }
 
 /**
- * 全局响应序列化拦截器：对每个 HTTP 响应体套 `serializeBody`。
- * 与 ValidationPipe / AllExceptionsFilter 一样在 `main.ts` 经 `useGlobalInterceptors` 注册。
- * （异常过滤器不经拦截器链，但其响应体只含 { code, message } 原语，无需转换。）
+ * Global response serialization interceptor: wraps every HTTP response body with `serializeBody`.
+ * Registered in `main.ts` via `useGlobalInterceptors`, like ValidationPipe / AllExceptionsFilter.
+ * (The exception filter bypasses the interceptor chain, but its response body contains only { code, message } primitives, so no conversion is needed.)
  */
 @Injectable()
 export class SerializeInterceptor implements NestInterceptor {

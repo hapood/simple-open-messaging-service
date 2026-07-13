@@ -1,40 +1,43 @@
 /**
- * 消息分组判定（纯函数，无 DOM/框架依赖）。
+ * Message grouping predicates (pure functions, no DOM/framework dependencies).
  *
- * 业界（WhatsApp）式分组：连续消息「同发送者」归为一组（不再用时间窗口——时间间隔交由日期分隔行断开），
- * 组首显头像+名字、组内贴近上一条、每条仍显自己的时间戳。头像显隐直接决定单条渲染高度，
- * 是虚拟滚动（尤其 scrollTo(id) 跳转高度计算）的地基。
+ * Industry (WhatsApp)-style grouping: consecutive messages from the same sender are grouped (time windows are
+ * no longer used — time gaps are broken by date separator rows instead). The group head shows avatar + name,
+ * items inside a group hug the previous item, and each item still shows its own timestamp. Avatar visibility
+ * directly determines a single item's rendered height, which is the foundation of virtual scrolling
+ * (especially scrollTo(id) jump height calculations).
  *
- * 抽离自 MsgGroupFactory._buildDispDict，纯函数化，供 playground 假数据与真实消息列表统一复用。
+ * Extracted from MsgGroupFactory._buildDispDict, functionalized for unified reuse by playground mock data and
+ * the real message list.
  */
 
 export interface GroupCtx {
-  /** 发送者标识（用户 id）。 */
+  /** Sender identifier (user id). */
   creator: number | string;
 }
 
 export interface GroupFlags {
-  /** 组首：显头像 + 名字（无 prev / 换发送者 → 开新组）。 */
+  /** Group head: show avatar + name (no prev / sender change → starts a new group). */
   isShowHead: boolean;
-  /** 组内合并：贴近上一条（有 next 且同发送者 → 每条仍显自己的时间戳）。 */
+  /** In-group merge: hug the previous item (has next and same sender → each item still shows its own timestamp). */
   isDateShrink: boolean;
 }
 
 /**
- * 判定单条消息的分组标志（按发送者连续分组，WhatsApp 式）。
+ * Classify the group flags of a single message (consecutive grouping by sender, WhatsApp-style).
  *
- * @param prev 上一条（组首判定依据）；列表首条 / 日期分隔后传 null。
- * @param cur  当前条。
- * @param next 下一条（组内合并判定依据）；列表末条传 null。
+ * @param prev Previous item (basis for group-head detection); pass null for the list's first item / right after a date separator.
+ * @param cur  Current item.
+ * @param next Next item (basis for in-group-merge detection); pass null for the list's last item.
  */
 export function classifyGroupFlags(
   prev: GroupCtx | null,
   cur: GroupCtx,
   next: GroupCtx | null,
 ): GroupFlags {
-  // 组首：无 prev / 换发送者 → 开新组，显头像+名字。
+  // Group head: no prev / sender change → starts a new group, shows avatar + name.
   const isShowHead = !prev || prev.creator !== cur.creator;
-  // 组内合并：有 next 且同发送者 → 贴近上一条（每条仍显自己的时间戳）。
+  // In-group merge: has next and same sender → hug the previous item (each item still shows its own timestamp).
   const isDateShrink = !!next && next.creator === cur.creator;
   return { isShowHead, isDateShrink };
 }

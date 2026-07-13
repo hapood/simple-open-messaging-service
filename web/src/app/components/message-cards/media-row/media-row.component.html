@@ -61,9 +61,9 @@
 
       <div class="msg-media-meta">
         <span class="msg-media-meta-count">
-          @if (metaBar().images) { <span>{{ metaBar().images }} 图</span> }
-          @if (metaBar().videos) { <span>{{ metaBar().videos }} 视频</span> }
-          @if (metaBar().audios) { <span>{{ metaBar().audios }} 音频</span> }
+          @if (metaBar().images) { <span>{{ 'chat.mediaCount.image' | transloco: { count: metaBar().images } }}</span> }
+          @if (metaBar().videos) { <span>{{ 'chat.mediaCount.video' | transloco: { count: metaBar().videos } }}</span> }
+          @if (metaBar().audios) { <span>{{ 'chat.mediaCount.audio' | transloco: { count: metaBar().audios } }}</span> }
         </span>
         <span class="msg-media-meta-time">{{ metaBar().time }}</span>
       </div>

@@ -23,7 +23,7 @@
     margin-bottom: 4px;
   }
 
-  // 未投影图标时隐藏图标槽（ng-content 为空 → :empty 生效）
+  // Hide the icon slot when no icon is projected (ng-content empty → :empty applies)
   .es-icon:empty {
     display: none;
   }

@@ -44,7 +44,7 @@ export class LoginDto {
  * returning 200 + code:2.
  */
 export class RegisterDto {
-  // Account grammar: letters + `.` only, case-insensitive (docs/account-naming.md §3.1). The Transform
+  // Account grammar: letters + `.` only, case-insensitive. The Transform
   // lowercases on input (Postgres @@unique is case-sensitive — the /i flag alone is insufficient), then
   // @Matches enforces the grammar. The DB column is VarChar(31), so 31 is the hard ceiling.
   @ApiProperty({

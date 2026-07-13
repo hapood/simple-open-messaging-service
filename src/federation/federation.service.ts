@@ -61,7 +61,7 @@ export interface S2SAddress {
  * pixel dimensions. The receiver does NOT assume square — it runs the bytes back through saveAvatars,
  * which center-crops the largest square and emits the 32/64/128/256/512 multi-size set. Recommended
  * source size is 512×512 webp (~40 KB → ~55 KB base64); non-square sources are center-cropped. Null
- * (on S2SProfile.avatar) means the user has no avatar. See docs/federation-protocol.md.
+ * (on S2SProfile.avatar) means the user has no avatar.
  */
 export interface S2SAvatar {
   b64: string;
@@ -88,7 +88,7 @@ export interface S2SProfile {
  *  the idempotent-dedup key with `origin`. The discriminator is a FIELD on the concrete payload
  *  (`kind` / `op`), NOT the path: add-friend and add-group share `/s2s/invite`, mirroring the unified
  *  local Invite model. Cross-server MESSAGES do not use these bodies — they travel in the GET /messages
- *  response (docs/federation-step2-design.md §3.2). */
+ *  response. */
 interface S2SOpsBase {
   id: string; // origin-assigned ULID; dedup key with origin
   origin: string; // sending server's domain (== signer)
@@ -134,7 +134,7 @@ export interface S2SInviteAccept extends S2SOpsBase {
  * base URL), all inline within the caller's request. No outbox/worker — Step 1 friend-flow is low-volume
  * and the friendship ops are idempotent, so a peer that's momentarily down just fails the action and the
  * user retries (the receiver dedupes via S2SFriendOpSeen, so retries are safe). Step 2 messages do NOT
- * add an outbox either — they use coalesced-notify + active pull (docs/federation-step2-design.md).
+ * add an outbox either — they use coalesced-notify + active pull.
  *
  * Transaction note: the DB state change (e.g. Friendship PENDING) commits in its own tx BEFORE the
  * send — an HTTP POST can't live inside a DB tx. If the POST fails, local state is committed but the
@@ -454,7 +454,7 @@ export class FederationService implements OnModuleDestroy {
 
   /** Find or create a foreign User stub for account@<peer-domain>. Stubs never authenticate. */
   async ensureForeignUser(account: string, domain: string): Promise<number> {
-    const acct = normalizeAccount(account); // case-insensitive (docs/account-naming.md §4)
+    const acct = normalizeAccount(account); // case-insensitive
     const existing = await this.prisma.user.findUnique({
       where: { account_domain: { account: acct, domain } },
     });
@@ -744,8 +744,7 @@ export class FederationService implements OnModuleDestroy {
    *  matched markDemoted on a failed op), NOT staleness-driven; the reconnect sweep + slowPoll select
    *  targets by trustLevel, never by this watermark. So this write is benign bookkeeping — the explicit
    *  liveness channel is GET /s2s/ping (+ ensurePeerTrusted on trust refresh); advancing here is the
-   *  higher-fidelity supplement that records every real successful contact. See design-review item C1
-   *  (RETRACTED) in docs/federation-api-design-review.md. */
+   *  higher-fidelity supplement that records every real successful contact. */
   async markContactSuccess(domain: string): Promise<void> {
     const now = Date.now();
     const last = this.lastSuccessSentAt.get(domain);
@@ -1499,7 +1498,7 @@ export class FederationService implements OnModuleDestroy {
    * Unified pre-flight for every Step 2 outbound op: ensure trust is current BEFORE running, so a
    * demoted/blocked peer is caught up front (not only after a failure). The op itself (sendSignedPost
    * / getSigned) already calls markDemoted on failure → self-heal on the next reconnect-sweep tick.
-   * Throws FEDERATION_PEER_BLOCKED if the peer is admin-blocked. See docs/federation-step2-design.md §5.
+   * Throws FEDERATION_PEER_BLOCKED if the peer is admin-blocked.
    */
   private async withTrustedPeer<T>(
     domain: string,
@@ -1618,7 +1617,7 @@ export class FederationService implements OnModuleDestroy {
    * Pulls ONLY the sender's side (never the requester's own authored messages). Gate 2: the from↔to Friendship MUST be
    * APPROVED (else 403 FORBIDDEN — also the lazy-unfriend signal of §9.4). Media digests are NOT
    * surfaced separately: the receiver extracts them from `content` via the same extractDigests() helper
-   * the sender used, then fetches each via /get_file (§3.3). See docs/federation-step2-design.md §3.2.
+   * the sender used, then fetches each via /get_file (§3.3).
    */
   async serveOutboundMessages(
     fromAccount: string,

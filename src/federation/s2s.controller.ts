@@ -34,7 +34,7 @@ import { BusinessCode } from '../common/business-code.js';
  * - GET  /api/v1/s2s/users/:account/revision — lightweight profile-revision probe (no avatar transfer).
  *
  * NOTE: there is no unfriend/member-delete endpoint — those are LOCAL-ONLY. A severed edge / left member
- * is discovered lazily via rejection-on-send in Step 2 (see docs/federation-protocol.md).
+ * is discovered lazily via rejection-on-send in Step 2.
  */
 @Public()
 @Controller('s2s')
@@ -124,7 +124,7 @@ export class S2sController {
 
   /** GET /api/v1/s2s/new-msg-map — the peer pulls OUR outbound hint entries (the one-directional
    *  fallback, §4.3). Non-destructive: we serve a snapshot; entries leave only on a successful PUSH ack.
-   *  The requester is the signing server (req.peer.domain). See docs/federation-step2-design.md §3.1. */
+   *  The requester is the signing server (req.peer.domain). */
   @Get('new-msg-map')
   async getNewMsgMap(
     @Req() req: FastifyRequest,
@@ -279,8 +279,7 @@ export class S2sController {
 
   /** POST /api/v1/s2s/new-msg-map — a peer pushes ITS outbound hint entries (dirty conversations) to us.
    *  Validate `origin === signer` (belt-and-suspenders over the signature), then enqueue + drain. ACKs
-   *  fast (202 Accepted — the actual message pull runs out of band). See docs/federation-step2-design.md
-   *  §3.1 / §4.2. */
+   *  fast (202 Accepted — the actual message pull runs out of band). */
   @Post('new-msg-map')
   @HttpCode(HttpStatus.ACCEPTED)
   async postNewMsgMap(@Req() req: FastifyRequest): Promise<void> {

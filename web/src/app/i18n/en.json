@@ -236,6 +236,11 @@
       "file": "[File]",
       "voice": "[Voice message]"
     },
+    "mediaCount": {
+      "image": "{count, plural, =1 {# Photo} other {# Photos}}",
+      "video": "{count, plural, =1 {# Video} other {# Videos}}",
+      "audio": "{count, plural, =1 {# Audio} other {# Audio}}"
+    },
     "menuViewInfo": "Contact info",
     "menuSearch": "Search",
     "menuMute": "Mute notifications",

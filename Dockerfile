@@ -64,6 +64,11 @@ ARG APP_VERSION=dev
 LABEL org.opencontainers.image.version="${APP_VERSION}"
 WORKDIR /app
 ENV NODE_ENV=production APP_VERSION=${APP_VERSION}
+# openssl CLI: Prisma probes `openssl version` at runtime to pick the matching bundled engine; the slim
+# base omits it, so without the CLI Prisma defaults to openssl-1.1.x (not bundled) and tries to download
+# it at migrate time. ca-certificates: Caddy's HTTPS to the DNS-01 provider + Let's Encrypt.
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 # Secrets (DATABASE_URL, JWT_*, etc.) are injected at run time via the init service, never baked in.
 # --chown=node:node so the non-root runtime user owns every file (node:*-slim ships uid-1000 `node`).
 COPY --chown=node:node package.json ./
@@ -87,7 +92,7 @@ RUN chmod +x /app/entrypoint.sh /app/supervisor.sh /app/init.sh \
     # and `caddy adapt` it (caddy is in soms-base). Single source of truth — no separate baked Caddyfile.
     # The token only needs to be NON-EMPTY to satisfy the `dns cloudflare` parse (adapt does not run
     # Provision(), unlike `caddy validate`); a real one is supplied at runtime.
-    && mkdir -p /tmp/gate && printf 'SOMS_DOMAIN=validate.local\nCLOUDFLARE_API_TOKEN=dummy\n' > /tmp/gate/soms.conf \
+    && mkdir -p /tmp/gate && printf 'SOMS_DOMAIN=validate.local\nSOMS_TLS_MODE=standard\nCLOUDFLARE_API_TOKEN=dummy\nPOSTGRES_PASSWORD=gatepw\nADMIN_BOOTSTRAP_PASSWORD=gateadmin\nDATABASE_POOL_MAX=10\n' > /tmp/gate/soms.conf \
     && SOMS_CONFIG=/tmp/gate/soms.conf SOMS_RUN_DIR=/tmp/gate/run APPDATA_DIR=/tmp/gate/data PGDATA_DIR=/tmp/gate/pg \
        /app/init.sh >/dev/null \
     && caddy adapt --config /tmp/gate/run/Caddyfile --adapter caddyfile >/dev/null

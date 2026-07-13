@@ -5,7 +5,7 @@ import { KeypairService } from './keypair.service.js';
 
 /**
  * S2S request signing — DKIM-model on RFC 9421 (HTTP Message Signatures) wire format, Ed25519.
- * See docs/federation-protocol.md §5.1. The signer and verifier are both our code, so we fix one
+ * The signer and verifier are both our code, so we fix one
  * canonical covered-component set for v0.1; both sides use it.
  *
  * Covered components: @method @path @authority date content-digest

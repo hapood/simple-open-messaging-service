@@ -108,7 +108,7 @@ export type ConsumedMedia =
  * - Two authenticity checks: consumeImage checks the mimetype (coarse filter, rejects before the
  *   buffer is materialized) + isImage reads the real file-header magic bytes (anti-forgery).
  *
- * Storage dir is process.cwd()/uploads, aligned with main.ts's @fastify/static prefix '/uploads/'.
+ * Storage dir is process.cwd()/data/uploads, aligned with bootstrap.ts's @fastify/static prefix '/uploads/'.
  * Switching to object storage (S3/OSS/MinIO) in production means changing only save()/saveAvatars()'s
  * write target + url generation — the interface contract stays the same.
  */

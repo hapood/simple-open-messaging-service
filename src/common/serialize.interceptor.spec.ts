@@ -6,13 +6,13 @@ describe('serializeBody', () => {
     expect(serializeBody(9007199254740993n)).toBe('9007199254740993');
   });
 
-  it('Date → 毫秒时间戳 (number)', () => {
+  it('Date → millisecond timestamp (number)', () => {
     const d = new Date('2026-06-24T00:00:00Z');
     expect(serializeBody(d)).toBe(d.getTime());
     expect(typeof serializeBody(new Date(0))).toBe('number');
   });
 
-  it('原语原样返回（含 null/undefined）', () => {
+  it('primitives returned as-is (including null/undefined)', () => {
     expect(serializeBody(42)).toBe(42);
     expect(serializeBody('hi')).toBe('hi');
     expect(serializeBody(true)).toBe(true);
@@ -20,7 +20,7 @@ describe('serializeBody', () => {
     expect(serializeBody(undefined)).toBeUndefined();
   });
 
-  it('嵌套对象递归转换', () => {
+  it('nested objects are recursively converted', () => {
     const input = { id: 1n, nested: { id: 2n, d: new Date(0) } };
     expect(serializeBody(input)).toEqual({
       id: '1',
@@ -28,17 +28,17 @@ describe('serializeBody', () => {
     });
   });
 
-  it('数组递归转换', () => {
+  it('arrays are recursively converted', () => {
     const input = [{ id: 1n }, { id: 2n }];
     expect(serializeBody(input)).toEqual([{ id: '1' }, { id: '2' }]);
   });
 
-  it('lastRead (BigInt?) 转 string，null 保留 —— 堵原 convertBigIntId 漏转的 500', () => {
+  it('lastRead (BigInt?) converts to string, null preserved — fixes the 500 caused by old convertBigIntId missing conversion', () => {
     expect(serializeBody({ lastRead: 5n })).toEqual({ lastRead: '5' });
     expect(serializeBody({ lastRead: null })).toEqual({ lastRead: null });
   });
 
-  it('Message 形状（id BigInt + createdAt Date）整体转换', () => {
+  it('Message shape (id BigInt + createdAt Date) converted as a whole', () => {
     const input = {
       id: 9007199254740993n,
       contentType: 'PURE_TEXT',
@@ -57,26 +57,26 @@ describe('serializeBody', () => {
     });
   });
 
-  it('返回新对象，不修改原对象', () => {
+  it('returns a new object, does not modify the original', () => {
     const input = { id: 1n };
     serializeBody(input);
-    expect(input.id).toBe(1n); // 原对象 BigInt 未被就地改写
+    expect(input.id).toBe(1n); // the original object's BigInt was not mutated in place
   });
 
-  it('循环引用不爆栈（命中 seen 返回原引用）', () => {
+  it('circular references do not overflow the stack (hits seen and returns the original reference)', () => {
     const a: { id: bigint; self?: unknown } = { id: 1n };
     a.self = a;
     const out = serializeBody(a) as { id: string; self: unknown };
     expect(out.id).toBe('1');
-    expect(out.self).toBe(a); // 循环点返回原引用
+    expect(out.self).toBe(a); // the circular point returns the original reference
   });
 
-  it('类实例 / Map / Buffer 原样返回（不遍历）', () => {
+  it('class instances / Map / Buffer returned as-is (not traversed)', () => {
     class Foo {
       x = 1n;
     }
     const foo = new Foo();
-    expect(serializeBody(foo)).toBe(foo); // 同一引用，未遍历
+    expect(serializeBody(foo)).toBe(foo); // same reference, not traversed
 
     const m = new Map([['k', 1n]]);
     expect(serializeBody(m)).toBe(m);

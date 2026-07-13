@@ -155,7 +155,7 @@ export interface FederatedPeerListResult {
 
 // ─── Daily quotas (POST /admin/quota/nodes) ───
 // Unified per-node daily budgets: the local server (domain == SOMS_DOMAIN) + each federated peer.
-// See src/quota/quota.service.ts + docs/federation-quotas.md.
+// See src/quota/quota.service.ts.
 export type QuotaCategory = 'messages' | 'images' | 'largeFiles' | 'requests'
 
 /** Per-node override set (null/absent = use the global default). */

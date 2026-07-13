@@ -13,7 +13,7 @@ import {
   isP2002,
 } from './account.js';
 
-describe('account grammar + minting (docs/account-naming.md)', () => {
+describe('account grammar + minting', () => {
   describe('USER_ACCOUNT_RE', () => {
     it.each(['alice', 'john.smith', 'a.b.c', 'ALICE', 'Alice.Bob', 'h2user', 'alice2', 'a.b2'])(
       'accepts %s',

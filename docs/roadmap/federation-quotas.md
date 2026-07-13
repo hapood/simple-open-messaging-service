@@ -180,7 +180,7 @@ Because local is server-aggregate, **every local user's action increments the sa
   outbound POST would have wrongly demoted them. It now demotes only on `401 | 403 | >= 500` (mirroring the
   already-safe `getSigned`); `429 | 413 | 400 | 404 | 410` throw `S2sResponseError` **without** demoting.
 - A quota hit is **distinct from `blocked`** (an admin intent that persists until unblocked). See
-  `docs/federation-protocol.md` §trust-lifecycle and the `FederatedPeerEvent` audit log.
+  `docs/overview/federation-protocol.md` §trust-lifecycle and the `FederatedPeerEvent` audit log.
 
 ---
 
@@ -210,7 +210,7 @@ today's usage per category (`count / limit`) + inline-editable thresholds wired 
 
 ## 7. Deferred / out of scope
 
-- **Per-user quotas** — explicitly deferred ("user 级别靠后延期做"). The schema has no `userId` column;
+- **Per-user quotas** — explicitly deferred ("deferred — user-level quotas are a later phase"). The schema has no `userId` column;
   adding per-user later means widening the counter key + a new enforcement dimension. The local node is a
   single server-aggregate budget by design.
 - **Serving-side request-rate throttle on `/s2s/*`** — a peer hammering GET endpoints with bogus queries

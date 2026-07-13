@@ -28,7 +28,7 @@ import { BusinessException } from './business.exception.js';
  *   structured logs, correlated per-request via the X-Request-Id response header). Surfacing a traceId
  *   field in the response *body* was considered and rejected as unnecessary for a self-hosted service —
  *   the header + logs already bridge a client report to its server logs, and federation cross-server
- *   correlation keys off messageId/originSeq (see docs/protocol-plan.md §P3).
+ *   correlation keys off messageId/originSeq.
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {

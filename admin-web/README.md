@@ -8,7 +8,7 @@ through a **physically isolated admin account system** (independent JWT secret,
 and user credentials never cross.
 
 > See the repo root `README.md` for the tri-client architecture
-> (API `:3000` / web `:4200` / admin-web `:5180`) and `docs/architecture.md`
+> (API `:3000` / web `:4200` / admin-web `:5180`) and `docs/overview/architecture.md`
 > for the admin auth subsystem.
 
 ## Tech stack

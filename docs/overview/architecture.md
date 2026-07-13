@@ -40,19 +40,19 @@ This document describes the system architecture, module responsibilities, authen
 
 ## Backend Module Responsibilities
 
-The application root module [src/app.module.ts](../src/app.module.ts) imports `EventEmitterModule`, `RedisModule`, `AuthModule`, `UserModule`, `GatewayModule`, `MessageModule`, `GroupModule`, `UploadModule`, and `AdminModule`; controllers are declared within their respective modules (the root module directly registers `MessageController` / `AuthController` / `UserController` / `GroupController`).
+The application root module [src/app.module.ts](../../src/app.module.ts) imports `EventEmitterModule`, `RedisModule`, `AuthModule`, `UserModule`, `GatewayModule`, `MessageModule`, `GroupModule`, `UploadModule`, and `AdminModule`; controllers are declared within their respective modules (the root module directly registers `MessageController` / `AuthController` / `UserController` / `GroupController`).
 
 | Module | Key Files | Responsibilities |
 | --- | --- | --- |
-| **AuthModule** | [src/auth/](../src/auth/) | Passport `local` + `jwt` strategies, JWT dual-token generation and validation, argon2 password hashing, login-failure IP banning |
-| **UserModule** | [src/user/](../src/user/) | User registration (transactional creation of User + UserExtra + userNotiBox), user queries, thread queries |
-| **MessageModule** | [src/message/](../src/message/) | Message writing and paginated queries, **friend request state machine** (`makeFriendRequest` / `approveFriendRequest`) |
-| **GroupModule** | [src/group/](../src/group/) | Group CRUD, member management, issuing and decoding group invitation JWT tokens |
-| **GatewayModule** | [src/gateway/](../src/gateway/) | SSE downstream push (`EventsController` + `SseService`): connection registration, heartbeat, new-message push, forced logout, online connection snapshots |
-| **UploadModule** | [src/upload/](../src/upload/) | Chat image upload (`/upload`, magic-number validation), avatar `sharp` multi-size webp rewriting |
-| **AdminModule** | [src/admin/](../src/admin/) | Independent admin account system (`Admin` / `AdminRefreshToken`) + user/thread/ban/reuse-alert management endpoints |
-| **RedisModule** | [src/redis/](../src/redis/) | Redis client wrapper (access jti blacklist, etc.) |
-| **PrismaService** | [src/prisma.service.ts](../src/prisma.service.ts) | `PrismaClient` wrapper, auto-connects on `onModuleInit` |
+| **AuthModule** | [src/auth/](../../src/auth/) | Passport `local` + `jwt` strategies, JWT dual-token generation and validation, argon2 password hashing, login-failure IP banning |
+| **UserModule** | [src/user/](../../src/user/) | User registration (transactional creation of User + UserExtra + userNotiBox), user queries, thread queries |
+| **MessageModule** | [src/message/](../../src/message/) | Message writing and paginated queries, **friend request state machine** (`makeFriendRequest` / `approveFriendRequest`) |
+| **GroupModule** | [src/group/](../../src/group/) | Group CRUD, member management, issuing and decoding group invitation JWT tokens |
+| **GatewayModule** | [src/gateway/](../../src/gateway/) | SSE downstream push (`EventsController` + `SseService`): connection registration, heartbeat, new-message push, forced logout, online connection snapshots |
+| **UploadModule** | [src/upload/](../../src/upload/) | Chat image upload (`/upload`, magic-number validation), avatar `sharp` multi-size webp rewriting |
+| **AdminModule** | [src/admin/](../../src/admin/) | Independent admin account system (`Admin` / `AdminRefreshToken`) + user/thread/ban/reuse-alert management endpoints |
+| **RedisModule** | [src/redis/](../../src/redis/) | Redis client wrapper (access jti blacklist, etc.) |
+| **PrismaService** | [src/prisma.service.ts](../../src/prisma.service.ts) | `PrismaClient` wrapper, auto-connects on `onModuleInit` |
 
 > Unimported modules: Only `NotifyModule` is not yet imported into `AppModule` (`UserManageModule` has been activated by `AdminModule` for `admin/users`; `UploadModule` is already wired up, so image/avatar upload is available). See [Known Issues](#known-issues-and-improvements).
 
@@ -60,26 +60,26 @@ The application root module [src/app.module.ts](../src/app.module.ts) imports `E
 
 | Controller | File | Endpoint Prefix |
 | --- | --- | --- |
-| AuthController | [src/controller/auth.controller.ts](../src/controller/auth.controller.ts) | `/auth/*` |
-| UserController | [src/controller/user.controller.ts](../src/controller/user.controller.ts) | `/user/*` |
-| MessageController | [src/controller/message.controller.ts](../src/controller/message.controller.ts) | `/send-message`, `/query-messages`, `/thread/by-user-id` |
-| GroupController | [src/controller/group.controller.ts](../src/controller/group.controller.ts) | `/group/*` |
-| UploadController | [src/upload/upload.controller.ts](../src/upload/upload.controller.ts) | `/upload` (images), `/user/update-avatar` (avatar) |
-| AdminController | [src/admin/admin.controller.ts](../src/admin/admin.controller.ts) | `/admin/*` (independent admin JWT, `AdminAuthGuard`) |
-| EventsController | [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) | `GET /events` (SSE downstream stream, reuses `JwtAuthGuard`) |
+| AuthController | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts) | `/auth/*` |
+| UserController | [src/controller/user.controller.ts](../../src/controller/user.controller.ts) | `/user/*` |
+| MessageController | [src/controller/message.controller.ts](../../src/controller/message.controller.ts) | `/send-message`, `/query-messages`, `/thread/by-user-id` |
+| GroupController | [src/controller/group.controller.ts](../../src/controller/group.controller.ts) | `/group/*` |
+| UploadController | [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) | `/upload` (images), `/user/update-avatar` (avatar) |
+| AdminController | [src/admin/admin.controller.ts](../../src/admin/admin.controller.ts) | `/admin/*` (independent admin JWT, `AdminAuthGuard`) |
+| EventsController | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) | `GET /events` (SSE downstream stream, reuses `JwtAuthGuard`) |
 
 ## Frontend Structure
 
 The frontend is an Angular 18 standalone application using experimental Zoneless change detection + Signal-driven reactivity.
 
-**Bootstrap & Global Config** [web/src/app/app.config.ts](../web/src/app/app.config.ts)
+**Bootstrap & Global Config** [web/src/app/app.config.ts](../../web/src/app/app.config.ts)
 
 - `provideExperimentalZonelessChangeDetection()` — no zone.js
 - `AuthInterceptor` — HTTP interceptor, auto-injects `Bearer <access_token>`, auto-renews on 401
 - `provideRouter(routes, withComponentInputBinding())`
 - `provideHttpClient(withInterceptorsFromDi())`
 
-**Service Layer** [web/src/app/services/](../web/src/app/services/)
+**Service Layer** [web/src/app/services/](../../web/src/app/services/)
 
 | Service | Responsibilities |
 | --- | --- |
@@ -94,7 +94,7 @@ The frontend is an Angular 18 standalone application using experimental Zoneless
 
 ## Unified Response Format
 
-All HTTP endpoints return the `ApiResult` envelope (since P1a the `status` field has been renamed to `code`; see [src/common/api-result.ts](../src/common/api-result.ts)):
+All HTTP endpoints return the `ApiResult` envelope (since P1a the `status` field has been renamed to `code`; see [src/common/api-result.ts](../../src/common/api-result.ts)):
 
 ```ts
 interface ApiResult<T = any> {
@@ -105,9 +105,9 @@ interface ApiResult<T = any> {
 }
 ```
 
-Business results always return HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes for broad categories (DTO parameter validation failures are also folded into the business flow as 200 + `10000`). **Business codes are segmented by domain** (`10xxx` general / `20xxx` friend·state machine / `30xxx` message / `40xxx` group); see [api.md → Business Error Codes](./api.md#业务错误码).
+Business results always return HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes for broad categories (DTO parameter validation failures are also folded into the business flow as 200 + `10000`). **Business codes are segmented by domain** (`10xxx` general / `20xxx` friend·state machine / `30xxx` message / `40xxx` group); see [api.md → Business Error Codes](../api/api.md#business-error-codes).
 
-> Serialization is handled uniformly by the global `SerializeInterceptor` ([src/common/serialize.interceptor.ts](../src/common/serialize.interceptor.ts)): `Date → millisecond timestamp`, `BigInt → string`. P1 removed the former `Date.prototype.toJSON` global hack and the manual `convertBigIntId()`.
+> Serialization is handled uniformly by the global `SerializeInterceptor` ([src/common/serialize.interceptor.ts](../../src/common/serialize.interceptor.ts)): `Date → millisecond timestamp`, `BigInt → string`. P1 removed the former `Date.prototype.toJSON` global hack and the manual `convertBigIntId()`.
 
 ## Authentication Mechanism
 
@@ -125,7 +125,7 @@ Business results always return HTTP 200 + `code`; only unauthenticated (401) / n
 1. `POST /auth/login` (body: `account`, `password`) → `LocalAuthGuard` → `LocalStrategy.validate()`.
 2. **IP ban check**: Looks up the in-memory `_ipBlackDict[ip]`; if not yet unbanned, the request is rejected outright.
 3. `AuthService.validateUser()`: Looks up the user, then verifies the password with `argon2.verify`.
-4. **Failure counting and banning** ([src/auth/local.strategy.ts](../src/auth/local.strategy.ts)): Cumulative failures `>3` bans for 30 minutes, `>6` bans for 3 hours, `>9` bans for 24 hours; records older than 2 days are purged every 24 hours.
+4. **Failure counting and banning** ([src/auth/local.strategy.ts](../../src/auth/local.strategy.ts)): Cumulative failures `>3` bans for 30 minutes, `>6` bans for 3 hours, `>9` bans for 24 hours; records older than 2 days are purged every 24 hours.
 5. On success, returns access + refresh; wrong credentials return `code:10003`; IP ban returns `code:10005` + `data.bannedUntil`.
 
 ### JWT Validation (Jwt Strategy)
@@ -146,7 +146,7 @@ Business results always return HTTP 200 + `code`; only unauthenticated (401) / n
 
 ## Real-time Communication (SSE Downstream)
 
-**Endpoint** [src/gateway/events.controller.ts](../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../src/gateway/sse.service.ts): `GET /api/v1/events` (`text/event-stream`, same port 3000 as HTTP). SSE is a one-way downstream channel — push-only; all client business upstream (sending messages, future typing) goes through HTTP.
+**Endpoint** [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts): `GET /api/v1/events` (`text/event-stream`, same port 3000 as HTTP). SSE is a one-way downstream channel — push-only; all client business upstream (sending messages, future typing) goes through HTTP.
 
 ### Connection Authentication
 
@@ -180,7 +180,7 @@ The frontend can render directly on receipt, **with no secondary `query-messages
 - **During disconnection**: The SSE stream does not replay history (the server does not consume `Last-Event-ID`). After a successful reconnect, the frontend emits `reconnect$`, and each thread does an HTTP incremental catch-up fetch (`refillNewer`) of missed messages using the `newestMsgId` cursor.
 - **Multiple connections**: A single user's multiple connections are each individually ordered; ordering is not guaranteed across connections.
 
-### Frontend Handling ([websocket.service.ts](../web/src/app/services/websocket.service.ts), internally `@microsoft/fetch-event-source`)
+### Frontend Handling ([websocket.service.ts](../../web/src/app/services/websocket.service.ts), internally `@microsoft/fetch-event-source`)
 
 - `onopen` receives 401: Throws `AuthNeededError` → the outer loop single-flights `renewAccessToken()`; on success it reopens immediately (not counted toward backoff), on failure it triggers `redoLoginAuth`.
 - Receives `NEW_MESSAGE`: Forwards to the thread component for direct rendering (the payload is already the complete message body).
@@ -207,7 +207,7 @@ UserMessageThreadStatus:
 
 ### Friend Request State Machine
 
-`MessageService.makeFriendRequest(from, to)` ([src/message/message.service.ts](../src/message/message.service.ts)) branches on the other party's current `UserMessageThread` status within a transaction:
+`MessageService.makeFriendRequest(from, to)` ([src/message/message.service.ts](../../src/message/message.service.ts)) branches on the other party's current `UserMessageThread` status within a transaction:
 
 ```
 Other party's status  Action                                               Status
@@ -243,7 +243,7 @@ TO_PENDING/BLOCKED    No further action                                   5
 1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): JWT access/refresh/admin secrets are now externalized; when not explicitly set, they are auto-generated at first startup under `./data/jwt-*.key` (no longer fail-fast; see `src/auth/jwt-secret.ts`). Group invitations switched to the `GROUP_INVITE` message type and no longer use the signing secret.
 2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): refresh_token is now persisted to the `RefreshToken` table (storing the sha256 hash); it survives restarts, is revocable (`revokedAt`), and rotates on renewal. This also fixed three bugs — `logout` (reads refresh from the body instead of the JWT payload where it was always undefined, and was made a public endpoint), `renew-access` (no longer mistakenly deletes the refresh, which would break the 7-day scheduled renewal), and `renew-refresh` (now null-checks before revoking, fixing a null-pointer 500).
 3. **`NotifyModule` not wired up**: Not yet imported into `AppModule` (Prisma already models `Notify` / `userNotiBox`, but the code does not consume them). `UserManageModule` has been activated by `AdminModule` (`admin/users`), and `UploadModule` is wired up (image/avatar upload is available).
-4. ~~**File upload**~~ ✅ Implemented: `UploadModule` ([src/upload/](../src/upload/)) provides `/upload` (chat images, magic-number validation + 10MB limit) and `/user/update-avatar` (`sharp` multi-size webp rewriting). When switching to object storage in production, only the write target changes; the API contract stays the same.
+4. ~~**File upload**~~ ✅ Implemented: `UploadModule` ([src/upload/](../../src/upload/)) provides `/upload` (chat images, magic-number validation + 10MB limit) and `/user/update-avatar` (`sharp` multi-size webp rewriting). When switching to object storage in production, only the write target changes; the API contract stays the same.
 5. ~~**Frontend authGuard not in effect**~~ ✅ Fixed: `authGuard` / `guestGuard` are now mounted on routes (home/nav use authGuard, login/register use guestGuard).
 6. **`/user/query` privacy**: Allows batch queries of any non-deleted user's information, with no relationship-level visibility isolation.
 7. ~~**`Date.prototype.toJSON` global override**~~ ✅ Removed (P1): Replaced by the global `SerializeInterceptor` which uniformly converts `Date → ms` / `BigInt → string`, no longer polluting the prototype.

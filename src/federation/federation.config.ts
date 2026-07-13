@@ -2,7 +2,6 @@ import { requireEnv } from '../common/env.js';
 
 /**
  * Federation (S2S) configuration. Loaded from env at module-init time (fail-fast via requireEnv).
- * See docs/federation-protocol.md Part II.
  */
 export interface FederationConfig {
   /** This server's public domain — the domain in @user@domain handles and in .well-known/soms. */
@@ -55,7 +54,7 @@ export function loadFederationConfig(): FederationConfig {
  * Unified daily-quota configuration (local SOMS_DOMAIN node + each federated peer). These are the
  * global defaults; a per-node override (FederatedPeer columns for a peer, SystemSetting 'quota:local'
  * for the local node) takes precedence when set (null override → use the default here). Thresholds
- * benchmarked in docs/federation-quotas.md §2. Loaded separately from FederationConfig to keep the
+ * Loaded separately from FederationConfig to keep the
  * transport config focused. See src/quota/quota.service.ts.
  */
 export interface QuotaConfig {

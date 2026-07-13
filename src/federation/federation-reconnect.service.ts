@@ -13,7 +13,7 @@ import { FederationService } from './federation.service.js';
  * fallback). A recover() that fails (peer still down) is expected + silent; the next tick retries.
  *
  * ±jitter staggers recoveries so a fleet-wide outage doesn't hammer every peer on the same tick; the
- * inFlight guard dedupes recoveries for one domain within a sweep. See docs/federation-step2-design.md §4.3.
+ * inFlight guard dedupes recoveries for one domain within a sweep.
  */
 @Injectable()
 export class FederationReconnectService implements OnModuleInit, OnModuleDestroy {

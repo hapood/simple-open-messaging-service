@@ -17,17 +17,17 @@
 > - **Step 2 — 1:1 cross-server messages + media.** Light-notify + active **pull** over
 >   `GET /api/v1/s2s/messages` (per-`(thread, sender)` `originSeq` cursor + dedup) — NOT a POSTed
 >   payload, NOT an outbox/worker. Images localize via the CAS path; large files stream over
->   `Range`/206 on `/get_file`. Authoritative design: `docs/federation-step2-design.md`.
+>   `Range`/206 on `/get_file`. Authoritative design: `docs/roadmap/federation-step2-design.md`.
 > - **Step 3 — cross-server groups (origin-hub).** The origin server is the single authority for roster
 >   AND message history: a member signals the origin, the origin pulls + aggregates + re-signals,
 >   members pull the whole thread from the origin. Unified `/s2s/invite` (friend + group); lazy roster
->   meta-pull; group-invite chat card; leave. Authoritative design: `docs/federation-step3-design.md`.
+>   meta-pull; group-invite chat card; leave. Authoritative design: `docs/roadmap/federation-step3-design.md`.
 >
 > **What is NOT yet built (deferred).** Presence/typing (v0.2, best-effort ephemeral — lossy, no retry),
 > read receipts (v0.2, a separate item — NOT best-effort, delivery is wanted), group
 > **rename/avatar/description** sync, a durable **active-liveness** leave backstop, origin death/re-homing.
 > Per-peer **quota** enforcement is now **BUILT** (unified local + peers — see
-> `docs/federation-quotas.md`). **Edit/delete propagation is a non-goal**, not deferred — the origin has no
+> `docs/roadmap/federation-quotas.md`). **Edit/delete propagation is a non-goal**, not deferred — the origin has no
 > authority over receiver-local data once delivered (§9).
 > These are flagged inline as **Deferred**. The per-section "Future" headers below that predate Steps 2/3
 > are retained as historical design notes — read them as **implemented** per the step-design docs unless
@@ -75,7 +75,7 @@ A **lightweight, JSON-based, IM-native federation protocol.** ActivityPub-inspir
 - **Not** remote edit/delete of delivered messages. The origin's authority ends at delivery — once a peer
   pulls + stores a message it is that receiver's local data (the delivered-immutability / email model).
   A local edit/delete stays local; a deleted-by-sender message is a gap on the receiver, never a
-  remote-driven tombstone. (See `docs/federation-step2-design.md` §9.)
+  remote-driven tombstone. (See `docs/roadmap/federation-step2-design.md` §9.)
 
 ### Why this design, not the alternatives
 
@@ -117,11 +117,11 @@ address := { account, domain }    // e.g. { account: "alice", domain: "soms.io" 
 
 `account` is the peer's `account`; `domain` is the peer server. The friend-op payloads' `from`/`to` carry these as objects (`{account, domain}`), and the resolve endpoint is `/users/:account`. The `@` separator is a **UI input aid ONLY** — a user types `alice@soms.io` in the search box, the client splits it into the two fields before any API call, and no `@`-joined string ever crosses the wire or appears in a backend definition. (SOMS local `account`s never contain `@`, so the client split is unambiguous.)
 
-> **Account grammar is specified separately** in [`docs/account-naming.md`](./account-naming.md) — the single source of truth for the `account` charset, the `!` group sigil, dot rules, and case handling. There are two account classes: **users** (letters + digits + `.`, must start with a letter) and **groups** (`!`-prefixed opaque ids), distinguished by grammar. A group address on the wire is `{ account: "!01hz...", domain: "soms.io" }`.
+> **Account grammar is specified separately** in [`docs/overview/account-naming.md`](./account-naming.md) — the single source of truth for the `account` charset, the `!` group sigil, dot rules, and case handling. There are two account classes: **users** (letters + digits + `.`, must start with a letter) and **groups** (`!`-prefixed opaque ids), distinguished by grammar. A group address on the wire is `{ account: "!01hz...", domain: "soms.io" }`.
 
 > **The federated address is immutable — both halves, for life.** Neither field of `{ account, domain }`
 > ever changes after creation. The `account` half is set once at registration / group-create and is
-> **never renamed** ([`docs/account-naming.md`](./account-naming.md) §7 — renaming is forbidden at the
+> **never renamed** ([`docs/overview/account-naming.md`](./account-naming.md) §7 — renaming is forbidden at the
 > identity layer, not merely unimplemented: it would orphan every peer's remote stub and free the old
 > account for re-registration / impersonation). The `domain` half is fixed because `user@domain` is
 > bound to its server in v0.1 (identity portability is a deferred non-goal, §10). A user is therefore
@@ -168,7 +168,7 @@ See Part II §D2 for SRV record format and configuration.
 > `/s2s/invite` (deliver, `kind` FRIEND|GROUP) + `/s2s/invite-accept`. The earlier
 > `/s2s/friend-request` + `/s2s/friend-approve` + `/s2s/thread/invite` are removed. The `kind` field on
 > `S2SInvite` is the discriminator (FRIEND carries `profile`; GROUP carries the group identity + a
-> revision). See `docs/federation-s2s-api.md` for the canonical shapes. The friend-flow narrative below
+> revision). See `docs/api/federation-s2s-api.md` for the canonical shapes. The friend-flow narrative below
 > (§4.1) still describes the FRIEND semantics; read "POST /s2s/invite {kind:FRIEND}" for the old
 > `/friend-request` and "POST /s2s/invite-accept {kind:FRIEND}" for `/friend-approve`.
 
@@ -212,7 +212,7 @@ inline (no nested fetch); `friend-approve` is the bare base (pure state confirma
 
 > **No `message` payload type.** Step 2 cross-server messages do **not** travel as a POSTed payload — they
 > travel in the response of a signed `GET /api/v1/s2s/messages` (active pull), gated by friendship +
-> `originSeq` idempotency (`docs/federation-step2-design.md`). The earlier "durable message envelope"
+> `originSeq` idempotency (`docs/roadmap/federation-step2-design.md`). The earlier "durable message envelope"
 > design (`type: message`, `durability`, `origin_seq`, `thread`, `prev`, `client_message_id`, opaque
 > `content`) was the rejected push alternative. There is no `type` / `durability` field on the wire, and
 > `content` is not a payload slot — a future E2EE layer, if ever added, would live on the pull-response
@@ -374,7 +374,7 @@ Body: <payload>
 > `Message` table is the source of truth; a tiny best-effort `message.notify` hints the peer, which
 > **pulls** by cursor; a lost notify is caught by pull-on-thread-open + a slow poll. The retry budget
 > below applies only to the (best-effort, 10s-timeout) notify, not to a queue. Authoritative design:
-> `docs/federation-step2-design.md`. An outbox revives only if a future tier needs transactional
+> `docs/roadmap/federation-step2-design.md`. An outbox revives only if a future tier needs transactional
 > delivery guarantees — and it would layer ON TOP of the pull model, not replace it.
 
 Backoff schedule: **30s → 1m → 5m → 30m → 2h → 24h**, then **dead-letter** for operator inspection. Single-worker per `(thread, recipient-domain)` to preserve `origin_seq` order; parallelism across threads/domains is fine.
@@ -402,7 +402,7 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 
 ## 7. Ordering & consistency (Step 2 — built)
 
-> **Built (Step 2).** The rules below govern cross-server message ordering. Step 3 §5 refined the display rule: the **arrival time** (the receiver's local `now()` when a pulled message is stored) is what the chatbox shows and what orders the conversation list; `originSeq` (per-sender) is the cursor/dedup authority — never a global order. See `docs/federation-step3-design.md` §5.
+> **Built (Step 2).** The rules below govern cross-server message ordering. Step 3 §5 refined the display rule: the **arrival time** (the receiver's local `now()` when a pulled message is stored) is what the chatbox shows and what orders the conversation list; `originSeq` (per-sender) is the cursor/dedup authority — never a global order. See `docs/roadmap/federation-step3-design.md` §5.
 
 - **Within a thread:** sort by `(ts, origin_seq)`. `ts` is the origin's clock; `origin_seq` (per-thread, monotonic on origin) breaks ties.
 - **`origin_seq`:** allocated by a per-thread counter on the origin server. No cross-thread coordination.
@@ -420,7 +420,7 @@ This generalizes from 2 addresses (one v4 + one v6) to **N** addresses: a target
 >
 > ⚠️ **Step 2 makes backfill the SAME endpoint as incremental pull** — `GET /api/v1/s2s/messages?after=0`
 > is a full backfill; `after=<cursor>` is incremental. No separate `/threads/:id/messages` route. See
-> `docs/federation-step2-design.md` §3.2. The shape below (membership-gated, origin-served) still
+> `docs/roadmap/federation-step2-design.md` §3.2. The shape below (membership-gated, origin-served) still
 > applies; only the path/param convention changed.
 
 A server pulls thread history from the origin when its user is added/rejoins:
@@ -465,7 +465,7 @@ Alice@soms.io wants to chat with Bob@other.com.
 
 > **Built (Step 2).** The ⚠️ SUPERSEDED note below carries the authoritative flow (light-notify + active-pull, NO `S2SOutbox`). The push flow retained below is the rejected alternative, kept as rationale.
 >
-> ⚠️ **SUPERSEDED — see `docs/federation-step2-design.md` for the authoritative Step 2 flow
+> ⚠️ **SUPERSEDED — see `docs/roadmap/federation-step2-design.md` for the authoritative Step 2 flow
 > (light-notify + active-pull, NO `S2SOutbox`).** The actual flow: sender stores locally + allocates
 > `originSeq` → best-effort `message.notify {latestSeq}` to the peer → the peer **pulls** the sender's
 > side by cursor (`GET /api/v1/s2s/messages`) → stores + SSE to its user. The push flow below is the
@@ -493,7 +493,7 @@ Group invites remain friend-gated: **the inviter and invitee must already be fri
 > **local-only**: the owner may hand ownership only to another user on the **same origin server**;
 > transferring ownership to a member on a *different* domain is **forbidden** (rejected by the backend,
 > hidden in the UI), so the origin domain never changes. Authoritative detail in
-> [`docs/federation-step3-design.md`](./federation-step3-design.md) §2 (Decision 2) and §7.6.
+> [`docs/roadmap/federation-step3-design.md`](../roadmap/federation-step3-design.md) §2 (Decision 2) and §7.6.
 
 ### 9.4 Unfriend
 
@@ -531,7 +531,7 @@ model User {
 // origin server's domain (groupUser.domain). NULL groupUserId for purely-local threads (all P2P,
 // local-only groups); 1:1 threads still have no shared id.
 // Message gains originServerTime (Step 2/3 — the sender clock, stored not shown; createdAt = arrival,
-// displayed). See docs/federation-step3-design.md §3.
+// displayed). See docs/roadmap/federation-step3-design.md §3.
 
 // Friendship: one normalized row per pair (userAId=min, userBId=max) + requesterId for direction.
 // reqMessage is the ≤255-char friend-request note (local + federated). threadId is the P2P
@@ -610,7 +610,7 @@ model S2SFriendOpSeen {
 
 > The earlier `/s2s/friend-request` + `/s2s/friend-approve` + `/s2s/thread/invite` + `/s2s/thread/member`
 > are removed (unified into `/s2s/invite` + `/s2s/invite-accept`; roster propagation is lazy pull, not
-> push fanout). See `docs/federation-s2s-api.md`.
+> push fanout). See `docs/api/federation-s2s-api.md`.
 
 ### Services (NestJS)
 
@@ -634,14 +634,14 @@ A user's avatar crosses servers **inline as base64**, never by cross-origin URL 
 
 **No approve-time refresh** — `friend.approve` carries no profile and triggers no re-pull on either side. The requester's stub of the approver was created at resolve time; any profile drift (across the request→approve window or later) is caught uniformly by the chat-open probe. This keeps `approve` a pure state-confirmation and avoids a redundant avatar transfer + a nested S2S call inside the handler.
 
-Avatars are the **only media that federates in v0.1** — message-image federation (album/file photos **in chat**) is a separate, larger step (see Deferred below + `docs/federation-quotas.md`).
+Avatars are the **only media that federates in v0.1** — message-image federation (album/file photos **in chat**) is a separate, larger step (see Deferred below + `docs/roadmap/federation-quotas.md`).
 
 ### Deferred (explicit non-goals for v0.1)
 
 - **E2EE** — `content` reserved; crypto is a separate effort.
 - **Presence / typing** — ephemeral, v0.2 (lossy, carry no `id`, never retried).
 - **Read receipts across federation** — `receipt` type reserved; logic v0.2.
-- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). The per-node **quota** system that will bound that traffic is **BUILT** (daily message/image/file count limits + size caps, admin-adjustable, applied to local + peers) — see `docs/federation-quotas.md`; it is already live for text `messages`, image/large-file local uploads, and inbound S2S `requests`.
+- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). The per-node **quota** system that will bound that traffic is **BUILT** (daily message/image/file count limits + size caps, admin-adjustable, applied to local + peers) — see `docs/roadmap/federation-quotas.md`; it is already live for text `messages`, image/large-file local uploads, and inbound S2S `requests`.
 - **Open federation / anti-spam** — allow-list only.
 - **Bridges to Matrix / XMPP / ActivityPub** — separate adapter services.
 - **Identity portability** — `user@domain` is bound to its server in v0.1.

@@ -64,7 +64,7 @@ export class EditProfileComponent {
     })
   }
 
-  /** 仅当昵称合法、未在请求中、且至少一项相对当前 session 改动时才可保存。 */
+  /** Saveable only when the nickname is valid, no request is in flight, and at least one field changed vs the current session. */
   readonly canSave = computed(() => {
     const p = this.sessionProfile()
     if (!p) return false
@@ -76,7 +76,7 @@ export class EditProfileComponent {
   onAvatarPicked(e: Event) {
     const input = e.target as HTMLInputElement
     const file = input.files?.[0]
-    input.value = '' // 清空，允许重复选同一文件
+    input.value = '' // clear so the same file can be picked again
     if (!file) return
     // Hand the raw file to the cropper; upload only the cropped square it returns.
     // Cancel/back yields no result, so nothing uploads.
@@ -90,7 +90,7 @@ export class EditProfileComponent {
     this.userService.updateAvatar(file).subscribe({
       next: () => {
         this.uploading.set(false)
-        // 头像已落库 → 回读 sessionProfile，rail/抽屉/预览随之刷新。
+        // avatar persisted → re-read sessionProfile; rail/drawer/preview refresh accordingly.
         this.userService.updateSessionProfile()
       },
       error: () => {

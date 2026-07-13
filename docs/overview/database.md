@@ -1,6 +1,6 @@
 # Data Model
 
-SOMS uses PostgreSQL, with the data model defined via Prisma 7 (Rust-free client + `@prisma/adapter-pg` driver adapter; `relationJoins` is GA). Schema source file: [prisma/schema.prisma](../prisma/schema.prisma); CLI configuration is in [prisma.config.ts](../prisma.config.ts).
+SOMS uses PostgreSQL, with the data model defined via Prisma 7 (Rust-free client + `@prisma/adapter-pg` driver adapter; `relationJoins` is GA). Schema source file: [prisma/schema.prisma](../../prisma/schema.prisma); CLI configuration is in [prisma.config.ts](../../prisma.config.ts).
 
 ## Table of Contents
 
@@ -194,7 +194,7 @@ enum NotifyType {
 ## Design Notes
 
 1. **Polymorphic thread association**: `UserMessageThread` uses `(toObjType, toObjId)` to simultaneously express "a P2P thread with a certain user" and "a thread with a certain group", avoiding separate tables.
-2. **Status-driven lifecycle**: The establishment/blocking/deletion of a thread is entirely expressed by `UserMessageThread.status`; a friend request is simply one state transition (see [architecture.md → Friend Request State Machine](./architecture.md#好友请求状态机)).
+2. **Status-driven lifecycle**: The establishment/blocking/deletion of a thread is entirely expressed by `UserMessageThread.status`; a friend request is simply one state transition (see [architecture.md → Friend Request State Machine](./architecture.md#friend-request-state-machine)).
 3. **Lazy thread binding**: During the friend-request phase `threadId` is empty; `MessageThread` is only created and back-filled in `approveFriendRequest`, avoiding meaningless empty threads.
-4. **BigInt message IDs**: `Message.id` / `Notify.id` / `UserMessageThread.lastRead` use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#统一响应格式)).
+4. **BigInt message IDs**: `Message.id` / `Notify.id` / `UserMessageThread.lastRead` use BigInt, uniformly serialized to strings by the global `SerializeInterceptor` (see [architecture.md → Unified Response Format](./architecture.md#unified-response-format)).
 5. **Group = Thread**: Each group has a 1:1 relationship with a `MessageThread(GROUP)`, and group messages are written directly to that thread; membership is reflected in both `GroupMember` and `UserMessageThread`.

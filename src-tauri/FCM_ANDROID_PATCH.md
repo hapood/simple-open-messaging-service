@@ -106,7 +106,7 @@ implementation("com.squareup.okhttp3:okhttp:4.12.0")            // worker HTTP P
 ### 7. New i18n resources
 
 - `res/values/strings.xml` — `notif_missed_one` / `notif_missed_many` (English).
-- `res/values-zh-rCN/strings.xml` — 简体中文 variants. Android picks per device locale automatically;
+- `res/values-zh-rCN/strings.xml` — Simplified Chinese variants. Android picks per device locale automatically;
   `ctx.getString(R.string.notif_*)` resolves to the right one with no explicit branching. Wording
   mirrors `web/src/app/i18n/{en,zh-CN}.json notif.*` for cross-surface consistency.
 

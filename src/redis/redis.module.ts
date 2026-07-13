@@ -2,8 +2,8 @@ import { Global, Module } from '@nestjs/common';
 import { RedisService } from './redis.service.js';
 
 /**
- * @Global：RedisService 被 JwtStrategy / LocalStrategy / AuthService / ThrottleGuard
- * 跨域注入，全局导出免去各模块逐个 import。
+ * @Global: RedisService is injected cross-module by JwtStrategy / LocalStrategy / AuthService / ThrottleGuard;
+ * exporting it globally saves each module from importing it individually.
  */
 @Global()
 @Module({

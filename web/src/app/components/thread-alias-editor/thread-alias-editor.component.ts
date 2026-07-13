@@ -6,7 +6,7 @@ import { MsgService } from '../../services/message.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 
 /**
- * Inline alias/remark (备注) editor for a conversation, embedded in the peer-profile + group-info panels.
+ * Inline alias/remark editor for a conversation, embedded in the peer-profile + group-info panels.
  * Shows the caller's current alias for the thread (or an "add remark" affordance); tapping toggles an
  * input + Save/Cancel. Save hits `thread/set-alias` and patches the conv list optimistically so the chat
  * header + conversation list update the displayed name immediately; the THREAD_META frame re-confirms it

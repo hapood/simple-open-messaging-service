@@ -14,7 +14,7 @@ export type { S2sProxy };
 /**
  * Federation e2e harness — boots TWO full SOMS apps in SEPARATE Node processes (appA=aaa.local on DB
  * _a, appB=bbb.local on DB _b), making real signed HTTP requests to each other over loopback. Each app
- * is a child process running the COMPILED entry (`ensureCompiledEntry` → tsc → `.fed-app-build/`).
+ * is a child process running the COMPILED entry (`ensureCompiledEntry` → tsc → `.e2e-build/`).
  *
  * Why separate processes (not two AppModule instances in one process, as before): a single Node process
  * shares process-global singletons — Passport's `local` strategy is registered globally, so appB's
@@ -44,13 +44,13 @@ export const FED_DOMAIN_A = 'aaa.local';
 export const FED_DOMAIN_B = 'bbb.local';
 
 /** Path to the COMPILED subprocess entry (see ensureCompiledEntry — why it's compiled, not run via tsx). */
-const APP_MAIN = join(process.cwd(), '.fed-app-build', 'test', 'federation-app.main.js');
+const APP_MAIN = join(process.cwd(), '.e2e-build', 'test', 'federation-app.main.js');
 
-/** Compile the subprocess entry + its deps to .fed-app-build/ via tsc, IF missing or stale. Staleness is
+/** Compile the subprocess entry + its deps to .e2e-build/ via tsc, IF missing or stale. Staleness is
  *  gated (any relevant source newer than the build → recompile) so the ~10s compile runs only when needed. */
 function ensureCompiledEntry(): void {
   const sources =
-    'src test/federation-app.main.ts test/federation-harness.ts test/federation-proxy.ts test/federation-test-helpers.ts tsconfig.json tsconfig.fed-app.json';
+    'src test/federation-app.main.ts test/federation-harness.ts test/federation-proxy.ts test/federation-test-helpers.ts tsconfig.json tsconfig.e2e.json';
   try {
     execSync(
       `test -f "${APP_MAIN}" && test -z "$(find ${sources} -newer "${APP_MAIN}" 2>/dev/null)"`,
@@ -60,7 +60,7 @@ function ensureCompiledEntry(): void {
   } catch {
     // missing or stale → (re)compile below
   }
-  execSync('npx tsc -p tsconfig.fed-app.json', { stdio: 'inherit' });
+  execSync('npx tsc -p tsconfig.e2e.json', { stdio: 'inherit' });
 }
 
 /** A duck-typed KeypairService held entirely in memory — no file I/O, distinct keys per app. */

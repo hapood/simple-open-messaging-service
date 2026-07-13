@@ -1,7 +1,7 @@
 <div class="pg" [class.pg--mobile]="!isDesktop()" [class.pg--desktop]="isDesktop()"
      [class.pg--native-anchor]="useNativeAnchor">
   <div class="pg-stage" appKbdOffset>
-    <!-- 顶部 header：聊天头 + 右上主题切换 -->
+    <!-- Top header: chat header + top-right theme toggle -->
     <header class="pg-header">
       <div class="pg-header-chat">
         <div class="pg-header-avatar"><app-user-avatar [name]="'Alice'" /></div>
@@ -100,12 +100,13 @@
         </div>
       }
       <div class="pg-content" #content>
-        <!-- 顶部哨兵：IO 观察它进入视口 → 触发向上加载历史（相对滚动架构）。 -->
+        <!-- Top sentinel: IntersectionObserver watches it enter the viewport → triggers upward history load (relative-scroll architecture). -->
         <div class="pg-sentinel" #topSentinel></div>
       </div>
     </div>
-    <!-- Telegram 式粘性日期浮层：在 .pg-stage 内、.pg-viewport 外（兄弟）——
-         不在滚动容器内故不随文档流滚、也不参与虚拟滚动回收；组件据滚动位置实时更新文本。 -->
+    <!-- Telegram-style sticky date overlay: inside .pg-stage but outside .pg-viewport (sibling) —
+         not in the scroll container, so it neither scrolls with the document flow nor participates in
+         virtual-scroll recycling; the component updates its text from the scroll position in real time. -->
     <app-sticky-date-overlay [label]="stickyDate()" />
     <!-- Demo indicators use the SAME slot architecture as production: a single <app-indicator-slot> anchor,
          with the indicators themselves carrying no positioning. The playground overrides the SLOT's position
@@ -119,7 +120,7 @@
     @if (toast()) {
       <div class="pg-toast" role="status">{{ toast() }}</div>
     }
-    <!-- 移动端：唤起控制面板抽屉（可拖动重定位） -->
+    <!-- Mobile: opens the control-panel drawer (draggable to reposition) -->
     <button type="button" class="pg-fab" #fab (pointerdown)="onFabDown($event)" aria-label="Control panel (draggable)">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -136,7 +137,7 @@
                     (send)="onSendIntent($event)" />
   </div>
 
-  <!-- 移动端：抽屉遮罩，点按关闭 -->
+  <!-- Mobile: drawer mask, tap to close -->
   <div class="pg-overlay" [class.show]="panelOpen()" (click)="closePanel()"></div>
 
   <aside class="pg-panel" [class.open]="panelOpen()" (click)="$event.stopPropagation()">

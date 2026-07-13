@@ -1,28 +1,31 @@
-// 虚拟滚动内核所需的唯一全局样式契约（与核心库同目录，框架无关）。
+// The only global style contract the virtual-scroll kernel requires (same directory as the core lib; framework-agnostic).
 //
-// .cb-pending：内核 mount() 时为元素加上、measurePending() 测完真实 offsetHeight 后移除。
-// 用 visibility:hidden（保留布局、仍占高度可测）在「挂载→实测」这一帧把元素藏住，
-// 消除 estimateHeight→真实高度的跳变 flicker。消费方（styles.scss）@use 本文件一次即全局生效，
-// playground 与真实聊天共用内核 → 共享此规则，无需各处重复定义。
+// .cb-pending: the kernel adds it to an element on mount() and removes it after measurePending() reads the real offsetHeight.
+// visibility:hidden is used (layout preserved, still measurable) to hide the element during the "mount → measure" frame,
+// eliminating the estimateHeight → real-height flicker. Consumers (styles.scss) @use this file once and it applies globally;
+// playground and the real chat share the kernel → share this rule, no need to redefine it in each place.
 .cb-pending {
   visibility: hidden !important;
 }
 
-// .cb-ghost：内核给挂载窗口最顶条（oldestId 槽位、未到全局最老）加 cb-ghost，提示「上方还在加载」。
-// 两种承载：① createItem 对最顶条（prev=null、非全局最老）直接产【.cb-ghost-loading 居中 spinner】（见下：WhatsApp 风、
-//    固定高度、不渲真实组件 / 图片）；② trim 后位置晋升的最顶条是真实组件 el（prev 可能过时），用 ::after overlay
-//    流光遮盖其内部（_row-base 契约：外部 CSS 不写 host 内部 → 用伪元素遮盖、不穿透组件 DOM）。
-//    故 overlay 用 :not(.cb-ghost-loading) 排除 spinner 宿主（spinner 自带 ::before、不需遮罩）。
-// loadOlder 挂上更老邻居后该条 rebuild 显形（spinner → 真实）、内核移除 cb-ghost；跟着 oldestId 传递，noOlder 时永久消失。
-// position:relative 强制（host 默认无 position，不设 ::after 会相对 .pg-content 撑满整列）；absolute 不撑高 host offsetHeight。
+// .cb-ghost: the kernel tags the top item of the mounted window (the oldestId slot, not yet at the global oldest) with
+// cb-ghost to signal "still loading above". Two carriers: ① createItem produces a centered spinner [.cb-ghost-loading]
+// for the top item directly (prev=null, not the global oldest — see below: WhatsApp-style, fixed height, no real
+// component / image rendered); ② after a trim, an item promoted into the top slot is a real component el (its prev may
+// be stale), so a ::after overlay shimmers over its interior (_row-base contract: outer CSS never writes inside the host
+// → use a pseudo-element veil, do not pierce the component DOM). Hence the overlay uses :not(.cb-ghost-loading) to exclude
+// the spinner host (the spinner has its own ::before and needs no veil). Once loadOlder attaches the older neighbor the
+// item rebuilds into view (spinner → real) and the kernel removes cb-ghost; it follows oldestId and disappears permanently
+// when noOlder. position:relative is forced (the host has no position by default; without it ::after would size to .pg-content
+// and fill the whole column); absolute does not inflate the host offsetHeight.
 .cb-ghost {
   position: relative;
   &:not(.cb-ghost-loading)::after {
     content: '';
     position: absolute;
     inset: 0;
-    z-index: 1;            // 盖在 .msg-row / .msg-date 之上（它们无 stacking context）
-    pointer-events: none;  // 不挡滚动 / 点击
+    z-index: 1;            // covers .msg-row / .msg-date (they have no stacking context)
+    pointer-events: none;  // does not block scroll / clicks
     background-color: var(--app-active);
     background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.5) 50%, transparent 70%);
     background-size: 200% 100%;
@@ -43,14 +46,17 @@
   animation: cb-spin 0.8s linear infinite;
 }
 
-// .cb-ghost-loading：ghost 加载指示——业界主流聊天「向上加载更老消息」的增量加载指示用居中 spinner
-//（WhatsApp 风；Telegram 骨架是初始空白填充用、非本场景）。骨架/消息形占位不适合此处：仅一行、且不知 self/other/
-// 内容类型，形状只能猜。spinner 与内容无关、轻、语义准（加载中）。结构由 createGhostCbElement 产（空 host + ::before 圆环）。
-// 固定高度（GHOST_H 由 JS inline）→ 不被内容撑变；host offsetHeight 恒定 = estimateHeight，rebuildDelta 由内核补偿。
-// 设计选择：spinner 用居中环形（border 圆环 + 顶色高亮 + 旋转），fg 取 --app-text-faint（与时间戳同档中性灰），track 浅灰。
+// .cb-ghost-loading: ghost loading indicator — the centered spinner used by mainstream chat apps for the incremental
+// "load older messages upward" indicator (WhatsApp style; Telegram's skeleton is for initial blank fill, not this case).
+// A skeleton / message-shaped placeholder does not fit here: only one row, and the self/other/content type is unknown, so
+// the shape can only be guessed. A spinner is content-agnostic, light, and semantically precise (loading). The structure is
+// produced by createGhostCbElement (empty host + ::before ring). Fixed height (GHOST_H inlined by JS) → never stretched by
+// content; host offsetHeight is constant = estimateHeight, the rebuildDelta is compensated by the kernel. Design choice: the
+// spinner is a centered ring (border ring + top-arc highlight + rotation); fg uses --app-text-faint (same neutral-gray tier as
+// the timestamp), track is a light gray.
 .cb-ghost-loading {
   --cb-spin-track: rgba(0, 0, 0, 0.12);
-  --cb-spin-fg: var(--app-text-faint);     // 中性灰（与时间戳 / 占位同档）
+  --cb-spin-fg: var(--app-text-faint);     // neutral gray (same tier as timestamp / placeholder)
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -61,7 +67,8 @@
   }
 }
 
-// 深色模式（[data-theme="dark"]）：spinner token 翻成浅色（WhatsApp dark 底 #0b141a 上可辨；fg 走 --app-text-faint 已自适应）。
+// Dark mode ([data-theme="dark"]): the spinner track token flips to a light tint (discernible on the WhatsApp dark base
+// #0b141a; fg via --app-text-faint is already adaptive).
 [data-theme="dark"] .cb-ghost-loading {
   --cb-spin-track: rgba(255, 255, 255, 0.14);
 }
@@ -100,31 +107,33 @@
 }
 
 @keyframes cb-shimmer {
-  0%   { background-position: 200% 0; }   // 高光带在右外
-  100% { background-position: -200% 0; }  // 滑到左外（从右往左流光）
+  0%   { background-position: 200% 0; }   // highlight band outside on the right
+  100% { background-position: -200% 0; }  // slides to outside on the left (shimmer flows right → left)
 }
 
 @keyframes cb-spin {
-  to { transform: rotate(360deg); }       // 环形 spinner 匀速旋转
+  to { transform: rotate(360deg); }       // ring spinner rotates at constant speed
 }
 
-// .cb-jump-highlight：跳转到指定消息后给目标行加的一次性高亮（scrollToIndex/openAround 的 highlight 触发）。
-// 背景色由 --app-active（主题强调色）半透明起、淡出到透明；animationend 内核移除 class（flashHighlight）。
-// flashHighlight 重加 class 前强制 reflow（void offsetWidth）→ 连续跳转同一目标能重启动画。
-// 语义区别于 .cb-ghost-loading 的环形 spinner：spinner=「正在加载更老消息」（动效=进行中）；
-//  jump-highlight=「指给你看这条」（消息已加载，仅引注意）→ 用 Telegram/iMessage 式背景闪、不用 spinner，避免误导。
-// 不写 host 内部（_row-base 契约）——仅改宿主背景；气泡/头像自带背景叠在其上，高亮透出于行内留白处。
+// .cb-jump-highlight: a one-shot highlight added to the target row after jumping to a specific message (triggered by the
+// highlight flag on scrollToIndex/openAround). The background starts at a semi-transparent --app-active (theme accent) and
+// fades to transparent; on animationend the kernel removes the class (flashHighlight). Before re-adding the class,
+// flashHighlight forces a reflow (void offsetWidth) → consecutive jumps to the same target restart the animation. Semantic
+// distinction from the .cb-ghost-loading ring spinner: spinner = "loading older messages" (animation = in progress);
+// jump-highlight = "pointing you at this one" (message already loaded, just drawing attention) → uses a Telegram/iMessage-style
+// background flash, not a spinner, to avoid misleading. Does not write inside the host (_row-base contract) — only the host
+// background changes; bubbles / avatars carry their own background on top, the highlight shows through the in-row whitespace.
 .cb-jump-highlight {
   animation: cb-jump-flash 1.6s ease-out;
 }
 
 @keyframes cb-jump-flash {
-  0%   { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // 半透强调色（不刺眼）
-  55%  { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // 稍作停留便于察觉
-  100% { background-color: transparent; }                                            // 淡出回常态
+  0%   { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // semi-transparent accent (not harsh)
+  55%  { background-color: color-mix(in srgb, var(--app-active) 55%, transparent); } // brief hold for noticeability
+  100% { background-color: transparent; }                                            // fades back to normal
 }
 
-// 无障碍：用户偏好减少动效 → 不闪（保留一次极短淡入即静止，仍可察觉目标）。
+// Accessibility: user prefers reduced motion → no flash (a very short fade-in to static is kept so the target is still noticeable).
 @media (prefers-reduced-motion: reduce) {
   .cb-jump-highlight {
     animation: cb-jump-flash-reduced 0.4s ease-out;

@@ -1,7 +1,7 @@
 # SOMS Federation — Step 3 Design (cross-server groups)
 
 > **Status:** **Phase A BUILT** (2026-07-09): the unified S2S invite (`/s2s/invite` +
-> `/s2s/invite-accept`, friend + group share one endpoint — see `docs/federation-s2s-api.md`),
+> `/s2s/invite-accept`, friend + group share one endpoint — see `docs/api/federation-s2s-api.md`),
 > cross-server group **invite + join** (origin records the joiner), and the lazy **roster meta-pull**
 > (chat-open probe, reusing the Step-2 profile-sync path + `GET /s2s/group/:account/roster`). **Phase B BUILT**
 > (2026-07-10): cross-server group **messaging** via the **origin-hub** (the origin is the single
@@ -15,7 +15,7 @@
 > at invite time) so a new member seeds `pullUntil` and starts from invite-time, not full history.
 > **Deferred:** a durable active-liveness leave backstop (the pull-reject hint is volatile), the frontend
 > card/account-resolution
-> adaptation. Builds directly on Step 2 (`docs/federation-step2-design.md`), whose 1:1 transport is
+> adaptation. Builds directly on Step 2 (`docs/roadmap/federation-step2-design.md`), whose 1:1 transport is
 > reused verbatim.
 >
 > **Scope:** cross-server **GROUP** threads — a group whose owner lives on server A and whose members
@@ -23,7 +23,7 @@
 > **mirror** threads that pull history **from the origin** (the single message authority).
 >
 > **Out of scope (deferred):** group rename/avatar sync propagation, origin death / re-homing. Per-peer
-> quota enforcement is now **BUILT** (unified local + peers — see `docs/federation-quotas.md`). Edit/delete
+> quota enforcement is now **BUILT** (unified local + peers — see `docs/roadmap/federation-quotas.md`). Edit/delete
 > is a **non-goal** (Step 2 §9: the origin cannot mutate receiver-local data once delivered).
 
 ---
@@ -226,7 +226,7 @@ payload (sender → receiver)   =  { originSeq, contentType, content, ts }
 ### 6.2 New — roster lifecycle (origin only)
 
 - **`POST /api/v1/s2s/invite`** with `kind: "GROUP"` — the **unified** invite endpoint (friend + group
-  share it; see `docs/federation-s2s-api.md`). Friend-gated. From the origin (or any member server
+  share it; see `docs/api/federation-s2s-api.md`). Friend-gated. From the origin (or any member server
   relaying a local user's invite up to origin first — see §7.2) to the invitee's server:
   ```json
   { "id":"<op-ulid>", "origin":"soms.io", "kind":"GROUP", "ts":1750000000000,
@@ -515,7 +515,7 @@ hint-write layer: `signalOutbound` excludes the domain the message was fetched f
   fixed; if it dies the group goes read-only (members retain whatever they have pulled) until it
   returns. Re-homing to another server is explicitly out of scope — it would require a trust transfer
   the protocol deliberately does not offer.
-- **Per-peer quota enforcement.** Hooks designed in `docs/federation-quotas.md`; group traffic
+- **Per-peer quota enforcement.** Hooks designed in `docs/roadmap/federation-quotas.md`; group traffic
   (origin fan-out to N members, single-origin backfill) is the main reason the quota layer matters and
   is enforced when that lands.
 - **Read receipts / typing / presence.** v0.2, deferred (presence+typing best-effort ephemeral; read

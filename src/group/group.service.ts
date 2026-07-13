@@ -32,7 +32,7 @@ function outranks(operator: GroupRole, target: GroupRole | null): boolean {
  * (leave/kick/transfer/set-role/update).
  *
  * A group IS a `!`-sigil User row (account="!"+ULID, isGroup=true) carrying name/avatar/bio; the Group
- * table is abolished (docs/account-naming.md). The group↔thread link is MessageThread.groupUserId, and
+ * table is abolished. The group↔thread link is MessageThread.groupUserId, and
  * the owner is derived from ThreadParticipant.role=OWNER (no ownerId column). All group-management
  * operations now key on threadId (the stable handle, also used for messaging); the wire still calls it
  * `groupId` for frontend compatibility, but the value IS the threadId.
@@ -105,7 +105,7 @@ export class GroupService implements OnModuleInit {
    * Create a group: mint the `!`-User identity (name/avatar/bio) + the GROUP thread linked via
    * groupUserId + the owner as an OWNER participant. No other members here — the controller writes
    * GROUP_INVITE messages into each invited friend's P2P thread; they join via group/join. Wrapped in a
-   * regenerate-on-P2002 loop (docs/account-naming.md §3.3): a same-ms ULID collision at the
+   * regenerate-on-P2002 loop: a same-ms ULID collision at the
    * account-domain unique index is probabilistically impossible, but the loop is a real safety net.
    */
   async createNewGroup(params: {

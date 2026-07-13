@@ -29,7 +29,7 @@ This document codifies the visual and layout design specification for SOMS's **m
 - **WhatsApp style** (iMessage / Telegram abandoned): light-filled bubbles, small rounded corners, a timestamp embedded at the bottom-right of each bubble, group heads carry an avatar + a tail tip pointing at the avatar.
 - **Avatars are WeChat-style squares** (8px corner radius, not circular).
 - **Industry alignment**: message avatars are **40px** (WhatsApp / WeChat / Telegram / Discord / Material Design specs are all ~40px).
-- Consumes the project's design tokens (`--app-*`, defined in [`web/src/app/assets/_tokens.scss`](../web/src/app/assets/_tokens.scss)); IM semantic colors such as bubble colors are hardcoded per this spec.
+- Consumes the project's design tokens (`--app-*`, defined in [`web/src/app/assets/_tokens.scss`](../../web/src/app/assets/_tokens.scss)); IM semantic colors such as bubble colors are hardcoded per this spec.
 
 ## 2. Message Row Structure
 
@@ -149,7 +149,7 @@ The group-head bubble carries a triangular handle pointing at its respective ava
 | other avatar background | `#C7C7CC` | `#37424a` |
 | Date pill background | `rgba(0,0,0,.06)` | `#182229` |
 
-**Theme mechanism**: semantic tokens (`--app-bg` / `--app-surface` / `--app-text`, etc.) decouple light/dark, so switching themes only redefines variables with zero component changes. Production redefines tokens under `[data-theme="dark"]` ([`_tokens.scss`](../web/src/app/assets/_tokens.scss) already reserves placeholders); IM hardcoded colors such as bubbles are overridden in the dark block.
+**Theme mechanism**: semantic tokens (`--app-bg` / `--app-surface` / `--app-text`, etc.) decouple light/dark, so switching themes only redefines variables with zero component changes. Production redefines tokens under `[data-theme="dark"]` ([`_tokens.scss`](../../web/src/app/assets/_tokens.scss) already reserves placeholders); IM hardcoded colors such as bubbles are overridden in the dark block.
 
 ## 9. Size and Spacing Summary
 
@@ -171,7 +171,7 @@ The group-head bubble carries a triangular handle pointing at its respective ava
 
 ## 10. Grouping Rules
 
-Reuses `classifyGroupFlags` from [`web/src/app/lib/chat-box/group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts) (already unit-tested):
+Reuses `classifyGroupFlags` from [`web/src/app/lib/chat-box/group-logic.ts`](../../web/src/app/lib/chat-box/group-logic.ts) (already unit-tested):
 
 - **Same sender + within a 5-minute window** of consecutive messages are grouped together.
 - `isShowHead`: sender changes / exceeds 5 minutes / after a date separator → new group head (shows avatar + name).
@@ -194,15 +194,15 @@ The message list is responsive and primarily mobile. Desktop (wide screen + prec
 ## 13. Reference Implementation
 
 - Validation playground (hand-written DOM, `pg-` prefix; to be deprecated along with the real component after phase-4):
-  - [`web/src/app/pages/chatbox-playground/chatbox-playground.component.ts`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.ts) (`createItemEl` renders the message row)
-  - [`...chatbox-playground.component.scss`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.scss) (all visual rules)
-  - [`...chatbox-playground.component.html`](../web/src/app/pages/chatbox-playground/chatbox-playground.component.html)
-- Grouping logic: [`group-logic.ts`](../web/src/app/lib/chat-box/group-logic.ts)
-- Design tokens: [`_tokens.scss`](../web/src/app/assets/_tokens.scss)
+  - [`web/src/app/pages/chatbox-playground/chatbox-playground.component.ts`](../../web/src/app/pages/chatbox-playground/chatbox-playground.component.ts) (`createItemEl` renders the message row)
+  - [`...chatbox-playground.component.scss`](../../web/src/app/pages/chatbox-playground/chatbox-playground.component.scss) (all visual rules)
+  - [`...chatbox-playground.component.html`](../../web/src/app/pages/chatbox-playground/chatbox-playground.component.html)
+- Grouping logic: [`group-logic.ts`](../../web/src/app/lib/chat-box/group-logic.ts)
+- Design tokens: [`_tokens.scss`](../../web/src/app/assets/_tokens.scss)
 
 ## 14. Scroll Architecture (Relative Scroll)
 
-The message-list virtual scroll adopts **relative scroll + sentinel**, not "absolute positioning + global prefix sum". Kernel implementation: [`chat-box-scroller.ts`](../web/src/app/lib/chat-box/chat-box-scroller.ts). For the decision background see the [Decision Record](#decision-record).
+The message-list virtual scroll adopts **relative scroll + sentinel**, not "absolute positioning + global prefix sum". Kernel implementation: [`chat-box-scroller.ts`](../../web/src/app/lib/chat-box/chat-box-scroller.ts). For the decision background see the [Decision Record](#decision-record).
 
 ### Why Not Absolute Positioning
 
@@ -226,7 +226,7 @@ So global coordinates are dropped, **managing only the mounted region**.
 
 ### Element Interfacing (VsElement)
 
-Each mounted element implements the [`VsElement`](../web/src/app/lib/chat-box/chat-box-scroller.ts) interface; the kernel interacts with elements only through it, **framework-agnostic** (ng components / hand-written DOM each implement their own):
+Each mounted element implements the [`VsElement`](../../web/src/app/lib/chat-box/chat-box-scroller.ts) interface; the kernel interacts with elements only through it, **framework-agnostic** (ng components / hand-written DOM each implement their own):
 
 | Method | Use |
 | --- | --- |

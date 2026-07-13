@@ -1,23 +1,16 @@
 # compiled output
 /dist
 /node_modules
-/build
 
-# Logs
-logs
+# Logs — global *.log catch-all + npm debug (npm is the only package manager here; no pnpm/yarn/lerna)
 *.log
 npm-debug.log*
-pnpm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-lerna-debug.log*
 
 # OS
 .DS_Store
 
 # Tests
 /coverage
-/.nyc_output
 
 # IDEs and editors
 /.idea
@@ -49,26 +42,18 @@ lerna-debug.log*
 .temp
 .tmp
 
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
-
 .npmrc
 
-# Runtime uploads (user avatars / images) — never tracked
-/uploads
-
-# Federation S2S signing keypair (Ed25519) — generated on first boot into data/, NEVER tracked
+# Unified runtime state — NEVER tracked. Everything the app writes lives under data/ (=<cwd>/data in
+# dev, /app/data under Docker's WORKDIR): S2S Ed25519 + JWT HMAC keys, logs/, uploads/ (avatars + CAS
+# shards), Caddy state, postgres/. Bind-mounted out of the container in docker-compose.
 /data
 
-# Docker deployment config (docker compose launch dir) — holds secrets; soms.conf.example is tracked
+# Docker launch dir (deploy/) — runtime secrets/state when testing in-tree; the templates are tracked
 /soms.conf
+/deploy/soms.conf
+/deploy/data/
 
 # Federation e2e compiled entry — tsc output of test/federation-app.main.ts + deps, rebuilt on
 # demand by ensureCompiledEntry (test/federation-harness.ts); never tracked
-/.fed-app-build
+/.e2e-build

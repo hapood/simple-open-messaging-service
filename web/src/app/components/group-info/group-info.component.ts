@@ -75,7 +75,7 @@ export class GroupInfoComponent implements OnInit, OnDestroy {
   /** Inline identity-edit mode (admin+). */
   readonly editing = signal(false)
   readonly nameEdit = signal('')
-  /** Max length of the group description (群简介). */
+  /** Max length of the group description. */
   readonly DESC_MAX = 240
   /** Staged description while editing (admin+); seeded from the current value on beginEdit. */
   readonly descEdit = signal('')

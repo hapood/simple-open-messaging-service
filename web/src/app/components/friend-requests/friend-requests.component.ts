@@ -253,7 +253,7 @@ export class FriendRequestsComponent implements OnDestroy {
     this.userService.acceptInvite({ inviteId: req.id }).subscribe(res => {
       const reqList = this.pendingReqList()
       if (res.code === 0) {
-        // Optimistic "added": keep the row showing 已添加 (status 1). Not persisted — next panel open
+        // Optimistic "added": keep the row showing "Added" (status 1). Not persisted — next panel open
         // re-queries and the backend filters out the now-friend, so it disappears on its own.
         this.pendingReqList.set(reqList.slice(0, index).concat([{ ...req, status: 1, errText: '' }]).concat(reqList.slice(index + 1)))
       } else {

@@ -153,7 +153,7 @@ export class ThreadListComponent implements OnInit, OnDestroy {
     '[Voice message]': 'chat.preview.voice',
   };
 
-  /** Display name for a thread — alias (备注) overrides the real name. */
+  /** Display name for a thread — alias overrides the real name. */
   displayName(t: ConversationItem): string {
     return displayThreadName(t)
   }

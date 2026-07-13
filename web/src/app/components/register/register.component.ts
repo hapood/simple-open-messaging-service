@@ -40,7 +40,7 @@ export class RegisterComponent {
   })
   isSuccess = signal(false)
   // Starts with a letter, then letters/digits with single-dot separators (3-31 total). Mirrors the
-  // backend USER_ACCOUNT_RE exactly (docs/account-naming.md §3.1) — one grammar, validated client-side
+  // backend USER_ACCOUNT_RE exactly — one grammar, validated client-side
   // for early UX feedback and again server-side. Dots allowed; underscore is NOT (the backend rejects it).
   private _accountRegex = /^(?=.{3,31}$)[a-zA-Z][a-zA-Z0-9]*(\.[a-zA-Z0-9]+)*$/
   private _passwordRegx: RegExp = /^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/;

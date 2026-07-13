@@ -106,7 +106,7 @@ export class InviteDetailComponent implements OnInit, OnDestroy {
       this.detail.set(res.data);
       this.notFound.set(false);
     } else {
-      // INVITE_NOT_FOUND (or any error) → invalid (the dialog shows "群邀请已失效").
+      // INVITE_NOT_FOUND (or any error) → invalid (the dialog shows "invite expired").
       this.notFound.set(true);
     }
   }

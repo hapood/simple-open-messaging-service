@@ -154,7 +154,7 @@ The frontend accesses the backend via `//<current-hostname>:3000` by default (se
 
 ## Architecture and Design
 
-See [docs/architecture.md](docs/architecture.md) for details. Key points:
+See [docs/overview/architecture.md](docs/overview/architecture.md) for details. Key points:
 
 - **Unified response format**: All HTTP endpoints return `{ status, message, data? }`, where `status: 0` indicates success.
 - **Thread abstraction**: Both P2P and groups are abstracted as `MessageThread`; each user holds one `UserMessageThread` record per thread, whose `status` field drives the thread lifecycle (pending / established / blocked / deleted).
@@ -163,7 +163,7 @@ See [docs/architecture.md](docs/architecture.md) for details. Key points:
 
 ## API and Real-Time Communication Quick Reference
 
-See [docs/api.md](docs/api.md) for the full documentation. Except for the SSE downstream stream (`GET /api/v1/events`), all read/write endpoints use `POST`.
+See [docs/api/api.md](docs/api/api.md) for the full documentation. Except for the SSE downstream stream (`GET /api/v1/events`), all read/write endpoints use `POST`.
 
 **HTTP (partial)**
 
@@ -242,13 +242,15 @@ docker build --target runtime -t soms:slim .
 
 ### Run (all-in-one, full image)
 
+`deploy/` holds the launch templates — copy it to a deployment directory and run from there (not inside the source checkout, so `./data` doesn't land in the tree):
+
 ```bash
-SOMS_DOMAIN=chat.example.com \
-CLOUDFLARE_API_TOKEN=... \
+cp -r deploy/ /opt/soms/ && cd /opt/soms   # your deployment dir
+cp soms.conf.example soms.conf             # then edit soms.conf: set SOMS_DOMAIN + CLOUDFLARE_API_TOKEN
 docker compose up -d
 ```
 
-Required environment (compose fails fast if missing): `SOMS_DOMAIN` — your public domain / federation identity (`@user@<SOMS_DOMAIN>`). `POSTGRES_PASSWORD` ships a working default (postgres is internal-only — not published); set it to override. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (a token with **Zone:DNS:Edit** on the `SOMS_DOMAIN` zone) — see [DNS provider](#dns-provider-certificate-signing) below for other providers. `ADMIN_BOOTSTRAP_PASSWORD` is optional — see the bootstrap-admin note below.
+Required in `soms.conf` (compose fails fast if missing): `SOMS_DOMAIN` — your public domain / federation identity (`@user@<SOMS_DOMAIN>`). `POSTGRES_PASSWORD` ships a working default (postgres is internal-only — not published); set it to override. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (a token with **Zone:DNS:Edit** on the `SOMS_DOMAIN` zone) — see [DNS provider](#dns-provider-certificate-signing) below for other providers. `ADMIN_BOOTSTRAP_PASSWORD` is optional — see the bootstrap-admin note below.
 
 Only **one port** is published: `7667` (HTTPS; `7667/udp` for HTTP/3). Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Web UI, API, SSE, and federation S2S all ride on `7667`. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
 
@@ -262,7 +264,7 @@ Only **one port** is published: `7667` (HTTPS; `7667/udp` for HTTP/3). Caddy ter
 The bundled Caddy ships **76 buildable** DNS-01 providers from `github.com/caddy-dns` — Cloudflare + all the China providers (**AliDNS** `alidns`, **Tencent** `tencentcloud` + `edgeone`, plus `huaweicloud`, `volcengine`, `westcn`) and the other major ones. So switching DNS providers is a **config change, not a rebuild**. (The other caddy-dns modules are excluded at build: archived, no resolvable version, or stuck on the pre-1.0 `libdns` API — notably `dnspod` is unmaintained, so Tencent users use `tencentcloud`/`edgeone`.)
 
 - **Cloudflare (default)**: just set `CLOUDFLARE_API_TOKEN` in `soms.conf` — the `init` service generates the Caddyfile from it.
-- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `soms.conf` to that provider's `dns ...` line (quoted — it contains spaces) plus its credential vars; `{KEY}` refs are transcribed into the generated Caddyfile. Examples are in `soms.conf.example`. Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
+- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `soms.conf` to that provider's `dns ...` line (quoted — it contains spaces) plus its credential vars; `{KEY}` refs are transcribed into the generated Caddyfile. Examples are in `deploy/soms.conf.example`. Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
 
 ### Bring your own reverse proxy (slim image)
 
@@ -280,8 +282,29 @@ The core flows of this project (registration/login, friends, P2P/group threads, 
 
 ## More Documentation
 
-- [docs/architecture.md](docs/architecture.md) — System architecture, module responsibilities, authentication flow, SSE real-time communication, core business flows
-- [docs/api.md](docs/api.md) — Complete HTTP API and SSE event reference
-- [docs/database.md](docs/database.md) — Data models and relationship diagrams
-- [docs/protocol-plan.md](docs/protocol-plan.md) — Backend interface and frontend-backend interaction protocol stack plan (layered target contracts, error codes, WS event catalog, P0–P3 roadmap)
-- [docs/chat-message-list-design.md](docs/chat-message-list-design.md) — Mobile 1v1 chat message list design spec (WhatsApp style: bubbles/avatars/names/tails/grouping/light-dark themes/sizing)
+Documentation lives under `docs/` in three buckets.
+
+**Project description & specs** (`docs/overview/`) — the system as it is:
+
+- [architecture.md](docs/overview/architecture.md) — System architecture, module responsibilities, authentication, SSE real-time, core business flows
+- [database.md](docs/overview/database.md) — Data models and relationships
+- [account-naming.md](docs/overview/account-naming.md) — `account` grammar spec (single source of truth)
+- [chat-message-list-design.md](docs/overview/chat-message-list-design.md) — Mobile 1v1 chat message-list UI spec (WhatsApp style)
+- [federation-protocol.md](docs/overview/federation-protocol.md) — Federation protocol & deployment guide (what federation is + how to deploy a node)
+
+**API & interface contracts** (`docs/api/`):
+
+- [api.md](docs/api/api.md) — Complete HTTP API + SSE event reference (consumer + admin)
+- [federation-s2s-api.md](docs/api/federation-s2s-api.md) — Federation server-to-server API reference
+
+**Architecture evolution / roadmap** (`docs/roadmap/`) — phase designs, reviews, follow-ups, planned items:
+
+- [protocol-plan.md](docs/roadmap/protocol-plan.md) — Core protocol-stack plan + P0–P3 roadmap
+- [federation-step2-design.md](docs/roadmap/federation-step2-design.md) — Federation Step 2 (cross-server 1:1 messages + media)
+- [federation-step3-design.md](docs/roadmap/federation-step3-design.md) — Federation Step 3 (cross-server groups, origin-hub)
+- [federation-api-design-review.md](docs/roadmap/federation-api-design-review.md) — Federation S2S API design review
+- [federation-quotas.md](docs/roadmap/federation-quotas.md) — Unified daily quotas (local + federated peers)
+- [push-fcm-runtime-config.md](docs/roadmap/push-fcm-runtime-config.md) — FCM runtime-config fetch (planned)
+- [backend-review-followups.md](docs/roadmap/backend-review-followups.md) — Backend review P1–P3 follow-ups
+
+> `docs/requests.http` is a VS Code REST Client scratch script for the business-code regression.

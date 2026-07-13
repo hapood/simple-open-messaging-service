@@ -37,7 +37,7 @@
   waste, no pagination starvation under self-heavy bursts). Typechecks; unit-spec failures are
   pre-existing and unrelated.
   - Files: `src/federation/federation.service.ts` (serveOutboundMessagesGroup + doc comment),
-    `docs/federation-s2s-api.md` (two lines noting all-senders excludes self).
+    `docs/api/federation-s2s-api.md` (two lines noting all-senders excludes self).
 
 ## 3. DEFERRED — message API (the remaining "mess")
 
@@ -66,7 +66,7 @@
   group all-senders, group per-author, `get_file`, roster) — each pull URL now carries
   `&toDomain=<ourDomain>`. `toDomain` is binding-checked (`toDomain === signer` → else
   `FEDERATION_BINDING_VIOLATION`) via `S2sController.requireBinding` on `/messages`, `/messages/before`,
-  `/get_file` (NOT roster — different, trusted-peer gate). Docs (`docs/federation-s2s-api.md`) updated.
+  `/get_file` (NOT roster — different, trusted-peer gate). Docs (`docs/api/federation-s2s-api.md`) updated.
   `S2SAddress` objects (`S2SInvite.from/to`, `accepter`/`by`/`owner`) deliberately NOT renamed. Typechecks
   clean (`src/` 0 errors); unit specs green (19/19).
 - [~] **A2 — message item `kind` discriminator — RETRACTED (YAGNI under the immutability principle).**
@@ -219,12 +219,12 @@
   **absent from the API doc table** (12 listed, 13 built; grep in docs/ = zero hits).
 - **E2 — RESOLVED.** Row #6 now states it returns `profileRev` (group IDENTITY revision); the roster
   comparison is the separate #6b probe. The two probes are no longer folded into one row.
-- **E4 — RESOLVED.** Both stale "NOT YET WIRED" markers in `docs/federation-step2-design.md` corrected:
+- **E4 — RESOLVED.** Both stale "NOT YET WIRED" markers in `docs/roadmap/federation-step2-design.md` corrected:
   §4.3 marker → BUILT (the 60 s sweep + one-directional pull + cert-rotation safety are all live in
   `FederationReconnectService`); §4.4 marker → PARTIAL (the 5 min slow poll is built and is the restart
   floor; pull-on-thread-open for messages remains open). §8 items 10/11 re-tagged `[BUILT]`/`[PARTIAL]` to
   match.
-- **E5 — RESOLVED.** `docs/federation-quotas.md` header + §1 no longer say "deferred until Step 2 is
+- **E5 — RESOLVED.** `docs/roadmap/federation-quotas.md` header + §1 no longer say "deferred until Step 2 is
   designed" / "nothing to count" — Step 2+3 are built and the traffic is live; deferral is now framed as
   priority (not precondition), quotas still genuinely unbuilt.
 

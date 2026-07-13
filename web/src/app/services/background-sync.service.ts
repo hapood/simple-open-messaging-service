@@ -3,7 +3,7 @@ import { Injectable, signal } from '@angular/core';
 /** FCM status shape returned by the `SomsFcm.getFcmStatus` bridge (JSON-decoded). */
 export interface FcmStatus {
   /** True when an FCM token has been obtained — the proxy for "FCM available on this device"
-   *  (Google Play Services present). False on 国内 devices without GMS, or before the first fetch. */
+   *  (Google Play Services present). False on domestic devices without GMS, or before the first fetch. */
   hasToken: boolean;
   /** Epoch ms of the last FCM availability check. 0 = never. */
   lastCheck: number;

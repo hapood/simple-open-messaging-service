@@ -56,7 +56,7 @@
   width: 96px;
   height: 96px;
   border-radius: var(--app-radius-lg);
-  overflow: visible; // 让编辑按钮可越出圆角
+  overflow: visible; // allow the edit button to overflow the rounded corners
 }
 
 .avatar-edit {
@@ -78,7 +78,7 @@
   &:disabled { cursor: progress; opacity: 0.8; }
 }
 
-// 头像上传中的旋转指示
+// Spinner shown while the avatar is uploading
 .spin {
   width: 16px;
   height: 16px;
