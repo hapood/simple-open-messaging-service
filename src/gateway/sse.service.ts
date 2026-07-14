@@ -56,8 +56,13 @@ export class SseService implements OnModuleDestroy {
    * Auth is already done by the route's guard before reaching this service (JwtAuthGuard for the
    * primary stream, NotificationTokenGuard for the notification stream), so this only pushes.
    */
-  private attach(map: Record<number, SseClient[]>, userId: number, res: ServerResponse): void {
-    const ping = initSseResponse(res);
+  private attach(
+    map: Record<number, SseClient[]>,
+    userId: number,
+    res: ServerResponse,
+    origin?: string,
+  ): void {
+    const ping = initSseResponse(res, origin);
 
     const entry: SseClient = { res, ping, since: Date.now() };
     (map[userId] ??= []).push(entry);
@@ -72,15 +77,17 @@ export class SseService implements OnModuleDestroy {
     });
   }
 
-  /** Register one primary-session SSE connection (GET /events). Auth done upstream by JwtAuthGuard. */
-  register(userId: number, res: ServerResponse): void {
-    this.attach(this.clients, userId, res);
+  /** Register one primary-session SSE connection (GET /events). Auth done upstream by JwtAuthGuard.
+   *  `origin` is the request Origin, forwarded so the hijacked raw response carries its CORS header. */
+  register(userId: number, res: ServerResponse, origin?: string): void {
+    this.attach(this.clients, userId, res, origin);
   }
 
   /** Register one notification-stream SSE connection (GET /notifications/stream). Auth done upstream
-   *  by NotificationTokenGuard. Consumed by the Android foreground service. */
-  registerNotif(userId: number, res: ServerResponse): void {
-    this.attach(this.notifClients, userId, res);
+   *  by NotificationTokenGuard. Consumed by the Android foreground service. `origin` forwards the
+   *  request Origin for the hijacked-response CORS header (harmless when the FGS is a native client). */
+  registerNotif(userId: number, res: ServerResponse, origin?: string): void {
+    this.attach(this.notifClients, userId, res, origin);
   }
 
   /** True iff the user currently has ≥1 live PRIMARY SSE connection. Used by PushService to skip FCM

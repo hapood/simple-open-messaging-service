@@ -38,7 +38,9 @@ export class LogViewerController {
     @Query('level') level?: string,
   ): void {
     reply.hijack(); // take over the raw response before any reply.raw write
-    this.viewer.attach(reply.raw, this.normalizeLevel(level));
+    // Forward the request Origin: hijack bypasses @fastify/cors, so the reflected CORS header must be
+    // written on the raw stream or cross-origin admin-web (:5180) can never read the log tail.
+    this.viewer.attach(reply.raw, this.normalizeLevel(level), req.headers.origin);
   }
 
   /**

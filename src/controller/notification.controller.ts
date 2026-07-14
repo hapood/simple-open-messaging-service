@@ -80,7 +80,9 @@ export class NotificationController {
   async stream(@Req() req: FastifyRequest, @Res() reply: FastifyReply): Promise<void> {
     reply.hijack();
     const userId = (req.user as { userId: number }).userId;
-    this.sseService.registerNotif(userId, reply.raw);
+    // Forward the request Origin so the hijacked raw stream carries its CORS header (hijack bypasses
+    // @fastify/cors); harmless when the FGS is a native client with no Origin.
+    this.sseService.registerNotif(userId, reply.raw, req.headers.origin);
     // Push the current snapshot so the FGS's away-notification is correct from the first moment.
     const snapshot = await this.notifQuery.buildUnreadSnapshot(userId);
     this.sseService.pushNotifSnapshot(userId, snapshot);

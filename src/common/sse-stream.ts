@@ -24,8 +24,18 @@ export const SSE_HEARTBEAT_MS = 25000;
  * Http2ServerResponse under HTTP/2 (both share writeHead/write/end/on('close')). h2 is detected by the
  * presence of res.stream (Http2ServerResponse only). A failed heartbeat write (broken socket) → end
  * now; the caller's res.on('close') finishes the registry/subscriber cleanup.
+ *
+ * `origin` is the inbound request's `Origin` header. Because reply.hijack() takes over the raw
+ * response, this stream never re-enters Fastify's lifecycle — @fastify/cors (origin:true, see
+ * bootstrap.ts) never gets to stamp `Access-Control-Allow-Origin` on it the way it does for ordinary
+ * responses. Without that header a CROSS-ORIGIN client (Tauri desktop/Android, admin-web on :5180)
+ * cannot read the stream: the browser blocks the headerless response, the consumer's `fetch()` rejects,
+ * and the SSE reconnect loop spins forever ("stuck reconnecting"). Same-origin browser requests carry
+ * no Origin header → `origin` is undefined → nothing is emitted (CORS does not apply). Reflecting the
+ * exact Origin (never a wildcard, never `Access-Control-Allow-Credentials`) mirrors the global
+ * `origin:true` posture: Bearer-header auth, no credentialed cross-origin surface.
  */
-export function initSseResponse(res: ServerResponse): NodeJS.Timeout {
+export function initSseResponse(res: ServerResponse, origin?: string): NodeJS.Timeout {
   const isH2 = (res as unknown as { stream?: unknown }).stream !== undefined;
   const headers: Record<string, string> = {
     'Content-Type': 'text/event-stream',
@@ -33,6 +43,11 @@ export function initSseResponse(res: ServerResponse): NodeJS.Timeout {
     'X-Accel-Buffering': 'no',
   };
   if (!isH2) headers['Connection'] = 'keep-alive';
+  // Hijack bypasses @fastify/cors, so the reflected origin must be written here on the raw response.
+  if (origin) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    headers['Vary'] = 'Origin';
+  }
   res.writeHead(200, headers);
   res.write(': connected\n\n');
 

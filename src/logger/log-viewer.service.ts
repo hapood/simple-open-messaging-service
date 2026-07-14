@@ -30,8 +30,8 @@ export class LogViewerService implements OnModuleDestroy {
 
   constructor(@Inject(LogStreamStore) private readonly store: LogStreamStore) {}
 
-  attach(res: ServerResponse, minLevel?: string): void {
-    const ping = initSseResponse(res);
+  attach(res: ServerResponse, minLevel?: string, origin?: string): void {
+    const ping = initSseResponse(res, origin);
 
     // Replay the ring buffer first (newest-last → chronological render order in the viewer).
     for (const rec of this.store.snapshot(minLevel)) {

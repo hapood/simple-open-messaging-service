@@ -22,6 +22,8 @@ export class EventsController {
   stream(@Req() req: FastifyRequest, @Res() reply: FastifyReply): void {
     reply.hijack(); // take over the raw response for the infinite SSE stream
     const userId = (req.user as { userId: number }).userId;
-    this.sseService.register(userId, reply.raw);
+    // Forward the request Origin: hijack bypasses @fastify/cors, so the reflected CORS header must be
+    // written on the raw stream or cross-origin clients (Tauri desktop/Android) can never read it.
+    this.sseService.register(userId, reply.raw, req.headers.origin);
   }
 }
