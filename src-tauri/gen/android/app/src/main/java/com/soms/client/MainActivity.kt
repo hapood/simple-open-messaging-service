@@ -4,10 +4,13 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -51,6 +54,10 @@ class MainActivity : TauriActivity() {
     // the web layer reads these via SomsShell.getSafeInsets() to pad content below the status bar.
     @Volatile private var safeInsetTopCss = 0
     @Volatile private var safeInsetBottomCss = 0
+    /** The dev-tools bubble's window view (null when not attached). It lives in its own WindowManager
+     *  window, not in android.R.id.content, so it survives the webview's content container being
+     *  swapped mid-session (which used to drop the bubble a few seconds after launch). */
+    private var bubbleView: View? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -92,9 +99,16 @@ class MainActivity : TauriActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(content) { _, insets ->
             val status = insets.getInsets(WindowInsetsCompat.Type.statusBars())
             val nav = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            // Bottom inset = max(navigation bar, mandatory gesture area). navigationBars() covers the
+            // 3-button nav bar; mandatorySystemGestures() covers the gesture pill on full-screen /
+            // bezel-less (全面屏) devices, where navigationBars() alone can under-report on some OEM
+            // ROMs — taking the max guarantees the app content always clears the system bar on every
+            // navigation mode. (systemGestures — the wider back-swipe zone — is intentionally excluded:
+            // it would over-pad.)
+            val gestures = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
             val d = resources.displayMetrics.density
             safeInsetTopCss = Math.round(status.top / d)
-            safeInsetBottomCss = Math.round(nav.bottom / d)
+            safeInsetBottomCss = Math.round(maxOf(nav.bottom, gestures.bottom) / d)
             applySafeInsetsToWebView()
             insets
         }
@@ -135,18 +149,41 @@ class MainActivity : TauriActivity() {
         if (BuildConfig.DEBUG) attachDevToolsBubble()
     }
 
-    /** Attach the draggable dev-tools bubble above the webview (debug builds only). Idempotent across
-     *  activity recreate (tag-guarded). Inserted after the webview so it draws on top of it. */
+    /** Attach the draggable dev-tools bubble (debug builds only) in its OWN window via WindowManager,
+     *  NOT in android.R.id.content. A content-attached bubble was lost when Tauri swapped the webview's
+     *  content container on navigation (it vanished a few seconds after launch, once the page rendered).
+     *  A TYPE_APPLICATION_PANEL sub-window is independent of the content view (survives the swap) and
+     *  draws above the activity's content (the webview) regardless of z-order. No SYSTEM_ALERT_WINDOW
+     *  permission — it's a sub-window of this activity, not a system overlay. Idempotent; removed in
+     *  onDestroy. */
     private fun attachDevToolsBubble() {
-        val content = findViewById<ViewGroup>(android.R.id.content) ?: return
-        if (content.findViewWithTag<View>(DEV_BUBBLE_TAG) != null) return
-        val bubble = DevToolsBubble(this) { captureWebView(); DevToolsDialog(this).show() }
-        bubble.tag = DEV_BUBBLE_TAG
+        if (bubbleView?.isAttachedToWindow == true) return
+        // TYPE_APPLICATION_PANEL needs the parent window's token; the decorView token is set once the
+        // window is attached. If it isn't yet (very early), bail — onResume/onWebViewCreate retry.
+        val token = window.decorView.windowToken ?: return
         val density = resources.displayMetrics.density
-        bubble.x = 16f * density
-        bubble.y = 80f * density // below the status bar / notch
-        content.addView(bubble)
-        bubble.bringToFront() // draw above the webview regardless of insertion order
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            this.token = token
+            gravity = Gravity.TOP or Gravity.START
+            x = (16f * density).toInt()
+            y = (80f * density).toInt() // below the status bar / notch
+        }
+        val bubble = DevToolsBubble(
+            this,
+            { captureWebView(); DevToolsDialog(this).show() },
+            getWindowManager(),
+            params,
+        )
+        runCatching { getWindowManager().addView(bubble, params) }
+            .onFailure { android.util.Log.w("SomsDev", "attachDevToolsBubble failed", it) }
+        bubbleView = bubble
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.
@@ -206,6 +243,10 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        // The dev bubble lives in its own WindowManager sub-window (NOT in the content view), so it is
+        // NOT auto-removed when the content is destroyed — drop it explicitly to avoid leaking a window.
+        bubbleView?.let { v -> runCatching { getWindowManager().removeView(v) } }
+        bubbleView = null
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
         SomsBridge.webView = null
@@ -444,8 +485,6 @@ class MainActivity : TauriActivity() {
     companion object {
         private const val REQ_POST_NOTIF = 1001
         private const val NOTIF_SYNC_WORK = "soms-notif-sync"
-        /** Tag used to idempotently guard the dev-tools bubble across activity recreate. */
-        private const val DEV_BUBBLE_TAG = "soms_dev_bubble"
         /** FCM availability auto-check cadence (the user's "once/day" requirement). */
         private const val FCM_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000
     }

@@ -254,9 +254,13 @@ gitignored `gen/android` tree, so it is re-applied here. Debug-only — release 
 
 ### New Kotlin files in `com.soms.client`
 
-- `DevToolsBubble.kt` — an `ImageView` added to `android.R.id.content` (after the webview, so it draws
-  on top), no `SYSTEM_ALERT_WINDOW` permission (it lives in our own window). Drag repositions it
-  (clamped to its parent); a tap opens `DevToolsDialog`.
+- `DevToolsBubble.kt` — an `ImageView` in its OWN `WindowManager` window (`TYPE_APPLICATION_PANEL`), NOT
+  in `android.R.id.content`. Tauri replaces the content container when it sets up the webview, which
+  discarded a content-attached bubble a few seconds after launch (once the page rendered). A separate
+  sub-window is independent of the content container (survives the swap) and draws above the activity's
+  content (the webview). No `SYSTEM_ALERT_WINDOW` permission — it's a sub-window of our own activity.
+  Drag repositions the window (`params.x/y` + `updateViewLayout`, clamped to the display); a tap opens
+  `DevToolsDialog`.
 - `DevToolsDialog.kt` — a framework `AlertDialog` (no Material dep). Owns the persisted `dev_url` file
   (data-dir root `dev_url`) and drives the live webview via `SomsBridge.eval` (no Rust commands, no JS bridge):
     - Connect → validate http(s) → write `dev_url` → `location.replace(url)` (immediate; persists for
@@ -271,13 +275,17 @@ gitignored `gen/android` tree, so it is re-applied here. Debug-only — release 
 
 ### `MainActivity.kt` wiring
 
-- `import android.view.View` + `import android.view.ViewGroup`.
-- In `onWebViewCreate`, after the deep-link consume block: `if (BuildConfig.DEBUG) attachDevToolsBubble()`
-  — called after the webview is added so the bubble draws on top of it.
-- `attachDevToolsBubble()`: `findViewById<ViewGroup>(android.R.id.content)`, tag-guarded against
-  double-add on activity recreate, `DevToolsBubble(this) { DevToolsDialog(this).show() }`, positioned at
-  (16dp, 80dp), `content.addView(bubble)`.
-- `companion object`: `private const val DEV_BUBBLE_TAG = "soms_dev_bubble"`.
+- Imports: `android.view.WindowManager`, `android.view.Gravity`, `android.graphics.PixelFormat` (for the
+  bubble's sub-window params).
+- `attachDevToolsBubble()` is called from `onResume` and `onWebViewCreate` (both gated on
+  `BuildConfig.DEBUG`).
+- `attachDevToolsBubble()`: idempotent (guarded by `bubbleView?.isAttachedToWindow`). Builds a
+  `WindowManager.LayoutParams` (`WRAP_CONTENT`, `TYPE_APPLICATION_PANEL`, `FLAG_NOT_FOCUSABLE |
+  FLAG_LAYOUT_NO_LIMITS`, `token = window.decorView.windowToken` — required for a sub-window), positioned
+  at (16dp, 80dp), then `getWindowManager().addView(bubble, params)`. The bubble's drag calls
+  `windowManager.updateViewLayout` to move the window. `onDestroy` calls `getWindowManager().removeView`
+  (the sub-window is NOT auto-removed when the content is destroyed, so it must be dropped explicitly).
+- No `DEV_BUBBLE_TAG` (the WindowManager bubble is tracked by the `bubbleView` field, not a view tag).
 
 ### Rust contract (`src-tauri/src/lib.rs` — NOT gitignored, persists across `tauri android init`)
 

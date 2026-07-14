@@ -42,9 +42,18 @@ class DevToolsDialog(private val activity: MainActivity) {
         val urlInput = EditText(activity).apply {
             hint = "http://192.168.2.7:4200"
             inputType = InputType.TYPE_TEXT_VARIATION_URI
-            // Pre-fill with the webview's current URL when it is already a remote dev server.
-            val cur = SomsBridge.webView?.url
-            if (cur != null && (cur.startsWith("http://") || cur.startsWith("https://"))) setText(cur)
+            // Pre-fill with the persisted dev_url (the origin the user last Connected to — survives
+            // launches, origin-only). Fall back to the webview's current ORIGIN only when no dev_url is
+            // persisted yet AND the webview is already on a remote http(s) server. Never show the full
+            // page URL (e.g. .../config): this field is a server origin, and connect() persists the
+            // field text, so a path here would leak into dev_url and reload to that subpath next boot.
+            val prefill: String? = runCatching {
+                devUrlFile.takeIf { it.exists() }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
+            }.getOrNull()
+                ?: SomsBridge.webView?.url
+                    ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+                    ?.let { originOnly(it) }
+            if (prefill != null) setText(prefill)
         }
         val container = LinearLayout(activity).apply {
             orientation = LinearLayout.VERTICAL
@@ -80,12 +89,19 @@ class DevToolsDialog(private val activity: MainActivity) {
             toast("URL must start with http:// or https://")
             return
         }
+        // Persist + navigate the ORIGIN only (scheme://host[:port]). A dev server is an origin, so a
+        // typed path/query must never leak into dev_url — it would reload to that subpath next boot.
+        val origin = originOnly(raw)
+        if (origin == null) {
+            toast("Invalid URL")
+            return
+        }
         try {
-            val url = URI(raw).toURL()
-            devUrlFile.writeText(url.toString())
-            SomsBridge.eval("location.replace(${SomsBridge.jsonStr(url.toString())});")
-            val port = if (url.port > 0) url.port else if (url.protocol == "https") 443 else 80
-            toast("Connecting to ${url.host}:$port")
+            devUrlFile.writeText(origin)
+            SomsBridge.eval("location.replace(${SomsBridge.jsonStr(origin)});")
+            val u = URI(origin)
+            val port = if (u.port > 0) u.port else if (u.scheme == "https") 443 else 80
+            toast("Connecting to ${u.host}:$port")
         } catch (e: Exception) {
             toast("Invalid URL: ${e.message}")
         }
@@ -119,6 +135,18 @@ class DevToolsDialog(private val activity: MainActivity) {
             value.toFloat(),
             activity.resources.displayMetrics,
         ).toInt()
+
+    /** The origin of an http(s) URL — `scheme://host[:port]`, dropping any path/query/fragment. Null if
+     *  [raw] is not a parseable http(s) URL with a host. Normalizes both the pre-fill (strip the path
+     *  from the webview's current URL) and what Connect persists + navigates to (a dev server is an
+     *  origin, never a subpath). */
+    private fun originOnly(raw: String): String? {
+        val u = runCatching { URI(raw.trim()) }.getOrNull() ?: return null
+        if (u.scheme != "http" && u.scheme != "https") return null
+        if (u.host.isNullOrBlank()) return null
+        val port = if (u.port > 0) ":${u.port}" else ""
+        return "${u.scheme}://${u.host}$port"
+    }
 
     companion object {
         /** Must match Rust's `DEV_URL_FILENAME` in src-tauri/src/lib.rs ("dev_url"). */

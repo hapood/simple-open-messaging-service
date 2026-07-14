@@ -3,22 +3,29 @@ package com.soms.client
 import android.annotation.SuppressLint
 import android.content.Context
 import android.util.TypedValue
-import android.view.Gravity
 import android.view.MotionEvent
 import android.view.ViewConfiguration
 import android.view.ViewGroup
-import android.widget.FrameLayout
+import android.view.WindowManager
 import android.widget.ImageView
 
 /**
- * A small draggable floating button that opens the native dev-tools dialog ([DevToolsDialog]). Added
- * to the activity's `android.R.id.content` FrameLayout in [MainActivity.onWebViewCreate] (AFTER the
- * webview, so it draws on top) and only in debug builds (the caller gates on `BuildConfig.DEBUG`),
- * so release APKs never show it. No `SYSTEM_ALERT_WINDOW` permission is needed: it lives inside our
- * own window, drawn over our own webview — not over other apps.
+ * A small draggable floating button that opens the native dev-tools dialog ([DevToolsDialog]). It lives
+ * in its OWN window (added via [WindowManager.addView] with `TYPE_APPLICATION_PANEL` in
+ * [MainActivity.attachDevToolsBubble]) — NOT in `android.R.id.content` — for two reasons:
  *
- * Touch model: a drag repositions the bubble (clamped to its parent); a tap (movement below the
- * touch-slop threshold) fires [onClick]. Standard "drag-or-tap" floating-button UX.
+ *  1. Tauri swaps the webview's content container when the webview navigates. A bubble attached to the
+ *     old `android.R.id.content` was discarded with it, so it vanished a few seconds after launch (once
+ *     the page rendered). A separate window is independent of the content view and survives the swap.
+ *  2. An application sub-window draws above the activity's content (the webview) regardless of view
+ *     z-order, so the bubble stays on top even while the page is rendering.
+ *
+ * Debug-only (the caller gates on `BuildConfig.DEBUG`), so release APKs never show it. No
+ * `SYSTEM_ALERT_WINDOW` permission: `TYPE_APPLICATION_PANEL` is a sub-window of our own activity,
+ * drawn over our own content — not over other apps.
+ *
+ * Touch model: a drag repositions the window (`params.x/y` + `updateViewLayout`); a tap (movement
+ * below the touch-slop threshold) fires [onClick]. Standard "drag-or-tap" floating-button UX.
  *
  * Kept native (not web) on purpose: it stays reachable even when the webview is parked on a dead
  * dev-server error page, so the user can always fix the URL or bail to the bundle. The web app has
@@ -27,25 +34,25 @@ import android.widget.ImageView
 class DevToolsBubble(
     context: Context,
     private val onClick: () -> Unit,
+    private val windowManager: WindowManager,
+    private val params: WindowManager.LayoutParams,
 ) : ImageView(context) {
 
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private var downRawX = 0f
     private var downRawY = 0f
-    private var startX = 0f
-    private var startY = 0f
+    private var startX = 0
+    private var startY = 0
     private var dragged = false
+    private val displayW = resources.displayMetrics.widthPixels
+    private val displayH = resources.displayMetrics.heightPixels
 
     init {
         setBackgroundResource(R.drawable.dev_bubble_bg)
         setImageResource(R.drawable.ic_dev_tools)
         val pad = dp(12)
         setPadding(pad, pad, pad, pad)
-        val size = dp(48)
-        layoutParams = FrameLayout.LayoutParams(size, size).apply {
-            gravity = Gravity.TOP or Gravity.START
-        }
-        // Draw above the webview regardless of insertion order (the webview is elevation 0).
+        layoutParams = ViewGroup.LayoutParams(dp(48), dp(48))
         elevation = dp(6).toFloat()
         setContentDescription("SOMS dev tools")
         setupTouch()
@@ -58,8 +65,8 @@ class DevToolsBubble(
                 MotionEvent.ACTION_DOWN -> {
                     downRawX = e.rawX
                     downRawY = e.rawY
-                    startX = v.x
-                    startY = v.y
+                    startX = params.x
+                    startY = params.y
                     dragged = false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -69,11 +76,12 @@ class DevToolsBubble(
                         dragged = true
                     }
                     if (dragged) {
-                        val parent = v.parent as? ViewGroup ?: return@setOnTouchListener true
-                        val maxX = (parent.width - v.width).coerceAtLeast(0).toFloat()
-                        val maxY = (parent.height - v.height).coerceAtLeast(0).toFloat()
-                        v.x = (startX + dx).coerceIn(0f, maxX)
-                        v.y = (startY + dy).coerceIn(0f, maxY)
+                        // Clamp to the screen so the bubble can't be dragged off-display.
+                        val maxX = (displayW - v.width).coerceAtLeast(0)
+                        val maxY = (displayH - v.height).coerceAtLeast(0)
+                        params.x = (startX + dx).toInt().coerceIn(0, maxX)
+                        params.y = (startY + dy).toInt().coerceIn(0, maxY)
+                        windowManager.updateViewLayout(v, params)
                     }
                 }
                 MotionEvent.ACTION_UP -> {
