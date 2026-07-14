@@ -195,4 +195,9 @@ run: install  ## install then launch the app on the connected device
 		&& echo "✓ launched com.soms.client"
 
 clean:  ## drop generated Android build outputs (keeps the gradle cache volume warm)
-	rm -rf $(ROOT)/src-tauri/gen/android/.gradle $(ROOT)/src-tauri/gen/android/build $(ROOT)/src-tauri/gen/android/app/build
+	@# Also clear app/src/main/jniLibs: tauri symlinks target/<abi>/libsoms_client_lib.so there per build,
+	@# so ABIs from prior multi-arch builds linger across a single-arch `make apk ABI=…`. Harmless (gradle's
+	@# --target filters at packaging — verified the APK reads ABIs:[arm64-v8a] despite stale siblings) but
+	@# tidy to reset. Tauri recreates the dir on the next build; the .so are gitignored.
+	rm -rf $(ROOT)/src-tauri/gen/android/.gradle $(ROOT)/src-tauri/gen/android/build \
+	  $(ROOT)/src-tauri/gen/android/app/build $(ROOT)/src-tauri/gen/android/app/src/main/jniLibs
