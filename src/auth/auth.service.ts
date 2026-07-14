@@ -5,7 +5,7 @@ import { JwtService } from '@nestjs/jwt';
 import argon2 from 'argon2';
 import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
-import { RedisService } from '../redis/redis.service.js';
+import { KvStoreService } from '../kv-store/kv-store.service.js';
 import { jwtConstants } from './constants.js';
 import { normalizeAccount } from '../common/account.js';
 
@@ -27,7 +27,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     private userService: UserService,
     private jwtService: JwtService,
     private prisma: PrismaService,
-    private redis: RedisService,
+    private kvStore: KvStoreService,
     private eventEmitter: EventEmitter2,
   ) {}
 
@@ -195,7 +195,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Issue an access token: the claim carries {sub, jti, tver}.
-   * - jti: unique id of this token; when revoking a single token it is added to a Redis blacklist (TTL = remaining lifetime).
+   * - jti: unique id of this token; when revoking a single token it is added to a KV-store blacklist (TTL = remaining lifetime).
    * - tver: the User.tokenVersion at issue time, which JwtStrategy verifies matches the current value; bumping tver invalidates all access tokens.
    */
   async getAccessToken(userId: number): Promise<string> {
@@ -211,13 +211,12 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
 
   /** Immediately revoke a single access token (log out a single device): add its jti to the blacklist, TTL defaults to the access token's remaining lifetime. */
   async blacklistAccessJti(jti: string, ttlSec: number = jwtConstants.accessTtlSec) {
-    if (!this.redis.enabled) return;
-    await this.redis.setex(`access:jti:${jti}`, ttlSec, '1').catch(() => {});
+    await this.kvStore.setex(`access:jti:${jti}`, ttlSec, '1').catch(() => {});
   }
 
   /**
    * Log out all devices / change password / force offline: revoke all refresh tokens and increment tokenVersion (invalidating all access tokens).
-   * Clear the Redis tokenVersion cache so the new version takes effect immediately; emit an event so online WS clients FORCE_LOGOUT.
+   * Clear the KV-store tokenVersion cache so the new version takes effect immediately; emit an event so online WS clients FORCE_LOGOUT.
    */
   async invalidateAllSessions(userId: number, reason: string): Promise<number> {
     await this.prisma.refreshToken.updateMany({
@@ -229,9 +228,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       data: { tokenVersion: { increment: 1 } },
       select: { tokenVersion: true },
     });
-    if (this.redis.enabled) {
-      await this.redis.del(`access:tver:${userId}`).catch(() => {});
-    }
+    await this.kvStore.del(`access:tver:${userId}`).catch(() => {});
     this.eventEmitter.emit('auth.sessions-invalidated', {
       userId,
       reason,

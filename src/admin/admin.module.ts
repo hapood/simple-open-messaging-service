@@ -29,7 +29,7 @@ import { UserManageModule } from '../user-manage/user-manage.module.js';
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
 import { UploadModule } from '../upload/upload.module.js';
-import { RedisModule } from '../redis/redis.module.js';
+import { KvStoreModule } from '../kv-store/kv-store.module.js';
 
 @Module({
   imports: [
@@ -43,8 +43,8 @@ import { RedisModule } from '../redis/redis.module.js';
     PushModule,
     // UploadService (exported by UploadModule) lets MediaAssetGcService resolve shards/ paths (refs<=0 → GC).
     UploadModule,
-    // RedisService backs ThrottleGuard's counters (admin/login failure rate-limiting).
-    RedisModule,
+    // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
+    KvStoreModule,
   ],
   controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController],
   providers: [

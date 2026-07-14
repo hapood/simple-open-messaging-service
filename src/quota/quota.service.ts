@@ -20,7 +20,7 @@ import { BusinessCode } from '../common/business-code.js';
  *  - `images` — image media (local upload + federation media ingest).
  *  - `largeFiles` — video/large-file media (local upload + federation media ingest), with a byte cap.
  *
- * Counter store: a DB table, NOT RedisService (that is a non-atomic in-process Map). The atomic
+ * Counter store: a DB table, NOT KvStoreService (that is a non-atomic in-process Map). The atomic
  * increment is `INSERT … ON CONFLICT DO UPDATE … RETURNING count`; thrown inside a transaction so an
  * over-limit increment rolls back → exact count (not the doc's ±1 slop) on the federation path.
  *

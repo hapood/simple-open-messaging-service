@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import type { FastifyRequest } from 'fastify';
-import { RedisService } from '../redis/redis.service.js';
+import { KvStoreService } from '../kv-store/kv-store.service.js';
 
 export const THROTTLE_KEY = 'throttle';
 
@@ -24,7 +24,7 @@ export const Throttle = (limit = 30, ttlSec = 60) =>
 @Injectable()
 export class ThrottleGuard implements CanActivate {
   constructor(
-    private readonly redis: RedisService,
+    private readonly kvStore: KvStoreService,
     private readonly reflector: Reflector,
   ) {}
 
@@ -34,13 +34,15 @@ export class ThrottleGuard implements CanActivate {
       ctx.getHandler(),
     );
     if (!cfg) return true; // endpoints not annotated with @Throttle are not rate-limited
-    // FastifyRequest exposes `.ip` (resolves the real client IP via the adapter's trustProxy),
-    // but has no `.socket`/`.path` — fall back to the raw Node socket and derive the path from
-    // `.url` (Express's `.path` does not exist here).
+    // FastifyRequest exposes `.ip` (resolves the real client IP via the adapter's trustProxy) but
+    // has no Express `.path` — derive the path from `.url`. Use ONLY `.ip` for client identity:
+    // `req.raw.socket.remoteAddress` is the raw TCP peer, which behind the Caddy reverse proxy is
+    // always 127.0.0.1 and would collapse every client into one rate-limit bucket, so it is
+    // intentionally NOT used as a fallback.
     const req = ctx.switchToHttp().getRequest<FastifyRequest>();
-    const ip = req.ip ?? req.raw?.socket?.remoteAddress ?? 'unknown';
+    const ip = req.ip ?? 'unknown';
     const path = req.url?.split('?')[0] ?? 'unknown';
-    const n = await this.redis.incrWithExpire(`rl:${path}:${ip}`, cfg.ttlSec);
+    const n = await this.kvStore.incrWithExpire(`rl:${path}:${ip}`, cfg.ttlSec);
     if (n > cfg.limit) {
       throw new HttpException(
         'too many requests',

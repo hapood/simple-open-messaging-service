@@ -89,9 +89,10 @@ export class LocalStrategy
     account: string,
     password: string,
   ): Promise<LoginAuthInfo> {
-    // FastifyRequest exposes `.ip` (honors the adapter's trustProxy); `.socket` does not exist
-    // on it, so the raw Node socket is the fallback.
-    const ip = req.ip ?? req.raw?.socket?.remoteAddress ?? 'unknown';
+    // Use ONLY `.ip` (honors the adapter's trustProxy): `req.raw.socket.remoteAddress` is the raw
+    // TCP peer, which behind the Caddy reverse proxy is always 127.0.0.1 and would collapse every
+    // user into one brute-force ban bucket, so it is intentionally NOT used as a fallback.
+    const ip = req.ip ?? 'unknown';
 
     // If either dimension is still in its ban window -> reject outright (also return the remaining ban time for the client to display)
     const bannedUntil = this.activeBanUntil(ip, account);

@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
 import { extractDigests } from '../upload/file-content.js';
+import { MEDIA_STATUS } from '../common/media-status.js';
 
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
 const PREVIEW_TEXT_MAX = 200;
@@ -338,12 +339,78 @@ export class MessageService implements OnModuleInit {
     if (filters?.hideCreatorIds && filters.hideCreatorIds.length > 0) {
       where.creator = { notIn: filters.hideCreatorIds };
     }
-    const data = await this.prisma.message.findMany({
+    // id is fetched here (not omitted) so attachMediaStatus can resolve MediaMessage authz by messageId;
+    // attachMediaStatus strips id before returning (id is the internal global throughput side-channel
+    // and must never reach a client).
+    const rows = await this.prisma.message.findMany({
       ...params,
       where,
-      omit: { id: true }, // never expose the internal global id (throughput side-channel)
     });
-    return data;
+    return this.attachMediaStatus(rows);
+  }
+
+  /** Attach a `mediaStatus` ('ready' | 'failed') + `sv` (status version = seq) to each message by
+   *  checking, in bulk, whether every CAS digest in its content has a MediaMessage authz row for THIS
+   *  message AND a MediaAsset with refs>0 (bytes on disk). Non-media / legacy-flat messages (no digest)
+   *  are trivially 'ready'. Two batch queries serve a whole page — no per-row N+1. Strips the internal
+   *  id (it never reaches a client). Drives the query-messages response and the media-status probe. */
+  async attachMediaStatus<T extends Message>(
+    msgs: T[],
+  ): Promise<(Omit<T, 'id'> & { mediaStatus: 'ready' | 'failed'; sv: number })[]> {
+    if (msgs.length === 0) return [];
+    const byMsg = new Map<bigint, string[]>();
+    const allDigests = new Set<string>();
+    for (const m of msgs) {
+      const ds = extractDigests(m.content);
+      byMsg.set(m.id, ds);
+      for (const d of ds) allDigests.add(d);
+    }
+    const ids = msgs.map((m) => m.id);
+    const [authRows, assetRows] = await Promise.all([
+      this.prisma.mediaMessage.findMany({
+        where: { messageId: { in: ids } },
+        select: { messageId: true, digest: true },
+      }),
+      allDigests.size === 0
+        ? Promise.resolve([] as { digest: string; refs: number }[])
+        : this.prisma.mediaAsset.findMany({
+            where: { digest: { in: [...allDigests] } },
+            select: { digest: true, refs: true },
+          }),
+    ]);
+    // A digest is ready for message m iff an authz row (messageId, digest) exists AND the asset has
+    // refs>0 on disk. messageId is BigInt; String(1n) === "1" so the composite key is collision-free.
+    const auth = new Set(authRows.map((r) => `${r.messageId}:${r.digest}`));
+    const present = new Set(
+      assetRows.filter((a) => a.refs > 0).map((a) => a.digest),
+    );
+    return msgs.map((m) => {
+      const { id: _drop, ...rest } = m;
+      const ds = byMsg.get(m.id) ?? [];
+      const ready =
+        ds.length === 0 || ds.every((d) => auth.has(`${m.id}:${d}`) && present.has(d));
+      return {
+        ...rest,
+        mediaStatus: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
+        sv: m.seq,
+      };
+    });
+  }
+
+  /** Bulk media-status probe for a set of seqs within one thread (the client's scroll backstop for
+   *  missed MEDIA_STATUS frames). Returns {seq, status, sv} per requested seq that exists; missing seqs
+   *  are omitted (the client keeps its last known state). Reuses attachMediaStatus for the digest check;
+   *  never exposes content/id. */
+  async queryMediaStatus(
+    threadId: number,
+    seqs: number[],
+  ): Promise<Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>> {
+    if (seqs.length === 0) return [];
+    const msgs = await this.prisma.message.findMany({
+      where: { threadId, seq: { in: seqs } },
+    });
+    const attached = await this.attachMediaStatus(msgs);
+    return attached.map((m) => ({ seq: m.seq, status: m.mediaStatus, sv: m.sv }));
   }
 
   /**

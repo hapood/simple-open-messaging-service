@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { jwtConstants } from './constants.js';
-import { RedisService } from '../redis/redis.service.js';
+import { KvStoreService } from '../kv-store/kv-store.service.js';
 import { PrismaService } from '../prisma.service.js';
 
 /** Access-token JWT claims: sub = userId, jti = unique token id, tver = tokenVersion at issuance. */
@@ -25,7 +25,7 @@ export type AccessPayload = {
 export class AccessTokenValidator {
   constructor(
     private readonly jwtService: JwtService,
-    private readonly redis: RedisService,
+    private readonly kvStore: KvStoreService,
     private readonly prisma: PrismaService,
   ) {}
 
@@ -44,7 +44,7 @@ export class AccessTokenValidator {
 
   /**
    * Revocation-aware check on an already-verified payload:
-   * 1. jti blacklist (single-token revoke) → reject (fail-open if Redis is down).
+   * 1. jti blacklist (single-token revoke) → reject (fail-open if the store is down).
    * 2. tokenVersion: claim.tver must equal the user's current version (global logout / password
    *    change bumps it), else reject.
    * Legacy tokens (pre-Phase-2, no jti/tver) pass through to natural expiry (≤15min).
@@ -56,25 +56,21 @@ export class AccessTokenValidator {
     if (!payload.jti || payload.tver === undefined) {
       return { userId: payload.sub }; // legacy token compat
     }
-    if (this.redis.enabled) {
-      const blocked = await this.redis
-        .existsKey(`access:jti:${payload.jti}`)
-        .catch(() => false);
-      if (blocked) return null;
-    }
+    const blocked = await this.kvStore
+      .existsKey(`access:jti:${payload.jti}`)
+      .catch(() => false);
+    if (blocked) return null;
     const cur = await this.currentTokenVersion(payload.sub);
     if (cur !== payload.tver) return null;
     return { userId: payload.sub };
   }
 
-  /** Current tokenVersion: Redis cache (60s) → DB fallback. Redis error falls back to DB (correctness lives in the DB). */
+  /** Current tokenVersion: KV-store cache (60s) → DB fallback. Store error falls back to DB (correctness lives in the DB). */
   private async currentTokenVersion(userId: number): Promise<number> {
-    if (this.redis.enabled) {
-      const cached = await this.redis
-        .get(`access:tver:${userId}`)
-        .catch(() => null);
-      if (cached !== null) return Number(cached);
-    }
+    const cached = await this.kvStore
+      .get(`access:tver:${userId}`)
+      .catch(() => null);
+    if (cached !== null) return Number(cached);
     const u = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { tokenVersion: true, isDeleted: true },
@@ -83,11 +79,9 @@ export class AccessTokenValidator {
     // Defense-in-depth: admin disable already bumps tokenVersion (invalidateAllSessions), so this is the
     // backstop for any future disable path that forgets to bump. Cached only on the happy path below.
     if (!u || u.isDeleted) return -1;
-    if (this.redis.enabled) {
-      await this.redis
-        .setex(`access:tver:${userId}`, 60, String(u.tokenVersion))
-        .catch(() => {});
-    }
+    await this.kvStore
+      .setex(`access:tver:${userId}`, 60, String(u.tokenVersion))
+      .catch(() => {});
     return u.tokenVersion;
   }
 }

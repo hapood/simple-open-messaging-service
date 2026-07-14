@@ -11,7 +11,7 @@ import { UserController } from './controller/user.controller.js';
 import { GroupModule } from './group/group.module.js';
 import { GroupController } from './controller/group.controller.js';
 import { UploadModule } from './upload/upload.module.js';
-import { RedisModule } from './redis/redis.module.js';
+import { KvStoreModule } from './kv-store/kv-store.module.js';
 import { AdminModule } from './admin/admin.module.js';
 import { ThreadParticipantModule } from './thread-participant/thread-participant.module.js';
 import { InviteModule } from './invite/invite.module.js';
@@ -36,7 +36,7 @@ import { QuotaModule } from './quota/quota.module.js';
   imports: [
     EventEmitterModule.forRoot(),
     LoggerModule,
-    RedisModule,
+    KvStoreModule,
     AuthModule,
     UserModule,
     GatewayModule,

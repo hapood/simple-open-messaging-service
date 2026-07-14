@@ -1,6 +1,8 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsIn,
   IsInt,
@@ -290,4 +292,43 @@ export class SearchMessagesDto {
   @Type(() => Number)
   @IsInt()
   lastSeq?: number;
+}
+
+/** Manually re-run federated media localize for one message (the user tapped retry in the detail
+ *  view after a localize failure left the media inert). Idempotent — already-local digests skip the
+ *  fetch and cost no quota. The endpoint returns the post-localize status ('ready' | 'failed'). */
+export class RelocalizeMediaDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({ example: 42, description: 'Per-thread message seq to re-localize' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  seq!: number;
+}
+
+/** Bulk media-status probe for a set of messages in one thread — the client's scroll backstop for
+ *  missed MEDIA_STATUS frames. Returns { seq, status, sv } per existing seq; missing seqs are omitted. */
+export class MediaStatusDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
+
+  @ApiProperty({
+    example: [42, 43],
+    description: 'Per-thread message seqs to probe (1–50).',
+    type: [Number],
+  })
+  @IsArray()
+  @ArrayMaxSize(50)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  seqs!: number[];
 }

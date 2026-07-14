@@ -1,10 +1,9 @@
 import { Public } from '../common/public.decorator.js';
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get } from '@nestjs/common';
 import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { SERVER_VERSION } from '../common/version.js';
-import { Throttle, ThrottleGuard } from '../auth/throttle.guard.js';
 
 /** Payload of GET /api/v1/health. */
 export class HealthResponseDto {
@@ -36,18 +35,21 @@ export class HealthResponseDto {
  * welcome page) won't carry our envelope, so the client can tell "reachable but not SOMS" from
  * "reachable and correct".
  *
- * Throttled (generously) so a public unauthenticated endpoint can't be abused for load; no auth guard.
+ * Never rate-limited: a liveness/reachability probe must return 200 whenever the process is
+ * responsive, so a 429 here would make an orchestrator (Docker HEALTHCHECK) restart a perfectly
+ * healthy container. The handler is zero-I/O — `SERVER_VERSION` is cached at module load, `time` is
+ * `Date.now()` — so there is no load to protect and no per-probe counter cost. External flood
+ * protection, if ever required, belongs at the Caddy edge (keyed on the real client IP), not an
+ * in-process shared counter. No auth guard.
  */
 @ApiTags('health')
 @Public()
 @Controller()
-@UseGuards(ThrottleGuard)
 export class HealthController {
   @Get('health')
   @ApiOperation({
     summary: 'Public liveness probe (unauthenticated): status, version, server time.',
   })
-  @Throttle(60, 60)
   health(): ApiResult<HealthResponseDto> {
     return {
       code: BusinessCode.OK,

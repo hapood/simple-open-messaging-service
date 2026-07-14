@@ -65,7 +65,7 @@ export class AdminAuthService {
   /**
    * Disable / role change / force-kick an admin: revoke every active admin refresh token AND bump
    * tokenVersion so all access tokens fail their next tver check (immediate — no 15m lag). Mirrors the
-   * user-side AuthService.invalidateAllSessions, minus the Redis tver cache + WS FORCE_LOGOUT (admins
+   * user-side AuthService.invalidateAllSessions, minus the KV-store tver cache + WS FORCE_LOGOUT (admins
    * have no WS client and admin request volume is low, so the strategy reads tokenVersion from the DB
    * directly).
    */

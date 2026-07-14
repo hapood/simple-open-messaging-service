@@ -4,6 +4,7 @@ import {
   GroupRole,
   MessageThreadType,
 } from '../prisma/generated/client.js';
+import { MEDIA_STATUS, MediaStatus } from '../common/media-status.js';
 
 /**
  * Response entity DTOs (for OpenAPI response schemas). Field types reflect the on-the-wire serialized
@@ -121,6 +122,28 @@ export class MessageResponseDto {
       'Client-generated idempotency UUID (present when the message was sent through the optimistic-send path). The frontend correlates its optimistic bubble with this server-confirmed real by this key.',
   })
   clientMessageId?: string;
+
+  @ApiProperty({
+    required: false,
+    enum: [MEDIA_STATUS.READY, MEDIA_STATUS.DOWNLOADING, MEDIA_STATUS.FAILED],
+    example: MEDIA_STATUS.READY,
+    description:
+      "Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). " +
+      "'ready' = bytes local + authz written (the URL serves 200); 'failed' = localize failed (URL 4xx, " +
+      "retryable from the detail view); 'downloading' = localize in flight (carried only on a freshly-pulled " +
+      "NEW_MESSAGE frame — the backend stores/pushes the 'ready'|'failed' terminals; the client infers " +
+      "'downloading' optimistically on arrival / manual retry).",
+  })
+  mediaStatus?: MediaStatus;
+
+  @ApiProperty({
+    required: false,
+    example: 42,
+    description:
+      "Monotonic status version — the client's reduceMediaStatus drops stale out-of-order MEDIA_STATUS " +
+      'frames whose version is ≤ the already-applied one.',
+  })
+  sv?: number;
 }
 
 export class GroupResponseDto {

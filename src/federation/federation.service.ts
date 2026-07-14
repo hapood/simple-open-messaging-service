@@ -23,7 +23,8 @@ import {
 } from '../prisma/generated/client.js';
 import { derivePreview, stripMessageId, MessageService } from '../message/message.service.js';
 import { FederationBufferService, type NewMsgMapEntry } from './federation-buffer.service.js';
-import { extractDigestEntries } from '../upload/file-content.js';
+import { extractDigestEntries, extractDigests } from '../upload/file-content.js';
+import { MEDIA_STATUS } from '../common/media-status.js';
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -2510,7 +2511,16 @@ export class FederationService implements OnModuleDestroy {
     // Excludes the sender (creatorId) — for a pulled message the creator is a foreign stub, absent from
     // the local recipient set anyway. P2P → the single recipient; GROUP → every local member. Strips the
     // internal BigInt id (a throughput side-channel).
-    const msgData = serializeBody({ ...stripMessageId(created) });
+    // A freshly-pulled media message is mid-localize (the caller runs localizeMedia right after this
+    // returns, then pushes a MEDIA_STATUS terminal frame that flips this to ready/failed). Non-media is
+    // trivially ready. sv = seq is the monotonic status version the client uses to order frames.
+    const msgData = serializeBody({
+      ...stripMessageId(created),
+      mediaStatus: this.isMediaContentType(created.contentType)
+        ? MEDIA_STATUS.DOWNLOADING
+        : MEDIA_STATUS.READY,
+      sv: created.seq,
+    });
     for (const uid of recipients) {
       if (uid !== creatorId) this.sse.onNewMessage(uid, msgData);
     }
@@ -2559,7 +2569,13 @@ export class FederationService implements OnModuleDestroy {
    * URL (inert) for a later retry.
    */
   private async localizeMedia(
-    msg: { id: bigint; threadId: number; content: string; contentType: ContentType },
+    msg: {
+      id: bigint;
+      threadId: number;
+      seq: number;
+      content: string;
+      contentType: ContentType;
+    },
     peerDomain: string,
     fromAccount: string,
     fromDomain: string,
@@ -2596,9 +2612,139 @@ export class FederationService implements OnModuleDestroy {
         });
       } catch {
         // Best-effort per file — never block the text pull. The cross-origin URL stays inert until a
-        // later retry (pull-on-open / next push) re-runs localize.
+        // later retry (the manual relocalize endpoint, or pull-on-open / next push) re-runs localize.
       }
     }
+    // All digests processed (best-effort). Re-query for the final status, then signal every local
+    // recipient so their card flips off the optimistic 'downloading': 'ready' = every digest has bytes
+    // on disk + an authz row (the URL now serves 200), 'failed' = at least one digest is still inert
+    // (shown as a retryable failure). `v` is a monotonic version so the client drops stale out-of-order
+    // frames (a manual retry re-localize, or a reconnect replay). The manual relocalize endpoint calls
+    // this same method, so its MEDIA_STATUS signal is produced here too — one push site, not two.
+    const ready = await this.isMessageMediaReady(msg.id, msg.content);
+    const recipients = await this.localActiveMemberIds(msg.threadId);
+    for (const uid of recipients) {
+      this.sse.onMediaStatus(uid, {
+        threadId: msg.threadId,
+        seq: msg.seq,
+        status: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
+        v: Date.now(),
+      });
+    }
+  }
+
+  /** Whether every CAS digest referenced by `content` is fully local: each digest has a MediaMessage
+   *  authz row for THIS message (same-origin fetch admitted) AND a MediaAsset with refs>0 (bytes on
+   *  disk). A non-media or legacy-flat message (no digest) is trivially ready. Drives the localize
+   *  outcome report + the MEDIA_STATUS signal, and is reused by the manual relocalize endpoint. */
+  private async isMessageMediaReady(
+    msgId: bigint,
+    content: string,
+  ): Promise<boolean> {
+    const digests = extractDigests(content);
+    if (digests.length === 0) return true;
+    const rows = await this.prisma.mediaMessage.findMany({
+      where: { messageId: msgId, digest: { in: digests } },
+      select: { digest: true },
+    });
+    if (rows.length !== digests.length) return false; // a digest has no authz row yet
+    const assets = await this.prisma.mediaAsset.findMany({
+      where: { digest: { in: digests } },
+      select: { digest: true, refs: true },
+    });
+    return assets.length === digests.length && assets.every((a) => a.refs > 0);
+  }
+
+  /**
+   * Manually re-run localize for one federated media message (the user tapped retry in the detail
+   * view). Resolves the localizeMedia context (creator account/domain + the thread's receiver/peer
+   * domain) from the stored message alone, then re-runs the SAME localize path the pull flow uses —
+   * localizeMedia is idempotent (already-local digests skip the fetch and cost no quota) and pushes
+   * the terminal MEDIA_STATUS itself, so this method needs no push of its own. Returns the post-
+   * localize status so the endpoint can answer the client. Non-media → 'ready' (nothing to do);
+   * missing message/creator → NOT_FOUND.
+   */
+  async localizeMediaForMessage(
+    threadId: number,
+    seq: number,
+  ): Promise<'ready' | 'failed'> {
+    // Fetch WITH id (localizeMedia + isMessageMediaReady need the internal BigInt id); the id never
+    // leaves this method — only a status string is returned.
+    const msg = await this.prisma.message.findUnique({
+      where: { threadId_seq: { threadId, seq } },
+    });
+    if (!msg) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `no such message in thread [${threadId}]`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (!this.isMediaContentType(msg.contentType)) return 'ready';
+    const creator = await this.prisma.user.findUnique({
+      where: { id: msg.creator },
+      select: { account: true, domain: true },
+    });
+    if (!creator) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `media message ${threadId}/${seq} creator ${msg.creator} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const { toAccount, peerDomain } = await this.resolveMediaContext(
+      msg.threadId,
+      msg.creator,
+      creator.account,
+      creator.domain,
+    );
+    await this.localizeMedia(
+      msg,
+      peerDomain,
+      creator.account,
+      creator.domain,
+      toAccount,
+    );
+    return (await this.isMessageMediaReady(msg.id, msg.content))
+      ? 'ready'
+      : 'failed';
+  }
+
+  /**
+   * Resolve the localizeMedia transport context for a pulled message: `toAccount` + `peerDomain`
+   * naming the peer /get_file source. GROUP → the thread's group-User account + its origin domain
+   * (roster-gated source). P2P → the thread's OTHER active (non-creator) participant account (the
+   * local receiver), with peerDomain = the creator's domain (the sender server). Mirrors the context
+   * the pull paths compute at pull time (pullP2P / pullGroupWhole), recovered here from the stored
+   * message for the manual retry path. */
+  private async resolveMediaContext(
+    threadId: number,
+    creatorUserId: number,
+    creatorAccount: string,
+    creatorDomain: string,
+  ): Promise<{ toAccount: string; peerDomain: string }> {
+    const thread = await this.prisma.messageThread.findUnique({
+      where: { id: threadId },
+      select: {
+        type: true,
+        groupUser: { select: { account: true, domain: true } },
+      },
+    });
+    if (thread?.type === MessageThreadType.GROUP && thread.groupUser) {
+      return {
+        toAccount: thread.groupUser.account,
+        peerDomain: thread.groupUser.domain,
+      };
+    }
+    // P2P: the receiver is the thread's other active (non-creator) participant.
+    const peer = await this.prisma.threadParticipant.findFirst({
+      where: { threadId, userId: { not: creatorUserId }, leftAt: null },
+      include: { user: { select: { account: true } } },
+    });
+    return {
+      toAccount: peer?.user.account ?? creatorAccount,
+      peerDomain: creatorDomain,
+    };
   }
 
   /**

@@ -28,12 +28,15 @@ import {
 } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
+import { FederationService } from '../federation/federation.service.js';
 import { QuotaService } from '../quota/quota.service.js';
 import {
   SendMessageDto,
   SendMediaDto,
   QueryMessagesDto,
   MarkReadDto,
+  MediaStatusDto,
+  RelocalizeMediaDto,
   SetMutedDto,
   SetPinnedDto,
   ClearHistoryDto,
@@ -51,6 +54,7 @@ export class MessageController {
     private readonly userBlockService: UserBlockService,
     private readonly fanout: MessageFanoutService,
     private readonly quota: QuotaService,
+    private readonly federation: FederationService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -433,5 +437,48 @@ export class MessageController {
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
     return { code: BusinessCode.OK, message: 'successful', data, hasMore };
+  }
+
+  @UseGuards(ThrottleGuard, ThreadAccessGuard)
+  @ResourceId<RelocalizeMediaDto>('threadId')
+  @Throttle(10, 60) // retry ceiling: 10 re-localize attempts/min (each is a peer fetch when not cached)
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('relocalize-media')
+  @ApiOperation({
+    summary:
+      'Manually re-run federated media localize for one message (retry after a localize failure)',
+  })
+  async relocalizeMedia(
+    @Request() req: FastifyRequest,
+    @Body() dto: RelocalizeMediaDto,
+  ): Promise<ApiResult> {
+    // ThreadAccessGuard resolved membership + scoped threadId; localizeMediaForMessage re-validates
+    // (threadId, seq) exists and re-runs the idempotent localize path. localizeMedia pushes the terminal
+    // MEDIA_STATUS itself, so this returns the outcome for the caller's optimistic flip.
+    const status = await this.federation.localizeMediaForMessage(
+      req.threadAccess.threadId,
+      dto.seq,
+    );
+    return { code: BusinessCode.OK, message: 'successful', data: { status } };
+  }
+
+  @UseGuards(ThreadAccessGuard)
+  @ResourceId<MediaStatusDto>('threadId')
+  @ApiBearerAuth()
+  @HttpCode(HttpStatus.OK)
+  @Post('media-status')
+  @ApiOperation({
+    summary:
+      'Bulk-probe federated media localize status (scroll backstop for missed MEDIA_STATUS frames)',
+  })
+  async mediaStatus(@Body() dto: MediaStatusDto): Promise<ApiResult> {
+    // No ThrottleGuard: a cheap read (two batched queries), fired only on scroll when the viewport
+    // exposes non-ready media. ThreadAccessGuard scopes threadId; missing seqs are omitted.
+    const statuses = await this.messageService.queryMediaStatus(
+      dto.threadId,
+      dto.seqs,
+    );
+    return { code: BusinessCode.OK, message: 'successful', data: { statuses } };
   }
 }
