@@ -55,11 +55,20 @@ struct ProxyState {
 /// Validate a backend origin: must parse as a clean http(s) URL. Returns the canonical string form so
 /// the caller never stores or injects malformed input (the origin feeds both a fetch URL and a JS
 /// string literal in the init script). `None` on anything else — callers fall back, never panic.
+///
+/// Trailing slash is stripped because this origin is a path-concatenation BASE, not a page URL:
+/// WHATWG serialization appends the root path '/' after the host (`http://h:3000` → `http://h:3000/`),
+/// and the frontend builds `${apiOrigin()}/api/v1` while the media proxy builds
+/// `${api_origin}${path_and_query}` — a trailing slash on the base doubles both into `//api/v1` /
+/// `//uploads/`, which Fastify 404s on (the `//api/v1/auth/login` login failure). Stripping matches the
+/// `DEFAULT_API_ORIGIN` literal (never parsed, so already slash-free) and the contract `constants.ts`
+/// relies on. Because every origin source — env boot, persisted-config boot, and `set_api_origin` save —
+/// flows through here, this also re-normalizes any trailing-slash value an older build persisted to disk.
 fn validate_origin(raw: &str) -> Option<String> {
     reqwest::Url::parse(raw.trim())
         .ok()
         .filter(|u| u.scheme() == "http" || u.scheme() == "https")
-        .map(|u| u.to_string())
+        .map(|u| u.to_string().trim_end_matches('/').to_string())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
