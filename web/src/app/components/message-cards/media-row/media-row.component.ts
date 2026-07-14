@@ -1,6 +1,8 @@
 import { Component, computed, input, output, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import type { AlbumImage, ChatMsgData } from '../chat-item';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatIconModule } from '@angular/material/icon';
+import { MEDIA_STATUS, type AlbumImage, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
@@ -24,12 +26,14 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
 @Component({
   selector: 'app-msg-media-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
+  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe, MatProgressSpinnerModule, MatIconModule],
   templateUrl: './media-row.component.html',
   styleUrl: './media-row.component.scss',
 })
 export class MediaRowComponent {
   readonly UserAvatarType = UserAvatarType;
+  /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
+  readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);
@@ -70,6 +74,8 @@ export class MediaRowComponent {
         duration: m?.duration,
         isMore: i === moreIdx,
         unplayable: kind === 'video' && failed.has(i),
+        // Federated media localize status is message-level (all cells share it). Non-media defaults ready.
+        status: this.data().mediaStatus ?? MEDIA_STATUS.READY,
         // Size-tiered placeholder: only IMAGE over threshold, not yet tapped-to-load. VIDEO/AUDIO are
         // unaffected (they are a gray cell / first-frame already).
         placeholder: kind === 'image' && thr > 0 && size > thr && !loaded.has(i),

@@ -1,17 +1,37 @@
-import { ApplicationConfig, isDevMode, provideZonelessChangeDetection } from '@angular/core';
+import { ApplicationConfig, CSP_NONCE, isDevMode, provideZonelessChangeDetection } from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideHttpClient, withInterceptorsFromDi, HTTP_INTERCEPTORS } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
-import { provideTransloco } from '@jsverse/transloco';
-import { provideTranslocoMessageformat } from '@jsverse/transloco-messageformat';
+import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
 import { provideServiceWorker } from '@angular/service-worker';
+import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
 import { AuthInterceptor } from './auth.interceptor';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
 
+/**
+ * Read the CSP nonce the Tauri shell stamped onto an inline element at load time, so Angular can replay
+ * it on every runtime-injected `<style>` (component + Material styles).
+ *
+ * Tauri enforces `style-src 'self' 'nonce-<per-load>'`: per CSP, a nonce disables `'unsafe-inline'`, so
+ * Angular's component styles — injected as inline `<style>` AFTER the CSP is fixed, with no nonce of
+ * their own — are refused (their `.sheet` ends up null and the rules never apply → the unstyled, tiny,
+ * skewed UI seen under the shell before this). Tauri mints one nonce per page load and stamps it onto
+ * the static inline elements it processed; reading it back here and handing it to Angular via `CSP_NONCE`
+ * makes `SharedStylesHost` stamp it on every `<style>` it creates, so they pass. The nonce rotates per
+ * load, so it must be re-read at every bootstrap (this runs at module-eval, after the document is parsed).
+ * Returns null in the browser (no nonce there) → Angular injects styles without one, exactly as before.
+ */
+function readCspNonce(): string | null {
+  if (typeof document === 'undefined') return null;
+  const el = document.querySelector('style[nonce], script[nonce]') as ({ nonce: string } & Element) | null;
+  return el?.nonce || null;
+}
+
 export const appConfig: ApplicationConfig = {
   providers: [
+    { provide: CSP_NONCE, useValue: readCspNonce() },
     provideZonelessChangeDetection(),
     {
       provide: HTTP_INTERCEPTORS,
@@ -38,7 +58,11 @@ export const appConfig: ApplicationConfig = {
       loader: InlineTranslocoLoader,
     }),
     // ICU {count, plural, …} / {…, select, …} support for the few pluralized strings.
-    provideTranslocoMessageformat(),
+    // CSP-safe transpiler: @jsverse/transloco-messageformat delegates to
+    // @messageformat/core, which compiles each message via `new Function()` — that
+    // needs 'unsafe-eval', forbidden by the bundled Tauri CSP, so it broke every
+    // translation under the shell. This resolver uses Intl.PluralRules (no eval).
+    provideTranslocoTranspiler(CspSafeIcuTranspiler),
     // PWA service worker (ngsw). Disabled in dev so HMR + eruda keep working; the `application`
     // builder emits `ngsw-worker.js` (the SW script) + `ngsw.json` (its config) from
     // `ngsw-config.json` in the prod build. The arg is the SW SCRIPT path — `ngsw.json` is fetched by

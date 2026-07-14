@@ -85,7 +85,7 @@
   --mdc-outlined-button-container-height: 36px;
 }
 
-// Status pill — leading icon + text. Color-tracked to the outcome via the modifier classes.
+// Status pill — leading icon/spinner + text. Color-tracked to the outcome via the modifier classes.
 .sc-status {
   display: inline-flex;
   align-items: center;
@@ -96,6 +96,15 @@
   font-size: 13px;
   line-height: 18px;
   border: 1px solid transparent;
+  // The pill sits beside the button in a 380px card; the status text must never wrap to a
+  // second line (a long message pushed the row past the card edge). Kept single-line by the
+  // shortened i18n strings; nowrap is the guarantee.
+  white-space: nowrap;
+
+  &.sc-status-testing {
+    color: var(--app-text-muted);
+    background: var(--app-hover);
+  }
 
   &.sc-status-ok {
     color: var(--app-success);

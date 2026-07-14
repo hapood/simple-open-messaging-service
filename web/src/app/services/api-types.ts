@@ -174,6 +174,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/relocalize-media": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Manually re-run federated media localize for one message (retry after a localize failure) */
+        post: operations["MessageController_relocalizeMedia"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/media-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Bulk-probe federated media localize status (scroll backstop for missed MEDIA_STATUS frames) */
+        post: operations["MessageController_mediaStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -1687,6 +1721,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/admin/quota/nodes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List all quota nodes (local + each federated peer) with today usage + limits */
+        post: operations["AdminQuotaController_listNodes"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/admin/quota/nodes/{domain}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Set a quota node's per-category daily limits (a null field = use the default) */
+        post: operations["AdminQuotaController_setLimits"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/admin/media/gc": {
         parameters: {
             query?: never;
@@ -2159,6 +2227,17 @@ export interface components {
              * @example b3f4a1e2-1c2d-4e3f-8a9b-0c1d2e3f4a5b
              */
             clientMessageId?: string;
+            /**
+             * @description Federated media localize status (IMAGE/FILE/VIDEO/AUDIO only; absent = ready for non-media). 'ready' = bytes local + authz written (the URL serves 200); 'failed' = localize failed (URL 4xx, retryable from the detail view); 'downloading' = localize in flight (carried only on a freshly-pulled NEW_MESSAGE frame — the backend stores/pushes the 'ready'|'failed' terminals; the client infers 'downloading' optimistically on arrival / manual retry).
+             * @example ready
+             * @enum {string}
+             */
+            mediaStatus?: "ready" | "downloading" | "failed";
+            /**
+             * @description Monotonic status version — the client's reduceMediaStatus drops stale out-of-order MEDIA_STATUS frames whose version is ≤ the already-applied one.
+             * @example 42
+             */
+            sv?: number;
         };
         SendMessageDto: {
             /**
@@ -2317,6 +2396,33 @@ export interface components {
              * @example 42
              */
             lastSeq?: number;
+        };
+        RelocalizeMediaDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Per-thread message seq to re-localize
+             * @example 42
+             */
+            seq: number;
+        };
+        MediaStatusDto: {
+            /**
+             * @description Conversation (MessageThread) id
+             * @example 12
+             */
+            threadId: number;
+            /**
+             * @description Per-thread message seqs to probe (1–50).
+             * @example [
+             *       42,
+             *       43
+             *     ]
+             */
+            seqs: number[];
         };
         LoginDto: {
             /**
@@ -3149,6 +3255,38 @@ export interface components {
              */
             dnsResolver?: string;
         };
+        AdminSetQuotaDto: {
+            /**
+             * @description Messages/day (null = default)
+             * @example 5000
+             */
+            dailyMsgLimit?: Record<string, never>;
+            /**
+             * @description Image media items/day (null = default)
+             * @example 500
+             */
+            dailyImageLimit?: Record<string, never>;
+            /**
+             * @description Video/large-file media items/day (null = default)
+             * @example 50
+             */
+            dailyLargeFileLimit?: Record<string, never>;
+            /**
+             * @description Inbound friend ops/day — anti-spam (null = default)
+             * @example 100
+             */
+            dailyRequestLimit?: Record<string, never>;
+            /**
+             * @description Single-image byte cap (null = default)
+             * @example 52428800
+             */
+            maxImageBytes?: Record<string, never>;
+            /**
+             * @description Single-large-file byte cap (null = default)
+             * @example 524288000
+             */
+            maxLargeFileBytes?: Record<string, never>;
+        };
         AdminAuditQueryDto: {
             /** @default 0 */
             skip: number;
@@ -3413,6 +3551,48 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["SearchMessagesDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_relocalizeMedia: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RelocalizeMediaDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    MessageController_mediaStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MediaStatusDto"];
             };
         };
         responses: {
@@ -5231,6 +5411,46 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["AdminFederationSelfCheckDto"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_listNodes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    AdminQuotaController_setLimits: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                domain: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminSetQuotaDto"];
             };
         };
         responses: {

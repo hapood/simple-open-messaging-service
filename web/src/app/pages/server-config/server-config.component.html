@@ -42,17 +42,20 @@
           [disabled]="testing() || saving() || urlControl.invalid"
         >
           <app-icon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
-          {{ (testing() ? 'serverConfig.testing' : 'serverConfig.testBtn') | transloco }}
+          {{ 'serverConfig.testBtn' | transloco }}
         </button>
 
         @if (showStatus()) {
           <div
             class="sc-status"
+            [class.sc-status-testing]="status() === 'testing'"
             [class.sc-status-ok]="status() === 'ok'"
             [class.sc-status-warn]="status() === 'warn' || status() === 'notsoms'"
             [class.sc-status-fail]="status() === 'fail'"
           >
-            @if (statusIcon(); as icon) {
+            @if (status() === 'testing') {
+              <mat-progress-spinner mode="indeterminate" [diameter]="16" />
+            } @else if (statusIcon(); as icon) {
               <app-icon [type]="icon" [style]="{ width: '16px', height: '16px' }" />
             }
             <span>{{ statusKey() | transloco: { version: version() || '?' } }}</span>

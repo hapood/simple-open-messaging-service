@@ -19,8 +19,9 @@ module.exports = (config) => {
           '--disable-gpu',
           '--disable-dev-shm-usage',
           '--no-sandbox',
-          '--remote-debugging-port=9222',
+          '--remote-debugging-port=9223', // 9222 is taken by adb on this host (Android dev) → Chrome can't bind its debugging port → karma "not captured"
           '--no-proxy-server',
+          '--password-store=basic', // Linux: Chrome otherwise tries to unlock the GNOME keyring (Secret Service) on startup → GUI password prompt blocks the headless process → "not captured". No-op on macOS/Windows.
         ],
       },
     },

@@ -82,10 +82,19 @@
 }
 
 // Download glyph (de-emphasized; darkens on hover — the whole row is click-to-download, this is auxiliary cue).
+// When the federated media is not yet local, the glyph slot swaps to a spinner (downloading) or a
+// cloud_off icon (failed) — HEIGHT-NEUTRAL: the slot is fixed, the swap never changes the row height.
 .msg-file-dl {
   flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
   opacity: 0.4;
+  .mat-icon { font-size: 20px; width: 20px; height: 20px; line-height: 20px; }
 }
+.msg-file-dl-failed { color: var(--app-danger, #ff5252); opacity: 0.95; }
 .msg-file-row:hover .msg-file-dl {
   opacity: 0.8;
 }

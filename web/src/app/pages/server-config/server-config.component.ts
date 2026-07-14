@@ -13,6 +13,7 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
@@ -55,6 +56,7 @@ function urlValidator(control: AbstractControl): ValidationErrors | null {
     MatFormFieldModule,
     MatInputModule,
     MatProgressBarModule,
+    MatProgressSpinnerModule,
     AuthBrandComponent,
     AuthToolbarComponent,
     IconComponent,
@@ -91,15 +93,14 @@ export class ServerConfigComponent {
     });
   }
 
-  /** Whether a terminal status pill should render (ok / warn / notsoms / fail — not idle/testing). */
-  readonly showStatus = computed(() => {
-    const s = this.status();
-    return s === 'ok' || s === 'warn' || s === 'notsoms' || s === 'fail';
-  });
+  /** Whether the status pill should render — every state but 'idle' (testing + all terminal outcomes). */
+  readonly showStatus = computed(() => this.status() !== 'idle');
 
-  /** transloco key for the status pill text. */
+  /** transloco key for the status pill text (reuses 'serverConfig.testing' for the in-flight state). */
   readonly statusKey = computed<string>(() => {
     switch (this.status()) {
+      case 'testing':
+        return 'serverConfig.testing';
       case 'ok':
         return 'serverConfig.statusOk';
       case 'warn':
@@ -152,22 +153,22 @@ export class ServerConfigComponent {
     this.version.set(null);
     const base = this.normalizedUrl();
     try {
-      await this.fetchWithTimeout(`${base}/api/v1/health`, { mode: 'no-cors' }, 6000);
-      try {
-        const res = await this.fetchWithTimeout(`${base}/api/v1/health`, {}, 6000);
-        const data = (await res.json().catch(() => null)) as
-          | { code?: unknown; data?: { status?: unknown; version?: unknown } }
-          | null;
-        if (data && data.code === 0 && data.data && data.data.status === 'ok') {
-          this.version.set(typeof data.data.version === 'string' ? data.data.version : null);
-          this.status.set('ok');
-        } else {
-          this.status.set('notsoms');
-        }
-      } catch {
-        this.status.set('warn');
+      const res = await this.fetchWithTimeout(`${base}/api/v1/health`, {}, 6000);
+      const data = (await res.json().catch(() => null)) as
+        | { code?: unknown; data?: { status?: unknown; version?: unknown } }
+        | null;
+      if (data && data.code === 0 && data.data && data.data.status === 'ok') {
+        this.version.set(typeof data.data.version === 'string' ? data.data.version : null);
+        this.status.set('ok');
+      } else {
+        this.status.set('notsoms');
       }
     } catch {
+      // Fetch rejects on network error (unreachable) or CORS block. The backend enables CORS
+      // (bootstrap.ts enableCors({origin:true})), so a rejection here is effectively "unreachable".
+      // NOTE: a `mode:'no-cors'` pre-flight was removed — in the Android WebView (Chrome 114) a
+      // cross-origin no-cors fetch rejects with "Failed to fetch" even when the same URL's normal CORS
+      // fetch returns 200, so the pre-flight produced false "cannot connect to server" failures.
       this.status.set('fail');
     } finally {
       this.testing.set(false);
@@ -181,7 +182,12 @@ export class ServerConfigComponent {
     this.saving.set(true);
     this.saveError.set(null);
     try {
-      await setApiOrigin(value);
+      const normalized = await setApiOrigin(value);
+      // Stash the new origin for the boot init script to read on reload (see src-tauri/src/lib.rs).
+      // Without this the fixed init script re-injects the stale setup-time origin and the guard bounces
+      // back here — the "Save loops back to /config" symptom. localStorage is the webview's concern, so
+      // it lives here in JS; Rust owns the file + proxy.
+      try { localStorage.setItem('__soms_api_origin__', normalized); } catch { /* private mode */ }
       // Rust persisted + updated the proxy. Reload so module-load constants re-resolve to the new origin.
       location.reload();
     } catch (e) {

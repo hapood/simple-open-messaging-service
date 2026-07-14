@@ -159,6 +159,41 @@
   }
 }
 
+// Federated media localize status overlay (downloading spinner / failed cloud_off icon) — absolute,
+// fills the cell, HEIGHT-NEUTRAL (never changes the cell's measured height; the cell size is locked by
+// layoutAlbum before render). Sits above the image/video; pointer-events:none so clicks still reach the
+// cell div (open gallery → retry lives in the detail view, per the card-only-shows-status contract).
+.msg-media-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.35);
+  color: #fff;
+  pointer-events: none;
+}
+.msg-media-overlay-icon {
+  font-size: 28px;
+  width: 28px;
+  height: 28px;
+  color: var(--app-danger, #ff5252);
+}
+
+// Federated media status chip in the meta bar (downloading spinner / failed icon + label). Inline flex,
+// fixed to the meta bar's line-height — HEIGHT-NEUTRAL (never changes the meta bar's measured 18px).
+.msg-media-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--im-bubble-text);
+  .mat-icon { font-size: 13px; width: 13px; height: 13px; line-height: 13px; }
+  &.msg-media-status--failed { color: var(--app-danger, #ff5252); }
+}
+
 // "+N" more badge (album >6: last cell covered with a translucent black overlay + a centered number).
 .msg-cell-more::after {
   content: '';

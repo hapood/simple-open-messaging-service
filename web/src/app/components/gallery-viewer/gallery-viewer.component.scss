@@ -98,6 +98,18 @@
 
 // Tap-to-retry card shown when the <img> fails to load. Full-stage overlay (sibling of the stage, z-above) so the tap
 // reaches the button instead of the pan/swipe handlers; centered content on the dark stage.
+// Backend-localize-in-flight spinner (status 'downloading') — full-stage centered, same layer as the
+// retry card. pointer-events:none (no interaction while the server is fetching the bytes).
+.gv-status {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
 .gv-retry {
   position: absolute;
   inset: 0;

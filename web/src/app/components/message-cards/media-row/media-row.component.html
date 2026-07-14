@@ -33,6 +33,16 @@
             (click)="onCellClick($index)"
             (keydown.enter)="onCellClick($index)"
           >
+            @if (c.status !== MEDIA_STATUS.READY) {
+              <div class="msg-media-overlay" role="status"
+                   [attr.aria-label]="c.status === MEDIA_STATUS.DOWNLOADING ? ('chat.mediaDownloading' | transloco) : ('chat.mediaFailed' | transloco)">
+                @if (c.status === MEDIA_STATUS.DOWNLOADING) {
+                  <mat-progress-spinner mode="indeterminate" [diameter]="24" />
+                } @else {
+                  <mat-icon class="msg-media-overlay-icon">cloud_off</mat-icon>
+                }
+              </div>
+            }
             @if (c.placeholder) {
               <span class="msg-media-tap">Tap to load</span>
             }
@@ -65,6 +75,16 @@
           @if (metaBar().videos) { <span>{{ 'chat.mediaCount.video' | transloco: { count: metaBar().videos } }}</span> }
           @if (metaBar().audios) { <span>{{ 'chat.mediaCount.audio' | transloco: { count: metaBar().audios } }}</span> }
         </span>
+        @if (data().mediaStatus !== MEDIA_STATUS.READY) {
+          <span class="msg-media-status msg-media-status--{{ data().mediaStatus }}">
+            @if (data().mediaStatus === MEDIA_STATUS.DOWNLOADING) {
+              <mat-progress-spinner mode="indeterminate" [diameter]="12" />
+            } @else {
+              <mat-icon>error_outline</mat-icon>
+            }
+            {{ (data().mediaStatus === MEDIA_STATUS.DOWNLOADING ? 'chat.mediaDownloading' : 'chat.mediaFailed') | transloco }}
+          </span>
+        }
         <span class="msg-media-meta-time">{{ metaBar().time }}</span>
       </div>
 

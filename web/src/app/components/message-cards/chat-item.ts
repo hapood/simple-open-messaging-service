@@ -1,3 +1,16 @@
+// Federated media localize status values — the stable wire format (backend serializeBody + MEDIA_STATUS
+// SSE frame + the attachMediaStatus query field carry these exact strings). Defined here (the components
+// SoT) mirroring services/model.ts (the services SoT) — same strings, the wire contract. A const object so
+// every reference is MEDIA_STATUS.READY (typed + refactor-safe), not a bare literal. 'ready' = bytes local
+// + authz (URL serves 200); 'failed' = localize failed (URL 4xx, retryable); 'downloading' = localize in
+// flight (a client-side optimistic state only — the backend stores/pushes the 'ready'|'failed' terminals).
+export const MEDIA_STATUS = {
+  READY: 'ready',
+  DOWNLOADING: 'downloading',
+  FAILED: 'failed',
+} as const;
+export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS];
+
 /**
  * A single media cell (image / video / audio). layoutAlbum lays out by {w,h}; `src` is used for
  * background-image (image) / <video> first-frame (video) / download anchor (audio). `kind` drives
@@ -18,6 +31,9 @@ export interface AlbumMedia {
   /** Owning original msg id (differs across cells in a merged album); layout ignores it, used only
    *  for the dev badge showing the aggregation range `[min-max]`. */
   msgId?: number;
+  /** Federated localize status of this cell's owning message (the gallery shows a backend retry when
+   *  'failed'). Absent = 'ready'. */
+  status?: MediaStatus;
 }
 
 /** Legacy alias — gallery-viewer and older call sites still reference AlbumImage. */
@@ -66,6 +82,11 @@ export interface ChatMsgData {
   images: AlbumMedia[] | null;
   /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */
   file: FileInfo | null;
+
+  /** Federated media localize status (IMAGE/FILE/VIDEO/AUDIO). Absent = 'ready' (local upload, or
+   *  already-localized federated media). 'downloading' = localize in flight (overlay spinner);
+   *  'failed' = localize failed (overlay icon + a retry in the detail view). */
+  mediaStatus?: MediaStatus;
   /** Raw epoch milliseconds (drives date-separator decisions). */
   createdAtMs: number;
   /** Delivery state for self-sent messages, rendered as a status tick (sending=animated spinner ring, sent=check,

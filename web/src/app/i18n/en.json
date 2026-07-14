@@ -215,6 +215,9 @@
     "openImageAria": "Open image",
     "openFileAria": "Open file",
     "retrySendAria": "Retry send",
+    "mediaDownloading": "Downloading…",
+    "mediaFailed": "Download failed",
+    "retryDownload": "Retry download",
     "fileFallback": "File",
     "invitedBy": "Invited by {{name}}",
     "validUntil": "Valid until {{date}}",
@@ -426,8 +429,8 @@
     "saving": "Saving…",
     "cancel": "Cancel",
     "statusOk": "Connected · v{{version}}",
-    "statusWarn": "Reachable, but the response is CORS-blocked — usually a reverse proxy in front of the backend. The backend itself allows all origins.",
-    "statusNotSoms": "Reached a server, but it isn't a SOMS backend.",
-    "statusFail": "Can't reach the server. Check the address, your network, or that the server is running."
+    "statusWarn": "Reachable · CORS blocked",
+    "statusNotSoms": "Not a SOMS backend",
+    "statusFail": "Unreachable"
   }
 }

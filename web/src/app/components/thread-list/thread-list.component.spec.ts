@@ -1,7 +1,7 @@
 import { TestBed, ComponentFixture } from '@angular/core/testing';
 import { signal, provideZonelessChangeDetection } from '@angular/core';
-import { provideTransloco } from '@jsverse/transloco';
-import { provideTranslocoMessageformat } from '@jsverse/transloco-messageformat';
+import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import { CspSafeIcuTranspiler } from '../../i18n/csp-safe-icu.transpiler';
 import { ThreadListComponent } from './thread-list.component';
 import { UserService } from '../../services/user.service';
 import { RouteService, PopupType } from '../../services/route.service';
@@ -51,7 +51,7 @@ describe('ThreadListComponent', () => {
           },
           loader: InlineTranslocoLoader,
         }),
-        provideTranslocoMessageformat(),
+        provideTranslocoTranspiler(CspSafeIcuTranspiler),
         // Stub the facade with the signals/methods the component reads. status starts at LOADING (the
         // fresh-store state) so the ngOnInit guard can be exercised.
         {

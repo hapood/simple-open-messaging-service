@@ -85,6 +85,14 @@ $app-gray-900: #111827;
   --app-space-2: 8px;
   --app-space-3: 12px;
   --app-space-4: 16px;
+
+  // Safe-area insets (status bar / gesture bar). Default = the CSS env() values, which browsers and
+  // iOS PWA forward correctly. Android WebView does NOT forward the status-bar inset through env()
+  // (it returns 0), so the native Tauri shell measures the real inset via WindowInsets and overrides
+  // these on :root at boot (see MainActivity + main.ts). Never hardcode a device-specific px here —
+  // the value varies per device/orientation (Huawei 32px today, different tomorrow).
+  --soms-safe-top:    env(safe-area-inset-top, 0px);
+  --soms-safe-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 // ---- Chat / IM semantic tokens (WhatsApp-aligned, --im-*) ------------------

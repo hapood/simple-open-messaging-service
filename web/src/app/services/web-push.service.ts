@@ -25,12 +25,15 @@ export class WebPushService {
   /** The endpoint currently registered with the backend (null = not subscribed). */
   private registeredEndpoint: string | null = null;
 
-  /** Current browser notification permission, or `'unsupported'` when the Notification API is absent
-   *  (an insecure origin — plain HTTP that isn't localhost — or an old browser; there the whole
-   *  feature is inert, no permission to request). Reactive so the Settings toggle + category summary
-   *  update live as the user grants/revokes. */
+  /** Current browser notification permission, or `'unsupported'` when the feature is inert on this
+   *  origin — either the Notification API is absent (old browser), OR the origin is NOT a secure
+   *  context. A plain-HTTP LAN hostname is *not* secure: `window.Notification` is defined there and
+   *  reads `'default'`, but `Notification.requestPermission()` is silently blocked (no prompt ever
+   *  appears), so presenting a clickable toggle would be a dead affordance. `window.isSecureContext`
+   *  is true for HTTPS and for `localhost`, exactly the origins where the prompt CAN show. Reactive
+   *  so the Settings toggle + category summary update live as the user grants/revokes. */
   readonly permission = signal<NotificationPermission | 'unsupported'>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'unsupported',
+    typeof Notification !== 'undefined' && window.isSecureContext ? Notification.permission : 'unsupported',
   );
 
   /** Wire up at app boot (AppComponent), after a session is restored. No-op when unsupported.
@@ -95,7 +98,7 @@ export class WebPushService {
    *  Returns the resulting permission. MUST be called from a click handler: modern browsers block
    *  `Notification.requestPermission()` outside a user gesture (why {@link init} doesn't request). */
   async enable(): Promise<NotificationPermission | 'unsupported'> {
-    if (typeof Notification === 'undefined') return 'unsupported';
+    if (typeof Notification === 'undefined' || !window.isSecureContext) return 'unsupported';
     // The toggle is only clickable from 'default', but guard for direct callers anyway.
     const perm =
       Notification.permission === 'default'
@@ -117,7 +120,9 @@ export class WebPushService {
   /** Re-read `Notification.permission` into the signal — called on init and on window focus (the user
    *  may have changed the site permission in browser settings while the tab was in the background). */
   private refreshPermission(): void {
-    if (typeof Notification !== 'undefined') this.permission.set(Notification.permission);
+    if (typeof Notification !== 'undefined' && window.isSecureContext) {
+      this.permission.set(Notification.permission);
+    }
   }
 
   /** Register the push SW → fetch VAPID key → subscribe → POST to /devices/register. Each failure

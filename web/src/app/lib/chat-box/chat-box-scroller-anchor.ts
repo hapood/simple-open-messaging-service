@@ -730,6 +730,12 @@ export class ChatBoxScrollerAnchor<T = unknown> implements ScrollerApi<T> {
     this.balance();
   }
 
+  updateItemData(_id: number, _patch: Partial<T>): boolean {
+    // The anchor (playground) has no federated mediaStatus path — accept the call as a no-op. Returns
+    // false so a caller that checks knows the item was not updated in place.
+    return false;
+  }
+
   flushViewportResize(): void {
     // Apply a resize that was deferred during an immunity frame. Re-check isFrozen so a thaw that
     // races with a re-freeze (back-to-back transitions) does not prematurely flush.

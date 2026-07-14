@@ -43,9 +43,24 @@
       </div>
     </dl>
 
-    <!-- Download: the row no longer downloads directly; this is the primary action. Disabled while there is no URL
-         (an optimistic send before its upload resolves). -->
-    @if (hasUrl()) {
+    <!-- Download / retry: the primary action. When the federated file is not yet local, swap to a retry
+         (status 'failed') or a downloading spinner (status 'downloading'). Disabled when no URL (an
+         optimistic send before its upload resolves). -->
+    @if (currentStatus() === MEDIA_STATUS.FAILED) {
+      <button type="button" class="fd-download fd-download--retry" (click)="relocalize()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        <span>{{ 'chat.retryDownload' | transloco }}</span>
+      </button>
+    } @else if (currentStatus() === MEDIA_STATUS.DOWNLOADING) {
+      <div class="fd-download fd-download--loading" aria-disabled="true">
+        <mat-progress-spinner mode="indeterminate" [diameter]="20" />
+        <span>{{ 'chat.mediaDownloading' | transloco }}</span>
+      </div>
+    } @else if (hasUrl()) {
       <a class="fd-download"
          [href]="downloadHref()"
          [download]="file()?.name ?? null"

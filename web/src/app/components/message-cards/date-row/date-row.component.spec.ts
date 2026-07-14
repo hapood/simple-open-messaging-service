@@ -1,7 +1,7 @@
 import { createComponent, EnvironmentInjector, provideZonelessChangeDetection } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
-import { provideTransloco } from '@jsverse/transloco';
-import { provideTranslocoMessageformat } from '@jsverse/transloco-messageformat';
+import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
+import { CspSafeIcuTranspiler } from '../../../i18n/csp-safe-icu.transpiler';
 import { InlineTranslocoLoader } from '../../../i18n/transloco.loader';
 import { LanguageService } from '../../../services/language.service';
 import { DateRowComponent } from './date-row.component';
@@ -31,7 +31,7 @@ describe('DateRowComponent — kernel-style detached mount', () => {
           },
           loader: InlineTranslocoLoader,
         }),
-        provideTranslocoMessageformat(),
+        provideTranslocoTranspiler(CspSafeIcuTranspiler),
       ],
     });
     language = TestBed.inject(LanguageService);

@@ -4,10 +4,40 @@ import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import { MsgService } from './message.service';
 import { UserService } from './user.service';
-import { Message, QueryMessageLogParams } from './model';
+import { Message, QueryMessageLogParams, MEDIA_STATUS, MediaStatus } from './model';
 
 /** The read query shape — mirrors `MsgService.queryMessageLog` params (so the source swaps over 1:1). */
 export type MessageQuery = Pick<QueryMessageLogParams, 'skip' | 'take' | 'lastSeq' | 'orderBy'>;
+
+/** The client's stored media-status state for one message: its current status + the monotonic version of
+ *  the event that last set it. 'downloading' is a client-only optimistic state (set directly on a manual
+ *  retry click); 'ready'/'failed' are backend terminals (stored in IDB + pushed via MEDIA_STATUS). */
+export interface StoredMediaStatus {
+  status: MediaStatus;
+  sv: number;
+}
+
+/**
+ * Pure reducer — the single decision point every mediaStatus terminal ('ready'|'failed') update flows
+ * through (SSE MEDIA_STATUS, the scroll probe, the manual-retry ack). Given the current stored state and
+ * a backend terminal event, returns the next state or null to reject (no write, no signal):
+ *  - Anti-regression: an event with sv ≤ the applied sv is dropped — a stale out-of-order frame (a
+ *    reconnect replay, or a probe racing a newer SSE). Backend terminals always carry a strictly greater
+ *    sv (its Date.now), so once 'ready' a stale 'failed' cannot un-ready it; a retry's fresh 'ready'
+ *    (greater sv) still wins over an older 'failed'.
+ *  - Idempotent: the same {status, sv} already applied is a no-op.
+ * 'downloading' is never produced here — it is a client optimistic state set directly by
+ * {@link MessageRepository.setMediaDownloading} (which keeps sv), so any later backend terminal (greater
+ * sv) overrides it.
+ */
+export function reduceMediaStatus(
+  cur: StoredMediaStatus | undefined,
+  ev: { status: 'ready' | 'failed'; sv: number },
+): StoredMediaStatus | null {
+  if (cur && ev.sv <= cur.sv) return null; // stale / out-of-order → drop
+  if (cur && cur.status === ev.status && cur.sv === ev.sv) return null; // idempotent
+  return { status: ev.status, sv: ev.sv };
+}
 
 /**
  * The DB-layer repository for message bodies — the read + SSE half of the strict 3-tier
@@ -49,6 +79,15 @@ export class MessageRepository {
   private readonly signal$ = new Subject<{ threadId: number; seq: number }>();
   readonly liveSignal$ = this.signal$.asObservable();
 
+  /**
+   * Fires `{threadId, seq}` after a message's mediaStatus changed in IDB (a MEDIA_STATUS terminal, a
+   * scroll-probe correction, or a manual-retry optimistic 'downloading'). The per-thread HttpItemSource
+   * filters to its threadId and calls `kernel.updateItemData(seq)` to re-render that one card in place
+   * (zero height change — the status overlay/meta slot never alter the cell's measured height).
+   */
+  private readonly mediaStatusSignal$ = new Subject<{ threadId: number; seq: number; status: MediaStatus }>();
+  readonly mediaStatusLive$ = this.mediaStatusSignal$.asObservable();
+
   /** Per-thread highest seq observed (via NEW_MESSAGE or a backend response body). In-memory only —
    *  re-established by the init backend-probe each session. Drives the getNewer cache-hit ceiling test. */
   private readonly maxSeenSeq = new Map<number, number>();
@@ -63,6 +102,27 @@ export class MessageRepository {
     this.ws.eventSubject
       .pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined))
       .subscribe((m) => void this.onNewMessage(m.data as unknown as Message));
+
+    // Own the MEDIA_STATUS SSE: a federated media message finished localizing ('ready') or failed
+    // ('failed'). Flow it through the reducer (anti-regression by sv) + IDB write + the mediaStatus signal
+    // so the card flips off its optimistic 'downloading'. The frame is {threadId, seq, status, v}.
+    this.ws.eventSubject
+      .pipe(filter((m) => m.event === 'MEDIA_STATUS' && m.status === 0 && m.data !== undefined))
+      .subscribe((m) => {
+        const d = m.data as unknown as {
+          threadId: number;
+          seq: number;
+          status: 'ready' | 'failed';
+          v: number;
+        };
+        if (
+          typeof d?.threadId === 'number' &&
+          typeof d?.seq === 'number' &&
+          (d.status === 'ready' || d.status === 'failed')
+        ) {
+          void this.applyMediaStatus(d.threadId, d.seq, d.status, d.v, 'sse');
+        }
+      });
 
     // Session-end reset: maxSeenSeq is documented "in-memory only — re-established by the init
     // backend-probe each session", so it must not survive an account switch (a stale ceiling from the
@@ -255,6 +315,71 @@ export class MessageRepository {
       await tx.done;
     } catch {
       /* best-effort */
+    }
+  }
+
+  /** Read one cached message by its composite key [threadId, seq] (best-effort; undefined when IDB is
+   *  unavailable or the message was never cached). */
+  private async getOne(threadId: number, seq: number): Promise<Message | undefined> {
+    try {
+      return await (await this.webdb.db()).get('messages', [threadId, seq]);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Apply a backend mediaStatus terminal ('ready'|'failed') through the pure {@link reduceMediaStatus}
+   * (anti-regression by sv + idempotent). On accept: write IDB, then emit the mediaStatus signal so the
+   * kernel re-renders the one card in place. THE single entry point for SSE MEDIA_STATUS, the scroll
+   * probe, and the manual-retry ack — three sources, one truth. Returns true iff the state changed.
+   * Best-effort: a not-cached message (never pulled) is a no-op (the next query-messages carries the
+   * authoritative status from the backend).
+   */
+  async applyMediaStatus(
+    threadId: number,
+    seq: number,
+    status: 'ready' | 'failed',
+    sv: number,
+    _source: 'sse' | 'probe' | 'retry' = 'sse',
+  ): Promise<boolean> {
+    const cur = await this.getOne(threadId, seq);
+    if (!cur) return false;
+    const curState: StoredMediaStatus | undefined =
+      cur.mediaStatus !== undefined
+        ? { status: cur.mediaStatus, sv: cur.sv ?? 0 }
+        : undefined;
+    const next = reduceMediaStatus(curState, { status, sv });
+    if (!next) return false;
+    await this.put({ ...cur, mediaStatus: next.status, sv: next.sv });
+    this.mediaStatusSignal$.next({ threadId, seq, status: next.status });
+    return true;
+  }
+
+  /**
+   * Optimistic 'downloading' flip on a manual retry click — bypasses the reducer ('downloading' is a
+   * client-only transient, not a backend terminal) and KEEPS sv, so the eventual backend terminal (a
+   * strictly greater sv) always wins via {@link applyMediaStatus}. Emits the signal for an immediate
+   * spinner. Best-effort (IDB unavailable → no-op; the SSE terminal still lands and corrects it).
+   */
+  async setMediaDownloading(threadId: number, seq: number): Promise<void> {
+    const cur = await this.getOne(threadId, seq);
+    if (!cur || cur.mediaStatus === MEDIA_STATUS.DOWNLOADING) return;
+    await this.put({ ...cur, mediaStatus: MEDIA_STATUS.DOWNLOADING });
+    this.mediaStatusSignal$.next({ threadId, seq, status: MEDIA_STATUS.DOWNLOADING });
+  }
+
+  /**
+   * Bulk-apply a scroll-probe result: each entry flows through {@link applyMediaStatus} (per-row reduce),
+   * emitting a signal per changed row so each card flips as its row resolves (no batch latency). The
+   * scroll probe is the SSE backstop — it corrects statuses the client missed while disconnected.
+   */
+  async markMediaStatusBatch(
+    threadId: number,
+    entries: Array<{ seq: number; status: 'ready' | 'failed'; sv: number }>,
+  ): Promise<void> {
+    for (const e of entries) {
+      await this.applyMediaStatus(threadId, e.seq, e.status, e.sv, 'probe');
     }
   }
 }

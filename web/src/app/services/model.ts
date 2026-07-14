@@ -10,8 +10,27 @@ import type { components } from './api-types'
  */
 type S = components['schemas']
 
+/** Federated media localize status values — the stable wire format (backend serializeBody + MEDIA_STATUS
+ *  SSE frame + the attachMediaStatus query field carry these exact strings). A const object so every
+ *  reference is `MEDIA_STATUS.READY` (typed + refactor-safe), not a bare literal scattered around.
+ *  Mirrors the backend's src/common/media-status.ts. 'ready' = bytes local + authz (URL serves 200);
+ *  'failed' = localize failed (URL 4xx, retryable); 'downloading' = localize in flight (a client-side
+ *  optimistic state only — the backend stores/pushes the 'ready'|'failed' terminals). */
+export const MEDIA_STATUS = {
+  READY: 'ready',
+  DOWNLOADING: 'downloading',
+  FAILED: 'failed',
+} as const
+export type MediaStatus = (typeof MEDIA_STATUS)[keyof typeof MEDIA_STATUS]
+
 export type User = S['UserResponseDto']
-export type Message = S['MessageResponseDto']
+export type Message = S['MessageResponseDto'] & {
+  /** Federated media localize status (absent = ready). Carried on query-messages rows + NEW_MESSAGE
+   *  frames; the client also sets 'downloading' optimistically on arrival / manual retry. */
+  mediaStatus?: MediaStatus
+  /** Monotonic status version — the anti-regression key for the client's reduceMediaStatus. */
+  sv?: number
+}
 export type Group = S['GroupResponseDto']
 
 // peerUser/group are optional on the generated DTO (mutually exclusive by type), but templates branch on

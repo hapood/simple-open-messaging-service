@@ -1,7 +1,13 @@
-import { AfterViewInit, Component, computed, effect, HostListener, input, OnDestroy, output, signal } from '@angular/core';
+import { AfterViewInit, Component, computed, effect, HostListener, inject, input, OnDestroy, output, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import type { AlbumImage } from '../message-cards/chat-item';
+import { MatButtonModule } from '@angular/material/button';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatIconModule } from '@angular/material/icon';
+import { firstValueFrom } from 'rxjs';
+import { MEDIA_STATUS, type AlbumImage, type MediaStatus } from '../message-cards/chat-item';
 import { assetUrl } from '../../services/runtime';
+import { MsgService } from '../../services/message.service';
+import { MessageRepository } from '../../services/message-repository.service';
 
 const DRAG_THRESHOLD = 8;   // px: a pointer sequence under this length is a tap, not a drag
 const SWIPE_X = 50;         // px: horizontal drag at 1x → prev/next
@@ -31,13 +37,15 @@ function vh(): number { return typeof window !== 'undefined' ? window.innerHeigh
 @Component({
   selector: 'app-gallery-viewer',
   standalone: true,
-  imports: [TranslocoPipe],
+  imports: [TranslocoPipe, MatButtonModule, MatProgressSpinnerModule, MatIconModule],
   templateUrl: './gallery-viewer.component.html',
   styleUrl: './gallery-viewer.component.scss',
 })
 export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly images = input.required<AlbumImage[]>();
   readonly startIndex = input<number>(0);
+  /** The owning thread — scopes the backend relocalize retry to this conversation. */
+  readonly threadId = input<number>(0);
   readonly close = output<void>();
 
   readonly count = computed(() => this.images().length);
@@ -49,6 +57,21 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   /** Opacity dim while swipe-to-close drags down at 1x (feedback that releasing will close). 1 = opaque. */
   readonly dim = signal(1);
   readonly current = computed<AlbumImage | null>(() => this.images()[this.index()] ?? null);
+
+  /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
+  readonly MEDIA_STATUS = MEDIA_STATUS;
+
+  /** Per-index LOCAL mediaStatus override — set by a backend retry in the viewer (the album payload is a
+   *  snapshot from open time; the viewer tracks the post-retry status here so it reflects the retry without
+   *  waiting for the album input to change). Absent → fall back to the image's payload status. */
+  readonly statusOverrides = signal<Map<number, MediaStatus>>(new Map());
+  /** Effective status of the shown image: a local override (post-retry) else the payload status, else 'ready'.
+   *  'failed' shows the backend-relocalize retry card; 'downloading' a spinner; 'ready' defers to loadState. */
+  readonly currentStatus = computed<MediaStatus>(() => {
+    const ov = this.statusOverrides().get(this.index());
+    if (ov) return ov;
+    return this.current()?.status ?? MEDIA_STATUS.READY;
+  });
   /** The CSS transform applied to the image (translate then scale, origin center). */
   readonly transform = computed(() => `translate(${this.tx()}px, ${this.ty()}px) scale(${this.scale()})`);
 
@@ -74,6 +97,9 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   readonly imgOpacity = computed(() => (this.loadState() === 'error' ? 0 : this.dim()));
 
   private drag: { x: number; y: number; tx0: number; ty0: number; moved: boolean } | null = null;
+
+  private readonly msg = inject(MsgService);
+  private readonly repo = inject(MessageRepository);
 
   constructor() {
     // Reset zoom/pan + load state whenever the shown image changes (nav or startIndex change) — every image enters at
@@ -161,6 +187,33 @@ export class GalleryViewerComponent implements AfterViewInit, OnDestroy {
   onImgError(): void { this.loadState.set('error'); }
   /** User tapped retry: force a fresh fetch (cache-busted for http(s) via retryKey) and go back to 'loading'. */
   retryLoad(): void { this.retryKey.update(k => k + 1); this.loadState.set('loading'); }
+
+  /** Backend relocalize retry — the federated media never finished localizing (status 'failed'). Optimistic
+   *  'downloading' immediately, then call the endpoint; on 'ready' cache-bust the <img> (the URL now serves
+   *  200) so it re-fetches, on 'failed' surface the error again. Also flips the repo so the chat card mirrors
+   *  the viewer (setMediaDownloading now → the eventual MEDIA_STATUS SSE / probe lands the terminal there). */
+  async relocalizeCurrent(): Promise<void> {
+    const img = this.current();
+    const tid = this.threadId();
+    if (!img || !img.msgId || tid === 0) return;
+    const i = this.index();
+    this.statusOverrides.update((m) => { const n = new Map(m); n.set(i, MEDIA_STATUS.DOWNLOADING); return n; });
+    this.loadState.set('loading');
+    void this.repo.setMediaDownloading(tid, img.msgId);
+    try {
+      const res = await firstValueFrom(this.msg.relocalizeMedia(tid, img.msgId));
+      const status = res.code === 0 && res.data ? res.data.status : MEDIA_STATUS.FAILED;
+      this.statusOverrides.update((m) => { const n = new Map(m); n.set(i, status); return n; });
+      if (status === MEDIA_STATUS.READY) {
+        this.retryKey.update((k) => k + 1); // cache-bust the <img> → re-fetch, now 200
+      } else {
+        this.loadState.set('error');
+      }
+    } catch {
+      this.statusOverrides.update((m) => { const n = new Map(m); n.set(i, MEDIA_STATUS.FAILED); return n; });
+      this.loadState.set('error');
+    }
+  }
 
   /** Mouse wheel adjusts the zoom level (desktop). */
   onWheel(e: WheelEvent): void {

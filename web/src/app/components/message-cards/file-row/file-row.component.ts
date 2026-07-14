@@ -1,6 +1,8 @@
 import { Component, computed, input, output } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
-import type { ChatMsgData } from '../chat-item';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { MatIconModule } from '@angular/material/icon';
+import { MEDIA_STATUS, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import {
   UserAvatarComponent,
@@ -22,12 +24,14 @@ import { categorize, fileExt, formatBytes, type FileCategory } from '../file-met
 @Component({
   selector: 'app-msg-file-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe],
+  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe, MatProgressSpinnerModule, MatIconModule],
   templateUrl: './file-row.component.html',
   styleUrl: './file-row.component.scss',
 })
 export class FileRowComponent {
   readonly UserAvatarType = UserAvatarType;
+  /** Exposed for the template (status comparisons use MEDIA_STATUS.* — no bare literals). */
+  readonly MEDIA_STATUS = MEDIA_STATUS;
   readonly data = input.required<ChatMsgData>();
   readonly isShowHead = input(false);
   readonly isGroupStart = input(false);

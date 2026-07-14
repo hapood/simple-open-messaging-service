@@ -234,6 +234,14 @@ export interface ScrollerApi<T = unknown> {
   confirmPending(clientMessageId: string): void;
   getInfo(): CbScrollInfo;
   refresh(): void;
+  /** Re-render one mounted item's data IN PLACE (no remount, no height re-measure) — for a data-only
+   *  change whose presentation never alters the cell's measured height (e.g. a mediaStatus flip: the
+   *  status overlay + meta slot are height-neutral). Album-aware via {@link indexOfId}: any member id
+   *  resolves to the album item. Morphs through `CbElement.update` (the same path reconcilePending uses
+   *  for a status morph) with the patched data and the unchanged prev neighbor; because the height is
+   *  unchanged, no reflow, no anchor shift, no onHeightChange fires. Returns false when the item is not
+   *  currently mounted (the next mount carries the patched data from IDB — a no-op is safe). */
+  updateItemData(id: number, patch: Partial<T>): boolean;
   /** Apply a viewport resize that was deferred during an immunity frame (see
    *  {@link CbOptions.isFrozen}). No-op if nothing was deferred. */
   flushViewportResize(): void;
@@ -1071,6 +1079,23 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     if (this.rafId) { cancelAnimationFrame(this.rafId); this.rafId = 0; }
     this.dirty = false;
     this.balance();
+  }
+
+  updateItemData(id: number, patch: Partial<T>): boolean {
+    const idx = this.indexOfId(id);
+    if (idx < 0) return false; // not mounted — the next mount reads the patched data from IDB
+    const entry = this.mounted[idx];
+    const prev = idx > 0 ? this.mounted[idx - 1].item : null;
+    // New item ref with patched data (entry.item is replaced wholesale). By contract the height is
+    // unchanged (a status overlay / meta slot flip never alters the cell's measured height), so update()'s
+    // re-render fires no onHeightChange → no reflow, no anchor compensation, no dirtyPrefix churn.
+    const newItem: CbItem<T> = {
+      ...entry.item,
+      data: { ...(entry.item.data as object), ...(patch as object) } as unknown as T,
+    };
+    entry.item = newItem;
+    entry.vs.update(newItem, prev);
+    return true;
   }
 
   flushViewportResize(): void {

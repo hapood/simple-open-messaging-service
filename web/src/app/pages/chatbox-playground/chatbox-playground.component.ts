@@ -345,8 +345,8 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const vs = createMsgCbElement(
       item, isShowHead, isGroupStart, showDate, this.envInjector,
       id => this.retrySend(id),
-      (images, index) => this.galleryViewer.open(images, index),
-      (data) => this.fileDetail.open(data),
+      (images, index) => this.galleryViewer.open(images, index, 0),
+      (data) => this.fileDetail.open(data, 0),
     );
     // Dev badge (head/body + message id): injected into the row by the playground; ngDevMode-guarded → production AOT creates none.
     if (ngDevMode) this.attachDevBadge(vs.el, item, isShowHead);

@@ -2205,4 +2205,68 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(olderCalls).toBe(0);
     expect(newerCalls).toBe(0);
   });
+
+  it('updateItemData morphs a mounted item in place (vs.update, no recreate) — object data, like ChatItemData', async () => {
+    type D = { v: number };
+    let creates = 0, updates = 0;
+    const dataMap = new Map<number, D>();
+    const hooks = {
+      createItem: (item: CbItem<D>, _prev: CbItem<D> | null): CbElement<D> => {
+        creates++; dataMap.set(item.id, item.data);
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 100 });
+        return { el, onHeightChange: () => () => {}, update: (n: CbItem<D>) => { updates++; dataMap.set(item.id, n.data); }, destroy: () => {} };
+      },
+    };
+    const items: CbItem<D>[] = Array.from({ length: 20 }, (_, i) => ({ id: i, data: { v: i } }));
+    items[0] = { ...items[0], boundary: 'oldest' as const };
+    items[19] = { ...items[19], boundary: 'newest' as const };
+    const src: CbSource<D> = {
+      init: async () => items.slice(), getOlder: async () => [], getNewer: async () => [],
+      pushLive: () => {}, getPending: () => [], destroy: () => {},
+    };
+    const s = new ChatBoxScroller<D>({ viewport, content, hooks, source: src });
+    try {
+      await s.init();
+      const before = creates;
+      expect(s.updateItemData(15, { v: 999 })).toBe(true);
+      expect(updates).toBe(1);
+      expect(creates).toBe(before); // in-place morph, NOT destroy+recreate
+      expect(dataMap.get(15)).toEqual({ v: 999 });
+    } finally { s.destroy(); }
+  });
+
+  it('updateItemData returns false (no-op) when the id is not mounted', async () => {
+    const t = trackingHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks: t.hooks, source: fakeSource(20) });
+    await scroller.init();
+    expect(scroller.updateItemData(9999, 1)).toBe(false);
+    expect(t.updateCount()).toBe(0);
+  });
+
+  it('updateItemData is album-aware: any member id (item.ids) resolves to the album item', async () => {
+    type D = { v: number };
+    let updates = 0;
+    const dataMap = new Map<number, D>();
+    const hooks = {
+      createItem: (item: CbItem<D>): CbElement<D> => {
+        dataMap.set(item.id, item.data);
+        const el = document.createElement('div');
+        Object.defineProperty(el, 'offsetHeight', { configurable: true, get: () => 100 });
+        return { el, onHeightChange: () => () => {}, update: (n: CbItem<D>) => { updates++; dataMap.set(item.id, n.data); }, destroy: () => {} };
+      },
+    };
+    const album: CbItem<D> = { id: 10, data: { v: 10 }, ids: [10, 11, 12], boundary: 'both' };
+    const src: CbSource<D> = {
+      init: async () => [album], getOlder: async () => [], getNewer: async () => [],
+      pushLive: () => {}, getPending: () => [], destroy: () => {},
+    };
+    const s = new ChatBoxScroller<D>({ viewport, content, hooks, source: src });
+    try {
+      await s.init();
+      expect(s.updateItemData(11, { v: 77 })).toBe(true); // member 11 → album item (id 10)
+      expect(updates).toBe(1);
+      expect(dataMap.get(10)).toEqual({ v: 77 });
+    } finally { s.destroy(); }
+  });
 });

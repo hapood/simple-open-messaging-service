@@ -23,7 +23,6 @@
     "@angular/router": "^20.3.25",
     "@angular/service-worker": "^20.3.25",
     "@jsverse/transloco": "^8.4.0",
-    "@jsverse/transloco-messageformat": "^8.4.0",
     "@tiptap/core": "^3.27.1",
     "@tiptap/extension-mention": "^3.27.1",
     "@tiptap/extension-placeholder": "^3.27.1",

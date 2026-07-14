@@ -14,23 +14,30 @@
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr);
   min-height: 100vh;
   min-height: 100dvh;
+  // border-box + padding-top so the grid's 100dvh height INCLUDES the status-bar safe-area inset:
+  // the auth toolbar (absolute top:16px on .form-pane) and the form card then sit BELOW the status bar
+  // instead of under it. Android WebView is edge-to-edge and env(safe-area-inset-top) is 0 there, so
+  // --soms-safe-top is injected by the native shell (see _tokens.scss).
+  box-sizing: border-box;
+  padding-top: var(--soms-safe-top, 0px);
 
   .form-pane {
     // Anchor for <app-auth-toolbar>'s absolute top-right placement.
     position: relative;
     display: flex;
+    flex-direction: column; // stack the form card + the Tauri-only "server settings" link vertically
     align-items: center;
     justify-content: center;
+    box-sizing: border-box; // padding stays inside the grid-stretched size — no explicit height is set
     padding: 32px 24px;
     background: var(--app-bg);
   }
 
   @media (max-width: 899px) {
     grid-template-columns: 1fr;
-
-    .form-pane {
-      min-height: 100vh;
-      min-height: 100dvh;
-    }
+    // .form-pane needs no min-height: the grid stretches the single row to fill the auth-shell's 100dvh
+    // content area (verified live). The old `min-height: 100dvh` sized the content-box and, with the
+    // 32px padding, gave 1088px → 64px overflow on a 1024px viewport. Stretch + border-box adapts to
+    // any viewport / status-bar height without writing a fixed height.
   }
 }

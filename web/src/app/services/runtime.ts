@@ -78,6 +78,11 @@ declare global {
     /** Kotlin `@JavascriptInterface` exposed by the Android shell: finishes the activity (clean app exit)
      *  when NavStateMachineService.back() has nothing left to peel. Android-only. */
     SomsBack?: { exit: () => void };
+    /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
+     *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
+     *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
+     *  main.ts before bootstrap for a FOUC-free first paint. Absent in browser/desktop. */
+    SomsShell?: { getSafeInsets: () => string };
   }
 }
 
@@ -155,4 +160,23 @@ export function apiOriginIsLocalhost(): boolean {
 export async function setApiOrigin(url: string): Promise<string> {
   if (!isTauri()) throw new Error('setApiOrigin is only available under the Tauri shell');
   return tauriInvoke<string>('set_api_origin', { url });
+}
+
+/**
+ * Apply the native system-bar insets to :root as --soms-safe-top / --soms-safe-bottom, so the auth shell
+ * and the app shell can pad content below the status bar (Android WebView is edge-to-edge and
+ * env(safe-area-inset-*) returns 0 there). Reads SomsShell.getSafeInsets() — the Kotlin @JavascriptInterface
+ * — synchronously; MUST run before bootstrapApplication() so the first paint already has the insets
+ * (FOUC-free). No-op in the browser build (no SomsShell): the CSS default env() applies there.
+ */
+export function applySafeInsets(): void {
+  if (typeof window === 'undefined' || !window.SomsShell) return;
+  try {
+    const { top, bottom } = JSON.parse(window.SomsShell.getSafeInsets()) as { top: number; bottom: number };
+    const root = document.documentElement;
+    root.style.setProperty('--soms-safe-top', `${top}px`);
+    root.style.setProperty('--soms-safe-bottom', `${bottom}px`);
+  } catch {
+    // SomsShell present but the call failed — leave the CSS default (env(), 0 on Android).
+  }
 }

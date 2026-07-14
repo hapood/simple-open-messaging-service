@@ -22,9 +22,10 @@ import {
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
 import { HttpItemSource } from './http-item-source';
+import { MediaProbeScheduler } from './media-probe-scheduler';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../message-cards/create-item';
 import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
-import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message-cards/chat-item';
+import { MEDIA_STATUS, type AlbumImage, type ChatItemData, type ChatMsgData, type FileInfo, type MediaStatus } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
 import { ChatInputComponent, type ChatSendIntent } from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
@@ -116,6 +117,9 @@ export class MessageThreadComponent implements OnDestroy {
   /** Reveal the skeleton only after this delay (ms) — the "don't flash on fast loads" gate. */
   private static readonly SKELETON_DELAY = 300;
   private skeletonTimer?: ReturnType<typeof setTimeout>;
+  /** Scroll-driven SSE backstop for federated media status — one instance per open thread. Owns the
+   *  in-flight ('downloading') seqs + the debounced/rate-limited bulk probe. See MediaProbeScheduler. */
+  private readonly probe = new MediaProbeScheduler(this.msgService, this.msgRepo);
 
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
@@ -158,13 +162,21 @@ export class MessageThreadComponent implements OnDestroy {
       // init(-1), which is also where rawToItems runs once (so ids register once — no double-registration to
       // dedup away a self-send echo / reply on an empty thread). onMessageSignal is the optimistic-confirm
       // reconcile path (appendLive direct-mounts and would double-mount a self-send real beside its bubble).
-      { onSignal: (seq: number) => {
-        // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
-        // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
-        // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
-        // window to decide whether a post-init replay is actually needed.
-        void this.scroller?.onMessageSignal(seq).catch((e) => console.error('[chat] onMessageSignal rejected', e));
-      } },
+      {
+        onSignal: (seq: number) => {
+          // onMessageSignal is async — without a .catch a kernel throw here would be an unhandled rejection
+          // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
+          // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
+          // window to decide whether a post-init replay is actually needed.
+          void this.scroller?.onMessageSignal(seq).catch((e) => console.error('[chat] onMessageSignal rejected', e));
+        },
+        // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
+        // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
+        onMediaStatus: (seq: number, status: MediaStatus) => {
+          this.scroller?.updateItemData(seq, { mediaStatus: status });
+          this.probe.track(seq, status === MEDIA_STATUS.DOWNLOADING);
+        },
+      },
     );
     this.scroller = new ChatBoxScroller<ChatItemData>({
       viewport,
@@ -202,11 +214,12 @@ export class MessageThreadComponent implements OnDestroy {
     // rendered via the createSkeleton hook supplied below. createItem never branches on ghost-vs-real: that rule
     // drifted between playground and production and is what swallowed the empty-thread first message.
     const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
+    if (item.data.mediaStatus === MEDIA_STATUS.DOWNLOADING) this.probe.track(item.id, true);
     return createMsgCbElement(
       item, isShowHead, isGroupStart, showDate, this.envInjector,
       (msgId) => this.retrySend(msgId),
-      (images, index) => this.galleryViewer.open(images, index),
-      (data) => this.fileDetail.open(data),
+      (images, index) => this.galleryViewer.open(images, index, this.threadId() ?? 0),
+      (data) => this.fileDetail.open(data, this.threadId() ?? 0),
     );
   }
 
@@ -221,6 +234,7 @@ export class MessageThreadComponent implements OnDestroy {
     this.sweepPendingFiles();
     this.atBottom.set(info.atBottom);
     this.updateStickyDate();
+    this.probe.schedule(this.threadId() ?? 0);
   }
 
   /** Telegram-style sticky date overlay: the text of the last date-separator row at/above the viewport top. */
@@ -332,7 +346,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   private dispatchHttpSendText(item: CbItem<ChatItemData>): void {
     const cid = item.clientMessageId!;
-    const tid = this.threadId();
+    const tid = this.threadId() ?? 0;
     if (!tid) return;
     firstValueFrom(this.msgService.sendMessage({
       threadId: tid, content: item.data.text, contentType: 'PURE_TEXT', clientMessageId: cid,
@@ -347,7 +361,7 @@ export class MessageThreadComponent implements OnDestroy {
    *  server promotes the stage to a real Message. The NEW_MESSAGE SSE echo (matched by cid) reconciles
    *  the optimistic bubble — so on upload success there is nothing to do here. Any failure → failPending. */
   private async uploadAndSendImage(cid: string, f: File, item: CbItem<ChatItemData>, dims: { w: number; h: number }): Promise<void> {
-    const tid = this.threadId();
+    const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
       const staged = await firstValueFrom(this.msgService.sendMedia({ threadId: tid, contentType: 'IMAGE', clientMessageId: cid }));
@@ -361,7 +375,7 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async uploadAndSendFile(cid: string, f: File, item: CbItem<ChatItemData>): Promise<void> {
-    const tid = this.threadId();
+    const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
       const staged = await firstValueFrom(this.msgService.sendMedia({ threadId: tid, contentType: 'FILE', clientMessageId: cid }));
@@ -377,7 +391,7 @@ export class MessageThreadComponent implements OnDestroy {
   private async uploadAndSendVideo(
     cid: string, f: File, item: CbItem<ChatItemData>, meta: { w: number; h: number; duration: number },
   ): Promise<void> {
-    const tid = this.threadId();
+    const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
       const staged = await firstValueFrom(this.msgService.sendMedia({
@@ -395,7 +409,7 @@ export class MessageThreadComponent implements OnDestroy {
   private async uploadAndSendAudio(
     cid: string, f: File, item: CbItem<ChatItemData>, meta: { duration: number },
   ): Promise<void> {
-    const tid = this.threadId();
+    const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
       const staged = await firstValueFrom(this.msgService.sendMedia({
@@ -561,6 +575,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   private teardown(): void {
     clearTimeout(this.skeletonTimer);
+    this.probe.destroy();
     this.scroller?.destroy(); // destroy() also calls source.destroy() (unsubscribes SSE)
     this.scroller = undefined;
     this.source = undefined;

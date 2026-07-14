@@ -19,8 +19,21 @@
   }
 </div>
 
-@if (loadState() === 'error') {
-  <!-- Sibling of the stage (z-above) so a tap reaches the button, not the pan/swipe handlers. -->
+@if (currentStatus() === MEDIA_STATUS.FAILED) {
+  <!-- Backend never localized the bytes (status 'failed') — retry re-runs localize on the server. Sibling of
+       the stage (z-above) so a tap reaches the button, not the pan/swipe handlers. -->
+  <button type="button" class="gv-retry gv-retry--backend" (click)="relocalizeCurrent()"
+          [attr.aria-label]="'chat.retryDownload' | transloco">
+    <span class="gv-retry-icon">&#8635;</span>
+    <span class="gv-retry-text">{{ 'chat.mediaFailed' | transloco }}</span>
+    <span class="gv-retry-hint">{{ 'chat.retryDownload' | transloco }}</span>
+  </button>
+} @else if (currentStatus() === MEDIA_STATUS.DOWNLOADING) {
+  <div class="gv-status" role="status" [attr.aria-label]="'chat.mediaDownloading' | transloco">
+    <mat-progress-spinner mode="indeterminate" [diameter]="32" />
+  </div>
+} @else if (loadState() === 'error') {
+  <!-- Bytes are local (status 'ready') but the <img> failed to fetch (transient network/auth) — cache-bust retry. -->
   <button type="button" class="gv-retry" (click)="retryLoad()" [attr.aria-label]="'gallery.retryAria' | transloco">
     <span class="gv-retry-icon">&#8635;</span>
     <span class="gv-retry-text">{{ 'gallery.failed' | transloco }}</span>

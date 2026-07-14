@@ -30,7 +30,7 @@ import { WebsocketService } from '../../services/websocket.service';
 import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
-import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo } from '../message-cards/chat-item';
+import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo, MediaStatus } from '../message-cards/chat-item';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -49,6 +49,9 @@ export interface HttpItemSourceLiveOpts {
    *  self-send echo / incoming reply on an empty (just-added-friend) thread reconciles correctly instead of
    *  being deduped away. */
   onSignal: (seq: number) => void;
+  /** A mediaStatus change landed for this thread (MEDIA_STATUS SSE / scroll probe / retry ack) — the
+   *  kernel re-renders that one card in place via updateItemData (height-neutral). */
+  onMediaStatus?: (seq: number, status: MediaStatus) => void;
 }
 
 export class HttpItemSource implements CbSource<ChatItemData> {
@@ -67,6 +70,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   private readonly pending: CbItem<ChatItemData>[] = [];
   private sseSub?: Subscription;
   private reconnectSub?: Subscription;
+  private mediaStatusSub?: Subscription;
+  private readonly onMediaStatus: (seq: number, status: MediaStatus) => void;
   private readonly onSignal: (seq: number) => void;
 
   constructor(
@@ -78,12 +83,18 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     live: HttpItemSourceLiveOpts,
   ) {
     this.onSignal = live.onSignal;
+    this.onMediaStatus = live.onMediaStatus ?? (() => {});
     // The DB-layer MessageRepository owns the NEW_MESSAGE SSE: it caches the body, THEN emits liveSignal$,
     // so this signal arrives AFTER the body is in IDB — the kernel's subsequent getNewer pull reads it from
     // the cache (no backend round-trip). Filter to THIS thread (one source per open thread).
     this.sseSub = repo.liveSignal$
       .pipe(filter((s) => s.threadId === this.conv.threadId))
       .subscribe((s) => this.onSignal(s.seq));
+    // mediaStatus changes (MEDIA_STATUS SSE / scroll probe / manual-retry ack) → re-render that one card
+    // in place via updateItemData. Height-neutral (the overlay/meta slot never change the cell height).
+    this.mediaStatusSub = repo.mediaStatusLive$
+      .pipe(filter((s) => s.threadId === this.conv.threadId))
+      .subscribe((s) => this.onMediaStatus(s.seq, s.status));
     // On a successful SSE reconnect, signal the kernel to pull — the SSE stream does not replay frames missed
     // while disconnected, so the kernel re-reads newer-than-its-cursor from the DB (source of truth).
     this.reconnectSub = wsService.reconnect$.subscribe(() => this.onSignal(Number.MAX_SAFE_INTEGER));
@@ -279,6 +290,8 @@ export class HttpItemSource implements CbSource<ChatItemData> {
   destroy(): void {
     this.sseSub?.unsubscribe();
     this.sseSub = undefined;
+    this.mediaStatusSub?.unsubscribe();
+    this.mediaStatusSub = undefined;
     this.reconnectSub?.unsubscribe();
     this.reconnectSub = undefined;
   }
@@ -295,13 +308,13 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       // same-creator IMAGE/VIDEO are merged into an album by the kernel's mergeItems (AUDIO stays standalone).
       let images: AlbumImage[] | null = null;
       if (m.contentType === 'IMAGE') {
-        images = [{ ...parseImageContent(m.content), msgId: id }];
+        images = [{ ...parseImageContent(m.content), msgId: id, status: m.mediaStatus }];
       } else if (m.contentType === 'VIDEO') {
         const v = parseVideoContent(m.content);
-        if (v) images = [{ ...v, msgId: id }];
+        if (v) images = [{ ...v, msgId: id, status: m.mediaStatus }];
       } else if (m.contentType === 'AUDIO') {
         const a = parseAudioContent(m.content);
-        if (a) images = [{ ...a, msgId: id }];
+        if (a) images = [{ ...a, msgId: id, status: m.mediaStatus }];
       }
       // FILE message → the attachment metadata parsed from content JSON (url/name/size/mimeType).
       const file: FileInfo | null = m.contentType === 'FILE' ? parseFileContent(m.content) : null;
@@ -334,6 +347,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
       isSelf: p?.isSelf ?? m.creator === this.myUserId,
       name: p?.name ?? '', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
       contentType: m.contentType, images, file, createdAtMs: m.createdAt,
+      mediaStatus: m.mediaStatus,
     };
   }
 

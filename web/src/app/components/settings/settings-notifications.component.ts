@@ -32,6 +32,7 @@ import { WebPushService } from '../../services/web-push.service';
             <span matListItemLine class="hint">{{ hintKey() | transloco }}</span>
             @if (supported()) {
               <mat-slide-toggle
+                matListItemMeta
                 [checked]="granted()"
                 [disabled]="locked()"
                 [attr.aria-label]="'settings.notifications' | transloco"

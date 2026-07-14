@@ -154,6 +154,17 @@
     color: var(--app-text-muted, #6b7280);
     cursor: not-allowed;
   }
+  // Backend relocalize retry (federated file status 'failed') — danger-tinted primary action.
+  &.fd-download--retry {
+    background: var(--app-danger, #e53935);
+  }
+  // Backend localize in flight (status 'downloading') — neutral, spinner + label, no interaction.
+  &.fd-download--loading {
+    background: var(--app-border, rgba(0, 0, 0, 0.08));
+    color: var(--app-text-muted, #6b7280);
+    cursor: default;
+    .mat-progress-spinner circle.mat-spinner-stroke { stroke: currentColor; }
+  }
 }
 
 @keyframes fd-enter {

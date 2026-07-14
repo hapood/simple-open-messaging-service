@@ -215,6 +215,9 @@
     "openImageAria": "打开图片",
     "openFileAria": "打开文件",
     "retrySendAria": "重试发送",
+    "mediaDownloading": "下载中…",
+    "mediaFailed": "下载失败",
+    "retryDownload": "重试下载",
     "fileFallback": "文件",
     "invitedBy": "{{name}} 邀请你",
     "validUntil": "有效期至 {{date}}",
@@ -426,8 +429,8 @@
     "saving": "保存中…",
     "cancel": "取消",
     "statusOk": "已连接 · v{{version}}",
-    "statusWarn": "服务器可达，但响应被 CORS 拦截——通常是后端前层的反向代理所致。后端本身放行所有来源。",
-    "statusNotSoms": "已连接到服务器，但它不是 SOMS 后端。",
-    "statusFail": "无法连接服务器。请检查地址、网络，或确认服务端已运行。"
+    "statusWarn": "可达 · CORS 拦截",
+    "statusNotSoms": "非 SOMS 后端",
+    "statusFail": "无法连接"
   }
 }
