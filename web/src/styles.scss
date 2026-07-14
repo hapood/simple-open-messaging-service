@@ -133,6 +133,12 @@ $dark-theme: mat.define-theme((
 html,
 body {
   height: 100%;
+  // Suppress Android WebView's default translucent-blue tap-highlight overlay. The property is
+  // inherited, so this one rule removes the flash on every <button>, [role="button"], and clickable
+  // host app-wide — interactive elements already declare their own themed press affordance (the
+  // connection chip's ::before state layer, the styless-button scale, etc.), so the native overlay
+  // only ever duplicated those as an ugly blue flash. No effect on desktop/browser.
+  -webkit-tap-highlight-color: transparent;
 }
 
 body {
