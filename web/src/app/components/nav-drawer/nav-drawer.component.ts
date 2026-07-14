@@ -1,5 +1,5 @@
-import { Component, input, output, inject, viewChild, computed, effect, untracked } from '@angular/core';
-import { MatSidenavModule, MatSidenav } from '@angular/material/sidenav';
+import { Component, input, inject, computed } from '@angular/core';
+import { MatSidenavModule } from '@angular/material/sidenav';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -17,6 +17,11 @@ import { LayoutService } from '../../services/layout.service';
  * scoped to the thread-list column as it was when the list was projected into mat-sidenav-content.
  * mode=over still gives backdrop-click close, ESC close, focus trap, and the slide animation. The
  * thread list itself is a plain sibling column owned by HomeShellComponent.
+ *
+ * The drawer's open state is owned by {@link NavStateMachineService.drawerOpen}, NOT inside MatSidenav,
+ * so the Android hardware-back handler (`NavStateMachineService.back`) peels it (closes the drawer)
+ * instead of exiting the app. The mat-sidenav is a controlled component: `[opened]` reads the signal,
+ * `(openedChange)` writes it back, so MatSidenav's own backdrop-click/ESC closes stay in sync.
  */
 @Component({
   selector: 'app-nav-drawer',
@@ -29,11 +34,7 @@ export class NavDrawerComponent {
   readonly AppIconType = AppIconType
   /** Callback to refresh the list after a group is created (forwarded from the parent). */
   readonly onThreadListChanged = input<(() => void) | undefined>(undefined)
-  /** Emits when the drawer opens/closes (so the parent can react, e.g. close the search box). Fires
-   *  at the end of the open/close animation — Material's `openedChange` semantics. */
-  readonly drawerOpenChange = output<boolean>()
 
-  private readonly sidenav = viewChild(MatSidenav)
   private readonly routeService = inject(RouteService)
   readonly userService = inject(UserService)
   private readonly themeService = inject(ThemeService)
@@ -43,18 +44,9 @@ export class NavDrawerComponent {
   private readonly layout = inject(LayoutService)
 
   readonly sessionProfile = this.userService.sessionProfile
-
-  constructor() {
-    // Close when a chat opens (state machine) — mode=over is a covering drawer, so leaving it open would
-    // occlude the chat the user just opened from the inline list. CRITICAL: `untracked` around close() —
-    // close() reads the sidenav() viewChild, and tracking it makes this effect re-run on every view change
-    // (and close() mutating the sidenav feeds the loop), which slams the drawer shut right after the user
-    // opens it. untracked limits tracking to chatThreadId only. (Replaces the old router NavigationEnd
-    // subscription: app nav no longer goes through the router.)
-    effect(() => {
-      if (this.nav.chatThreadId() !== undefined) untracked(() => this.close());
-    });
-  }
+  /** The drawer's open state — sourced from {@link NavStateMachineService} so hardware-back can close
+   *  the drawer. Bound two-way to the mat-sidenav (`[opened]` reads, `(openedChange)` writes). */
+  readonly drawerOpen = this.nav.drawerOpen
 
   /** Icon reflecting the current theme mode (predictable cycling affordance). */
   readonly themeIcon = computed<AppIconType>(() => {
@@ -70,8 +62,8 @@ export class NavDrawerComponent {
   /** Cycle theme without closing the drawer, so the change is visible and re-toggleable. */
   cycleTheme(): void { this.themeService.cycleMode(); }
 
-  toggle() { this.sidenav()?.toggle() }
-  close() { this.sidenav()?.close() }
+  toggle() { this.nav.toggleDrawer() }
+  close() { this.nav.closeDrawer() }
 
   editProfile() {
     this.close()

@@ -44,17 +44,18 @@ let nextAsideId = 0;
  * and calls {@link back}.
  *
  * Layered model: `chatThreadId` (base) ← `searchOpen` ← `aside` (a stack) ← `paneStack` (topmost last).
- * {@link back} peels one layer: topmost pane → one aside entry → search → chat → (home: returns `false`,
- * caller exits). The aside being a stack means a panel can drill into sub-pages and back pops one level.
+ * {@link back} peels one layer: topmost pane → one aside entry → search → chat → nav drawer → (home:
+ * returns `false`, caller exits). The aside being a stack means a panel can drill into sub-pages and back
+ * pops one level. The nav drawer is a home-screen overlay (only ever open at home) peeled last, before exit.
  *
  * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
  * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
  * with the mobile close-slide lag — the way it used to read the routed thread id). All other readers
  * (ChatPane, thread-list, peer-profile, group-info) are unchanged.
  *
- * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel AND the in-chat search field
- * are session-state, NOT mirrored — they aren't deep-linkable, and an `(aside:…)` URL segment would make
- * the router try to match an auxiliary outlet we no longer have.
+ * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel, the in-chat search field,
+ * AND the nav drawer are session-state, NOT mirrored — they aren't deep-linkable, and an `(aside:…)` URL
+ * segment would make the router try to match an auxiliary outlet we no longer have.
  */
 @Injectable({ providedIn: 'root' })
 export class NavStateMachineService {
@@ -73,6 +74,12 @@ export class NavStateMachineService {
    *  `aside`, NOT mirrored to the URL); {@link back} peels it before the chat so hardware-back exits
    *  search before leaving the thread. */
   readonly searchOpen = signal(false);
+  /** Whether the left nav drawer is open. A home-screen session-state overlay (NOT mirrored to the URL);
+   *  {@link back} peels it at the home level so hardware-back closes the drawer before exiting the app.
+   *  Owned here — not inside MatSidenav — precisely so `back()` can see it (the bug it fixes: back used to
+   *  skip the drawer and exit the app). The drawer's `[opened]` binding mirrors this signal two-way
+   *  (`(openedChange)` writes back), so backdrop-click and ESC closes stay in sync. */
+  readonly drawerOpen = signal(false);
   /** Transient pane stack (dialogs + overlays). Top = last entry. */
   readonly paneStack = signal<readonly PaneEntry[]>([]);
 
@@ -97,20 +104,22 @@ export class NavStateMachineService {
   // --- chat layer ---
   /** Open a chat thread. Closing a chat-scoped aside on a thread switch mirrors the old openChat (which
    *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
-   *  Also clears the pane stack and the in-chat search — a thread switch scopes away any open
-   *  dialog/overlay/search. */
+   *  Also clears the pane stack, the in-chat search, and the nav drawer — a thread switch scopes away any
+   *  open dialog/overlay/search/drawer. */
   openChat(threadId: number): void {
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
+    this.drawerOpen.set(false);
     this.chatThreadId.set(threadId);
   }
-  /** Leave the chat → home. Also closes the aside + search + clears the pane stack. */
+  /** Leave the chat → home. Also closes the aside + search + nav drawer + clears the pane stack. */
   closeChat(): void {
     this.closeAllPanes();
     this.chatThreadId.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
+    this.drawerOpen.set(false);
   }
 
   // --- aside layer ---
@@ -137,6 +146,11 @@ export class NavStateMachineService {
   closeSearch(): void {
     this.searchOpen.set(false);
   }
+
+  // --- nav drawer layer ---
+  openDrawer(): void { this.drawerOpen.set(true); }
+  closeDrawer(): void { this.drawerOpen.set(false); }
+  toggleDrawer(): void { this.drawerOpen.update((v) => !v); }
 
   // --- transient pane layer ---
   /** Push a pane; returns its id (pass to {@link closePane}). */
@@ -166,9 +180,9 @@ export class NavStateMachineService {
   }
 
   /**
-   * Peel one layer: topmost pane → aside → chat → home. Returns whether a layer was consumed.
-   * `false` (at home) means the mobile caller should exit the app; on desktop/PWA browser-back has
-   * already exited (history is flat).
+   * Peel one layer: topmost pane → aside → search → chat → nav drawer → home. Returns whether a layer was
+   * consumed. `false` (at home) means the mobile caller should exit the app; on desktop/PWA browser-back
+   * has already exited (history is flat).
    */
   back(): boolean {
     const stack = this.paneStack();
@@ -192,6 +206,12 @@ export class NavStateMachineService {
     }
     if (this.chatThreadId() !== undefined) {
       this.closeChat();
+      return true;
+    }
+    // The nav drawer is a home-screen overlay — it's only ever open at home (opening a chat/aside/dialog
+    // closes it first), so it's the last layer to peel before the app exits.
+    if (this.drawerOpen()) {
+      this.drawerOpen.set(false);
       return true;
     }
     return false;
