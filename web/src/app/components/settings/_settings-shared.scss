@@ -58,7 +58,9 @@
     color: var(--app-brand);
   }
 
-  // FCM status pill — green when a token was obtained (FCM available), muted otherwise.
+  // Status pill — semantic-color readout for a row (FCM available, connection state, health). The base
+  // is muted; modifiers tint it. active=green (success), warn=amber (in-progress / connecting), error=red
+  // (failure). All three draw on theme-aware tokens with dark overrides, so they stay legible in dark mode.
   .status-pill {
     flex: 0 0 auto;
     padding: 2px 8px;
@@ -73,9 +75,30 @@
       background: var(--app-success-soft);
       border-color: transparent;
     }
+    &.warn {
+      color: var(--app-warning);
+      // No dedicated -soft token for warning; derive a subtle wash over the surface (adapts to dark).
+      background: color-mix(in srgb, var(--app-warning) 14%, var(--app-surface));
+      border-color: transparent;
+    }
+    &.error {
+      color: var(--app-danger);
+      background: var(--app-danger-soft);
+      border-color: transparent;
+    }
   }
 
-  // Compact the Material text button in the FCM row so the trailing cluster stays tidy.
+  // Trailing cluster when a row has MORE than one trailing control (a status pill + an action button).
+  // Wrapped in a single <div matListItemMeta> so the whole group projects into the MDC list-item __end
+  // slot (multiple bare children would land in the primary content slot — the crooked-toggle bug).
+  .row-actions {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  // Compact the Material text button in an action row so the trailing cluster stays tidy.
   .check-btn {
     --mdc-text-button-label-text-size: 13px;
     min-height: 32px;

@@ -10,6 +10,7 @@ import { LanguageService } from '../../services/language.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
+import { WebsocketService } from '../../services/websocket.service';
 import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId } from './settings-categories';
 
 /** Drill-in slide for the sub-page, matching `overlaySlide`'s motion language in HomeShell (the same
@@ -56,6 +57,7 @@ export class SettingsComponent {
   private readonly mediaSize = inject(MediaSizeThresholdService);
   private readonly bgSync = inject(BackgroundSyncService);
   private readonly webPush = inject(WebPushService);
+  private readonly ws = inject(WebsocketService);
 
   /** The shared category registry (built once; the same array drives the desktop/tablet dialog too). */
   readonly categories = buildSettingsCategories({
@@ -64,6 +66,7 @@ export class SettingsComponent {
     mediaSize: this.mediaSize,
     bgSync: this.bgSync,
     webPush: this.webPush,
+    ws: this.ws,
     transloco: this.transloco,
   });
 

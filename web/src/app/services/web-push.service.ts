@@ -22,7 +22,9 @@ export class WebPushService {
   private readonly transloco = inject(TranslocoService);
   private readonly toast = inject(ToastService);
 
-  /** The endpoint currently registered with the backend (null = not subscribed). */
+  /** The endpoint currently registered with the backend for the OPTIONAL Web Push (closed-tab) path, or
+   *  null when not subscribed. Best-effort internal state — the Settings toggle does NOT reflect this; it
+   *  reflects the browser {@link permission}, which is all LOCAL notifications (the primary feature) need. */
   private registeredEndpoint: string | null = null;
 
   /** Current browser notification permission, or `'unsupported'` when the feature is inert on this
@@ -92,11 +94,17 @@ export class WebPushService {
     }
   }
 
-  /** User-clicked permission request (the Settings → Notifications toggle). Requests browser
-   *  notification permission — only meaningful from the `'default'` state, which is the only state the
-   *  toggle is clickable in — and, on grant, (re)subscribes Web Push so closed-tab delivery works too.
-   *  Returns the resulting permission. MUST be called from a click handler: modern browsers block
-   *  `Notification.requestPermission()` outside a user gesture (why {@link init} doesn't request). */
+  /** User-clicked permission request (the Settings → Notifications toggle). The toggle is about LOCAL
+   *  notifications: the instant the browser grants permission, {@link UnreadAttentionService} posts
+   *  `new Notification(...)` on every background NEW_MESSAGE — pure JS → system notification, with no
+   *  server, no VAPID, no subscription. That is the whole job, and it's complete the moment permission
+   *  is granted.
+   *
+   *  On grant we ALSO kick off server-side Web Push (the OPTIONAL closed-tab delivery path, which needs
+   *  VAPID configured) — best-effort and SILENT on failure. The common "VAPID not configured yet" case
+   *  must NOT read as "notifications broken", because local notifications already work without it. MUST
+   *  be called from a click handler: modern browsers block `Notification.requestPermission()` outside a
+   *  user gesture (why {@link init} doesn't request). */
   async enable(): Promise<NotificationPermission | 'unsupported'> {
     if (typeof Notification === 'undefined' || !window.isSecureContext) return 'unsupported';
     // The toggle is only clickable from 'default', but guard for direct callers anyway.
@@ -109,11 +117,8 @@ export class WebPushService {
       this.toast.warn(this.t('push.permissionDenied'));
       return perm;
     }
-    try {
-      await this.subscribeAndRegister();
-    } catch (e) {
-      /* toasted inside */
-    }
+    // Local notifications are live now. Best-effort Web Push for the closed-tab case — silent on failure.
+    void this.subscribeAndRegister();
     return perm;
   }
 
@@ -125,10 +130,12 @@ export class WebPushService {
     }
   }
 
-  /** Register the push SW → fetch VAPID key → subscribe → POST to /devices/register. Each failure
-   *  surfaces a specific translated toast + returns. Assumes permission is ALREADY `'granted'` (the
-   *  request lives in {@link enable}); no-ops when the browser lacks the Web Push surface (in-tab
-   *  Notification via UnreadAttentionService may still work without it). */
+  /** Register the push SW → fetch VAPID key → subscribe → POST to /devices/register. This is the
+   *  OPTIONAL closed-tab delivery path layered on top of local notifications. It is BEST-EFFORT and
+   *  SILENT: every failure (no SW/PushManager, SW registration error, VAPID not configured, subscribe
+   *  error, register HTTP error) just returns — local notifications (the primary feature) are unaffected,
+   *  and the common "VAPID not configured yet" deploy state must NOT surface a scary toast. Assumes
+   *  permission is ALREADY `'granted'` (requested in {@link enable}). */
   private async subscribeAndRegister(): Promise<void> {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
     if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
@@ -136,16 +143,13 @@ export class WebPushService {
     let reg: ServiceWorkerRegistration;
     try {
       reg = await navigator.serviceWorker.register('./push/sw-push.js', { scope: './push/' });
-    } catch (e) {
-      this.toast.warn(this.t('push.subscribeFailed'));
-      return;
+    } catch {
+      return; // SW registration failed — local notifications still work without Web Push.
     }
-    // 2. VAPID public key (single source of truth = backend env).
+    // 2. VAPID public key (single source of truth = the admin-configured keypair in SystemSetting).
+    //    Missing/unreachable = Web Push not available yet; bail silently (local notifications unaffected).
     const publicKey = await this.fetchVapidKey();
-    if (!publicKey) {
-      this.toast.warn(this.t('push.subscribeFailed'));
-      return;
-    }
+    if (!publicKey) return;
     // 3. Subscribe (re-use an existing subscription if one exists — idempotent).
     let sub: PushSubscription;
     try {
@@ -155,8 +159,7 @@ export class WebPushService {
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(publicKey),
         }));
-    } catch (e) {
-      this.toast.warn(this.t('push.subscribeFailed'));
+    } catch {
       return;
     }
     // 4. Register with the backend (idempotent upsert on endpoint).
@@ -170,17 +173,18 @@ export class WebPushService {
       })
       .subscribe({
         next: (r) => { if (r.code === 0) this.registeredEndpoint = sub.endpoint; },
-        error: () => this.toast.warn(this.t('push.subscribeFailed')),
+        error: () => { /* best-effort: a failed registration is retried or pruned on the next send */ },
       });
   }
 
+  /** Fetch the VAPID public key, or null when unavailable (endpoint unreachable, or no key configured). */
   private async fetchVapidKey(): Promise<string | null> {
     try {
       const res = await fetch(`${apiPrefix}/notifications/vapid-key`);
       const json = await res.json();
       const pk = json?.data?.publicKey;
       return typeof pk === 'string' && pk.length > 0 ? pk : null;
-    } catch (e) {
+    } catch {
       return null;
     }
   }

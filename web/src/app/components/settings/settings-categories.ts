@@ -6,6 +6,7 @@ import { LanguageService } from '../../services/language.service';
 import { MediaSizeThresholdService } from '../../services/media-size-threshold.service';
 import { BackgroundSyncService } from '../../services/background-sync.service';
 import { WebPushService } from '../../services/web-push.service';
+import { WebsocketService } from '../../services/websocket.service';
 import { isAndroid, isTauri } from '../../services/runtime';
 import { appVersion } from '../../version';
 import { SettingsAppearanceComponent } from './settings-appearance.component';
@@ -13,11 +14,19 @@ import { SettingsLanguageComponent } from './settings-language.component';
 import { SettingsMediaComponent } from './settings-media.component';
 import { SettingsPushComponent } from './settings-push.component';
 import { SettingsNotificationsComponent } from './settings-notifications.component';
+import { SettingsConnectionComponent } from './settings-connection.component';
 import { SettingsAboutComponent } from './settings-about.component';
 
 /** Identifiers for the Settings categories (drives the aside-stack `params.category` on mobile, and the
  *  local selection signal in the desktop/tablet dialog). */
-export type SettingsCategoryId = 'appearance' | 'language' | 'media' | 'push' | 'notifications' | 'about';
+export type SettingsCategoryId =
+  | 'appearance'
+  | 'language'
+  | 'media'
+  | 'connection'
+  | 'push'
+  | 'notifications'
+  | 'about';
 
 /**
  * One row on the Settings category list. `summary`/`visible` close over the injected preference services
@@ -46,6 +55,7 @@ export interface SettingsCategoryDeps {
   readonly mediaSize: MediaSizeThresholdService;
   readonly bgSync: BackgroundSyncService;
   readonly webPush: WebPushService;
+  readonly ws: WebsocketService;
   readonly transloco: TranslocoService;
 }
 
@@ -82,6 +92,18 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
     if (p === 'granted') return d.transloco.translate('settings.notifOn');
     if (p === 'unsupported') return d.transloco.translate('settings.notifUnavailable');
     return d.transloco.translate('settings.notifOff'); // 'default' | 'denied'
+  };
+  const connectionSummary = (): string => {
+    void d.language.lang();
+    const key =
+      d.ws.state() === 'open'
+        ? 'settings.connStatusOpen'
+        : d.ws.state() === 'connecting'
+          ? 'settings.connStatusConnecting'
+          : d.ws.state() === 'reconnecting'
+            ? 'settings.connStatusReconnecting'
+            : 'settings.connStatusClosed';
+    return d.transloco.translate(key);
   };
 
   return [
@@ -130,6 +152,18 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
       summary: notifSummary,
       component: SettingsNotificationsComponent,
       visible: () => !isTauri(),
+      order: 3,
+    },
+    {
+      // Diagnostics: realtime SSE connection state (+ retry) and a manual server health probe. Visible
+      // everywhere — every platform has a realtime stream to inspect. Sits after the push/notifications
+      // pair (same order, later in the array) and before About.
+      id: 'connection',
+      icon: AppIconType.SERVER,
+      titleKey: 'settings.connection',
+      summary: connectionSummary,
+      component: SettingsConnectionComponent,
+      visible: () => true,
       order: 3,
     },
     {

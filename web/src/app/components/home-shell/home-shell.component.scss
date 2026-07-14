@@ -13,6 +13,11 @@
   height: 100%;
   overflow: hidden;
   background: var(--app-bg);
+  /* NOTE: the gesture-bar inset is NOT applied here. Each bottom surface owns its own
+     --soms-safe-bottom so its background extends seamlessly under the Android gesture / navigation bar
+     (Material 3 edge-to-edge: the bar color continues under the system bar, no tonal strip). Padding
+     here would shrink the in-flow tablet .chat-slot and double-count with the input bar's own inset.
+     See .drawer-body (list), .aside-slot (panels), and the chat input bar (.ci-input-bar). */
   /* Single source for the app-header height — read by HomeHeaderComponent (its own height), a DOM
      descendant of .shell, so the var reaches it. The indicator chip no longer reads a derived var from
      here: indicators now live in <app-indicator-slot> at the HomeComponent layer (outside .shell) and are
@@ -33,6 +38,15 @@
 .aside-slot > :not(router-outlet) {
   flex: 1 1 auto;
   min-height: 0;
+}
+// The aside panel (peer-profile / group-info / settings) owns its gesture-bar inset itself: the slot
+// spans the full screen edge-to-edge (inset:0 / bottom:0 below) and this bottom padding pushes its
+// scrollable content above the system bar, while the slot's --app-surface background extends under the
+// bar (seamless, no tonal strip). .chat-slot does NOT get this — its input bar owns the inset instead
+// (see .ci-input-bar), and padding here would shrink the host and break the KbdOffsetDirective math.
+.aside-slot {
+  box-sizing: border-box;
+  padding-bottom: var(--soms-safe-bottom, 0px);
 }
 
 // ── desktop: icon-rail | list (resizable) | resizer | chat | aside(side panel) ──
@@ -158,6 +172,10 @@
     inset: 0;
     z-index: 30;
     background: var(--app-surface);
+    /* Full-screen edge-to-edge: the input bar (.ci-input-bar) owns the gesture-bar inset itself, so its
+       background extends seamlessly under the system bar. Clipping this slot to the inset (the old
+       approach) exposed .shell's --app-bg below the bar — a tonal seam in dark theme. The KbdOffsetDirective
+       host (.msg-container) still spans the full screen, so its offset math is unchanged. */
     /* Hidden/shown by the [@chatSlide] animation, NOT display:none↔flex (display is not animatable):
        mobile-closed = translate3d(100%,0,0) + visibility:hidden (off-screen right, the list shows through),
        mobile-open = in place. display stays flex (from the shared rule above) so the routed component lays
@@ -168,6 +186,8 @@
     inset: 0;
     z-index: 40;
     background: var(--app-surface);
+    /* Full-screen; the shared .aside-slot padding-bottom carries the gesture-bar inset so the panel's
+       scrollable content clears the bar while its background extends under it. */
     /* Same transform-driven show/hide as .chat-slot above: [@overlaySlide] slides this overlay in/out on
        mobile (over the chat at z-index 40); display stays flex so the routed panel lays out off-screen. */
   }
@@ -181,6 +201,11 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
+  /* Owns the thread list's gesture-bar inset: bottom padding lifts the scrolling list above the system
+     bar, and the list pane is transparent over --app-bg, so the padded strip blends seamlessly (no tonal
+     break). border-box keeps height:100% inclusive of the padding. 0 on desktop/browser. */
+  box-sizing: border-box;
+  padding-bottom: var(--soms-safe-bottom, 0px);
 }
 .drawer-body .header { flex: 0 0 auto; }
 .drawer-body .list { flex: 1 1 auto; min-height: 0; }

@@ -3,3 +3,11 @@
 .auth-shell {
   @include auth-shell;
 }
+
+// Tauri-only entry to the backend-URL config page — mirrors the login page's link (same rule). A
+// Material text button (<a mat-button>); M3 button styles own the look, here we only seat + center it
+// below the register form. Integer px per the CSS rule.
+.server-link {
+  align-self: center;
+  margin-top: 12px;
+}

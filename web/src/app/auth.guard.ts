@@ -3,6 +3,7 @@ import { CanActivateFn, RedirectCommand } from '@angular/router';
 import { Router } from '@angular/router';
 import { AuthService } from './services/auth.service';
 import { apiOriginIsLocalhost, isTauri } from './services/runtime';
+import { ServerConfigGateService } from './services/server-config-gate.service';
 
 // Auth-flow history contract: a logged-in user must NEVER be able to press Back from the app and land
 // on /auth/login or /auth/register. That is enforced structurally, not by reacting after the fact:
@@ -34,10 +35,12 @@ export const guestGuard: CanActivateFn = () => {
   }
   // Bundled-APK first run: if the backend origin is still the localhost build default it's unreachable
   // from a phone, so force the server-config page before showing a login form that can only fail. The
-  // reload that follows a save makes the persisted origin land here as non-localhost, so this gate
-  // drops away on every later run. No-op in the browser build (same-origin host, never localhost-gated
-  // because isTauri() is false).
-  if (isTauri() && apiOriginIsLocalhost()) {
+  // gate is latched once per boot via ServerConfigGateService.consumeOnce() — otherwise canceling back
+  // to /auth/login would re-trip this redirect forever (an inescapable loop). A full reload resets the
+  // latch and re-offers the page (correct: the app is unusable while unconfigured). After a Save the
+  // persisted origin lands here as non-localhost, so this gate drops away on every later run. No-op in
+  // the browser build (isTauri() is false).
+  if (isTauri() && apiOriginIsLocalhost() && inject(ServerConfigGateService).consumeOnce()) {
     return new RedirectCommand(router.parseUrl('/config'), { replaceUrl: true });
   }
   return true;

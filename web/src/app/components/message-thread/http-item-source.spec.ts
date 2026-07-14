@@ -20,6 +20,7 @@ import { MessageRepository } from '../../services/message-repository.service';
 import { UserService } from '../../services/user.service';
 import { WebsocketService } from '../../services/websocket.service';
 import type { ConversationItem, Message, User, StandardResponse } from '../../services/model';
+import type { MediaStatus } from '../message-cards/chat-item';
 
 /** A P2P ConversationItem fixture (only threadId is read by HttpItemSource). */
 function conv(threadId: number): ConversationItem {
@@ -54,11 +55,14 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
    *  liveSignal$. `onSignal` is captured. */
   function setup(dbResult: StandardResponse<Message[]>, tid = 42) {
     const liveSignal$ = new Subject<{ threadId: number; seq: number }>();
+    // The constructor also subscribes to repo.mediaStatusLive$ (a MEDIA_STATUS re-render signal); the stub
+    // must expose it or new HttpItemSource throws "Cannot read properties of undefined (reading 'pipe')".
+    const mediaStatusLive$ = new Subject<{ threadId: number; seq: number; status: MediaStatus }>();
     const queryMessages = jasmine.createSpy('queryMessages').and.resolveTo({
       data: dbResult.data ?? [],
       hasMore: dbResult.hasMore ?? false,
     });
-    const repo = { queryMessages, liveSignal$ } as unknown as MessageRepository;
+    const repo = { queryMessages, liveSignal$, mediaStatusLive$ } as unknown as MessageRepository;
     const users: User[] = [
       { id: 1, account: 'Me', name: 'Me', avatar: '', bio: '', isForeigner: false, domain: '', createdAt: 0, updatedAt: 0, isDeleted: false } as unknown as User,
       { id: 2, account: 'Alice', name: 'Alice', avatar: '', bio: '', isForeigner: false, domain: '', createdAt: 0, updatedAt: 0, isDeleted: false } as unknown as User,
@@ -69,7 +73,7 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     const ws = { reconnect$: new Subject<void>() } as unknown as WebsocketService;
     const signals = jasmine.createSpy('onSignal');
     const src = new HttpItemSource(conv(tid), 1, repo, userService, ws, { onSignal: signals });
-    return { src, repo, liveSignal$, signals };
+    return { src, repo, liveSignal$, mediaStatusLive$, signals };
   }
 
   it('liveSignal$ fires onSignal only for THIS thread (the repo already filtered NEW_MESSAGE)', () => {

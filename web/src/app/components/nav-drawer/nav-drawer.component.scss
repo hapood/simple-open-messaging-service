@@ -130,7 +130,11 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px;
+  /* Bottom padding carries the gesture / navigation bar inset (Android edge-to-edge) so the Settings
+     row + theme toggle sit above the system bar instead of under it. Adds to the base 8px; 0 on
+     desktop/browser (--soms-safe-bottom is 0 there). Growing the footer also lifts .drawer-menu's
+     scroll area end, so the last nav item clears the bar too. */
+  padding: 8px 8px calc(8px + var(--soms-safe-bottom, 0px));
   border-top: 1px solid var(--app-border);
 
   /* The Settings row reuses .nav-item's look but spans the footer: .nav-item's 0 8px margin would

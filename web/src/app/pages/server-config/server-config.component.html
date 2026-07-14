@@ -41,7 +41,6 @@
           (click)="testConnection()"
           [disabled]="testing() || saving() || urlControl.invalid"
         >
-          <app-icon [type]="AppIcon.REFRESH" [style]="{ width: '18px', height: '18px' }" />
           {{ 'serverConfig.testBtn' | transloco }}
         </button>
 

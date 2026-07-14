@@ -15,7 +15,15 @@ app-chat-input {
   display: flex;
   align-items: flex-end; // auto-grow multiline keeps the send key pinned to the bottom
   gap: 8px;
-  padding: 8px 12px;
+  // Bottom padding cushions content above whichever system occlusion is taller — the Android gesture /
+  // navigation bar (closed) OR the soft keyboard (open) — so the bar's own --app-bg-muted background
+  // extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal strip). The bar STAYS
+  // anchored to the screen edge and grows upward by this padding; the keyboard region is hidden behind
+  // the keyboard, so there is no gap. --kbd-lift is set by the production host (friend-message) from
+  // KbdOffsetDirective.offset(); absent (playground) → 0, and --soms-safe-bottom is 0 on desktop/browser,
+  // so this resolves to the base 8px there. The directive's offset calc is untouched (msg-container
+  // clientHeight is unchanged — only the consumption changed from margin to padding).
+  padding: 8px 12px calc(8px + max(var(--soms-safe-bottom, 0px), var(--kbd-lift, 0px)));
   background: var(--app-bg-muted);
   border-top: 1px solid var(--app-border);
 }

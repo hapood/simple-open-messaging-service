@@ -79,10 +79,12 @@ export class MessageThreadComponent implements OnDestroy {
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
-  /** Soft-keyboard occlusion height (from the KbdOffsetDirective on `.msg-container`). Bound as the
-   *  input bar's margin-bottom so the flex column turns it into a bottom inset and the viewport
-   *  (flex:1) shrinks to match — the kernel re-pins to a correct bottom. Public so the template can
-   *  read `kbdOffset()?.offset()` (private members are not template-accessible under strict templates). */
+  /** Soft-keyboard occlusion height (from the KbdOffsetDirective on `.msg-container`). Exposed to the
+   *  template as the `--kbd-lift` CSS var on <app-chat-input>; `.ci-input-bar` folds it into its bottom
+   *  padding as `max(--soms-safe-bottom, --kbd-lift)` so the bar's own background extends seamlessly
+   *  under whichever is taller (gesture bar closed / keyboard open) — see chat-input.component.scss. The
+   *  viewport (flex:1) shrinks to match and the kernel re-pins. Public so the template can read
+   *  `kbdOffset()?.offset()` (private members are not template-accessible under strict templates). */
   readonly kbdOffset = viewChild(KbdOffsetDirective);
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);

@@ -71,16 +71,19 @@
   width: 100%;
 }
 
-// Test-button + status pill row.
+// Test-button + status pill row. nowrap keeps the pill on the button's line: it extends/retracts in
+// WIDTH as it appears/disappears/mid-test, so the row height stays constant (no card-height flicker).
+// The button never shrinks; the pill shrinks + ellipsizes if a long version string would overflow.
 .sc-test {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 10px;
   margin-top: 4px;
 }
 
 .sc-test-btn {
+  flex: 0 0 auto;
   // Compact the stroked button so the row stays tidy next to the pill.
   --mdc-outlined-button-container-height: 36px;
 }
@@ -92,14 +95,22 @@
   gap: 6px;
   padding: 0 10px;
   height: 28px;
+  flex: 1 1 auto;
+  min-width: 0;
   border-radius: var(--app-radius-pill);
   font-size: 13px;
   line-height: 18px;
   border: 1px solid transparent;
-  // The pill sits beside the button in a 380px card; the status text must never wrap to a
-  // second line (a long message pushed the row past the card edge). Kept single-line by the
-  // shortened i18n strings; nowrap is the guarantee.
+  // The pill shares the button's line in a 380px card (see .sc-test). It shrinks so a long version
+  // string ellipsizes instead of overflowing; the text never wraps (white-space: nowrap below).
   white-space: nowrap;
+
+  // The status text is the shrinkable flex child — let it ellipsize, never push the row wider.
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   &.sc-status-testing {
     color: var(--app-text-muted);

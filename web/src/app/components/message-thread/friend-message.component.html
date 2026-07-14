@@ -96,7 +96,7 @@
     } @else {
       <app-chat-input
         [members]="[]"
-        [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
+        [style.--kbd-lift]="(kbdOffset()?.offset() ?? 0) + 'px'"
         (send)="onSendIntent($event)"
       ></app-chat-input>
     }

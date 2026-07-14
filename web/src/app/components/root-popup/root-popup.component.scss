@@ -3,6 +3,14 @@
   width: 100%;
   height: 100%;
   position: absolute;
+  /* Mobile/tablet sheets are full-screen (height:100% of the 100vh backdrop), so their footer/action
+     buttons would sit under the Android gesture / navigation bar. Reserve the inset here once — every
+     dialog's internal flex column (header + scroll body + footer) fills the wrapper's content box, so the
+     footer lifts above the system bar. border-box keeps height:100% inclusive of the padding (no overflow
+     past the 100vh backdrop). The desktop centered card overrides height to auto with max-height:80vh, and
+     --soms-safe-bottom is 0 there anyway, so this is a no-op on desktop. */
+  box-sizing: border-box;
+  padding-bottom: var(--soms-safe-bottom, 0px);
 }
 
 // desktop: centered modal card on the backdrop instead of a full-screen overlay

@@ -7,7 +7,6 @@ import {
   ValidationErrors,
   Validators,
 } from '@angular/forms';
-import { Router } from '@angular/router';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -17,14 +16,15 @@ import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import { RouteService, RoutePage } from '../../services/route.service';
 import { apiOrigin, setApiOrigin } from '../../services/runtime';
 
 /**
  * Bundled-APK backend-URL configuration (Tauri/Android only — the route is `canMatch`-gated on
  * `isTauri()`). A phone running the APK can't reach the `http://localhost:3000` build default, so the
  * user sets the real backend origin here. The value is persisted Rust-side (app-data config file) and
- * re-injected before Angular boots on the next launch; after save we hard-reload so `apiOrigin`
- * (captured once at module load) and every derived apiPrefix/sseUrl/media URL re-resolve.
+ * re-injected before Angular boots on the next launch; after save we full-load to /auth/login so
+ * `apiOrigin` (captured once at module load) and every derived apiPrefix/sseUrl/media URL re-resolve.
  *
  * First-run gating: `guestGuard` redirects here when `isTauri() && apiOriginIsLocalhost()` (no server
  * configured yet). Reachable later from the login page's "Server settings" Material button.
@@ -65,7 +65,7 @@ function urlValidator(control: AbstractControl): ValidationErrors | null {
   styleUrl: './server-config.component.scss',
 })
 export class ServerConfigComponent {
-  private readonly router = inject(Router);
+  private readonly routeService = inject(RouteService);
   private readonly destroyRef = inject(DestroyRef);
 
   readonly AppIcon = AppIconType;
@@ -188,18 +188,25 @@ export class ServerConfigComponent {
       // back here — the "Save loops back to /config" symptom. localStorage is the webview's concern, so
       // it lives here in JS; Rust owns the file + proxy.
       try { localStorage.setItem('__soms_api_origin__', normalized); } catch { /* private mode */ }
-      // Rust persisted + updated the proxy. Reload so module-load constants re-resolve to the new origin.
-      location.reload();
+      // Rust persisted + updated the proxy. Full-load to /auth/login (not a bare reload, which would
+      // re-render /config — the "Save flashes and stays here" symptom): the init script re-reads the
+      // stashed origin so the module-load apiOrigin/apiPrefix/sseUrl re-resolve to the new host, and we
+      // land on login (origin is now non-localhost, so guestGuard lets it through). replace — not
+      // assign — keeps /config out of the history stack (auth-flow history contract).
+      location.replace('/auth/login');
     } catch (e) {
       this.saving.set(false);
       this.saveError.set(e instanceof Error ? e.message : String(e));
     }
   }
 
-  /** Back to login. If the origin is still the localhost default, guestGuard bounces back here — which
-   *  is the correct behavior (you can't log in without a reachable server). */
+  /** Back to login via the canonical nav helper (RouteService.redirect uses replaceUrl, like
+   *  login-success and logout — so the login↔config toggle never grows the history stack → no Android
+   *  hardware-back trap). The first-run nudge is latched once per boot (ServerConfigGateService), so
+   *  this reaches login instead of bouncing back to /config. If the origin is still unconfigured, login
+   *  just fails to reach the server — the user returns here via the login page's "Server settings" link. */
   cancel(): void {
-    this.router.navigate(['/auth/login']);
+    this.routeService.redirect(RoutePage.AUTH_LOGIN);
   }
 
   /** fetch with a hard timeout via AbortController. Rejects on timeout or network error. */

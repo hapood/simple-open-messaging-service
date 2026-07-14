@@ -367,12 +367,15 @@
     "dismiss": "Later"
   },
   "push": {
-    "permissionDenied": "Notifications are blocked — you'll only receive messages while the app is open.",
-    "subscribeFailed": "Couldn't enable push notifications."
+    "permissionDenied": "Notifications are blocked — you'll only receive messages while the app is open."
   },
   "notif": {
     "missedOne": "{{name}} sent you new messages while you were away",
-    "missedMany": "You have new messages in {{count}} conversations"
+    "missedMany": "You have new messages in {{count}} conversations",
+    "one": "{{name}} sent you a message while you were away",
+    "many": "{{name}} sent you {{count}} messages while you were away",
+    "two": "{{a}} and {{b}} sent you {{count}} messages while you were away",
+    "manyConv": "{{a}}, {{b}} and others sent you {{count}} messages while you were away"
   },
   "settings": {
     "title": "Settings",
@@ -392,6 +395,27 @@
     "notifOn": "On",
     "notifOff": "Off",
     "notifUnavailable": "Unavailable",
+    "notifDesktop": "Show desktop alerts",
+    "notifDesktopDesc": "Pop up a system notification when a new message arrives while this tab is in the background.",
+    "notifSound": "Sound",
+    "notifSoundDesc": "Play the system sound when a notification appears.",
+    "connection": "Connection",
+    "realtimeConnection": "Realtime connection",
+    "realtimeDesc": "The persistent server stream that delivers live messages.",
+    "connStatusOpen": "Connected",
+    "connStatusConnecting": "Connecting",
+    "connStatusReconnecting": "Reconnecting",
+    "connStatusClosed": "Disconnected",
+    "retry": "Retry",
+    "serverHealth": "Server health",
+    "healthDesc": "Probe the server's liveness endpoint (no sign-in needed).",
+    "healthIdle": "Not checked",
+    "healthOkShort": "OK",
+    "healthFailShort": "Failed",
+    "healthCheck": "Check",
+    "healthChecking": "Checking…",
+    "healthOkDetail": "Reachable · v{{version}} · {{ms}} ms",
+    "healthFailDetail": "Unreachable: {{error}}",
     "fcm": "FCM push",
     "fcmActive": "Active",
     "fcmUnavailable": "Unavailable (no Google services)",
@@ -423,7 +447,7 @@
     "urlLabel": "Backend URL",
     "placeholder": "http://192.168.1.10:3000",
     "urlInvalid": "Enter a full URL, e.g. http://192.168.1.10:3000 or https://api.example.com",
-    "testBtn": "Test connection",
+    "testBtn": "Test",
     "testing": "Testing…",
     "save": "Save",
     "saving": "Saving…",

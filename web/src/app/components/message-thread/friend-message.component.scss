@@ -91,7 +91,10 @@ app-chat-input {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0 16px;
+  // Bottom padding carries the gesture-bar inset so the tap target clears the system bar; content-box
+  // height:48px keeps the centered text whole while the --app-hover background extends under the bar
+  // (seamless, mirroring .ci-input-bar). No keyboard in the blocked state, so a static inset suffices.
+  padding: 0 16px var(--soms-safe-bottom, 0px);
   background: var(--app-hover);
   color: var(--app-text);
   font-size: 13px;

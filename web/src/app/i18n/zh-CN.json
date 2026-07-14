@@ -367,12 +367,15 @@
     "dismiss": "稍后"
   },
   "push": {
-    "permissionDenied": "通知权限被拒绝——仅 app 打开时能收到消息。",
-    "subscribeFailed": "推送通知启用失败。"
+    "permissionDenied": "通知权限被拒绝——仅 app 打开时能收到消息。"
   },
   "notif": {
     "missedOne": "你离开时 {{name}} 给你发了新消息",
-    "missedMany": "你有 {{count}} 个会话的新消息"
+    "missedMany": "你有 {{count}} 个会话的新消息",
+    "one": "{{name}} 在你离开时给你发送了 1 条消息",
+    "many": "{{name}} 在你离开时给你发送了 {{count}} 条消息",
+    "two": "{{a}}、{{b}} 在你离开时给你发送了 {{count}} 条消息",
+    "manyConv": "{{a}}、{{b}} 等 {{n}} 个会话在你离开时给你发送了 {{count}} 条消息"
   },
   "settings": {
     "title": "设置",
@@ -392,6 +395,27 @@
     "notifOn": "开",
     "notifOff": "关",
     "notifUnavailable": "不可用",
+    "notifDesktop": "桌面通知弹窗",
+    "notifDesktopDesc": "标签页在后台时，新消息弹出系统通知。",
+    "notifSound": "提示音",
+    "notifSoundDesc": "通知出现时播放系统提示音。",
+    "connection": "连接",
+    "realtimeConnection": "实时连接",
+    "realtimeDesc": "持续接收实时消息的服务器连接。",
+    "connStatusOpen": "已连接",
+    "connStatusConnecting": "连接中",
+    "connStatusReconnecting": "重连中",
+    "connStatusClosed": "未连接",
+    "retry": "重连",
+    "serverHealth": "服务器健康",
+    "healthDesc": "探测服务器存活接口（无需登录）。",
+    "healthIdle": "未检测",
+    "healthOkShort": "正常",
+    "healthFailShort": "异常",
+    "healthCheck": "检测",
+    "healthChecking": "检测中…",
+    "healthOkDetail": "可达 · v{{version}} · {{ms}} ms",
+    "healthFailDetail": "不可达：{{error}}",
     "fcm": "FCM 推送",
     "fcmActive": "已启用",
     "fcmUnavailable": "不可用（无 Google 服务）",
@@ -423,7 +447,7 @@
     "urlLabel": "后端地址",
     "placeholder": "http://192.168.1.10:3000",
     "urlInvalid": "请输入完整地址，如 http://192.168.1.10:3000 或 https://api.example.com",
-    "testBtn": "测试连接",
+    "testBtn": "测试",
     "testing": "测试中…",
     "save": "保存",
     "saving": "保存中…",
