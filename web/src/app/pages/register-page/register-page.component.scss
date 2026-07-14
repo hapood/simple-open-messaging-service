@@ -11,3 +11,10 @@
   align-self: center;
   margin-top: 12px;
 }
+
+// See login-page.component.scss: <app-icon matButtonIcon> seats the gear in the button's leading-icon
+// slot (a flex child, geometrically centered), and Material's icon-spacing rule — which keys off
+// .mat-icon — must be mirrored for our custom host.
+.server-link app-icon {
+  margin-right: var(--mat-button-text-icon-spacing, 8px);
+}

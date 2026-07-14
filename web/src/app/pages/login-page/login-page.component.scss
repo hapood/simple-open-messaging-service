@@ -11,3 +11,12 @@
   align-self: center;
   margin-top: 12px;
 }
+
+// <app-icon matButtonIcon> seats the gear in the button's leading-icon projection slot, making it a
+// direct flex child of the button — so Material centers it geometrically (align-items: center) rather
+// than baseline-fudging it inside .mdc-button__label. Material's own icon *spacing*, though, keys off
+// .mat-icon and so doesn't fire for our custom host; mirror its spacing token so the glyph isn't flush
+// against the label.
+.server-link app-icon {
+  margin-right: var(--mat-button-text-icon-spacing, 8px);
+}

@@ -5,7 +5,7 @@
     <app-login (onSuccess)="onSuccess()"></app-login>
     @if (isTauri()) {
       <a mat-button class="server-link" routerLink="/config" replaceUrl>
-        <app-icon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+        <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
         {{ 'serverConfig.entry' | transloco }}
       </a>
     }
