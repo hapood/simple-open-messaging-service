@@ -1,9 +1,14 @@
-# FCM Android patch (re-apply after `tauri android init`)
+# FCM Android native side (reference)
 
-`src-tauri/gen/` is gitignored — `tauri android init` generates the Android project on demand, and these
-native-side Firebase modifications are NOT recovered from a fresh checkout. This file is the source of
-truth. Re-apply all changes below after regenerating the Android project (or when bumping the Tauri
-version). The browser/backend builds are unaffected.
+> **Status (2026-07):** `gen/android/` is now **version-controlled** (Tauri's default — only
+> `gen/schemas` is gitignored). All patches below are committed in-tree, so they survive a fresh clone
+> and **no longer need re-applying** after `tauri android init`. This file is now a *reference* for what
+> the native side contains and the invariants that must hold — not a re-apply runbook. The "re-apply"
+> guidance below applies only if you deliberately regenerate `gen/android` (e.g. a Tauri major bump).
+
+Historically `gen/` was fully gitignored and `tauri android init` regenerated the Android project on
+demand, losing these native-side modifications — hence the original "re-apply" framing. The
+browser/backend builds are unaffected by all of the below.
 
 The edits live in four persistent (non-`generated/`) files plus two new Kotlin files. **Never** edit
 anything under `gen/android/app/src/main/java/com/soms/client/generated/` or any `tauri.*.gradle.kts`
@@ -134,28 +139,45 @@ way (the on-disk files are canonical, these are the rules that must hold):
   latestMessageId = mid.takeIf { obj.has("latestMessageId") && !obj.isNull("latestMessageId") && mid.isNotEmpty() },
   ```
 
+- **`MainActivity.fetchFcmToken` MUST guard the Firebase call** when the `google-services` plugin is off
+  (the "TEMPORARILY OFF" build). Without the plugin + `google-services.json`, the default `FirebaseApp` is
+  never auto-initialized, so the bare `FirebaseMessaging.getInstance()` call throws
+  `IllegalStateException: Default FirebaseApp is not initialized` from `onCreate → maybeFetchFcmToken →
+  fetchFcmToken` and the app crashes instantly on launch (verified via `adb logcat` on the x86_64
+  emulator). The guard is the single line below; it makes the build push-optional (runs without FCM) and
+  is a no-op once Firebase is enabled. `SomsMessagingService` needs no guard — the system only invokes it
+  on a real FCM event, which can't fire without an initialized FirebaseApp.
+  ```kotlin
+  private fun fetchFcmToken() {
+      if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) return  // push-optional guard
+      FirebaseMessaging.getInstance().token.addOnCompleteListener { … }
+  }
+  ```
+
 ## Release signing (optional — needed only to install a *release* APK)
 
-`make apk` produces `app-universal-release-unsigned.apk` by default; Android won't install an
-unsigned build. For a quick installable test build, build debug instead (`--debug`, auto-signed by
-the Android debug keystore — no setup). For a signed *release* build, wire a signing config:
+The signing config is **already wired** in `gen/android/app/build.gradle.kts`: it loads
+`keystore.properties` when present and applies a `signingConfigs.release` to the release build type
+(absent file → unsigned release, which Android won't install). Debug builds auto-sign with the stable
+debug keystore the Makefile generates (see README §Android build). To produce an installable **release**
+APK, provide the two secret files (both gitignored):
 
-1. Generate a keystore (do this once; keep the file + passwords safe — it is your signing identity):
+1. Generate the release keystore once (keep it + the passwords safe — it is your signing identity):
    ```
    keytool -genkeypair -keystore src-tauri/gen/android/app/soms-release.keystore \
      -alias soms -keyalg RSA -keysize 2048 -validity 10000 \
      -storepass <STOREPASS> -keypass <KEYPASS> -dname "CN=SOMS, O=SOMS"
    ```
-2. `src-tauri/gen/android/keystore.properties` (gitignored — secrets):
+2. `src-tauri/gen/android/keystore.properties`:
    ```
    storeFile=app/soms-release.keystore
    storePassword=<STOREPASS>
    keyAlias=soms
    keyPassword=<KEYPASS>
    ```
-3. In `gen/android/app/build.gradle.kts`, load `keystore.properties` and add a `signingConfigs.release`
-   pointed at it, then set `buildTypes.release.signingConfig = signingConfigs.release`. Load guards on
-   the file's presence so unsigned builds still work when it's absent.
+
+Both files are secrets — back them up out-of-band; a fresh clone needs them restored before a signed
+release build.
 
 ## IPC contract (webview ↔ Kotlin)
 
@@ -194,3 +216,90 @@ Hardware-back is routed to the web nav state machine (`NavStateMachineService`),
 JS registers `window.__SOMS_BACK__` at boot (`AppComponent`, gated `isTauri() && isAndroid()`): it calls
 `nav.back()`; if that returns `false` (at home), it calls `window.SomsBack.exit()`. Desktop/browser have no
 native back — history is flat, so browser-back exits there.
+
+## Safe-area inset bridge (status bar / gesture bar)
+
+Android WebView is drawn edge-to-edge (`enableEdgeToEdge()` in `MainActivity.onCreate`), so the system
+status bar overlays the top of the web content. `env(safe-area-inset-top)` returns **0** in Android
+WebView (it forwards cutout insets, not the status bar), so the web layer can't learn the inset from CSS
+alone. The native shell measures it and injects it.
+
+| Direction | Carrier | Mechanism |
+|---|---|---|
+| JS → Kotlin (read insets) | `@JavascriptInterface` named `SomsShell` (`getSafeInsets()`), attached in `onWebViewCreate` | Same `@JavascriptInterface` pattern as `SomsFcm`/`SomsBack` |
+| Kotlin → JS (inset change, e.g. rotation) | `WebView.evaluateJavascript` setting `--soms-safe-top`/`--soms-safe-bottom` on `:root` | Same `evaluateJavascript` pattern as the token/deep-link emissions |
+
+- `MainActivity.installInsetsListener()` (called from `onCreate`) registers a
+  `ViewCompat.setOnApplyWindowInsetsListener` on `android.R.id.content`. It reads
+  `WindowInsetsCompat.Type.statusBars().top` + `navigationBars().bottom` (device px), divides by
+  `resources.displayMetrics.density` → integer CSS px, and stores them in `@Volatile` fields
+  (`safeInsetTopCss` / `safeInsetBottomCss`). Per-device — never a hardcoded constant (Huawei =
+  80dp ÷ 2.5 = 32px; other devices differ).
+- The listener fires on the first layout pass (~1 frame after attach, well before the page finishes
+  loading) and on every inset change (rotation).
+- `SomsShell.getSafeInsets()` returns JSON `{"top":int,"bottom":int}`. The web app reads it in
+  `main.ts` **before `bootstrapApplication()`** (`applySafeInsets()` in `services/runtime.ts`) and sets
+  `--soms-safe-top`/`--soms-safe-bottom` on `:root` — so the first Angular paint already has the inset
+  (FOUC-free). The listener's `evaluateJavascript` covers later changes (rotation) without a reload.
+- CSS default (`web/src/app/assets/_tokens.scss`): `--soms-safe-top: env(safe-area-inset-top, 0px)` —
+  correct for the browser/iOS-PWA build (which forward `env()`), so no native bridge is needed there.
+  Consumed by the auth shell (`assets/utils.scss`) and the app shell to pad content below the status bar.
+
+## 8. Dev-tools floating overlay (debug only)
+
+A draggable floating button + native dialog for the on-device frontend dev loop: load a frontend dev
+server, refresh the page, revert to the bundled app. Not FCM-related, but it lives in the same
+gitignored `gen/android` tree, so it is re-applied here. Debug-only — release APKs never show it (the
+`BuildConfig.DEBUG` gate + R8 stripping the then-unused classes under `isMinifyEnabled`).
+
+### New Kotlin files in `com.soms.client`
+
+- `DevToolsBubble.kt` — an `ImageView` added to `android.R.id.content` (after the webview, so it draws
+  on top), no `SYSTEM_ALERT_WINDOW` permission (it lives in our own window). Drag repositions it
+  (clamped to its parent); a tap opens `DevToolsDialog`.
+- `DevToolsDialog.kt` — a framework `AlertDialog` (no Material dep). Owns the persisted `dev_url` file
+  (data-dir root `dev_url`) and drives the live webview via `SomsBridge.eval` (no Rust commands, no JS bridge):
+    - Connect → validate http(s) → write `dev_url` → `location.replace(url)` (immediate; persists for
+      next launch).
+    - Reload → `location.reload()` (the dialog stays open — repeatable).
+    - Revert → delete `dev_url` → `Process.killProcess` (relaunch → Rust re-resolves to the bundle).
+
+### New drawables (`res/drawable/`)
+
+- `dev_bubble_bg.xml` — translucent circular background for the bubble.
+- `ic_dev_tools.xml` — Material "build" (wrench) glyph, white.
+
+### `MainActivity.kt` wiring
+
+- `import android.view.View` + `import android.view.ViewGroup`.
+- In `onWebViewCreate`, after the deep-link consume block: `if (BuildConfig.DEBUG) attachDevToolsBubble()`
+  — called after the webview is added so the bubble draws on top of it.
+- `attachDevToolsBubble()`: `findViewById<ViewGroup>(android.R.id.content)`, tag-guarded against
+  double-add on activity recreate, `DevToolsBubble(this) { DevToolsDialog(this).show() }`, positioned at
+  (16dp, 80dp), `content.addView(bubble)`.
+- `companion object`: `private const val DEV_BUBBLE_TAG = "soms_dev_bubble"`.
+
+### Rust contract (`src-tauri/src/lib.rs` — NOT gitignored, persists across `tauri android init`)
+
+`const DEV_URL_FILENAME: &str = "dev_url"` (must match Kotlin's `DevToolsDialog.DEV_URL_FILENAME`). At
+boot, in debug builds only, the webview URL resolves in this precedence: persisted `dev_url` file →
+`SOMS_DEV_URL` env → `option_env!("SOMS_DEFAULT_DEV_URL")` (compiled-in default) → desktop `devUrl` →
+bundled `index.html`. Release always bundles (the whole branch is `cfg!(debug_assertions)`-gated — a
+runtime-remote frontend would be an arbitrary-code-execution surface). No Rust commands: the dialog
+acts on the webview directly via `SomsBridge.eval`.
+
+### Path invariant
+
+The persisted file is the app's data-dir ROOT `dev_url` — Rust reads `app_data_dir()/dev_url`
+(`src-tauri/src/lib.rs`), which on Android is `/data/data/com.soms.client/` (the root, where
+`api_origin` also lives); Kotlin writes the same root via `Context.dataDir` (`DevToolsDialog.kt`).
+(Earlier this used `filesDir` = `.../files/`, a different directory Rust never reads — a Connect'd URL
+did not persist. `dataDir` == `app_data_dir()` root fixes it.) Verify on the device:
+`adb shell run-as com.soms.client ls -l dev_url`.
+
+### Makefile (`src-tauri/Makefile` — NOT gitignored)
+
+`make apk-dev ABI=aarch64 DEV_URL=http://host:port` — a debug build that bakes the URL via
+`docker -e SOMS_DEFAULT_DEV_URL=..` (Rust `option_env!` reads it at compile time), output
+`soms-<ver>-dev-<abi>.apk`. The dev server must be reachable from the device:
+`npm --prefix web run start -- --host 0.0.0.0`.

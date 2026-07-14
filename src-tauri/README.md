@@ -12,19 +12,48 @@ remote backend over the network instead of being served same-origin by NestJS.
 | `/uploads/*` media auth | A `media://localhost` custom URI scheme registered in `src/lib.rs` proxies to `${SOMS_API_ORIGIN}/uploads/*`, injecting `Authorization: Bearer`. The frontend rewrites bare `/uploads/...` URLs to `media://localhost/...` via `assetUrl()` (browser path unchanged). Bare `<img src>`/CSS `url()` can't set headers and the `media_token` cookie is `SameSite=Strict` (no cross-origin), so the proxy is the only correct path. |
 | Token handoff | The frontend calls `window.__TAURI__.core.invoke('set_access_token', { token })` on login/renew and `clear_access_token` on logout (see `AuthService`). Stored in `ProxyState` for the proxy. |
 
-## Build host requirements (NOT satisfiable on Kylin V10 SP1)
+## Android build (primary client target)
 
-Tauri v2 needs **`libwebkit2gtk-4.1`**, which only ships on Ubuntu 22.04+ / Kylin V10 SP2 / macOS /
-Windows. The Kylin V10 SP1 dev box (20.04-based) only has `4.0`, so the binary must be built on a
-22.04+ host. The system-deps install script lives at `../scripts/install-tauri-deps.sh` (proxy
-baked in); run it on the build host:
+The Android APK is built via `src-tauri/Makefile` (docker-based, Linux host). Run `make help` for the
+full surface; the build-type taxonomy (all land in `dist/android/`):
 
-```bash
-sudo bash ../scripts/install-tauri-deps.sh   # prints whether 4.1 (v2 OK) or 4.0 (need newer OS)
-```
+| Command | Output |
+|---|---|
+| `make apk` | release APKs → `dist/android/soms-<ver>-<abi>.apk` (release-signed when `keystore.properties` present) |
+| `make apk-debug` | debug APKs (stable debug key, no minify — fastest iteration) |
+| `make apk-dev DEV_URL=http://host:4200` | debug APK loading a frontend dev server at runtime |
+| `make install` / `make run` | `adb install -r` (+ launch) the newest APK |
 
-Plus the Rust toolchain (`rustup` or `conda install -n easy-chart -c conda-forge rust`) and the
-Tauri CLI: `cargo install tauri-cli --version "^2"`.
+Artifacts land under `dist/<platform>/` (`dist/android/` now; `dist/{linux,windows,macos}/` slot in
+when desktop lands). The builder image (`make image`, one-time ~20 min) bakes the JDK / Android SDK /
+NDK / Rust toolchain + pre-fetched crates, so warm `make apk*` runs need no network.
+
+### `gen/android` is tracked; signing keys are secrets
+
+`gen/android/` — the customized Android Studio project (FCM, Kotlin bridges, the dev shell, signing
+config) — **is version-controlled** (Tauri's default; only `gen/schemas` is gitignored), so a fresh
+clone builds without `tauri android init`. **Signing keys are NOT committed** (gitignored in-tree via
+`gen/android/.gitignore`):
+
+- **Debug** keystore auto-generates on first `make apk-debug` (stable across rebuilds → `adb install -r`
+  works; a one-time uninstall is needed only when the debug key changes).
+- **Release** keystore + `gen/android/keystore.properties` are **secrets** — back them up out-of-band
+  and restore them to `gen/android/` on a fresh clone.
+
+See `FCM_ANDROID_PATCH.md` for the native-side (FCM, bridges, dev shell) details.
+
+## Desktop build host requirements (future — not wired today)
+
+> Desktop bundles (Linux deb/appimage, Windows msi/exe, macOS dmg) are **future** work — they need a
+> native host and are not yet orchestrated (the `Makefile` covers Android only). The requirements below
+> are for when that lands; the industry-standard path is a `tauri-apps/tauri-action` CI matrix because
+> macOS/Windows can't be cross-built on Linux.
+
+Tauri v2 desktop needs **`libwebkit2gtk-4.1`** (Ubuntu 22.04+ / Kylin V10 SP2 / macOS / Windows). The
+Kylin V10 SP1 dev box (20.04-based) only has `4.0`, so a Linux desktop build must run on a 22.04+ host.
+Install the system deps there (`libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`,
+`libayatana-appindicator3-dev`), plus the Rust toolchain and Tauri CLI
+(`cargo install tauri-cli --version "^2"`).
 
 ### China mirror / proxy (cargo)
 

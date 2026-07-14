@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Simplified Chinese (mainland China). Android auto-selects between values/ and values-zh-rCN/ by
+     device locale, so SomsMessagingService / MessageSyncService resolve strings via
+     ctx.getString(R.string.notif_*) with no explicit language branching. String VALUES mirror the web
+     zh-CN.json notif.* for cross-surface consistency (the values themselves stay Chinese by design —
+     this is the zh-rCN locale file; only this comment is English per the project's English-comment rule). -->
+<resources>
+    <string name="app_name">"SOMS"</string>
+    <string name="main_activity_title">"SOMS"</string>
+    <string name="notif_missed_coalesced">"你离开时 %1$s 给你发了消息"</string>
+    <string name="notif_fgs_running">"正在后台运行"</string>
+</resources>

@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">"SOMS"</string>
+    <string name="main_activity_title">"SOMS"</string>
+    <!-- Coalesced "away" notification — ONE notification (stable id, updated in place) listing every
+         sender who messaged the user while they were away. %1$s is the pre-joined sender names (e.g.
+         "Alice, Bob +2"); the Kotlin side composes + caps the list. Wording mirrored in the web i18n
+         (web/src/app/i18n/{en,zh-CN}.json notif.*) for cross-surface consistency. -->
+    <string name="notif_missed_coalesced">"%1$s sent you messages while you were away"</string>
+    <!-- Foreground-service persistent notification (FGS-required, IMPORTANCE_LOW). -->
+    <string name="notif_fgs_running">"Running in background"</string>
+</resources>

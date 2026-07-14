@@ -32,6 +32,12 @@ const DEFAULT_API_ORIGIN: &str = "http://localhost:3000";
 /// one string). Read at boot to override the env/default; written by `set_api_origin`.
 const CONFIG_FILENAME: &str = "api_origin";
 
+/// Persisted dev-server URL file (the native on-device dev-tools dialog's "Connect" writes this). In a
+/// DEBUG build the shell reads it at boot to load a frontend dev server instead of the bundled assets
+/// (on-device HMR); ignored in RELEASE. Same app-data dir as [CONFIG_FILENAME]. Must match the Kotlin
+/// `DEV_URL_FILENAME` in DevToolsDialog.kt (see FCM_ANDROID_PATCH.md).
+const DEV_URL_FILENAME: &str = "dev_url";
+
 /// Shared state for the media proxy + token/origin handoff commands. Cloned cheaply (the reqwest
 /// Client, the token Arc, the origin Arc, and the config-path Arc are all refcounted), so the protocol
 /// handler and the command handlers see the same live values.
@@ -133,24 +139,62 @@ pub fn run() {
 
             // Inject the API origin as a read-only global BEFORE any page script runs. Read at module
             // load by web/.../constants.ts → every apiPrefix/sseUrl call resolves to the absolute origin.
-            // Rust's {:?} on a &str produces a valid JS string literal for these http(s):// URLs.
+            //
+            // The baked `resolved_origin` is the setup-time value (persisted file → env → default) and is
+            // FIXED for the process. So a bare `location.reload()` after `set_api_origin` would re-inject
+            // the STALE origin and the Server page would loop ("Save bounces back to /config"). To make a
+            // Save take effect on a same-process reload, the Angular save() also stashes the new origin in
+            // localStorage and this script prefers it. localStorage is per-origin, synchronous, and live
+            // before page scripts — exactly what's needed, with no sync-XHR / custom-scheme / CSP dance.
+            // A fresh process still resolves correctly: setup re-reads the persisted file → baked = the new
+            // value, and localStorage is empty until the next in-process Save.
             let init_script = format!(
-                "Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:{:?},writable:false}});",
+                "(function(){{var o={0:?};try{{var s=localStorage.getItem('__soms_api_origin__');if(s)o=s;}}catch(e){{}}Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:o,writable:false}});}})();",
                 resolved_origin
             );
 
-            // The main window is created in code (not config) so we can attach the init script. devUrl
-            // (dev) vs bundled index.html (release).
-            let url = if cfg!(debug_assertions) {
-                app.config()
-                    .build
-                    .dev_url
-                    .clone()
-                    .map(WebviewUrl::External)
-                    .unwrap_or_else(|| WebviewUrl::App("index.html".into()))
+            // The main window is created in code (not config) so we can attach the init script.
+            //
+            // Frontend source resolution. RELEASE always loads the bundled index.html — a runtime-remote
+            // frontend would be an arbitrary-code-execution surface. DEBUG can instead load a frontend dev
+            // server for on-device HMR, resolved in this precedence:
+            //   1. The persisted `dev_url` file (app-data dir) — written by the native on-device dev-tools
+            //      dialog's "Connect", so a URL set once sticks across launches; cleared by "Revert" (or
+            //      `adb shell pm clear` as a hard reset).
+            //   2. `SOMS_DEV_URL` env (per-launch; e.g. `SOMS_DEV_URL=.. cargo tauri dev` on desktop).
+            //   3. `SOMS_DEFAULT_DEV_URL` compiled-in default — the Makefile `apk-dev` target bakes it via
+            //      `docker -e SOMS_DEFAULT_DEV_URL=..`, so a freshly installed dev APK goes straight to the
+            //      dev server with zero config. `option_env!` reads it at compile time.
+            //   4. The desktop `tauri dev` devUrl (beforeDevCommand runs `ng serve` on :4200).
+            // The persisted file (1) is the operative path on a real device (no env, no shell); (4) keeps
+            // desktop `tauri dev` working unchanged. The native dialog + bubble live in gen/android (see
+            // FCM_ANDROID_PATCH.md). Everything falls back to the bundled index.html when nothing resolves.
+            let dev_url: Option<String> = if cfg!(debug_assertions) {
+                fs::read_to_string(data_dir.join(DEV_URL_FILENAME))
+                    .ok()
+                    .and_then(|s| validate_origin(&s))
+                    .or_else(|| {
+                        std::env::var("SOMS_DEV_URL")
+                            .ok()
+                            .and_then(|s| validate_origin(&s))
+                    })
+                    .or_else(|| {
+                        option_env!("SOMS_DEFAULT_DEV_URL").and_then(|s| validate_origin(s))
+                    })
+                    .or_else(|| {
+                        if cfg!(desktop) {
+                            app.config().build.dev_url.as_ref().map(|u| u.to_string())
+                        } else {
+                            None
+                        }
+                    })
             } else {
-                WebviewUrl::App("index.html".into())
+                None
             };
+            let url = dev_url
+                .and_then(|s| reqwest::Url::parse(&s).ok())
+                .map(WebviewUrl::External)
+                .unwrap_or_else(|| WebviewUrl::App("index.html".into()));
             WebviewWindowBuilder::new(app, "main", url)
                 .title("SOMS")
                 .inner_size(1200.0, 800.0)
