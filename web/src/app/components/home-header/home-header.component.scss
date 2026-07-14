@@ -10,7 +10,11 @@
   align-items: center;
   justify-content: flex-start;
   gap: 10px;
-  padding: 0 10px;
+  // Top padding = the status-bar safe-area inset, so the bar's --app-surface background extends seamlessly
+  // under the status bar (edge-to-edge, no tonal strip) and the content row sits below it. --app-header-h
+  // (on .shell) already includes the inset (calc(56px + --soms-safe-top)); with border-box the content row
+  // stays exactly 56px. 0 on desktop/browser (no native injection). Right/left = 10px, bottom = 0.
+  padding: var(--soms-safe-top, 0px) 10px 0;
 }
 
 .icon-btn {

@@ -20,8 +20,13 @@
   // the header by exactly its height) AND by MessageHeaderComponent (.msg-header height).
   // Defined on the positioning context so both the overlay and the header descendant
   // read ONE value (no drift if the header height is later tuned). Inherited through
-  // the component boundary (CSS custom properties cross shadow/emulated borders).
-  --msg-header-h: 56px;
+  // the component boundary (CSS custom properties cross shadow/emulated borders). The value is the
+  // header's TOTAL occupied height: the 56px content row PLUS the status-bar safe-area inset
+  // (--soms-safe-top, injected by the native Android shell; 0 on desktop/browser). Both the header and
+  // the sticky-date pill thus grow in lockstep on a notched device, and MessageHeaderComponent consumes
+  // the inset as padding-top so its content row stays 56px while its --app-surface bg fills under the
+  // status bar (edge-to-edge, no seam).
+  --msg-header-h: calc(56px + var(--soms-safe-top, 0px));
   // Sticky-date overlay top offset for <app-sticky-date-overlay> (inherits down to it): the header is a
   // normal-flow flex child occupying the top --msg-header-h pixels, so the pill must clear exactly that.
   --sd-top: var(--msg-header-h, 56px);

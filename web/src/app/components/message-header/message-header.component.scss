@@ -12,7 +12,11 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 0 10px;
+  // Top padding = the status-bar safe-area inset, so the bar's --app-surface background extends seamlessly
+  // under the status bar (edge-to-edge, no tonal strip) and the content row sits below it. --msg-header-h
+  // (on .msg-container) already includes the inset; with border-box the content row stays exactly 56px and
+  // align-items:center centers within it. 0 on desktop/browser (no native injection).
+  padding: var(--soms-safe-top, 0px) 10px 0;
 }
 
 // Title takes the middle space and truncates so a long peer/group name never pushes the MORE

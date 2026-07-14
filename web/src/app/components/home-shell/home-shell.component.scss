@@ -21,8 +21,12 @@
   /* Single source for the app-header height — read by HomeHeaderComponent (its own height), a DOM
      descendant of .shell, so the var reaches it. The indicator chip no longer reads a derived var from
      here: indicators now live in <app-indicator-slot> at the HomeComponent layer (outside .shell) and are
-     positioned solely by IndicatorSlotComponent's :host. */
-  --app-header-h: 56px;
+     positioned solely by IndicatorSlotComponent's :host. The value is the header's TOTAL occupied height:
+     the 56px content row PLUS the status-bar safe-area inset (--soms-safe-top, injected by the native
+     Android shell; 0 on desktop/browser), so on a notched device the bar's --app-surface background
+     extends seamlessly under the status bar while its content row sits below it (edge-to-edge, no tonal
+     strip). HomeHeaderComponent consumes the inset as padding-top (border-box keeps the content row 56px). */
+  --app-header-h: calc(56px + var(--soms-safe-top, 0px));
 }
 
 // Both persistent slots are flex columns; the routed component fills the slot (router-outlet itself
@@ -46,6 +50,11 @@
 // (see .ci-input-bar), and padding here would shrink the host and break the KbdOffsetDirective math.
 .aside-slot {
   box-sizing: border-box;
+  // The slot spans full-screen edge-to-edge on mobile, so its --app-surface background extends under BOTH
+  // the status bar (top) and the gesture bar (bottom) — seamless, no tonal strip — while each panel's own
+  // header/body/footer (settings, peer-profile, group-info) sit inside the system bars. 0 on desktop/browser;
+  // the desktop/tablet absolute overlay drawer is unaffected when no native inset is injected.
+  padding-top: var(--soms-safe-top, 0px);
   padding-bottom: var(--soms-safe-bottom, 0px);
 }
 

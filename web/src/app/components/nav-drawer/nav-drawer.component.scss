@@ -61,7 +61,10 @@
 
 .drawer-header {
   flex: 0 0 auto;
-  padding: 20px 16px 16px;
+  // Top padding carries the status-bar safe-area inset (Android edge-to-edge) so the avatar + profile
+  // header sit below the status bar instead of under it; the .nav-drawer's --app-surface-elevated
+  // background fills the strip seamlessly (no tonal strip). Adds to the base 20px; 0 on desktop/browser.
+  padding: calc(20px + var(--soms-safe-top, 0px)) 16px 16px;
   display: flex;
   flex-direction: column;
   border-bottom: 1px solid var(--app-border);
