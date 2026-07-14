@@ -16,6 +16,8 @@
  * to the same-origin relative path.
  */
 
+import { signal } from '@angular/core';
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
@@ -108,15 +110,18 @@ export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unkn
   return invoke(cmd, args) as Promise<T>;
 }
 
-/** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin
- *  (browser). Read once at module load; the Tauri initialization script runs before any module is
- *  evaluated, so this is always populated under Tauri and always empty in the browser. */
-const API_ORIGIN: string =
+/** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser).
+ *  A LIVE writable signal — the single source of truth for where the data layer points. Seeded at
+ *  module load from `window.__SOMS_API_ORIGIN__` (the Tauri init script injects the persisted value
+ *  before any module evaluates; empty in the browser), and updated in place by {@link setApiOrigin} so
+ *  every derived URL (`apiPrefix`/`sseUrl` in constants.ts), the SSE reconnect, the guest guard, and the
+ *  Settings "backend" label re-resolve against the new host with NO page reload. Read it via
+ *  `apiOrigin()`; only {@link setApiOrigin} writes it. */
+export const apiOrigin = signal<string>(
   typeof window !== 'undefined' && typeof window.__SOMS_API_ORIGIN__ === 'string'
     ? window.__SOMS_API_ORIGIN__
-    : '';
-
-export { API_ORIGIN as apiOrigin };
+    : '',
+);
 
 /** Custom URI scheme the Tauri Rust side registers (see `src-tauri/src/lib.rs`) to proxy
  *  `/uploads/*` media with a Bearer header. */
@@ -144,22 +149,25 @@ export function assetUrl(path: string | null | undefined): string {
  *  login. `tauri dev` (SOMS_API_ORIGIN set to a real host) and a persisted real origin both read as
  *  non-localhost → skip the gate. */
 export function apiOriginIsLocalhost(): boolean {
-  return /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(API_ORIGIN);
+  return /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(apiOrigin());
 }
 
 /**
- * Persist a new backend origin (Tauri only). Rust validates it is a clean http(s) URL, writes it to a
- * config file in the app-data dir (so it survives restarts and is injected before Angular boots on the
- * next launch), and updates the media proxy's live origin. Returns the normalized origin Rust stored.
- *
- * Because `apiOrigin` is captured once at module load (`constants.ts` → `apiPrefix`/`sseUrl`), the
- * caller MUST `location.reload()` after this resolves so every HTTP/SSE/media URL re-resolves against
- * the new origin — hot-swapping in-flight would leave the SSE worker and the HTTP interceptors pinned
- * to the old origin.
+ * Persist a new backend origin and repoint the live data layer to it (Tauri only). Rust validates the
+ * URL, writes the app-data config file (cold-boot persistence) AND updates the media proxy's live
+ * origin (so `/uploads/*` media immediately uses the new host); here we mirror that into the
+ * {@link apiOrigin} signal so every in-process consumer — HttpClient calls (via `apiPrefix()`), the SSE
+ * worker's reconnect, the guest guard, the Settings "backend" label — picks up the new host at once,
+ * with NO page reload and NO localStorage stash. Returns the normalized origin Rust stored.
  */
 export async function setApiOrigin(url: string): Promise<string> {
   if (!isTauri()) throw new Error('setApiOrigin is only available under the Tauri shell');
-  return tauriInvoke<string>('set_api_origin', { url });
+  const normalized = await tauriInvoke<string>('set_api_origin', { url });
+  apiOrigin.set(normalized);
+  // The Android background poller (WorkManager) fires with no WebView alive, so it can't read the
+  // signal — push the origin into its encrypted store. Absent (no-op) under browser/desktop shells.
+  window.SomsFcm?.setApiOrigin(normalized);
+  return normalized;
 }
 
 /**

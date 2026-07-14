@@ -163,7 +163,7 @@ export class SettingsConnectionComponent {
     this.checking.set(true);
     const t0 = performance.now();
     try {
-      const res = await fetch(`${apiPrefix}/health`);
+      const res = await fetch(`${apiPrefix()}/health`);
       const ms = Math.round(performance.now() - t0);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = await res.json();

@@ -137,19 +137,14 @@ pub fn run() {
                 .expect("origin lock")
                 .clone();
 
-            // Inject the API origin as a read-only global BEFORE any page script runs. Read at module
-            // load by web/.../constants.ts → every apiPrefix/sseUrl call resolves to the absolute origin.
-            //
-            // The baked `resolved_origin` is the setup-time value (persisted file → env → default) and is
-            // FIXED for the process. So a bare `location.reload()` after `set_api_origin` would re-inject
-            // the STALE origin and the Server page would loop ("Save bounces back to /config"). To make a
-            // Save take effect on a same-process reload, the Angular save() also stashes the new origin in
-            // localStorage and this script prefers it. localStorage is per-origin, synchronous, and live
-            // before page scripts — exactly what's needed, with no sync-XHR / custom-scheme / CSP dance.
-            // A fresh process still resolves correctly: setup re-reads the persisted file → baked = the new
-            // value, and localStorage is empty until the next in-process Save.
+            // Inject the API origin as a read-only global BEFORE any page script runs. The Angular
+            // runtime.ts seeds its `apiOrigin` writable signal from this value at module load, and every
+            // apiPrefix()/sseUrl() call (and the SSE worker) resolves to it. On a `set_api_origin` save the
+            // frontend updates that signal IN PLACE — no reload — so this baked setup-time value only ever
+            // needs to be correct at boot. A fresh process re-reads the persisted config file (written by
+            // set_api_origin) here in setup, so the boot value is the user's configured origin.
             let init_script = format!(
-                "(function(){{var o={0:?};try{{var s=localStorage.getItem('__soms_api_origin__');if(s)o=s;}}catch(e){{}}Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:o,writable:false}});}})();",
+                "(function(){{Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:{0:?},writable:false}});}})();",
                 resolved_origin
             );
 
@@ -298,8 +293,8 @@ fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
 /// Persist a new backend origin chosen in the Server page. Validates http(s), writes the app-data
 /// config file (so it survives restarts and is injected before Angular boots on the next launch),
 /// and updates the proxy's live origin (so `/uploads/*` media immediately uses the new host). Returns
-/// the normalized origin Rust stored; the caller then `location.reload()`s to make the frontend's
-/// module-load `apiOrigin`/`apiPrefix`/`sseUrl` re-resolve.
+/// the normalized origin Rust stored; the caller (frontend `setApiOrigin`) mirrors it into the
+/// `apiOrigin` signal so every HttpClient/SSE/media URL resolves to the new host live — no reload.
 #[tauri::command]
 fn set_api_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<String, String> {
     let normalized = validate_origin(&url)

@@ -127,7 +127,7 @@ describe('SettingsConnectionComponent', () => {
     expect(h.version).toBe('1.2.3');
     expect(typeof h.ms).toBe('number');
     expect(h.ms as number).toBeGreaterThanOrEqual(0);
-    expect(fetchSpy).toHaveBeenCalledWith(`${apiPrefix}/health`);
+    expect(fetchSpy).toHaveBeenCalledWith(`${apiPrefix()}/health`);
     expect(comp.checking()).toBe(false);
   });
 

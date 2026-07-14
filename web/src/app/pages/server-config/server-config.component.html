@@ -4,7 +4,7 @@
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
 
-    <form class="sc-card" (ngSubmit)="save()">
+    <form class="sc-card" [formGroup]="form" (ngSubmit)="save()">
       <div class="progress-slot">
         @if (saving()) {
           <mat-progress-bar mode="indeterminate"></mat-progress-bar>
@@ -27,7 +27,7 @@
           inputmode="url"
           autocomplete="off"
           spellcheck="false"
-          [formControl]="urlControl"
+          formControlName="url"
           [placeholder]="'serverConfig.placeholder' | transloco"
         />
         <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>

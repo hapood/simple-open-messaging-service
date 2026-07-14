@@ -82,7 +82,7 @@ export class WebPushService {
     this.registeredEndpoint = null;
     // Unregister from the backend (best-effort; the access token is still live at this point).
     this.http
-      .delete(`${apiPrefix}/devices/register/${encodeURIComponent(endpoint)}`)
+      .delete(`${apiPrefix()}/devices/register/${encodeURIComponent(endpoint)}`)
       .subscribe({ error: () => { /* a stale endpoint is pruned on next send */ } });
     // Unsubscribe the browser-side subscription so the push service stops holding a channel.
     try {
@@ -165,7 +165,7 @@ export class WebPushService {
     // 4. Register with the backend (idempotent upsert on endpoint).
     if (sub.endpoint === this.registeredEndpoint) return;
     this.http
-      .post<{ code: number }>(`${apiPrefix}/devices/register`, {
+      .post<{ code: number }>(`${apiPrefix()}/devices/register`, {
         token: sub.endpoint,
         platform: 'WEB',
         p256dh: sub.getKey('p256dh') ? base64UrlEncode(sub.getKey('p256dh')!) : undefined,
@@ -180,7 +180,7 @@ export class WebPushService {
   /** Fetch the VAPID public key, or null when unavailable (endpoint unreachable, or no key configured). */
   private async fetchVapidKey(): Promise<string | null> {
     try {
-      const res = await fetch(`${apiPrefix}/notifications/vapid-key`);
+      const res = await fetch(`${apiPrefix()}/notifications/vapid-key`);
       const json = await res.json();
       const pk = json?.data?.publicKey;
       return typeof pk === 'string' && pk.length > 0 ? pk : null;

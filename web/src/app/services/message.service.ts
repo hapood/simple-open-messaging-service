@@ -10,15 +10,15 @@ export class MsgService {
   constructor(private http: HttpClient) { }
 
   addUser(params: { account: string, password: string }) {
-    return this.http.post(`${apiPrefix}/add-user`, params)
+    return this.http.post(`${apiPrefix()}/add-user`, params)
   }
 
   addFriend(account: string) {
-    return this.http.post(`${apiPrefix}/add-friend`, { account })
+    return this.http.post(`${apiPrefix()}/add-friend`, { account })
   }
 
   sendMessage(params: { threadId: number, content: string, contentType?: string, clientMessageId?: string }) {
-    return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix}/send-message`, params)
+    return this.http.post<StandardResponse<{ id: string, createAt: string }>>(`${apiPrefix()}/send-message`, params)
   }
 
   /**
@@ -35,7 +35,7 @@ export class MsgService {
     clientMessageId: string,
     meta?: { w?: number, h?: number, duration?: number },
   }) {
-    return this.http.post<StandardResponse<{ clientMessageId: string }>>(`${apiPrefix}/send-media`, params)
+    return this.http.post<StandardResponse<{ clientMessageId: string }>>(`${apiPrefix()}/send-media`, params)
   }
 
   /** Upload an image (multipart: file + width/height), returns {url,w,h}. w/h are read client-side via
@@ -47,7 +47,7 @@ export class MsgService {
     fd.append('w', String(w))
     fd.append('h', String(h))
     return this.http.post<StandardResponse<{ url: string, w: number, h: number }>>(
-      `${apiPrefix}/upload`,
+      `${apiPrefix()}/upload`,
       fd,
       clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : undefined,
     )
@@ -63,7 +63,7 @@ export class MsgService {
     const fd = new FormData()
     fd.append('file', file)
     return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
-      `${apiPrefix}/upload/file`,
+      `${apiPrefix()}/upload/file`,
       fd,
       {
         reportProgress: true,
@@ -81,7 +81,7 @@ export class MsgService {
     const fd = new FormData()
     fd.append('file', file)
     return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
-      `${apiPrefix}/upload/video`,
+      `${apiPrefix()}/upload/video`,
       fd,
       clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : undefined,
     )
@@ -94,7 +94,7 @@ export class MsgService {
     const fd = new FormData()
     fd.append('file', file)
     return this.http.post<StandardResponse<{ url: string, name: string, size: number, mimeType: string }>>(
-      `${apiPrefix}/upload/audio`,
+      `${apiPrefix()}/upload/audio`,
       fd,
       clientMessageId ? { headers: this.cmidHeader(clientMessageId) } : undefined,
     )
@@ -106,33 +106,33 @@ export class MsgService {
   }
 
   queryMessageLog(params: QueryMessageLogParams) {
-    return this.http.post<StandardResponse<Message[]>>(`${apiPrefix}/query-messages`, params)
+    return this.http.post<StandardResponse<Message[]>>(`${apiPrefix()}/query-messages`, params)
   }
 
   /** Resolve the P2P thread with a peer user — returns { threadId } when friends, THREAD_NOT_FOUND otherwise. */
   getThreadByUserId(params: { userId: number }) {
-    return this.http.post<StandardResponse<{ threadId: number }>>(`${apiPrefix}/thread/by-user-id`, params)
+    return this.http.post<StandardResponse<{ threadId: number }>>(`${apiPrefix()}/thread/by-user-id`, params)
   }
 
   /** Mute / unmute a conversation (suppresses notifications, not delivery). */
   setMuted(params: { threadId: number, muted: boolean }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-muted`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/thread/set-muted`, params)
   }
 
   /** Pin / unpin a conversation (pinned-first ordering). */
   setPinned(params: { threadId: number, pinned: boolean }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-pinned`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/thread/set-pinned`, params)
   }
 
   /** Per-user "clear chat history" — hides all messages up to now for the caller; peer copy untouched. */
   clearHistory(params: { threadId: number }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/thread/clear-history`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/thread/clear-history`, params)
   }
 
   /** Set a per-user alias/remark for a conversation — overrides the displayed name for the caller.
    *  An empty string clears it. */
   setAlias(params: { threadId: number, alias?: string }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/thread/set-alias`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/thread/set-alias`, params)
   }
 
   /**
@@ -142,7 +142,7 @@ export class MsgService {
    */
   searchMessages(params: { threadId: number, keyword: string, take: number, lastSeq?: number }) {
     return this.http.post<StandardResponse<{ seq: number, createdAt: number }[]>>(
-      `${apiPrefix}/search-messages`,
+      `${apiPrefix()}/search-messages`,
       params,
     )
   }
@@ -152,7 +152,7 @@ export class MsgService {
    *  Returns the post-localize status ('ready' = bytes local | 'failed' = still missing). */
   relocalizeMedia(threadId: number, seq: number) {
     return this.http.post<StandardResponse<{ status: 'ready' | 'failed' }>>(
-      `${apiPrefix}/relocalize-media`,
+      `${apiPrefix()}/relocalize-media`,
       { threadId, seq },
     )
   }
@@ -161,7 +161,7 @@ export class MsgService {
    *  MEDIA_STATUS frames the client missed while disconnected. Returns {seq, status, sv} per existing seq. */
   queryMediaStatus(threadId: number, seqs: number[]) {
     return this.http.post<StandardResponse<{ statuses: Array<{ seq: number; status: 'ready' | 'failed'; sv: number }> }>>(
-      `${apiPrefix}/media-status`,
+      `${apiPrefix()}/media-status`,
       { threadId, seqs },
     )
   }

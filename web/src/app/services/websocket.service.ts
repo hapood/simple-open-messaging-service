@@ -1,7 +1,8 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, signal, effect, untracked } from '@angular/core';
 import { Subject, filter, firstValueFrom } from 'rxjs';
 import { AuthService } from './auth.service';
 import { sseUrl } from './constants';
+import { apiOrigin } from './runtime';
 import type { ToMain, ToWorker } from './sse-worker-protocol';
 
 /** Dev-build-only diagnostic gate (mirrors Angular's own per-file declaration): truthy under
@@ -70,6 +71,17 @@ export class WebsocketService {
 
   constructor(private authService: AuthService) {
     this.connect()
+    // A backend-origin swap (server-config save) repoints every URL live via the apiOrigin signal. The
+    // worker captured the OLD sseUrl at its `start`, so reconnect it against the new host: the first
+    // run is skipped (this.connect() above already used the boot origin), then every change tears the
+    // worker down and respawns it reading the now-current sseUrl(). untracked so the connect()/disconnect()
+    // calls don't themselves get wired into the reactive graph.
+    let booted = false
+    effect(() => {
+      apiOrigin()
+      if (!booted) { booted = true; return }
+      untracked(() => { this.disconnect(); this.connect() })
+    })
   }
 
   public connect() {
@@ -85,7 +97,7 @@ export class WebsocketService {
     worker.onmessage = ({ data }: MessageEvent<ToMain>) => this.onMessage(data)
     worker.onerror = () => this.onWorkerError()
     this.worker = worker
-    worker.postMessage({ type: 'start', url: sseUrl } satisfies ToWorker)
+    worker.postMessage({ type: 'start', url: sseUrl() } satisfies ToWorker)
   }
 
   /** Logout / force-login: tell the worker to stop, terminate it, and clear main-side state. */

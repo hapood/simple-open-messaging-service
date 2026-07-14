@@ -3,6 +3,7 @@ import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import {
   AbstractControl,
   FormControl,
+  FormGroup,
   ReactiveFormsModule,
   ValidationErrors,
   Validators,
@@ -23,8 +24,9 @@ import { apiOrigin, setApiOrigin } from '../../services/runtime';
  * Bundled-APK backend-URL configuration (Tauri/Android only — the route is `canMatch`-gated on
  * `isTauri()`). A phone running the APK can't reach the `http://localhost:3000` build default, so the
  * user sets the real backend origin here. The value is persisted Rust-side (app-data config file) and
- * re-injected before Angular boots on the next launch; after save we full-load to /auth/login so
- * `apiOrigin` (captured once at module load) and every derived apiPrefix/sseUrl/media URL re-resolve.
+ * re-injected before Angular boots on the next launch; on save, `setApiOrigin` updates the `apiOrigin`
+ * signal in place, so every derived apiPrefix/sseUrl/media URL (and the SSE worker's reconnect) picks
+ * up the new host with NO reload — we then navigate in-SPA to /auth/login.
  *
  * First-run gating: `guestGuard` redirects here when `isTauri() && apiOriginIsLocalhost()` (no server
  * configured yet). Reachable later from the login page's "Server settings" Material button.
@@ -70,11 +72,17 @@ export class ServerConfigComponent {
 
   readonly AppIcon = AppIconType;
 
-  /** Pre-filled with the origin Rust injected at boot (persisted value, or the localhost default). */
-  readonly urlControl = new FormControl(apiOrigin, {
+  /** Pre-filled with the live origin Rust injected at boot (persisted value, or the localhost default). */
+  readonly urlControl = new FormControl(apiOrigin(), {
     nonNullable: true,
     validators: [Validators.required, urlValidator],
   });
+  /** FormGroup wrapper. `FormGroupDirective` (activated by `[formGroup]` on the `<form>`) is what
+   *  intercepts the native `submit` — it preventDefaults AND emits `ngSubmit`. Without it a bare
+   *  `[formControl]` provides NO submit interception, so the Save button's `type="submit"` fired a native
+   *  GET that reloaded the page (and `save()` never ran). This mirrors the `FormsModule`+`NgForm` pattern
+   *  every other form in the app uses; here the reactive validator makes a FormGroup the right fit. */
+  readonly form = new FormGroup({ url: this.urlControl });
 
   readonly saving = signal(false);
   readonly testing = signal(false);
@@ -182,18 +190,15 @@ export class ServerConfigComponent {
     this.saving.set(true);
     this.saveError.set(null);
     try {
-      const normalized = await setApiOrigin(value);
-      // Stash the new origin for the boot init script to read on reload (see src-tauri/src/lib.rs).
-      // Without this the fixed init script re-injects the stale setup-time origin and the guard bounces
-      // back here — the "Save loops back to /config" symptom. localStorage is the webview's concern, so
-      // it lives here in JS; Rust owns the file + proxy.
-      try { localStorage.setItem('__soms_api_origin__', normalized); } catch { /* private mode */ }
-      // Rust persisted + updated the proxy. Full-load to /auth/login (not a bare reload, which would
-      // re-render /config — the "Save flashes and stays here" symptom): the init script re-reads the
-      // stashed origin so the module-load apiOrigin/apiPrefix/sseUrl re-resolve to the new host, and we
-      // land on login (origin is now non-localhost, so guestGuard lets it through). replace — not
-      // assign — keeps /config out of the history stack (auth-flow history contract).
-      location.replace('/auth/login');
+      // setApiOrigin persists Rust-side (cold-boot config file + live media proxy) AND updates the
+      // apiOrigin signal in place, so every HttpClient call, the SSE worker's reconnect, and the media
+      // proxy already resolve to the new host — NO reload and NO localStorage stash (that stash was only
+      // ever a workaround for the reload the module-load constant forced; the reactive signal retires
+      // it). The origin is now non-localhost, so guestGuard lets /auth/login through. Navigate in-SPA
+      // (RouteService.redirect is replaceUrl) per the auth-flow history contract — /config never enters
+      // the back stack.
+      await setApiOrigin(value);
+      this.routeService.redirect(RoutePage.AUTH_LOGIN);
     } catch (e) {
       this.saving.set(false);
       this.saveError.set(e instanceof Error ? e.message : String(e));

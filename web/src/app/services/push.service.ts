@@ -44,8 +44,9 @@ export class PushService {
     // Kotlin → JS: warm-start deep link (notification tap while the app is already running).
     window.__SOMS_DEEP_LINK__ = (tid) => this.openThread(tid);
     // Hand the resolved backend origin to Kotlin so the WorkManager poller (which fires with no WebView
-    // alive) knows where to POST /notifications/missed.
-    window.SomsFcm?.setApiOrigin(apiOrigin || null);
+    // alive) knows where to POST /notifications/missed. Reads the live signal (the boot value here);
+    // setApiOrigin also pushes on a swap, so the poller always has the current origin.
+    window.SomsFcm?.setApiOrigin(apiOrigin() || null);
     // Recover anything emitted before Angular booted. getToken() is a synchronous @JavascriptInterface
     // read; if Kotlin already has a token, use it (the live hook may have been missed).
     const token = window.SomsFcm?.getToken() ?? null;
@@ -76,7 +77,7 @@ export class PushService {
     const token = this.registeredToken ?? this.currentToken ?? window.SomsFcm?.getToken() ?? null;
     if (token) {
       this.http
-        .delete(`${apiPrefix}/devices/register/${encodeURIComponent(token)}`)
+        .delete(`${apiPrefix()}/devices/register/${encodeURIComponent(token)}`)
         .subscribe({ error: () => { /* best-effort: a stale token is pruned server-side on next send */ } });
     }
     this.registeredToken = null;
@@ -87,7 +88,7 @@ export class PushService {
     if (this.notificationToken) {
       const t = this.notificationToken;
       this.notificationToken = null;
-      fetch(`${apiPrefix}/auth/notification-token`, {
+      fetch(`${apiPrefix()}/auth/notification-token`, {
         method: 'DELETE',
         headers: { Authorization: `Bearer ${t}` },
         keepalive: true, // best-effort even if the page is unloading
@@ -103,7 +104,7 @@ export class PushService {
   private issueNotificationToken() {
     this.http
       .post<{ code: number; data?: { notificationToken: string } }>(
-        `${apiPrefix}/auth/notification-token`,
+        `${apiPrefix()}/auth/notification-token`,
         {},
       )
       .subscribe({
@@ -131,7 +132,7 @@ export class PushService {
     if (!token || token === this.registeredToken) return;
     const deviceId = localStorage.getItem('device_id') ?? undefined;
     this.http
-      .post<{ code: number }>(`${apiPrefix}/devices/register`, {
+      .post<{ code: number }>(`${apiPrefix()}/devices/register`, {
         token,
         platform: 'ANDROID',
         deviceId,

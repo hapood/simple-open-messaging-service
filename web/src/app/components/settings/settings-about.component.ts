@@ -35,6 +35,10 @@ export class SettingsAboutComponent {
   readonly appVersion = appVersion;
   /** The Backend row is only meaningful under Tauri (where the origin is configurable). */
   readonly showBackend = isTauri();
-  /** Human-readable backend origin, or null when still on the localhost default. */
-  readonly backendLabel = computed(() => (apiOrigin && !apiOriginIsLocalhost() ? apiOrigin : null));
+  /** Human-readable backend origin, or null when still on the localhost default. Reads the live
+   *  signal, so it updates the moment a server-config save repoints the backend. */
+  readonly backendLabel = computed(() => {
+    const o = apiOrigin();
+    return o && !apiOriginIsLocalhost() ? o : null;
+  });
 }

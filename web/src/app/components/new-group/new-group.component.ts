@@ -129,7 +129,7 @@ export class NewGroupComponent {
     // avatars are square). Returns { avatar } (a /uploads/avatars/ url) staged until group creation.
     const fd = new FormData()
     fd.append('file', file)
-    this.http.post<{ code: number; data?: { avatar: string } }>(`${apiPrefix}/upload/avatar`, fd).subscribe({
+    this.http.post<{ code: number; data?: { avatar: string } }>(`${apiPrefix()}/upload/avatar`, fd).subscribe({
       next: (res) => {
         this.busy.set(false)
         if (res?.code === 0 && res.data?.avatar) this.pendingAvatar.set(res.data.avatar)

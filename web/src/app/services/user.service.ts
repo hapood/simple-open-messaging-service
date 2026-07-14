@@ -117,12 +117,12 @@ export class UserService {
   }
 
   register(params: { account: string, name: string, password: string }) {
-    return this.http.post<{ code: number, message: string, data?: { id: number, account: string } }>(`${apiPrefix}/user/register`,
+    return this.http.post<{ code: number, message: string, data?: { id: number, account: string } }>(`${apiPrefix()}/user/register`,
       params)
   }
 
   getMyProfile() {
-    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/my-profile`, {})
+    return this.http.post<StandardResponse<User>>(`${apiPrefix()}/user/my-profile`, {})
   }
 
   /** Upload and bind the current user's avatar (multipart file → backend rewrites multiple sizes with
@@ -130,13 +130,13 @@ export class UserService {
   updateAvatar(file: File) {
     const fd = new FormData()
     fd.append('file', file)
-    return this.http.post<StandardResponse<{ avatar: string }>>(`${apiPrefix}/user/update-avatar`, fd)
+    return this.http.post<StandardResponse<{ avatar: string }>>(`${apiPrefix()}/user/update-avatar`, fd)
   }
 
   /** Update the current user's display name / bio. Call updateSessionProfile() afterwards to refresh the
    *  local copy. */
   updateProfile(params: { name?: string, bio?: string }) {
-    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/update-profile`, params)
+    return this.http.post<StandardResponse<User>>(`${apiPrefix()}/user/update-profile`, params)
   }
 
   /** Query a page of active conversations. `revision` (REQUIRED by the backend — pins membership to
@@ -146,7 +146,7 @@ export class UserService {
   queryUserThreadValid(params: Omit<QueryUserThreadParams, 'revision'> & { revision?: number }) {
     const revision = params.revision ?? this.threadRevCursor() ?? 0
     return this.http.post<StandardResponse<ConversationItem[]>>(
-      `${apiPrefix}/user/query-thread/valid`,
+      `${apiPrefix()}/user/query-thread/valid`,
       { ...params, revision },
     )
   }
@@ -157,7 +157,7 @@ export class UserService {
    *  ordered by revision asc. See thread-delta.ts (`planDelta`) for the apply semantics. */
   queryThreadDelta(params: { fromRevision: number; toRevision: number }) {
     return this.http.post<StandardResponse<ThreadDeltaOp[]>>(
-      `${apiPrefix}/user/query-thread/delta`,
+      `${apiPrefix()}/user/query-thread/delta`,
       params,
     )
   }
@@ -214,21 +214,21 @@ export class UserService {
   }
 
   queryUserInfo(params: { userIds: number[] }) {
-    return this.http.post<StandardResponse<User[]>>(`${apiPrefix}/user/query`, params)
+    return this.http.post<StandardResponse<User[]>>(`${apiPrefix()}/user/query`, params)
   }
 
   /** Resolve a user to address in friend ops. `account` alone = local lookup; `account` + `domain` =
    *  federated. The `@` separator is a UI input aid only — the caller (friend-requests search) splits a
    *  typed `alice@bbb.com` into these two fields; the API never carries an @-joined string. */
   resolveUser(params: { account: string; domain?: string }) {
-    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/resolve`, params)
+    return this.http.post<StandardResponse<User>>(`${apiPrefix()}/user/resolve`, params)
   }
 
   /** Local user discovery (fuzzy over account OR display name, case-insensitive). Returns up to 20
    *  LOCAL matches (server excludes federated stubs + soft-deleted; min query length 2). Federated
    *  users are NOT discoverable here — resolve those by exact account + domain via resolveUser. */
   searchUsers(params: { q: string; skip?: number; take?: number }) {
-    return this.http.post<StandardResponse<{ list: User[]; total: number }>>(`${apiPrefix}/user/search`, params)
+    return this.http.post<StandardResponse<{ list: User[]; total: number }>>(`${apiPrefix()}/user/search`, params)
   }
 
   /** Pre-flight trust check for a federated handle search: has mutual trust with this peer domain been
@@ -236,13 +236,13 @@ export class UserService {
    *  when the server reports the domain untrusted (a handshake IS expected during the resolve), never
    *  guessed from latency. Cheap local allow-list lookup server-side (no network). */
   peerTrustStatus(params: { domain: string }) {
-    return this.http.post<StandardResponse<{ trusted: boolean }>>(`${apiPrefix}/user/peer-trust-status`, params)
+    return this.http.post<StandardResponse<{ trusted: boolean }>>(`${apiPrefix()}/user/peer-trust-status`, params)
   }
 
   /** Send a friend invite. Federated targets are delivered via S2S automatically. On auto-accept (the
    *  target already invited me back, local-only) data carries threadId instead of inviteId. */
   sendFriendInvite(params: { toUserId: number; note?: string }) {
-    return this.http.post<StandardResponse<{ inviteId?: string; threadId?: number }>>(`${apiPrefix}/invite/friend`, params)
+    return this.http.post<StandardResponse<{ inviteId?: string; threadId?: number }>>(`${apiPrefix()}/invite/friend`, params)
   }
 
   /** Refresh a peer's avatar/name/bio if stale (chat-open + profile-panel-open hook). Federated: cheap
@@ -250,38 +250,38 @@ export class UserService {
    *  the caller's last-seen peer updatedAt as `sinceUpdatedAt` for a lightweight data:null short-circuit
    *  when unchanged — no payload, no re-render. */
   syncPeerProfile(params: { userId: number; sinceUpdatedAt?: number }) {
-    return this.http.post<StandardResponse<User>>(`${apiPrefix}/user/sync-peer-profile`, params)
+    return this.http.post<StandardResponse<User>>(`${apiPrefix()}/user/sync-peer-profile`, params)
   }
 
   /** Incoming pending friend invites (no params — backend hardcodes last-7-days, ≤200, friends filtered
    *  out). The inviter profile is embedded on each row (fromUser). */
   listIncomingInvites() {
-    return this.http.post<StandardResponse<Invite[]>>(`${apiPrefix}/invite/incoming`, {})
+    return this.http.post<StandardResponse<Invite[]>>(`${apiPrefix()}/invite/incoming`, {})
   }
 
   /** My outgoing pending friend invites (same parameterless shape as incoming). */
   listOutgoingInvites() {
-    return this.http.post<StandardResponse<Invite[]>>(`${apiPrefix}/invite/outgoing`, {})
+    return this.http.post<StandardResponse<Invite[]>>(`${apiPrefix()}/invite/outgoing`, {})
   }
 
   /** Accept an invite by id (friend → P2P thread; group → join). data carries the threadId. */
   acceptInvite(params: { inviteId: string }) {
-    return this.http.post<StandardResponse<{ threadId?: number }>>(`${apiPrefix}/invite/accept`, params)
+    return this.http.post<StandardResponse<{ threadId?: number }>>(`${apiPrefix()}/invite/accept`, params)
   }
 
   /** Reject an incoming invite by id. */
   rejectInvite(params: { inviteId: string }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/invite/reject`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/invite/reject`, params)
   }
 
   /** Revoke my own outgoing invite by id. */
   revokeInvite(params: { inviteId: string }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/invite/revoke`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/invite/revoke`, params)
   }
 
   /** Live invite state for the group-invite dialog (validity / already-joined / group identity). */
   getInviteDetail(params: { inviteId: string }) {
-    return this.http.post<StandardResponse<InviteDetail>>(`${apiPrefix}/invite/detail`, params)
+    return this.http.post<StandardResponse<InviteDetail>>(`${apiPrefix()}/invite/detail`, params)
   }
 
   /**
@@ -290,16 +290,16 @@ export class UserService {
    * the open chat/profile. Distinct from reject/revoke, which act on a still-pending invite.
    */
   deleteFriend(params: { userId: number }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/user/delete-friend`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/user/delete-friend`, params)
   }
 
   /** Clear the friend-invite unread badge (the user has viewed the friend-requests panel). */
   markInvitesRead() {
-    return this.http.post<StandardResponse>(`${apiPrefix}/invite/mark-read`, {})
+    return this.http.post<StandardResponse>(`${apiPrefix()}/invite/mark-read`, {})
   }
 
   getThreadInfo(params: { threadId: number }) {
-    return this.http.post<StandardResponse<ConversationItem>>(`${apiPrefix}/user/thread-info`, params)
+    return this.http.post<StandardResponse<ConversationItem>>(`${apiPrefix()}/user/thread-info`, params)
   }
 
   /**
@@ -307,7 +307,7 @@ export class UserService {
    * mark read up to (and including) a specific message. Fires the per-user read-cursor advance.
    */
   markRead(params: { threadId: number, lastReadMessageId?: string }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/thread/mark-read`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/thread/mark-read`, params)
   }
 
   /**
@@ -315,7 +315,7 @@ export class UserService {
    * blocker's query-messages hides the blocked creator's messages. `block: true` blocks, `false` unblocks.
    */
   setBlock(params: { userId: number, block: boolean }) {
-    return this.http.post<StandardResponse>(`${apiPrefix}/user/block`, params)
+    return this.http.post<StandardResponse>(`${apiPrefix()}/user/block`, params)
   }
 
 }

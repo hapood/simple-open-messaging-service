@@ -82,7 +82,7 @@ export class AuthService {
     // request body; it is still used after success to decide where to persist the token.
     const { isKeep, ...credentials } = params;
     return this.http.post<AccessTokenRes>
-      (`${apiPrefix}/auth/login`, { ...credentials, device: this.getDeviceId() }).pipe(tap((res) => {
+      (`${apiPrefix()}/auth/login`, { ...credentials, device: this.getDeviceId() }).pipe(tap((res) => {
         if (res.code === 0) {
           const data = res.data!
           this._isKeep = isKeep
@@ -127,7 +127,7 @@ export class AuthService {
     this.acTkSub.next(null) // pause protected requests until the new token arrives
     this._accessSetAt = null
     const req$ = this.http.post<AccessTokenRes>(
-      `${apiPrefix}/auth/renew-access`,
+      `${apiPrefix()}/auth/renew-access`,
       { refreshToken: rfToken, device: this.getDeviceId() },
     ).pipe(
       tap((res) => {
@@ -206,7 +206,7 @@ export class AuthService {
       this.clearToken()
       // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
       this.userService.clearSession()
-      return this.http.post<{ code: number; message: string }>(`${apiPrefix}/auth/logout`, {
+      return this.http.post<{ code: number; message: string }>(`${apiPrefix()}/auth/logout`, {
         refreshToken
       })
     }
@@ -217,7 +217,7 @@ export class AuthService {
    *  local tokens are replaced with the new ones. */
   changePassword(params: { oldPassword: string, newPassword: string }) {
     return this.http.post<{ code: number, message: string, data?: { access_token: string, refresh_token: string } }>(
-      `${apiPrefix}/auth/change-password`, params
+      `${apiPrefix()}/auth/change-password`, params
     ).pipe(tap((res) => {
       if (res.code === 0) {
         this.setAcToken(res.data!.access_token)
@@ -228,10 +228,10 @@ export class AuthService {
 
   /** Session management: list active sessions / kick a single device. */
   getSessions() {
-    return this.http.post<{ code: number, message: string, data?: any[] }>(`${apiPrefix}/auth/sessions`, {})
+    return this.http.post<{ code: number, message: string, data?: any[] }>(`${apiPrefix()}/auth/sessions`, {})
   }
   revokeSession(jti: string) {
-    return this.http.post<{ code: number, message: string }>(`${apiPrefix}/auth/revoke-session`, { jti })
+    return this.http.post<{ code: number, message: string }>(`${apiPrefix()}/auth/revoke-session`, { jti })
   }
 
   /** Device identifier: a persistent localStorage uuid (distinguishes multi-device sessions). */
