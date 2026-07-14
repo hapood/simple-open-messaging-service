@@ -33,6 +33,12 @@ export enum BusinessCode {
   QUOTA_EXCEEDED = 10008, // daily-quota budget exhausted on a LOCAL user endpoint (HTTP 200 + this code; the
                           // body carries {category, limit, retryAfter}). Distinct from the IP-burst RATE_LIMITED
                           // (10005): a daily budget is a business outcome, not a protocol rate-limit. See src/quota/.
+  INVALID_CREDENTIALS = 10009, // wrong account/password at a login boundary (consumer /auth/login, admin /admin/login).
+                               // Distinct from UNAUTHENTICATED (10003): 10003 = a request lacking valid auth
+                               // mid-session (expired/invalid/reused token) → "please sign in again"; 10009 = the
+                               // user is already AT the login screen and the typed credentials don't match →
+                               // "incorrect account or password". Same code for wrong-account and wrong-password
+                               // to avoid user enumeration (see AuthService.validateUser, which collapses both).
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state

@@ -585,6 +585,7 @@
       "notFound": "Not found",
       "alreadyExists": "Already exists",
       "unauthenticated": "Please sign in again",
+      "invalidCredentials": "Incorrect account or password",
       "forbidden": "You don't have permission to perform this action",
       "rateLimited": "Too many requests, please wait",
       "refreshReuse": "Session changed, please sign in again",

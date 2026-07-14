@@ -16,6 +16,8 @@ function localizedBizMessage(code: number): string | null {
       return i18n.t('errors.biz.validation')
     case CODE.UNAUTHENTICATED:
       return i18n.t('errors.biz.unauthenticated')
+    case CODE.INVALID_CREDENTIALS:
+      return i18n.t('errors.biz.invalidCredentials')
     case CODE.FORBIDDEN:
       return i18n.t('errors.biz.forbidden')
     case CODE.RATE_LIMITED:

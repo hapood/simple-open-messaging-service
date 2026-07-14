@@ -318,6 +318,7 @@
       "notFound": "Not found",
       "alreadyExists": "Already exists",
       "unauthenticated": "Please sign in again",
+      "invalidCredentials": "Incorrect account or password",
       "forbidden": "You don't have permission to do that",
       "rateLimited": "Too many requests, please slow down",
       "quotaExceeded": "Daily limit reached for this action; please try again tomorrow",

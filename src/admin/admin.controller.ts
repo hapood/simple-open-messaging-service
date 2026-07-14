@@ -79,7 +79,7 @@ export class AdminController {
   ): Promise<ApiResult> {
     const r = await this.adminAuthService.login(dto.account, dto.password, ip);
     if (r) return this.ok(r);
-    return { code: BusinessCode.UNAUTHENTICATED, message: 'invalid credentials' };
+    return { code: BusinessCode.INVALID_CREDENTIALS, message: 'invalid credentials' };
   }
 
   @HttpCode(HttpStatus.OK)

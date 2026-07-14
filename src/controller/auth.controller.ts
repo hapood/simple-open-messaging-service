@@ -101,8 +101,8 @@ export class AuthController {
         };
       } else {
         return {
-          code: BusinessCode.UNAUTHENTICATED,
-          message: 'error account/password',
+          code: BusinessCode.INVALID_CREDENTIALS,
+          message: 'invalid credentials',
         };
       }
     }

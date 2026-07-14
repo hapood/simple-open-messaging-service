@@ -92,7 +92,7 @@ describe('AdminBootstrapService (e2e — app self-seeds the bootstrap admin on b
       const login = await request(app.getHttpServer())
         .post('/api/v1/admin/login')
         .send({ account: 'admin', password: 'anything' });
-      expect(login.body.code).not.toBe(0); // UNAUTHENTICATED — no admin row to verify against
+      expect(login.body.code).not.toBe(0); // INVALID_CREDENTIALS — no admin row to verify against
     } finally {
       await app.close();
     }
