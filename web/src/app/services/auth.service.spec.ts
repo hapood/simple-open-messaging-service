@@ -2,50 +2,52 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { AuthService, USE_SESSION_TOKEN } from './auth.service';
+import { AuthService } from './auth.service';
 import { RouteService } from './route.service';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 
 /**
- * AuthService session/device contract — the client-side half of the device-management feature.
+ * AuthService session-token contract — the single long-lived credential.
  *
- * Locked down here:
- *  - login() sends the `client` kind (web/desktop/app) + a human-readable `device` label (not the old
- *    opaque device_id uuid), and stores the issued session token in memory;
- *  - revokeSession(id) sends `{ id }` (by row id, not the old jti) and marks the request with the
- *    USE_SESSION_TOKEN context so the interceptor auths it with the session token (isCurrent works);
- *  - getSessions() sets the same context.
- *
- * No AuthInterceptor registered — the request reaches the HttpTestingController backend directly, so the
- * request body + HttpContext are inspected as the service authored them.
+ * Locked down here (HttpTestingController backend, no interceptor):
+ *  - login() sends the `client` kind (web/desktop/app) + a human-readable `device` label, and stores the
+ *    issued session token (in memory + storage), flipping isLoggedIn;
+ *  - logout() sends `{ sessionToken }` (no refresh token) and clears the held token;
+ *  - revokeSession(id) sends `{ id }` by row id.
  */
-describe('AuthService (session/device contract)', () => {
+describe('AuthService (session-token contract)', () => {
   let svc: AuthService;
   let httpMock: HttpTestingController;
 
   beforeEach(() => {
+    sessionStorage.clear();
+    localStorage.clear();
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
         provideHttpClient(),
         provideHttpClientTesting(),
         AuthService,
-        { provide: RouteService, useValue: { redirect: () => {}, openSettings: () => {} } },
+        { provide: RouteService, useValue: { redirect: jasmine.createSpy('redirect'), openSettings: () => {} } },
         { provide: PushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
-        { provide: WebPushService, useValue: { onLogin: jasmine.createSpy('onLogin') } },
+        { provide: WebPushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
         { provide: UserService, useValue: { clearSession: jasmine.createSpy('clearSession') } },
       ],
     });
     svc = TestBed.inject(AuthService);
     httpMock = TestBed.inject(HttpTestingController);
   });
-  afterEach(() => TestBed.resetTestingModule());
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    sessionStorage.clear();
+    localStorage.clear();
+  });
 
   it('login() sends client + a friendly device label, and stores the session token on success', () => {
     expect(svc.sessionToken).toBeNull(); // nothing held before login
-    svc.login({ account: 'alice', password: 'pw', isKeep: true }).subscribe();
+    svc.login({ account: 'alice', password: 'pw', isKeep: false }).subscribe();
 
     const req = httpMock.expectOne((r) => /\/auth\/login$/.test(r.url));
     expect(req.request.body.account).toBe('alice');
@@ -54,26 +56,32 @@ describe('AuthService (session/device contract)', () => {
     expect(typeof req.request.body.device).toBe('string');
     expect(req.request.body.device.length).toBeGreaterThan(0);
 
-    req.flush({
-      code: 0,
-      message: 'ok',
-      data: { access_token: 'at', refresh_token: 'rt', session_token: 'st-1' },
-    });
+    req.flush({ code: 0, message: 'ok', data: { session_token: 'st-1' } });
     expect(svc.sessionToken).toBe('st-1');
+    expect(svc.isLoggedIn()).toBe(true);
   });
 
-  it('revokeSession(id) sends { id } (by row id, not jti) and sets the USE_SESSION_TOKEN context', () => {
+  it('logout() sends { sessionToken } (no refresh token) and clears the held token', () => {
+    // Log in first so a session token is held.
+    svc.login({ account: 'alice', password: 'pw', isKeep: false }).subscribe();
+    httpMock
+      .expectOne((r) => /\/auth\/login$/.test(r.url))
+      .flush({ code: 0, message: 'ok', data: { session_token: 'st-1' } });
+
+    svc.logout().subscribe();
+    const req = httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url));
+    expect(req.request.body.sessionToken).toBe('st-1');
+    expect(req.request.body.refreshToken).toBeUndefined();
+    req.flush({ code: 0, message: 'ok' });
+
+    expect(svc.sessionToken).toBeNull();
+    expect(svc.isLoggedIn()).toBe(false);
+  });
+
+  it('revokeSession(id) sends { id } (by row id, not jti)', () => {
     svc.revokeSession(42).subscribe();
     const req = httpMock.expectOne((r) => /\/auth\/revoke-session$/.test(r.url));
     expect(req.request.body.id).toBe(42);
-    expect(req.request.context.get(USE_SESSION_TOKEN)).toBe(true);
     req.flush({ code: 0, message: 'ok' });
-  });
-
-  it('getSessions() sets the USE_SESSION_TOKEN context so isCurrent resolves', () => {
-    svc.getSessions().subscribe();
-    const req = httpMock.expectOne((r) => /\/auth\/sessions$/.test(r.url));
-    expect(req.request.context.get(USE_SESSION_TOKEN)).toBe(true);
-    req.flush({ code: 0, message: 'ok', data: [] });
   });
 });

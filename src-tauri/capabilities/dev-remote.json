@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "dev-remote",
-  "description": "DEBUG-ONLY — loaded only by the Makefile `apk-dev` target, which adds it to app.security.capabilities via a `--config` override (release keeps capabilities=[default], so this rule is not even compiled into release builds). Grants the frontend dev server — loaded as a remote URL by the debug dev-shell — the same IPC the bundled app has, so the dev-server page can invoke app commands (set_api_origin, set_access_token, clear_access_token) and post notifications. remote.urls is intentionally broad (any http(s) origin) for dev convenience; never present in release.",
+  "description": "DEBUG-ONLY — loaded only by the Makefile `apk-dev` target, which adds it to app.security.capabilities via a `--config` override (release keeps capabilities=[default], so this rule is not even compiled into release builds). Grants the frontend dev server — loaded as a remote URL by the debug dev-shell — the same IPC the bundled app has, so the dev-server page can invoke app commands (set_api_origin, set_session_token, clear_session_token) and post notifications. remote.urls is intentionally broad (any http(s) origin) for dev convenience; never present in release.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://*:*", "https://*:*"]

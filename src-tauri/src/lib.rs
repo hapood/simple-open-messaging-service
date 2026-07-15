@@ -10,8 +10,8 @@
 //     the current access token in an `Authorization: Bearer` header. A bare `<img src>` / CSS url()
 //     can't set headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict (so it
 //     can't cross origins) — the proxy is the only correct way to authenticate media in the shell.
-//  3. Hold the access token + live origin for the proxy in `ProxyState`, updated by `set_access_token`
-//     / `clear_access_token` (login/logout) and `set_api_origin` (Server page) commands.
+//  3. Hold the session token + live origin for the proxy in `ProxyState`, updated by `set_session_token`
+//     / `clear_session_token` (login/logout) and `set_api_origin` (Server page) commands.
 
 use std::borrow::Cow;
 use std::fs;
@@ -121,8 +121,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_api_origin,
             set_api_origin,
-            set_access_token,
-            clear_access_token,
+            set_session_token,
+            clear_session_token,
         ])
         .setup(move |app| {
             // Resolve the app-data config path and load the persisted origin, overriding the env/default
@@ -303,17 +303,18 @@ fn set_api_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<St
     Ok(normalized)
 }
 
-/// Stash the access token for the media proxy. Called by AuthService on login / renew.
+/// Stash the session token for the media proxy. Called by AuthService on login (the long-lived session
+/// token authenticates the proxy's /uploads/* requests, replacing the old short-lived access token).
 #[tauri::command]
-fn set_access_token(token: String, state: tauri::State<'_, ProxyState>) {
+fn set_session_token(token: String, state: tauri::State<'_, ProxyState>) {
     if let Ok(mut g) = state.token.lock() {
         *g = Some(token);
     }
 }
 
-/// Clear the stashed token. Called by AuthService on logout / token invalidation.
+/// Clear the stashed session token. Called by AuthService on logout / token invalidation.
 #[tauri::command]
-fn clear_access_token(state: tauri::State<'_, ProxyState>) {
+fn clear_session_token(state: tauri::State<'_, ProxyState>) {
     if let Ok(mut g) = state.token.lock() {
         *g = None;
     }

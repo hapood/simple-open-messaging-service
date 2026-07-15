@@ -8,13 +8,11 @@
  *
  * Auth handshake (the one genuinely tricky part — a naive port reconnects with a stale token in a
  * tight 401 loop): the worker never touches `AuthService` (it can't — it's a worker, no Angular DI,
- * no `localStorage`). Instead it asks the main thread:
- *  - `need-token`  — "give me the current access token" (cheap; used for the first open).
- *  - `renew-token` — "that token 401'd; renew and give me a fresh one" (expensive; main calls
- *    `AuthService.renewAccessToken()`).
- * Both are correlated by `reqId`. The worker caches the most recent token (`currentToken`) and
- * reuses it across reconnects; it only asks again after a 401 clears the cache. A stale `{token, reqId}`
- * reply (from a prior request) is dropped because its `reqId` won't match `tokenReqId`.
+ * no `localStorage`). Instead it asks the main thread for the long-lived session token via `need-token`
+ * (once; reused across reconnects), correlated by `reqId`. A stale `{token, reqId}` reply (from a prior
+ * request) is dropped because its `reqId` won't match `tokenReqId`. There is no renew: a 401 means the
+ * session token is revoked/expired, so the worker posts `force-logout` (main re-logs in) and stops — it
+ * does NOT retry (that would just 401-loop).
  *
  * The stream is read with a bare `fetch` + `getReader()` loop, NOT `@microsoft/fetch-event-source`.
  * That library is main-thread-only — it resolves `window.fetch` / `window.setTimeout` and calls
@@ -90,15 +88,15 @@ function post(msg: ToMain): void {
   sw.postMessage(msg);
 }
 
-/** Ask the main thread for a token (`need-token` = current, `renew-token` = fresh) and await the
- *  matching `{token, reqId}` / `{token-failed, reqId}` reply. Resolves undefined on failure / stop. */
-function requestToken(kind: 'need-token' | 'renew-token'): Promise<string | undefined> {
+/** Ask the main thread for the long-lived session token and await the matching `{token, reqId}` /
+ *  `{token-failed, reqId}` reply. Resolves undefined on failure / stop. */
+function requestToken(): Promise<string | undefined> {
   // The `run` loop is serial, so at most one token request is ever outstanding — no need to queue.
   const reqId = String(++tokenSeq);
   return new Promise<string | undefined>((resolve) => {
     tokenReqId = reqId;
     tokenResolve = resolve;
-    post({ type: kind, reqId });
+    post({ type: 'need-token', reqId });
   });
 }
 
@@ -116,14 +114,12 @@ async function run(): Promise<void> {
     } catch (err) {
       if (manualClose) break;
       if (err instanceof AuthNeededError) {
-        // 401: renew for a fresh token; on success reopen immediately (reset backoff), on failure stop
-        // (redoLoginAuth already ran on main, which replied `token-failed`).
-        post({ type: 'state', state: 'reconnecting' });
-        const fresh = await requestToken('renew-token');
-        if (!fresh || manualClose) break;
-        currentToken = fresh;
-        attempt = 0;
-        continue;
+        // 401: the session token is revoked/expired. There is no renew — tell main to re-login
+        // (force-logout → redoLoginAuth) and stop, so we don't 401-loop. (A server-pushed FORCE_LOGOUT
+        // frame takes the same path in `dispatch`.)
+        manualClose = true;
+        post({ type: 'force-logout' });
+        break;
       }
       // Network / other error: back off and retry.
       post({ type: 'state', state: 'reconnecting' });
@@ -140,7 +136,7 @@ async function run(): Promise<void> {
 async function openOnce(): Promise<void> {
   let token = currentToken;
   if (!token) {
-    token = await requestToken('need-token');
+    token = await requestToken();
     if (!token || manualClose) return;
     currentToken = token;
   }
@@ -153,7 +149,7 @@ async function openOnce(): Promise<void> {
     cache: 'no-store',
   });
   if (res.status === 401) {
-    currentToken = undefined; // force a renew on the next loop iteration
+    currentToken = undefined; // session token dead — the run loop posts force-logout + stops
     throw new AuthNeededError();
   }
   if (!res.ok || !res.body) {

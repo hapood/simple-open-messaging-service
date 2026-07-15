@@ -15,24 +15,20 @@ import type { ToMain, ToWorker } from './sse-worker-protocol';
  * and the online/offline fast-path — everything off the main thread so SSE parsing never contends with
  * the virtual-scroll kernel or the Tiptap editor. This class is a thin `postMessage` bridge: it spawns
  * the worker, forwards its `state`/`event`/`reconnect`/`force-logout` messages onto the {@link RealtimeSink},
- * and answers the worker's token requests via {@link AuthService} (which only the main thread can reach).
+ * and answers the worker's `need-token` request with the long-lived session token.
  *
- * Token handshake (the worker cannot reach AuthService or localStorage, so it asks us):
- *  - `need-token` → return the current access token (wait for one if none held yet). Cheap path.
- *  - `renew-token` → a 401 occurred; call `renewAccessToken()` (single-flight across concurrent
- *    requests), return the fresh token or `token-failed` (which stops the worker — `redoLoginAuth`
- *    has already run inside renew). Replies are routed to the specific `Worker` instance that asked,
- *    so a reply computed before a `stop()`/reconnect can never land in a freshly-spawned worker.
+ * Token handshake: the worker is spawned at boot (pre-login) and asks for the token via `need-token`. We
+ * hand it the current session token, waiting for the first non-null emission if login hasn't happened yet
+ * (the worker must BLOCK, not busy-loop). The token is long-lived + reused across reconnects — there is no
+ * `renew-token` (a 401 means the session is dead; the worker posts `force-logout` and stops). Replies are
+ * routed to the specific `Worker` instance that asked, so a reply computed before a `stop()`/reconnect can
+ * never land in a freshly-spawned worker.
  */
 export class WorkerSseTransport extends RealtimeTransport {
   /** The spawned SSE worker. Undefined while stopped (or between an error and the respawn). */
   private worker?: Worker;
   /** The pending 1s respawn from {@link onWorkerError}, cancelled if {@link retryNow} fires first. */
   private respawnTimer?: ReturnType<typeof setTimeout>;
-  /** Single-flight in-progress token renew, so concurrent `renew-token` requests share one call.
-   *  `AuthService.renewAccessToken()` nulls `acTkSub` mid-flight, so un-collapsed concurrent callers
-   *  would both see null and loop — this collapses them onto the same Promise. */
-  private renewInFlight?: Promise<string | null>;
 
   constructor(sink: RealtimeSink, private readonly authService: AuthService) {
     super(sink);
@@ -60,7 +56,6 @@ export class WorkerSseTransport extends RealtimeTransport {
     this.worker = undefined
     clearTimeout(this.respawnTimer)
     this.respawnTimer = undefined
-    this.renewInFlight = undefined
     this.sink.onState('closed')
   }
 
@@ -84,42 +79,27 @@ export class WorkerSseTransport extends RealtimeTransport {
       case 'event': this.sink.onEvent(m.payload as StandardMessage); break;
       case 'reconnect': this.sink.onReconnect(); break;
       case 'need-token': void this.handleNeedToken(m.reqId); break;
-      case 'renew-token': void this.handleRenewToken(m.reqId); break;
       case 'force-logout':
-        // Server-initiated kick — the facade clears state + re-logs in (onForceLogout).
+        // The session token 401'd (revoked/expired) OR the server pushed FORCE_LOGOUT — the worker has
+        // already stopped itself; the facade clears state + re-logs in (onForceLogout).
         this.sink.onForceLogout();
         break;
     }
   }
 
-  /** Cheap path — provide the current access token, waiting for one if none is held yet. */
+  /** Provide the long-lived session token. If none is held yet (the worker spawned at boot, pre-login),
+   *  block on the first non-null emission so the worker doesn't busy-loop. If `stop()`/reconnect swapped
+   *  the worker while we were waiting, drop the reply. A null result (logout won the race) is replied as
+   *  `token-failed`, which makes the worker treat it as a give-up (it stops + the facade re-logs in). */
   private async handleNeedToken(reqId: string): Promise<void> {
     const worker = this.worker
     if (!worker) return
-    let token = this.authService.accessToken
+    let token = this.authService.sessionToken
     if (!token) {
-      token = await this.waitForAccessToken()
+      token = await firstValueFrom(
+        this.authService.sessionToken$.pipe(filter((t): t is string => t !== null)),
+      ).catch(() => null)
     }
-    // If stop()/reconnect swapped the worker while we were waiting, drop the reply.
-    if (this.worker !== worker) return
-    this.postTokenReply(worker, reqId, token)
-  }
-
-  /** Expensive path — a 401 occurred; renew the access token (single-flight), then reply. On failure
-   *  `redoLoginAuth` has already run inside renew → reply `token-failed` and the worker stops. */
-  private async handleRenewToken(reqId: string): Promise<void> {
-    const worker = this.worker
-    if (!worker) return
-    if (!this.renewInFlight) {
-      this.renewInFlight = new Promise<string | null>((resolve) => {
-        this.authService.renewAccessToken().subscribe({
-          next: (res) => resolve(res.code === 0 ? this.authService.accessToken : null),
-          error: () => resolve(null),
-        })
-      })
-    }
-    const token = await this.renewInFlight
-    this.renewInFlight = undefined
     if (this.worker !== worker) return
     this.postTokenReply(worker, reqId, token)
   }
@@ -132,27 +112,12 @@ export class WorkerSseTransport extends RealtimeTransport {
     )
   }
 
-  /** Resolve the first non-null access token from AuthService. Returns null if none arrives — the worker
-   *  treats null as "give up" (only happens on the failure path, where redoLoginAuth ran). */
-  private async waitForAccessToken(): Promise<string | null> {
-    const cur = this.authService.accessToken
-    if (cur) return cur
-    try {
-      return await firstValueFrom(
-        this.authService.acTkSub.pipe(filter((t): t is string => t !== null)),
-      )
-    } catch {
-      return null
-    }
-  }
-
   /** A dedicated worker that throws an uncaught exception is dead — it will never recover on its own,
    *  so SSE would silently stop forever. Flip to `reconnecting` (so the banner explains the outage) and
    *  respawn the worker after a short delay; the worker's own backoff then paces reconnect attempts. */
   private onWorkerError(): void {
     this.worker?.terminate()
     this.worker = undefined
-    this.renewInFlight = undefined
     this.sink.onState('reconnecting')
     this.respawnTimer = setTimeout(() => this.start(), 1000)
   }

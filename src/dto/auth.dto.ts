@@ -111,15 +111,19 @@ export class RefreshTokenDto {
   device?: string;
 }
 
-/** logout input: refreshToken is required (legacy); accessJti + sessionToken are optional. */
+/** logout input: refreshToken + accessJti are legacy (optional — the session-token client omits both);
+ *  sessionToken is the primary revocation credential for the session-token client. At least one of
+ *  refreshToken / sessionToken is expected, but neither is hard-required so a client transitioning off
+ *  refresh can revoke by session token alone. */
 export class LogoutDto {
   @ApiProperty({
+    required: false,
     example: 'eyJhbGciOiJIUzI1NiIs...',
-    description: 'refresh token',
+    description: 'refresh token (legacy; omitted by the session-token client)',
   })
   @IsString()
-  @IsNotEmpty()
-  refreshToken!: string;
+  @IsOptional()
+  refreshToken?: string;
 
   @ApiProperty({
     required: false,

@@ -98,7 +98,11 @@ export class AuthController {
         client,
         { device: body.device, userAgent, ip },
       );
-      this.setMediaCookie(reply, tokens.access_token);
+      // The httpOnly media cookie mirrors the bearer credential the same-origin /uploads/* preHandler
+      // validates (AccessTokenValidator resolves access-JWT OR session token). Mirror the SESSION token
+      // (long-lived, sliding) — not the 15-min access token — so browser media stays authenticated
+      // without a renew cycle. (Legacy renew-access still mirrors the access token for old clients.)
+      this.setMediaCookie(reply, session_token);
       return {
         code: BusinessCode.OK,
         message: 'successful',
@@ -208,9 +212,12 @@ export class AuthController {
     @Body() dto: LogoutDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
-    // The client sends a 'public' header + body; no JWT auth needed — possession of the refresh
-    // token authorizes the revocation.
-    await this.authService.logout(dto.refreshToken);
+    // No JWT auth needed — possession of the refresh token (legacy) or the session token authorizes the
+    // revocation. The session-token client revokes via sessionToken (below); a legacy client still sends
+    // its refresh token. refreshToken is optional now, so guard the legacy revoke path.
+    if (dto.refreshToken) {
+      await this.authService.logout(dto.refreshToken);
+    }
     if (dto.accessJti) {
       await this.authService.blacklistAccessJti(dto.accessJti);
     }

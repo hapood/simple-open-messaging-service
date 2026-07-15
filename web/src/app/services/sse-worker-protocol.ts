@@ -5,9 +5,10 @@
  *
  * Lifecycle:
  *  - main posts `start` once the worker is spawned (the worker idles until then).
- *  - the worker asks for tokens via `need-token` (cheap: the current access token) or `renew-token`
- *    (expensive: a fresh token after a 401). Both are correlated by `reqId` so a stale reply from a
- *    prior request can never satisfy the current one (see the handshake notes in `sse.worker.ts`).
+ *  - the worker asks for the long-lived session token via `need-token` (once; reused across reconnects).
+ *    Correlated by `reqId` so a stale reply from a prior request can never satisfy the current one (see
+ *    the handshake notes in `sse.worker.ts`). There is no `renew-token` — a 401 means the session token is
+ *    revoked/expired, handled by `force-logout` (re-login), not a renew.
  *  - the worker streams `state` changes, `event` frames, and the `reconnect` backfill pulse up; main
  *    re-emits these onto the existing `state` signal / `eventSubject` / `reconnect$` unchanged.
  */
@@ -38,7 +39,6 @@ export type ToMain =
   | { type: 'event'; payload: SseEventPayload }
   | { type: 'reconnect' }
   | { type: 'need-token'; reqId: string }
-  | { type: 'renew-token'; reqId: string }
   | { type: 'force-logout' };
 
 /** Server-side named SSE events the worker must special-case (mirrors `src/gateway/sse.service.ts`).

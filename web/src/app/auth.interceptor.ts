@@ -6,78 +6,44 @@ import {
   HttpEvent,
   HttpErrorResponse,
 } from '@angular/common/http';
-import { Observable, of, EMPTY, throwError, catchError, switchMap } from 'rxjs';
-import { AuthService, USE_SESSION_TOKEN } from './services/auth.service';
+import { Observable, EMPTY, throwError, catchError } from 'rxjs';
+import { AuthService } from './services/auth.service';
 
 /**
- * Public endpoints (no token required, excluded from 401 retry): auth-related + user registration
- * (at /user/register, usable before login) + health check (GET /health, used by the server-config
- * connection probe and potentially by a future main-screen connection banner).
- * The former `Authorization: 'public'` header marker is obsolete — replaced by a URL-path whitelist
- * (declarative, unambiguous).
+ * Public endpoints (no token required): auth-related + user registration (at /user/register, usable
+ * before login) + health check (GET /health, used by the server-config connection probe). Declared as a
+ * URL-path whitelist (unambiguous) — the former `Authorization: 'public'` header marker is obsolete.
  */
 const PUBLIC_PATH = /\/(auth\/(login|renew-access|renew-refresh|logout)|user\/register|health)$/;
 
+/**
+ * Attaches the long-lived session token as `Authorization: Bearer` to every non-public request. There is
+ * no access JWT, no refresh, and no renewal — so there is no `withToken`/`retryOnce` 401-renew machinery.
+ * A 401 means the session token is revoked/expired → {@link AuthService.redoLoginAuth} (re-login); the
+ * failed request is dropped (the page navigates to login). When no session token is held the request goes
+ * out unauthenticated and the same 401 path handles it.
+ */
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
   constructor(private authService: AuthService) {}
 
   intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<Object>> {
     if (PUBLIC_PATH.test(req.url)) {
-      return next.handle(req)
+      return next.handle(req);
     }
-    // Device-management calls opt into the long-lived session token: only a session token carries the
-    // session id the server needs to flag the requesting row `isCurrent`. No 401-renew-retry here — the
-    // session token has no renewal; a 401 (revoked/expired) surfaces to the caller. When the flag is set
-    // but no session token is held yet (page refresh before re-login), fall through to the access-JWT path.
-    if (req.context.get(USE_SESSION_TOKEN)) {
-      const sessionToken = this.authService.sessionToken
-      if (sessionToken) {
-        return next.handle(this.addTokenHeader(req, sessionToken)).pipe(
-          catchError((error) => throwError(() => error)),
-        )
-      }
-    }
-    return this.withToken().pipe(
-      switchMap((token) =>
-        next.handle(this.addTokenHeader(req, token)).pipe(
-          catchError((error) =>
-            error instanceof HttpErrorResponse && error.status === 401
-              ? this.retryOnce(req, next)
-              : throwError(() => error),
-          ),
-        ),
-      ),
-    )
+    const token = this.authService.sessionToken;
+    const authed = token ? this.addTokenHeader(req, token) : req;
+    return next.handle(authed).pipe(catchError((error) => this.on401(error)));
   }
 
-  /**
-   * Obtain the current access token:
-   * - present → use it directly;
-   * - absent (startup / renew in progress) → proactively drive renewAccessToken (internally single-flight;
-   *   concurrent requests share the same refresh), yielding a fresh token on success; on failure (reuse/invalid)
-   *   renew already triggered redoLoginAuth → return EMPTY here to drop the request (the page has navigated to login).
-   * Key: never "wait for acTkSub to emit a non-empty value" — renewAccessToken has a definite endpoint, so it cannot hang forever.
-   */
-  private withToken(): Observable<string> {
-    const cur = this.authService.accessToken
-    if (cur) {
-      return of(cur)
+  /** A 401 = the session token is revoked/expired (there is no renew). Re-login + drop the request so the
+   *  caller's subscriber sees nothing (the page has navigated to login). Non-401 errors propagate. */
+  private on401(error: unknown): Observable<HttpEvent<Object>> {
+    if (error instanceof HttpErrorResponse && error.status === 401) {
+      this.authService.redoLoginAuth();
+      return EMPTY;
     }
-    return this.authService.renewAccessToken().pipe(
-      switchMap((res) => (res.code === 0 ? of(res.data!.access_token) : EMPTY)),
-    )
-  }
-
-  /**
-   * 401 retry: renew once, then re-send the original request with the new token (capped at 1 attempt, no recursion → no infinite loop).
-   * Renew failure → EMPTY to drop the request (renew already triggered redoLoginAuth).
-   */
-  private retryOnce(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<Object>> {
-    return this.authService.renewAccessToken().pipe(
-      switchMap((res) => (res.code === 0 ? of(res.data!.access_token) : EMPTY)),
-      switchMap((token) => next.handle(this.addTokenHeader(req, token))),
-    )
+    return throwError(() => error);
   }
 
   private addTokenHeader(request: HttpRequest<any>, token: string) {

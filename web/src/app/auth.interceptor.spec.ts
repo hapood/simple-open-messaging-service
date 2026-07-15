@@ -1,28 +1,26 @@
-import { HttpRequest, HttpHandler, HttpErrorResponse, HttpContext, HttpEvent } from '@angular/common/http';
+import { HttpRequest, HttpHandler, HttpErrorResponse, HttpEvent } from '@angular/common/http';
 import { Observable, of, throwError } from 'rxjs';
 import { AuthInterceptor } from './auth.interceptor';
-import { AuthService, USE_SESSION_TOKEN } from './services/auth.service';
+import { AuthService } from './services/auth.service';
 
 /**
- * AuthInterceptor USE_SESSION_TOKEN branch — the device-management auth path.
+ * AuthInterceptor — the single session-token auth path.
  *
- * Locked down here (pure unit: AuthInterceptor instantiated with a stub AuthService, no TestBed):
- *  - a request flagged USE_SESSION_TOKEN + a held session token → that session token is attached;
- *  - the same flag with NO session token held → falls through to the access-JWT path (isCurrent=false);
- *  - an ordinary request (no flag) → the access-JWT path, unaffected;
- *  - a device-management 401 propagates (no session-token renew-retry, unlike the access-JWT path).
+ * Pure unit (AuthInterceptor + a stub AuthService, no TestBed):
+ *  - a protected request with a held session token → that token is attached as Bearer;
+ *  - a public path (login/logout/register/health) → no token attached;
+ *  - no session token held → the request goes out unauthenticated (the server 401s → re-login);
+ *  - a 401 on a protected request → redoLoginAuth fires and the request is DROPPED (EMPTY), not retried;
+ *  - a non-401 error propagates unchanged.
  */
-describe('AuthInterceptor (USE_SESSION_TOKEN branch)', () => {
+describe('AuthInterceptor (session token)', () => {
   /** Build an interceptor around a stub AuthService with the given token state. */
-  function makeInterceptor(sessionToken: string | null, accessToken = 'access-jwt') {
+  function makeInterceptor(sessionToken: string | null) {
     const auth = {
       sessionToken,
-      accessToken,
-      // The access-JWT path's renew fallback; tests that take that path always have accessToken set, so
-      // this should never actually run — keep it as a failing spy to surface any drift.
-      renewAccessToken: jasmine.createSpy('renewAccessToken'),
+      redoLoginAuth: jasmine.createSpy('redoLoginAuth'),
     } as unknown as AuthService;
-    return new AuthInterceptor(auth);
+    return { ic: new AuthInterceptor(auth), auth };
   }
 
   /** Run the interceptor against `req` and capture the request handed to the handler. */
@@ -38,38 +36,51 @@ describe('AuthInterceptor (USE_SESSION_TOKEN branch)', () => {
     return captured!;
   }
 
-  it('attaches the session token when USE_SESSION_TOKEN is set and one is held', () => {
-    const ic = makeInterceptor('sess-123');
-    const req = new HttpRequest('POST', '/api/v1/auth/sessions', {}, {
-      context: new HttpContext().set(USE_SESSION_TOKEN, true),
-    });
+  it('attaches the held session token to a protected request', () => {
+    const { ic } = makeInterceptor('sess-123');
+    const req = new HttpRequest('GET', '/api/v1/messages', {});
     expect(captureHandled(ic, req).headers.get('Authorization')).toBe('Bearer sess-123');
   });
 
-  it('falls back to the access JWT when USE_SESSION_TOKEN is set but no session token is held', () => {
-    const ic = makeInterceptor(null, 'access-jwt');
-    const req = new HttpRequest('POST', '/api/v1/auth/sessions', {}, {
-      context: new HttpContext().set(USE_SESSION_TOKEN, true),
-    });
-    expect(captureHandled(ic, req).headers.get('Authorization')).toBe('Bearer access-jwt');
+  it('does NOT attach a token to a public path (login)', () => {
+    const { ic } = makeInterceptor('sess-123');
+    const req = new HttpRequest('POST', '/api/v1/auth/login', {});
+    expect(captureHandled(ic, req).headers.has('Authorization')).toBe(false);
   });
 
-  it('uses the access jwt for an ordinary request (no USE_SESSION_TOKEN context)', () => {
-    const ic = makeInterceptor('sess-123', 'access-jwt');
+  it('sends an unauthenticated request when no session token is held', () => {
+    const { ic } = makeInterceptor(null);
     const req = new HttpRequest('GET', '/api/v1/messages', {});
-    expect(captureHandled(ic, req).headers.get('Authorization')).toBe('Bearer access-jwt');
+    expect(captureHandled(ic, req).headers.has('Authorization')).toBe(false);
   });
 
-  it('propagates a 401 on a device-management call (no session-token renew-retry)', () => {
-    const ic = makeInterceptor('sess-123');
-    const req = new HttpRequest('POST', '/api/v1/auth/sessions', {}, {
-      context: new HttpContext().set(USE_SESSION_TOKEN, true),
-    });
-    let errored = false;
+  it('a 401 fires redoLoginAuth and DROPS the request (no renew-retry)', () => {
+    const { ic, auth } = makeInterceptor('sess-123');
+    const req = new HttpRequest('GET', '/api/v1/messages', {});
     const next: HttpHandler = {
       handle: () => throwError(() => new HttpErrorResponse({ status: 401 })),
     };
+    let nexted = false, errored = false, completed = false;
+    ic.intercept(req, next).subscribe({
+      next: () => (nexted = true),
+      error: () => (errored = true),
+      complete: () => (completed = true),
+    });
+    expect(auth.redoLoginAuth).toHaveBeenCalledTimes(1);
+    expect(nexted).toBe(false);
+    expect(errored).toBe(false); // EMPTY → complete, not propagated
+    expect(completed).toBe(true);
+  });
+
+  it('a non-401 error propagates unchanged (no re-login)', () => {
+    const { ic, auth } = makeInterceptor('sess-123');
+    const req = new HttpRequest('GET', '/api/v1/messages', {});
+    const next: HttpHandler = {
+      handle: () => throwError(() => new HttpErrorResponse({ status: 500 })),
+    };
+    let errored = false;
     ic.intercept(req, next).subscribe({ error: () => (errored = true) });
+    expect(auth.redoLoginAuth).not.toHaveBeenCalled();
     expect(errored).toBe(true);
   });
 });

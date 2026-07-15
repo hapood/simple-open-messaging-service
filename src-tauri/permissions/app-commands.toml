@@ -1,7 +1,7 @@
 "$schema" = "schemas/schema.json"
 
 # App-defined IPC commands registered via generate_handler! in src/lib.rs (set_api_origin,
-# get_api_origin, set_access_token, clear_access_token). WITHOUT this file the app has no ACL, so these
+# get_api_origin, set_session_token, clear_session_token). WITHOUT this file the app has no ACL, so these
 # commands are callable from the bundled (app-origin) webview but NOT from a REMOTE origin — the debug
 # dev-shell loads the frontend dev server as a remote URL, and invoke returns
 # "<cmd> not allowed. Plugin not found". Defining them here gives them ACL entries so the dev-remote
@@ -18,15 +18,15 @@ description = "Enables the get_api_origin command without any pre-configured sco
 commands.allow = ["get_api_origin"]
 
 [[permission]]
-identifier = "allow-set-access-token"
-description = "Enables the set_access_token command without any pre-configured scope."
-commands.allow = ["set_access_token"]
+identifier = "allow-set-session-token"
+description = "Enables the set_session_token command without any pre-configured scope."
+commands.allow = ["set_session_token"]
 
 [[permission]]
-identifier = "allow-clear-access-token"
-description = "Enables the clear_access_token command without any pre-configured scope."
-commands.allow = ["clear_access_token"]
+identifier = "allow-clear-session-token"
+description = "Enables the clear_session_token command without any pre-configured scope."
+commands.allow = ["clear_session_token"]
 
 [default]
-description = "All app-defined IPC commands: API origin get/set + access token set/clear."
-permissions = ["allow-set-api-origin", "allow-get-api-origin", "allow-set-access-token", "allow-clear-access-token"]
+description = "All app-defined IPC commands: API origin get/set + session token set/clear."
+permissions = ["allow-set-api-origin", "allow-get-api-origin", "allow-set-session-token", "allow-clear-session-token"]
