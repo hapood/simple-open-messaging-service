@@ -5,6 +5,7 @@ import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
+import { MissedSyncService } from './missed-sync.service';
 import { ConversationItem, User } from './model';
 import { planDelta } from './thread-delta';
 import { toFriendlyHttpError } from './http-error';
@@ -45,6 +46,7 @@ export class ThreadRepository {
   private readonly ws = inject(WebsocketService);
   private readonly profileRepo = inject(ProfileRepository);
   private readonly messageRepo = inject(MessageRepository);
+  private readonly missedSync = inject(MissedSyncService);
 
   private readonly _items = signal<ConversationItem[]>([]);
   readonly items = this._items.asReadonly();
@@ -121,6 +123,9 @@ export class ThreadRepository {
     // (any add/delete / preview / unread missed during the disconnect — SSE does not replay). Owned here
     // (the DB layer handles its own refresh), so the UI layer stops subscribing for this purpose.
     this.sseSub.add(this.ws.reconnect$.subscribe(() => this.load({ force: true })));
+    // Missed catch-up hydrated newer local messages → re-derive list previews from the local store (the
+    // snapshot no longer embeds preview content, so previews are local-first).
+    this.sseSub.add(this.missedSync.catchUpDone$.subscribe(() => { void this.hydratePreviews(); }));
 
     // Session-end reset: when the session ends (sessionProfile → undefined, i.e. clearSession/logout),
     // drop the in-memory list so a second account logging into the same live SPA cannot inherit this
@@ -203,6 +208,8 @@ export class ThreadRepository {
       void this.persistThreads(this._items());
       this._status.set('READY');
       this._error.set('');
+      // Derive list previews from the local message store (the snapshot no longer embeds preview content).
+      void this.hydratePreviews();
     } catch (err) {
       if (gen !== this.bootGen) return;
       // First-boot failure (no cached paint) → ERROR. Otherwise keep the cached paint (stale but usable);
@@ -487,6 +494,51 @@ export class ThreadRepository {
     });
     if (changed) void this.persistThread(changed);
     if (!existed) this.load();
+  }
+
+  /** Re-derive each thread's list preview (lastMessagePreview/SenderId/SenderName) from the LOCAL message
+   *  store. The threadlist snapshot no longer embeds preview content (local-first), so the list derives it
+   *  from the newest cached message — fed by SSE ({@link onNewMessage}) + the missed catch-up. Runs on
+   *  boot (after the snapshot) + after each catch-up. Leaves `lastMessageAt` untouched (the snapshot's
+   *  value is the authoritative sort key); a thread with no cached message yet keeps its prior preview.
+   *  Group sender names are resolved best-effort from the profile cache (bare when unknown — same as a
+   *  live NEW_MESSAGE, which can't resolve the name cheaply either). */
+  private async hydratePreviews(): Promise<void> {
+    const items = this._items();
+    if (items.length === 0) return;
+    const me = this.userService.sessionProfile()?.id;
+    const byThread = new Map<
+      number,
+      {
+        lastMessagePreview: string;
+        lastMessageSenderId: number;
+        lastMessageSenderName: string | null;
+      }
+    >();
+    await Promise.all(
+      items.map(async (it) => {
+        const m = await this.messageRepo.getNewestMessage(it.threadId);
+        if (!m) return; // nothing cached locally yet — leave the item's preview as-is
+        const senderName =
+          it.type === 'GROUP' && m.creator !== me
+            ? ((await this.profileRepo.getProfile(`u${m.creator}`))?.name ?? null)
+            : null;
+        byThread.set(it.threadId, {
+          lastMessagePreview: rawPreview(m.contentType, m.content),
+          lastMessageSenderId: m.creator,
+          lastMessageSenderName: senderName,
+        });
+      }),
+    );
+    if (byThread.size === 0) return;
+    this._items.update((list) =>
+      list.map((it) => {
+        const patch = byThread.get(it.threadId);
+        return patch ? { ...it, ...patch } : it;
+      }),
+    );
+    // Persist so the next boot's cached paint already carries the derived preview (no "no messages" flash).
+    void this.persistThreads(this._items());
   }
 
   /**

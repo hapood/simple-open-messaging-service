@@ -1,6 +1,6 @@
 import { Injectable, inject, effect, untracked, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Subscription, firstValueFrom } from 'rxjs';
+import { Subject, Subscription, firstValueFrom } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { WebsocketService } from './websocket.service';
 import { MessageRepository } from './message-repository.service';
@@ -52,6 +52,11 @@ export class MissedSyncService implements OnDestroy {
   private inFlight = false;
   private readonly sub: Subscription;
 
+  /** Fires after a catch-up run that applied ≥1 page, so downstream (ThreadRepository) can re-derive the
+   *  list previews from the newly-hydrated local messages. */
+  private readonly _catchUpDone$ = new Subject<void>();
+  readonly catchUpDone$ = this._catchUpDone$.asObservable();
+
   constructor() {
     // Reconnect → catch up (the SSE stream resumed, but the offline gap is not replayed).
     this.sub = this.ws.reconnect$.subscribe(() => {
@@ -76,6 +81,7 @@ export class MissedSyncService implements OnDestroy {
     if (this.inFlight) return;
     if (!this.webdb.ready()) return; // no DB → nothing to cache into (the effect gate usually covers this)
     this.inFlight = true;
+    let applied = false;
     try {
       // First page bound: the HWM (null → INIT newest-per-thread seed). Every later page uses the opaque cursor.
       const hwm = await this.messageRepo.getHwm();
@@ -91,11 +97,13 @@ export class MissedSyncService implements OnDestroy {
         ).catch(() => null);
         if (!res || res.code !== 0 || !res.data) return;
         await this.messageRepo.applyMissed(res.data.messages ?? []);
+        applied = true;
         if (!res.data.hasMore || !res.data.nextCursor) return;
         bound = { cursor: res.data.nextCursor }; // cursor takes precedence; `since` is dropped hereafter
       }
     } finally {
       this.inFlight = false;
+      if (applied) this._catchUpDone$.next();
     }
   }
 

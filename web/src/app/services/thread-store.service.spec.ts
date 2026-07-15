@@ -5,6 +5,7 @@ import { signal, provideZonelessChangeDetection } from '@angular/core';
 import { WebdbService } from './webdb.service';
 import { ThreadRepository } from './thread-store.service';
 import { MessageRepository } from './message-repository.service';
+import { MissedSyncService } from './missed-sync.service';
 import { ProfileRepository } from './profile-store.service';
 import { UserService } from './user.service';
 import { MsgService } from './message.service';
@@ -70,8 +71,13 @@ describe('ThreadRepository', () => {
         { provide: MsgService, useValue: { queryMessageLog: jasmine.createSpy('queryMessageLog') } },
         {
           provide: ProfileRepository,
-          useValue: { putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined) },
+          useValue: {
+            putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined),
+            // hydratePreviews resolves group sender names best-effort; resolve to undefined (bare) in tests.
+            getProfile: jasmine.createSpy('getProfile').and.resolveTo(undefined),
+          },
         },
+        { provide: MissedSyncService, useValue: { catchUpDone$: new Subject<void>() } },
         {
           provide: WebsocketService,
           useValue: { eventSubject, reconnect$ },

@@ -228,27 +228,6 @@ export class UserController {
       .map((p) => p.threadId);
     const groupByThread =
       await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
-    // Hydrate the last-message sender's display name for GROUP threads so the list can prefix group
-    // previews with "Name:". Only GROUP senders are resolved — P2P previews are never prefixed (the
-    // peer is implied), so the dict simply has no entry for P2P senders.
-    const groupSenderIds = Array.from(
-      new Set(
-        list
-          .filter((p) => p.thread.type === 'GROUP')
-          .map((p) => p.thread.lastMessageSenderId)
-          .filter((id): id is number => id != null),
-      ),
-    );
-    const groupSenders =
-      groupSenderIds.length > 0
-        ? await this.userService.queryUsers({
-            where: { id: { in: groupSenderIds } },
-          })
-        : [];
-    const senderNameById = new Map<number, string>();
-    groupSenders.forEach((u) => {
-      senderNameById.set(u.id, u.name);
-    });
     const data = list.map((p) => {
       const item = {
         id: p.id,
@@ -257,13 +236,9 @@ export class UserController {
         lastReadSeq: p.lastReadSeq ?? undefined,
         role: p.role ?? undefined,
         unreadCount: unread.get(p.threadId) ?? 0,
-        lastMessagePreview: p.thread.lastMessagePreview ?? null,
+        // The list preview is NOT embedded — the client derives it from its local message store
+        // (local-first). lastMessageAt stays (cheap, needed for sort).
         lastMessageAt: p.thread.lastMessageAt ?? null,
-        lastMessageSenderId: p.thread.lastMessageSenderId ?? null,
-        lastMessageSenderName:
-          p.thread.lastMessageSenderId != null
-            ? (senderNameById.get(p.thread.lastMessageSenderId) ?? null)
-            : null,
         // Per-user display state: mute (notification suppression), pin (top-tier ordering), and the
         // per-user clear-history watermark (query-messages hides rows older than this for this user).
         muted: p.muted,
@@ -278,10 +253,7 @@ export class UserController {
         lastReadSeq: number | undefined;
         role: GroupRole | undefined;
         unreadCount: number;
-        lastMessagePreview: string | null;
         lastMessageAt: Date | null;
-        lastMessageSenderId: number | null;
-        lastMessageSenderName: string | null;
         muted: boolean;
         pinned: boolean;
         pinnedAt: Date | null;
@@ -555,9 +527,7 @@ export class UserController {
       lastReadSeq: p.lastReadSeq ?? undefined,
       role: p.role ?? undefined,
       unreadCount: unread.get(p.threadId) ?? 0,
-      lastMessagePreview: p.thread.lastMessagePreview ?? null,
       lastMessageAt: p.thread.lastMessageAt ?? null,
-      lastMessageSenderId: p.thread.lastMessageSenderId ?? null,
       muted: p.muted,
       pinned: p.pinned,
       pinnedAt: p.pinnedAt ?? null,
@@ -570,10 +540,7 @@ export class UserController {
       lastReadSeq: number | undefined;
       role: GroupRole | undefined;
       unreadCount: number;
-      lastMessagePreview: string | null;
       lastMessageAt: Date | null;
-      lastMessageSenderId: number | null;
-      lastMessageSenderName?: string | null;
       muted: boolean;
       pinned: boolean;
       pinnedAt: Date | null;
@@ -605,13 +572,6 @@ export class UserController {
       item.group = gu
         ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio, domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain }
         : undefined;
-      // Resolve the last-message sender's display name for the group preview prefix.
-      if (p.thread.lastMessageSenderId != null) {
-        const [sender] = await this.userService.queryUsers({
-          where: { id: p.thread.lastMessageSenderId },
-        });
-        item.lastMessageSenderName = sender ? sender.name : null;
-      }
     }
     return { code: BusinessCode.OK, message: 'successful', data: item };
   }

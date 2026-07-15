@@ -298,6 +298,25 @@ export class MessageRepository {
     return this.hwm;
   }
 
+  /** The newest cached message for a thread (highest seq), or undefined when none is cached / IDB is
+   *  unavailable. Drives the local-first list-preview derivation — the threadlist snapshot no longer
+   *  embeds preview content, so the list derives it from this (fed by SSE + the missed catch-up). */
+  async getNewestMessage(threadId: number): Promise<Message | undefined> {
+    try {
+      const db = await this.webdb.db();
+      // Composite-key range [threadId, *], cursor backwards → the first entry is the highest seq.
+      const cursor = await db
+        .transaction('messages')
+        .store.openCursor(
+          IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
+          'prev',
+        );
+      return cursor?.value;
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Decide whether `cached` is a complete, contiguous held range for the query (→ cache hit) or whether
    * the cache lacks data here (→ gap-fill). `cached` is in `orderBy` order (desc: highest-first below the

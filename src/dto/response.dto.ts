@@ -231,15 +231,6 @@ export class ConversationItemDto {
   unreadCount!: number;
 
   @ApiProperty({
-    type: String,
-    example: 'hi group',
-    nullable: true,
-    description:
-      'Short preview of the thread\'s last message (content-type aware: "[Photo]" / "[Group invite]" / text). Null on empty threads.',
-  })
-  lastMessagePreview?: string | null;
-
-  @ApiProperty({
     type: Number,
     example: 1_700_000_000_000,
     nullable: true,
@@ -247,23 +238,6 @@ export class ConversationItemDto {
       'When the last message was sent (ms timestamp). Null on empty threads.',
   })
   lastMessageAt?: number | null;
-
-  @ApiProperty({
-    type: Number,
-    example: 7,
-    nullable: true,
-    description: 'Sender userId of the last message. Null on empty threads.',
-  })
-  lastMessageSenderId?: number | null;
-
-  @ApiProperty({
-    type: String,
-    example: 'Alice',
-    nullable: true,
-    description:
-      'Display name of the last-message sender (GROUP conversations only — used to prefix group previews like "Alice: hi"). Null/absent on P2P and empty threads.',
-  })
-  lastMessageSenderName?: string | null;
 
   @ApiProperty({
     example: false,
