@@ -51,7 +51,6 @@ model User {
   messages           Message[]           @relation("AuthoredMessages")
   refreshTokens      RefreshToken[]
   pushTokens         PushToken[]
-  notificationTokens NotificationToken[]
   sessionTokens      SessionToken[]
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
   userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
@@ -96,25 +95,7 @@ model PushToken {
   @@index([userId]) // dispatch lookup: tokens to fan out for a recipient set
 }
 
-/// Long-lived, revocable, single-purpose credential for background pollers (the Android WorkManager
-/// NotificationSyncWorker) that can't hold a 15-minute access token and must not share the refresh
-/// token family (which would race the web client's own renewal). Mirrors RefreshToken's hash+lookup:
-/// we store only the sha256 hash; the plaintext is returned once at issue and sent as a Bearer header
-/// on /notifications/*. Scoped by NotificationTokenGuard to ONLY the missed-thread endpoint, so a
-/// leak grants no other app access. Revoked on logout.
-model NotificationToken {
-  id        Int       @id @default(autoincrement())
-  userId    Int
-  user      User      @relation(fields: [userId], references: [id])
-  tokenHash String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
-  createdAt DateTime  @default(now())
-  expiresAt DateTime // 30-day TTL — the poller re-issues on next foreground login
-  revokedAt DateTime? // soft revoke on logout
-
-  @@index([userId])
-}
-
-/// Long-lived session credential that supersedes the access+refresh+notification trinity for native +
+/// Long-lived session credential that supersedes the access+refresh pair for native +
 /// web clients (Telegram-style: one credential per device, revocable). Opaque (`randomBytes(32)`),
 /// sha256-hashed in DB — the plaintext is returned once at issue and sent as a Bearer header.
 /// `expiresAt` is NULL for the native app (no lifecycle — revocation-only; the token lives in the

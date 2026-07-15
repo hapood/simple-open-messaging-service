@@ -28,8 +28,8 @@ function hashToken(token: string): string {
 
 /**
  * Issues + validates long-lived, revocable, per-device session credentials (the single credential that
- * replaces the access+refresh+notification trinity). Mirrors NotificationTokenService's hash+lookup
- * pattern (we store only the sha256 hash; the plaintext is returned once), generalized to:
+ * replaces the legacy access+refresh pair). Stores only the sha256 hash; the plaintext is returned once,
+ * generalized to:
  *  - a nullable `expiresAt` (app = never; web = sliding 30d);
  *  - a `lastSeenAt` sliding-window tracker for web;
  *  - a 60s KV cache so validation is cheap on the hot path.

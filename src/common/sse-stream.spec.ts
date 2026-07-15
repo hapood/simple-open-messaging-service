@@ -5,7 +5,7 @@ import { initSseResponse, formatSseFrame } from './sse-stream.js';
 /**
  * Regression guard for the CORS-on-hijacked-SSE fix.
  *
- * Every SSE endpoint (GET /events, /notifications/stream, /admin/logs/stream) calls reply.hijack() and
+ * Every SSE endpoint (GET /events, /admin/logs/stream) calls reply.hijack() and
  * hands reply.raw to initSseResponse(). Hijacking detaches the response from Fastify's lifecycle, so
  * @fastify/cors (origin:true in bootstrap.ts) never stamps Access-Control-Allow-Origin on it. A
  * cross-origin client (Tauri desktop/Android, admin-web) then cannot read the stream — its fetch()

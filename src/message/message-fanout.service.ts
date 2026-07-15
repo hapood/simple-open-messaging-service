@@ -2,7 +2,6 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { Message } from '../prisma/generated/client.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
-import { NotificationQueryService } from '../notification/notification-query.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
@@ -38,7 +37,6 @@ export class MessageFanoutService {
   constructor(
     private readonly sseService: SseService,
     private readonly pushService: PushService,
-    private readonly notifQuery: NotificationQueryService,
     private readonly userBlockService: UserBlockService,
     private readonly federation: FederationService,
     private readonly participantService: ThreadParticipantService,
@@ -82,14 +80,6 @@ export class MessageFanoutService {
       threadId,
       msgData,
     );
-    notifTargets.forEach((p) => {
-      const uid = p.userId;
-      if (this.sseService.hasNotifClient(uid)) {
-        void this.notifQuery
-          .buildUnreadSnapshot(uid)
-          .then((snapshot) => this.sseService.pushNotifSnapshot(uid, snapshot));
-      }
-    });
     // Federation Step 2: if the thread has a foreign (federated) participant, mark the conversation
     // dirty — a debounced /new-msg-map push tells the peer to pull. No-op for local-only threads.
     // message.originSeq is always set on a fresh locally-authored insert.

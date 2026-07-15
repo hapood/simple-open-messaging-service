@@ -1,7 +1,6 @@
 import {
   Controller,
   Post,
-  Delete,
   Request,
   UseGuards,
   Body,
@@ -20,7 +19,6 @@ import {
   MEDIA_TOKEN_COOKIE,
   MEDIA_COOKIE_OPTIONS,
 } from '../auth/access-token.validator.js';
-import { NotificationTokenService } from '../auth/notification-token.service.js';
 import {
   SessionTokenService,
   type SessionClient,
@@ -43,7 +41,6 @@ import {
 export class AuthController {
   constructor(
     private authService: AuthService,
-    private readonly notificationTokens: NotificationTokenService,
     private readonly sessionTokens: SessionTokenService,
   ) {}
 
@@ -295,36 +292,6 @@ export class AuthController {
     @Body() dto: RevokeSessionDto,
   ): Promise<ApiResult> {
     await this.authService.revokeSession(req.user.userId, dto.id);
-    return { code: BusinessCode.OK, message: 'success' };
-  }
-
-  // ─── Notification token (scoped background-poll credential) ─────────────────────────────────
-  // See NotificationTokenService. The Android WorkManager poller presents this Bearer token on
-  // /notifications/missed; it is separate from the JWT/refresh-token family so it can't race the
-  // web client's renewal and can't be used for anything beyond the missed-thread summary.
-
-  @ApiBearerAuth()
-  @Throttle(10, 60)
-  @HttpCode(HttpStatus.OK)
-  @Post('auth/notification-token')
-  @ApiOperation({ summary: 'Issue a long-lived notification token for the background poller' })
-  async issueNotificationToken(@Request() req: FastifyRequest): Promise<ApiResult> {
-    const notificationToken = await this.notificationTokens.issue(req.user.userId);
-    return { code: BusinessCode.OK, message: 'success', data: { notificationToken } };
-  }
-
-  /** Self-revoke: a device presents its own Bearer notification token and the server invalidates
-   *  that one token (per-device, not all the user's tokens). No guard needed — possession of the
-   *  token IS the proof; a not-found/already-revoked token is an idempotent no-op. Called on logout. */
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @Delete('auth/notification-token')
-  @ApiOperation({ summary: 'Revoke the presented notification token (self-revoke on logout)' })
-  async revokeNotificationToken(@Headers('authorization') auth: string): Promise<ApiResult> {
-    const match = /^Bearer\s+(.+)$/i.exec(auth ?? '');
-    if (match) {
-      await this.notificationTokens.revoke(match[1]);
-    }
     return { code: BusinessCode.OK, message: 'success' };
   }
 }

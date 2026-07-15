@@ -8,12 +8,13 @@ import { UserBlockService } from '../user-block/user-block.service.js';
 /**
  * One thread's unread state, in the minimal shape the notification paths need. This is the single
  * shape produced and consumed by:
- *  - POST /notifications/missed (the WorkManager poller's HTTP response)
- *  - GET /notifications/stream (the Android FGS's live SSE feed — each frame is `UnreadThreadItem[]`)
+ *  - POST /notifications/missed `{ summary: true }` (the FCM/WorkManager coalesced-notification HTTP
+ *    response — the Android foreground service consumes `/events` directly now, so there is no longer a
+ *    separate notification SSE feed)
  *  - the FGS / WorkManager / FCM notification renderers on-device (coalesced into ONE away-notification)
  *
- * `latestMessageId` is the per-thread dedup cursor (BigInt→string), shared with FCM so the three
- * background paths never double-notify the same message.
+ * `latestMessageId` is the per-thread dedup cursor (BigInt→string), shared with FCM so the background
+ * paths never double-notify the same message.
  */
 export interface UnreadThreadItem {
   threadId: number;

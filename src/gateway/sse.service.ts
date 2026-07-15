@@ -32,65 +32,41 @@ interface SseClient {
  * (Last-Event-ID) and controllable reconnection via fetch-event-source, which removes a whole class
  * of connection/reconnect/auth complexity at the root.
  *
- * Two parallel registries are maintained, both keyed by userId (a user may have multiple live
- * connections — multiple tabs/devices — in an array):
- *  - `clients`     : the primary session stream (GET /events, access-token auth) — full NEW_MESSAGE
- *                    payloads + group/read-cursor events for the in-app UI. `res.on('close')` cleanup.
- *  - `notifClients`: the notification stream (GET /notifications/stream, scoped notification-token
- *                    auth) — consumed by the Android foreground service. Pushes a coalesced
- *                    `NOTIF_SYNC` snapshot (the /notifications/missed shape) so the FGS can render ONE
- *                    away-notification statelessly (last snapshot wins).
- * The connect/push mechanics are identical, so both share `attach()`/`writeTo()`.
+ * One registry, `clients`, keyed by userId (a user may have multiple live connections — multiple
+ * tabs/devices — in an array): the primary session stream (GET /events) carrying full NEW_MESSAGE
+ * payloads + group/read-cursor events for the in-app UI, with `res.on('close')` cleanup. (The former
+ * separate notification-stream registry + its scoped notification token were removed — the Android
+ * foreground service now consumes `/events` directly via the Kotlin-owned connection.)
  */
 @Injectable()
 export class SseService implements OnModuleDestroy {
   private readonly clients: Record<number, SseClient[]> = {};
-  private readonly notifClients: Record<number, SseClient[]> = {};
 
   /**
-   * Connect plumbing shared by the primary stream and the notification stream: the SSE headers, the
-   * ': connected' flush, and the 25s named-ping heartbeat are in common/sse-stream.ts (one source of
-   * truth — the same wire format the admin log viewer and the consumer sse.worker.ts use). This keeps
-   * the per-user registry insertion and the close cleanup.
-   *
-   * Auth is already done by the route's guard before reaching this service (JwtAuthGuard for the
-   * primary stream, NotificationTokenGuard for the notification stream), so this only pushes.
+   * Register one SSE connection (GET /events): the SSE headers, the `: connected` flush, and the 25s
+   * named-ping heartbeat are in common/sse-stream.ts (one source of truth — the same wire format the
+   * admin log viewer and the consumer sse.worker.ts use). This keeps the per-user registry insertion
+   * + the close cleanup. Auth is already done by the route's guard before reaching this service
+   * (JwtAuthGuard), so this only pushes. `origin` is the request Origin, forwarded so the hijacked raw
+   * response carries its CORS header.
    */
-  private attach(
-    map: Record<number, SseClient[]>,
-    userId: number,
-    res: ServerResponse,
-    origin?: string,
-  ): void {
+  register(userId: number, res: ServerResponse, origin?: string): void {
     const ping = initSseResponse(res, origin);
 
     const entry: SseClient = { res, ping, since: Date.now() };
-    (map[userId] ??= []).push(entry);
+    (this.clients[userId] ??= []).push(entry);
 
     res.on('close', () => {
       clearInterval(ping);
-      const list = map[userId];
+      const list = this.clients[userId];
       if (!list) return;
       const idx = list.indexOf(entry);
       if (idx !== -1) list.splice(idx, 1);
-      if (list.length === 0) delete map[userId];
+      if (list.length === 0) delete this.clients[userId];
     });
   }
 
-  /** Register one primary-session SSE connection (GET /events). Auth done upstream by JwtAuthGuard.
-   *  `origin` is the request Origin, forwarded so the hijacked raw response carries its CORS header. */
-  register(userId: number, res: ServerResponse, origin?: string): void {
-    this.attach(this.clients, userId, res, origin);
-  }
-
-  /** Register one notification-stream SSE connection (GET /notifications/stream). Auth done upstream
-   *  by NotificationTokenGuard. Consumed by the Android foreground service. `origin` forwards the
-   *  request Origin for the hijacked-response CORS header (harmless when the FGS is a native client). */
-  registerNotif(userId: number, res: ServerResponse, origin?: string): void {
-    this.attach(this.notifClients, userId, res, origin);
-  }
-
-  /** True iff the user currently has ≥1 live PRIMARY SSE connection. Used by PushService to skip FCM
+  /** True iff the user currently has ≥1 live SSE connection. Used by PushService to skip FCM
    *  dispatch for already-online recipients (no double-delivery, no wasted battery) — the inverse of
    *  the fan-out loop in onNewMessage. Constant-time lookup; safe per-recipient in the send hot path.
    *  The 25s heartbeat bounds the only inaccuracy: a half-open connection reads "online" until the next
@@ -100,20 +76,11 @@ export class SseService implements OnModuleDestroy {
     return !!list && list.length > 0;
   }
 
-  /** True iff the user has ≥1 live NOTIFICATION-stream connection — i.e. the Android FGS is currently
-   *  backgrounded and streaming. Gates the snapshot computation in the send-message fan-out so only
-   *  backgrounded-FGS recipients pay it. */
-  hasNotifClient(userId: number): boolean {
-    const list = this.notifClients[userId];
-    return !!list && list.length > 0;
-  }
-
   /**
-   * Read-only snapshot of live PRIMARY SSE connections (for the admin console to observe).
+   * Read-only snapshot of live SSE connections (for the admin console to observe).
    * Aggregated per user: one user with multiple tabs → multiple connections merged into one entry,
    * `since` being the earliest establishment time. Contains no sensitive data (no token, no IP) — only
-   * userId + connection count + establishment time. (Notification-stream connections are deliberately
-   * excluded — they're an internal transport detail, not a "session" worth surfacing.)
+   * userId + connection count + establishment time.
    */
   snapshot(): {
     total: number;
@@ -138,19 +105,13 @@ export class SseService implements OnModuleDestroy {
   }
 
   /**
-   * Write one frame to all of a user's live connections in `map`. Reverse iteration + cleaning up
-   * failed/broken connections inline so a dead connection cannot abort the fan-out; backpressure
-   * (write returns false) is not handled here — left for the next frame / heartbeat to detect the
-   * drop. When the user's connection list empties, its slot is deleted.
+   * Write one frame to all of a user's live connections. Reverse iteration + cleaning up failed/broken
+   * connections inline so a dead connection cannot abort the fan-out; backpressure (write returns
+   * false) is not handled here — left for the next frame / heartbeat to detect the drop. When the
+   * user's connection list empties, its slot is deleted.
    */
-  private writeTo(
-    map: Record<number, SseClient[]>,
-    userId: number,
-    eventName: string,
-    data: unknown,
-    id?: string | number,
-  ): void {
-    const list = map[userId];
+  private pushToUser(userId: number, eventName: string, data: unknown, id?: string | number): void {
+    const list = this.clients[userId];
     if (!list || list.length === 0) return;
     const frame = formatSseFrame(eventName, data, id);
     for (let i = list.length - 1; i >= 0; i--) {
@@ -166,19 +127,7 @@ export class SseService implements OnModuleDestroy {
         list.splice(i, 1);
       }
     }
-    if (list.length === 0) delete map[userId];
-  }
-
-  /** Push to all of a user's live PRIMARY connections. (Indirection so the notification stream can
-   *  share the write path via writeTo without exposing the registry map publicly.) */
-  private pushToUser(userId: number, eventName: string, data: unknown, id?: string | number): void {
-    this.writeTo(this.clients, userId, eventName, data, id);
-  }
-
-  /** Push one coalesced unread-snapshot frame to the user's live notification-stream connection(s).
-   *  The Android FGS renders this as a single away-notification (last snapshot wins). */
-  pushNotifSnapshot(userId: number, snapshot: unknown): void {
-    this.writeTo(this.notifClients, userId, 'NOTIF_SYNC', snapshot);
+    if (list.length === 0) delete this.clients[userId];
   }
 
   /** New message: push the full message body. id = the message id (the client's Last-Event-ID resume cursor). */
@@ -256,15 +205,14 @@ export class SseService implements OnModuleDestroy {
   }
 
   /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop all of
-   *  the user's PRIMARY connections, and close their notification-stream connection(s) too (an FGS
-   *  holding a notification stream must stop on logout). */
+   *  the user's live connections. */
   @OnEvent('auth.sessions-invalidated')
   onSessionsInvalidated(payload: { userId: number; reason: string }) {
     const frame =
       `event: FORCE_LOGOUT\n` +
       `data: ${JSON.stringify({ event: 'FORCE_LOGOUT', status: 0, message: payload.reason })}\n\n`;
-    const drop = (list: SseClient[] | undefined) => {
-      if (!list) return;
+    const list = this.clients[payload.userId];
+    if (list) {
       list.forEach(({ res, ping }) => {
         clearInterval(ping);
         try {
@@ -272,21 +220,16 @@ export class SseService implements OnModuleDestroy {
           res.end();
         } catch {}
       });
-    };
-    drop(this.clients[payload.userId]);
-    drop(this.notifClients[payload.userId]);
+    }
     delete this.clients[payload.userId];
-    delete this.notifClients[payload.userId];
   }
 
-  /** Process exit / hot reload: clear all heartbeat timers (both registries) to avoid handle-leak warnings. */
+  /** Process exit / hot reload: clear all heartbeat timers to avoid handle-leak warnings. */
   onModuleDestroy() {
-    for (const map of [this.clients, this.notifClients]) {
-      for (const uid of Object.keys(map)) {
-        const id = Number(uid);
-        map[id].forEach(({ ping }) => clearInterval(ping));
-        delete map[id];
-      }
+    for (const uid of Object.keys(this.clients)) {
+      const id = Number(uid);
+      this.clients[id].forEach(({ ping }) => clearInterval(ping));
+      delete this.clients[id];
     }
   }
 }

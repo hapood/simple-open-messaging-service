@@ -31,8 +31,8 @@ import { BusinessCode } from '../common/business-code.js';
  *   5. signature invalid / body tampered                    → 401 FEDERATION_BAD_SIGNATURE    (no retry)
  *   6. from.domain != signer.domain (bodies with `from`)     → 401 FEDERATION_BINDING_VIOLATION(no retry)
  *
- * On success, attaches `req.peer = { domain, keyId }` for the handler. Mirrors NotificationTokenGuard
- * (a plain CanActivate, not Passport-based).
+ * On success, attaches `req.peer = { domain, keyId }` for the handler. A plain CanActivate, not
+ * Passport-based.
  */
 @Injectable()
 export class S2sSignatureGuard implements CanActivate {

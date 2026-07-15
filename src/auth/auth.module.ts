@@ -12,8 +12,6 @@ import { jwtConstants } from './constants.js';
 import { UserService } from '../user/user.service.js';
 import { ThrottleGuard } from './throttle.guard.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
-import { NotificationTokenService } from './notification-token.service.js';
-import { NotificationTokenGuard } from './notification-token.guard.js';
 import { SessionTokenService } from './session-token.service.js';
 import { BearerAuthService } from './bearer-auth.service.js';
 
@@ -33,8 +31,6 @@ import { BearerAuthService } from './bearer-auth.service.js';
     JwtStrategy,
     AccessTokenValidator,
     ThrottleGuard,
-    NotificationTokenService,
-    NotificationTokenGuard,
     SessionTokenService,
     BearerAuthService,
     // Global guard: every route is authenticated unless it opts out with @Public(). Accepts an access
@@ -47,8 +43,6 @@ import { BearerAuthService } from './bearer-auth.service.js';
     AuthService,
     LocalStrategy,
     AccessTokenValidator,
-    NotificationTokenService,
-    NotificationTokenGuard,
     SessionTokenService,
     BearerAuthService,
   ],
