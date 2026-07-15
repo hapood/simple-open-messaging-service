@@ -187,7 +187,7 @@ class MainActivity : TauriActivity() {
         // env(safe-area-inset-top) is 0, so this @JavascriptInterface is the only source.
         webView.addJavascriptInterface(SomsShellInterface(this), "SomsShell")
         // window.SomsSecureStore.getApiOrigin()/setApiOrigin() — the WebView-independent persistence the
-        // web seeds apiOrigin from at boot and the native SSE (MessageSyncService / RealtimeService)
+        // web seeds apiOrigin from at boot and the native SSE (RealtimeService)
         // reads. Added here, before the page boots, so runtime.ts's synchronous seed read resolves the
         // native store (not a stale injected global).
         webView.addJavascriptInterface(SomsSecureStoreInterface(this), "SomsSecureStore")
@@ -277,9 +277,10 @@ class MainActivity : TauriActivity() {
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
         SomsMessagingService.appInForeground = true
-        // User returned: stop the FGS (the live WebView SSE takes over) and clear the away-notification
-        // so the in-app UI owns message display again.
-        stopService(Intent(this, MessageSyncService::class.java))
+        // App visible: ensure the realtime service is running (the WebView's only event source on Android
+        // is this /events stream) and drop the persistent FGS notification + away-notification so the
+        // in-app UI owns message display again.
+        startService(Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND))
         ContextCompat.getSystemService(this, NotificationManager::class.java)
             ?.cancel(SomsMessagingService.AWAY_NOTIF_ID)
     }
@@ -287,11 +288,17 @@ class MainActivity : TauriActivity() {
     override fun onStop() {
         super.onStop()
         SomsMessagingService.appInForeground = false
-        // Start the FGS when backgrounded if its toggle is on AND the user is logged in (token present).
+        // Backgrounded: keep the realtime connection alive only if the toggle is on AND the user is logged
+        // in (session token present) — promote the already-running service to a foreground service so the
+        // system doesn't kill it. Toggle off → stop it (background delivery falls back to FCM/WorkManager).
         if (SomsSecureStore.getForegroundServiceEnabled(this) &&
-            SomsSecureStore.getNotificationToken(this) != null
+            SomsSecureStore.getSessionToken(this) != null
         ) {
-            startForegroundService(Intent(this, MessageSyncService::class.java))
+            startForegroundService(
+                Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_BACKGROUND),
+            )
+        } else {
+            stopService(Intent(this, RealtimeService::class.java))
         }
     }
 
@@ -371,11 +378,11 @@ class MainActivity : TauriActivity() {
      *  toggled on while already backgrounded, start it now. */
     private fun applyForegroundServiceEnabled(enabled: Boolean) {
         if (!enabled) {
-            stopService(Intent(this, MessageSyncService::class.java))
+            stopService(Intent(this, RealtimeService::class.java))
             return
         }
         if (!SomsMessagingService.appInForeground) {
-            startForegroundService(Intent(this, MessageSyncService::class.java))
+            startForegroundService(Intent(this, RealtimeService::class.java))
         }
     }
 
@@ -427,14 +434,32 @@ class MainActivity : TauriActivity() {
             a.runOnUiThread { a.requestNotificationPermission() }
         }
 
-        /** Push the scoped notification token (POST /auth/notification-token) into encrypted storage so
-         *  the WorkManager poller can authenticate /notifications/missed while the WebView is suspended.
-         *  Called from JS on login; pass null/empty on logout to clear. */
+        /** Push the session token (POST /auth/login, app client) into encrypted storage so the Kotlin-owned
+         *  /events stream (RealtimeService) and the background `/notifications/missed` fetchers
+         *  (FCM / WorkManager) can authenticate while the WebView is suspended. Called from JS on login;
+         *  pass null/empty on logout to clear. */
         @JavascriptInterface
-        fun setNotificationToken(token: String?) {
+        fun setSessionToken(token: String?) {
             val a = activityRef.get() ?: return
-            SomsSecureStore.setNotificationToken(a, token)
+            SomsSecureStore.setSessionToken(a, token)
+            // The realtime service lifecycle follows the session: a freshly-persisted token (login) opens
+            // the /events stream the WebView consumes; clearing it (logout) tears the stream down.
+            // ACTION_FOREGROUND because login happens while the app is visible. startService/stopService
+            // are thread-safe (this @JavascriptInterface runs on a background JS thread).
+            if (token.isNullOrEmpty()) {
+                a.stopService(Intent(a, RealtimeService::class.java))
+            } else {
+                a.startService(
+                    Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND),
+                )
+            }
         }
+
+        /** Synchronous read of the RealtimeService's last-pushed connection state
+         *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
+         *  connection-state signal before the next transition (Kotlin only pushes on transitions). */
+        @JavascriptInterface
+        fun getConnState(): String = RealtimeService.connState
 
         /** Whether the 6-hour background-sync poller is enabled (default true). Read by the Settings page
          *  to render the toggle's initial state. */
@@ -452,7 +477,7 @@ class MainActivity : TauriActivity() {
             a.applyPollingEnabled(enabled)
         }
 
-        /** Whether the dataSync foreground service (MessageSyncService) is enabled (default false). */
+        /** Whether the dataSync foreground service (RealtimeService) is enabled (default false). */
         @JavascriptInterface
         fun getForegroundServiceEnabled(): Boolean {
             val a = activityRef.get() ?: return false
@@ -534,7 +559,7 @@ class MainActivity : TauriActivity() {
     }
 
     /** JS-callable surface exposed as window.SomsSecureStore — the WebView-independent persistence the
-     *  web seeds `apiOrigin` from at boot and the native SSE (MessageSyncService / RealtimeService)
+     *  web seeds `apiOrigin` from at boot and the native SSE (RealtimeService)
      *  reads. Backed by EncryptedSharedPreferences via [SomsSecureStore]; absent on desktop/browser,
      *  where the web substitutes a localStorage shim. @JavascriptInterface methods run on a background
      *  JS thread and only touch the thread-safe [SomsSecureStore] object, so no thread hop is needed. */

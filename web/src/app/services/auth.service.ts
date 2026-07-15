@@ -3,7 +3,7 @@ import { HttpClient, HttpContext, HttpContextToken } from '@angular/common/http'
 import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
-import { isTauri, isAndroid, tauriInvoke } from './runtime';
+import { isTauri, isAndroidNative, tauriInvoke } from './runtime';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -88,6 +88,17 @@ export class AuthService {
   /** Current session token (synchronous snapshot), or null when none is held. */
   get sessionToken(): string | null { return this._sessionToken }
 
+  /** Push the current session token to the Android shell so Kotlin's RealtimeService can authenticate
+   *  /events and the background fetchers (FCM/WorkManager) can authenticate /notifications/missed while
+   *  the WebView is suspended. null clears it (logout) and stops the native stream. No-op off Android
+   *  (no SomsFcm surface — web/desktop don't own a native connection). */
+  private syncNativeSessionToken() {
+    if (!isAndroidNative()) return // off Android there is no native bridge to push to
+    // On Android the shell injects SomsFcm before any page script — call it directly so a missing
+    // bridge surfaces as an error instead of being silently swallowed by optional chaining.
+    window.SomsFcm!.setSessionToken(this._sessionToken)
+  }
+
   constructor(
     private http: HttpClient,
     private routeService: RouteService,
@@ -140,6 +151,9 @@ export class AuthService {
           this.setReToken(data.refresh_token, isKeep)
           this.setAcToken(data.access_token)
           this._sessionToken = data.session_token ?? null
+          // Hand the session token to the Android shell so Kotlin's RealtimeService can authenticate
+          // /events (no-op on web/desktop, which have no native connection).
+          this.syncNativeSessionToken()
           // Now that the access token is in the interceptor, register (or re-register) this device's
           // FCM token so the server can push to it. No-op outside the Tauri shell.
           this.push.onLogin()
@@ -233,6 +247,7 @@ export class AuthService {
     this.acTkSub.next(null)
     this._accessSetAt = null
     this._sessionToken = null
+    this.syncNativeSessionToken()
     if (this._isKeep) {
       localStorage.removeItem(REFRESH_TOKEN)
     } else {
@@ -272,6 +287,7 @@ export class AuthService {
         this.setAcToken(res.data!.access_token)
         this.setReToken(res.data!.refresh_token)
         this._sessionToken = null
+        this.syncNativeSessionToken()
       }
     }))
   }
@@ -310,7 +326,7 @@ export class AuthService {
   /** Client kind for the session-token lifetime policy + the device-list badge: the Android Tauri shell is
    *  'app' (no-expiry, native secure store), the desktop Tauri shell is 'desktop', the browser is 'web'. */
   private resolveClient(): SessionClient {
-    if (isTauri() && isAndroid()) return 'app'
+    if (isAndroidNative()) return 'app'
     if (isTauri()) return 'desktop'
     return 'web'
   }
@@ -328,7 +344,7 @@ export class AuthService {
               : /CrOS/i.test(ua) ? 'ChromeOS'
                 : /Linux/i.test(ua) ? 'Linux'
                   : (typeof navigator !== 'undefined' && navigator.platform) || 'Unknown'
-    if (isTauri() && isAndroid()) return 'Android'        // native app — the OS is the device identity
+    if (isAndroidNative()) return 'Android'        // native app — the OS is the device identity
     if (isTauri()) return `Desktop · ${os}`                // Tauri desktop shell
     const browser =
       /Edg\//i.test(ua) ? 'Edge'

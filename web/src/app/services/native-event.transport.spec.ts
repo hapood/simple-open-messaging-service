@@ -1,0 +1,161 @@
+import { NativeEventTransport } from './native-event.transport';
+import type { ConnectionState, RealtimeSink, StandardMessage } from './realtime-transport';
+import { SSE_EVENT_FORCE_LOGOUT, SSE_EVENT_PING } from './sse-worker-protocol';
+
+/**
+ * NativeEventTransport unit tests — the Android event-routing seam.
+ *
+ * This transport is the ONLY web-side code that turns Kotlin's forwarded /events frames into the
+ * StandardMessage shape every downstream consumer reads, and it owns the FORCE_LOGOUT interception + the
+ * `SomsFcm.getConnState()` seeding that keeps the connection banner correct on a freshly-booted WebView
+ * (Kotlin only pushes state on transitions). It is pure logic with no HttpClient / Web Worker / SSE
+ * dependency — drive `window.__SOMS_EVENT__` / `window.__SOMS_CONN_STATE__` and assert what the sink
+ * received. No Angular surface (mirrors runtime.spec.ts). The Kotlin half (the service that feeds these
+ * hooks) has no instrumented harness — it is verified via the manual `make apk-dev` flow.
+ */
+
+/** A recording sink: captures every call so each test asserts exactly what the transport emitted. */
+function recordingSink() {
+  const events: StandardMessage[] = [];
+  const states: ConnectionState[] = [];
+  let reconnects = 0;
+  let forceLogouts = 0;
+  const sink: RealtimeSink = {
+    onEvent: (m) => events.push(m),
+    onState: (s) => states.push(s),
+    onReconnect: () => reconnects++,
+    onForceLogout: () => forceLogouts++,
+  };
+  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts };
+}
+
+/** Install a minimal `window.SomsFcm` exposing only `getConnState` (all the transport reads). */
+function installFakeFcm(connState: string): void {
+  (window as unknown as { SomsFcm: { getConnState: () => string } }).SomsFcm = {
+    getConnState: () => connState,
+  };
+}
+
+/** Invoke the currently-installed (or not) Kotlin push hook the way RealtimeService.forwardToJs does. */
+function fireEvent(type: string, data: unknown): void {
+  window.__SOMS_EVENT__?.(type, data);
+}
+
+/** Invoke the conn-state push hook the way RealtimeService.pushConnState does. */
+function fireConnState(state: string): void {
+  window.__SOMS_CONN_STATE__?.(state as ConnectionState);
+}
+
+describe('NativeEventTransport', () => {
+  // The transport installs global hooks; restore both globals after each test so a leftover hook from one
+  // case never bleeds into the next, and a test's fake SomsFcm never leaks to specs that expect it absent.
+  afterEach(() => {
+    window.__SOMS_EVENT__ = undefined;
+    window.__SOMS_CONN_STATE__ = undefined;
+    (window as unknown as { SomsFcm?: unknown }).SomsFcm = undefined;
+  });
+
+  it('seeds the connection banner from SomsFcm.getConnState() on start (Kotlin only pushes on transitions)', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    expect(rec.states).toEqual(['open']);
+  });
+
+  it('seeds "closed" too (a truthy state) — a fresh process with no connection still pins the banner', () => {
+    installFakeFcm('closed');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    expect(rec.states).toEqual(['closed']);
+  });
+
+  it('forwards a NEW_MESSAGE frame verbatim into a StandardMessage', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireEvent('NEW_MESSAGE', { id: 5, threadId: 42, body: 'hi' });
+    expect(rec.events).toEqual([
+      { event: 'NEW_MESSAGE', status: 0, message: 'new message', data: { id: 5, threadId: 42, body: 'hi' } },
+    ]);
+  });
+
+  it('drops the ping heartbeat (Kotlin already skips it; the transport defends in depth)', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireEvent(SSE_EVENT_PING, {});
+    expect(rec.events.length).toBe(0);
+  });
+
+  it('intercepts FORCE_LOGOUT (the facade re-logs in) and does NOT re-emit it as a data event', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireEvent(SSE_EVENT_FORCE_LOGOUT, {});
+    expect(rec.forceLogouts()).toBe(1);
+    expect(rec.events.length).toBe(0);
+  });
+
+  it('mirrors __SOMS_CONN_STATE__ transitions onto the sink so the banner tracks the native socket', () => {
+    installFakeFcm('connecting');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireConnState('open');
+    fireConnState('reconnecting');
+    expect(rec.states).toEqual(['connecting', 'open', 'reconnecting']);
+  });
+
+  it('does NOT emit a reconnect pulse on the FIRST open (downstream boots its own catch-up)', () => {
+    installFakeFcm('connecting');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireConnState('open'); // first open
+    expect(rec.reconnects()).toBe(0);
+  });
+
+  it('emits a reconnect pulse on every open AFTER the first (native reconnect → downstream backfill)', () => {
+    installFakeFcm('closed');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireConnState('open'); // first open — no pulse
+    fireConnState('reconnecting'); // stream dropped (Android backgrounded / transient failure)
+    fireConnState('open'); // RE-connect — pulse (drives ThreadRepository reboot + MissedSyncService catch-up)
+    fireConnState('reconnecting');
+    fireConnState('open'); // another reconnect — pulse again
+    expect(rec.reconnects()).toBe(2);
+  });
+
+  it('start() is idempotent — a second start does not re-seed or re-install (no banner flicker)', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    const t = new NativeEventTransport(rec.sink);
+    t.start();
+    t.start();
+    expect(rec.states).toEqual(['open']); // exactly one seed
+  });
+
+  it('stop() detaches the hooks (further Kotlin pushes become no-ops via the && guard) and emits closed', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    const t = new NativeEventTransport(rec.sink);
+    t.start();
+    t.stop();
+    // The transport reports its own stream as closed; Kotlin's service is unaffected (independent lifecycle).
+    expect(rec.states[rec.states.length - 1]).toBe('closed');
+    // Hooks detached → a forwarded frame no longer reaches the sink.
+    fireEvent('NEW_MESSAGE', { id: 9 });
+    expect(rec.events.length).toBe(0);
+    expect(window.__SOMS_EVENT__).toBeUndefined();
+    expect(window.__SOMS_CONN_STATE__).toBeUndefined();
+  });
+
+  it('stop() is idempotent — calling it twice emits closed exactly once', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    const t = new NativeEventTransport(rec.sink);
+    t.start();
+    t.stop();
+    t.stop();
+    expect(rec.states.filter((s) => s === 'closed')).toEqual(['closed']);
+  });
+});

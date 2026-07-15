@@ -30,9 +30,6 @@ export class PushService {
   private registeredToken: string | null = null;
   /** The most recently seen FCM token (from Kotlin), regardless of registration state. */
   private currentToken: string | null = null;
-  /** The scoped notification token for the WorkManager poller (POST /auth/notification-token). Null
-   *  until login mints one; cleared on logout. Pushed to Kotlin via SomsFcm.setNotificationToken. */
-  private notificationToken: string | null = null;
   /** One-shot guard so the POST_NOTIFICATIONS prompt is asked at most once. */
   private permissionPrompted = false;
 
@@ -57,19 +54,22 @@ export class PushService {
   }
 
   /** Called by AuthService after a successful login — the access token is now in the interceptor, so
-   *  the register POST will carry the Authorization header. Also mints a scoped notification token for
-   *  the WorkManager poller and pushes it (plus the origin) to Kotlin encrypted storage. */
+   *  the register POST will carry the Authorization header. (The Android background fetchers no longer
+   *  need a scoped notification token — they authenticate /notifications/missed with the session token,
+   *  which AuthService pushes to Kotlin via SomsFcm.setSessionToken.) */
   onLogin() {
     if (!isTauri()) return;
     this.maybePromptPermission();
     this.register();
-    this.issueNotificationToken();
   }
 
   /** Called by AuthService.logout BEFORE it clears the access token, so the DELETE still carries the
-   *  Authorization header. Also clears the notification token from Kotlin storage so the poller stops. */
+   *  Authorization header. (The session token the Android background fetchers use is cleared separately
+   *  by AuthService.syncNativeSessionToken.) */
   unregister() {
     if (!isTauri()) return;
+    // SomsFcm is absent on desktop (this runs under isTauri = desktop + Android), so `?.` is correct
+    // here — getToken() legitimately no-ops on desktop.
     const token = this.registeredToken ?? this.currentToken ?? window.SomsFcm?.getToken() ?? null;
     if (token) {
       this.http
@@ -77,42 +77,6 @@ export class PushService {
         .subscribe({ error: () => { /* best-effort: a stale token is pruned server-side on next send */ } });
     }
     this.registeredToken = null;
-    // Revoke + clear the notification token. The self-revoke DELETE must carry the NOTIFICATION token
-    // (NotificationTokenGuard), not the access token — so bypass HttpClient (whose AuthInterceptor
-    // would overwrite Authorization with the access token on /auth/* paths) and use a raw fetch.
-    // Clearing local storage also stops the poller firing on the next period regardless.
-    if (this.notificationToken) {
-      const t = this.notificationToken;
-      this.notificationToken = null;
-      fetch(`${apiPrefix()}/auth/notification-token`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${t}` },
-        keepalive: true, // best-effort even if the page is unloading
-      }).catch(() => { /* idempotent; a stale token expires within 30d anyway */ });
-    }
-    window.SomsFcm?.setNotificationToken(null);
-  }
-
-  /** Mint a scoped 30-day notification token (POST /auth/notification-token) and push it to Kotlin
-   *  encrypted storage, so the WorkManager poller can authenticate /notifications/missed while the
-   *  WebView is suspended. Idempotent-ish: each login issues a fresh token; old ones expire/are-pruned
-   *  server-side. Best-effort — a failure just means the poller stays dormant this session. */
-  private issueNotificationToken() {
-    this.http
-      .post<{ code: number; data?: { notificationToken: string } }>(
-        `${apiPrefix()}/auth/notification-token`,
-        {},
-      )
-      .subscribe({
-        next: (r) => {
-          const t = r.code === 0 ? r.data?.notificationToken : undefined;
-          if (t) {
-            this.notificationToken = t;
-            window.SomsFcm?.setNotificationToken(t);
-          }
-        },
-        error: () => { /* best-effort: poller stays dormant, foreground SSE still works */ },
-      });
   }
 
   /** New token from Kotlin (first fetch or rotation). Stash it and try to register. */

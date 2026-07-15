@@ -259,4 +259,46 @@ describe('MessageRepository', () => {
     expect(res.data.map((m) => m.seq)).toEqual([5, 6, 7]);
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill after the ceiling was cleared
   });
+
+  // ── applyMissed: the missed-catch-up shared apply path (a paginated /notifications/missed page → batch
+  //    cache + HWM advance + one signal per thread). The SAME path a live NEW_MESSAGE takes; idempotent.
+  describe('applyMissed (missed catch-up shared path)', () => {
+    it('caches a batch across threads + is idempotent on re-apply (no duplicate rows)', async () => {
+      await repo.applyMissed([msg(42, 1), msg(42, 2), msg(99, 1)]);
+      expect(await dbCount(42)).toBe(2);
+      expect(await dbCount(99)).toBe(1);
+      await repo.applyMissed([msg(42, 1), msg(42, 2), msg(99, 1)]); // re-fetch → overwrite, not duplicate
+      expect(await dbCount(42)).toBe(2);
+      expect(await dbCount(99)).toBe(1);
+    });
+
+    it('advances the global HWM to the newest createdAt in the batch', async () => {
+      expect(await repo.getHwm()).toBeNull(); // fresh DB — no message cached yet
+      await repo.applyMissed([msg(42, 1), msg(99, 5), msg(42, 3)]); // msg() → createdAt = seq*1000; newest is 5000
+      expect(await repo.getHwm()).toBe(5 * 1000);
+    });
+
+    it('never regresses the HWM for an older / out-of-order batch', async () => {
+      await repo.applyMissed([msg(42, 9)]); // createdAt 9000
+      expect(await repo.getHwm()).toBe(9000);
+      await repo.applyMissed([msg(42, 1)]); // createdAt 1000 — older
+      expect(await repo.getHwm()).toBe(9000); // monotonic — never moves backward
+    });
+
+    it('emits ONE live signal per affected thread (its highest seq), not one per message', async () => {
+      const signals: { threadId: number; seq: number }[] = [];
+      repo.liveSignal$.subscribe((s) => signals.push(s));
+      await repo.applyMissed([msg(42, 1), msg(42, 5), msg(42, 3), msg(99, 2)]);
+      // thread 42 collapses to seq 5, thread 99 to seq 2 — exactly two signals, in first-seen order.
+      expect(signals).toEqual([{ threadId: 42, seq: 5 }, { threadId: 99, seq: 2 }]);
+    });
+
+    it('an empty page is a no-op (no signal, no HWM change)', async () => {
+      const signals: { threadId: number; seq: number }[] = [];
+      repo.liveSignal$.subscribe((s) => signals.push(s));
+      await repo.applyMissed([]);
+      expect(signals).toEqual([]);
+      expect(await repo.getHwm()).toBeNull();
+    });
+  });
 });

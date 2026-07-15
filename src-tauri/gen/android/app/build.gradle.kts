@@ -112,12 +112,12 @@ dependencies {
     implementation("com.google.firebase:firebase-messaging")
     // NotificationSyncWorker (国内 fallback — polls /notifications/missed on a ~6h periodic, since FCM
     // is blocked in mainland China). WorkManager schedules the poll; EncryptedSharedPreferences guards
-    // the scoped notification-token + dedup cursor; OkHttp does the HTTPS POST. See FCM_ANDROID_PATCH.md.
+    // the session token + dedup cursor; OkHttp does the HTTPS POST. See FCM_ANDROID_PATCH.md.
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    // SSE EventSource client for MessageSyncService (the dataSync foreground service that holds a live
-    // /notifications/stream). Same version as okhttp; okhttp-sse is a separate artifact.
+    // SSE EventSource client for RealtimeService (the service that holds a live /events stream).
+    // Same version as okhttp; okhttp-sse is a separate artifact.
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")

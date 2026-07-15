@@ -1,23 +1,21 @@
 import { Injectable, inject } from '@angular/core';
 import { WebsocketService } from './websocket.service';
-import { isAndroid, isTauri } from './runtime';
+import { isAndroidNative } from './runtime';
 
 /**
- * Mobile-only SSE backgrounding + universal foreground catch-up.
+ * Foreground catch-up for the WebView-owned SSE worker (browser + desktop).
  *
- * On **Tauri Android** the OS suspends the WebView shortly after backgrounding — any held SSE socket
- * dies a half-open death that the server only notices after the 25s heartbeat, and the reconnect thrash
- * on resume wastes resources. So when the Android shell goes hidden we **proactively disconnect** the
- * SSE worker (graceful — the server sees the close immediately and stops treating the user as online).
- * On resume we reconnect, and the existing `reconnect$ → ConversationListService.load()` flow backfills
- * anything missed while away.
+ * On **browser + Tauri desktop (pc/mac/linux)** the realtime transport is the in-WebView SSE worker. A
+ * Web Worker is NOT throttled on tab hide, so the stream stays alive when minimized/hidden — but a worker
+ * that died while hidden needs reconnecting on resume, so every `visible` transition calls `connect()`
+ * (idempotent — a no-op when the worker is already up). The accompanying `reconnect$` pulse then drives
+ * `ConversationListService.load()` to backfill anything missed while away.
  *
- * **PC (Tauri desktop) and browser** keep SSE alive when minimized/hidden (the OS doesn't aggressively
- * suspend them) — per the user's explicit directive that desktop must NOT disconnect. The discriminator
- * is `isTauri() && isAndroid()`.
- *
- * `connect()` is idempotent (no-op when the worker already exists), so calling it on every visible
- * transition is safe across all platforms — on PC it's a no-op, on mobile it respawns the worker.
+ * On **Android** this is a NO-OP: the realtime connection is owned by Kotlin's `RealtimeService`
+ * (continuous fg/bg), and the WebView's `NativeEventTransport` is a passive listener on
+ * `window.__SOMS_EVENT__`. The fg/bg connection lifecycle (promote to FGS on background, drop the
+ * persistent notification on resume) is driven by `MainActivity.onResume/onStop`, NOT by the WebView's
+ * visibility — so the WebView must not touch the transport here.
  */
 @Injectable({ providedIn: 'root' })
 export class SseLifecycleService {
@@ -29,15 +27,13 @@ export class SseLifecycleService {
   }
 
   private onVisibilityChange = (): void => {
-    const mobile = isTauri() && isAndroid();
-    if (document.visibilityState === 'hidden') {
-      // Mobile backgrounding → graceful SSE close. PC/browser: leave it connected.
-      if (mobile) this.ws.disconnect();
-    } else if (document.visibilityState === 'visible') {
-      // Resume: ensure the SSE worker is up. Idempotent on PC (no-op when already connected); on
-      // mobile it respawns the worker that disconnect() tore down. The reconnect$ pulse then
-      // triggers ConversationListService.load() (wired in HomeComponent) to backfill missed messages.
+    // Android: Kotlin owns the connection; the WebView is a passive listener — do nothing.
+    if (isAndroidNative()) return;
+    if (document.visibilityState === 'visible') {
+      // Resume: ensure the SSE worker is up (idempotent — a no-op when already connected). The
+      // reconnect$ pulse triggers ConversationListService.load() to backfill missed messages.
       this.ws.connect();
     }
+    // hidden: the worker stays alive (a Web Worker isn't throttled on tab hide) — nothing to do.
   };
 }

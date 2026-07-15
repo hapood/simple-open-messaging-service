@@ -23,7 +23,7 @@ import { signal } from '@angular/core';
  * The persistence surface for state that must survive WebView/renderer death and be readable with no
  * page alive (the backend origin today; the session token once the native-realtime rewrite lands).
  *  - Android: a Kotlin `@JavascriptInterface` (`window.SomsSecureStore`) backed by
- *    EncryptedSharedPreferences — the SAME store the native SSE (MessageSyncService / RealtimeService)
+ *    EncryptedSharedPreferences — the SAME store the native SSE (RealtimeService)
  *    reads, so the web and the native realtime layer can never disagree on the host.
  *  - Desktop / browser: `window.SomsSecureStore` is absent, so the web substitutes a JS shim over
  *    localStorage (see `secureStore` below). The web talks to this single interface regardless of
@@ -61,10 +61,15 @@ declare global {
       getToken: () => string | null;
       requestToken: () => void;
       requestNotificationPermission: () => void;
-      /** Push the scoped notification token (POST /auth/notification-token) into Android encrypted
-       *  storage so the WorkManager poller can authenticate /notifications/missed while the WebView is
-       *  suspended. Pass null/empty on logout to clear. Android-only. */
-      setNotificationToken: (token: string | null) => void;
+      /** Push the session token (POST /auth/login, app client) into Android encrypted storage so the
+       *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
+       *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to
+       *  clear (and stop the native stream). Android-only. */
+      setSessionToken: (token: string | null) => void;
+      /** Synchronous read of the RealtimeService's last-pushed connection state
+       *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
+       *  connection-state signal before the next state transition. Android-only. */
+      getConnState: () => string;
       /** Read whether the 6-hour background-sync poller is enabled (stored in EncryptedSharedPreferences
        *  so the WorkManager worker can read it with no WebView alive). Defaults to true. Android-only;
        *  absent in the browser/desktop builds (guarded by isTauri() && isAndroid()). */
@@ -72,7 +77,7 @@ declare global {
       /** Enable/disable the 6-hour background-sync poller: persists the pref into EncryptedSharedPreferences
        *  AND cancels / re-enqueues the WorkManager schedule. Android-only. */
       setPollingEnabled: (enabled: boolean) => void;
-      /** Whether the dataSync foreground service (MessageSyncService) is enabled (default false). Android-only. */
+      /** Whether the dataSync foreground service (RealtimeService) is enabled (default false). Android-only. */
       getForegroundServiceEnabled: () => boolean;
       /** Enable/disable the foreground service: persists the pref AND starts/stops the service to match. Android-only. */
       setForegroundServiceEnabled: (enabled: boolean) => void;
@@ -108,6 +113,17 @@ declare global {
      *  `KbdOffsetDirective` reads on Android. Absent in browser/desktop (never called there). Follows the
      *  `__SOMS_<NAME>__` bridge-hook convention. */
     __SOMS_IME_HEIGHT__?: (px: number) => void;
+    /** Kotlin→JS push (RealtimeService.forwardToJs): one `/events` frame forwarded from the native-owned
+     *  SSE, so the Android WebView consumes realtime without opening its own worker. Installed by the
+     *  NativeEventTransport; absent on browser/desktop (where the WebsocketService spawns sse.worker.ts).
+     *  Kotlin guards the call (`window.__SOMS_EVENT__ && …`), so frames arriving before the transport
+     *  installs the hook are silently dropped and recovered by the app-open HWM catch-up. */
+    __SOMS_EVENT__?: (type: string, data: any) => void;
+    /** Kotlin→JS push (RealtimeService.pushConnState): a connection-state transition
+     *  ('connecting'|'open'|'reconnecting'|'closed') of the native /events stream, so the ConnectionBanner
+     *  reflects the Kotlin-owned connection. Installed by the NativeEventTransport; the current value is
+     *  also readable synchronously via `SomsFcm.getConnState()` (Kotlin only pushes on transitions). */
+    __SOMS_CONN_STATE__?: (state: string) => void;
   }
 }
 
@@ -122,6 +138,21 @@ export function isTauri(): boolean {
  *  kill it anyway), while PC/desktop keeps it alive. UA-based: the Android WebView UA carries "Android". */
 export function isAndroid(): boolean {
   return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+}
+
+/** True when running in the Android Tauri shell — the platform whose realtime connection is owned
+ *  natively (Kotlin's RealtimeService) and which exposes the `SomsFcm` / `SomsSecureStore` / `SomsShell`
+ *  `@JavascriptInterface` surfaces. The single discriminator for "consume the native bridge" vs "run the
+ *  browser/desktop code path".
+ *
+ *  IMPORTANT for call sites: the Android shell injects `window.SomsFcm` BEFORE any page script, so after
+ *  gating on this, the bridge is guaranteed present — a missing one is a shell wiring bug. At such gated
+ *  sites prefer an early `return` on the false branch and a direct `window.SomsFcm!.method()` call (so a
+ *  genuine absence throws and surfaces) over `window.SomsFcm?.method()` (which silently swallows the bug).
+ *  Reserve `?.` for sites gated only on `isTauri()` (desktop + Android), where `SomsFcm` is legitimately
+ *  absent on desktop. */
+export function isAndroidNative(): boolean {
+  return isTauri() && isAndroid();
 }
 
 /** Invoke a Tauri command (only meaningful when `isTauri()`). Resolves the command's return value;

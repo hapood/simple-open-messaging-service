@@ -19,9 +19,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
-/** One thread's unread state — the shape of `/notifications/missed` `data[]` and each NOTIF_SYNC
- *  snapshot frame the FGS stream pushes. The single shape all three background paths
- *  (FCM / WorkManager / FGS) feed into [SomsMessagingService.notifyAwaySummary]. */
+/** One thread's unread state — the shape of `/notifications/missed` `summary:true` `data[]`. The single
+ *  shape all three background paths (FCM / WorkManager / RealtimeService-background) fetch and feed into
+ *  [SomsMessagingService.notifyAwaySummary]. */
 data class MissedItem(
     val threadId: String,
     val displayName: String,
@@ -43,10 +43,10 @@ data class MissedItem(
  * FCM for recipients with a live SSE connection (SseService.isUserOnline); this flag is the
  * client-side backstop for the brief heartbeat-gap overlap.
  *
- * Notification UX: all three background paths (FCM real-time, the FGS native stream, the WorkManager
- * 6h poll) converge on ONE coalesced away-notification ([notifyAwaySummary]) at a stable id — the user
- * never sees one notification per message/thread, just one accumulating "{senders} sent you messages
- * while you were away", updated in place. The per-thread dedup cursor in SomsSecureStore keeps the
+ * Notification UX: all three background paths (FCM real-time, the RealtimeService background path, the
+ * WorkManager 6h poll) converge on ONE coalesced away-notification ([notifyAwaySummary]) at a stable id — the user
+ * never sees one notification per message/thread, just one accumulating "{senders} sent you messages",
+ * updated in place. The per-thread dedup cursor in SomsSecureStore keeps the
  * three paths from double-processing the same message.
  */
 class SomsMessagingService : FirebaseMessagingService() {
@@ -64,7 +64,7 @@ class SomsMessagingService : FirebaseMessagingService() {
         val threadId = data["threadId"] ?: return
         if (appInForeground) return // SSE handled it; suppress the system notification.
 
-        // Advance the shared dedup cursor so NotificationSyncWorker / MessageSyncService (the domestic
+        // Advance the shared dedup cursor so NotificationSyncWorker / RealtimeService (the domestic
         // fallbacks) don't re-notify this same message — FCM, FGS, and WorkManager share one cursor.
         data["messageId"]?.let { mid -> if (mid.isNotEmpty()) SomsSecureStore.advanceCursor(this, threadId, mid) }
         // Coalesce: re-fetch the unread snapshot and render ONE away-notification listing every sender
@@ -132,14 +132,15 @@ class SomsMessagingService : FirebaseMessagingService() {
             }
         }
 
-        /** Fetch the current unread-threads snapshot from `/notifications/missed` using the scoped
-         *  notification token. Used by the FCM path (re-query on each push so its per-message wake-up
-         *  can coalesce). The WorkManager poller uses its own response; the FGS consumes the live stream.
-         *  Null on any failure (auth/network/parse) — callers simply skip rendering. */
+        /** Fetch the current unread-threads snapshot from `/notifications/missed` (`summary:true` — the
+         *  server-resolved displayName/unreadCount shape, since raw message rows carry no display names)
+         *  using the session token. Shared by all three background paths: the FCM re-query on each push,
+         *  the WorkManager poll, and the RealtimeService debounced background coalesce. Null on any
+         *  failure (auth/network/parse) — callers simply skip rendering. */
         fun fetchMissedSnapshot(ctx: Context): List<MissedItem>? {
-            val token = SomsSecureStore.getNotificationToken(ctx) ?: return null
+            val token = SomsSecureStore.getSessionToken(ctx) ?: return null
             val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
-            val body = JSONObject().toString() // empty body — the missed endpoint takes none
+            val body = JSONObject().put("summary", true).toString()
             val request = Request.Builder()
                 .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
                 .post(body.toRequestBody("application/json".toMediaType()))
@@ -198,9 +199,8 @@ class SomsMessagingService : FirebaseMessagingService() {
             nm.notify(AWAY_NOTIF_ID, notif)
         }
 
-        /** "Alice sent you messages while you were away" / "Alice, Bob +2 sent you messages while you
-         *  were away". Caps the listed names at 2, folding the rest into a "+N" count to keep the shade
-         *  tidy; de-dupes empty names. */
+        /** "Alice sent you messages" / "Alice, Bob +2 sent you messages". Caps the listed names at 2,
+         *  folding the rest into a "+N" count to keep the shade tidy; de-dupes empty names. */
         private fun composeAwayText(ctx: Context, names: List<String>): String {
             val distinct = LinkedHashSet(names.filter { it.isNotEmpty() }).toList()
             val joined = when {

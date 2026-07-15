@@ -18,9 +18,9 @@ import java.util.concurrent.TimeUnit
  * reminded" UX without any OEM/厂商 channel. On 海外 devices where FCM works, this still runs but is
  * gated to a no-op by the dedup cursor (FCM already notified the same messages) — see SomsSecureStore.
  *
- * Auth: a scoped 30-day notification token (POST /auth/notification-token), NOT the refresh token —
- * sharing the refresh-token family would race the web client's own renewal. The token is pushed here
- * from JS via the SomsFcm @JavascriptInterface on login; absent token ⇒ logged out ⇒ skip.
+ * Auth: the no-expiry session token (POST /auth/login, app client) — a single native credential shared
+ * with the RealtimeService /events stream. Pushed from JS via the SomsFcm @JavascriptInterface on login;
+ * absent token ⇒ logged out ⇒ skip.
  *
  * Schedule: ~6h periodic (the floor for reliable background work; giving several chances per day).
  * WorkManager survives reboot and process death; it can't be started from background, so the initial
@@ -45,11 +45,14 @@ class NotificationSyncWorker(
         // Skip when the user is already in-app — the SSE/in-app UI has it covered; don't double-notify.
         if (SomsMessagingService.appInForeground) return Result.success()
 
-        val token = SomsSecureStore.getNotificationToken(ctx) ?: return Result.success() // logged out
+        val token = SomsSecureStore.getSessionToken(ctx) ?: return Result.success() // logged out
         val origin = SomsSecureStore.getApiOrigin(ctx) ?: return Result.success() // not configured yet
         val cursor = SomsSecureStore.getDedupCursor(ctx)
 
-        val body = JSONObject().toString() // empty body — the missed endpoint takes none
+        // summary:true → the server-resolved unread-thread snapshot (displayName/unreadCount), the shape
+        // parseMissedData/notifyUnread expect. Raw message rows carry no display names, so the paginated
+        // messages form is reserved for the client message-store hydration, not notification coalescing.
+        val body = JSONObject().put("summary", true).toString()
         val request = Request.Builder()
             .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
             .post(body.toRequestBody("application/json".toMediaType()))

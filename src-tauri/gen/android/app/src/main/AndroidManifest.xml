@@ -4,7 +4,7 @@
     <!-- FCM notifications require POST_NOTIFICATIONS on Android 13+ (API 33). Granted at runtime via
          SomsFcm.requestNotificationPermission(), invoked from JS after first login. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Foreground service for the domestic background real-time path (MessageSyncService, dataSync
+    <!-- Foreground service for the native-owned realtime channel (RealtimeService, dataSync
          type). Required to start a foreground service at all (base) + the dataSync type specifically
          (Android 14+/API 34). The service is bounded by Android 15's ~6h/24h dataSync time budget. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -42,13 +42,13 @@
             </intent-filter>
         </service>
 
-        <!-- Domestic background real-time path (foreground service, dataSync type). Holds a native SSE
-             to /notifications/stream so messages arrive in near-real-time when FCM is unavailable.
-             Started/stopped by MainActivity.onStop/onResume based on the Settings toggle. Android 15
-             caps its runtime at ~6h/24h, after which onTimeout stops it and the WorkManager poll takes
-             over. See MessageSyncService. -->
+        <!-- The native-owned realtime channel (foreground service, dataSync type). Holds a long-lived SSE
+             to /events with the session token, continuous across fg/bg, so messages arrive in near-real-time
+             when FCM is unavailable; in the foreground it forwards every event to the WebView. Started/stopped
+             by MainActivity.onStop/onResume based on the Settings toggle. Android 15 caps its runtime at
+             ~6h/24h, after which onTimeout stops it and the WorkManager poll takes over. See RealtimeService. -->
         <service
-            android:name=".MessageSyncService"
+            android:name=".RealtimeService"
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 

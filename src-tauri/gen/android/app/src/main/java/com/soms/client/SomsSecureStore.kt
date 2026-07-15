@@ -9,7 +9,7 @@ import org.json.JSONObject
  * Encrypted-at-rest store for the three pieces of state the background poller (NotificationSyncWorker)
  * needs to survive across app process deaths — none of which the WebView/JS side can hand it at the
  * moment the worker fires (the WebView is suspended when the worker runs):
- *  - `notifToken`: the scoped 30-day credential from POST /auth/notification-token (Bearer on /missed).
+ *  - `sessionToken`: the no-expiry session credential from POST /auth/login (Bearer on /events + /missed).
  *  - `apiOrigin`: the backend base URL the user configured (mirrors the web `apiOrigin`).
  *  - `dedupCursor`: per-thread "last notified latestMessageId" — shared with SomsMessagingService so
  *    FCM (real-time, 海外) and WorkManager (periodic, 国内) never double-notify the same message.
@@ -20,21 +20,21 @@ import org.json.JSONObject
  *
  * EncryptedSharedPreferences (AES256-GCM) is the documented Android best practice for credentials at
  * rest; for a scoped/short-lived token this is belt-and-braces but cheap. The JS side pushes these
- * values via the SomsFcm @JavascriptInterface (setNotificationToken / setApiOrigin); the worker only
+ * values via the SomsFcm @JavascriptInterface (setSessionToken / setApiOrigin); the worker only
  * reads. SomsMessagingService reads+writes the dedup cursor when it posts an FCM notification.
  */
 object SomsSecureStore {
     private const val FILENAME = "soms_secure"
 
     /** The backend's global API version prefix, interpolated into every notification-path URL the
-     *  background services build ([MessageSyncService], [NotificationSyncWorker], SomsMessagingService).
+     *  background services build ([RealtimeService], [NotificationSyncWorker], SomsMessagingService).
      *  Mirrors the web `apiPrefix` constant (`${apiOrigin()}/api/v1`) — Nest applies this prefix to every
      *  controller, so `/notifications/stream` is actually served at `/api/v1/notifications/stream`. A path
      *  without it 404s, which (being a non-401 failure) the FGS treats as transient and retries forever —
      *  the service stays up but never receives a frame. Keep this in sync with `constants.ts`. */
     const val API_PREFIX = "/api/v1"
 
-    private const val KEY_NOTIF_TOKEN = "notif_token"
+    private const val KEY_SESSION_TOKEN = "session_token"
     private const val KEY_API_ORIGIN = "api_origin"
     private const val KEY_DEDUP_CURSOR = "dedup_cursor"
     private const val KEY_POLLING_ENABLED = "polling_enabled"
@@ -52,13 +52,18 @@ object SomsSecureStore {
         EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
 
-    fun setNotificationToken(ctx: Context, token: String?) {
+    /** The no-expiry session token (POST /auth/login, app client) — the single native credential that
+     *  authenticates the Kotlin-owned /events stream AND the background `/notifications/missed` fetches
+     *  (FGS / FCM / WorkManager). Supersedes the scoped 30-day notification token; revocation-only (no
+     *  client-side expiry), mirroring Telegram's auth_key model. JS pushes it via SomsFcm.setSessionToken
+     *  on login and clears it on logout. */
+    fun setSessionToken(ctx: Context, token: String?) {
         val ed = prefs(ctx).edit()
-        if (token.isNullOrEmpty()) ed.remove(KEY_NOTIF_TOKEN) else ed.putString(KEY_NOTIF_TOKEN, token)
+        if (token.isNullOrEmpty()) ed.remove(KEY_SESSION_TOKEN) else ed.putString(KEY_SESSION_TOKEN, token)
         ed.apply()
     }
 
-    fun getNotificationToken(ctx: Context): String? = prefs(ctx).getString(KEY_NOTIF_TOKEN, null)
+    fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
 
     /** Whether the 6-hour background poller is enabled (default true). The WorkManager worker reads this
      *  on every fire to self-gate, so a toggle-off takes effect even for a process woken in the background
@@ -69,7 +74,7 @@ object SomsSecureStore {
         prefs(ctx).edit().putBoolean(KEY_POLLING_ENABLED, enabled).apply()
     }
 
-    /** Whether the dataSync foreground service (MessageSyncService) is enabled. Default FALSE — opt-in,
+    /** Whether the dataSync foreground service (RealtimeService) is enabled. Default FALSE — opt-in,
      *  the more aggressive path (a persistent notification + held connection). The service starts on
      *  background only; this pref is the gate MainActivity.onStop checks. */
     fun getForegroundServiceEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_FGS_ENABLED, false)
