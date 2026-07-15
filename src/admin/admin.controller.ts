@@ -280,16 +280,6 @@ export class AdminController {
     return this.ok();
   }
 
-  // ===== Reuse audit =====
-
-  @UseGuards(AdminAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/reuse-alerts')
-  @ApiOperation({ summary: 'Refresh-token reuse alerts (revokeReason=reuse)' })
-  async reuseAlerts(@Body() dto: { take?: number }): Promise<ApiResult> {
-    return this.ok(await this.authService.reuseAlerts(dto.take));
-  }
-
   // ===== System-wide active session overview =====
 
   @UseGuards(AdminAuthGuard)

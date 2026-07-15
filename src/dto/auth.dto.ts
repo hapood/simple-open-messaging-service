@@ -91,54 +91,12 @@ export class RegisterDto {
   password!: string;
 }
 
-/** refresh token input: shared by renew-access / renew-refresh. */
-export class RefreshTokenDto {
-  @ApiProperty({
-    example: 'eyJhbGciOiJIUzI1NiIs...',
-    description: 'refresh token',
-  })
-  @IsString()
-  @IsNotEmpty()
-  refreshToken!: string;
-
-  @ApiProperty({
-    required: false,
-    example: 'web-chrome',
-    description: 'Device identifier (optional)',
-  })
-  @IsString()
-  @IsOptional()
-  device?: string;
-}
-
-/** logout input: refreshToken + accessJti are legacy (optional — the session-token client omits both);
- *  sessionToken is the primary revocation credential for the session-token client. At least one of
- *  refreshToken / sessionToken is expected, but neither is hard-required so a client transitioning off
- *  refresh can revoke by session token alone. */
+/** logout input: the session token to revoke (possession of the token authorizes its own revocation).
+ *  Optional so a client with no token held (already logged out) no-ops gracefully. */
 export class LogoutDto {
   @ApiProperty({
     required: false,
-    example: 'eyJhbGciOiJIUzI1NiIs...',
-    description: 'refresh token (legacy; omitted by the session-token client)',
-  })
-  @IsString()
-  @IsOptional()
-  refreshToken?: string;
-
-  @ApiProperty({
-    required: false,
-    example: 'a1b2c3d4-e5f6-...',
-    description:
-      'jti of the current access token (optional; used to immediately blacklist it)',
-  })
-  @IsString()
-  @IsOptional()
-  accessJti?: string;
-
-  @ApiProperty({
-    required: false,
-    description:
-      'Session token to revoke (the native/web credential). Optional — present when the client holds one.',
+    description: 'Session token to revoke (the per-device credential).',
   })
   @IsString()
   @IsOptional()

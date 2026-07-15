@@ -66,10 +66,10 @@ describe('Friend-request badge e2e (invite arms hasUrFriendReq; mark-read clears
     // 2. login both → access tokens
     const tokA = (
       await request(http).post('/api/v1/auth/login').send({ account: 'inviter', password: 'Pass1234' })
-    ).body.data.access_token;
+    ).body.data.session_token;
     const tokB = (
       await request(http).post('/api/v1/auth/login').send({ account: 'invitee', password: 'Pass1234' })
-    ).body.data.access_token;
+    ).body.data.session_token;
     expect(tokA).toBeTruthy();
     expect(tokB).toBeTruthy();
     const authA = { Authorization: `Bearer ${tokA}` };

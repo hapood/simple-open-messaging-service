@@ -122,7 +122,7 @@ describe('HTTP/2 over TLS', () => {
       '/api/v1/auth/login',
       JSON.stringify({ account: 'h2user', password: 'Pass1234' }),
     );
-    token = JSON.parse(login.body).data.access_token;
+    token = JSON.parse(login.body).data.session_token;
   }, 30000);
 
   afterAll(async () => {

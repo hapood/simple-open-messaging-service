@@ -1,56 +1,29 @@
-import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { UserService } from '../user/user.service.js';
-import { JwtService } from '@nestjs/jwt';
 import argon2 from 'argon2';
-import { createHash, randomUUID } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
-import { KvStoreService } from '../kv-store/kv-store.service.js';
-import { jwtConstants } from './constants.js';
 import { normalizeAccount } from '../common/account.js';
 import { SessionTokenService } from './session-token.service.js';
 
-const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Clean up expired records once per day
-
-/** Refresh token issue/rotation options: omit familyId -> mint a new family (login); pass it -> inherit (rotation). */
-type RefreshOpts = { familyId?: string; device?: string; userAgent?: string; ip?: string };
-
-/** verifyRefreshToken outcome: distinguishes reuse (to force re-login on the client) from ordinary invalidity. */
-type VerifyResult =
-  | { ok: true; userId: number; familyId: string; jti: string }
-  | { ok: false; reason: 'invalid' | 'expired' | 'reuse' };
-
+/**
+ * User authentication: local password login validation + the single session-token lifecycle
+ * (issue/validate/revoke live in {@link SessionTokenService}). There is no access JWT and no refresh
+ * token — one opaque session credential per device authenticates everything, revoked wholesale by
+ * {@link invalidateAllSessions} (logout-all / password change / admin purge), which also emits so online
+ * SSE clients are FORCE_LOGOUT'd at once. The admin console's SEPARATE JWT+refresh auth
+ * (AdminAuthService / AdminRefreshToken / Admin.tokenVersion) is a different system, untouched here.
+ */
 @Injectable()
-export class AuthService implements OnModuleInit, OnModuleDestroy {
-  private _cleanupTimer: NodeJS.Timeout | undefined;
-
+export class AuthService {
   constructor(
     private userService: UserService,
-    private jwtService: JwtService,
     private prisma: PrismaService,
-    private kvStore: KvStoreService,
     private eventEmitter: EventEmitter2,
     private sessionTokens: SessionTokenService,
   ) {}
 
-  async onModuleInit() {
-    // Periodically clean up expired refresh token records (replaces the original in-memory cleanup, fixing its key-mismatch bug)
-    this._cleanupTimer = setInterval(
-      () => this.cleanupExpiredRefreshTokens(),
-      REFRESH_CLEANUP_INTERVAL_MS,
-    );
-  }
-
-  async onModuleDestroy() {
-    if (this._cleanupTimer) {
-      clearInterval(this._cleanupTimer);
-    }
-  }
-
-  async validateUser(
-    account: string,
-    password: string,
-  ) {
+  async validateUser(account: string, password: string) {
     const user = await this.userService.findUniqueUserForAuth({
       account_domain: { account: normalizeAccount(account), domain: 'local' },
     });
@@ -70,188 +43,24 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return argon2.hash(str);
   }
 
-  async login(userId: number, opts: RefreshOpts = {}) {
-    return {
-      access_token: await this.getAccessToken(userId),
-      refresh_token: await this.getRefreshToken(userId, opts),
-    };
-  }
-
-  async logout(refreshToken: string) {
-    await this.revokeRefreshToken(refreshToken);
-  }
-
   /**
-   * Issue a refresh token: sign a JWT with refreshSecret (14d) and persist it (storing sha256 hash + jti + familyId).
-   * - Omit opts.familyId -> mint a new family (login); pass it -> inherit (rotation, preserving the reuse-detection chain).
-   * - jti ensures multiple signatures issued within the same second do not collide; familyId is the reuse-detection anchor (replaying a revoked token -> entire family revoked).
+   * Revoke every session token for the user (logout-all / password change / admin disable / admin purge)
+   * + emit `auth.sessions-invalidated` so the SSE service pushes FORCE_LOGOUT and drops their live
+   * connections at once. KV-cached session validations self-expire within 60s, so a token presented
+   * after this lands is rejected on its next (re)validation.
    */
-  async getRefreshToken(userId: number, opts: RefreshOpts = {}): Promise<string> {
-    const familyId = opts.familyId ?? randomUUID();
-    const jti = randomUUID();
-    const token = this.jwtService.sign(
-      { sub: userId, jti, fam: familyId },
-      { secret: jwtConstants.refreshSecret, expiresIn: jwtConstants.refreshTtlDays },
-    );
-    await this.prisma.refreshToken.create({
-      data: {
-        userId,
-        tokenHash: hashToken(token),
-        jti,
-        familyId,
-        device: opts.device ?? null,
-        userAgent: opts.userAgent ?? null,
-        ip: opts.ip ?? null,
-        expiresAt: new Date(Date.now() + jwtConstants.refreshTtlMs),
-      },
-    });
-    return token;
-  }
-
-  /**
-   * Verify a refresh token: first validate the JWT signature/expiry, then look up the DB record.
-   * - JWT valid but DB record already revoked -> reuse (token chain leaked) -> revoke the entire family and return reason:'reuse'.
-   * - Legacy tokens (issued before the migration; JWT lacks a fam claim but the DB row already has familyId/jti backfilled) still work,
-   *   and the next rotation upgrades them to the new token format.
-   */
-  async verifyRefreshToken(refreshToken: string): Promise<VerifyResult> {
-    try {
-      this.jwtService.verify(refreshToken, {
-        secret: jwtConstants.refreshSecret,
-      });
-    } catch {
-      return { ok: false, reason: 'invalid' };
-    }
-    const rec = await this.prisma.refreshToken.findUnique({
-      where: { tokenHash: hashToken(refreshToken) },
-      select: {
-        userId: true,
-        familyId: true,
-        jti: true,
-        revokedAt: true,
-        expiresAt: true,
-      },
-    });
-    if (!rec) return { ok: false, reason: 'invalid' };
-    if (rec.revokedAt !== null) {
-      await this.revokeFamily(rec.familyId, 'reuse');
-      this.eventEmitter.emit('auth.refresh-reuse-detected', {
-        userId: rec.userId,
-        familyId: rec.familyId,
-        jti: rec.jti,
-      });
-      return { ok: false, reason: 'reuse' };
-    }
-    if (rec.expiresAt <= new Date()) return { ok: false, reason: 'expired' };
-    return { ok: true, userId: rec.userId, familyId: rec.familyId, jti: rec.jti };
-  }
-
-  /**
-   * Rotate a refresh token: verify -> atomic claim (flip revokedAt) -> issue new access+refresh (inheriting familyId).
-   * - Concurrency race: if two callers rotate the same token simultaneously, only one updateMany where revokedAt:null gets count===1;
-   *   the loser gets count===0 and is treated as reuse -> revoke the entire family ("legitimate user and attacker sharing the old token -> mutual destruction").
-   * - verifyRefreshToken already detects reuse for revoked records; this claim backstops the concurrency window after verify.
-   * On failure throws a reason string ('invalid'|'expired'|'reuse'); the caller maps it to a business code.
-   */
-  async rotateRefreshToken(
-    refreshToken: string,
-    opts: RefreshOpts = {},
-  ): Promise<{ access: string; refresh: string; userId: number }> {
-    const v = await this.verifyRefreshToken(refreshToken);
-    if (v.ok === false) throw v.reason;
-    const claim = await this.prisma.refreshToken.updateMany({
-      where: { tokenHash: hashToken(refreshToken), revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'rotated' },
-    });
-    if (claim.count === 0) {
-      await this.revokeFamily(v.familyId, 'reuse');
-      this.eventEmitter.emit('auth.refresh-reuse-detected', {
-        userId: v.userId,
-        familyId: v.familyId,
-        jti: v.jti,
-      });
-      throw 'reuse';
-    }
-    const refresh = await this.getRefreshToken(v.userId, {
-      familyId: v.familyId,
-      ...opts,
-    });
-    return { access: await this.getAccessToken(v.userId), refresh, userId: v.userId };
-  }
-
-  /** Revoke an entire family at the root (triggered by reuse detection): all non-revoked members are invalidated. */
-  async revokeFamily(familyId: string, reason: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: { familyId, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
-  }
-
-  /** Revoke a single refresh token (used by logout; idempotent: no-op if it does not exist or is already revoked). */
-  async revokeRefreshToken(refreshToken: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: { tokenHash: hashToken(refreshToken), revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'logout' },
-    });
-  }
-
-  /**
-   * Issue an access token: the claim carries {sub, jti, tver}.
-   * - jti: unique id of this token; when revoking a single token it is added to a KV-store blacklist (TTL = remaining lifetime).
-   * - tver: the User.tokenVersion at issue time, which JwtStrategy verifies matches the current value; bumping tver invalidates all access tokens.
-   */
-  async getAccessToken(userId: number): Promise<string> {
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { tokenVersion: true },
-    });
-    return this.jwtService.sign(
-      { sub: userId, jti: randomUUID(), tver: user!.tokenVersion },
-      { expiresIn: jwtConstants.accessTtl },
-    );
-  }
-
-  /** Immediately revoke a single access token (log out a single device): add its jti to the blacklist, TTL defaults to the access token's remaining lifetime. */
-  async blacklistAccessJti(jti: string, ttlSec: number = jwtConstants.accessTtlSec) {
-    await this.kvStore.setex(`access:jti:${jti}`, ttlSec, '1').catch(() => {});
-  }
-
-  /**
-   * Log out all devices / change password / force offline: revoke all refresh tokens and increment tokenVersion (invalidating all access tokens).
-   * Clear the KV-store tokenVersion cache so the new version takes effect immediately; emit an event so online WS clients FORCE_LOGOUT.
-   */
-  async invalidateAllSessions(userId: number, reason: string): Promise<number> {
-    await this.prisma.refreshToken.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
-    // Also revoke every session token (the native/web credential that supersedes the refresh-token
-    // family). KV-cached validations self-expire within 60s; the live SSE connection is dropped at once
-    // by the auth.sessions-invalidated → FORCE_LOGOUT handler emitted below.
+  async invalidateAllSessions(userId: number, reason: string): Promise<void> {
     await this.sessionTokens.revokeAllForUser(userId, reason);
-    const user = await this.prisma.user.update({
-      where: { id: userId },
-      data: { tokenVersion: { increment: 1 } },
-      select: { tokenVersion: true },
-    });
-    await this.kvStore.del(`access:tver:${userId}`).catch(() => {});
-    this.eventEmitter.emit('auth.sessions-invalidated', {
-      userId,
-      reason,
-      tokenVersion: user.tokenVersion,
-    });
-    return user.tokenVersion;
+    this.eventEmitter.emit('auth.sessions-invalidated', { userId, reason });
   }
 
-  /** Change password: verify the old password -> swap the hash -> invalidateAllSessions -> return a fresh login pair (re-login on the current device). */
+  /** Change password: verify the old password → swap the hash → invalidateAllSessions (every session
+   *  token revoked; the client re-logs in for a fresh one — no token is reissued here). */
   async changePassword(
     userId: number,
     oldPassword: string,
     newPassword: string,
-  ): Promise<
-    | { ok: true; access_token: string; refresh_token: string }
-    | { ok: false; reason: 'wrong_password' }
-  > {
+  ): Promise<{ ok: true } | { ok: false; reason: 'wrong_password' }> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
       select: { hashPwd: true },
@@ -264,11 +73,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       data: { hashPwd: await argon2.hash(newPassword) },
     });
     await this.invalidateAllSessions(userId, 'password_change');
-    return {
-      ok: true,
-      access_token: await this.getAccessToken(userId),
-      refresh_token: await this.getRefreshToken(userId),
-    };
+    return { ok: true };
   }
 
   /** Active session credentials — the data behind the "Devices / Active sessions" settings page.
@@ -317,77 +122,62 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     return this.sessionTokens.revokeById(userId, sessionId);
   }
 
-  // ── Admin session/overview reads (moved from AdminController) ────────────────
-  // These own the user-side RefreshToken table; admin-session reads (AdminRefreshToken) live in
-  // AdminAuthService. Services return domain data; the controller wraps the HTTP envelope.
+  // ── Admin session/overview reads ─────────────────────────────────────────────
+  // User-side sessions live on SessionToken (the canonical credential). Admin-session reads
+  // (AdminRefreshToken) live in AdminAuthService. Services return domain data; the controller wraps
+  // the HTTP envelope.
 
-  /** System-wide active refresh-session overview (filter by userId / ip). */
+  /** System-wide active session overview — SessionToken rows (filter by userId / ip). Active = not
+   *  revoked and not past its sliding deadline (no-expiry app tokens always qualify); the ip filter
+   *  matches both the sign-in ip and the last-seen ip. Newest activity (lastSeenAt) first. */
   async listAllSessions(opts: { skip?: number; take?: number; userId?: number; ip?: string }) {
     const where = {
       revokedAt: null,
-      expiresAt: { gt: new Date() },
-      ...(opts.userId ? { userId: opts.userId } : {}),
-      ...(opts.ip ? { ip: { contains: opts.ip } } : {}),
+      AND: [
+        { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+        ...(opts.userId ? [{ userId: opts.userId }] : []),
+        ...(opts.ip
+          ? [{ OR: [{ ip: { contains: opts.ip } }, { lastSeenIp: { contains: opts.ip } }] }]
+          : []),
+      ],
     };
     const [list, total] = await Promise.all([
-      this.prisma.refreshToken.findMany({
+      this.prisma.sessionToken.findMany({
         where,
         skip: opts.skip ?? 0,
         take: opts.take ?? 50,
-        orderBy: { createdAt: 'desc' },
+        orderBy: { lastSeenAt: 'desc' },
         select: {
+          id: true,
           userId: true,
-          jti: true,
+          client: true,
           device: true,
           userAgent: true,
           ip: true,
+          lastSeenIp: true,
           createdAt: true,
+          lastSeenAt: true,
           expiresAt: true,
           user: { select: { id: true, account: true } },
         },
       }),
-      this.prisma.refreshToken.count({ where }),
+      this.prisma.sessionToken.count({ where }),
     ]);
     return { list, total };
   }
 
-  /** Refresh-token reuse events (the family has been revoked at the root). */
-  reuseAlerts(take = 50) {
-    return this.prisma.refreshToken.findMany({
-      where: { revokeReason: 'reuse' },
-      select: {
-        userId: true,
-        familyId: true,
-        jti: true,
-        ip: true,
-        userAgent: true,
-        revokedAt: true,
-      },
-      orderBy: { revokedAt: 'desc' },
-      take,
-    });
-  }
-
-  /** Purge every active session in one shot (forces every user to re-login; access tokens die at once). */
+  /** Purge every active session in one shot: revoke every session token for each user with an active
+   *  credential (forces every user to re-login). */
   async purgeAllSessions(): Promise<{ purgedUsers: number }> {
-    const active = await this.prisma.refreshToken.findMany({
-      where: { revokedAt: null, expiresAt: { gt: new Date() } },
+    const sessionUsers = await this.prisma.sessionToken.findMany({
+      where: { revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
       select: { userId: true },
       distinct: ['userId'],
     });
-    for (const { userId } of active) {
+    const userIds = new Set(sessionUsers.map((r) => r.userId));
+    for (const userId of userIds) {
       await this.invalidateAllSessions(userId, 'admin_purge');
     }
-    return { purgedUsers: active.length };
+    return { purgedUsers: userIds.size };
   }
-
-  private async cleanupExpiredRefreshTokens() {
-    await this.prisma.refreshToken.deleteMany({
-      where: { expiresAt: { lt: new Date() } },
-    });
-  }
-}
-
-function hashToken(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
 }

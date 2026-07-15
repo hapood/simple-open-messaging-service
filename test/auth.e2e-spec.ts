@@ -61,7 +61,7 @@ describe('Auth e2e (register -> login -> guarded)', () => {
       .send({ account: 'e2etest', password: 'Pass1234' });
     expect(login.status).toBe(200);
     expect(login.body.code).toBe(0);
-    const accessToken = login.body.data.access_token;
+    const accessToken = login.body.data.session_token;
     expect(accessToken).toBeTruthy();
 
     // 3. guarded route (JwtAuthGuard validates the signed token)
@@ -101,27 +101,33 @@ describe('Auth e2e (register -> login -> guarded)', () => {
     expect(webGuarded.body.code).toBe(0);
   });
 
-  it('revokes the session token on logout-all (it then 401s)', async () => {
+  it('revokes every session on logout-all (an un-cached second session then 401s)', async () => {
     await request(app.getHttpServer())
       .post('/api/v1/user/register')
       .send({ account: 'revoketest', name: 'Revoke', password: 'Pass1234' })
       .expect((r) => expect(r.body.code).toBe(0));
 
-    const login = await request(app.getHttpServer())
+    // Two sessions. tokenA authorizes logout-all — which validates it, populating ITS 60s KV cache.
+    const loginA = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ account: 'revoketest', password: 'Pass1234', client: 'app' });
-    const accessToken: string = login.body.data.access_token;
-    const sessionToken: string = login.body.data.session_token;
-    // IMPORTANT: do NOT use the session token before logout-all — that would populate its 60s KV
-    // cache and mask the revocation. The first validate after revoke is a cache miss → DB read.
+    const tokenA: string = loginA.body.data.session_token;
+    // tokenB is NEVER presented before the check, so its first validate after revoke is a KV cache
+    // miss → DB read → the revoked row → 401. (Authing logout-all with the SAME token would populate
+    // its cache and mask the revocation for up to 60s — the documented KV cache lag.)
+    const loginB = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ account: 'revoketest', password: 'Pass1234', client: 'app' });
+    const tokenB: string = loginB.body.data.session_token;
+
     const logoutAll = await request(app.getHttpServer())
       .post('/api/v1/auth/logout-all')
-      .set('Authorization', `Bearer ${accessToken}`);
+      .set('Authorization', `Bearer ${tokenA}`);
     expect(logoutAll.body.code).toBe(0);
 
     const guarded = await request(app.getHttpServer())
       .post('/api/v1/auth/sessions')
-      .set('Authorization', `Bearer ${sessionToken}`);
+      .set('Authorization', `Bearer ${tokenB}`);
     expect(guarded.status).toBe(401);
   });
 

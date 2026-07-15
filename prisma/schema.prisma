@@ -30,7 +30,6 @@ model User {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   isDeleted          Boolean             @default(false)
-  tokenVersion       Int                 @default(0) // bumping this invalidates ALL of the user's access tokens (all-device logout / password change / force-kick)
   hasUrFriendReq     Boolean             @default(false) // unread friend-request badge (folded from userNotiBox). SELF-ONLY in responses — builders must omit it for non-self.
   // Profile revision (name/avatar/bio). On the ORIGIN, bumped on every profile edit (authoritative).
   // On a federated STUB, remoteProfileRev holds the origin's profileRev at last localization — the
@@ -49,7 +48,6 @@ model User {
   invitesFrom        Invite[]            @relation("InviteFrom") // invites THIS user sent
   invitesTo          Invite[]            @relation("InviteTo") // invites addressed to THIS user
   messages           Message[]           @relation("AuthoredMessages")
-  refreshTokens      RefreshToken[]
   pushTokens         PushToken[]
   sessionTokens      SessionToken[]
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
@@ -434,26 +432,6 @@ model PendingMedia {
   @@unique([threadId, creatorId, originSeq]) // federated dedup (NULL originSeq = local → many allowed)
   @@index([threadId])
   @@index([status, createdAt]) // GC stale-pending sweep
-}
-
-/// Refresh token persisted to DB (replaces an earlier in-memory map): survives restart, multi-device, revocable.
-model RefreshToken {
-  id           BigInt    @id @default(autoincrement())
-  userId       Int
-  user         User      @relation(fields: [userId], references: [id])
-  tokenHash    String    @unique // stores sha256 hash, never the plaintext token
-  jti          String    @unique // JWT id of this token; the precise revocation key, aligned with the claim
-  familyId     String // minted at login, inherited across rotation; reuse-detection anchor (a replayed revoked token → whole family revoked)
-  device       String? // multi-device label (the client's localStorage uuid)
-  userAgent    String?   @db.VarChar(255) // UA captured at issue/rotation, shown in the session list
-  ip           String?   @db.VarChar(64) // IP captured at issue/rotation, shown in the session list
-  createdAt    DateTime  @default(now())
-  expiresAt    DateTime
-  revokedAt    DateTime? // soft revoke
-  revokeReason String?   @db.VarChar(32) // revoke reason: logout|rotated|reuse|all_devices|password_change (observability/forensics only)
-
-  @@index([userId])
-  @@index([familyId])
 }
 
 /// Admin RBAC tiers. SUPER_ADMIN = all powers (default; the seed admin keeps full access); ADMIN =

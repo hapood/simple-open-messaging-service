@@ -100,7 +100,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     const login = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ account: 'fastify', password: 'Pass1234' });
-    token = login.body.data.access_token;
+    token = login.body.data.session_token;
     // Second local user for the per-object media-authz tests (the non-member).
     await request(app.getHttpServer())
       .post('/api/v1/user/register')
@@ -108,7 +108,7 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     const login2 = await request(app.getHttpServer())
       .post('/api/v1/auth/login')
       .send({ account: 'fastify2', password: 'Pass1234' });
-    token2 = login2.body.data.access_token;
+    token2 = login2.body.data.session_token;
     userAId = (await prisma.user.findFirst({ where: { account: 'fastify' } }))!
       .id;
     // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written

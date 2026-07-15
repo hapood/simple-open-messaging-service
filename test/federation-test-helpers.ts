@@ -70,7 +70,7 @@ export async function registerAndLogin(
   const login = await request(app.baseUrl)
     .post('/api/v1/auth/login')
     .send({ account, password: 'Pass1234' });
-  return { id: reg.body.data.id as number, token: login.body.data.access_token as string };
+  return { id: reg.body.data.id as number, token: login.body.data.session_token as string };
 }
 
 /** Create a SUPER_ADMIN on an app + log in via the admin route, returning the admin access token
@@ -89,6 +89,8 @@ export async function getAdminToken(app: AppLike, account = 'admin'): Promise<st
   const res = await request(app.baseUrl)
     .post('/api/v1/admin/login')
     .send({ account, password: 'Pass1234' });
+  // Admin login returns the ADMIN access_token (JWT) — the admin system stays JWT; only user auth moved
+  // to the session token. Do NOT read session_token here.
   return res.body.data.access_token as string;
 }
 

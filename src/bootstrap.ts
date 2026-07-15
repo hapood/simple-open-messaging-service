@@ -15,7 +15,7 @@ import { join } from 'path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
-import { MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
+import { MEDIA_TOKEN_COOKIE } from './auth/media-token.js';
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { BusinessCode } from './common/business-code.js';
@@ -127,7 +127,7 @@ export async function configureApp(
   // default). No `credentials: true` is needed for Bearer auth.
   //
   // The only cookie the API sets is the httpOnly media_token, and it is `SameSite=Strict`
-  // (access-token.validator.ts) — so it NEVER travels on a cross-origin request regardless of the
+  // (media-token.ts) — so it NEVER travels on a cross-origin request regardless of the
   // credentials flag. Media therefore authenticates one of two ways, neither credentialed-CORS:
   //   - same-origin web deploy (single-image): CORS doesn't apply at all;
   //   - Tauri/Android: the media:// Rust proxy injects a Bearer header.
@@ -203,11 +203,11 @@ async function registerStaticServing(
   mkdirSync(uploadsDir, { recursive: true });
 
   // Auth-gate /uploads/*: native <img src="/uploads/..."> and <a download> requests can't carry
-  // the Authorization header, so the access token is also placed in an httpOnly `media_token`
-  // cookie by the auth endpoints. Validate it here with the SAME AccessTokenValidator the API
-  // JwtStrategy uses — a revoked token (logout / password change / session invalidate) therefore
-  // loses media access too. Registered on the root instance as a global preHandler; Fastify
-  // propagates parent hooks into the @fastify/static child context that owns the /uploads/ route.
+  // the Authorization header, so the session token is also placed in an httpOnly `media_token`
+  // cookie by the auth endpoints. Validate it here with the SAME BearerAuthService the global guard
+  // uses — a revoked session (logout / password change / session invalidate) therefore loses media
+  // access too. Registered on the root instance as a global preHandler; Fastify propagates parent
+  // hooks into the @fastify/static child context that owns the /uploads/ route.
   const bearerAuth = app.get(BearerAuthService);
   const mediaAccess = app.get(MediaAccessService);
   adapter.getInstance().addHook(
@@ -217,8 +217,8 @@ async function registerStaticServing(
       // Native <img>/<a download> can't send Authorization → they ride the httpOnly media_token
       // cookie (same-origin browser path). Cross-origin clients (the Tauri media proxy, any
       // native client) can't use that cookie — SameSite=Strict suppresses it cross-origin — so
-      // also accept a Bearer header. BearerAuthService accepts an access JWT OR a session token, so
-      // the API and media surfaces enforce identical auth (and revocation) rules.
+      // also accept a Bearer header. BearerAuthService resolves the session token, so the API and
+      // media surfaces enforce identical auth (and revocation) rules.
       const raw = request.cookies?.[MEDIA_TOKEN_COOKIE] ?? extractBearer(request.headers.authorization);
       const principal = raw ? await bearerAuth.resolve(raw, { ip: request.ip }) : null;
       if (!principal) {

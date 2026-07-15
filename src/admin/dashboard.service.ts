@@ -5,7 +5,7 @@ import { SseService } from '../gateway/sse.service.js';
 /**
  * Console overview aggregator. Every metric is a cheap read so the dashboard can poll:
  *  - online: the in-memory SSE connection snapshot (live downlinks, aggregated per user).
- *  - activeSessions: unexpired, unrevoked user refresh tokens.
+ *  - activeSessions: active user session tokens (unrevoked, not past their sliding deadline).
  *  - federation: peer counts grouped by trustLevel.
  *  - media: total content bytes + asset count from MediaAsset (CAS, deduped) + reclaimable (refs<=0).
  *    Uses the table aggregate, not a filesystem walk — reflects managed media and is O(1)-ish.
@@ -31,8 +31,8 @@ export class DashboardService {
       recentActions,
     ] = await Promise.all([
       this.sseService.snapshot(),
-      this.prisma.refreshToken.count({
-        where: { revokedAt: null, expiresAt: { gt: now } },
+      this.prisma.sessionToken.count({
+        where: { revokedAt: null, OR: [{ expiresAt: null }, { expiresAt: { gt: now } }] },
       }),
       this.prisma.federatedPeer.groupBy({
         by: ['trustLevel'],
