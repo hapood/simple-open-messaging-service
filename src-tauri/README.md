@@ -24,8 +24,8 @@ full surface; the build-type taxonomy (all land in `dist/android/`):
 | `make apk-dev DEV_URL=http://host:4200` | debug APK loading a frontend dev server at runtime |
 | `make install` / `make run` | `adb install -r` (+ launch) the newest APK |
 
-Artifacts land under `dist/<platform>/` (`dist/android/` now; `dist/{linux,windows,macos}/` slot in
-when desktop lands). The builder image (`make image`, one-time ~20 min) bakes the JDK / Android SDK /
+Artifacts land under `dist/<platform>/` (`dist/android/` and `dist/macos/` now; `dist/{linux,windows}/`
+slot in when those desktop hosts are wired). The builder image (`make image`, one-time ~20 min) bakes the JDK / Android SDK /
 NDK / Rust toolchain + pre-fetched crates, so warm `make apk*` runs need no network.
 
 ### `gen/android` is tracked; signing keys are secrets
@@ -42,18 +42,48 @@ clone builds without `tauri android init`. **Signing keys are NOT committed** (g
 
 See `FCM_ANDROID_PATCH.md` for the native-side (FCM, bridges, dev shell) details.
 
-## Desktop build host requirements (future — not wired today)
+## macOS desktop build (wired)
 
-> Desktop bundles (Linux deb/appimage, Windows msi/exe, macOS dmg) are **future** work — they need a
-> native host and are not yet orchestrated (the `Makefile` covers Android only). The requirements below
-> are for when that lands; the industry-standard path is a `tauri-apps/tauri-action` CI matrix because
-> macOS/Windows can't be cross-built on Linux.
+The universal macOS bundle (`.app` + `.dmg`, covers Intel x86_64 + Apple Silicon aarch64) is built
+natively on a Mac via `src-tauri/Makefile` — no Docker, because macOS can't be cross-built on Linux
+(needs `hdiutil`/`codesign` + the macOS SDK). It reuses the same pipeline discipline as Android: version
+gate, `WEB_BUILD`, versioned artifacts under `dist/<platform>/` (`dist/macos/` here).
 
-Tauri v2 desktop needs **`libwebkit2gtk-4.1`** (Ubuntu 22.04+ / Kylin V10 SP2 / macOS / Windows). The
-Kylin V10 SP1 dev box (20.04-based) only has `4.0`, so a Linux desktop build must run on a 22.04+ host.
-Install the system deps there (`libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`,
-`libayatana-appindicator3-dev`), plus the Rust toolchain and Tauri CLI
-(`cargo install tauri-cli --version "^2"`).
+| Command | Output |
+|---|---|
+| `make macos` | universal `.app` + `.dmg` → `dist/macos/SOMS-<ver>-universal.{app,dmg}` (ad-hoc signed; export `APPLE_SIGNING_IDENTITY` for a real Developer ID) |
+| `make macos-run` | open the newest built `SOMS.app` |
+| `make dev` | `cargo tauri dev` — hot-reload (`ng serve` on :4200) |
+| `SOMS_API_ORIGIN=http://host:3000 make dev` | dev against a non-local backend |
+
+Ad-hoc signing (`bundle.macOS.signingIdentity: "-"` in `tauri.conf.json`) launches locally and on Apple
+Silicon with no Apple Developer cert — arm64 requires at least ad-hoc signing to run. For public
+distribution, export `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD` (app-specific), and
+`APPLE_TEAM_ID`, then `make macos` — Tauri notarizes automatically. See the Tauri v2 macOS signing guide.
+
+### macOS one-time prerequisites
+
+```bash
+xcode-select --install                                      # clang, codesign, hdiutil, lipo
+cargo install tauri-cli --version "^2.11.4" --locked        # PIN to web/package.json @tauri-apps/cli
+rustup target add aarch64-apple-darwin x86_64-apple-darwin   # both arches for universal-apple-darwin
+npm --prefix web install                                    # so beforeBuildCommand (ng build) works
+```
+
+`tauri-cli` here is the `cargo tauri` binary (NOT the `src-tauri/tauri.js` node shim, which is
+Android-gradle-only). Pin it to `^2.11.4` to match `web/package.json`'s `@tauri-apps/cli` — the same
+version-drift guard the Android builder image follows.
+
+## Linux / Windows desktop build (future — not wired)
+
+> Linux (deb/appimage) and Windows (msi/exe) bundles remain **future** work — each needs its own native
+> host (neither can be cross-built from the macOS host) and is not yet orchestrated. The industry-standard
+> path is a `tauri-apps/tauri-action` CI matrix.
+
+Tauri v2 desktop needs **`libwebkit2gtk-4.1`** (Ubuntu 22.04+ / Kylin V10 SP2). The Kylin V10 SP1 dev box
+(20.04-based) only has `4.0`, so a Linux desktop build must run on a 22.04+ host. Install the system deps
+there (`libwebkit2gtk-4.1-dev`, `libsoup-3.0-dev`, `libgtk-3-dev`, `libayatana-appindicator3-dev`), plus
+the Rust toolchain and Tauri CLI (`cargo install tauri-cli --version "^2"`).
 
 ### China mirror / proxy (cargo)
 

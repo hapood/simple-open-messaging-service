@@ -1,7 +1,8 @@
-# SOMS Android APK builder — LINUX host, docker-based. Sits next to the Dockerfile it builds and
-# produces signed Android APKs on a Linux (Ubuntu/Debian) host. macOS / Windows / Linux-desktop
-# artifacts are NOT built here — macOS can't be cross-built on Linux (needs hdiutil/codesign + SDK),
-# and desktop bundles need a native host (webkit2gtk-4.1); they slot into dist/<platform>/ later.
+# SOMS native client builder — Android (LINUX host, docker-based) + macOS (native Mac host). Sits next
+# to the Dockerfile it builds and produces signed Android APKs on a Linux (Ubuntu/Debian) host; macOS
+# .app/.dmg are built natively on a Mac (macOS can't be cross-built on Linux — needs hdiutil/codesign +
+# the macOS SDK). Windows / Linux-desktop artifacts are NOT built here — each needs its own native host;
+# they slot into dist/<platform>/ later.
 #
 #   make image      — (re)build the self-contained builder image (one-time, ~20 min cold).
 # Build types (all land in dist/android/ as soms-<ver>[-debug|-dev]-<abi>.apk; future: apk-aab/AAB):
@@ -14,6 +15,10 @@
 #   make shell      — interactive shell in the builder (debugging).
 #   make clean      — drop generated Android build outputs (keeps the gradle cache volume warm).
 #   make help       — this list.
+# macOS desktop (native Mac host — no Docker):
+#   make macos      — universal RELEASE .app + .dmg into dist/macos/ (ad-hoc signed; APPLE_SIGNING_IDENTITY for real).
+#   make macos-run  — open the newest built SOMS.app.
+#   make dev        — cargo tauri dev (hot-reload; beforeDevCommand runs ng serve on :4200).
 #
 # Variants: by default `make apk` builds ONE apk per ABI in MULTI_ABIS (aarch64 armv7) PLUS a
 # universal that bundles exactly those ABIs — so dist/android/ ends up with:
@@ -91,7 +96,7 @@ DOCKER_RUN := docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
               $(PROXY_RUN_FLAGS) $(CLEAR_JAVA_PROXY) \
               -v "$(ROOT):$(WORK)" -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
 
-.PHONY: help image apk apk-debug apk-dev shell install run clean
+.PHONY: help image apk apk-debug apk-dev shell install run clean macos macos-run dev
 help:  ## show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
@@ -201,3 +206,60 @@ clean:  ## drop generated Android build outputs (keeps the gradle cache volume w
 	@# tidy to reset. Tauri recreates the dir on the next build; the .so are gitignored.
 	rm -rf $(ROOT)/src-tauri/gen/android/.gradle $(ROOT)/src-tauri/gen/android/build \
 	  $(ROOT)/src-tauri/gen/android/app/build $(ROOT)/src-tauri/gen/android/app/src/main/jniLibs
+
+# ─── macOS desktop (native host — no Docker; macOS can't be cross-built on Linux) ──────────────
+# Universal binary (Intel x86_64 + Apple Silicon aarch64) via `--target universal-apple-darwin`
+# (Tauri compiles each arch then lipo-merges into ONE .app + .dmg). Requires both Apple rust targets
+# (rustup target add aarch64-apple-darwin x86_64-apple-darwin) + Xcode Command Line Tools. Runs straight
+# on the host — no container (unlike the Android path), so beforeBuildCommand (ng build) runs natively.
+#
+# Signing: config defaults to ad-hoc ("-" — launches locally + on Apple Silicon, no Apple cert needed).
+# Real distribution just exports APPLE_SIGNING_IDENTITY="Developer ID Application: …", which OVERRIDES
+# the config value (Tauri env-vars ref). Notarization additionally needs APPLE_ID + APPLE_PASSWORD +
+# APPLE_TEAM_ID — intentionally NOT set for personal/local use.
+#
+# macOS find is BSD and lacks -printf (the Android recipes use GNU find inside their Linux container);
+# artifact discovery here uses `ls -t` instead — safe because bundle filenames have no spaces.
+MAC_DIST_DIR := $(MAKE_DIR)dist/macos
+MAC_BUNDLE   := $(MAKE_DIR)target/universal-apple-darwin/release/bundle
+
+define do_macos
+	@# Version gate — same single-source-of-truth assertion as the Android do_build.
+	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
+	@# Both Apple targets must be installed (universal-apple-darwin compiles each, then lipo-merges).
+	@for t in aarch64-apple-darwin x86_64-apple-darwin; do \
+	  rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "✗ missing rust target $$t — run: rustup target add aarch64-apple-darwin x86_64-apple-darwin"; exit 1; }; \
+	done
+	@# Ad-hoc ("-", the committed signingIdentity) by default — launches locally AND on Apple Silicon
+	@# without a Developer cert (arm64 needs at least ad-hoc signing to run). Real distribution just
+	@# exports APPLE_SIGNING_IDENTITY="Developer ID Application: ...", which OVERRIDES the config value.
+	@# Notarization additionally needs APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID — unset for local use.
+	@if [ -n "$$APPLE_SIGNING_IDENTITY" ]; then echo "▶ macOS universal · signing with APPLE_SIGNING_IDENTITY ($$APPLE_SIGNING_IDENTITY)"; \
+	 else echo "▶ macOS universal · ad-hoc signing (signingIdentity \"-\" — local/personal use)"; fi
+	@# beforeBuildCommand (npm --prefix web run build) runs natively on this host, so (unlike the Android
+	@# container) we let Tauri run it directly — EXCEPT WEB_BUILD=0 blanks it (dev: web served live).
+	@cfg=; [ "$(WEB_BUILD)" != 1 ] && cfg='--config {"build":{"beforeBuildCommand":""}}'; \
+	cargo tauri build --target universal-apple-darwin $$cfg
+	@mkdir -p $(MAC_DIST_DIR); set -e; \
+	dmg=$$(ls $(MAC_BUNDLE)/dmg/*.dmg 2>/dev/null | head -1); \
+	app=$$(ls -d $(MAC_BUNDLE)/macos/*.app 2>/dev/null | head -1); \
+	test -f "$$dmg" -a -d "$$app" || { echo "  ✗ no .app/.dmg produced under $(MAC_BUNDLE)"; exit 1; }; \
+	bin=$$(find "$$app/Contents/MacOS" -type f | head -1); \
+	archs=$$(lipo -archs "$$bin"); \
+	echo "✓ universal arches: $$archs"; \
+	case "$$archs" in *x86_64*arm64*|*arm64*x86_64*) ;; *) echo "  ✗ not universal: $$archs"; exit 1;; esac; \
+	cp -R "$$app" "$(MAC_DIST_DIR)/SOMS-$(VERSION)-universal.app"; \
+	cp "$$dmg" "$(MAC_DIST_DIR)/SOMS-$(VERSION)-universal.dmg"; \
+	echo "✓ $(MAC_DIST_DIR)/:"; ls -lh $(MAC_DIST_DIR)/*.dmg 2>/dev/null | awk '{print "    "$$5"  "$$NF}'
+endef
+
+macos:  ## build universal macOS .app + .dmg into dist/macos/ (ad-hoc; APPLE_SIGNING_IDENTITY for real)
+	$(call do_macos)
+
+macos-run:  ## open the newest built SOMS.app (dist/macos/ preferred, else raw bundle)
+	@APP=$$(ls -dt $(MAC_DIST_DIR)/*.app $(MAC_BUNDLE)/macos/*.app 2>/dev/null | head -1); \
+	test -n "$$APP" || { echo "No SOMS.app found — run 'make macos' first."; exit 1; }; \
+	echo "opening: $$APP"; open "$$APP"
+
+dev:  ## run the desktop app in dev mode (cargo tauri dev — ng serve on :4200 + hot-reload)
+	cargo tauri dev
