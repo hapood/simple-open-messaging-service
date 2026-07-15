@@ -1,3 +1,10 @@
+<!-- Transparent mask: a click on the empty area closes the emoji popup but does NOT steal focus (same
+     appPreventFocusSteal directive on the backdrop). [hidden] removes it from layout + pointer events when the
+     panel is closed. SIBLING of the form (not inside it): `.ci-input-bar` carries the keyboard-lift
+     `transform: translateY(-K)`, and a transformed ancestor becomes the containing block for this
+     `position: fixed` mask — breaking its full-screen `inset: 0`. Keeping the backdrop outside the form
+     leaves it anchored to the real viewport. -->
+<div class="ci-backdrop" appPreventFocusSteal [hidden]="!emojiOpen()" (click)="closeEmoji()"></div>
 <form class="ci-input-bar" #inputBar (submit)="$event.preventDefault()" (keydown.escape)="closeEmoji()">
   <!-- Emoji panel — WhatsApp/Telegram-style: category tabs + scrollable grid. Floats above the bar; the
        native keyboard stays up on mobile (no VirtualKeyboard swap — hide() is broken on Chrome Android,
@@ -8,9 +15,6 @@
        rasterized — see chat-input.component.scss. [aria-hidden] keeps the closed panel out of the a11y tree
        (opacity alone would leave it reachable to AT). appPreventFocusSteal on the panel covers every button via
        mousedown bubbling (one directive, not ~440). -->
-  <!-- Transparent mask: a click on the empty area closes the popup but does NOT steal focus (same directive on
-       the backdrop). [hidden] removes it from layout + pointer events when the panel is closed. -->
-  <div class="ci-backdrop" appPreventFocusSteal [hidden]="!emojiOpen()" (click)="closeEmoji()"></div>
   <div class="ci-emoji-panel" appPreventFocusSteal
        [class.ci-emoji-panel--open]="emojiOpen()"
        [attr.aria-hidden]="!emojiOpen()"

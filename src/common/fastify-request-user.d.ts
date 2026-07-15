@@ -14,6 +14,11 @@ declare module 'fastify' {
     // richer objects some guards attach (e.g. LocalStrategy's LoginAuthInfo — cast at the read site).
     user: {
       userId: number;
+      /** The requesting credential's SessionToken row id (set by JwtAuthGuard / the /uploads
+       *  preHandler when the request authed via a session token). null when the request authed via
+       *  the legacy access JWT (no session row); absent under admin/notification-token guards. Used by
+       *  GET /auth/sessions to flag the current device. */
+      sessionId?: number | null;
       adminId?: number;
       role?: string;
       [key: string]: unknown;

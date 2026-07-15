@@ -6,11 +6,12 @@ import { FriendRequestsComponent } from '../components/friend-requests/friend-re
 import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
-import { SessionsComponent } from '../components/sessions/sessions.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
+import type { SettingsCategoryId } from '../components/settings/settings-categories';
 import { AppIconType } from '../components/icon/model';
 import { NavStateMachineService } from './nav-state.service';
+import { LayoutService } from './layout.service';
 
 export enum RoutePage {
   HOME, AUTH_LOGIN, AUTH_REGISTER
@@ -22,14 +23,13 @@ export enum RoutePage {
  * the {@link DlgRef} handle). `dlgList` is a computed view of the dialog entries that RootPopup renders.
  * The auth-page `navigate`/`redirect` helpers stay (those are page-level router routes, not app-nav).
  */
-export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, SESSIONS, AVATAR_EDITOR, CONFIRM }
+export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, AVATAR_EDITOR, CONFIRM }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
   [PopupType.NEW_GROUP]: NewGroupComponent,
   [PopupType.FOLDER_EDITOR]: FolderEditorComponent,
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
-  [PopupType.SESSIONS]: SessionsComponent,
   [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
   [PopupType.CONFIRM]: ConfirmDialogComponent,
 }
@@ -40,7 +40,6 @@ export interface PopupInput {
   [PopupType.NEW_GROUP]: undefined
   [PopupType.FOLDER_EDITOR]: { folderId?: string }
   [PopupType.EDIT_PROFILE]: undefined
-  [PopupType.SESSIONS]: undefined
   [PopupType.AVATAR_EDITOR]: { file: File },
   /** Generic confirm dialog. `messageKey` is required; the rest are optional presentation knobs. */
   [PopupType.CONFIRM]: {
@@ -60,7 +59,6 @@ export interface PopupResult {
   [PopupType.NEW_GROUP]: { groupId: number }
   [PopupType.FOLDER_EDITOR]: boolean
   [PopupType.EDIT_PROFILE]: boolean
-  [PopupType.SESSIONS]: undefined
   // cropped File on Save; undefined on Cancel/back.
   [PopupType.AVATAR_EDITOR]: { file: File } | undefined,
   // true on confirm; undefined on cancel / system-back (treated identically by the caller).
@@ -89,6 +87,7 @@ export interface DlgRef {
 })
 export class RouteService {
   private readonly nav = inject(NavStateMachineService);
+  private readonly layout = inject(LayoutService);
 
   constructor(private router: Router) {}
 
@@ -154,14 +153,37 @@ export class RouteService {
   }
 
   /**
+   * Open Settings, optionally deep-linking straight to a category — e.g. Edit Profile → "Manage sessions"
+   * lands on the Devices page. Mirrors the entry-point branch in NavDrawerComponent.settings() (aside on
+   * mobile, wide dialog on tablet/desktop) but threads an initial selection: mobile drills one level into
+   * the category via {@link NavStateMachineService.pushAside}; desktop binds `initialCategoryId` on the
+   * dialog. Callers opening Settings from inside a dialog (Edit Profile) should close themselves first so
+   * the Settings surface isn't stacked beneath the dialog on mobile (the aside layer sits below panes).
+   */
+  openSettings(category?: SettingsCategoryId): void {
+    if (this.layout.mode() === 'mobile') {
+      this.nav.openAside('settings');
+      if (category) this.nav.pushAside('settings', { category });
+    } else {
+      this.openSettingsDialog(category);
+    }
+  }
+
+  /**
    * Open Settings as a wide two-column dialog (desktop/tablet). Mobile does NOT use this — it opens the
    * aside surface ({@link NavStateMachineService.openAside}) instead; the branch lives in the entry points
-   * (icon-rail / nav-drawer). Pushed as a `wide` dialog pane so RootPopup renders a wider centered card on
-   * desktop (the default 480px is too narrow for two columns) and a full-screen sheet on tablet. Back /
-   * hardware-back peels it in one step (no drill-in layers in flat mode).
+   * (icon-rail / nav-drawer / {@link openSettings}). Pushed as a `wide` dialog pane so RootPopup renders a
+   * wider centered card on desktop (the default 480px is too narrow for two columns) and a full-screen
+   * sheet on tablet. `initialCategoryId` selects the right-hand category on open (deep-link); omit it for
+   * the default (first visible) selection. Back / hardware-back peels it in one step (flat mode).
    */
-  openSettingsDialog(): DlgRef {
-    const id = this.nav.pushPane({ kind: 'dialog', component: SettingsDialogComponent, wide: true });
+  openSettingsDialog(initialCategoryId?: SettingsCategoryId): DlgRef {
+    const id = this.nav.pushPane({
+      kind: 'dialog',
+      component: SettingsDialogComponent,
+      wide: true,
+      inputs: initialCategoryId ? { initialCategoryId } : undefined,
+    });
     return { id };
   }
 

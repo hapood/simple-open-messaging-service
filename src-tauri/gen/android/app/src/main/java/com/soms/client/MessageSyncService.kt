@@ -7,6 +7,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.util.Log
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -15,6 +16,12 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import org.json.JSONArray
 import java.util.concurrent.TimeUnit
+
+/** logcat tag for this otherwise-headless foreground service. The FGS runs with no WebView and used to
+ *  be a total black box — these calls (onOpen / onEvent / onClosed / onFailure) are the only way to see
+ *  whether the native SSE is connecting, receiving frames, and why it drops. Native `Log.*` → logcat is
+ *  the legitimate debug surface for a headless service (distinct from the web no-console.log rule). */
+private const val TAG = "SomsFgs"
 
 /**
  * The domestic real-time background path: a `dataSync` foreground service holding a native SSE to
@@ -59,6 +66,7 @@ class MessageSyncService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i(TAG, "onStartCommand fgsEnabled running")
         startForegroundCompat()
         openStream()
         return START_STICKY
@@ -90,23 +98,34 @@ class MessageSyncService : Service() {
         val origin = SomsSecureStore.getApiOrigin(this) ?: run { stopSelf(); return }
         eventSource?.cancel()
         val request = Request.Builder()
-            .url("$origin/notifications/stream")
+            .url("$origin${SomsSecureStore.API_PREFIX}/notifications/stream")
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Accept", "text/event-stream")
             .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
             .build()
+        Log.i(TAG, "openStream url=${request.url} attempt=$attempt")
         eventSource = sseFactory.newEventSource(request, listener)
     }
 
     private val listener = object : EventSourceListener() {
+        override fun onOpen(eventSource: EventSource, response: Response) {
+            Log.i(TAG, "onOpen connected code=${response.code}")
+        }
+
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+            // The 25s liveness heartbeat is a NAMED `ping` event carrying `{}` (see common/sse-stream.ts) —
+            // not a snapshot, so skip it before the array parse. Only `NOTIF_SYNC` frames carry snapshots.
+            if (type == "ping") return
             // Each frame's data is a bare JSON array (the snapshot) — parse, advance the dedup cursor per
             // thread so FCM/WorkManager skip them, then render the coalesced away-notification.
             val snapshot = try {
                 SomsMessagingService.parseSnapshotArray(JSONArray(data))
             } catch (e: Exception) {
+                Log.w(TAG, "onEvent parse failed: ${e.message} dataLen=${data.length}")
                 return
             }
+            val first = snapshot.firstOrNull()
+            Log.i(TAG, "onEvent items=${snapshot.size} first=${first?.let { "t=${it.threadId} name=${it.displayName} unread=${it.unreadCount}" }}")
             snapshot.forEach { item ->
                 item.latestMessageId?.let { mid ->
                     SomsSecureStore.advanceCursor(this@MessageSyncService, item.threadId, mid)
@@ -117,10 +136,12 @@ class MessageSyncService : Service() {
         }
 
         override fun onClosed(eventSource: EventSource) {
+            Log.i(TAG, "onClosed → scheduleReopen")
             scheduleReopen()
         }
 
         override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+            Log.w(TAG, "onFailure code=${response?.code} ${t?.javaClass?.simpleName}: ${t?.message}")
             // 401 → token expired/revoked; the next foreground login re-issues. Stop rather than spin.
             if (response?.code == 401) {
                 stopSelf()

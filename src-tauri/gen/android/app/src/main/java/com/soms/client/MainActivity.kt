@@ -17,6 +17,7 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
@@ -43,6 +44,10 @@ import java.util.concurrent.TimeUnit
  *    JS as SomsShell.getSafeInsets() (a @JavascriptInterface added in onWebViewCreate). Android WebView
  *    is edge-to-edge but env(safe-area-inset-*) returns 0, so this is the only way the web layer learns
  *    the per-device inset to pad content below the status bar (see --soms-safe-top in _tokens.scss).
+ *  - IME (keyboard) height: the same edge-to-edge gap blinds window.visualViewport to the soft keyboard, so
+ *    the IME inset is measured via WindowInsets (Type.ime) and pushed to JS as window.__SOMS_IME_HEIGHT__
+ *    (per-frame via WindowInsetsAnimation on API 30+; readable at boot via SomsShell.getImeHeight()) so the
+ *    web's KbdOffsetDirective can lift the chat input bar above the keyboard (see ime-insets.service.ts).
  *
  * The webview reference comes from WryActivity.onWebViewCreate — the idiomatic Tauri v2 hook — rather
  * than fishing it out of the view tree, so this stays stable across Tauri versions.
@@ -54,6 +59,13 @@ class MainActivity : TauriActivity() {
     // the web layer reads these via SomsShell.getSafeInsets() to pad content below the status bar.
     @Volatile private var safeInsetTopCss = 0
     @Volatile private var safeInsetBottomCss = 0
+    // Soft-keyboard (IME) height in CSS px, measured via WindowInsets (Type.ime). On API 30+ a
+    // WindowInsetsAnimation callback pushes per-frame during the open/close animation so the chat input bar
+    // tracks the keyboard exactly; below API 30 the IME shows instantly and onApplyWindowInsets delivers
+    // the final value. Pushed to JS as window.__SOMS_IME_HEIGHT__(px) and readable at boot via
+    // getImeHeight(). Android WebView's visualViewport doesn't reflect the IME (edge-to-edge, window
+    // undivided), so this is the only source of the keyboard height for the web layer.
+    @Volatile private var imeHeightCss = 0
     /** The dev-tools bubble's window view (null when not attached). It lives in its own WindowManager
      *  window, not in android.R.id.content, so it survives the webview's content container being
      *  swapped mid-session (which used to drop the bubble a few seconds after launch). */
@@ -106,11 +118,36 @@ class MainActivity : TauriActivity() {
             // navigation mode. (systemGestures — the wider back-swipe zone — is intentionally excluded:
             // it would over-pad.)
             val gestures = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
+            // IME (soft keyboard) bottom inset — see imeHeightCss. Read alongside the system bars so every
+            // inset change (rotation, keyboard open/close settle) pushes the authoritative value once.
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
             val d = resources.displayMetrics.density
             safeInsetTopCss = Math.round(status.top / d)
             safeInsetBottomCss = Math.round(maxOf(nav.bottom, gestures.bottom) / d)
+            imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
             applySafeInsetsToWebView()
+            pushImeHeight()
             insets
+        }
+        // On API 30+ the IME animates open/close (~250ms). Follow it frame-by-frame so the chat input bar
+        // slides up in sync with the keyboard (DISPATCH_MODE_STOP: we own the lift — the WebView must NOT
+        // auto-resize/scroll for the IME during the animation; after the animation onApplyWindowInsets above
+        // fires once with the settled inset). Below API 30 the IME shows/hides instantly, so the
+        // onApplyWindowInsets push already carries the final height (the Compat layer never calls onProgress
+        // pre-R, so this callback is inert there).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            ViewCompat.setWindowInsetsAnimationCallback(content,
+                object : WindowInsetsAnimationCompat.Callback(DISPATCH_MODE_STOP) {
+                    override fun onProgress(
+                        insets: WindowInsetsCompat,
+                        runningAnims: MutableList<WindowInsetsAnimationCompat>,
+                    ): WindowInsetsCompat {
+                        val d = resources.displayMetrics.density
+                        imeHeightCss = Math.max(0, Math.round(insets.getInsets(WindowInsetsCompat.Type.ime()).bottom / d))
+                        pushImeHeight()
+                        return insets
+                    }
+                })
         }
         ViewCompat.requestApplyInsets(content)
     }
@@ -123,6 +160,17 @@ class MainActivity : TauriActivity() {
         val js = "document.documentElement.style.setProperty('--soms-safe-top','${safeInsetTopCss}px');" +
             "document.documentElement.style.setProperty('--soms-safe-bottom','${safeInsetBottomCss}px');"
         v.evaluateJavascript(js, null)
+    }
+
+    /** Push the current IME (keyboard) height to the webview via window.__SOMS_IME_HEIGHT__ (installed before
+     *  bootstrap by the web's ime-insets.service.ts → ImeInsetsService). KbdOffsetDirective reads it as
+     *  offset() on Android and lifts the chat input bar above the keyboard (the browser/PWA build keeps the
+     *  visualViewport path; Android WebView's visualViewport doesn't reflect the IME). Called per inset change
+     *  and per animation frame on API 30+. A no-op before the page has loaded (the eval lands on about:blank,
+     *  harmless) — same as applySafeInsetsToWebView. */
+    private fun pushImeHeight() {
+        val v = SomsBridge.webView ?: return
+        v.evaluateJavascript("window.__SOMS_IME_HEIGHT__&&window.__SOMS_IME_HEIGHT__($imeHeightCss);", null)
     }
 
     override fun onWebViewCreate(webView: WebView) {
@@ -138,6 +186,11 @@ class MainActivity : TauriActivity() {
         // main.ts, before bootstrap) to set --soms-safe-top for a FOUC-free first paint. Android WebView's
         // env(safe-area-inset-top) is 0, so this @JavascriptInterface is the only source.
         webView.addJavascriptInterface(SomsShellInterface(this), "SomsShell")
+        // window.SomsSecureStore.getApiOrigin()/setApiOrigin() — the WebView-independent persistence the
+        // web seeds apiOrigin from at boot and the native SSE (MessageSyncService / RealtimeService)
+        // reads. Added here, before the page boots, so runtime.ts's synchronous seed read resolves the
+        // native store (not a stale injected global).
+        webView.addJavascriptInterface(SomsSecureStoreInterface(this), "SomsSecureStore")
         // Deliver anything that arrived before the webview was ready.
         SomsBridge.FcmToken.current?.let { emitToken(it) }
         SomsBridge.DeepLink.pendingThreadId?.let {
@@ -383,14 +436,6 @@ class MainActivity : TauriActivity() {
             SomsSecureStore.setNotificationToken(a, token)
         }
 
-        /** Push the resolved backend origin into storage — the poller can't read window.__SOMS_API_ORIGIN__
-         *  (no WebView alive when it fires). Called from JS at boot and whenever the user changes server. */
-        @JavascriptInterface
-        fun setApiOrigin(origin: String?) {
-            val a = activityRef.get() ?: return
-            SomsSecureStore.setApiOrigin(a, origin)
-        }
-
         /** Whether the 6-hour background-sync poller is enabled (default true). Read by the Settings page
          *  to render the toggle's initial state. */
         @JavascriptInterface
@@ -479,6 +524,37 @@ class MainActivity : TauriActivity() {
                 .put("top", a?.safeInsetTopCss ?: 0)
                 .put("bottom", a?.safeInsetBottomCss ?: 0)
                 .toString()
+        }
+
+        /** Current soft-keyboard (IME) height in CSS px (0 when closed). Lets the web layer seed the value at
+         *  bootstrap in case the keyboard is somehow already open (e.g. a page reload while the IME is up); the
+         *  live source is the window.__SOMS_IME_HEIGHT__ push. */
+        @JavascriptInterface
+        fun getImeHeight(): Int = activityRef.get()?.imeHeightCss ?: 0
+    }
+
+    /** JS-callable surface exposed as window.SomsSecureStore — the WebView-independent persistence the
+     *  web seeds `apiOrigin` from at boot and the native SSE (MessageSyncService / RealtimeService)
+     *  reads. Backed by EncryptedSharedPreferences via [SomsSecureStore]; absent on desktop/browser,
+     *  where the web substitutes a localStorage shim. @JavascriptInterface methods run on a background
+     *  JS thread and only touch the thread-safe [SomsSecureStore] object, so no thread hop is needed. */
+    private class SomsSecureStoreInterface(activity: MainActivity) {
+        private val activityRef = java.lang.ref.WeakReference(activity)
+
+        /** The persisted backend origin (canonical, no trailing slash), or null when not configured. */
+        @JavascriptInterface
+        fun getApiOrigin(): String? {
+            val a = activityRef.get() ?: return null
+            return SomsSecureStore.getApiOrigin(a)
+        }
+
+        /** Persist the backend origin (null/empty clears). Called from JS `setApiOrigin` on a
+         *  server-config save — the single writer; the web never mirrors a boot value back here (that
+         *  was the stale-global corruption path). */
+        @JavascriptInterface
+        fun setApiOrigin(origin: String?) {
+            val a = activityRef.get() ?: return
+            SomsSecureStore.setApiOrigin(a, origin)
         }
     }
 

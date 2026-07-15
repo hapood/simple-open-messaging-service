@@ -141,7 +141,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
             val body = JSONObject().toString() // empty body — the missed endpoint takes none
             val request = Request.Builder()
-                .url("$origin/notifications/missed")
+                .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .addHeader("Authorization", "Bearer $token")
                 .build()
@@ -191,7 +191,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
                 .setAutoCancel(true)
                 .setOnlyAlertOnce(true)
-                .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setContentIntent(pendingIntent)
                 .build()

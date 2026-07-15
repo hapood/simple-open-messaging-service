@@ -2,7 +2,7 @@
      [class.pg--native-anchor]="useNativeAnchor">
   <div class="pg-stage" appKbdOffset>
     <!-- Top header: chat header + top-right theme toggle -->
-    <header class="pg-header">
+    <header class="pg-header" #pgHeader>
       <div class="pg-header-chat">
         <div class="pg-header-avatar"><app-user-avatar [name]="'Alice'" /></div>
         <div class="pg-header-meta">
@@ -26,7 +26,8 @@
         }
       </button>
     </header>
-    <div class="pg-viewport" #viewport tabindex="0">
+    <div class="pg-viewport" #viewport tabindex="0"
+         (transitionend)="onViewportTransitionEnd($event)">
       <!-- Initial-load shimmer skeleton: a sibling of .pg-content (NOT a child of it) so it never enters the
            kernel's measured height model. Shows during the `loading()` window (data generation), or is forced
            on by the panel's skeleton-demo toggle for preview. Styles/shared markup live in the global
@@ -130,10 +131,10 @@
       <span class="pg-fab-fps" [style.display]="debugMode() ? null : 'none'">↑{{ viewportAbove() }} ↓{{ viewportBelow() }}</span>
     </button>
 
-    <!-- Input bar: flex child of the stage column. margin-bottom lifts it above the soft keyboard (mobile). -->
+    <!-- Input bar: flex child of the stage column. Lifts above the soft keyboard via the same --kbd-lift
+         transform as .pg-viewport (consumed by .ci-input-bar) — no per-frame layout reflow. -->
     <app-chat-input class="pg-input-anchor"
                     [members]="members()"
-                    [style.margin-bottom.px]="kbdOffset()?.offset() ?? 0"
                     (send)="onSendIntent($event)" />
   </div>
 

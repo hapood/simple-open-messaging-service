@@ -459,6 +459,73 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
+   * Cross-thread message catch-up for the repurposed POST /notifications/missed — backs the app-open /
+   * reconnect incremental sync (and the init seed). Membership-scoped (an active ThreadParticipant row
+   * for the user) and blocked-creator-hidden, mirroring the per-viewer rules in {@link queryMessages}.
+   * Returns FULL Message rows (BigInt `id` intact) — the caller funnels them through
+   * {@link attachMediaStatus}, which strips `id` before it can reach a client.
+   *
+   * Two modes (selected by `init`):
+   *  - init (no high-water-mark yet): the NEWEST message per thread (`DISTINCT ON (threadId)`), so every
+   *    conversation gets a latest-message preview seed in one query. Bounded by `take` (one row per
+   *    thread; threads past the cap get no seed — their preview arrives on the next live/catch-up event).
+   *  - catch-up (since a high-water-mark): every message with `(createdAt, id) > (sinceMs, sinceId)`,
+   *    ordered `createdAt ASC, id ASC` (the time-ascending contract the client applies in arrival order).
+   *    The composite `(createdAt, id)` bound makes pagination strictly monotonic — no same-ms skip and no
+   *    re-fetch loop — without ever exposing the internal `id` (it travels only inside the opaque cursor).
+   *
+   * Served by the `Message(createdAt)` index (migration 20260715130000) for the global time range scan;
+   * the ThreadParticipant join scopes it to the user's active conversations.
+   */
+  async missedMessages(
+    userId: number,
+    opts: {
+      init: boolean;
+      sinceMs?: number | null;
+      sinceId?: bigint;
+      take: number;
+      hideCreatorIds?: number[];
+    },
+  ): Promise<Message[]> {
+    const blocked = opts.hideCreatorIds ?? [];
+    const blockedClause = blocked.length
+      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(blocked)})`
+      : Prisma.empty;
+
+    if (opts.init) {
+      // Newest message per active thread. DISTINCT ON picks the first row per threadId under the given
+      // ORDER BY, so `ORDER BY threadId, seq DESC` yields each thread's highest-seq (latest) message.
+      const where = blocked.length
+        ? Prisma.sql`WHERE m."creator" NOT IN (${Prisma.join(blocked)})`
+        : Prisma.empty;
+      return this.prisma.$queryRaw<Message[]>`
+        SELECT DISTINCT ON (m."threadId") m.*
+        FROM "Message" m
+        JOIN "ThreadParticipant" tp
+          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+        ${where}
+        ORDER BY m."threadId" DESC, m."seq" DESC
+        LIMIT ${opts.take}
+      `;
+    }
+
+    // Catch-up: composite (createdAt, id) > (sinceMs, sinceId). The `OR` same-ms branch advances past
+    // rows already seen at the cursor's millisecond, so paging is strictly forward.
+    const since = new Date(opts.sinceMs ?? 0);
+    const sinceId = opts.sinceId ?? 0n;
+    return this.prisma.$queryRaw<Message[]>`
+      SELECT m.*
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+      WHERE (m."createdAt" > ${since} OR (m."createdAt" = ${since} AND m."id" > ${sinceId}))
+        ${blockedClause}
+      ORDER BY m."createdAt" ASC, m."id" ASC
+      LIMIT ${opts.take + 1}
+    `;
+  }
+
+  /**
    * Unread counts for a user across the given threads, in ONE query. Unread = messages with a per-thread
    * seq greater than the per-thread read watermark (lastReadSeq; NULL ⇒ never read ⇒ count everything via
    * COALESCE(...,0)). Uses the Message(threadId,seq) index for the range scan. Returns a Map keyed by

@@ -16,6 +16,11 @@
   width: 100%;
   overflow: hidden;
   position: relative;
+  // Contain the keyboard-lift z-index choreography (header 2 / .ci-backdrop 3 / .ci-input-bar 4 / sticky
+  // pill 5) locally so the input bar's z-index can never leak above sibling-level chrome (e.g. a dialog or
+  // drawer overlapping this surface). isolation does NOT create a containing block for position:fixed (only
+  // transform/filter/will-change do), so the re-parented .ci-backdrop still anchors to the real viewport.
+  isolation: isolate;
   // Shared header-height token: consumed here by the sticky-date overlay (must clear
   // the header by exactly its height) AND by MessageHeaderComponent (.msg-header height).
   // Defined on the positioning context so both the overlay and the header descendant
@@ -30,6 +35,14 @@
   // Sticky-date overlay top offset for <app-sticky-date-overlay> (inherits down to it): the header is a
   // normal-flow flex child occupying the top --msg-header-h pixels, so the pill must clear exactly that.
   --sd-top: var(--msg-header-h, 56px);
+  // Effective keyboard lift = how far the viewport + input bar translate up. The bar's bottom padding
+  // already carries --soms-safe-bottom to clear the gesture/nav bar while the keyboard is CLOSED; when the
+  // keyboard opens it COVERS the gesture bar, so that safe-bottom of clearance becomes redundant — the bar
+  // only needs to lift by (kbd-lift − safe-bottom) for its content to clear the keyboard (its own padding
+  // supplies the rest). Without this subtraction the closed-keyboard safe-bottom padding would show as an
+  // extra gap between the editor and the keyboard. Clamped at 0 (closed → no lift). 0 on browser (no
+  // --soms-safe-bottom injection there), so this is an Android-only adjustment.
+  --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
   // Wallpaper: bg color + tiled doodle layered on the same element (an element's
   // own background always paints behind its content, so no pseudo-element / z-index
   // is needed). The parent container does not scroll with the viewport → the pattern
@@ -44,6 +57,17 @@
 .msg-viewport {
   flex: 1 1 auto;
   position: relative; // positioning context for the .msg-skeleton initial-load overlay
+  // Keyboard lift is a compositor-only transform (rigid with .ci-input-bar), NOT a viewport resize: the
+  // kernel measures offsetHeight/clientHeight/scrollHeight/scrollTop — all transform-invariant — so the
+  // ResizeObserver stays silent and no per-frame reflow/re-pin fires. Uses --kbd-lift-effective (set on
+  // .msg-container) — the raw --kbd-lift minus the safe-bottom the bar's own padding already covers — so
+  // no extra gap opens between the editor and the keyboard. The 60ms transition low-pass-filters the
+  // native↔JS push jitter (Android) and mirrors .ci-input-bar's cadence so the two translate as one rigid
+  // unit. translateY(0px) is a permanent stacking context — harmless (the only positioned descendant is the
+  // absolute skeleton, which rides the transform) and below the header (z-index:2) so lifted content slides
+  // UNDER the header.
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transition: transform 60ms linear;
   overflow-x: hidden;
   overflow-y: auto;
   overflow-anchor: none;

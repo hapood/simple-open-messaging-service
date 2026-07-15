@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
-import { isTauri, apiOrigin } from './runtime';
+import { isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
 
 /**
@@ -43,10 +43,6 @@ export class PushService {
     window.__SOMS_FCM_TOKEN__ = (t) => this.onToken(t);
     // Kotlin → JS: warm-start deep link (notification tap while the app is already running).
     window.__SOMS_DEEP_LINK__ = (tid) => this.openThread(tid);
-    // Hand the resolved backend origin to Kotlin so the WorkManager poller (which fires with no WebView
-    // alive) knows where to POST /notifications/missed. Reads the live signal (the boot value here);
-    // setApiOrigin also pushes on a swap, so the poller always has the current origin.
-    window.SomsFcm?.setApiOrigin(apiOrigin() || null);
     // Recover anything emitted before Angular booted. getToken() is a synchronous @JavascriptInterface
     // read; if Kotlin already has a token, use it (the live hook may have been missed).
     const token = window.SomsFcm?.getToken() ?? null;

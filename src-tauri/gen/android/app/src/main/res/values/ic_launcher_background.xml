@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-  <color name="ic_launcher_background">#fff</color>
+  <!-- Brand blue (#2196f3, the logo rect fill). The launcher mask clips this
+       solid layer to its silhouette; the foreground supplies only the white
+       bubble glyph, so the icon reads as a blue shape + white bubble on every
+       mask shape. -->
+  <color name="ic_launcher_background">#2196f3</color>
 </resources>

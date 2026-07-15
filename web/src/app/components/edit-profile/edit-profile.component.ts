@@ -120,8 +120,12 @@ export class EditProfileComponent {
     this.routeService.closeDlg()
   }
 
+  /** Devices / active-sessions management now lives in Settings (its standard home). Close this dialog
+   *  first so the Settings surface — an aside on mobile, which sits below dialog panes — isn't hidden
+   *  behind it, then deep-link straight to the Devices category. */
   openSessions() {
-    this.routeService.popupDlg(PopupType.SESSIONS)
+    this.routeService.closeDlg()
+    this.routeService.openSettings('devices')
   }
 
   /**

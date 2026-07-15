@@ -9,21 +9,32 @@ app-chat-input {
 
 // WhatsApp-style capsule: [emoji + editor + file] inside a pill, with a round send key outside.
 .ci-input-bar {
-  position: relative; // anchor for .ci-emoji-panel (bottom:100%) and .ci-backdrop stacking
+  position: relative; // anchor for .ci-emoji-panel (bottom:100%); the backdrop is now a sibling, not a child
+  z-index: 4; // lift the bar (+ its panel, a stacking-context child) above the sibling .ci-backdrop (z-index:3)
   min-height: 63px;
   box-sizing: border-box;
   display: flex;
   align-items: flex-end; // auto-grow multiline keeps the send key pinned to the bottom
   gap: 8px;
-  // Bottom padding cushions content above whichever system occlusion is taller — the Android gesture /
-  // navigation bar (closed) OR the soft keyboard (open) — so the bar's own --app-bg-muted background
-  // extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal strip). The bar STAYS
-  // anchored to the screen edge and grows upward by this padding; the keyboard region is hidden behind
-  // the keyboard, so there is no gap. --kbd-lift is set by the production host (friend-message) from
-  // KbdOffsetDirective.offset(); absent (playground) → 0, and --soms-safe-bottom is 0 on desktop/browser,
-  // so this resolves to the base 8px there. The directive's offset calc is untouched (msg-container
-  // clientHeight is unchanged — only the consumption changed from margin to padding).
-  padding: 8px 12px calc(8px + max(var(--soms-safe-bottom, 0px), var(--kbd-lift, 0px)));
+  // Keyboard lift is a compositor-only transform (NOT padding/margin): the bar translates up by
+  // --kbd-lift-effective alongside the scroller, so neither the flex column nor the virtual-scroll kernel
+  // reflows on each frame (transform leaves clientHeight/scrollHeight/scrollTop untouched). --kbd-lift is
+  // set on the host (.msg-container / .pg-stage) by KbdOffsetDirective's host binding; --kbd-lift-effective
+  // (derived there) = max(0, --kbd-lift − --soms-safe-bottom) — the bar's own bottom padding already carries
+  // the safe-bottom to clear the gesture bar, so subtracting it here avoids an extra gap between the editor
+  // and the keyboard when it's open. The 60ms LINEAR transition low-pass-filters the native↔JS push jitter
+  // on Android (evaluateJavascript latency jitters a few ms; the browser build's visualViewport.resize is
+  // in-process and smooth). Lag ≈ this duration — tune DOWN (≈30ms) for tighter tracking, UP (≈100ms) for
+  // more smoothing. No-op on desktop (--kbd-lift: 0). translateY(0px) is non-`none`, so it is a permanent
+  // stacking context / containing block for fixed descendants — which is exactly why the .ci-backdrop was
+  // re-parented out of the form.
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transition: transform 60ms linear;
+  // Bottom padding carries ONLY the static gesture-/navigation-bar inset (closed keyboard): the bar's own
+  // --app-bg-muted background extends seamlessly under the system bar (Material 3 edge-to-edge: no tonal
+  // strip). The keyboard region itself is covered by the translated bar + the IME, so there is no gap.
+  // --soms-safe-bottom is 0 on desktop/browser, so this resolves to the base 8px there.
+  padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
   background: var(--app-bg-muted);
   border-top: 1px solid var(--app-border);
 }

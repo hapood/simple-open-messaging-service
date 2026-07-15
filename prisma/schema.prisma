@@ -52,6 +52,7 @@ model User {
   refreshTokens      RefreshToken[]
   pushTokens         PushToken[]
   notificationTokens NotificationToken[]
+  sessionTokens      SessionToken[]
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
   userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
   admins             Admin[] // linked admin profile (absent for normal users; an admin's identity IS this User row — name + password live here, the Admin row holds only admin-specific state)
@@ -109,6 +110,32 @@ model NotificationToken {
   createdAt DateTime  @default(now())
   expiresAt DateTime // 30-day TTL — the poller re-issues on next foreground login
   revokedAt DateTime? // soft revoke on logout
+
+  @@index([userId])
+}
+
+/// Long-lived session credential that supersedes the access+refresh+notification trinity for native +
+/// web clients (Telegram-style: one credential per device, revocable). Opaque (`randomBytes(32)`),
+/// sha256-hashed in DB — the plaintext is returned once at issue and sent as a Bearer header.
+/// `expiresAt` is NULL for the native app (no lifecycle — revocation-only; the token lives in the
+/// device's OS secure store) or a sliding 30-day deadline for web (JS-memory storage; extended on use
+/// via `lastSeenAt` so active sessions stay alive while idle ones expire). Validated by
+/// BearerAuthService, shared by the global JwtAuthGuard and the /uploads/* media preHandler.
+model SessionToken {
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  user         User      @relation(fields: [userId], references: [id])
+  tokenHash    String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
+  client       String    @db.VarChar(16) // app | web | desktop — drives the lifetime policy + the device-list icon/label
+  device       String?   @db.VarChar(127) // human-friendly device label the client reports at login (e.g. "Pixel 7", "Chrome · macOS")
+  userAgent    String?   @db.VarChar(255) // raw UA captured server-side from the HTTP header; parsed into browser/os for the device list
+  ip           String?   @db.VarChar(64) // sign-in IP (captured at issue time)
+  lastSeenIp   String?   @db.VarChar(64) // most-recent IP (updated on the throttled sliding touch) — the device-list "last seen" location source
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime? // null = never (native app); set = sliding deadline (web/desktop)
+  lastSeenAt   DateTime  @default(now()) // sliding-window activity tracker (web/desktop)
+  revokedAt    DateTime? // soft revoke (logout / logout-all / password change / admin disable)
+  revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable (observability)
 
   @@index([userId])
 }
@@ -354,6 +381,7 @@ model Message {
   @@unique([threadId, seq]) // per-thread seq identity: allocation authority + keyset cursor (also the hot pagination index)
   @@unique([threadId, creator, originSeq]) // (a) sender seq allocation race AND (b) receiver pull dedup
   @@index([threadId, createdAt])
+  @@index([createdAt]) // cross-thread "messages since T" catch-up (POST /notifications/missed) — global time range scan
   @@index([creator])
   @@index([threadId, creator, originSeq]) // federation pull query + MAX(cursor) derivation
 }

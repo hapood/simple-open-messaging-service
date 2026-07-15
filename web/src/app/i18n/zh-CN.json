@@ -107,8 +107,16 @@
     "noSessions": "没有活跃的会话",
     "ip": "IP {{ip}}",
     "signedIn": "登录于 {{date}}",
+    "lastActive": "最近活动 {{date}}",
     "expires": "过期于 {{date}}",
-    "revoke": "撤销"
+    "neverExpires": "永久有效",
+    "revoke": "退出登录",
+    "revokeConfirm": "退出此会话（{{device}}）？",
+    "terminateOthers": "退出其他所有设备（{{count}}）",
+    "terminateOthersConfirm": "退出其他 {{count}} 个会话？",
+    "clientApp": "安卓",
+    "clientWeb": "网页",
+    "clientDesktop": "桌面"
   },
   "folder": {
     "title": "分组",
@@ -439,7 +447,9 @@
     "media": "媒体",
     "mediaThreshold": "图片加载阈值",
     "mediaThresholdHint": "较大的图片显示点击加载占位符。",
-    "noLimit": "不限制"
+    "noLimit": "不限制",
+    "devices": "登录设备",
+    "devicesHint": "活跃会话"
   },
   "serverConfig": {
     "entry": "服务器设置",

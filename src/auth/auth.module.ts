@@ -14,6 +14,8 @@ import { ThrottleGuard } from './throttle.guard.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { NotificationTokenService } from './notification-token.service.js';
 import { NotificationTokenGuard } from './notification-token.guard.js';
+import { SessionTokenService } from './session-token.service.js';
+import { BearerAuthService } from './bearer-auth.service.js';
 
 @Module({
   imports: [
@@ -33,11 +35,22 @@ import { NotificationTokenGuard } from './notification-token.guard.js';
     ThrottleGuard,
     NotificationTokenService,
     NotificationTokenGuard,
-    // Global guard: every route is JWT-authenticated unless it opts out with @Public(). Registered here
-    // (not in AppModule) to co-locate with JwtAuthGuard/JwtStrategy/PassportModule. Mirrors the existing
-    // APP_INTERCEPTOR→AdminAuditInterceptor precedent in AdminModule.
+    SessionTokenService,
+    BearerAuthService,
+    // Global guard: every route is authenticated unless it opts out with @Public(). Accepts an access
+    // JWT OR a session token (via BearerAuthService). Registered here (not in AppModule) to co-locate
+    // with JwtAuthGuard/JwtStrategy/PassportModule. Mirrors the APP_INTERCEPTOR→AdminAuditInterceptor
+    // precedent in AdminModule.
     { provide: APP_GUARD, useClass: JwtAuthGuard },
   ],
-  exports: [AuthService, LocalStrategy, AccessTokenValidator, NotificationTokenService, NotificationTokenGuard],
+  exports: [
+    AuthService,
+    LocalStrategy,
+    AccessTokenValidator,
+    NotificationTokenService,
+    NotificationTokenGuard,
+    SessionTokenService,
+    BearerAuthService,
+  ],
 })
 export class AuthModule {}

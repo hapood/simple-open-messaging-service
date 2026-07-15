@@ -1,10 +1,11 @@
 // SOMS cross-platform shell (Tauri v2) — desktop (Linux/Windows/macOS) and Android.
 //
 // Responsibilities:
-//  1. Resolve the backend origin and inject `window.__SOMS_API_ORIGIN__` before the Angular app boots
-//     (initialization script). Resolution order: a persisted user choice in the app-data config file
-//     (set via the in-app Server page — the only way to point a bundled phone APK at a real backend),
-//     then the SOMS_API_ORIGIN env var (dev), then the localhost default.
+//  1. Resolve the backend origin for the media proxy. Resolution order: a persisted user choice in the
+//     app-data config file (set via the in-app Server page — the only way to point a bundled phone APK
+//     at a real backend), then the SOMS_API_ORIGIN env var (dev), then the localhost default. The web
+//     layer no longer reads this from Rust — it seeds from its own persistence surface (native
+//     SomsSecureStore on Android, localStorage on desktop); this resolved value feeds only the proxy Arc.
 //  2. Register a `media://localhost` custom URI scheme that proxies `/uploads/*` to the backend with
 //     the current access token in an `Authorization: Bearer` header. A bare `<img src>` / CSS url()
 //     can't set headers, and the backend's httpOnly `media_token` cookie is SameSite=Strict (so it
@@ -125,8 +126,9 @@ pub fn run() {
         ])
         .setup(move |app| {
             // Resolve the app-data config path and load the persisted origin, overriding the env/default
-            // when the user has configured one. The window reads origin via the live Arc at request time,
-            // and the init script below injects the resolved value before any page script runs.
+            // when the user has configured one. The media proxy reads origin via the live Arc at request
+            // time; the web layer seeds from its own persistence surface (SomsSecureStore on Android,
+            // localStorage on desktop) at boot — it no longer reads a Rust-injected global.
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let config_path = data_dir.join(CONFIG_FILENAME);
@@ -140,24 +142,8 @@ pub fn run() {
                 .config_path
                 .lock()
                 .expect("config_path lock") = config_path;
-            let resolved_origin = proxy_state
-                .api_origin
-                .lock()
-                .expect("origin lock")
-                .clone();
 
-            // Inject the API origin as a read-only global BEFORE any page script runs. The Angular
-            // runtime.ts seeds its `apiOrigin` writable signal from this value at module load, and every
-            // apiPrefix()/sseUrl() call (and the SSE worker) resolves to it. On a `set_api_origin` save the
-            // frontend updates that signal IN PLACE — no reload — so this baked setup-time value only ever
-            // needs to be correct at boot. A fresh process re-reads the persisted config file (written by
-            // set_api_origin) here in setup, so the boot value is the user's configured origin.
-            let init_script = format!(
-                "(function(){{Object.defineProperty(window,'__SOMS_API_ORIGIN__',{{value:{0:?},writable:false}});}})();",
-                resolved_origin
-            );
-
-            // The main window is created in code (not config) so we can attach the init script.
+            // The main window is created in code (not config) for direct control of its build + lifecycle.
             //
             // Frontend source resolution. RELEASE always loads the bundled index.html — a runtime-remote
             // frontend would be an arbitrary-code-execution surface. DEBUG can instead load a frontend dev
@@ -203,7 +189,6 @@ pub fn run() {
                 .title("SOMS")
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(900.0, 600.0)
-                .initialization_script(init_script)
                 .build()?;
             Ok(())
         })
@@ -291,9 +276,9 @@ fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
 
 // --- frontend-facing commands ---------------------------------------------------------------
 
-/// Read the live backend origin. The frontend reads the boot value from window.__SOMS_API_ORIGIN__
-/// directly; this command reports the current (possibly repointed) value for diagnostics / the Server
-/// page.
+/// Read the live backend origin (for diagnostics / the Server page). The web layer seeds from its own
+/// persistence surface (native SomsSecureStore / localStorage), not from this command, so this is
+/// informational only.
 #[tauri::command]
 fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
     state.api_origin.lock().expect("origin lock").clone()

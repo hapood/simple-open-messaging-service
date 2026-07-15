@@ -22,13 +22,13 @@ import { apiOrigin, setApiOrigin } from '../../services/runtime';
 
 /**
  * Bundled-APK backend-URL configuration (Tauri/Android only — the route is `canMatch`-gated on
- * `isTauri()`). A phone running the APK can't reach the `http://localhost:3000` build default, so the
- * user sets the real backend origin here. The value is persisted Rust-side (app-data config file) and
- * re-injected before Angular boots on the next launch; on save, `setApiOrigin` updates the `apiOrigin`
- * signal in place, so every derived apiPrefix/sseUrl/media URL (and the SSE worker's reconnect) picks
- * up the new host with NO reload — we then navigate in-SPA to /auth/login.
+ * `isTauri()`). The user sets the real backend origin here; it is persisted into the platform store
+ * (Android EncryptedSharedPreferences via `window.SomsSecureStore`, localStorage on desktop) AND the
+ * Rust app-data config file (which feeds the media proxy's Arc). On save, `setApiOrigin` updates the
+ * `apiOrigin` signal in place, so every derived apiPrefix/sseUrl/media URL (and the SSE worker's
+ * reconnect) picks up the new host with NO reload — we then navigate in-SPA to /auth/login.
  *
- * First-run gating: `guestGuard` redirects here when `isTauri() && apiOriginIsLocalhost()` (no server
+ * First-run gating: `guestGuard` redirects here when `isTauri() && apiOriginIsEmpty()` (no server
  * configured yet). Reachable later from the login page's "Server settings" Material button.
  *
  * Connection probe: a two-stage pre-flight check against the CANDIDATE url (the typed value, not the
@@ -36,6 +36,11 @@ import { apiOrigin, setApiOrigin } from '../../services/runtime';
  * backend I can reach" before committing it or typing credentials.
  */
 type ProbeStatus = 'idle' | 'testing' | 'ok' | 'warn' | 'notsoms' | 'fail';
+
+/** The placeholder backend origin pre-filled into the form when none is configured yet — the canonical
+ *  SOMS server URL shape (https + the federation port 7667). A UI hint only; it never seeds the
+ *  apiOrigin signal (empty = unconfigured), so `apiOriginIsEmpty()` stays true until the user Saves. */
+const DEFAULT_FORM_ORIGIN = 'https://soms.example.com:7667';
 
 /** Validator: must parse as an http(s) URL with a host. */
 function urlValidator(control: AbstractControl): ValidationErrors | null {
@@ -72,8 +77,10 @@ export class ServerConfigComponent {
 
   readonly AppIcon = AppIconType;
 
-  /** Pre-filled with the live origin Rust injected at boot (persisted value, or the localhost default). */
-  readonly urlControl = new FormControl(apiOrigin(), {
+  /** Pre-filled with the live origin, or — when no origin is configured yet — the placeholder
+   *  `https://soms.example.com:7667` for the user to edit. The placeholder is a FORM default only; it
+   *  never enters the apiOrigin signal (which stays empty until Save persists a real origin). */
+  readonly urlControl = new FormControl(apiOrigin() || DEFAULT_FORM_ORIGIN, {
     nonNullable: true,
     validators: [Validators.required, urlValidator],
   });
@@ -190,11 +197,11 @@ export class ServerConfigComponent {
     this.saving.set(true);
     this.saveError.set(null);
     try {
-      // setApiOrigin persists Rust-side (cold-boot config file + live media proxy) AND updates the
-      // apiOrigin signal in place, so every HttpClient call, the SSE worker's reconnect, and the media
-      // proxy already resolve to the new host — NO reload and NO localStorage stash (that stash was only
-      // ever a workaround for the reload the module-load constant forced; the reactive signal retires
-      // it). The origin is now non-localhost, so guestGuard lets /auth/login through. Navigate in-SPA
+      // setApiOrigin persists the origin into the platform store (Android EncryptedSharedPreferences /
+      // desktop localStorage — the same store the native SSE reads) AND the Rust app-data file (media
+      // proxy Arc), and updates the apiOrigin signal in place, so every HttpClient call, the SSE
+      // worker's reconnect, and the media proxy already resolve to the new host with NO reload. The
+      // origin is now non-empty, so guestGuard lets /auth/login through. Navigate in-SPA
       // (RouteService.redirect is replaceUrl) per the auth-flow history contract — /config never enters
       // the back stack.
       await setApiOrigin(value);

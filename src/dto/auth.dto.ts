@@ -1,11 +1,13 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
+  IsIn,
+  IsInt,
   IsNotEmpty,
   IsOptional,
   IsString,
   Matches,
 } from 'class-validator';
-import { Transform } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { IsDisplayName } from '../common/validators.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 
@@ -36,6 +38,17 @@ export class LoginDto {
   @IsString()
   @IsOptional()
   device?: string;
+
+  @ApiProperty({
+    required: false,
+    enum: ['app', 'web', 'desktop'],
+    default: 'web',
+    description:
+      "Client kind, selects the session-token lifetime policy: 'app' (native, stored in OS secure storage) → no-expiry, revocation-only; 'web' (browser) / 'desktop' (Tauri, JS memory) → sliding 30-day. Persisted on the row for the device list. Omitted → 'web'.",
+  })
+  @IsIn(['app', 'web', 'desktop'])
+  @IsOptional()
+  client?: 'app' | 'web' | 'desktop';
 }
 
 /**
@@ -98,7 +111,7 @@ export class RefreshTokenDto {
   device?: string;
 }
 
-/** logout input: refreshToken is required; accessJti is optional (immediately blacklists the current access). */
+/** logout input: refreshToken is required (legacy); accessJti + sessionToken are optional. */
 export class LogoutDto {
   @ApiProperty({
     example: 'eyJhbGciOiJIUzI1NiIs...',
@@ -117,6 +130,15 @@ export class LogoutDto {
   @IsString()
   @IsOptional()
   accessJti?: string;
+
+  @ApiProperty({
+    required: false,
+    description:
+      'Session token to revoke (the native/web credential). Optional — present when the client holds one.',
+  })
+  @IsString()
+  @IsOptional()
+  sessionToken?: string;
 }
 
 /** Change-password input (newPassword reuses RegisterDto's 6-20 allowed-character rule). */
@@ -136,23 +158,14 @@ export class ChangePasswordDto {
   newPassword!: string;
 }
 
-/** Revoke a single session. */
+/** Revoke a single session by its device-list row id. Ownership is verified server-side, so only the
+ *  id is needed. */
 export class RevokeSessionDto {
   @ApiProperty({
-    example: 'a1b2c3d4-e5f6-...',
-    description: 'jti of the session to revoke',
+    example: 42,
+    description: 'id of the SessionToken row to revoke, as shown in GET /auth/sessions',
   })
-  @IsString()
-  @IsNotEmpty()
-  jti!: string;
-
-  @ApiProperty({
-    required: false,
-    example: 'a1b2c3d4-e5f6-...',
-    description:
-      'jti of the current access token (optional; used to immediately blacklist it)',
-  })
-  @IsString()
-  @IsOptional()
-  accessJti?: string;
+  @Type(() => Number)
+  @IsInt()
+  id!: number;
 }

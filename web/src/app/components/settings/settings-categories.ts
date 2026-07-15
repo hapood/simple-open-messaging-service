@@ -16,6 +16,7 @@ import { SettingsPushComponent } from './settings-push.component';
 import { SettingsNotificationsComponent } from './settings-notifications.component';
 import { SettingsConnectionComponent } from './settings-connection.component';
 import { SettingsAboutComponent } from './settings-about.component';
+import { SettingsDevicesComponent } from './settings-devices.component';
 
 /** Identifiers for the Settings categories (drives the aside-stack `params.category` on mobile, and the
  *  local selection signal in the desktop/tablet dialog). */
@@ -23,6 +24,7 @@ export type SettingsCategoryId =
   | 'appearance'
   | 'language'
   | 'media'
+  | 'devices'
   | 'connection'
   | 'push'
   | 'notifications'
@@ -131,6 +133,20 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
       titleKey: 'settings.media',
       summary: () => thresholdLabel(d.mediaSize.kb()),
       component: SettingsMediaComponent,
+      visible: () => true,
+      order: 2,
+    },
+    {
+      // Active sessions / logged-in devices — revocable per-device (industry-standard session management).
+      // Visible everywhere: web, desktop, and the Android WebView app all share this one component.
+      id: 'devices',
+      icon: AppIconType.DEVICES,
+      titleKey: 'settings.devices',
+      summary: () => {
+        void d.language.lang();
+        return d.transloco.translate('settings.devicesHint');
+      },
+      component: SettingsDevicesComponent,
       visible: () => true,
       order: 2,
     },

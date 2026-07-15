@@ -1,5 +1,14 @@
 @use "../../assets/utils.scss" as *;
 
+// Paint above the scroll viewport (which carries the keyboard-lift transform and would otherwise slide
+// content over the header). A flex item honors z-index without `position`, but `position: relative` makes
+// the intent explicit. The opaque .msg-header background (var(--app-surface)) clips content sliding under
+// it. The CDK action-menu overlay mounts at body level, so it is unaffected.
+:host {
+  position: relative;
+  z-index: 2;
+}
+
 .msg-header {
   // Single source of truth: the height is the --msg-header-h token defined on the
   // host .msg-container (the sticky-date overlay consumes the same value to clear

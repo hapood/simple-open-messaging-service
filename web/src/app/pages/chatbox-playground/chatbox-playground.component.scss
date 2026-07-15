@@ -32,6 +32,14 @@
 // inputBarHeight plumbing. sticky-date/toast/FAB stay position:absolute/fixed on this relative context.
 .pg-stage {
   position: relative;
+  // Contain the keyboard-lift z-index choreography locally (mirrors production .msg-container) so the
+  // input bar's z-index can't leak above the mobile drawer / sibling chrome. isolation does NOT create a
+  // containing block for position:fixed, so the re-parented .ci-backdrop still anchors to the real viewport.
+  isolation: isolate;
+  // Effective keyboard lift = raw --kbd-lift minus the --soms-safe-bottom the bar's own bottom padding
+  // already covers (the keyboard covers the gesture bar, so that clearance is redundant while it's open).
+  // Clamped at 0; 0 on browser (no --soms-safe-bottom). See .msg-container for the full rationale.
+  --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
@@ -118,6 +126,15 @@
 .pg-viewport {
   position: relative; // positioning context for the initial-load skeleton overlay (sibling of .pg-content)
   flex: 1 1 auto;
+  // Keyboard lift = compositor-only transform (rigid with .ci-input-bar), mirroring production .msg-viewport:
+  // the kernel measures offsetHeight/clientHeight/scrollHeight/scrollTop (all transform-invariant), so the
+  // ResizeObserver stays silent and no per-frame reflow fires. Uses --kbd-lift-effective (set on .pg-stage)
+  // — the raw --kbd-lift minus the safe-bottom the bar's own padding already covers — so no extra gap opens
+  // between the editor and the keyboard. The 60ms transition low-pass-filters the native↔JS push jitter and
+  // matches .ci-input-bar's cadence so the two translate as one rigid unit. translateY(0px) is a permanent
+  // stacking context, below the header (z-index:2) so lifted content slides UNDER it.
+  transform: translateY(calc(-1 * var(--kbd-lift-effective, 0px)));
+  transition: transform 60ms linear;
   overflow-y: auto;
   // Plan B (default -b route): the kernel manages scrollTop anchor compensation
   // itself, so browser scroll anchoring is disabled to avoid fighting it.

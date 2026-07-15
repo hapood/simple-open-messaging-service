@@ -51,7 +51,7 @@ class NotificationSyncWorker(
 
         val body = JSONObject().toString() // empty body — the missed endpoint takes none
         val request = Request.Builder()
-            .url("$origin/notifications/missed")
+            .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
             .post(body.toRequestBody("application/json".toMediaType()))
             .addHeader("Authorization", "Bearer $token")
             .build()

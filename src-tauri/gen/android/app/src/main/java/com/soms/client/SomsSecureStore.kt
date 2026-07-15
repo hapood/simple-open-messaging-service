@@ -25,6 +25,15 @@ import org.json.JSONObject
  */
 object SomsSecureStore {
     private const val FILENAME = "soms_secure"
+
+    /** The backend's global API version prefix, interpolated into every notification-path URL the
+     *  background services build ([MessageSyncService], [NotificationSyncWorker], SomsMessagingService).
+     *  Mirrors the web `apiPrefix` constant (`${apiOrigin()}/api/v1`) — Nest applies this prefix to every
+     *  controller, so `/notifications/stream` is actually served at `/api/v1/notifications/stream`. A path
+     *  without it 404s, which (being a non-401 failure) the FGS treats as transient and retries forever —
+     *  the service stays up but never receives a frame. Keep this in sync with `constants.ts`. */
+    const val API_PREFIX = "/api/v1"
+
     private const val KEY_NOTIF_TOKEN = "notif_token"
     private const val KEY_API_ORIGIN = "api_origin"
     private const val KEY_DEDUP_CURSOR = "dedup_cursor"

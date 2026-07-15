@@ -7,7 +7,7 @@ import {
   HttpErrorResponse,
 } from '@angular/common/http';
 import { Observable, of, EMPTY, throwError, catchError, switchMap } from 'rxjs';
-import { AuthService } from './services/auth.service';
+import { AuthService, USE_SESSION_TOKEN } from './services/auth.service';
 
 /**
  * Public endpoints (no token required, excluded from 401 retry): auth-related + user registration
@@ -25,6 +25,18 @@ export class AuthInterceptor implements HttpInterceptor {
   intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<Object>> {
     if (PUBLIC_PATH.test(req.url)) {
       return next.handle(req)
+    }
+    // Device-management calls opt into the long-lived session token: only a session token carries the
+    // session id the server needs to flag the requesting row `isCurrent`. No 401-renew-retry here — the
+    // session token has no renewal; a 401 (revoked/expired) surfaces to the caller. When the flag is set
+    // but no session token is held yet (page refresh before re-login), fall through to the access-JWT path.
+    if (req.context.get(USE_SESSION_TOKEN)) {
+      const sessionToken = this.authService.sessionToken
+      if (sessionToken) {
+        return next.handle(this.addTokenHeader(req, sessionToken)).pipe(
+          catchError((error) => throwError(() => error)),
+        )
+      }
     }
     return this.withToken().pipe(
       switchMap((token) =>

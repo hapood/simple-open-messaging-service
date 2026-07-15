@@ -217,7 +217,9 @@ export class AdminController {
   @Post('admin/users/:id/sessions')
   @ApiOperation({ summary: "View a given user's active sessions" })
   async userSessions(@Param('id') id: string): Promise<ApiResult> {
-    return this.ok(await this.authService.listActiveSessions(Number(id)));
+    // Admin viewing another user's sessions — there is no "current" session from the admin's
+    // perspective, so currentSessionId is null (no row is flagged isCurrent).
+    return this.ok(await this.authService.listActiveSessions(Number(id), null));
   }
 
   @UseGuards(AdminAuthGuard)

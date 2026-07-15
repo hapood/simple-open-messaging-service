@@ -1,0 +1,110 @@
+// Settings → Devices sub-page styles. Pulls in the shared M3 group/card shell (kept scoped by Angular's
+// view encapsulation), then layers the rich per-device rows the category list doesn't need. All vertical
+// metrics are integer px (height, vertical padding/border/gap, line-height) per the project rule.
+@use './_settings-shared.scss' as s;
+
+@include s.settings-groups;
+
+:host {
+  display: block;
+}
+
+.state {
+  padding: 40px 0;
+  line-height: 20px;
+  font-size: 13px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+
+// The "sign out everywhere else" affordance sits in its own surface above the list, separated by the
+// group gap. Right-aligned so it reads as an action, not a row.
+.danger-card {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px;
+}
+
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+}
+
+.dev-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-md, 12px);
+  background: var(--app-surface);
+
+  &.current {
+    border-color: var(--app-success);
+    background: var(--app-success-soft);
+  }
+}
+
+.dev-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 24px;
+
+  .lead {
+    flex: 0 0 auto;
+    color: var(--app-text-muted);
+  }
+
+  .dev-name {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 15px;
+    line-height: 24px;
+    font-weight: 600;
+    color: var(--app-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.dev-ua {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+  word-break: break-all;
+}
+
+.dev-meta {
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+}
+
+.dev-foot {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+// Client badge + "This device" tag — a compact pill. `current` tints brand/success so the requesting
+// session is visually unmistakable; the plain badge is muted (it only names the client kind).
+.badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: var(--app-radius-pill);
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+  background: var(--app-bg-muted);
+  border: 1px solid var(--app-border);
+
+  &.current {
+    color: var(--app-success);
+    background: var(--app-success-soft);
+    border-color: transparent;
+  }
+}

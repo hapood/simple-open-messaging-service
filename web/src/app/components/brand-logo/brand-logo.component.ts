@@ -1,14 +1,15 @@
 import { Component, input } from '@angular/core';
 
 /**
- * Single source of truth for the brand logo: mark (blue-background white-bubble SVG) + "SOMS" wordmark + optional tagline.
- * Extracted from auth-brand and shared by the auth-page brand panel and the chat-pane empty state, so the two
- * SVG copies cannot drift.
+ * Brand logo: "SOMS" wordmark + optional tagline, with the mark rendered from
+ * the single shared asset web/public/logo.svg (the same source the favicon /
+ * PWA / Tauri icons are generated from), so there is exactly one mark SVG.
  *
- * The mark's background color is hardcoded #2196f3 (matches the favicon — an intentional fixed brand color, not a
- * theme variable). Text color/size are exposed via CSS variables (--bl-word / --bl-tag / --bl-*-color); overriding
- * them on the brand-gradient panel (auth-brand white text) only requires setting these variables on the host — no
- * ::ng-deep needed.
+ * The mark's background is the fixed brand blue baked into logo.svg (#2196f3 —
+ * not a theme variable). Text color/size are exposed via CSS variables
+ * (--bl-word / --bl-tag / --bl-*-color); overriding them on the brand-gradient
+ * panel (auth-brand white text) only requires setting these variables on the
+ * host — no ::ng-deep needed.
  */
 @Component({
   selector: 'app-brand-logo',

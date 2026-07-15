@@ -1,0 +1,121 @@
+import { TestBed } from '@angular/core/testing';
+import { provideZonelessChangeDetection } from '@angular/core';
+import {
+  KeyboardInsetService,
+  browserKbdInset,
+  installKeyboardInsetBridge,
+} from './keyboard-inset.service';
+
+// Zoneless: no fakeAsync/tick. Signal-driven updates are flushed via TestBed/ApplicationRef tick.
+// The module-scoped `inset` signal is shared with the eager native bridge; each test sets an explicit
+// value (the bridge call or the visualViewport source's initial read) rather than relying on a clean
+// starting state.
+
+describe('browserKbdInset (pure)', () => {
+  /** A minimal VisualViewport double — only height/offsetTop are read by the helper. */
+  const vv = (height: number, offsetTop = 0): VisualViewport =>
+    ({ height, offsetTop }) as unknown as VisualViewport;
+
+  it('keyboard open → occlusion = layoutHeight − height − offsetTop', () => {
+    expect(browserKbdInset(vv(700), 1000)).toBe(300);
+  });
+
+  it('no keyboard (vv fills the layout viewport) → 0', () => {
+    expect(browserKbdInset(vv(1000), 1000)).toBe(0);
+  });
+
+  it('clamps a negative occlusion (vv taller than layout, e.g. an address-bar) → 0', () => {
+    expect(browserKbdInset(vv(1100), 1000)).toBe(0);
+  });
+
+  it('offsetTop contributes to the occlusion', () => {
+    expect(browserKbdInset(vv(700, 50), 1000)).toBe(250);
+  });
+
+  it('truncates fractional values to integer px', () => {
+    expect(browserKbdInset(vv(700.7), 1000)).toBe(299); // 1000 − 700.7 − 0 = 299.3 → 299
+  });
+});
+
+describe('KeyboardInsetService', () => {
+  let realVv: VisualViewport | null;
+  let realClientHeight: PropertyDescriptor | undefined;
+
+  beforeEach(() => {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({ providers: [provideZonelessChangeDetection()] });
+    realVv = window.visualViewport;
+  });
+
+  afterEach(() => {
+    TestBed.resetTestingModule();
+    // Restore the real visualViewport (tests that faked it replaced it on the window).
+    Object.defineProperty(window, 'visualViewport', {
+      value: realVv, configurable: true, writable: true,
+    });
+    if (realClientHeight) {
+      Object.defineProperty(document.documentElement, 'clientHeight', realClientHeight);
+      realClientHeight = undefined;
+    }
+  });
+
+  it('available is false in the browser (no Tauri shell)', () => {
+    expect(TestBed.inject(KeyboardInsetService).available).toBe(false);
+  });
+
+  it('the native bridge (Android push) feeds inset, clamped + integerized, and drives open', () => {
+    installKeyboardInsetBridge();
+    // Injecting the service on the browser path also installs the (real) visualViewport source, which
+    // seeds `inset` at ~0 in a headless browser — the bridge call below then overwrites it.
+    const svc = TestBed.inject(KeyboardInsetService);
+
+    window.__SOMS_IME_HEIGHT__!(300);
+    expect(svc.inset()).toBe(300);
+    expect(svc.open()).toBe(true);
+
+    window.__SOMS_IME_HEIGHT__!(0);
+    expect(svc.inset()).toBe(0);
+    expect(svc.open()).toBe(false);
+
+    window.__SOMS_IME_HEIGHT__!(-50); // negative → clamped to 0
+    expect(svc.inset()).toBe(0);
+
+    window.__SOMS_IME_HEIGHT__!(123.9); // fractional → truncated
+    expect(svc.inset()).toBe(123);
+  });
+
+  it('visualViewport resize (browser) feeds inset and drives the open event', () => {
+    // Pin the layout height so the occlusion is deterministic regardless of the test iframe size.
+    realClientHeight = Object.getOwnPropertyDescriptor(document.documentElement, 'clientHeight');
+    Object.defineProperty(document.documentElement, 'clientHeight', {
+      get: () => 1000, configurable: true,
+    });
+
+    // A minimal VisualViewport double with a dispatcher for the resize/scroll listeners.
+    const listeners: Array<() => void> = [];
+    const fakeVv = {
+      height: 1000, offsetTop: 0,
+      addEventListener: (_t: string, cb: () => void) => listeners.push(cb),
+      removeEventListener: (_t: string, cb: () => void) => {
+        const i = listeners.indexOf(cb); if (i >= 0) listeners.splice(i, 1);
+      },
+    };
+    Object.defineProperty(window, 'visualViewport', {
+      value: fakeVv, configurable: true, writable: true,
+    });
+
+    const svc = TestBed.inject(KeyboardInsetService);
+    expect(svc.inset()).toBe(0);   // vv fills the layout viewport → no keyboard
+    expect(svc.open()).toBe(false);
+
+    fakeVv.height = 700;           // keyboard opens → occludes 300px
+    for (const cb of listeners) cb();
+    expect(svc.inset()).toBe(300);
+    expect(svc.open()).toBe(true);
+
+    fakeVv.height = 1000;          // keyboard closes
+    for (const cb of listeners) cb();
+    expect(svc.inset()).toBe(0);
+    expect(svc.open()).toBe(false);
+  });
+});

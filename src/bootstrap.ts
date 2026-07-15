@@ -15,7 +15,8 @@ import { join } from 'path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
-import { AccessTokenValidator, MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
+import { MEDIA_TOKEN_COOKIE } from './auth/access-token.validator.js';
+import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { BusinessCode } from './common/business-code.js';
 
@@ -207,7 +208,7 @@ async function registerStaticServing(
   // JwtStrategy uses — a revoked token (logout / password change / session invalidate) therefore
   // loses media access too. Registered on the root instance as a global preHandler; Fastify
   // propagates parent hooks into the @fastify/static child context that owns the /uploads/ route.
-  const tokenValidator = app.get(AccessTokenValidator);
+  const bearerAuth = app.get(BearerAuthService);
   const mediaAccess = app.get(MediaAccessService);
   adapter.getInstance().addHook(
     'preHandler',
@@ -216,10 +217,10 @@ async function registerStaticServing(
       // Native <img>/<a download> can't send Authorization → they ride the httpOnly media_token
       // cookie (same-origin browser path). Cross-origin clients (the Tauri media proxy, any
       // native client) can't use that cookie — SameSite=Strict suppresses it cross-origin — so
-      // also accept a Bearer header. Same validator, same revocation; the cookie stays primary.
+      // also accept a Bearer header. BearerAuthService accepts an access JWT OR a session token, so
+      // the API and media surfaces enforce identical auth (and revocation) rules.
       const raw = request.cookies?.[MEDIA_TOKEN_COOKIE] ?? extractBearer(request.headers.authorization);
-      const payload = raw ? tokenValidator.verifyToken(raw) : null;
-      const principal = payload ? await tokenValidator.validatePayload(payload) : null;
+      const principal = raw ? await bearerAuth.resolve(raw, { ip: request.ip }) : null;
       if (!principal) {
         return reply.code(401).type('application/json').send({
           statusCode: 401,
@@ -228,7 +229,7 @@ async function registerStaticServing(
           data: null,
         });
       }
-      request.user = { userId: principal.userId };
+      request.user = { userId: principal.userId, sessionId: principal.sessionId };
 
       // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
       // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by

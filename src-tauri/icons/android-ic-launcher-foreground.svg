@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS">
+  <!-- Android adaptive-icon foreground.
+
+       A solid white speech bubble with a cutout "M" node-graph (the M is knocked
+       out so the blue background layer shows through) and a short, thick tail
+       placed at the golden-ratio point of the bottom edge.
+
+       The solid fill is intentional: it covers the blue background (so the icon
+       isn't blue-heavy) and, unlike an outline, it clips gracefully to any
+       launcher mask when it exceeds the safe zone. It is sized to ~37dp from
+       center — deliberately past the 33dp guaranteed safe zone, since the solid
+       shape rounds off cleanly at the mask edge.
+
+       The blue fill and outer silhouette come from the background layer
+       (res/values/ic_launcher_background.xml = #2196f3); the launcher mask clips
+       that layer to its shape.
+
+       `cargo tauri icon` cannot produce this: it scales the source SVG
+       full-bleed, ignoring the adaptive safe zone. Regenerate the PNGs with
+       gen-android-foreground.sh after running `cargo tauri icon`. -->
+  <defs>
+    <mask id="m-cutout">
+      <rect width="108" height="108" fill="#ffffff" />
+      <path d="M35 65 L35 42 L54 57 L73 42 L73 65" fill="none" stroke="#000000" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+      <g fill="#000000">
+        <circle cx="35" cy="65" r="6.5" />
+        <circle cx="35" cy="42" r="6.5" />
+        <circle cx="54" cy="57" r="6.5" />
+        <circle cx="73" cy="42" r="6.5" />
+        <circle cx="73" cy="65" r="6.5" />
+      </g>
+    </mask>
+  </defs>
+  <!-- Body [21,87]x[29,79] rx11; tail base x[41,52] (w11), tip (46,84) (h5)
+       at the 0.382 golden section of the bottom edge. -->
+  <path fill="#ffffff" mask="url(#m-cutout)"
+    d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
+</svg>

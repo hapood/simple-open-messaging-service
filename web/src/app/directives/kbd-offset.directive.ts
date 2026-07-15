@@ -1,56 +1,53 @@
-import { Directive, effect, ElementRef, inject, signal } from '@angular/core';
+import { Directive, effect, inject, signal } from '@angular/core';
+import { KeyboardInsetService } from '../services/keyboard-inset.service';
 import { InputDeviceService } from '../services/input-device.service';
 import { LayoutService } from '../services/layout.service';
 
 /**
- * Single source of soft-keyboard geometry for a chat surface.
+ * Soft-keyboard lift policy for a chat surface.
  *
  * Placed on the full-height chat container (the playground `.pg-stage` and the production
- * `.msg-container`). Owns the ONE visualViewport listener — previously duplicated, with subtly
- * different shapes, in the playground and the message thread — and exposes:
+ * `.msg-container`). Binds the keyboard occlusion height as the `--kbd-lift` CSS variable on its host
+ * (consumed by `.msg-viewport` and `.ci-input-bar` as a compositor-only `translateY(-K)` lift — see those
+ * SCSS files). The keyboard GEOMETRY itself — the single `inset` signal, unified across the Android
+ * native push and the browser `visualViewport` — is owned by {@link KeyboardInsetService}; this directive
+ * applies only POLICY on top of it:
  *
- * - {@link offset}: `host.clientHeight − visualViewport.height − visualViewport.offsetTop`, bound as
- *   the input bar's bottom inset (margin-bottom). The layout viewport does not resize on touch browsers
- *   (the default `resizes-visual` keeps it at the full screen size — the `interactive-widget=resizes-content`
- *   keyword that once shrank it on Chromium Android was removed when the viewport-keyboard strategy was
- *   abandoned), so this carries the FULL keyboard height on both iOS and Android; the flex column above
- *   shrinks by the same amount, so the message list reflows clear of the keyboard too. This is the
- *   finished lift calc — do not change it.
+ * - {@link offset}: the lift height. 0 when a physical keyboard is in use, or while a route-transition
+ *   slide is in flight (immunity frame — hold the current lift so a native push mid-slide does not lift
+ *   mid-transition). Otherwise it mirrors {@link KeyboardInsetService.inset}.
  *
- * Immunity frame: while `LayoutService.reflowFrozen()` (a route-transition animation is in flight) the
- * offset holds its current value — no mid-slide lift jitter — and recomputes once on thaw. Reading
- * `reflowFrozen()` inside the effect makes it re-run on freeze/thaw edges. A no-op on the playground,
- * which never route-transitions.
+ * Immunity frame: while {@link LayoutService.reflowFrozen} is true the offset holds its current value —
+ * no mid-slide lift jitter — and recomputes once on thaw. Reading `reflowFrozen()` inside the effect
+ * makes it re-run on freeze/thaw edges. The `if (frozen) return` guard sits BEFORE the `inset()` read so
+ * `inset` is NOT tracked during a freeze (a native push mid-slide would otherwise re-run the effect and
+ * lift mid-transition); on thaw the effect re-runs and reads it fresh.
  */
-@Directive({ selector: '[appKbdOffset]' })
+@Directive({
+  selector: '[appKbdOffset]',
+  host: { '[style.--kbd-lift]': 'offset() + "px"' },
+})
 export class KbdOffsetDirective {
-  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly kbd = inject(KeyboardInsetService);
   private readonly layout = inject(LayoutService);
   private readonly inputDevice = inject(InputDeviceService);
 
-  /** Soft-keyboard occlusion height (px) — bound as the input bar's bottom inset so it lifts above the
-   *  keyboard. ~0 when no keyboard is open. */
+  /** Soft-keyboard lift height (px) — bound as `--kbd-lift` on the host so `.msg-viewport` and
+   *  `.ci-input-bar` translate the surface above the keyboard. ~0 when no keyboard is open. */
   readonly offset = signal(0);
 
-  private readonly track = effect((onCleanup) => {
+  private readonly track = effect(() => {
     const frozen = this.layout.reflowFrozen(); // track → re-run on freeze/thaw edges
-    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
     // Short-circuit on a PHYSICAL KEYBOARD (input modality), NOT on layout width. Keys on
     // InputDeviceService.hasPhysicalKeyboard because `layout.isDesktop` is width-only now — a wide touch
-    // tablet (≥1280px desktop mode WITH a soft keyboard) must still track the keyboard, so the gate cannot
-    // be the layout signal.
-    if (this.inputDevice.hasPhysicalKeyboard() || !vv) { this.offset.set(0); return; }
-    const el = this.host.nativeElement;
-    const update = (): void => {
-      if (this.layout.reflowFrozen()) return; // immunity frame: hold the current offset
-      this.offset.set(Math.max(0, el.clientHeight - vv.height - vv.offsetTop));
-    };
-    if (!frozen) update();
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    onCleanup(() => {
-      vv.removeEventListener('resize', update);
-      vv.removeEventListener('scroll', update);
-    });
+    // tablet (≥1280px desktop mode WITH a soft keyboard) must still track the keyboard, so the gate
+    // cannot be the layout signal.
+    if (this.inputDevice.hasPhysicalKeyboard()) { this.offset.set(0); return; }
+    // Immunity frame: hold the current offset mid route-transition slide; recompute on thaw. MUST precede
+    // the `inset()` read so `inset` is not tracked during a freeze (a native push mid-slide would
+    // otherwise re-run the effect and lift mid-transition). Returning here keeps the effect subscribed to
+    // `reflowFrozen()`, so it re-runs on thaw.
+    if (frozen) return;
+    this.offset.set(this.kbd.inset()); // read only when not frozen → tracked → re-runs on every push
   });
 }

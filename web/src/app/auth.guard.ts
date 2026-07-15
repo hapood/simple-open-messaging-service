@@ -2,7 +2,7 @@ import { inject } from '@angular/core';
 import { CanActivateFn, RedirectCommand } from '@angular/router';
 import { Router } from '@angular/router';
 import { AuthService } from './services/auth.service';
-import { apiOriginIsLocalhost, isTauri } from './services/runtime';
+import { apiOriginIsEmpty, isTauri } from './services/runtime';
 import { ServerConfigGateService } from './services/server-config-gate.service';
 
 // Auth-flow history contract: a logged-in user must NEVER be able to press Back from the app and land
@@ -33,14 +33,13 @@ export const guestGuard: CanActivateFn = () => {
   if (authService.isLoggedIn()) {
     return new RedirectCommand(router.parseUrl(''), { replaceUrl: true });
   }
-  // Bundled-APK first run: if the backend origin is still the localhost build default it's unreachable
-  // from a phone, so force the server-config page before showing a login form that can only fail. The
-  // gate is latched once per boot via ServerConfigGateService.consumeOnce() — otherwise canceling back
-  // to /auth/login would re-trip this redirect forever (an inescapable loop). A full reload resets the
-  // latch and re-offers the page (correct: the app is unusable while unconfigured). After a Save the
-  // persisted origin lands here as non-localhost, so this gate drops away on every later run. No-op in
-  // the browser build (isTauri() is false).
-  if (isTauri() && apiOriginIsLocalhost() && inject(ServerConfigGateService).consumeOnce()) {
+  // Bundled-APK first run: if no backend origin is configured yet (the apiOrigin signal is empty) the
+  // login form can only fail, so force the server-config page first. The gate is latched once per boot
+  // via ServerConfigGateService.consumeOnce() — otherwise canceling back to /auth/login would re-trip
+  // this redirect forever (an inescapable loop). A full reload resets the latch and re-offers the page
+  // (correct: the app is unusable while unconfigured). After a Save the persisted origin is non-empty,
+  // so this gate drops away on every later run. No-op in the browser build (isTauri() is false).
+  if (isTauri() && apiOriginIsEmpty() && inject(ServerConfigGateService).consumeOnce()) {
     return new RedirectCommand(router.parseUrl('/config'), { replaceUrl: true });
   }
   return true;

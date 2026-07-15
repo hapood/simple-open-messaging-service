@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { NgComponentOutlet } from '@angular/common';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -65,6 +65,10 @@ import { buildSettingsCategories, type SettingsCategory, type SettingsCategoryId
 export class SettingsDialogComponent {
   readonly AppIconType = AppIconType;
 
+  /** Optional deep-link target: when the dialog is opened via {@link RouteService.openSettings} with a
+   *  category (e.g. Edit Profile → Devices), the right-hand pane starts on it instead of the first row. */
+  readonly initialCategoryId = input<SettingsCategoryId | null>(null);
+
   private readonly routeService = inject(RouteService);
   private readonly transloco = inject(TranslocoService);
   private readonly theme = inject(ThemeService);
@@ -92,13 +96,27 @@ export class SettingsDialogComponent {
       .sort((a, b) => a.order - b.order),
   );
 
-  /** The currently-selected category (local state — flat, no nav stack). Defaults to the first visible. */
-  readonly selectedId = signal<SettingsCategoryId | null>(this.visibleCategories()[0]?.id ?? null);
+  /** The currently-selected category (local state — flat, no nav stack). Seeded from the deep-link input
+   *  (when it names a visible category) or the first visible category, via the constructor effect below. */
+  readonly selectedId = signal<SettingsCategoryId | null>(null);
 
   /** The selected category object (for rendering its sub-page), or null. */
   readonly selectedCategory = computed<SettingsCategory | null>(
     () => this.categories.find((c) => c.id === this.selectedId()) ?? null,
   );
+
+  constructor() {
+    // Seed the selection once inputs are bound (ngComponentOutlet binds before first CD, so this effect
+    // runs after `initialCategoryId` is available). Guarded by the null check so it never overwrites a
+    // later user selection — it fires until the first set, then no-ops.
+    effect(() => {
+      if (this.selectedId() !== null) return;
+      const init = this.initialCategoryId();
+      const visible = this.visibleCategories();
+      const pick = init && visible.some((c) => c.id === init) ? init : (visible[0]?.id ?? null);
+      this.selectedId.set(pick);
+    });
+  }
 
   select(id: SettingsCategoryId): void {
     this.selectedId.set(id);

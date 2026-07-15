@@ -1,0 +1,47 @@
+<section class="settings-group">
+  @if (loading()) {
+    <div class="state">{{ 'common.loading' | transloco }}</div>
+  } @else if (list().length === 0) {
+    <div class="state">{{ 'session.noSessions' | transloco }}</div>
+  } @else {
+    @if (othersCount() > 0) {
+      <div class="danger-card">
+        <button mat-stroked-button color="warn" type="button" (click)="terminateOthers()">
+          {{ 'session.terminateOthers' | transloco:{ count: othersCount() } }}
+        </button>
+      </div>
+    }
+
+    <div class="settings-card">
+      @for (s of list(); track s.id) {
+        <div class="dev-row" [class.current]="s.isCurrent">
+          <div class="dev-head">
+            <app-icon class="lead" [type]="AppIconType.DEVICES" [style]="{ width: '22px', height: '22px' }"></app-icon>
+            <span class="dev-name">{{ deviceLabel(s) }}</span>
+            @if (s.isCurrent) {
+              <span class="badge current">{{ 'common.thisDevice' | transloco }}</span>
+            } @else {
+              <span class="badge">{{ clientLabel(s.client) }}</span>
+            }
+          </div>
+
+          @if (s.userAgent) {
+            <div class="dev-ua">{{ s.userAgent }}</div>
+          }
+          <div class="dev-meta">{{ 'session.ip' | transloco:{ ip: location(s) } }}</div>
+          <div class="dev-meta">{{ 'session.signedIn' | transloco:{ date: fmt(s.createdAt) } }}</div>
+          <div class="dev-meta">{{ 'session.lastActive' | transloco:{ date: fmt(s.lastSeenAt) } }}</div>
+          <div class="dev-meta">{{ 'session.expires' | transloco:{ date: expiresLabel(s) } }}</div>
+
+          @if (!s.isCurrent) {
+            <div class="dev-foot">
+              <button mat-stroked-button color="warn" type="button" (click)="revoke(s)">
+                {{ 'session.revoke' | transloco }}
+              </button>
+            </div>
+          }
+        </div>
+      }
+    </div>
+  }
+</section>

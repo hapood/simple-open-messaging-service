@@ -21,6 +21,10 @@ import {
   MEDIA_COOKIE_OPTIONS,
 } from '../auth/access-token.validator.js';
 import { NotificationTokenService } from '../auth/notification-token.service.js';
+import {
+  SessionTokenService,
+  type SessionClient,
+} from '../auth/session-token.service.js';
 import { LoginAuthInfo } from '../auth/local.strategy.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -40,6 +44,7 @@ export class AuthController {
   constructor(
     private authService: AuthService,
     private readonly notificationTokens: NotificationTokenService,
+    private readonly sessionTokens: SessionTokenService,
   ) {}
 
   /**
@@ -84,11 +89,20 @@ export class AuthController {
         userAgent,
         ip,
       });
+      // Issue the long-lived session credential alongside the legacy access/refresh pair (additive —
+      // clients that don't consume it yet simply ignore the field). 'app' → no-expiry (native, stored
+      // in OS secure storage); 'web' (default) → sliding 30-day.
+      const client: SessionClient = body.client ?? 'web';
+      const session_token = await this.sessionTokens.issue(
+        authInfo.userId!,
+        client,
+        { device: body.device, userAgent, ip },
+      );
       this.setMediaCookie(reply, tokens.access_token);
       return {
         code: BusinessCode.OK,
         message: 'successful',
-        data: tokens,
+        data: { ...tokens, session_token },
       };
     } else {
       if (authInfo.bannedUntil !== undefined) {
@@ -200,6 +214,9 @@ export class AuthController {
     if (dto.accessJti) {
       await this.authService.blacklistAccessJti(dto.accessJti);
     }
+    if (dto.sessionToken) {
+      await this.sessionTokens.revoke(dto.sessionToken);
+    }
     this.clearMediaCookie(reply);
     return { code: BusinessCode.OK, message: 'success' };
   }
@@ -253,19 +270,24 @@ export class AuthController {
     return {
       code: BusinessCode.OK,
       message: 'success',
-      data: await this.authService.listActiveSessions(req.user.userId),
+      data: await this.authService.listActiveSessions(
+        req.user.userId,
+        req.user.sessionId ?? null,
+      ),
     };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('auth/revoke-session')
-  @ApiOperation({ summary: 'Revoke a single session (by jti, belonging to the current user)' })
+  @ApiOperation({
+    summary: 'Revoke a single session by its device-list id (belonging to the current user)',
+  })
   async revokeSession(
     @Request() req: FastifyRequest,
     @Body() dto: RevokeSessionDto,
   ): Promise<ApiResult> {
-    await this.authService.revokeSession(req.user.userId, dto.jti, dto.accessJti);
+    await this.authService.revokeSession(req.user.userId, dto.id);
     return { code: BusinessCode.OK, message: 'success' };
   }
 

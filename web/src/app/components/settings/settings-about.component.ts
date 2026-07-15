@@ -1,7 +1,7 @@
 import { Component, computed } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { TranslocoPipe } from '@jsverse/transloco';
-import { isTauri, apiOrigin, apiOriginIsLocalhost } from '../../services/runtime';
+import { isTauri, apiOrigin, apiOriginIsEmpty } from '../../services/runtime';
 import { appVersion } from '../../version';
 
 /**
@@ -35,10 +35,10 @@ export class SettingsAboutComponent {
   readonly appVersion = appVersion;
   /** The Backend row is only meaningful under Tauri (where the origin is configurable). */
   readonly showBackend = isTauri();
-  /** Human-readable backend origin, or null when still on the localhost default. Reads the live
-   *  signal, so it updates the moment a server-config save repoints the backend. */
+  /** Human-readable backend origin, or null when no origin is configured yet. Reads the live signal,
+   *  so it updates the moment a server-config save repoints the backend. */
   readonly backendLabel = computed(() => {
     const o = apiOrigin();
-    return o && !apiOriginIsLocalhost() ? o : null;
+    return o && !apiOriginIsEmpty() ? o : null;
   });
 }

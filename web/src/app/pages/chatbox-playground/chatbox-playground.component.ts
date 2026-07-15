@@ -6,6 +6,7 @@ import {
 import { FormsModule } from '@angular/forms';
 import { ChatBoxScroller, ScrollerApi, CbElement, CbItem, CbConfig, CbOptions, CbScrollInfo, CbDebugStats } from '../../lib/chat-box/chat-box-scroller';
 import { ChatBoxScrollerAnchor } from '../../lib/chat-box/chat-box-scroller-anchor';
+import { pickStickyDateLabel, stickyDateRowOpacity, isViewportTransformEnd } from '../../lib/sticky-date';
 import { ActivatedRoute } from '@angular/router';
 import { LayoutService } from '../../services/layout.service';
 import { ThemeService } from '../../services/theme.service';
@@ -84,9 +85,9 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
   private readonly fabRef = viewChild<ElementRef<HTMLButtonElement>>('fab');
-  /** Soft-keyboard occlusion height from the KbdOffsetDirective on `.pg-stage` (mobile). Lifts the input bar.
-   *  Public so the template can read `kbdOffset()?.offset()` (private members are not template-accessible). */
-  readonly kbdOffset = viewChild(KbdOffsetDirective);
+  /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date pill
+   *  (the viewport's own top slides under the header while the keyboard-lift transform is active). */
+  private readonly headerRef = viewChild('pgHeader', { read: ElementRef<HTMLElement> });
   private readonly jumpInput = viewChild<ElementRef<HTMLInputElement>>('jumpInput');
   private readonly insertInput = viewChild<ElementRef<HTMLInputElement>>('insertInput');
   private readonly removeInput = viewChild<ElementRef<HTMLInputElement>>('removeInput');
@@ -423,33 +424,41 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
     if (!vp || !ct) { this.stickyDate.set(null); return; }
-    const vTop = vp.getBoundingClientRect().top;
-    // Fade band (px, from the viewport top) tracks the floating sticky pill — its SCSS `top` is
-    // calc(var(--sd-top) + 6px), so it sits ~6px below this viewport top. The inline date pill fades out
+    // The visible top is the header's bottom edge (stable — the header does NOT carry the keyboard-lift
+    // transform), NOT the viewport's getBoundingClientRect().top (which slides under the header while the
+    // keyboard is up, so a vTop-relative threshold/fade would anchor to a hidden message). Falls back to
+    // the viewport top before the header ref is available (early init).
+    const visibleTop = this.headerRef()?.nativeElement.getBoundingClientRect().bottom
+      ?? vp.getBoundingClientRect().top;
+    // Fade band (px, from the visible top) tracks the floating sticky pill — its SCSS `top` is
+    // calc(var(--sd-top) + 6px), so it sits ~6px below this visible top. The inline date pill fades out
     // exactly as it passes behind the float: lo = fully transparent, hi = fade start. The overlay's +6px gap
     // is baked into both offsets; move them together or a gap opens between the two pills.
     const STICKY_DATE_FADE_PX = { lo: 20, hi: 66 };
-    const fadeLo = vTop + STICKY_DATE_FADE_PX.lo;
-    const fadeHi = vTop + STICKY_DATE_FADE_PX.hi;
-    const rects = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))
-      .map(d => ({ d, top: d.getBoundingClientRect().top }));
-    let current: string | null = null;
-    for (const { d, top } of rects) {
-      if (top <= fadeLo) current = d.textContent?.trim() ?? null;
-    }
+    const fadeLo = visibleTop + STICKY_DATE_FADE_PX.lo;
+    const fadeHi = visibleTop + STICKY_DATE_FADE_PX.hi;
+    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))
+      .map((d) => ({ d, top: d.getBoundingClientRect().top, label: d.textContent?.trim() ?? null }));
+    let current = pickStickyDateLabel(rows, visibleTop, STICKY_DATE_FADE_PX.lo);
     // When the top ghost loading spinner (.cb-ghost-loading, centered) is visible it overlaps the centered date overlay →
-    // hide the overlay while the spinner sits at the viewport top (its bottom crosses the viewport top); it restores
+    // hide the overlay while the spinner sits at the visible top (its bottom crosses it); it restores
     // naturally once the spinner is gone (the inline date row is still there).
     const ghost = ct.querySelector('.cb-ghost-loading');
-    if (ghost && ghost.getBoundingClientRect().bottom > vTop) current = null;
+    if (ghost && ghost.getBoundingClientRect().bottom > visibleTop) current = null;
     this.stickyDate.set(current);
     const hasFloat = current !== null;
-    for (const { d, top } of rects) {
-      const op = hasFloat && top <= fadeHi
-        ? Math.max(0, Math.min(1, (top - fadeLo) / (fadeHi - fadeLo)))
-        : 1;
-      d.style.opacity = op.toFixed(2);
+    for (const { d, top } of rows) {
+      d.style.opacity = stickyDateRowOpacity(top, fadeLo, fadeHi, hasFloat).toFixed(2);
     }
+  }
+
+  /** Recompute the sticky-date pill when the keyboard-lift `transform` settles on the viewport. The
+   *  transform fires no scroll event, so onScroll alone would leave the pill on its pre-lift label across
+   *  a keyboard open/close; this closes that gap. {@link isViewportTransformEnd} filters to the viewport's
+   *  own `transform` (ignoring bubbled item transitions like cb-move). */
+  onViewportTransitionEnd(event: TransitionEvent): void {
+    if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement)) return;
+    this.updateStickyDate();
   }
 
   // --- Controls ---

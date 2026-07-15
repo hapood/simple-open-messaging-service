@@ -1,9 +1,9 @@
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpContext, HttpContextToken } from '@angular/common/http';
 import { BehaviorSubject, EMPTY, Observable, finalize, shareReplay, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
-import { isTauri, tauriInvoke } from './runtime';
+import { isTauri, isAndroid, tauriInvoke } from './runtime';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -12,7 +12,37 @@ import { uuid } from '../lib/uuid';
 const REFRESH_TOKEN = 'refresh_token',
   IS_KEEP_LOGIN = 'is_keep_login'
 
-type AccessTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string } }
+type AccessTokenRes = { code: number, message: string, data?: { access_token: string, refresh_token: string, session_token?: string } }
+
+/**
+ * Per-request directive for {@link AuthInterceptor}: authenticate with the long-lived session token
+ * instead of the short-lived access JWT. The server stamps the requesting session's id on req.user only
+ * when the credential IS a session token, so `/auth/sessions` must present one for the device list to
+ * flag the current row `isCurrent`. Device-management calls set this; everything else defaults to false
+ * (the access-JWT path). When no session token is held (e.g. right after a page refresh, before a fresh
+ * login reissues one) the interceptor falls back to the access JWT and `isCurrent` is simply false.
+ */
+export const USE_SESSION_TOKEN = new HttpContextToken(() => false);
+
+/** The client kind, selecting the session-token lifetime policy server-side and shown as a badge in the
+ *  device list. Mirrors the backend LoginDto.client union. */
+export type SessionClient = 'app' | 'web' | 'desktop';
+
+/** One row of GET /auth/sessions — the active-session credential behind the "Devices" settings page.
+ *  Dates arrive as ISO strings (Prisma DateTime over the wire); `expiresAt` is null for no-expiry app
+ *  tokens. `isCurrent` is server-stamped against the requesting session token. */
+export interface SessionInfo {
+  id: number;
+  client: SessionClient;
+  device: string | null;
+  userAgent: string | null;
+  ip: string | null;
+  lastSeenIp: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string | null;
+  isCurrent: boolean;
+}
 
 /**
  * When the tab returns to the foreground, proactively renew the access token if it is likely stale.
@@ -49,6 +79,15 @@ export class AuthService {
    *  reads this to decide whether to send immediately or renew first. */
   public acTkSub = new BehaviorSubject<string | null>(null)
 
+  /** The long-lived session token minted at login (the per-device credential behind the "Devices" list).
+   *  Held in JS memory only — NOT persisted (an XSS-grabbable 30d token in storage is the cookie risk the
+   *  bearer-in-memory model exists to avoid). Lost on page refresh; reissued by the next login, so the
+   *  device-management calls simply fall back to the access JWT (isCurrent=false) until then. Phase 3 will
+   *  promote this to the primary web credential. */
+  private _sessionToken: string | null = null
+  /** Current session token (synchronous snapshot), or null when none is held. */
+  get sessionToken(): string | null { return this._sessionToken }
+
   constructor(
     private http: HttpClient,
     private routeService: RouteService,
@@ -81,8 +120,15 @@ export class AuthService {
     // localStorage or sessionStorage). The backend does not consume it, so it is stripped from the
     // request body; it is still used after success to decide where to persist the token.
     const { isKeep, ...credentials } = params;
+    // `client` selects the session-token lifetime policy (app=no-expiry, web/desktop=sliding 30d) and is
+    // shown as a badge in the device list; `device` is a human-readable label for that list (distinct from
+    // the device_id uuid, which is the push-token device identifier).
     return this.http.post<AccessTokenRes>
-      (`${apiPrefix()}/auth/login`, { ...credentials, device: this.getDeviceId() }).pipe(tap((res) => {
+      (`${apiPrefix()}/auth/login`, {
+        ...credentials,
+        client: this.resolveClient(),
+        device: this.getDeviceLabel(),
+      }).pipe(tap((res) => {
         if (res.code === 0) {
           const data = res.data!
           this._isKeep = isKeep
@@ -93,6 +139,7 @@ export class AuthService {
           localStorage.removeItem(REFRESH_TOKEN)
           this.setReToken(data.refresh_token, isKeep)
           this.setAcToken(data.access_token)
+          this._sessionToken = data.session_token ?? null
           // Now that the access token is in the interceptor, register (or re-register) this device's
           // FCM token so the server can push to it. No-op outside the Tauri shell.
           this.push.onLogin()
@@ -128,7 +175,7 @@ export class AuthService {
     this._accessSetAt = null
     const req$ = this.http.post<AccessTokenRes>(
       `${apiPrefix()}/auth/renew-access`,
-      { refreshToken: rfToken, device: this.getDeviceId() },
+      { refreshToken: rfToken, device: this.getDeviceLabel() },
     ).pipe(
       tap((res) => {
         if (res.code === 0) {
@@ -185,6 +232,7 @@ export class AuthService {
   clearToken() {
     this.acTkSub.next(null)
     this._accessSetAt = null
+    this._sessionToken = null
     if (this._isKeep) {
       localStorage.removeItem(REFRESH_TOKEN)
     } else {
@@ -213,8 +261,9 @@ export class AuthService {
     return EMPTY
   }
 
-  /** Change password: on success the server revokes other sessions and returns a fresh login pair; the
-   *  local tokens are replaced with the new ones. */
+  /** Change password: on success the server revokes every session (including this device's session token)
+   *  and returns a fresh access/refresh pair — but NOT a new session token. Drop the now-revoked session
+   *  token so the device-management calls don't present a dead credential; the next login reissues one. */
   changePassword(params: { oldPassword: string, newPassword: string }) {
     return this.http.post<{ code: number, message: string, data?: { access_token: string, refresh_token: string } }>(
       `${apiPrefix()}/auth/change-password`, params
@@ -222,19 +271,33 @@ export class AuthService {
       if (res.code === 0) {
         this.setAcToken(res.data!.access_token)
         this.setReToken(res.data!.refresh_token)
+        this._sessionToken = null
       }
     }))
   }
 
-  /** Session management: list active sessions / kick a single device. */
+  /** List the current user's active sessions. Auths with the session token ({@link USE_SESSION_TOKEN}) so
+   *  the server can flag the requesting row `isCurrent`; falls back to the access JWT (no isCurrent) when
+   *  no session token is held. */
   getSessions() {
-    return this.http.post<{ code: number, message: string, data?: any[] }>(`${apiPrefix()}/auth/sessions`, {})
-  }
-  revokeSession(jti: string) {
-    return this.http.post<{ code: number, message: string }>(`${apiPrefix()}/auth/revoke-session`, { jti })
+    return this.http.post<{ code: number, message: string, data?: SessionInfo[] }>(
+      `${apiPrefix()}/auth/sessions`, {},
+      { context: new HttpContext().set(USE_SESSION_TOKEN, true) },
+    )
   }
 
-  /** Device identifier: a persistent localStorage uuid (distinguishes multi-device sessions). */
+  /** Revoke a single session by its device-list row id. Same session-token auth so the server records the
+   *  revocation against the requester's own session lineage; ownership is verified server-side. */
+  revokeSession(id: number) {
+    return this.http.post<{ code: number, message: string }>(
+      `${apiPrefix()}/auth/revoke-session`, { id },
+      { context: new HttpContext().set(USE_SESSION_TOKEN, true) },
+    )
+  }
+
+  /** Push-device identifier: a persistent localStorage uuid used to dedup the FCM/Web-Push endpoint
+   *  registration. Unrelated to the session `device` label — do not reuse it for that (it is opaque, not
+   *  human-readable). */
   private getDeviceId(): string {
     let id = localStorage.getItem('device_id')
     if (!id) {
@@ -242,5 +305,38 @@ export class AuthService {
       localStorage.setItem('device_id', id)
     }
     return id
+  }
+
+  /** Client kind for the session-token lifetime policy + the device-list badge: the Android Tauri shell is
+   *  'app' (no-expiry, native secure store), the desktop Tauri shell is 'desktop', the browser is 'web'. */
+  private resolveClient(): SessionClient {
+    if (isTauri() && isAndroid()) return 'app'
+    if (isTauri()) return 'desktop'
+    return 'web'
+  }
+
+  /** Human-readable label for this device/browser, sent on login so the Active-sessions list shows a
+   *  recognizable name instead of an opaque uuid. Best-effort navigator.userAgent parse (dependency-free);
+   *  stable per device so re-login keeps the same label. */
+  private getDeviceLabel(): string {
+    const ua = (typeof navigator !== 'undefined' && navigator.userAgent) || ''
+    const os =
+      /Windows NT/i.test(ua) ? 'Windows'
+        : /iPhone|iPad|iPod|iOS/i.test(ua) ? 'iOS'
+          : /Mac OS X/i.test(ua) ? 'macOS'
+            : /Android/i.test(ua) ? 'Android'
+              : /CrOS/i.test(ua) ? 'ChromeOS'
+                : /Linux/i.test(ua) ? 'Linux'
+                  : (typeof navigator !== 'undefined' && navigator.platform) || 'Unknown'
+    if (isTauri() && isAndroid()) return 'Android'        // native app — the OS is the device identity
+    if (isTauri()) return `Desktop · ${os}`                // Tauri desktop shell
+    const browser =
+      /Edg\//i.test(ua) ? 'Edge'
+        : /OPR\//i.test(ua) ? 'Opera'
+          : /Chrome\//i.test(ua) ? 'Chrome'
+            : /Firefox\//i.test(ua) ? 'Firefox'
+              : /Safari\//i.test(ua) ? 'Safari'
+                : 'Browser'
+    return `${browser} · ${os}`
   }
 }

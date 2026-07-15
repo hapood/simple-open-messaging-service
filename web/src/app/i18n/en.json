@@ -107,8 +107,16 @@
     "noSessions": "No active sessions",
     "ip": "IP {{ip}}",
     "signedIn": "Signed in {{date}}",
+    "lastActive": "Active {{date}}",
     "expires": "Expires {{date}}",
-    "revoke": "Revoke"
+    "neverExpires": "No expiry",
+    "revoke": "Revoke",
+    "revokeConfirm": "Sign out this session ({{device}})?",
+    "terminateOthers": "Sign out everywhere else ({{count}})",
+    "terminateOthersConfirm": "Sign out all other {{count}} sessions?",
+    "clientApp": "Android",
+    "clientWeb": "Web",
+    "clientDesktop": "Desktop"
   },
   "folder": {
     "title": "Folders",
@@ -439,7 +447,9 @@
     "media": "Media",
     "mediaThreshold": "Image load threshold",
     "mediaThresholdHint": "Larger images show a tap-to-load placeholder.",
-    "noLimit": "No limit"
+    "noLimit": "No limit",
+    "devices": "Devices",
+    "devicesHint": "Active sessions"
   },
   "serverConfig": {
     "entry": "Server settings",

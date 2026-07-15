@@ -21,6 +21,7 @@ import {
   type CbItem,
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
+import { pickStickyDateLabel, isViewportTransformEnd } from '../../lib/sticky-date';
 import { HttpItemSource } from './http-item-source';
 import { MediaProbeScheduler } from './media-probe-scheduler';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../message-cards/create-item';
@@ -79,13 +80,11 @@ export class MessageThreadComponent implements OnDestroy {
 
   private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
   private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
-  /** Soft-keyboard occlusion height (from the KbdOffsetDirective on `.msg-container`). Exposed to the
-   *  template as the `--kbd-lift` CSS var on <app-chat-input>; `.ci-input-bar` folds it into its bottom
-   *  padding as `max(--soms-safe-bottom, --kbd-lift)` so the bar's own background extends seamlessly
-   *  under whichever is taller (gesture bar closed / keyboard open) — see chat-input.component.scss. The
-   *  viewport (flex:1) shrinks to match and the kernel re-pins. Public so the template can read
-   *  `kbdOffset()?.offset()` (private members are not template-accessible under strict templates). */
-  readonly kbdOffset = viewChild(KbdOffsetDirective);
+  /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date
+   *  pill. The viewport carries the keyboard-lift `transform`, so its own `getBoundingClientRect().top`
+   *  slides under the header while the keyboard is up; the header does not transform, so its bottom is the
+   *  true top of the visible content (see updateStickyDate). */
+  private readonly headerRef = viewChild('msgHeader', { read: ElementRef<HTMLElement> });
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);
   private readonly msgRepo = inject(MessageRepository);
@@ -239,17 +238,30 @@ export class MessageThreadComponent implements OnDestroy {
     this.probe.schedule(this.threadId() ?? 0);
   }
 
-  /** Telegram-style sticky date overlay: the text of the last date-separator row at/above the viewport top. */
+  /** Telegram-style sticky date overlay: the text of the last date-separator row at/above the VISIBLE top.
+   *  The visible top is the header's bottom edge (stable — the header does NOT carry the keyboard-lift
+   *  transform), NOT the viewport's `getBoundingClientRect().top` (which slides under the header while the
+   *  keyboard is up, so it would pick the date of a message now hidden behind the header). Falls back to
+   *  the viewport top before the header ref is available (early init). The pick is the pure
+   *  {@link pickStickyDateLabel} helper so the logic is unit-tested. */
   private updateStickyDate(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
     if (!vp || !ct) { this.stickyDate.set(null); return; }
-    const vTop = vp.getBoundingClientRect().top;
-    let current: string | null = null;
-    for (const d of Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))) {
-      if (d.getBoundingClientRect().top <= vTop + 14) current = d.textContent?.trim() ?? null;
-    }
-    this.stickyDate.set(current);
+    const visibleTop = this.headerRef()?.nativeElement.getBoundingClientRect().bottom
+      ?? vp.getBoundingClientRect().top;
+    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))
+      .map((d) => ({ top: d.getBoundingClientRect().top, label: d.textContent?.trim() ?? null }));
+    this.stickyDate.set(pickStickyDateLabel(rows, visibleTop, 14));
+  }
+
+  /** Recompute the sticky-date pill when the keyboard-lift `transform` settles on the viewport. The
+   *  transform fires no scroll event, so `onScroll` alone would leave the pill on its pre-lift label across
+   *  a keyboard open/close; this closes that gap. {@link isViewportTransformEnd} filters to the viewport's
+   *  own `transform` (ignoring bubbled item transitions like `cb-move`). */
+  onViewportTransitionEnd(event: TransitionEvent): void {
+    if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement)) return;
+    this.updateStickyDate();
   }
 
   // ---------- ChatInputComponent intent → optimistic dispatch ----------

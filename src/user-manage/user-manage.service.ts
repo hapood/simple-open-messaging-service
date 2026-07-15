@@ -49,7 +49,7 @@ export class UserManageService implements OnModuleInit {
         },
         orderBy: { joinedAt: 'desc' },
       }),
-      this.auth.listActiveSessions(id),
+      this.auth.listActiveSessions(id, null),
       this.prisma.pushToken.findMany({
         where: { userId: id },
         select: { id: true, platform: true, deviceId: true, lastSeenAt: true },

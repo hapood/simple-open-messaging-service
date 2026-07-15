@@ -1,5 +1,21 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SOMS">
-  <rect width="64" height="64" rx="14" fill="#2196f3" />
-  <path transform="translate(6 7) scale(2.2)" fill="#ffffff"
-    d="M12 3C6.5 3 2 6.6 2 11c0 2.3 1.2 4.4 3.2 5.8-.2 1-.7 2.2-1.6 3.2-.2.2 0 .6.3.5 1.7-.3 3.2-1 4.4-1.9 1.1.3 2.3.4 3.7.4 5.5 0 10-3.6 10-8s-4.5-8-10-8z" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS">
+  <!-- SOMS web icon source. Full-bleed brand-blue background + a solid white
+       speech bubble carrying a brand-blue "M" node-graph, with a short, thick
+       tail at the golden-ratio point of the bottom edge. The mark is scaled to
+       ~85% so it fills the icon (larger than the legacy ~69%). Render the
+       PNG/ICO set with scripts/gen-web-icons.sh; the maskable variants use a
+       smaller scale to stay inside the 80% safe zone. -->
+  <rect width="108" height="108" rx="24" fill="#2196f3" />
+  <g transform="translate(54 54) scale(1.24) translate(-54 -54)">
+    <path fill="#ffffff"
+      d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
+    <path d="M35 65 L35 42 L54 57 L73 42 L73 65" fill="none" stroke="#2196f3" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+    <g fill="#2196f3">
+      <circle cx="35" cy="65" r="6.5" />
+      <circle cx="35" cy="42" r="6.5" />
+      <circle cx="54" cy="57" r="6.5" />
+      <circle cx="73" cy="42" r="6.5" />
+      <circle cx="73" cy="65" r="6.5" />
+    </g>
+  </g>
 </svg>

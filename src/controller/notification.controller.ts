@@ -6,6 +6,7 @@ import {
   Request,
   Req,
   Res,
+  Body,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -18,25 +19,25 @@ import { NotificationQueryService } from '../notification/notification-query.ser
 import { SettingsService } from '../settings/settings.service.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { MissedDto } from '../dto/notification.dto.js';
+
+/** Page-size bounds for the paginated missed catch-up (the DTO validates 1–200; this is the default). */
+const MISSED_DEFAULT_TAKE = 50;
+const MISSED_MAX_TAKE = 200;
 
 /**
- * Read-only notification surface for background clients that hold ONLY the scoped notification token
- * (no access token, no live WebView):
- *  - POST /notifications/missed — the WorkManager poller's one-shot HTTP pull.
- *  - GET  /notifications/stream — the Android foreground service's live SSE feed.
- *
- * Both reuse {@link NotificationQueryService.buildUnreadSnapshot} for the unread-threads snapshot: the
- * HTTP endpoint returns it once per poll; the stream pushes it on every change (and once on connect)
- * so the FGS can render ONE coalesced away-notification statelessly (last snapshot wins).
- *
- * Auth is {@link NotificationTokenGuard} (not JwtAuthGuard): a scoped 30-day opaque token validated by
- * DB lookup, minted at POST /auth/notification-token. The stream validates once at connect, then pushes
- * for the connection's lifetime; mid-stream revocation drops the connection via SseService's
- * `auth.sessions-invalidated` handler.
+ * The notification + incremental-sync surface.
+ *  - GET  /notifications/vapid-key  — public Web Push VAPID key (no auth).
+ *  - POST /notifications/missed     — the repurposed cross-thread incremental-sync endpoint (global
+ *    guard: session token OR access JWT). `summary:true` returns the legacy unread-thread snapshot for
+ *    the FCM/WorkManager coalescing during the transition; the default returns paginated messages
+ *    (init seed = newest-per-thread; catch-up = messages newer than the high-water-mark, time-ascending).
+ *  - GET  /notifications/stream     — the Android foreground service's live SSE feed. @Public +
+ *    NotificationTokenGuard (scoped 30-day notification token) during the transition; removed in Phase 4
+ *    once the FGS holds /events directly.
  */
 @ApiTags('notification')
 @ApiBearerAuth()
-@Public()
 @Controller()
 export class NotificationController {
   constructor(
@@ -49,6 +50,7 @@ export class NotificationController {
    *  public keys are safe to expose), unauthenticated, single source of truth — read from the DB-backed
    *  SettingsService (admin-managed), so it always matches the keypair actually used to send. Empty string
    *  when Web Push is not configured (the browser simply won't subscribe). */
+  @Public()
   @HttpCode(HttpStatus.OK)
   @Get('notifications/vapid-key')
   @ApiOperation({ summary: 'VAPID public key for Web Push subscription (browser)' })
@@ -60,12 +62,34 @@ export class NotificationController {
     };
   }
 
-  @UseGuards(NotificationTokenGuard)
+  /** Cross-thread incremental sync (app-open / reconnect catch-up) OR the legacy unread snapshot.
+   *  Authenticated by the global guard (session token / access JWT) — the same credential the rest of
+   *  the API accepts. `summary:true` keeps the FCM/WorkManager unread-thread shape alive during the
+   *  transition (Phase 4 collapses it onto the message path). */
   @HttpCode(HttpStatus.OK)
   @Post('notifications/missed')
-  @ApiOperation({ summary: 'Threads with unread messages + display names (background poller)' })
-  async missed(@Request() req: FastifyRequest): Promise<ApiResult> {
-    const data = await this.notifQuery.buildUnreadSnapshot(req.user.userId as number);
+  @ApiOperation({
+    summary:
+      'Catch up on missed messages since a high-water-mark (paginated), or the unread-thread summary',
+  })
+  async missed(
+    @Request() req: FastifyRequest,
+    @Body() dto: MissedDto,
+  ): Promise<ApiResult> {
+    const userId = req.user.userId as number;
+    if (dto.summary) {
+      const data = await this.notifQuery.buildUnreadSnapshot(userId);
+      return { code: BusinessCode.OK, message: 'successful', data };
+    }
+    const take = Math.min(
+      MISSED_MAX_TAKE,
+      Math.max(1, dto.take ?? MISSED_DEFAULT_TAKE),
+    );
+    const data = await this.notifQuery.buildMissedPage(userId, {
+      since: dto.since,
+      cursor: dto.cursor,
+      take,
+    });
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -73,7 +97,10 @@ export class NotificationController {
    *  NotificationTokenGuard validates the scoped token once at connect; SseService owns the stream
    *  (headers + heartbeat + res.on('close') cleanup, mirroring GET /events). On connect the current
    *  snapshot is pushed immediately so the FGS renders the away-notification without waiting for the
-   *  next message; subsequent frames are pushed by the send-message fan-out. */
+   *  next message; subsequent frames are pushed by the send-message fan-out.
+   *  @Public() + NotificationTokenGuard during the transition (Phase 4 removes this route entirely once
+   *  the FGS holds /events directly and builds notifications from the live message stream). */
+  @Public()
   @UseGuards(NotificationTokenGuard)
   @Get('notifications/stream')
   @ApiOperation({ summary: 'Live unread-threads SSE stream (Android foreground service)' })

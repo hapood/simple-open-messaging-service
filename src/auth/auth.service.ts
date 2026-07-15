@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma.service.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 import { jwtConstants } from './constants.js';
 import { normalizeAccount } from '../common/account.js';
+import { SessionTokenService } from './session-token.service.js';
 
 const REFRESH_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Clean up expired records once per day
 
@@ -29,6 +30,7 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     private prisma: PrismaService,
     private kvStore: KvStoreService,
     private eventEmitter: EventEmitter2,
+    private sessionTokens: SessionTokenService,
   ) {}
 
   async onModuleInit() {
@@ -223,6 +225,10 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: reason },
     });
+    // Also revoke every session token (the native/web credential that supersedes the refresh-token
+    // family). KV-cached validations self-expire within 60s; the live SSE connection is dropped at once
+    // by the auth.sessions-invalidated → FORCE_LOGOUT handler emitted below.
+    await this.sessionTokens.revokeAllForUser(userId, reason);
     const user = await this.prisma.user.update({
       where: { id: userId },
       data: { tokenVersion: { increment: 1 } },
@@ -265,24 +271,50 @@ export class AuthService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** List active refresh sessions (not revoked, not expired), ordered by creation time descending. */
-  async listActiveSessions(userId: number) {
-    return this.prisma.refreshToken.findMany({
-      where: { userId, revokedAt: null, expiresAt: { gt: new Date() } },
-      select: { jti: true, device: true, userAgent: true, ip: true, createdAt: true, expiresAt: true },
-      orderBy: { createdAt: 'desc' },
+  /** Active session credentials — the data behind the "Devices / Active sessions" settings page.
+   *  SessionToken rows that are not revoked and not past their sliding deadline (no-expiry app tokens
+   *  always qualify), newest activity (lastSeenAt) first. `currentSessionId` is the requesting token's
+   *  row id (stamped on req.user by the guard); the matching row is flagged `isCurrent` so the UI can
+   *  tag "this device". */
+  async listActiveSessions(userId: number, currentSessionId: number | null) {
+    const rows = await this.prisma.sessionToken.findMany({
+      where: {
+        userId,
+        revokedAt: null,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      orderBy: { lastSeenAt: 'desc' },
+      select: {
+        id: true,
+        client: true,
+        device: true,
+        userAgent: true,
+        ip: true,
+        lastSeenIp: true,
+        createdAt: true,
+        lastSeenAt: true,
+        expiresAt: true,
+      },
     });
+    return rows.map((r) => ({
+      id: r.id,
+      client: r.client,
+      device: r.device,
+      userAgent: r.userAgent,
+      ip: r.ip,
+      lastSeenIp: r.lastSeenIp,
+      createdAt: r.createdAt,
+      lastSeenAt: r.lastSeenAt,
+      expiresAt: r.expiresAt,
+      isCurrent: currentSessionId !== null && r.id === currentSessionId,
+    }));
   }
 
-  /** Revoke a specific refresh token (by jti + owned by this userId) + optionally revoke its access token (blacklist). */
-  async revokeSession(userId: number, refreshJti: string, accessJti?: string) {
-    await this.prisma.refreshToken.updateMany({
-      where: { jti: refreshJti, userId, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'logout' },
-    });
-    if (accessJti) {
-      await this.blacklistAccessJti(accessJti);
-    }
+  /** Revoke one session by its device-list row id (the "revoke this device" action). Delegates to
+   *  SessionTokenService.revokeById, which ownership-checks (id + userId + active) and drops the KV
+   *  entry so the revocation lands within the 60s cache window. Returns true iff a row was revoked. */
+  async revokeSession(userId: number, sessionId: number) {
+    return this.sessionTokens.revokeById(userId, sessionId);
   }
 
   // ── Admin session/overview reads (moved from AdminController) ────────────────

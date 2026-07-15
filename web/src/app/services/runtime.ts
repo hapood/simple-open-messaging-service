@@ -5,9 +5,10 @@
  *  - Browser: served same-origin by NestJS; all URLs relative; media authenticated by the
  *    httpOnly `media_token` cookie set on login.
  *  - Tauri desktop webview: loaded from local assets at a non-HTTP origin (tauri://localhost on
- *    macOS, https://tauri.localhost on Windows, http://tauri.localhost on Linux). The shell
- *    injects `window.__SOMS_API_ORIGIN__` (the absolute backend origin) via an initialization
- *    script that runs before any page script, so API/SSE URLs resolve cross-origin. Media can't
+ *    macOS, https://tauri.localhost on Windows, http://tauri.localhost on Linux). The backend origin
+ *    is read from the platform persistence surface — the native `window.SomsSecureStore`
+ *    (@JavascriptInterface, EncryptedSharedPreferences) on Android, a localStorage shim on desktop —
+ *    at seed time, so API/SSE URLs resolve cross-origin. Media can't
  *    use the cookie (SameSite=Strict suppresses it cross-origin) and a bare `<img src>` / CSS
  *    `url()` can't carry an Authorization header, so `/uploads/*` is rewritten to a
  *    `media://localhost` custom URI scheme handled by a Rust-side proxy that injects the header.
@@ -18,10 +19,27 @@
 
 import { signal } from '@angular/core';
 
+/**
+ * The persistence surface for state that must survive WebView/renderer death and be readable with no
+ * page alive (the backend origin today; the session token once the native-realtime rewrite lands).
+ *  - Android: a Kotlin `@JavascriptInterface` (`window.SomsSecureStore`) backed by
+ *    EncryptedSharedPreferences — the SAME store the native SSE (MessageSyncService / RealtimeService)
+ *    reads, so the web and the native realtime layer can never disagree on the host.
+ *  - Desktop / browser: `window.SomsSecureStore` is absent, so the web substitutes a JS shim over
+ *    localStorage (see `secureStore` below). The web talks to this single interface regardless of
+ *    platform — no isAndroid() branching at the call sites.
+ */
+interface SomsSecureStore {
+  getApiOrigin(): string | null
+  setApiOrigin(origin: string | null): void
+}
+
 declare global {
   interface Window {
     __TAURI_INTERNALS__?: unknown;
-    __SOMS_API_ORIGIN__?: string;
+    /** Native (Android) persistence surface (EncryptedSharedPreferences); absent on desktop/browser,
+     *  where the web substitutes a localStorage shim. See `SomsSecureStore` + `secureStore`. */
+    SomsSecureStore?: SomsSecureStore;
     /** Exposed by Tauri v2 when `app.withGlobalTauri` is true (see src-tauri/tauri.conf.json). Used
      *  instead of the `@tauri-apps/api` npm package so the browser build has zero extra deps and the
      *  Tauri surface is unreachable outside the shell. */
@@ -47,9 +65,6 @@ declare global {
        *  storage so the WorkManager poller can authenticate /notifications/missed while the WebView is
        *  suspended. Pass null/empty on logout to clear. Android-only. */
       setNotificationToken: (token: string | null) => void;
-      /** Push the resolved backend origin into Android storage — the poller can't read window globals
-       *  (no WebView alive when it fires). Android-only. */
-      setApiOrigin: (origin: string | null) => void;
       /** Read whether the 6-hour background-sync poller is enabled (stored in EncryptedSharedPreferences
        *  so the WorkManager worker can read it with no WebView alive). Defaults to true. Android-only;
        *  absent in the browser/desktop builds (guarded by isTauri() && isAndroid()). */
@@ -83,8 +98,16 @@ declare global {
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
      *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
-     *  main.ts before bootstrap for a FOUC-free first paint. Absent in browser/desktop. */
-    SomsShell?: { getSafeInsets: () => string };
+     *  main.ts before bootstrap for a FOUC-free first paint. Absent in browser/desktop. `getImeHeight()`
+     *  (the current soft-keyboard height in CSS px, 0 when closed) lets the web seed the value at boot; the
+     *  live source is {@link __SOMS_IME_HEIGHT__}. */
+    SomsShell?: { getSafeInsets: () => string; getImeHeight?: () => number };
+    /** Kotlin→JS push (`MainActivity.pushImeHeight`): native calls this with the current IME (keyboard)
+     *  height in CSS px on every keyboard open/close and per animation frame on API 30+. Installed before
+     *  bootstrap by `installKeyboardInsetBridge()`; drives `KeyboardInsetService.inset`, which
+     *  `KbdOffsetDirective` reads on Android. Absent in browser/desktop (never called there). Follows the
+     *  `__SOMS_<NAME>__` bridge-hook convention. */
+    __SOMS_IME_HEIGHT__?: (px: number) => void;
   }
 }
 
@@ -110,18 +133,41 @@ export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unkn
   return invoke(cmd, args) as Promise<T>;
 }
 
-/** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser).
- *  A LIVE writable signal — the single source of truth for where the data layer points. Seeded at
- *  module load from `window.__SOMS_API_ORIGIN__` (the Tauri init script injects the persisted value
- *  before any module evaluates; empty in the browser), and updated in place by {@link setApiOrigin} so
- *  every derived URL (`apiPrefix`/`sseUrl` in constants.ts), the SSE reconnect, the guest guard, and the
- *  Settings "backend" label re-resolve against the new host with NO page reload. Read it via
- *  `apiOrigin()`; only {@link setApiOrigin} writes it. */
-export const apiOrigin = signal<string>(
-  typeof window !== 'undefined' && typeof window.__SOMS_API_ORIGIN__ === 'string'
-    ? window.__SOMS_API_ORIGIN__
-    : '',
-);
+/** Canonicalize a backend origin: trim and strip trailing slash(es) so it is a safe path-concatenation
+ *  base. A trailing slash turns `${apiOrigin()}/api/v1` into `${apiOrigin()}//api/v1`, which Fastify
+ *  404s — and users DO type a trailing slash in the server-config form. Mirrors the Rust
+ *  `validate_origin` strip; applied at the seed so the signal is canonical regardless of what was typed
+ *  or what an older build persisted. */
+export function canonicalOrigin(raw: string): string {
+  return raw.trim().replace(/\/+$/, '')
+}
+
+/** The concrete persistence surface: the native `@JavascriptInterface` on Android, or a localStorage
+ *  shim on desktop/browser. Resolved once at module load — `window.SomsSecureStore` is injected before
+ *  any page script by the Android shell (same window as the other @JavascriptInterface surfaces), so the
+ *  native store is available synchronously at seed time, with no async and no race. */
+const secureStore: SomsSecureStore =
+  typeof window !== 'undefined' && window.SomsSecureStore
+    ? window.SomsSecureStore
+    : {
+        getApiOrigin: () => {
+          try { return localStorage.getItem('api_origin') } catch { return null }
+        },
+        setApiOrigin: (o) => {
+          try {
+            if (o) localStorage.setItem('api_origin', o)
+            else localStorage.removeItem('api_origin')
+          } catch { /* storage unavailable — best-effort */ }
+        },
+      }
+
+/** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser) /
+ *  not-yet-configured (Tauri first run). A LIVE writable signal — the single source of truth for where
+ *  the data layer points. Seeded from the persisted store (`secureStore`), NOT from a frozen init-script
+ *  global, so a renderer-reclaim reload after a server-config change re-reads the live value instead of
+ *  a stale snapshot. `''` (not a localhost default) means "no server configured yet"; the server-config
+ *  form pre-fills a placeholder. Read via `apiOrigin()`; only `setApiOrigin` writes it. */
+export const apiOrigin = signal<string>(canonicalOrigin(secureStore.getApiOrigin() ?? ''));
 
 /** Custom URI scheme the Tauri Rust side registers (see `src-tauri/src/lib.rs`) to proxy
  *  `/uploads/*` media with a Bearer header. */
@@ -143,30 +189,28 @@ export function assetUrl(path: string | null | undefined): string {
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
 }
 
-/** True when the resolved backend origin is a loopback localhost URL. Under Tauri this means "no real
- *  server configured yet": the bundled APK ships with the `http://localhost:3000` default, which is
- *  unreachable from a phone, so the app gates first-run on this to force the server-config page before
- *  login. `tauri dev` (SOMS_API_ORIGIN set to a real host) and a persisted real origin both read as
- *  non-localhost → skip the gate. */
-export function apiOriginIsLocalhost(): boolean {
-  return /^http:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(apiOrigin());
+/** True when no backend origin is configured yet (the signal is empty). Under Tauri the app gates
+ *  first-run on this to force the server-config page before login; the form pre-fills a placeholder
+ *  origin for the user to edit. Once `setApiOrigin` persists a real origin this reads false. The browser
+ *  build is same-origin (`''`) but never hits this gate — the guard requires `isTauri()`. */
+export function apiOriginIsEmpty(): boolean {
+  return apiOrigin() === '';
 }
 
 /**
- * Persist a new backend origin and repoint the live data layer to it (Tauri only). Rust validates the
- * URL, writes the app-data config file (cold-boot persistence) AND updates the media proxy's live
- * origin (so `/uploads/*` media immediately uses the new host); here we mirror that into the
- * {@link apiOrigin} signal so every in-process consumer — HttpClient calls (via `apiPrefix()`), the SSE
- * worker's reconnect, the guest guard, the Settings "backend" label — picks up the new host at once,
- * with NO page reload and NO localStorage stash. Returns the normalized origin Rust stored.
+ * Persist a new backend origin and repoint the live data layer to it (Tauri only). Rust validates +
+ * canonicalizes the URL, writes the app-data config file, AND updates the media proxy's live Arc (so
+ * `/uploads/*` immediately uses the new host); here we persist the same value into the platform store
+ * (Android EncryptedSharedPreferences via `window.SomsSecureStore`, localStorage on desktop) — the same
+ * store the native SSE reads — and mirror it into the {@link apiOrigin} signal so every in-process
+ * consumer (HttpClient via `apiPrefix()`, the SSE worker's reconnect, the guest guard, the Settings
+ * label) picks up the new host at once, with NO page reload. Returns the canonical origin Rust stored.
  */
 export async function setApiOrigin(url: string): Promise<string> {
   if (!isTauri()) throw new Error('setApiOrigin is only available under the Tauri shell');
   const normalized = await tauriInvoke<string>('set_api_origin', { url });
   apiOrigin.set(normalized);
-  // The Android background poller (WorkManager) fires with no WebView alive, so it can't read the
-  // signal — push the origin into its encrypted store. Absent (no-op) under browser/desktop shells.
-  window.SomsFcm?.setApiOrigin(normalized);
+  secureStore.setApiOrigin(normalized);
   return normalized;
 }
 

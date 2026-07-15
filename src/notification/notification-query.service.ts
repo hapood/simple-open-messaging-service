@@ -3,6 +3,7 @@ import { MessageService } from '../message/message.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { UserService } from '../user/user.service.js';
 import { GroupService } from '../group/group.service.js';
+import { UserBlockService } from '../user-block/user-block.service.js';
 
 /**
  * One thread's unread state, in the minimal shape the notification paths need. This is the single
@@ -41,6 +42,7 @@ export class NotificationQueryService {
     private readonly messageService: MessageService,
     private readonly userService: UserService,
     private readonly groupService: GroupService,
+    private readonly userBlockService: UserBlockService,
   ) {}
 
   /** The current unread-threads snapshot for `userId`, newest lastMessageAt first. Empty array when
@@ -111,4 +113,84 @@ export class NotificationQueryService {
       latestMessageId: p.thread.lastMessageSeq?.toString() ?? null,
     }));
   }
+
+  /**
+   * The paginated, message-based catch-up that supersedes the snapshot model for the in-app client.
+   * Two modes (driven by `since`/`cursor`):
+   *  - no `since` and no `cursor` → INIT: the newest message per thread (a bounded preview seed so every
+   *    conversation has a latest message locally), `hasMore:false` (one shot).
+   *  - `since` (first page, the client's local high-water-mark = newest message `createdAt`) or `cursor`
+   *    (subsequent pages) → CATCH-UP: every message with `(createdAt, id) > bound`, time-ascending,
+   *    paginated until `hasMore:false`. The client applies each message the same way it applies a live
+   *    SSE `NEW_MESSAGE` (idempotent `[threadId,seq]` put), so SSE and catch-up are one apply path.
+   *
+   * The returned `messages` carry NO internal `id` (stripped by `attachMediaStatus`); `nextCursor` is an
+   * opaque `base64url("<createdAtMs>:<id>")` the client echoes for the next page — `id` never leaves the
+   * cursor, and the composite bound keeps paging strictly monotonic (no same-ms skip, no re-fetch loop).
+   * Blocked creators are hidden (mirrors `queryMessages`'s P2P block filter).
+   */
+  async buildMissedPage(
+    userId: number,
+    opts: { since?: number | null; cursor?: string; take: number },
+  ): Promise<{
+    messages: Array<Omit<import('../prisma/generated/client.js').Message, 'id'> & { mediaStatus: 'ready' | 'failed'; sv: number }>;
+    hasMore: boolean;
+    nextCursor?: string;
+  }> {
+    const blocked = await this.userBlockService.blockedByMe(userId);
+    const hideCreatorIds = blocked.size > 0 ? [...blocked] : [];
+
+    let init: boolean;
+    let sinceMs: number | null;
+    let sinceId: bigint;
+    if (opts.cursor) {
+      const c = decodeCursor(opts.cursor);
+      init = false;
+      sinceMs = c.ms;
+      sinceId = c.id;
+    } else if (opts.since !== undefined && opts.since !== null) {
+      init = false;
+      sinceMs = opts.since;
+      sinceId = 0n;
+    } else {
+      init = true;
+      sinceMs = null;
+      sinceId = 0n;
+    }
+
+    const rows = await this.messageService.missedMessages(userId, {
+      init,
+      sinceMs,
+      sinceId,
+      take: opts.take,
+      hideCreatorIds,
+    });
+
+    if (init) {
+      return { messages: await this.messageService.attachMediaStatus(rows), hasMore: false };
+    }
+
+    const hasMore = rows.length > opts.take;
+    const pageRows = hasMore ? rows.slice(0, opts.take) : rows;
+    const messages = await this.messageService.attachMediaStatus(pageRows);
+    const nextCursor =
+      hasMore && pageRows.length > 0 ? encodeCursor(pageRows[pageRows.length - 1]) : undefined;
+    return { messages, hasMore, nextCursor };
+  }
+}
+
+/** Opaque pagination cursor: base64url("<createdAtMs>:<id>"). The internal BigInt `id` is NEVER exposed
+ *  to clients as a field — it lives only inside this opaque token, where it disambiguates same-ms rows. */
+function encodeCursor(m: { createdAt: Date; id: bigint }): string {
+  return Buffer.from(`${m.createdAt.getTime()}:${m.id.toString()}`, 'utf8').toString('base64url');
+}
+
+function decodeCursor(cursor: string): { ms: number; id: bigint } {
+  const decoded = Buffer.from(cursor, 'base64url').toString('utf8');
+  const sep = decoded.lastIndexOf(':');
+  if (sep < 0) throw new Error('invalid missed cursor');
+  const ms = Number(decoded.slice(0, sep));
+  const id = BigInt(decoded.slice(sep + 1));
+  if (!Number.isFinite(ms)) throw new Error('invalid missed cursor');
+  return { ms, id };
 }
