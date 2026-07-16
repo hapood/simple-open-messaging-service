@@ -6,15 +6,16 @@ import {
 } from '@nestjs/common';
 
 /**
- * In-process TTL key-value store: access-token jti blacklist, tokenVersion cache, rate-limit counters.
+ * In-process TTL key-value store: SessionToken validation cache (60s TTL — see SessionTokenService) +
+ * fixed-window rate-limit counters (ThrottleGuard).
  *
  * Backed by a plain Map (NOT Redis) — single-instance only. The method names mirror Redis
- * (setex/get/del/existsKey/incrWithExpire) so that going multi-instance only requires swapping this
+ * (setex/get/del/incrWithExpire) so that going multi-instance only requires swapping this
  * implementation for ioredis; callers stay unchanged.
  *
- * Periodically cleans up expired keys (mirrors the setInterval pattern in auth.service.cleanupExpiredRefreshTokens).
- * Loss on restart: losing the jti blacklist means a logged-out single token revives for its remaining lifetime (≤15min) — acceptable at small scale;
- * losing the tokenVersion cache is harmless (falls back to DB lookup, correctness lives in the DB).
+ * Periodically cleans up expired keys (a 5-minute setInterval). Loss on restart is bounded: the
+ * SessionToken cache is a read optimization only (a miss re-reads the DB, where revocation is
+ * authoritative), and the rate-limit counters are best-effort — both acceptable at small scale.
  */
 @Injectable()
 export class KvStoreService implements OnModuleInit, OnModuleDestroy {
@@ -81,18 +82,5 @@ export class KvStoreService implements OnModuleInit, OnModuleDestroy {
     // Preserve the ORIGINAL window end — refreshing the TTL here would make this a sliding window.
     this.store.set(key, { val: String(next), expireAt: e.expireAt });
     return next;
-  }
-
-  /** Whether a key exists (used for the access jti blacklist; returns a boolean). */
-  async existsKey(...keys: string[]): Promise<boolean> {
-    const now = Date.now();
-    for (const k of keys) {
-      const e = this.store.get(k);
-      if (e) {
-        if (e.expireAt > now) return true;
-        this.store.delete(k); // expired — clean up
-      }
-    }
-    return false;
   }
 }

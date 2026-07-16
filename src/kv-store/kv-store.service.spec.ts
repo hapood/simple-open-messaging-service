@@ -92,17 +92,4 @@ describe('KvStoreService KV basics', () => {
     expect(await kvStore.del('a', 'b', 'missing')).toBe(2);
     expect(await kvStore.get('a')).toBeNull();
   });
-
-  it('existsKey is true only for non-expired keys', async () => {
-    vi.useFakeTimers();
-    try {
-      const kvStore = new KvStoreService();
-      await kvStore.setex('l', 5, 'x');
-      expect(await kvStore.existsKey('l')).toBe(true);
-      vi.advanceTimersByTime(5_001);
-      expect(await kvStore.existsKey('l')).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
-  });
 });

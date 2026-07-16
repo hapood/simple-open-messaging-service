@@ -359,7 +359,8 @@ export class FederationService implements OnModuleDestroy {
 
   /** Find a LOCAL user id by account (domain="local"). Null if not found / not local / soft-deleted.
    *  The isDeleted gate matters here because S2S bypasses the token system: the local /uploads/* path is
-   *  protected from admin-disabled users by tokenVersion (invalidateAllSessions bumps it on disable), but
+   *  protected from admin-disabled users by session-token revocation (invalidateAllSessions revokes every
+   *  SessionToken row on disable), but
    *  /get_file never touches tokens — so a disabled user's media would still flow out over federation
    *  unless we reject the soft-deleted row here. */
   async findLocalUserId(account: string): Promise<number | null> {

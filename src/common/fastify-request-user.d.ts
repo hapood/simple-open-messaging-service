@@ -7,16 +7,15 @@ import type { MessageThreadType, ThreadParticipant } from '../prisma/generated/c
 declare module 'fastify' {
   interface FastifyRequest {
     // Required on guarded routes: every auth guard (JwtAuthGuard / LocalAuthGuard / AdminAuthGuard /
-    // the /uploads preHandler / notification-token guard) populates `user` before the handler runs, so a
+    // the /uploads preHandler) populates `user` before the handler runs, so a
     // controller reading `req.user.userId` is always in a context where it is set. Typed as the C-end
     // principal `{ userId }` (the dominant shape) with adminId/role optional for the admin console,
     // which reads those via casts rather than `req.user.userId`. The index signature absorbs the
     // richer objects some guards attach (e.g. LocalStrategy's LoginAuthInfo — cast at the read site).
     user: {
       userId: number;
-      /** The requesting credential's SessionToken row id (set by JwtAuthGuard / the /uploads
-       *  preHandler when the request authed via a session token). null when the request authed via
-       *  the legacy access JWT (no session row); absent under admin/notification-token guards. Used by
+      /** The requesting credential's SessionToken row id — always set under JwtAuthGuard / the
+       *  /uploads preHandler (C-end auth is session-token only); absent under admin guards. Used by
        *  GET /auth/sessions to flag the current device. */
       sessionId?: number | null;
       adminId?: number;

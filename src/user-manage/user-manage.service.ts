@@ -82,7 +82,7 @@ export class UserManageService implements OnModuleInit {
     return { list, total };
   }
 
-  /** Soft-delete + revoke every session (refresh family + access tokenVersion bump). */
+  /** Soft-delete + revoke every session token (invalidateAllSessions revokes all SessionToken rows + emits FORCE_LOGOUT). */
   async disableUser(id: number): Promise<void> {
     await this.prisma.user.update({ where: { id }, data: { isDeleted: true } });
     await this.auth.invalidateAllSessions(id, 'admin_disabled');

@@ -19,7 +19,8 @@ export const Throttle = (limit = 30, ttlSec = 60) =>
 /**
  * Simple fixed-window rate limiter (in-process KV store counter): key = rl:<path>:<IP>.
  * Throws 429 when exceeded → AllExceptionsFilter maps it to RATE_LIMITED(10005).
- * Used to protect auth-sensitive endpoints (renew-access, renew-refresh, logout, change-password) against abuse.
+ * Opt-in per route via @Throttle: rate-limits abuse-sensitive endpoints (login, logout, change-password,
+ * message-sending, group ops, device registration) against brute-force / flooding.
  */
 @Injectable()
 export class ThrottleGuard implements CanActivate {
