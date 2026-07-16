@@ -49,10 +49,6 @@ npm-debug.log*
 # shards), Caddy state, postgres/. Bind-mounted out of the container in docker-compose.
 /data
 
-# Dev-runtime CAS shard / avatar leak to the repo root (same uploads/ tree, just not under data/ in
-# some local dev configs). Production serves these from /app/data/uploads (ignored via /data above).
-/uploads
-
 # Docker launch dir (deploy/) — runtime secrets/state when testing in-tree; the templates are tracked
 /soms.conf
 /deploy/soms.conf
