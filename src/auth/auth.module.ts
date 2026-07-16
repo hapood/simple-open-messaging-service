@@ -11,6 +11,8 @@ import { SessionAuthGuard } from './session-auth.guard.js';
 import { SessionCookieInterceptor } from './session-cookie.interceptor.js';
 import { SessionTokenService } from './session-token.service.js';
 import { BearerAuthService } from './bearer-auth.service.js';
+import { OtpLoginService } from './otp-login.service.js';
+import { QrLoginService } from './qr-login.service.js';
 
 @Module({
   imports: [UserModule, PassportModule, EventEmitterModule],
@@ -21,6 +23,8 @@ import { BearerAuthService } from './bearer-auth.service.js';
     ThrottleGuard,
     SessionTokenService,
     BearerAuthService,
+    OtpLoginService,
+    QrLoginService,
     // Global guard: every route is authenticated unless it opts out with @Public(). Resolves the
     // single session token via BearerAuthService. (Admin routes are @Public() + their own AdminJwtStrategy;
     // the s2s signature guard is @Public() + its own check.) Registered here to co-locate with
@@ -31,6 +35,6 @@ import { BearerAuthService } from './bearer-auth.service.js';
     // idiomatic guard-decides / interceptor-mutates split). See session-cookie.interceptor.ts.
     { provide: APP_INTERCEPTOR, useClass: SessionCookieInterceptor },
   ],
-  exports: [AuthService, LocalStrategy, SessionTokenService, BearerAuthService],
+  exports: [AuthService, LocalStrategy, SessionTokenService, BearerAuthService, OtpLoginService, QrLoginService],
 })
 export class AuthModule {}

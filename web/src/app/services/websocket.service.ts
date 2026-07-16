@@ -57,7 +57,7 @@ export class WebsocketService {
       },
       onState: (s) => this.state.set(s),
       onReconnect: () => this.reconnect$.next(),
-      onForceLogout: () => this.onForceLogout(),
+      onForceLogout: (reason?: string) => this.onForceLogout(reason),
     };
     // Select the transport ONCE, by platform. Android consumes the native /events bridge; every other
     // client runs its own SSE worker. No branching anywhere else in this class.
@@ -95,9 +95,10 @@ export class WebsocketService {
     this.transport.retryNow()
   }
 
-  /** Server-initiated kick (all-device logout / password change): drop the transport + re-run login. */
-  private onForceLogout(): void {
+  /** Server-initiated kick (all-device logout / password change / app-session replaced): drop the transport
+   *  + re-run login. `reason` (the revoke reason) is threaded to the login page as a one-shot notice. */
+  private onForceLogout(reason?: string): void {
     this.disconnect()
-    this.authService.redoLoginAuth()
+    this.authService.redoLoginAuth(reason)
   }
 }

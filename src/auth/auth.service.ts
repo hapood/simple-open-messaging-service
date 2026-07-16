@@ -54,6 +54,20 @@ export class AuthService {
     this.eventEmitter.emit('auth.sessions-invalidated', { userId, reason });
   }
 
+  /** Revoke every active `app` (long-term, Android) session for the user and notify JUST those devices —
+   *  the one-app-session rule: a new OTP app login replaces the prior app session (Telegram-style), so a
+   *  user holds at most one app session. Unlike {@link invalidateAllSessions} (which kicks ALL devices),
+   *  this targets only app sessions, leaving web/desktop sessions online. Emits `auth.session-revoked` per
+   *  revoked session so the SSE service FORCE_LOGOUTs only the replaced app connection(s); the reason
+   *  ('app_session_replaced') rides the FORCE_LOGOUT `message` field → the kicked client surfaces a
+   *  "signed in elsewhere" notice. */
+  async replaceAppSessions(userId: number, reason = 'app_session_replaced'): Promise<void> {
+    const sessionIds = await this.sessionTokens.revokeAllForClient(userId, 'app', reason);
+    for (const sessionId of sessionIds) {
+      this.eventEmitter.emit('auth.session-revoked', { userId, sessionId, reason });
+    }
+  }
+
   /** Change password: verify the old password → swap the hash → invalidateAllSessions (every session
    *  token revoked; the client re-logs in for a fresh one — no token is reissued here). */
   async changePassword(

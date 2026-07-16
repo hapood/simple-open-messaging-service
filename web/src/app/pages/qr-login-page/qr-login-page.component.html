@@ -1,0 +1,51 @@
+<div class="auth-shell">
+  <app-auth-brand aria-hidden="true"></app-auth-brand>
+  <main class="form-pane">
+    <app-auth-toolbar></app-auth-toolbar>
+    <div class="qr-card">
+      <div class="progress-slot">
+        @if (view() === 'loading' || view() === 'pending') {
+        <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
+      </div>
+
+      <h1 class="qr-title">{{ 'auth.qrTitle' | transloco }}</h1>
+
+      @if (notice()) {
+      <div class="notice" role="status">{{ notice() }}</div>}
+
+      <div class="qr-stage">
+        @switch (view()) {
+          @case ('loading') {
+            <p class="qr-state">{{ 'auth.qrLoading' | transloco }}</p>
+          }
+          @case ('pending') {
+            <!-- TODO(qr-image): render qrToken() as a scannable QR matrix (needs a QR-rendering dep). Until
+                 then the token is shown for integration testing. -->
+            <div class="qr-token" [title]="qrToken() ?? ''">{{ qrToken() }}</div>
+            <p class="qr-state">{{ 'auth.qrPending' | transloco }}</p>
+          }
+          @case ('scanned') {
+            <p class="qr-state">{{ 'auth.qrScanned' | transloco }}</p>
+          }
+          @case ('expired') {
+            <p class="qr-state">{{ 'auth.qrExpired' | transloco }}</p>
+            <button mat-flat-button color="primary" type="button" class="submit-btn" (click)="retry()">
+              {{ 'auth.qrRetry' | transloco }}
+            </button>
+          }
+        }
+      </div>
+
+      @if (canPassword()) {
+      <div class="alt-action">
+        <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>
+      </div>}
+    </div>
+    @if (isTauri()) {
+      <a mat-button class="server-link" routerLink="/config" replaceUrl>
+        <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+        {{ 'serverConfig.entry' | transloco }}
+      </a>
+    }
+  </main>
+</div>

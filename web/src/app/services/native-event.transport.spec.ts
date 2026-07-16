@@ -19,12 +19,12 @@ function recordingSink() {
   const events: StandardMessage[] = [];
   const states: ConnectionState[] = [];
   let reconnects = 0;
-  let forceLogouts = 0;
+  const forceLogouts: (string | undefined)[] = [];
   const sink: RealtimeSink = {
     onEvent: (m) => events.push(m),
     onState: (s) => states.push(s),
     onReconnect: () => reconnects++,
-    onForceLogout: () => forceLogouts++,
+    onForceLogout: (reason) => forceLogouts.push(reason),
   };
   return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts };
 }
@@ -92,8 +92,16 @@ describe('NativeEventTransport', () => {
     const rec = recordingSink();
     new NativeEventTransport(rec.sink).start();
     fireEvent(SSE_EVENT_FORCE_LOGOUT, {});
-    expect(rec.forceLogouts()).toBe(1);
+    expect(rec.forceLogouts().length).toBe(1);
     expect(rec.events.length).toBe(0);
+  });
+
+  it('threads the FORCE_LOGOUT reason (e.g. app_session_replaced) to the sink for a tailored notice', () => {
+    installFakeFcm('open');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireEvent(SSE_EVENT_FORCE_LOGOUT, { message: 'app_session_replaced' });
+    expect(rec.forceLogouts()).toEqual(['app_session_replaced']);
   });
 
   it('mirrors __SOMS_CONN_STATE__ transitions onto the sink so the banner tracks the native socket', () => {

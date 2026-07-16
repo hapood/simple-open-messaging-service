@@ -37,7 +37,10 @@ export interface RealtimeSink {
   onEvent(message: StandardMessage): void;
   onState(state: ConnectionState): void;
   onReconnect(): void;
-  onForceLogout(): void;
+  /** Server-initiated kick. `reason` is the FORCE_LOGOUT frame's message (the revoke reason, e.g.
+   *  'app_session_replaced'), threaded so the facade can surface a reason-aware login notice; undefined on
+   *  transports that don't carry it (the worker path). */
+  onForceLogout(reason?: string): void;
 }
 
 /** Abstract realtime transport — the swappable platform adapter. Subclasses push inbound events + state

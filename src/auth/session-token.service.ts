@@ -217,4 +217,33 @@ export class SessionTokenService {
       data: { revokedAt: new Date(), revokeReason: reason },
     });
   }
+
+  /** Revoke every ACTIVE session of a single client kind for the user — drives the one-app-session rule
+   *  (a new OTP app login revokes the prior app session). Returns the revoked row ids so the caller can
+   *  emit a per-session revoked event and FORCE_LOGOUT just those devices (NOT the user's web/desktop
+   *  sessions). Each KV entry is dropped so the revocation lands within the 60s cache window. */
+  async revokeAllForClient(userId: number, client: SessionClient, reason: string): Promise<number[]> {
+    const rows = await this.prisma.sessionToken.findMany({
+      where: { userId, client, revokedAt: null },
+      select: { id: true, tokenHash: true },
+    });
+    if (rows.length === 0) return [];
+    await this.prisma.sessionToken.updateMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      data: { revokedAt: new Date(), revokeReason: reason },
+    });
+    for (const r of rows) await this.kvStore.del(`${CACHE_PREFIX}${r.tokenHash}`).catch(() => {});
+    return rows.map((r) => r.id);
+  }
+
+  /** Resolve the row id of a freshly-issued plaintext token (hashing it the same way {@link issue} does).
+   *  Used by OTP/QR login to record the produced session id on an audit row WITHOUT changing issue()'s
+   *  return shape. The row exists immediately after issue()'s create, so this never misses. */
+  async idOfToken(raw: string): Promise<number | null> {
+    const rec = await this.prisma.sessionToken.findUnique({
+      where: { tokenHash: hashToken(raw) },
+      select: { id: true },
+    });
+    return rec?.id ?? null;
+  }
 }

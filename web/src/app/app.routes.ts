@@ -5,8 +5,8 @@ import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.com
 import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.component';
 import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.component';
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
-import { authGuard, guestGuard } from './auth.guard';
-import { isTauri } from './services/runtime';
+import { authGuard, guestGuard, registrationOpenGuard } from './auth.guard';
+import { isTauri, isAndroidNative } from './services/runtime';
 import { devRoutes } from './dev-tools';
 
 export const routes: Routes = [
@@ -19,7 +19,22 @@ export const routes: Routes = [
   { path: 'chat/:threadId', component: HomeComponent, canActivate: [authGuard] },
   { path: 'nav', component: PageNavgatorComponent, canActivate: [authGuard] },
   { path: 'auth/login', component: LoginPageComponent, canActivate: [guestGuard] },
-  { path: 'auth/register', component: RegisterPageComponent, canActivate: [guestGuard] },
+  { path: 'auth/register', component: RegisterPageComponent, canActivate: [guestGuard, registrationOpenGuard] },
+  // One-time-code login — Android only (the long-term app-session method). Reached automatically from
+  // /auth/login under APP_OTP_AND_QR mode; the route is platform-gated so it 404s off the Android build.
+  {
+    path: 'auth/otp',
+    loadComponent: () => import('./pages/otp-login-page/otp-login-page.component').then((m) => m.OtpLoginPageComponent),
+    canActivate: [guestGuard],
+    canMatch: [() => isAndroidNative()],
+  },
+  // QR-scan login — desktop/web only (the 2-week sliding-session method, confirmed by a logged-in phone).
+  {
+    path: 'auth/qr',
+    loadComponent: () => import('./pages/qr-login-page/qr-login-page.component').then((m) => m.QrLoginPageComponent),
+    canActivate: [guestGuard],
+    canMatch: [() => !isAndroidNative()],
+  },
   // Bundled-APK backend-URL configuration (Tauri/Android only). `canMatch` short-circuits to 404 in the
   // browser build, where the same-origin NestJS host makes a configurable origin meaningless. Reached
   // automatically on first run via guestGuard (when the origin is still the localhost default), and any

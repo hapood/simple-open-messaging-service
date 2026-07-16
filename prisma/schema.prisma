@@ -50,6 +50,7 @@ model User {
   messages           Message[]           @relation("AuthoredMessages")
   pushTokens         PushToken[]
   sessionTokens      SessionToken[]
+  loginCodes         LoginCode[] // admin-issued one-time login codes (Android app-session login) — audit trail
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
   userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
   admins             Admin[] // linked admin profile (absent for normal users; an admin's identity IS this User row — name + password live here, the Admin row holds only admin-specific state)
@@ -115,7 +116,31 @@ model SessionToken {
   lastSeenAt   DateTime  @default(now()) // sliding-window activity tracker (web/desktop)
   persistent   Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for app (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
   revokedAt    DateTime? // soft revoke (logout / logout-all / password change / admin disable)
-  revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable (observability)
+  revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable|app_session_replaced (observability)
+
+  @@index([userId])
+}
+
+/// Admin-issued one-time login code → the Android long-term (`app`) session login method. The admin mints
+/// a 6-digit code for an account; the user enters it in the Android app to obtain a no-expiry `app` session.
+/// The code is argon2-hashed at rest (codeHash) — the plaintext is returned ONCE at issue and never stored.
+/// `producedSessionId` links a consumed code to the SessionToken row it created for audit (the session token
+/// value itself is never exposed — only this row id, the session-management display handle). Single-use:
+/// `consumedAt` is set on first verification via an updateMany guard so a concurrent second use can't win.
+/// Issuing a new code revokes the account's prior unconsumed code (one valid code per account at a time).
+model LoginCode {
+  id                Int       @id @default(autoincrement())
+  userId            Int
+  user              User      @relation(fields: [userId], references: [id])
+  codeHash          String    @db.VarChar(127) // argon2 hash of the 6-digit code; plaintext never stored
+  issuedBy          Int // admin id (Admin.id) who minted the code — self-contained per-code audit
+  issuedAt          DateTime  @default(now())
+  expiresAt         DateTime // +10 min from issue; a code past this is OTP_EXPIRED
+  consumedAt        DateTime? // null until first verification; the updateMany guard enforces single-use
+  consumedIp        String?   @db.VarChar(64)
+  consumedDevice    String?   @db.VarChar(127)
+  producedSessionId Int? // SessionToken.id the consumed code created (audit link; intentionally NOT a FK — an audit row must outlive its session)
+  revokedAt         DateTime? // admin-revoked (only an unused code can be revoked)
 
   @@index([userId])
 }

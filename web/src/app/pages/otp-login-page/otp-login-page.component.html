@@ -1,0 +1,47 @@
+<div class="auth-shell">
+  <app-auth-brand aria-hidden="true"></app-auth-brand>
+  <main class="form-pane">
+    <app-auth-toolbar></app-auth-toolbar>
+    <form (ngSubmit)="submit()" class="login-card">
+      <div class="progress-slot">
+        @if (isSubmitting()) {
+        <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
+      </div>
+
+      <h1 class="login-title">{{ 'auth.otpTitle' | transloco }}</h1>
+      <p class="login-sub">{{ 'auth.otpSub' | transloco }}</p>
+
+      @if (notice()) {
+      <div class="notice" role="status">{{ notice() }}</div>}
+
+      <mat-form-field class="field" appearance="fill">
+        <mat-label>{{ 'auth.account' | transloco }}</mat-label>
+        <input matInput name="account" autocomplete="username" autofocus
+          [ngModel]="account()" (ngModelChange)="onAccountInput($event)">
+      </mat-form-field>
+
+      <mat-form-field class="field" appearance="fill">
+        <mat-label>{{ 'auth.otpCode' | transloco }}</mat-label>
+        <input matInput name="code" inputmode="numeric" maxlength="6" autocomplete="one-time-code"
+          [ngModel]="code()" (ngModelChange)="onCodeInput($event)">
+      </mat-form-field>
+
+      <div class="error" role="alert">{{ resp() }}</div>
+
+      <button mat-flat-button color="primary" type="submit" class="submit-btn" [disabled]="isDisabled()">
+        {{ 'auth.loginBtn' | transloco }}
+      </button>
+
+      @if (canPassword()) {
+      <div class="alt-action">
+        <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>
+      </div>}
+    </form>
+    @if (isTauri()) {
+      <a mat-button class="server-link" routerLink="/config" replaceUrl>
+        <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+        {{ 'serverConfig.entry' | transloco }}
+      </a>
+    }
+  </main>
+</div>

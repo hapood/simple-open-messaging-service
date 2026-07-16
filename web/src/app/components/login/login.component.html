@@ -30,8 +30,10 @@
 
   <button mat-flat-button color="primary" type="submit" class="submit-btn" [disabled]="isLoginBtnDisabled()">{{ 'auth.loginBtn' | transloco }}</button>
 
+  @if (config.registrationOpen()) {
   <div class="alt-action">
     {{ 'auth.loginAltQuestion' | transloco }}
     <button type="button" class="link-btn" (click)="jumpToRegister()">{{ 'auth.register' | transloco }}</button>
   </div>
+  }
 </form>

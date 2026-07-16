@@ -40,7 +40,11 @@ export class NativeEventTransport extends RealtimeTransport {
     window.__SOMS_EVENT__ = (type: string, data: unknown) => {
       if (type === SSE_EVENT_PING) return;
       if (type === SSE_EVENT_FORCE_LOGOUT) {
-        this.sink.onForceLogout();
+        // The FORCE_LOGOUT frame's `message` carries the revoke reason — e.g. 'app_session_replaced' when a
+        // new OTP login replaced this app session. Thread it to the facade so the kicked client can show a
+        // reason-aware notice instead of a generic "session ended".
+        const reason = (data as { message?: string } | null | undefined)?.message;
+        this.sink.onForceLogout(reason);
         return;
       }
       this.sink.onEvent({ event: type, status: 0, message: 'new message', data } as StandardMessage);

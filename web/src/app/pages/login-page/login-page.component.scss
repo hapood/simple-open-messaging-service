@@ -4,6 +4,26 @@
   @include auth-shell;
 }
 
+// One-shot post-kick notice (e.g. "signed in elsewhere" after a new OTP login replaced this session).
+.login-notice {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 20px;
+  border-radius: var(--app-radius-sm, 8px);
+  background: var(--app-info-bg, rgba(20, 80, 160, 0.08));
+  color: var(--app-brand);
+}
+
+// Login-method switcher (password ↔ one-time-code ↔ QR). Shown only when >1 method is available.
+.method-switch {
+  align-self: center;
+  margin-top: 10px;
+}
+
 // Tauri-only entry to the backend-URL config page (browser build never renders it). It's a Material
 // text button (<a mat-button>) so the look is owned by the M3 button styles (color tracks the brand
 // rebinding); here we only seat it below the login form and center it. Integer px per the CSS rule.

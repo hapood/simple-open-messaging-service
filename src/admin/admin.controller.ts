@@ -30,10 +30,12 @@ import {
   AdminListPushTokensDto,
   AdminPushTestDto,
   AdminUserBatchDto,
+  AdminCreateUserDto,
 } from './admin.dto.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { AuthService } from '../auth/auth.service.js';
+import { OtpLoginService } from '../auth/otp-login.service.js';
 import { UserManageService } from '../user-manage/user-manage.service.js';
 import { LocalStrategy } from '../auth/local.strategy.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -59,6 +61,7 @@ export class AdminController {
     private readonly localStrategy: LocalStrategy,
     private readonly sseService: SseService,
     private readonly pushService: PushService,
+    private readonly otpLoginService: OtpLoginService,
   ) {}
 
   private ok(data?: unknown): ApiResult {
@@ -133,6 +136,47 @@ export class AdminController {
   @ApiOperation({ summary: 'User list (paginated + searchable)' })
   async listUsers(@Body() dto: AdminListUsersDto): Promise<ApiResult> {
     return this.ok(await this.userManageService.listUsers(dto));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('user.create', { targetType: 'user' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/users/create')
+  @ApiOperation({ summary: 'Create a user account (admin-provisioned)' })
+  async createUser(@Body() dto: AdminCreateUserDto): Promise<ApiResult> {
+    return this.ok(await this.userManageService.createUser(dto));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('user.issue_login_code', { targetType: 'user', targetParam: 'id' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/users/:id/issue-login-code')
+  @ApiOperation({ summary: 'Issue a one-time login code for a user (plaintext returned once)' })
+  async issueLoginCode(@Req() req: FastifyRequest, @Param('id') id: string): Promise<ApiResult> {
+    const adminId = (req.user as { adminId?: number } | undefined)?.adminId;
+    if (!adminId) return { code: BusinessCode.UNAUTHENTICATED, message: 'no admin session' };
+    return this.ok(await this.otpLoginService.issueCode(adminId, Number(id)));
+  }
+
+  @UseGuards(AdminAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/users/:id/login-codes')
+  @ApiOperation({ summary: "Audit list of a user's one-time login codes (never the code/token value)" })
+  async listLoginCodes(@Param('id') id: string): Promise<ApiResult> {
+    return this.ok(await this.otpLoginService.listCodes(Number(id)));
+  }
+
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('user.revoke_login_code', { targetType: 'login_code', targetParam: 'id' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/login-codes/:id/revoke')
+  @ApiOperation({ summary: 'Revoke an unused one-time login code' })
+  async revokeLoginCode(@Param('id') id: string): Promise<ApiResult> {
+    await this.otpLoginService.revokeCode(Number(id));
+    return this.ok();
   }
 
   // ===== Push management (FCM / device tokens) =====

@@ -47,3 +47,26 @@ export function refreshSessionCookies(reply: FastifyReply, token: string): void 
   reply.setCookie(MEDIA_TOKEN_COOKIE, token, MEDIA_COOKIE_OPTIONS);
   reply.setCookie(LOGGED_IN_COOKIE, '1', LOGGED_IN_COOKIE_OPTIONS);
 }
+
+/** Set the session credential cookies — the httpOnly `media_token` (the real credential) + the non-httpOnly
+ *  `logged_in` presence flag — for a freshly issued session token. `persistent` selects a 14-day cookie
+ *  ("keep me logged in") vs a session cookie (dropped on browser close). Shared by the password, OTP, and
+ *  QR login paths so they all set cookies identically (the password-login handler predates this helper and
+ *  keeps its own private copy; new flows use this). */
+export function setSessionCookies(reply: FastifyReply, token: string, persistent: boolean): void {
+  const mediaOpts = persistent
+    ? MEDIA_COOKIE_OPTIONS
+    : { ...MEDIA_COOKIE_OPTIONS, maxAge: undefined };
+  const presenceOpts = persistent
+    ? LOGGED_IN_COOKIE_OPTIONS
+    : { ...LOGGED_IN_COOKIE_OPTIONS, maxAge: undefined };
+  reply.setCookie(MEDIA_TOKEN_COOKIE, token, mediaOpts);
+  reply.setCookie(LOGGED_IN_COOKIE, '1', presenceOpts);
+}
+
+/** Clear both session cookies — path must match the set-time path for the browser to drop them. Shared by
+ *  the login flows' logout/error paths. */
+export function clearSessionCookies(reply: FastifyReply): void {
+  reply.clearCookie(MEDIA_TOKEN_COOKIE, { path: '/' });
+  reply.clearCookie(LOGGED_IN_COOKIE, { path: '/' });
+}

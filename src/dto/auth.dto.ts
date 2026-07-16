@@ -102,6 +102,63 @@ export class RegisterDto {
   password!: string;
 }
 
+/** One-time-code (admin-issued) login input — the Android long-term (`app`) session login method. The code
+ *  is bound to the account at issue time, so the user enters their account + the 6-digit code. */
+export class OtpLoginDto {
+  @ApiProperty({ example: 'alice', description: 'Account the one-time code was issued for.' })
+  @Transform(({ value }) => normalizeAccount(value))
+  @Matches(USER_ACCOUNT_RE, { message: 'invalid account' })
+  account!: string;
+
+  @ApiProperty({ example: '123456', description: 'The 6-digit one-time login code (admin-issued).' })
+  @IsString()
+  @IsNotEmpty()
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code!: string;
+
+  @ApiProperty({ required: false, description: 'Human-readable device label (shown in the device list).' })
+  @IsString()
+  @IsOptional()
+  device?: string;
+}
+
+/** QR-login create input (desktop/web). `client` selects the session lifetime policy and is constrained to
+ *  web/desktop — a QR-issued session is never an `app` (long-term) session. */
+export class QrCreateDto {
+  @ApiProperty({
+    enum: ['web', 'desktop'],
+    default: 'web',
+    required: false,
+    description: "Client kind for the issued session: 'web' (browser) or 'desktop' (Tauri). Never 'app'.",
+  })
+  @IsIn(['web', 'desktop'])
+  @IsOptional()
+  client?: 'web' | 'desktop';
+}
+
+/** QR-login poll input (desktop/web) — check a token's status; on 'confirmed' the response carries the
+ *  session token. Polled at ~1.5s. */
+export class QrPollDto {
+  @ApiProperty({ description: 'The QR sign-in token returned by /auth/qr/create.' })
+  @IsString()
+  @IsNotEmpty()
+  qrToken!: string;
+
+  @ApiProperty({ required: false, description: 'Human-readable device label (shown in the device list).' })
+  @IsString()
+  @IsOptional()
+  device?: string;
+}
+
+/** QR-login scan/confirm input (the phone side, authenticated) — the token the phone scanned from the
+ *  desktop's QR. */
+export class QrTokenDto {
+  @ApiProperty({ description: 'The QR sign-in token scanned from the desktop QR.' })
+  @IsString()
+  @IsNotEmpty()
+  qrToken!: string;
+}
+
 /** logout input: the session token to revoke (possession of the token authorizes its own revocation).
  *  Optional so a client with no token held (already logged out) no-ops gracefully. */
 export class LogoutDto {

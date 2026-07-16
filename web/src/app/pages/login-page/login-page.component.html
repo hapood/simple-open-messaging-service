@@ -2,7 +2,17 @@
   <app-auth-brand aria-hidden="true"></app-auth-brand>
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
-    <app-login (onSuccess)="onSuccess()"></app-login>
+    @if (notice()) {
+    <div class="login-notice" role="status">{{ notice() }}</div>}
+    @if (showPassword()) {
+      <app-login (onSuccess)="onSuccess()"></app-login>
+    }
+    @if (canOtp()) {
+      <button mat-button class="method-switch" type="button" (click)="jumpToOtp()">{{ 'auth.switchToOtp' | transloco }}</button>
+    }
+    @if (canQr()) {
+      <button mat-button class="method-switch" type="button" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
+    }
     @if (isTauri()) {
       <a mat-button class="server-link" routerLink="/config" replaceUrl>
         <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />

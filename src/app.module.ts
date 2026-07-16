@@ -24,6 +24,9 @@ import { SettingsModule } from './settings/settings.module.js';
 import { DeviceController } from './controller/device.controller.js';
 import { NotificationController } from './controller/notification.controller.js';
 import { HealthController } from './controller/health.controller.js';
+import { ConfigController } from './controller/config.controller.js';
+import { AuthOtpController } from './controller/auth-otp.controller.js';
+import { AuthQrController } from './controller/auth-qr.controller.js';
 import { MessageFanoutModule } from './message/message-fanout.module.js';
 import { ThreadRevisionModule } from './thread-revision/thread-revision.module.js';
 import { QuotaModule } from './quota/quota.module.js';
@@ -64,6 +67,9 @@ import { QuotaModule } from './quota/quota.module.js';
     DeviceController,
     NotificationController,
     HealthController,
+    ConfigController,
+    AuthOtpController,
+    AuthQrController,
   ],
   providers: [],
 })

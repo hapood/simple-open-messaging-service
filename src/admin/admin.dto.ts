@@ -1,7 +1,9 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { AdminRole } from '../prisma/generated/client.js';
+import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
+import { IsDisplayName } from '../common/validators.js';
 
 /** Admin login input. */
 export class AdminLoginDto {
@@ -54,6 +56,34 @@ export class AdminResetPasswordDto {
     message: 'newPassword must be 6-20 chars of allowed set',
   })
   newPassword!: string;
+}
+
+/** Admin create-user input — mirrors the user-side RegisterDto grammar (the admin provisions an account the
+ *  user can later sign into via whichever login method is enabled). */
+export class AdminCreateUserDto {
+  @ApiProperty({
+    example: 'alice',
+    description: 'Login unique name: 3-31 chars, letters + digits + dots, start with a letter, case-insensitive',
+  })
+  @Transform(({ value }) => normalizeAccount(value))
+  @Matches(USER_ACCOUNT_RE, {
+    message: 'account must be 3-31 chars: letters + digits + dots, start with a letter',
+  })
+  account!: string;
+
+  @ApiProperty({ example: 'Alice', description: 'Display name (1-30 chars; unicode/emoji allowed)' })
+  @IsDisplayName()
+  @IsNotEmpty()
+  name!: string;
+
+  @ApiProperty({
+    example: 'P@ssw0rd',
+    description: 'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]',
+  })
+  @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
+    message: 'password must be 6-20 chars of allowed set',
+  })
+  password!: string;
 }
 
 /** Unban input (IP and/or account; at least one must be provided). */

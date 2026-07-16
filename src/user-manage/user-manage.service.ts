@@ -2,11 +2,15 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { Prisma } from '../prisma/generated/client.js';
 import { AuthService } from '../auth/auth.service.js';
+import { UserService } from '../user/user.service.js';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 @Injectable()
 export class UserManageService implements OnModuleInit {
   constructor(
     private prisma: PrismaService,
     private auth: AuthService,
+    private userService: UserService,
   ) {}
 
   async onModuleInit() {}
@@ -102,6 +106,28 @@ export class UserManageService implements OnModuleInit {
     const hash = await this.auth.hashStr(newPassword);
     await this.prisma.user.update({ where: { id }, data: { hashPwd: hash } });
     await this.auth.invalidateAllSessions(id, 'admin_reset_password');
+  }
+
+  /** Create a local user (admin-provisioned). Hashes the password and delegates to UserService.addUser —
+   *  the single creation choke point that normalizes/validates the account grammar + enforces uniqueness.
+   *  Returns the new {id, account}; throws ALREADY_EXISTS on a duplicate account. */
+  async createUser(params: {
+    account: string;
+    name: string;
+    password: string;
+  }): Promise<{ id: number; account: string }> {
+    const hashPwd = await this.auth.hashStr(params.password);
+    const res = await this.userService.addUser({
+      account: params.account,
+      name: params.name,
+      hashPwd,
+    });
+    // addUser returns {status:2} on a duplicate account (no data) — map to ALREADY_EXISTS. status 0
+    // guarantees data is present; the guard also narrows it for the typechecker.
+    if (res.status !== 0 || !res.data) {
+      throw new BusinessException(BusinessCode.ALREADY_EXISTS, `account ${params.account} already exists`);
+    }
+    return res.data;
   }
 
   /** Apply one action to many users, each via its single-user path. Returns the count processed. */

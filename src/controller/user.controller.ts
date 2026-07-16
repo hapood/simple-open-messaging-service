@@ -32,6 +32,7 @@ import { Public } from '../common/public.decorator.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { normalizeAccount } from '../common/account.js';
 import {
   ConversationItemDto,
@@ -582,6 +583,12 @@ export class UserController {
   @Post('user/register')
   @ApiOperation({ summary: 'Register a new user' })
   async registerLocal(@Body() dto: RegisterDto): Promise<ApiResult> {
+    // Self-registration gate: when the site is in admin-provisioned mode (registrationOpen=false) the
+    // register endpoint refuses up front — accounts come from POST admin/users/create instead. The
+    // registration logic below is untouched; only this switch is added.
+    if (!PUBLIC_CONFIG.registrationOpen) {
+      throw new BusinessException(BusinessCode.REGISTRATION_DISABLED, 'registration is closed');
+    }
     /* Format validation (regex) for account/password has moved into RegisterDto's @Matches → failures
        go through ValidationPipe → 200/10000. Business validation (account duplicate) stays in the
        service → 200 + ALREADY_EXISTS. */

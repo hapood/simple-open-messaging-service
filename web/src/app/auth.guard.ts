@@ -2,6 +2,7 @@ import { inject } from '@angular/core';
 import { CanActivateFn, RedirectCommand } from '@angular/router';
 import { Router } from '@angular/router';
 import { AuthService } from './services/auth.service';
+import { ConfigService } from './services/config.service';
 import { apiOriginIsEmpty, isTauri } from './services/runtime';
 import { ServerConfigGateService } from './services/server-config-gate.service';
 
@@ -43,4 +44,15 @@ export const guestGuard: CanActivateFn = () => {
     return new RedirectCommand(router.parseUrl('/config'), { replaceUrl: true });
   }
   return true;
+};
+
+// require registration open — bounce /auth/register to login when self-registration is closed. Awaits the
+// public config load (idempotent, never throws); when registrationOpen is not confirmed true (closed, still
+// loading, or load failed) the register page is unreachable by direct navigation.
+export const registrationOpenGuard: CanActivateFn = async () => {
+  const config = inject(ConfigService);
+  await config.ensureLoaded();
+  if (config.registrationOpen() === true) return true;
+  const router = inject(Router);
+  return new RedirectCommand(router.parseUrl('/auth/login'), { replaceUrl: true });
 };

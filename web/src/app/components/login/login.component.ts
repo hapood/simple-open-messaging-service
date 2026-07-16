@@ -2,6 +2,7 @@ import { Component, signal, computed, Output, EventEmitter, inject } from '@angu
 import { FormsModule } from '@angular/forms';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { AuthService } from '../../services/auth.service'
+import { ConfigService } from '../../services/config.service'
 import { translateBizResult } from '../../services/biz-code'
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -23,6 +24,9 @@ export class LoginComponent {
 
   readonly AppIcon = AppIconType;
   private readonly transloco = inject(TranslocoService);
+  /** Public site config — hides the register link when registration is closed. Pre-fetched on construct so
+   *  the link's visibility settles as soon as /config resolves (idempotent across all login components). */
+  readonly config = inject(ConfigService);
 
   account = signal('');
   password = signal('');
@@ -36,7 +40,7 @@ export class LoginComponent {
   })
 
   constructor(private authService: AuthService, private routeService: RouteService) {
-
+    void this.config.ensureLoaded();
   }
 
   togglePassword() {

@@ -1,4 +1,4 @@
-import { Injectable } from '@angular/core';
+import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { BehaviorSubject, EMPTY, tap } from 'rxjs';
 import { RouteService, RoutePage } from './route.service';
@@ -50,6 +50,17 @@ export class AuthService {
    *  to new subscribers (so a post-login spawn resolves at once). */
   private readonly _sessionTokenSub = new BehaviorSubject<string | null>(this._sessionToken)
   readonly sessionToken$ = this._sessionTokenSub.asObservable()
+
+  /** A transient, one-shot i18n key shown on the login page after a server-initiated kick (FORCE_LOGOUT).
+   *  Set by {@link redoLoginAuth} from the kick reason (e.g. 'app_session_replaced' → "signed in elsewhere"
+   *  when a new OTP login replaced this app session); consumed + cleared by the login page on render. Null
+   *  when there's nothing to surface. */
+  readonly loginNotice = signal<string | null>(null)
+  /** Kicks whose reason maps to a specific (non-generic) login-page notice. Unmapped reasons fall back to
+   *  no notice (the login page itself is the signal that the session ended). */
+  private static readonly KICK_NOTICE_KEY: Record<string, string> = {
+    app_session_replaced: 'auth.notice.signedInElsewhere',
+  }
 
   /** Push the current session token to the Android shell so Kotlin's RealtimeService can authenticate
    *  /events and the background fetchers (FCM/WorkManager) can authenticate /notifications/missed while
@@ -105,27 +116,88 @@ export class AuthService {
         persistent: isKeep,
       }).pipe(tap((res) => {
         if (res.code === 0 && res.data?.session_token) {
-          this._isKeep = isKeep
-          if (isKeep) localStorage.setItem(IS_KEEP_LOGIN, '1')
-          else localStorage.removeItem(IS_KEEP_LOGIN)
-          if (isTauri()) {
-            // Native: persist the raw token (desktop SSE worker + Android push need it). Clear both
-            // stores so an isKeep switch leaves no orphaned old token, then activate + push to native.
-            sessionStorage.removeItem(SESSION_TOKEN)
-            localStorage.removeItem(SESSION_TOKEN)
-            this.setSessionToken(res.data.session_token)
-          }
-          // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no
-          // token is held in JS.
-          this.push.onLogin()
-          void this.webPush.onLogin()
+          this.activateSession(res.data.session_token, isKeep)
         }
       }))
   }
 
-  redoLoginAuth() {
+  /** One-time-code (admin-issued) login → a long-term `app` session (Android). The server sets the httpOnly
+   *  cookie; native persists the raw token. Always persistent (the app session is long-lived). */
+  otpLogin(params: { account: string, code: string, device?: string }) {
+    return this.http.post<LoginRes>(
+      `${apiPrefix()}/auth/otp/login`, {
+        account: params.account,
+        code: params.code,
+        device: params.device ?? this.getDeviceLabel(),
+      }).pipe(tap((res) => {
+        if (res.code === 0 && res.data?.session_token) {
+          this.activateSession(res.data.session_token, true)
+        }
+      }))
+  }
+
+  /** QR-login: desktop/web mints a sign-in token to render as a QR. */
+  qrCreate(client: 'web' | 'desktop') {
+    return this.http.post<{ code: number, data?: { qrToken: string, expiresAt: number } }>(
+      `${apiPrefix()}/auth/qr/create`, { client },
+    )
+  }
+
+  /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
+   *  which activates a 14-day sliding web/desktop session. */
+  qrPoll(qrToken: string, device?: string) {
+    return this.http.post<{ code: number, data?: { status: string, session_token?: string } }>(
+      `${apiPrefix()}/auth/qr/poll`, { qrToken, device: device ?? this.getDeviceLabel() },
+    ).pipe(tap((res) => {
+      if (res.code === 0 && res.data?.session_token) {
+        this.activateSession(res.data.session_token, true)
+      }
+    }))
+  }
+
+  /** QR-login: the phone (already logged in) scans a desktop QR → marks it 'scanned'. Authenticated. */
+  qrScan(qrToken: string) {
+    return this.http.post<{ code: number }>(`${apiPrefix()}/auth/qr/scan`, { qrToken })
+  }
+
+  /** QR-login: the phone confirms a scanned QR → the desktop's next poll receives its session. Authenticated. */
+  qrConfirm(qrToken: string) {
+    return this.http.post<{ code: number }>(`${apiPrefix()}/auth/qr/confirm`, { qrToken })
+  }
+
+  /** Activate a freshly obtained session token (login/OTP/QR success). Mirrors it to storage (per isKeep),
+   *  the Android shell, and the desktop media proxy; fires the push + web-push login hooks. Extracted so the
+   *  password, OTP, and QR login paths activate identically. */
+  private activateSession(token: string, isKeep: boolean) {
+    this._isKeep = isKeep
+    if (isKeep) localStorage.setItem(IS_KEEP_LOGIN, '1')
+    else localStorage.removeItem(IS_KEEP_LOGIN)
+    if (isTauri()) {
+      // Native: persist the raw token (desktop SSE worker + Android push need it). Clear both stores so an
+      // isKeep switch leaves no orphaned old token, then activate + push to native.
+      sessionStorage.removeItem(SESSION_TOKEN)
+      localStorage.removeItem(SESSION_TOKEN)
+      this.setSessionToken(token)
+    }
+    // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
+    // held in JS.
+    this.push.onLogin()
+    void this.webPush.onLogin()
+  }
+
+  redoLoginAuth(reason?: string) {
+    if (reason && AuthService.KICK_NOTICE_KEY[reason]) {
+      this.loginNotice.set(AuthService.KICK_NOTICE_KEY[reason])
+    }
     this.clearToken()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
+  }
+
+  /** Read + clear the one-shot login notice (the login page calls this on render). */
+  consumeLoginNotice(): string | null {
+    const key = this.loginNotice()
+    if (key) this.loginNotice.set(null)
+    return key
   }
 
   /** Persist + activate a freshly obtained session token (login). Mirrors it to storage (per isKeep),
