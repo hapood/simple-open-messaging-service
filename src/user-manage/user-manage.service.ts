@@ -5,6 +5,7 @@ import { AuthService } from '../auth/auth.service.js';
 import { UserService } from '../user/user.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { randomInt } from 'node:crypto';
 @Injectable()
 export class UserManageService implements OnModuleInit {
   constructor(
@@ -65,7 +66,7 @@ export class UserManageService implements OnModuleInit {
 
   // ── Admin user-management operations ────────────────────────────────────────
   // Moved here from AdminController so the controller stays a pure HTTP adapter. Each mutator runs
-  // through the same path its single-user endpoint did: disable force-logs-out, reset-password
+  // through the same path its single-user endpoint did: disable force-logs-out, generate-initial-password
   // revokes all sessions, etc. Services take primitives/local option types (never admin DTOs) to keep
   // the user-manage layer free of an admin dependency; the controller translates the DTO.
 
@@ -101,22 +102,34 @@ export class UserManageService implements OnModuleInit {
     await this.auth.invalidateAllSessions(id, 'admin_force_logout');
   }
 
-  /** Swap the password hash + revoke all sessions (caller has already validated the password rules). */
-  async resetPassword(id: number, newPassword: string): Promise<void> {
-    const hash = await this.auth.hashStr(newPassword);
-    await this.prisma.user.update({ where: { id }, data: { hashPwd: hash } });
-    await this.auth.invalidateAllSessions(id, 'admin_reset_password');
+  /** (Re-)initialize a user's INITIAL password: generate a strong random password (reveal-once — the admin
+   *  never authors the value), store its hash, set mustChangePassword so the user is FORCED to set their own
+   *  on first login, and revoke every active session. This is the ONLY way a password lands on an account:
+   *  the admin can never choose or change a user's password, only re-initialize it. Returns the plaintext
+   *  exactly once. */
+  async generateInitialPassword(id: number): Promise<{ password: string }> {
+    const password = randomInitialPassword();
+    const hash = await this.auth.hashStr(password);
+    await this.prisma.user.update({
+      where: { id },
+      data: { hashPwd: hash, mustChangePassword: true },
+    });
+    await this.auth.invalidateAllSessions(id, 'admin_reinit_password');
+    return { password };
   }
 
-  /** Create a local user (admin-provisioned). Hashes the password and delegates to UserService.addUser —
-   *  the single creation choke point that normalizes/validates the account grammar + enforces uniqueness.
-   *  Returns the new {id, account}; throws ALREADY_EXISTS on a duplicate account. */
+  /** Create a local user (admin-provisioned). Delegates to UserService.addUser — the single creation choke
+   *  point that normalizes/validates the account grammar + enforces uniqueness. The password is optional:
+   *  provided → hashed + stored; omitted → the account is created with NO password (an OTP/QR-only account,
+   *  bootstrapped by the one-time code the admin issues next). Whether a password is allowed/required is a
+   *  loginMode policy enforced by the controller; this service persists exactly what it's given. Returns the
+   *  new {id, account}; throws ALREADY_EXISTS on a duplicate account. */
   async createUser(params: {
     account: string;
     name: string;
-    password: string;
+    password?: string;
   }): Promise<{ id: number; account: string }> {
-    const hashPwd = await this.auth.hashStr(params.password);
+    const hashPwd = params.password ? await this.auth.hashStr(params.password) : null;
     const res = await this.userService.addUser({
       account: params.account,
       name: params.name,
@@ -151,4 +164,13 @@ export class UserManageService implements OnModuleInit {
     });
     return new Map(users.map((u) => [u.id, u.account]));
   }
+}
+
+/** 12-char [A-Za-z0-9] password (~71 bits) — typeable, matches RegisterDto's allowed-character class.
+ *  Used only by {@link UserManageService.generateInitialPassword}. */
+function randomInitialPassword(): string {
+  const CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let s = '';
+  for (let i = 0; i < 12; i++) s += CHARS[randomInt(0, CHARS.length)];
+  return s;
 }

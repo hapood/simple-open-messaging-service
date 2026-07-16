@@ -95,7 +95,7 @@ export class SessionTokenService {
   async validate(
     raw: string,
     opts: { ip?: string | null } = {},
-  ): Promise<{ userId: number; sessionId: number; slid: boolean; persistent: boolean } | null> {
+  ): Promise<{ userId: number; sessionId: number; slid: boolean; persistent: boolean; mustChangePassword: boolean } | null> {
     const h = hashToken(raw);
     const key = `${CACHE_PREFIX}${h}`;
 
@@ -106,11 +106,16 @@ export class SessionTokenService {
         sessionId?: number;
         exp: number | null;
         persistent?: boolean;
+        mustChangePassword?: boolean;
       };
-      // sessionId present guards a stale pre-upgrade cache shape (no sessionId) → treat as a miss and
-      // fall through to the DB. An expired entry likewise falls through.
+      // sessionId + mustChangePassword present guards a stale pre-upgrade cache shape (lacking either)
+      // → treat as a miss and fall through to the DB. An expired entry likewise falls through.
+      // mustChangePassword is a SECURITY flag (drives the global password-rotation gate), so a stale
+      // entry without it MUST re-read the authoritative value rather than guess — unlike persistent,
+      // which defaults harmlessly.
       if (
         entry.sessionId !== undefined &&
+        entry.mustChangePassword !== undefined &&
         !(entry.exp !== null && entry.exp <= Date.now())
       ) {
         // Cache hit (within VALIDATE_CACHE_TTL_SEC) → no DB read, so no sliding write this call.
@@ -119,6 +124,7 @@ export class SessionTokenService {
           sessionId: entry.sessionId,
           slid: false,
           persistent: entry.persistent ?? true,
+          mustChangePassword: entry.mustChangePassword,
         };
       }
     }
@@ -132,6 +138,7 @@ export class SessionTokenService {
         revokedAt: true,
         lastSeenAt: true,
         persistent: true,
+        user: { select: { mustChangePassword: true } },
       },
     });
     if (!rec || rec.revokedAt !== null) return null;
@@ -170,10 +177,11 @@ export class SessionTokenService {
           sessionId: rec.id,
           exp: cachedExp,
           persistent: rec.persistent,
+          mustChangePassword: rec.user.mustChangePassword,
         }),
       )
       .catch(() => {});
-    return { userId: rec.userId, sessionId: rec.id, slid, persistent: rec.persistent };
+    return { userId: rec.userId, sessionId: rec.id, slid, persistent: rec.persistent, mustChangePassword: rec.user.mustChangePassword };
   }
 
   /** Revoke a single presented token (self-revoke on logout). Idempotent — a not-found or
@@ -245,5 +253,19 @@ export class SessionTokenService {
       select: { id: true },
     });
     return rec?.id ?? null;
+  }
+
+  /** Drop the validate-cache entry for a session row (looked up by id) so the NEXT validate() re-reads the
+   *  DB. Used when a mutation changes a field that lives in that cache WITHOUT invalidating the session —
+   *  specifically {@link AuthService.setPassword} clearing `mustChangePassword`: unlike changePassword /
+   *  generateInitialPassword (which revoke all sessions, so stale caches die with them), setPassword KEEPS
+   *  this session, so without busting the cache the cleared flag stays stale for up to 60s and gates the
+   *  user out of the app right after they set their password. One DB read (rare — only on a set-password). */
+  async bustCacheBySessionId(sessionId: number): Promise<void> {
+    const rec = await this.prisma.sessionToken.findUnique({
+      where: { id: sessionId },
+      select: { tokenHash: true },
+    });
+    if (rec) await this.kvStore.del(`${CACHE_PREFIX}${rec.tokenHash}`).catch(() => {});
   }
 }

@@ -188,6 +188,20 @@ export class ChangePasswordDto {
   newPassword!: string;
 }
 
+/** Set-own-password input — the forced first-time set right after an admin-generated initial password,
+ *  OR a voluntary set by an OTP/QR-only user enabling password login. No old password: the caller is already
+ *  session-authenticated. `newPassword` reuses RegisterDto's 6-20 allowed-character rule. */
+export class SetPasswordDto {
+  @ApiProperty({
+    example: 'MyOwnP@ss1',
+    description: 'New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]',
+  })
+  @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
+    message: 'newPassword must be 6-20 chars of allowed set',
+  })
+  newPassword!: string;
+}
+
 /** Revoke a single session by its device-list row id. Ownership is verified server-side, so only the
  *  id is needed. */
 export class RevokeSessionDto {

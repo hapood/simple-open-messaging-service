@@ -24,7 +24,6 @@ import {
   AdminLoginDto,
   AdminRefreshDto,
   AdminListUsersDto,
-  AdminResetPasswordDto,
   AdminUnbanDto,
   AdminListSessionsDto,
   AdminListPushTokensDto,
@@ -34,21 +33,23 @@ import {
 } from './admin.dto.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
+import { PUBLIC_CONFIG, isPasswordLoginEnabled } from '../config/public-config.js';
 import { AuthService } from '../auth/auth.service.js';
 import { OtpLoginService } from '../auth/otp-login.service.js';
+import { BruteForceService } from '../auth/brute-force.service.js';
 import { UserManageService } from '../user-manage/user-manage.service.js';
-import { LocalStrategy } from '../auth/local.strategy.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
 
 /**
  * Admin console HTTP adapter. All domain logic lives in services (AdminAuthService, AuthService,
- * UserManageService, LocalStrategy, SseService, PushService) — this controller only parses input,
+ * UserManageService, BruteForceService, SseService, PushService) — this controller only parses input,
  * delegates, and wraps the {code,message,data} envelope. No Prisma is touched here.
  *
  * RBAC (Phase 1): read/list endpoints carry no @Roles (open to every admin role, incl. VIEWER);
- * routine mutations require ADMIN+; high-impact operations (reset-password, purge-all) require
- * SUPER_ADMIN. Every mutation is tagged @Audit → AdminAuditInterceptor writes an AdminActionLog row.
+ * routine mutations require ADMIN+; the only SUPER_ADMIN-only operation is purge-all. Every mutation is
+ * tagged @Audit → AdminAuditInterceptor writes an AdminActionLog row.
  */
 @ApiTags('admin')
 @Public()
@@ -58,7 +59,7 @@ export class AdminController {
     private readonly adminAuthService: AdminAuthService,
     private readonly authService: AuthService,
     private readonly userManageService: UserManageService,
-    private readonly localStrategy: LocalStrategy,
+    private readonly bruteForce: BruteForceService,
     private readonly sseService: SseService,
     private readonly pushService: PushService,
     private readonly otpLoginService: OtpLoginService,
@@ -145,7 +146,18 @@ export class AdminController {
   @Post('admin/users/create')
   @ApiOperation({ summary: 'Create a user account (admin-provisioned)' })
   async createUser(@Body() dto: AdminCreateUserDto): Promise<ApiResult> {
-    return this.ok(await this.userManageService.createUser(dto));
+    // loginMode policy: a password is required iff password login is the active method (ALL / PASSWORD_ONLY).
+    // In APP_OTP_AND_QR the account has no password — it bootstraps via the one-time code issued next.
+    if (isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode) && !dto.password) {
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'password is required', HttpStatus.BAD_REQUEST);
+    }
+    return this.ok(
+      await this.userManageService.createUser({
+        account: dto.account,
+        name: dto.name,
+        password: dto.password,
+      }),
+    );
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -277,17 +289,18 @@ export class AdminController {
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
-  @Roles(AdminRole.SUPER_ADMIN)
-  @Audit('user.reset_password', { targetType: 'user', targetParam: 'id' })
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('user.generate_initial_password', { targetType: 'user', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
-  @Post('admin/users/:id/reset-password')
-  @ApiOperation({ summary: "Reset a user's password (revokes all sessions)" })
-  async resetPassword(
-    @Param('id') id: string,
-    @Body() dto: AdminResetPasswordDto,
-  ): Promise<ApiResult> {
-    await this.userManageService.resetPassword(Number(id), dto.newPassword);
-    return this.ok();
+  @Post('admin/users/:id/generate-initial-password')
+  @ApiOperation({ summary: "(Re-)generate the user's initial password (random, reveal-once; forces a set on next login)" })
+  async generateInitialPassword(@Param('id') id: string): Promise<ApiResult> {
+    // The admin can never choose or change a user's password — only (re-)initialize it (server-generated).
+    // Refuse outright when password login isn't enabled: no point minting a password that can't be used.
+    if (!isPasswordLoginEnabled(PUBLIC_CONFIG.loginMode)) {
+      throw new BusinessException(BusinessCode.LOGIN_METHOD_DISABLED, 'password login is disabled');
+    }
+    return this.ok(await this.userManageService.generateInitialPassword(Number(id)));
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -308,9 +321,9 @@ export class AdminController {
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans')
-  @ApiOperation({ summary: 'List active login bans (IP / account)' })
+  @ApiOperation({ summary: 'List active login bans (IP / account — password + OTP)' })
   async listBans(): Promise<ApiResult> {
-    return this.ok(this.localStrategy.listBans());
+    return this.ok(this.bruteForce.listBans());
   }
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
@@ -318,9 +331,9 @@ export class AdminController {
   @Audit('ban.unban')
   @HttpCode(HttpStatus.OK)
   @Post('admin/bans/unban')
-  @ApiOperation({ summary: 'Unban (IP and/or account)' })
+  @ApiOperation({ summary: 'Unban (IP and/or account — clears every account-keyed dimension: password + OTP)' })
   async unban(@Body() dto: AdminUnbanDto): Promise<ApiResult> {
-    this.localStrategy.clearBan({ ip: dto.ip, account: dto.account });
+    this.bruteForce.unban({ ip: dto.ip, account: dto.account });
     return this.ok();
   }
 

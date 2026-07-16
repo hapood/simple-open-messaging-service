@@ -25,6 +25,13 @@
   padding: 0 4px;
 }
 
+// The Android-only "Link a device" scanner entry sits above the list (a prominent action, not a row).
+.link-device-card {
+  display: flex;
+  justify-content: flex-start;
+  padding: 0 4px 4px;
+}
+
 .settings-card {
   display: flex;
   flex-direction: column;

@@ -46,12 +46,16 @@ export class AuthOtpController {
   ): Promise<ApiResult> {
     // verifyAndLogin throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on failure → the
     // global filter renders it as HTTP 200 + business code (consistent with the rest of the auth surface).
-    const token = await this.otpLoginService.verifyAndLogin(dto.account, dto.code, {
+    const { token, mustChangePassword } = await this.otpLoginService.verifyAndLogin(dto.account, dto.code, {
       device: dto.device,
       userAgent,
       ip,
     });
     setSessionCookies(reply, token, true);
-    return { code: BusinessCode.OK, message: 'successful', data: { session_token: token } };
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: { session_token: token, ...(mustChangePassword ? { mustChangePassword: true } : {}) },
+    };
   }
 }

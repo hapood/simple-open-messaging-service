@@ -15,7 +15,7 @@ const SESSION_TOKEN = 'session_token',
   // session token is JS-unreadable, so this flag is how the SPA tells whether a session exists.
   LOGGED_IN_COOKIE = 'logged_in'
 
-type LoginRes = { code: number, message: string, data?: { session_token?: string } }
+type LoginRes = { code: number, message: string, data?: { session_token?: string, mustChangePassword?: boolean } }
 type LogoutRes = { code: number, message: string }
 
 /**
@@ -146,7 +146,7 @@ export class AuthService {
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a 14-day sliding web/desktop session. */
   qrPoll(qrToken: string, device?: string) {
-    return this.http.post<{ code: number, data?: { status: string, session_token?: string } }>(
+    return this.http.post<{ code: number, data?: { status: string, session_token?: string, mustChangePassword?: boolean } }>(
       `${apiPrefix()}/auth/qr/poll`, { qrToken, device: device ?? this.getDeviceLabel() },
     ).pipe(tap((res) => {
       if (res.code === 0 && res.data?.session_token) {
@@ -270,6 +270,16 @@ export class AuthService {
     ).pipe(tap((res) => {
       if (res.code === 0) this.redoLoginAuth()
     }))
+  }
+
+  /** Set the user's OWN password — the forced first-time set right after an admin-generated initial
+   *  password. The backend clears `mustChangePassword` and KEEPS this session (no sessions are invalidated,
+   *  unlike {@link changePassword}); the caller is already session-authenticated, so no old password is
+   *  sent. On success the app unlocks — the caller routes to HOME. */
+  setPassword(newPassword: string) {
+    return this.http.post<{ code: number, message: string }>(
+      `${apiPrefix()}/auth/set-password`, { newPassword },
+    )
   }
 
   /** List the current user's active sessions. Every request carries the session token (the interceptor),

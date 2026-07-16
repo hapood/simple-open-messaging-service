@@ -35,7 +35,7 @@ export class AdminAuthService {
     if (!user || user.isDeleted || user.isGroup) return undefined;
     const admin = await this.prisma.admin.findUnique({ where: { userId: user.id } });
     if (!admin || !admin.enabled) return undefined;
-    if (!(await argon2.verify(user.hashPwd, password))) return undefined;
+    if (!user.hashPwd || !(await argon2.verify(user.hashPwd, password))) return undefined;
     await this.prisma.admin.update({
       where: { id: admin.id },
       data: { lastLoginAt: new Date(), lastLoginIp: ip ?? null },

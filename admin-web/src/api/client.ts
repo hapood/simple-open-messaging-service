@@ -60,3 +60,19 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
   }
   return json.data as T
 }
+
+/**
+ * Public GET (e.g. GET /config) — no Bearer injected, no 401/refresh retry, no body.
+ * Unwraps the same ApiResult envelope as {@link request}. Public reads are not part of
+ * the admin auth chain, so they never trigger a refresh cycle.
+ */
+export async function requestGet<T>(path: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method: 'GET' })
+  const json: ApiResult<T> = await res
+    .json()
+    .catch(() => ({ code: -1, message: i18n.t('errors.parseFailed') }) as ApiResult<T>)
+  if (json.code !== CODE.OK) {
+    throw new ApiError(json.code, json.message, res.status)
+  }
+  return json.data as T
+}

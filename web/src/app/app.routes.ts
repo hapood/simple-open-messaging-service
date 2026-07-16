@@ -35,6 +35,16 @@ export const routes: Routes = [
     canActivate: [guestGuard],
     canMatch: [() => !isAndroidNative()],
   },
+  // Forced set-own-password — reached proactively after any login whose session is still on the admin-
+  // generated initial password (the backend gates every other route until this clears it). A POST-login
+  // screen: guarded by `authGuard` (requires a live session), NOT `guestGuard` (which would bounce the
+  // just-logged-in user to home). No platform gate — reachable from the OTP (Android) and password/QR
+  // (desktop/web) flows alike.
+  {
+    path: 'auth/set-password',
+    loadComponent: () => import('./pages/set-password-page/set-password-page.component').then((m) => m.SetPasswordPageComponent),
+    canActivate: [authGuard],
+  },
   // Bundled-APK backend-URL configuration (Tauri/Android only). `canMatch` short-circuits to 404 in the
   // browser build, where the same-origin NestJS host makes a configurable origin meaningless. Reached
   // automatically on first run via guestGuard (when the origin is still the localhost default), and any

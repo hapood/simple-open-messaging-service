@@ -14,6 +14,8 @@
     "operationFailed": "操作失败",
     "comingSoon": "敬请期待",
     "neverExpires": "永不过期",
+    "copy": "复制",
+    "copied": "已复制",
     "client": {
       "app": "安卓",
       "web": "网页",
@@ -119,6 +121,7 @@
   },
   "users": {
     "title": "用户管理",
+    "create": "新建用户",
     "searchPlaceholder": "搜索 账户名",
     "col": {
       "id": "ID",
@@ -138,13 +141,15 @@
       "ban": "封禁",
       "forceLogout": "强制下线",
       "viewSessions": "查看会话",
-      "resetPassword": "重置密码"
+      "issueLoginCode": "签发登录码",
+      "generateInitialPassword": "生成初始密码"
     },
     "toast": {
       "unbanned": "已解禁",
       "banned": "已封禁",
       "forceLoggedOut": "已强制下线",
-      "batchDone": "已对 {{count}} 个用户执行操作"
+      "batchDone": "已对 {{count}} 个用户执行操作",
+      "created": "已创建用户"
     },
     "selected": "已选 {{count}} 项",
     "selectAll": "全选",
@@ -162,7 +167,7 @@
   },
   "bans": {
     "title": "封禁管理",
-    "desc": "当前生效的登录封禁（IP / 账户维度，由限流滑窗产生）。",
+    "desc": "当前生效的登录封禁（IP、密码账户或一次性登录码账户，由各登录方式共用的暴力破解滑窗产生）。",
     "col": {
       "type": "类型",
       "value": "值",
@@ -171,7 +176,8 @@
     },
     "type": {
       "ip": "IP",
-      "account": "账户"
+      "user": "密码",
+      "otp": "登录码"
     },
     "empty": "当前无封禁",
     "unban": "解封"
@@ -445,19 +451,68 @@
       "closed": "已断开"
     }
   },
-  "resetPassword": {
-    "title": "重置 {{name}} 的密码",
-    "newPassword": "新密码",
-    "hint": "6-20 位，允许字母数字和 .@!#$%^&*()",
-    "invalid": "6-20 位，允许字母数字和 .@!#$%^&*()",
-    "confirm": "确认重置",
-    "success": "密码已重置，该用户所有会话已吊销",
-    "failed": "重置失败"
+  "createUser": {
+    "title": "新建用户",
+    "account": "账户名",
+    "accountHint": "3-31 位：字母、数字、点号，须以字母开头",
+    "name": "显示名称",
+    "nameHint": "1 到 30 个字符",
+    "password": "初始密码",
+    "passwordHint": "6-20 位，允许字母数字和 .@!#$%^&*()",
+    "passwordOptional": "可选——留空则创建无密码账号（用登录码登录）",
+    "passwordRequired": "密码登录已启用，需设置初始密码",
+    "confirm": "创建",
+    "success": "已创建用户 {{account}}"
+  },
+  "issueLoginCode": {
+    "title": "为 {{name}} 签发登录码",
+    "warning": "签发新码会吊销该账号此前未使用的登录码；用户用新码登录时，其旧的手机端会话将被踢下线。",
+    "confirm": "签发",
+    "codeLabel": "一次性登录码（仅显示一次）",
+    "note": "请立即交给用户——关闭后将无法再次查看。",
+    "copied": "登录码已复制",
+    "copyFailed": "复制失败",
+    "success": "登录码已签发"
+  },
+  "generateInitialPassword": {
+    "title": "为 {{name}} 生成初始密码",
+    "note": "该密码为一次性初始密码。用户首次登录后将被强制设置自己的密码；同时该用户所有现有会话会被吊销。",
+    "confirm": "生成",
+    "passwordLabel": "初始密码（仅显示一次）",
+    "copied": "密码已复制",
+    "copyFailed": "复制失败",
+    "success": "初始密码已生成"
+  },
+  "loginCodes": {
+    "title": "登录码",
+    "desc": "管理员签发的一次性登录码记录。",
+    "col": {
+      "status": "状态",
+      "issuedAt": "签发时间",
+      "expiresAt": "过期时间",
+      "consumedAt": "消费时间",
+      "consumedIp": "消费 IP",
+      "device": "设备",
+      "session": "产生的会话"
+    },
+    "status": {
+      "pending": "待使用",
+      "consumed": "已使用",
+      "expired": "已过期",
+      "revoked": "已撤销"
+    },
+    "empty": "暂无登录码",
+    "revoke": "撤销",
+    "revokeConfirm": "撤销此未使用的登录码？",
+    "toast": {
+      "revoked": "登录码已撤销"
+    }
   },
   "userSessions": {
     "title": "{{name}} 的活跃会话",
     "loadFailed": "加载失败",
     "empty": "无活跃会话",
+    "appCount": "手机端会话：{{count}}",
     "col": {
       "device": "device",
       "client": "客户端",
@@ -601,6 +656,12 @@
       "rateLimited": "请求过于频繁，请稍候",
       "refreshReuse": "登录状态已变更，请重新登录",
       "sessionRevoked": "登录会话已结束，请重新登录",
+      "loginMethodDisabled": "该登录方式不可用",
+      "otpInvalid": "一次性登录码不正确",
+      "otpExpired": "一次性登录码已失效",
+      "otpConsumed": "一次性登录码已被使用",
+      "passwordNotSet": "该账号尚未设置密码",
+      "mustChangePassword": "请先设置密码",
       "internal": "出错了",
       "vapidInvalid": "VAPID 密钥对无效（格式错误或不匹配）"
     }

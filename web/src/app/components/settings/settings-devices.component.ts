@@ -1,11 +1,13 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { MatButtonModule } from '@angular/material/button';
+import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
-import { forkJoin } from 'rxjs';
+import { forkJoin, firstValueFrom } from 'rxjs';
 import dayjs from 'dayjs';
 import { AuthService, type SessionClient, type SessionInfo } from '../../services/auth.service';
 import { RouteService, PopupType } from '../../services/route.service';
 import { LanguageService } from '../../services/language.service';
+import { isAndroidNative } from '../../services/runtime';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 
 /**
@@ -31,8 +33,10 @@ export class SettingsDevicesComponent implements OnInit {
   private readonly route = inject(RouteService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
+  private readonly snackbar = inject(MatSnackBar);
 
   readonly AppIconType = AppIconType;
+  protected readonly isAndroidNative = isAndroidNative;
   readonly list = signal<SessionInfo[]>([]);
   readonly loading = signal(true);
 
@@ -120,5 +124,44 @@ export class SettingsDevicesComponent implements OnInit {
         forkJoin(others.map((o) => this.auth.revokeSession(o.id))).subscribe({ next: () => this.load() });
       },
     );
+  }
+
+  /** Android-only: authorize sign-in on another device by scanning its QR (the phone side of QR sign-in).
+   *  Two-step, mirroring Telegram's "Link Desktop Device": scan the desktop's QR token → mark it scanned
+   *  (the desktop shows "confirm on your phone") → confirm → the desktop's next poll receives its 2-week
+   *  session. The barcode-scanner plugin is dynamically imported so the browser/desktop bundle never loads
+   *  it; isAndroidNative() gates the whole flow. */
+  async linkDevice(): Promise<void> {
+    if (!isAndroidNative()) return;
+    let content: string;
+    try {
+      const { scan, Format } = await import('@tauri-apps/plugin-barcode-scanner');
+      content = (await scan({ formats: [Format.QRCode], cameraDirection: 'back' })).content;
+    } catch {
+      return; // scanner dismissed / camera permission denied — nothing to surface
+    }
+    if (!content) return;
+    // Step 1 — mark scanned so the desktop flips to "confirm on your phone".
+    const scanRes = await firstValueFrom(this.auth.qrScan(content));
+    if (scanRes.code !== 0) {
+      this.toast('session.linkDeviceFailed');
+      return;
+    }
+    // Step 2 — confirm: authorize the sign-in (the desktop's next poll mints its session).
+    this.route.popupDlg(
+      PopupType.CONFIRM,
+      { messageKey: 'session.linkDeviceConfirm', confirmKey: 'session.linkDeviceAuthorize' },
+      (ok) => {
+        if (!ok) return;
+        this.auth.qrConfirm(content).subscribe({
+          next: (res) => this.toast(res.code === 0 ? 'session.linkDeviceSuccess' : 'session.linkDeviceFailed'),
+          error: () => this.toast('session.linkDeviceFailed'),
+        });
+      },
+    );
+  }
+
+  private toast(key: string): void {
+    this.snackbar.open(this.transloco.translate(key), undefined, { duration: 3000 });
   }
 }

@@ -13,6 +13,7 @@ import { SessionTokenService } from './session-token.service.js';
 import { BearerAuthService } from './bearer-auth.service.js';
 import { OtpLoginService } from './otp-login.service.js';
 import { QrLoginService } from './qr-login.service.js';
+import { BruteForceService } from './brute-force.service.js';
 
 @Module({
   imports: [UserModule, PassportModule, EventEmitterModule],
@@ -23,6 +24,7 @@ import { QrLoginService } from './qr-login.service.js';
     ThrottleGuard,
     SessionTokenService,
     BearerAuthService,
+    BruteForceService,
     OtpLoginService,
     QrLoginService,
     // Global guard: every route is authenticated unless it opts out with @Public(). Resolves the
@@ -35,6 +37,6 @@ import { QrLoginService } from './qr-login.service.js';
     // idiomatic guard-decides / interceptor-mutates split). See session-cookie.interceptor.ts.
     { provide: APP_INTERCEPTOR, useClass: SessionCookieInterceptor },
   ],
-  exports: [AuthService, LocalStrategy, SessionTokenService, BearerAuthService, OtpLoginService, QrLoginService],
+  exports: [AuthService, SessionTokenService, BearerAuthService, BruteForceService, OtpLoginService, QrLoginService],
 })
 export class AuthModule {}

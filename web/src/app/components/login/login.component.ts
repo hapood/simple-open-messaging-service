@@ -20,6 +20,9 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
     styleUrl: './login.component.scss'
 })
 export class LoginComponent {
+  /** Fires on a successful login. The boolean payload is the resulting session's `mustChangePassword`
+   *  flag — the page routes to the forced set-password screen (not home) when the session is still on the
+   *  admin-generated initial password. */
   @Output() onSuccess = new EventEmitter<boolean>();
 
   readonly AppIcon = AppIconType;
@@ -75,7 +78,7 @@ export class LoginComponent {
       .subscribe({
         next: (res) => {
           if (res.code === 0) {
-            this.onSuccess.emit(true)
+            this.onSuccess.emit(!!res.data?.mustChangePassword)
             this.isSuccess.set(true)
             this.isLoging.set(false)
           } else {

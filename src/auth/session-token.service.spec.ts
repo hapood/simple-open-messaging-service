@@ -106,11 +106,12 @@ describe('SessionTokenService', () => {
         revokedAt: null,
         lastSeenAt: new Date(),
         persistent: true,
+        user: { mustChangePassword: false },
         ...overrides,
       };
     }
 
-    it('returns { userId, sessionId, slid, persistent } for a valid web token and caches the result', async () => {
+    it('returns { userId, sessionId, slid, persistent, mustChangePassword } for a valid web token and caches the result', async () => {
       const raw = 'a'.repeat(64);
       prisma.sessionToken.findUnique.mockResolvedValue(makeRow());
       // First call: cache miss → DB read + cache write. lastSeenAt is fresh → no slide (slid:false).
@@ -119,18 +120,25 @@ describe('SessionTokenService', () => {
         sessionId: 101,
         slid: false,
         persistent: true,
+        mustChangePassword: false,
       });
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1);
       expect(kv.setex).toHaveBeenCalledTimes(1);
-      // Second call: cache hit (with sessionId in the cached shape) → no DB read, slid:false.
+      // Second call: cache hit (with sessionId + mustChangePassword in the cached shape) → no DB read.
       kv.get.mockResolvedValue(
-        JSON.stringify({ userId: 7, sessionId: 101, exp: Date.now() + 3600_000 }),
+        JSON.stringify({
+          userId: 7,
+          sessionId: 101,
+          exp: Date.now() + 3600_000,
+          mustChangePassword: false,
+        }),
       );
       await expect(svc.validate(raw)).resolves.toEqual({
         userId: 7,
         sessionId: 101,
         slid: false,
         persistent: true,
+        mustChangePassword: false,
       });
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // still once
     });
@@ -149,6 +157,7 @@ describe('SessionTokenService', () => {
         sessionId: 101,
         slid: false,
         persistent: true,
+        mustChangePassword: false,
       });
     });
 
@@ -199,6 +208,29 @@ describe('SessionTokenService', () => {
       await svc.validate('g'.repeat(64));
       expect(prisma.sessionToken.update).not.toHaveBeenCalled();
     });
+
+    it('propagates user.mustChangePassword (drives the global password-rotation gate)', async () => {
+      prisma.sessionToken.findUnique.mockResolvedValue(
+        makeRow({ user: { mustChangePassword: true } }),
+      );
+      await expect(svc.validate('p'.repeat(32))).resolves.toEqual(
+        expect.objectContaining({ userId: 7, sessionId: 101, mustChangePassword: true }),
+      );
+    });
+
+    it('treats a cached entry lacking mustChangePassword as stale and re-reads the DB (security flag)', async () => {
+      // A pre-field cache entry (or one missing the flag) MUST NOT be trusted to default — mustChangePassword
+      // is a security flag, so validate falls through and reads the authoritative value instead of guessing.
+      kv.get.mockResolvedValue(
+        JSON.stringify({ userId: 7, sessionId: 101, exp: Date.now() + 3600_000 }),
+      );
+      prisma.sessionToken.findUnique.mockResolvedValue(
+        makeRow({ user: { mustChangePassword: true } }),
+      );
+      const res = await svc.validate('q'.repeat(32));
+      expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // fell through, not trusted
+      expect(res?.mustChangePassword).toBe(true); // the authoritative DB value, not a default
+    });
   });
 
   describe('revoke', () => {
@@ -246,6 +278,24 @@ describe('SessionTokenService', () => {
         where: { userId: 7, revokedAt: null },
         data: { revokedAt: expect.any(Date), revokeReason: 'password_change' },
       });
+    });
+  });
+
+  describe('bustCacheBySessionId', () => {
+    it('drops the validate-cache entry for the session row (looked up by id)', async () => {
+      prisma.sessionToken.findUnique.mockResolvedValue({ tokenHash: 'abc' });
+      await svc.bustCacheBySessionId(101);
+      expect(prisma.sessionToken.findUnique).toHaveBeenCalledWith({
+        where: { id: 101 },
+        select: { tokenHash: true },
+      });
+      expect(kv.del).toHaveBeenCalledTimes(1);
+    });
+
+    it('is a no-op when the session id is unknown (no cache key to drop)', async () => {
+      prisma.sessionToken.findUnique.mockResolvedValue(null);
+      await svc.bustCacheBySessionId(999);
+      expect(kv.del).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,4 +1,12 @@
 <section class="settings-group">
+  @if (isAndroidNative()) {
+    <div class="link-device-card">
+      <button mat-flat-button color="primary" type="button" (click)="linkDevice()">
+        <app-icon matButtonIcon [type]="AppIconType.DEVICES" [style]="{ width: '18px', height: '18px' }" />
+        {{ 'session.linkDevice' | transloco }}
+      </button>
+    </div>
+  }
   @if (loading()) {
     <div class="state">{{ 'common.loading' | transloco }}</div>
   } @else if (list().length === 0) {

@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
 import { SessionAuthGuard } from './session-auth.guard.js';
 import type { Reflector } from '@nestjs/core';
-import { IS_PUBLIC } from '../common/public.decorator.js';
+import { IS_PUBLIC, IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH } from '../common/public.decorator.js';
+import { BusinessCode } from '../common/business-code.js';
 import type { BearerAuthService } from './bearer-auth.service.js';
 
 /**
@@ -61,17 +62,59 @@ describe('SessionAuthGuard (global @Public opt-out + Bearer resolve)', () => {
     await expect(guard.canActivate(makeCtx())).resolves.toBe(true);
   });
 
-  it('admits a request whose credential resolves to a principal and sets req.user (with sessionId)', async () => {
+  it('admits a request whose credential resolves to a principal and sets req.user (with sessionId + mustChangePassword)', async () => {
     reflector.getAllAndOverride.mockReturnValue(undefined);
-    bearerAuth.resolve.mockResolvedValue({ userId: 42, sessionId: 101, slid: false, persistent: true });
+    bearerAuth.resolve.mockResolvedValue({
+      userId: 42,
+      sessionId: 101,
+      slid: false,
+      persistent: true,
+      mustChangePassword: false,
+    });
     const ctx = makeCtx('Bearer some-token');
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(bearerAuth.resolve).toHaveBeenCalledWith('some-token', { ip: '127.0.0.1' });
     expect(
       (ctx.switchToHttp().getRequest() as {
-        user: { userId: number; sessionId: number | null };
+        user: { userId: number; sessionId: number | null; mustChangePassword: boolean };
       }).user,
-    ).toEqual({ userId: 42, sessionId: 101 });
+    ).toEqual({ userId: 42, sessionId: 101, mustChangePassword: false });
+  });
+
+  it('rejects with MUST_CHANGE_PASSWORD when the principal must change password (server gate, not a UI hint)', async () => {
+    // Not @Public, not an escape hatch → the global password-rotation gate fires. Both getAllAndOverride
+    // calls (IS_PUBLIC, then the escape-hatch) return undefined.
+    reflector.getAllAndOverride.mockReturnValue(undefined);
+    bearerAuth.resolve.mockResolvedValue({
+      userId: 42,
+      sessionId: 101,
+      slid: false,
+      persistent: true,
+      mustChangePassword: true,
+    });
+    await expect(guard.canActivate(makeCtx('Bearer locked'))).rejects.toMatchObject({
+      bizCode: BusinessCode.MUST_CHANGE_PASSWORD,
+    });
+  });
+
+  it('admits a must-change user on an escape-hatch route (set-password / logout-all)', async () => {
+    // getAllAndOverride answers per metadata key: not public, but it IS the escape hatch.
+    reflector.getAllAndOverride.mockImplementation((key: string) =>
+      key === IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH ? true : undefined,
+    );
+    bearerAuth.resolve.mockResolvedValue({
+      userId: 42,
+      sessionId: 101,
+      slid: false,
+      persistent: true,
+      mustChangePassword: true,
+    });
+    const ctx = makeCtx('Bearer escape');
+    await expect(guard.canActivate(ctx)).resolves.toBe(true);
+    expect(
+      (ctx.switchToHttp().getRequest() as { user: { mustChangePassword: boolean } }).user
+        .mustChangePassword,
+    ).toBe(true);
   });
 
   it('rejects (401) when the credential does not resolve', async () => {

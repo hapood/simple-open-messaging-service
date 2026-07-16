@@ -44,6 +44,25 @@ export interface Session {
   expiresAt: number | null
 }
 
+// Admin-issued one-time login codes (POST /admin/users/:id/login-codes + issue-login-code).
+// codeHash is never exposed; the plaintext `code` is present ONLY on issue (reveal-once).
+// producedSessionId is the safe audit link into the session a consumed code created (never the token).
+// Dates are ms-epoch numbers (global interceptor serializes backend Date → number).
+export interface LoginCodeView {
+  id: number
+  issuedAt: number
+  expiresAt: number
+  consumedAt: number | null
+  consumedIp: string | null
+  consumedDevice: string | null
+  producedSessionId: number | null
+  revokedAt: number | null
+  issuedBy: number
+}
+export interface IssuedLoginCode extends LoginCodeView {
+  code: string
+}
+
 // System-wide active session overview entry (POST /admin/sessions; joins user for the account)
 export interface SessionListItem {
   id: number
@@ -80,10 +99,11 @@ export interface AdminSessionListResult {
   total: number
 }
 
-// Active login ban entry (POST /admin/bans; type distinguishes IP/account)
+// Active login ban entry (POST /admin/bans; type is the locked login surface — IP / password-account /
+// one-time-code-account, the brute-force dimensions shared across login methods)
 export interface Ban {
   key: string
-  type: 'ip' | 'user'
+  type: 'ip' | 'user' | 'otp'
   value: string
   until: number
   remainingMs: number

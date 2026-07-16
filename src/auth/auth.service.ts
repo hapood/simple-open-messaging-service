@@ -4,6 +4,8 @@ import { UserService } from '../user/user.service.js';
 import argon2 from 'argon2';
 import { PrismaService } from '../prisma.service.js';
 import { normalizeAccount } from '../common/account.js';
+import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { SessionTokenService } from './session-token.service.js';
 
 /**
@@ -31,6 +33,16 @@ export class AuthService {
       // A `!`-group-User is not a login principal: reject as invalid credentials (non-leaking — same
       // outcome as a wrong password, and skips argon2.verify on its unusable empty hashPwd).
       return undefined;
+    }
+    if (user.hashPwd === null) {
+      // Password-login interception: a null-hash account (OTP/QR-only) has no password to verify. Signal
+      // PASSWORD_NOT_SET so the client shows "contact the administrator to set the initial password" rather
+      // than a generic wrong-password — and LocalStrategy does NOT count it toward the brute-force ban
+      // (there is no password to guess). Non-exploitable: a no-password account can't be brute-forced.
+      throw new BusinessException(
+        BusinessCode.PASSWORD_NOT_SET,
+        'password not set; contact the administrator to set the initial password',
+      );
     }
     const match = await argon2.verify(user.hashPwd, password);
     if (match === true) {
@@ -79,15 +91,50 @@ export class AuthService {
       where: { id: userId },
       select: { hashPwd: true },
     });
-    if (!user || !(await argon2.verify(user.hashPwd, oldPassword))) {
+    if (!user || !user.hashPwd || !(await argon2.verify(user.hashPwd, oldPassword))) {
+      // No user, or no password set yet (OTP/QR-only account) → can't "change"; treat as wrong_password.
+      // The first-time set uses setPassword (no old password); a voluntary change requires the current one.
       return { ok: false, reason: 'wrong_password' };
     }
     await this.prisma.user.update({
       where: { id: userId },
-      data: { hashPwd: await argon2.hash(newPassword) },
+      data: { hashPwd: await argon2.hash(newPassword), mustChangePassword: false },
     });
     await this.invalidateAllSessions(userId, 'password_change');
     return { ok: true };
+  }
+
+  /** Set the user's OWN password — exactly one of two cases: (1) the FIRST-TIME set by a passwordless
+   *  (OTP/QR-only) account enabling password login (hashPwd null), or (2) the forced rotation of an
+   *  admin-generated initial password (mustChangePassword). No old password is required: the caller is
+   *  already session-authenticated. Once a password exists AND the user has already settled it
+   *  (mustChangePassword false), this refuses (FORBIDDEN) — the only path then is {@link changePassword},
+   *  which requires the old password. That closes the bypass where a logged-in user rotates a known
+   *  password without proving they know the current one. Stores the hash + CLEARS mustChangePassword.
+   *  Unlike changePassword, sessions are NOT invalidated — the user keeps the session they just proved
+   *  ownership of. The calling session's validate cache is BUSTED (via sessionId) so the cleared flag is
+   *  seen at once — otherwise its 60s cache entry keeps the stale flag and gates the user out post-set. */
+  async setPassword(userId: number, newPassword: string, sessionId?: number): Promise<void> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { hashPwd: true, mustChangePassword: true },
+    });
+    if (!user) {
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'user not found');
+    }
+    if (user.hashPwd !== null && !user.mustChangePassword) {
+      throw new BusinessException(
+        BusinessCode.FORBIDDEN,
+        'password already set — use change-password (old password required)',
+      );
+    }
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { hashPwd: await argon2.hash(newPassword), mustChangePassword: false },
+    });
+    if (sessionId !== undefined) {
+      await this.sessionTokens.bustCacheBySessionId(sessionId);
+    }
   }
 
   /** Active session credentials — the data behind the "Devices / Active sessions" settings page.

@@ -13,11 +13,21 @@ import {
 } from '@/components/ui/table'
 import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
+import type { Ban } from '@/types/api'
 
 export function BansPage() {
   const { t } = useTranslation()
   const { data, isLoading, error } = useBans()
   const unban = useUnban()
+
+  // Dimension value → human label. Keys mirror the API `type` union so Record<Ban['type'],…> enforces all
+  // cases at compile time (a new dimension can't land silently unlabeled). user/otp both unban as an account
+  // (an account unban clears every account-keyed dimension — password + OTP — server-side).
+  const typeLabel: Record<Ban['type'], string> = {
+    ip: t('bans.type.ip'),
+    user: t('bans.type.user'),
+    otp: t('bans.type.otp'),
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -54,7 +64,7 @@ export function BansPage() {
                 <TableRow key={b.key}>
                   <TableCell>
                     <Badge variant={b.type === 'ip' ? 'default' : 'secondary'}>
-                      {b.type === 'ip' ? t('bans.type.ip') : t('bans.type.account')}
+                      {typeLabel[b.type]}
                     </Badge>
                   </TableCell>
                   <TableCell className="font-mono text-xs">{b.value}</TableCell>

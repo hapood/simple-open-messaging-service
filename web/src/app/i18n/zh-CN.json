@@ -82,6 +82,10 @@
     "displayNameHint": "1 到 30 个字符",
     "passwordHint": "6 到 20 个字母、数字或符号",
     "passwordMismatch": "两次输入的密码不一致，请重新输入",
+    "setPasswordTitle": "设置你的密码",
+    "setPasswordSub": "请设置你自己的密码以完成登录。",
+    "newPassword": "新密码",
+    "setPasswordBtn": "设置密码",
     "unknownError": "发生未知错误",
     "themeAria": "主题：{{label}}",
     "languageAria": "语言：{{label}}",
@@ -131,7 +135,12 @@
     "terminateOthersConfirm": "退出其他 {{count}} 个会话？",
     "clientApp": "安卓",
     "clientWeb": "网页",
-    "clientDesktop": "桌面"
+    "clientDesktop": "桌面",
+    "linkDevice": "添加登录设备",
+    "linkDeviceConfirm": "确认在另一台设备登录？",
+    "linkDeviceAuthorize": "授权登录",
+    "linkDeviceSuccess": "已授权，另一台设备正在登录。",
+    "linkDeviceFailed": "授权失败，登录码可能已失效，请重试。"
   },
   "folder": {
     "title": "分组",
@@ -355,6 +364,8 @@
       "otpConsumed": "该一次性密码已被使用。",
       "qrInvalid": "该登录码无效。",
       "qrExpired": "该登录码已失效，请刷新后重试。",
+      "passwordNotSet": "该账号尚未设置密码，请联系管理员设置初始密码。",
+      "mustChangePassword": "请先设置你自己的密码再继续。",
       "notFriends": "你和该用户不是好友",
       "messageEmpty": "消息内容为空",
       "threadNotApproved": "会话尚未建立",

@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { MoreHorizontal, Search } from 'lucide-react'
+import { MoreHorizontal, Plus, Search } from 'lucide-react'
 import { useAdminUsers } from '@/hooks/use-admin-users'
 import { useListParams } from '@/hooks/use-list-params'
-import { useIsSuperAdmin } from '@/hooks/use-me'
+import { useIsAdminPlus } from '@/hooks/use-me'
 import {
   useBatchUsers,
   useDisableUser,
@@ -35,15 +35,19 @@ import { Pagination } from '@/components/common/pagination'
 import { TableBodyState } from '@/components/common/table-state'
 import { Timestamp } from '@/components/common/timestamp'
 import { SessionsDialog } from './sessions-dialog'
-import { ResetPasswordDialog } from './reset-password-dialog'
+import { CreateUserDialog } from './create-user-dialog'
+import { IssueLoginCodeDialog } from './issue-login-code-dialog'
+import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog'
 
 const PAGE_SIZE = 20
 
 export function UsersPage() {
   const { t } = useTranslation()
-  const isSuper = useIsSuperAdmin()
+  const canManage = useIsAdminPlus()
   const [sessionsUser, setSessionsUser] = useState<User | null>(null)
-  const [resetUser, setResetUser] = useState<User | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [issueUser, setIssueUser] = useState<User | null>(null)
+  const [genPwdUser, setGenPwdUser] = useState<User | null>(null)
 
   const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
     pageSize: PAGE_SIZE,
@@ -114,14 +118,22 @@ export function UsersPage() {
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight">{t('users.title')}</h1>
-        <div className="relative w-72">
-          <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
-          <Input
-            placeholder={t('users.searchPlaceholder')}
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            className="pl-8"
-          />
+        <div className="flex items-center gap-2">
+          <div className="relative w-72">
+            <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
+            <Input
+              placeholder={t('users.searchPlaceholder')}
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              className="pl-8"
+            />
+          </div>
+          {canManage ? (
+            <Button size="sm" onClick={() => setCreateOpen(true)}>
+              <Plus className="size-4" />
+              {t('users.create')}
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -251,10 +263,15 @@ export function UsersPage() {
                         <DropdownMenuItem onClick={() => setSessionsUser(u)}>
                           {t('users.action.viewSessions')}
                         </DropdownMenuItem>
-                        {isSuper ? (
-                          <DropdownMenuItem onClick={() => setResetUser(u)}>
-                            {t('users.action.resetPassword')}
-                          </DropdownMenuItem>
+                        {canManage ? (
+                          <>
+                            <DropdownMenuItem onClick={() => setIssueUser(u)}>
+                              {t('users.action.issueLoginCode')}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setGenPwdUser(u)}>
+                              {t('users.action.generateInitialPassword')}
+                            </DropdownMenuItem>
+                          </>
                         ) : null}
                       </DropdownMenuContent>
                     </DropdownMenu>
@@ -272,7 +289,15 @@ export function UsersPage() {
       </div>
 
       <SessionsDialog user={sessionsUser} onClose={() => setSessionsUser(null)} />
-      <ResetPasswordDialog user={resetUser} onClose={() => setResetUser(null)} />
+      <CreateUserDialog open={createOpen} onClose={() => setCreateOpen(false)} />
+      <IssueLoginCodeDialog
+        user={issueUser ? { id: issueUser.id, account: issueUser.account } : null}
+        onClose={() => setIssueUser(null)}
+      />
+      <GenerateInitialPasswordDialog
+        user={genPwdUser ? { id: genPwdUser.id, account: genPwdUser.account } : null}
+        onClose={() => setGenPwdUser(null)}
+      />
     </div>
   )
 }

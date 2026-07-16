@@ -46,20 +46,10 @@ export class AdminListUsersDto {
   search?: string;
 }
 
-/** Reset-user-password input (reuses the user-side 6-20 char rule). */
-export class AdminResetPasswordDto {
-  @ApiProperty({
-    example: 'NewP@ss2',
-    description: 'New password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]',
-  })
-  @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
-    message: 'newPassword must be 6-20 chars of allowed set',
-  })
-  newPassword!: string;
-}
-
-/** Admin create-user input — mirrors the user-side RegisterDto grammar (the admin provisions an account the
- *  user can later sign into via whichever login method is enabled). */
+/** Admin create-user input. The admin provisions an account the user later signs into via whichever login
+ *  method is enabled. `password` is required only when password login is enabled (loginMode ALL /
+ *  PASSWORD_ONLY); for an OTP/QR-only account (loginMode APP_OTP_AND_QR) it is omitted and the account is
+ *  created with NO password, bootstrapped instead by the one-time code the admin issues next. */
 export class AdminCreateUserDto {
   @ApiProperty({
     example: 'alice',
@@ -77,13 +67,16 @@ export class AdminCreateUserDto {
   name!: string;
 
   @ApiProperty({
+    required: false,
     example: 'P@ssw0rd',
-    description: 'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]',
+    description:
+      'Initial password: 6-20 chars, allowed set [a-zA-Z0-9.@!#$%^&*()]. Required only when password login is enabled (loginMode ALL / PASSWORD_ONLY); omitted for OTP/QR-only accounts.',
   })
+  @IsOptional()
   @Matches(/^([a-zA-Z0-9\.\@\!\#\$\%\^\&\*\(\)]){6,20}$/, {
     message: 'password must be 6-20 chars of allowed set',
   })
-  password!: string;
+  password?: string;
 }
 
 /** Unban input (IP and/or account; at least one must be provided). */

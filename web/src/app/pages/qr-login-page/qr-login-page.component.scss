@@ -51,21 +51,14 @@
   gap: 12px;
 }
 
-.qr-token {
-  width: 220px;
-  min-height: 220px;
+.qr-image {
+  // Fixed integer-px box (project rule). White card: the QR is dark-on-white for scan reliability, and the
+  // padding adds quiet zone beyond uqr's built-in border.
+  width: 240px;
+  height: 240px;
+  padding: 16px;
   box-sizing: border-box;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 12px;
-  word-break: break-all;
-  text-align: center;
-  font-size: 11px;
-  line-height: 16px;
-  color: var(--app-text-muted);
-  background: var(--app-surface-variant, #f6f7f9);
-  border: 1px dashed var(--app-border, rgba(0, 0, 0, 0.12));
+  background: #ffffff;
   border-radius: var(--app-radius-sm, 8px);
 }
 

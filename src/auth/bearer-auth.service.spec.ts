@@ -20,14 +20,18 @@ describe('BearerAuthService', () => {
     expect(sessions.validate).not.toHaveBeenCalled();
   });
 
-  it('resolves a valid session token to { userId, sessionId }', async () => {
-    sessions.validate.mockResolvedValue({ userId: 42, sessionId: 101 });
-    await expect(svc.resolve('a'.repeat(64))).resolves.toEqual({ userId: 42, sessionId: 101 });
+  it('resolves a valid session token to { userId, sessionId, mustChangePassword }', async () => {
+    sessions.validate.mockResolvedValue({ userId: 42, sessionId: 101, mustChangePassword: false });
+    await expect(svc.resolve('a'.repeat(64))).resolves.toEqual({
+      userId: 42,
+      sessionId: 101,
+      mustChangePassword: false,
+    });
     expect(sessions.validate).toHaveBeenCalledWith('a'.repeat(64), { ip: undefined });
   });
 
   it('threads the request ip into the session validation', async () => {
-    sessions.validate.mockResolvedValue({ userId: 42, sessionId: 101 });
+    sessions.validate.mockResolvedValue({ userId: 42, sessionId: 101, mustChangePassword: false });
     await svc.resolve('tok', { ip: '1.2.3.4' });
     expect(sessions.validate).toHaveBeenCalledWith('tok', { ip: '1.2.3.4' });
   });

@@ -14,6 +14,10 @@ function localizedBizMessage(code: number): string | null {
       return i18n.t('errors.parseFailed')
     case CODE.VALIDATION_FAILED:
       return i18n.t('errors.biz.validation')
+    case CODE.NOT_FOUND:
+      return i18n.t('errors.biz.notFound')
+    case CODE.ALREADY_EXISTS:
+      return i18n.t('errors.biz.alreadyExists')
     case CODE.UNAUTHENTICATED:
       return i18n.t('errors.biz.unauthenticated')
     case CODE.INVALID_CREDENTIALS:
@@ -24,6 +28,22 @@ function localizedBizMessage(code: number): string | null {
       return i18n.t('errors.biz.rateLimited')
     case CODE.REFRESH_REUSE_DETECTED:
       return i18n.t('errors.biz.refreshReuse')
+    case CODE.SESSION_REVOKED:
+      return i18n.t('errors.biz.sessionRevoked')
+    case CODE.LOGIN_METHOD_DISABLED:
+      return i18n.t('errors.biz.loginMethodDisabled')
+    case CODE.OTP_INVALID:
+      return i18n.t('errors.biz.otpInvalid')
+    case CODE.OTP_EXPIRED:
+      return i18n.t('errors.biz.otpExpired')
+    case CODE.OTP_CONSUMED:
+      return i18n.t('errors.biz.otpConsumed')
+    case CODE.PASSWORD_NOT_SET:
+      return i18n.t('errors.biz.passwordNotSet')
+    case CODE.MUST_CHANGE_PASSWORD:
+      return i18n.t('errors.biz.mustChangePassword')
+    case CODE.INTERNAL:
+      return i18n.t('errors.biz.internal')
     case CODE.VAPID_INVALID:
       return i18n.t('errors.biz.vapidInvalid')
     default:

@@ -6,6 +6,7 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
+import { seedUserWithSession } from './seed';
 
 /**
  * Friend-request unread badge — the BACKEND half of the badge data contract.
@@ -53,23 +54,10 @@ describe('Friend-request badge e2e (invite arms hasUrFriendReq; mark-read clears
   it('a FRIEND invite arms the recipient badge, and markInvitesRead clears it', async () => {
     const http = app.getHttpServer();
 
-    // 1. register inviter A + invitee B
-    const regA = await request(http)
-      .post('/api/v1/user/register')
-      .send({ account: 'inviter', name: 'Inviter', password: 'Pass1234' });
-    expect(regA.body.code).toBe(0);
-    const regB = await request(http)
-      .post('/api/v1/user/register')
-      .send({ account: 'invitee', name: 'Invitee', password: 'Pass1234' });
-    expect(regB.body.code).toBe(0);
-
-    // 2. login both → access tokens
-    const tokA = (
-      await request(http).post('/api/v1/auth/login').send({ account: 'inviter', password: 'Pass1234' })
-    ).body.data.session_token;
-    const tokB = (
-      await request(http).post('/api/v1/auth/login').send({ account: 'invitee', password: 'Pass1234' })
-    ).body.data.session_token;
+    // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
+    // authenticated users, not the login flow).
+    const tokA = (await seedUserWithSession(app, 'inviter', { name: 'Inviter' })).token;
+    const tokB = (await seedUserWithSession(app, 'invitee', { name: 'Invitee' })).token;
     expect(tokA).toBeTruthy();
     expect(tokB).toBeTruthy();
     const authA = { Authorization: `Bearer ${tokA}` };

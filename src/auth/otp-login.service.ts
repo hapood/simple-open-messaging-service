@@ -1,15 +1,25 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, HttpStatus } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
 import { PrismaService } from '../prisma.service.js';
 import { AuthService } from './auth.service.js';
 import { SessionTokenService } from './session-token.service.js';
+import { BruteForceService, BAN_DIM_OTP, type BanStep } from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { normalizeAccount } from '../common/account.js';
 
 /** How long an issued code is valid (10 min). */
 const CODE_TTL_MS = 10 * 60 * 1000;
+
+/** Account-dimension brute-force ceiling on the 6-digit code (the IP dimension is handled by the route's
+ *  @Throttle). A sliding window of failures per account; past the threshold the account's OTP is locked,
+ *  bounding distributed guessing — the code rotates every CODE_TTL_MS, so even a botnet can't exhaust the
+ *  10^6 space against one account. Mirrors LocalStrategy's account-dimension intent (same victim-lockout
+ *  tradeoff: an attacker can annoy-lock a real account for up to the ban, accepted as the cost of stopping
+ *  distributed guessing). Storage + the sliding window live in the shared {@link BruteForceService}, so OTP
+ *  locks are admin-visible and unbannable alongside password bans. */
+const OTP_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }];
 
 /** A 6-digit numeric string (000000–999999) — short enough for an admin to hand to a user and for the user
  *  to type on a phone; the 10^6 space resists guessing under the endpoint's @Throttle. */
@@ -54,7 +64,25 @@ export class OtpLoginService {
     private readonly prisma: PrismaService,
     private readonly auth: AuthService,
     private readonly sessionTokens: SessionTokenService,
+    private readonly bruteForce: BruteForceService,
   ) {}
+
+  /** Record one OTP failure for the account, then throw. If THIS failure crosses the ban threshold, surface
+   *  RATE_LIMITED + the ban deadline immediately — consistency with the password path, which surfaces the ban
+   *  on the triggering attempt (the old code waited one extra attempt). Collapsing every failure code to
+   *  RATE_LIMITED once banned also avoids distinguishing expired/consumed/invalid under a lock. The
+   *  account-dimension throttle (the IP dimension is the route @Throttle) lives in the shared
+   *  {@link BruteForceService}, so OTP locks are admin-visible/unbannable alongside password bans. Counted
+   *  ONLY for real accounts (see the not-found/group/disabled guard in {@link verifyAndLogin}). */
+  private failOtp(account: string, code: BusinessCode, message: string): never {
+    const ban = this.bruteForce.registerFailure(BAN_DIM_OTP, account, OTP_STEPS);
+    throw new BusinessException(
+      ban !== undefined ? BusinessCode.RATE_LIMITED : code,
+      ban !== undefined ? 'too many one-time code attempts; try again later' : message,
+      HttpStatus.OK,
+      ban !== undefined ? { bannedUntil: ban } : undefined,
+    );
+  }
 
   /** Mint a one-time code for a user. Revokes the user's prior unconsumed code first (one valid code per
    *  account at a time). Returns the plaintext ONCE (reveal-once) + the audit view. */
@@ -95,38 +123,58 @@ export class OtpLoginService {
    *  updateMany guard (only the first concurrent verifier wins); replaces the user's prior app session (the
    *  one-app-session rule, kicking the old Android device with a reason-aware notice); records the produced
    *  session id on the code for audit. Returns the plaintext session token (the caller sets it as the
-   *  httpOnly cookie). Throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any failure. */
+   *  httpOnly cookie) + the user's `mustChangePassword` flag so the client can proactively route to the
+   *  set-password screen (an OTP account whose admin-generated initial password was never rotated is gated
+   *  by SessionAuthGuard regardless — this flag is the clean proactive UX, not the enforcement). Throws
+   *  BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any failure. */
   async verifyAndLogin(
     account: string,
     code: string,
     opts: { device?: string; userAgent?: string; ip?: string },
-  ): Promise<string> {
+  ): Promise<{ token: string; mustChangePassword: boolean }> {
+    const acct = normalizeAccount(account);
+    // Account-dimension brute-force lock (the IP dimension is the route @Throttle). A locked account is
+    // rejected before any code lookup — RATE_LIMITED surfaces it so a legitimate user knows to wait / get a
+    // new code, and an attacker already knows they're hammering. Bounds distributed guessing against one
+    // account (the 6-digit space can't be exhausted once ≤5 guesses/window are allowed).
+    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_OTP, value: acct }]);
+    if (ban !== undefined) {
+      throw new BusinessException(
+        BusinessCode.RATE_LIMITED,
+        'too many one-time code attempts; try again later',
+        HttpStatus.OK,
+        { bannedUntil: ban },
+      );
+    }
     const user = await this.prisma.user.findUnique({
-      where: { account_domain: { account: normalizeAccount(account), domain: 'local' } },
-      select: { id: true, isGroup: true, isDeleted: true },
+      where: { account_domain: { account: acct, domain: 'local' } },
+      select: { id: true, isGroup: true, isDeleted: true, mustChangePassword: true },
     });
-    // Non-revealing: a non-existent / group / disabled account is indistinguishable from a wrong code.
+    // Non-revealing: a non-existent / group / disabled account is indistinguishable from a wrong code. NOT
+    // counted toward the lock — there is no real account to protect, and counting arbitrary input strings
+    // would let an attacker fill the failure map.
     if (!user || user.isGroup || user.isDeleted) {
       throw new BusinessException(BusinessCode.OTP_INVALID, 'invalid one-time code');
     }
 
-    // Inspect the most-recent code to return a precise failure code (expired / consumed / invalid).
+    // Inspect the most-recent code to return a precise failure code (expired / consumed / invalid). Each is
+    // a guessable failure → counted toward the account lock.
     const latest = await this.prisma.loginCode.findFirst({
       where: { userId: user.id },
       orderBy: { issuedAt: 'desc' },
     });
     if (!latest || latest.revokedAt) {
-      throw new BusinessException(BusinessCode.OTP_INVALID, 'invalid one-time code');
+      this.failOtp(acct, BusinessCode.OTP_INVALID, 'invalid one-time code');
     }
     if (latest.consumedAt) {
-      throw new BusinessException(BusinessCode.OTP_CONSUMED, 'one-time code already used');
+      this.failOtp(acct, BusinessCode.OTP_CONSUMED, 'one-time code already used');
     }
     if (latest.expiresAt.getTime() <= Date.now()) {
-      throw new BusinessException(BusinessCode.OTP_EXPIRED, 'one-time code expired');
+      this.failOtp(acct, BusinessCode.OTP_EXPIRED, 'one-time code expired');
     }
     const match = await argon2.verify(latest.codeHash, code);
     if (!match) {
-      throw new BusinessException(BusinessCode.OTP_INVALID, 'invalid one-time code');
+      this.failOtp(acct, BusinessCode.OTP_INVALID, 'invalid one-time code');
     }
 
     // Single-use guard: only the first concurrent verifier flips consumedAt from null. A 0 count means the
@@ -157,7 +205,8 @@ export class OtpLoginService {
         .update({ where: { id: latest.id }, data: { producedSessionId: sessionId } })
         .catch(() => {});
     }
-    return token;
+    this.bruteForce.clearFailures(BAN_DIM_OTP, acct); // success clears the account's OTP failure history
+    return { token, mustChangePassword: user.mustChangePassword };
   }
 
   /** Audit list of a user's login codes — never the codeHash or token value; producedSessionId links into

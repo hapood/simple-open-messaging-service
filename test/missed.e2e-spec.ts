@@ -7,6 +7,7 @@ import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
 import { ContentType } from '../src/prisma/generated/client.js';
+import { seedUser, seedSession } from './seed';
 
 /**
  * /notifications/missed e2e — the paginated, message-based incremental-sync endpoint (Phase 1).
@@ -38,17 +39,11 @@ describe('notifications/missed (paginated sync)', () => {
 
   beforeEach(async () => {
     await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
-    // Register + log in the recipient to obtain a session token (the global guard accepts it on /missed).
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'recip', name: 'Recip', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-    const recipient = await prisma.user.findUnique({ where: { account_domain: { account: 'recip', domain: 'local' } } });
-    recipientId = recipient!.id;
-    const login = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'recip', password: 'Pass1234', client: 'app' });
-    sessionToken = login.body.data.session_token;
+    // Seed the recipient + a session directly (registration is closed; the spec needs an authenticated
+    // user, not the login flow).
+    const recipient = await seedUser(app, 'recip', { name: 'Recip' });
+    recipientId = recipient.id;
+    sessionToken = await seedSession(app, recipientId, 'app');
 
     // A peer user + a P2P thread both participate in; 5 messages from the peer, 1s apart.
     const peer = await prisma.user.create({

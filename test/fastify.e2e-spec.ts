@@ -9,6 +9,7 @@ import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
 import { BusinessCode } from '../src/common/business-code';
 import { makePng } from './federation-harness';
+import { seedUserWithSession } from './seed';
 
 // Verifies the surfaces rewritten for the Express→Fastify migration that the auth e2e does
 // not cover: Swagger UI on Fastify, the @fastify/multipart upload path (UploadService.consumeImage)
@@ -86,7 +87,8 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     prisma = app.get(PrismaService);
     port = (app.getHttpServer().address() as { port: number }).port;
 
-    // Seed a user and grab an access token for the guarded routes below.
+    // Seed two local users + sessions directly (registration is closed; the spec needs authenticated
+    // users, not the login flow). userAId is the member for the per-object media-authz tests.
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "User" RESTART IDENTITY CASCADE',
     );
@@ -94,23 +96,11 @@ describe('Fastify adapter surfaces (docs / upload / SSE)', () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY',
     );
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'fastify', name: 'Fastify', password: 'Pass1234' });
-    const login = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'fastify', password: 'Pass1234' });
-    token = login.body.data.session_token;
+    const userA = await seedUserWithSession(app, 'fastify', { name: 'Fastify' });
+    token = userA.token;
+    userAId = userA.id;
     // Second local user for the per-object media-authz tests (the non-member).
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'fastify2', name: 'Fastify2', password: 'Pass1234' });
-    const login2 = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'fastify2', password: 'Pass1234' });
-    token2 = login2.body.data.session_token;
-    userAId = (await prisma.user.findFirst({ where: { account: 'fastify' } }))!
-      .id;
+    token2 = (await seedUserWithSession(app, 'fastify2', { name: 'Fastify2' })).token;
     // A sharp-valid PNG for the avatar endpoint (saveAvatars DECODES via sharp; the hand-written
     // PNG_1X1 used for the raw /upload tests has a header sharp's libpng rejects).
     avatarPng = await makePng(200);

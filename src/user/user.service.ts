@@ -97,7 +97,7 @@ export class UserService implements OnModuleInit {
     return { list, total };
   }
 
-  addUser(params: { account: string; name: string; hashPwd: string }) {
+  addUser(params: { account: string; name: string; hashPwd?: string | null }) {
     const account = normalizeAccount(params.account); // case-insensitive
     // Defense-in-depth at the single creation choke point: RegisterDto's @Matches guards the HTTP path,
     // but addUser is also reachable from internal/admin/test callers — enforce the USER grammar here so an
@@ -121,7 +121,7 @@ export class UserService implements OnModuleInit {
         data: {
           account,
           isForeigner: false,
-          hashPwd: params.hashPwd,
+          hashPwd: params.hashPwd ?? null, // null for OTP/QR-only accounts (no password)
           // Display name is now a required registration input (no longer defaulted to account).
           name: params.name,
           avatar: '',

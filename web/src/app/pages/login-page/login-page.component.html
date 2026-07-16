@@ -5,7 +5,7 @@
     @if (notice()) {
     <div class="login-notice" role="status">{{ notice() }}</div>}
     @if (showPassword()) {
-      <app-login (onSuccess)="onSuccess()"></app-login>
+      <app-login (onSuccess)="onSuccess($event)"></app-login>
     }
     @if (canOtp()) {
       <button mat-button class="method-switch" type="button" (click)="jumpToOtp()">{{ 'auth.switchToOtp' | transloco }}</button>

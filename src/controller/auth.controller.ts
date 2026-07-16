@@ -17,10 +17,9 @@ import { PasswordLoginEnabledGuard } from '../auth/password-login-enabled.guard.
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { AuthService } from '../auth/auth.service.js';
 import {
-  LOGGED_IN_COOKIE,
-  LOGGED_IN_COOKIE_OPTIONS,
-  MEDIA_COOKIE_OPTIONS,
   MEDIA_TOKEN_COOKIE,
+  setSessionCookies,
+  clearSessionCookies,
 } from '../auth/media-token.js';
 import {
   SessionTokenService,
@@ -29,11 +28,12 @@ import {
 import { LoginAuthInfo } from '../auth/local.strategy.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
-import { Public } from '../common/public.decorator.js';
+import { Public, MustChangePasswordEscapeHatch } from '../common/public.decorator.js';
 import {
   LoginDto,
   LogoutDto,
   ChangePasswordDto,
+  SetPasswordDto,
   RevokeSessionDto,
 } from '../dto/auth.dto.js';
 
@@ -46,27 +46,8 @@ export class AuthController {
     private readonly sessionTokens: SessionTokenService,
   ) {}
 
-  /** Set the session credential: the httpOnly `media_token` cookie (the primary credential the global
-   *  guard accepts on every route) AND the non-httpOnly `logged_in` presence cookie (so the pure-httpOnly
-   *  browser client can read login state via `document.cookie`). `persistent` selects a 14-day cookie
-   *  (default, "keep me logged in") vs a session cookie (dropped on browser close). Same validation path
-   *  as the API (BearerAuthService) → a revoked session loses all access. */
-  private setMediaCookie(reply: FastifyReply, token: string, persistent: boolean) {
-    const mediaOpts = persistent
-      ? MEDIA_COOKIE_OPTIONS
-      : { ...MEDIA_COOKIE_OPTIONS, maxAge: undefined };
-    const presenceOpts = persistent
-      ? LOGGED_IN_COOKIE_OPTIONS
-      : { ...LOGGED_IN_COOKIE_OPTIONS, maxAge: undefined };
-    reply.setCookie(MEDIA_TOKEN_COOKIE, token, mediaOpts);
-    reply.setCookie(LOGGED_IN_COOKIE, '1', presenceOpts);
-  }
-
-  /** Clear both cookies — path must match the one used at set time for the browser to drop them. */
-  private clearMediaCookie(reply: FastifyReply) {
-    reply.clearCookie(MEDIA_TOKEN_COOKIE, { path: '/' });
-    reply.clearCookie(LOGGED_IN_COOKIE, { path: '/' });
-  }
+  // Cookie set/clear live in media-token.ts (setSessionCookies / clearSessionCookies) — shared by the
+  // password, OTP, and QR login paths so every flow sets the session credential identically.
 
   @Public()
   @UseGuards(PasswordLoginEnabledGuard, LocalAuthGuard)
@@ -99,8 +80,21 @@ export class AuthController {
         client,
         { device: body.device, userAgent, ip, persistent },
       );
-      this.setMediaCookie(reply, session_token, persistent);
-      return { code: BusinessCode.OK, message: 'successful', data: { session_token } };
+      setSessionCookies(reply, session_token, persistent);
+      return {
+        code: BusinessCode.OK,
+        message: 'successful',
+        data: {
+          session_token,
+          // mustChangePassword flags an admin-generated INITIAL password the user must change before the
+          // app is usable — the client forces the set-password screen.
+          ...(authInfo.mustChangePassword ? { mustChangePassword: true } : {}),
+        },
+      };
+    } else if (authInfo.status === 2) {
+      // PASSWORD_NOT_SET: the account has no password (OTP/QR-only). The client shows "contact the
+      // administrator to set the initial password".
+      return { code: BusinessCode.PASSWORD_NOT_SET, message: 'password not set' };
     } else {
       if (authInfo.bannedUntil !== undefined) {
         return {
@@ -131,11 +125,12 @@ export class AuthController {
     if (token) {
       await this.sessionTokens.revoke(token);
     }
-    this.clearMediaCookie(reply);
+    clearSessionCookies(reply);
     return { code: BusinessCode.OK, message: 'success' };
   }
 
   @ApiBearerAuth()
+  @MustChangePasswordEscapeHatch()
   @HttpCode(HttpStatus.OK)
   @Post('auth/logout-all')
   @ApiOperation({ summary: 'Logout all devices (revoke every session)' })
@@ -144,7 +139,7 @@ export class AuthController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     await this.authService.invalidateAllSessions(req.user.userId, 'all_devices');
-    this.clearMediaCookie(reply);
+    clearSessionCookies(reply);
     return { code: BusinessCode.OK, message: 'success' };
   }
 
@@ -166,10 +161,25 @@ export class AuthController {
     if (r.ok) {
       // Every session (including this device's) is revoked → the media cookie is dead; clear it. The
       // client re-logs in for a fresh session token.
-      this.clearMediaCookie(reply);
+      clearSessionCookies(reply);
       return { code: BusinessCode.OK, message: 'success' };
     }
     return { code: BusinessCode.VALIDATION_FAILED, message: 'old password wrong' };
+  }
+
+  @ApiBearerAuth()
+  @MustChangePasswordEscapeHatch()
+  @Throttle(10, 60)
+  @HttpCode(HttpStatus.OK)
+  @Post('auth/set-password')
+  @ApiOperation({ summary: "Set the user's own password (forced first-time set after an initial password; clears mustChangePassword)" })
+  async setPassword(@Request() req: FastifyRequest, @Body() dto: SetPasswordDto): Promise<ApiResult> {
+    // No old password: the caller is already session-authenticated. Establishes the user's own password and
+    // clears the mustChangePassword flag so the app unlocks. Sessions are kept (unlike change-password).
+    // sessionId is threaded so setPassword can bust this token's validate cache (the cleared flag must be
+    // seen immediately, not after the 60s cache TTL).
+    await this.authService.setPassword(req.user.userId, dto.newPassword, req.user.sessionId ?? undefined);
+    return { code: BusinessCode.OK, message: 'success' };
   }
 
   @ApiBearerAuth()

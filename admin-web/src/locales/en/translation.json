@@ -14,6 +14,8 @@
     "operationFailed": "Operation failed",
     "comingSoon": "Coming soon",
     "neverExpires": "No expiry",
+    "copy": "Copy",
+    "copied": "Copied",
     "client": {
       "app": "Android",
       "web": "Web",
@@ -119,6 +121,7 @@
   },
   "users": {
     "title": "User Management",
+    "create": "Create user",
     "searchPlaceholder": "Search account",
     "col": {
       "id": "ID",
@@ -138,13 +141,15 @@
       "ban": "Ban",
       "forceLogout": "Force Logout",
       "viewSessions": "View Sessions",
-      "resetPassword": "Reset Password"
+      "issueLoginCode": "Issue login code",
+      "generateInitialPassword": "Generate initial password"
     },
     "toast": {
       "unbanned": "Unbanned",
       "banned": "Banned",
       "forceLoggedOut": "Force logged out",
-      "batchDone": "Action applied to {{count}} user(s)"
+      "batchDone": "Action applied to {{count}} user(s)",
+      "created": "User created"
     },
     "selected": "{{count}} selected",
     "selectAll": "Select all",
@@ -162,7 +167,7 @@
   },
   "bans": {
     "title": "Ban Management",
-    "desc": "Currently active login bans (IP / account, produced by the rate-limit sliding window).",
+    "desc": "Currently active login bans (IP, password-account, or one-time-code account — from the brute-force sliding window shared across login methods).",
     "col": {
       "type": "Type",
       "value": "Value",
@@ -171,7 +176,8 @@
     },
     "type": {
       "ip": "IP",
-      "account": "Account"
+      "user": "Password",
+      "otp": "OTP"
     },
     "empty": "No active bans",
     "unban": "Unban"
@@ -445,19 +451,68 @@
       "closed": "Disconnected"
     }
   },
-  "resetPassword": {
-    "title": "Reset password for {{name}}",
-    "newPassword": "New Password",
-    "hint": "6-20 chars; letters, digits and .@!#$%^&*()",
-    "invalid": "6-20 chars; letters, digits and .@!#$%^&*()",
-    "confirm": "Confirm Reset",
-    "success": "Password reset; all sessions of this user have been revoked",
-    "failed": "Reset failed"
+  "createUser": {
+    "title": "Create user",
+    "account": "Account",
+    "accountHint": "3-31 chars: letters, digits, dots; start with a letter",
+    "name": "Display name",
+    "nameHint": "1 to 30 characters",
+    "password": "Initial password",
+    "passwordHint": "6-20 chars; letters, digits and .@!#$%^&*()",
+    "passwordOptional": "Optional — leave blank for a passwordless account (login via code)",
+    "passwordRequired": "Password login is enabled; an initial password is required",
+    "confirm": "Create",
+    "success": "User {{account}} created"
+  },
+  "issueLoginCode": {
+    "title": "Issue login code for {{name}}",
+    "warning": "Issuing a new code revokes this account's prior unused code. When the user logs in with it, their existing mobile session is signed out.",
+    "confirm": "Issue",
+    "codeLabel": "One-time login code (shown once)",
+    "note": "Hand it to the user now — it cannot be viewed again after closing.",
+    "copied": "Code copied",
+    "copyFailed": "Copy failed",
+    "success": "Login code issued"
+  },
+  "generateInitialPassword": {
+    "title": "Generate initial password for {{name}}",
+    "note": "This is a one-time initial password. The user will be forced to set their own on first login, and all existing sessions are revoked.",
+    "confirm": "Generate",
+    "passwordLabel": "Initial password (shown once)",
+    "copied": "Password copied",
+    "copyFailed": "Copy failed",
+    "success": "Initial password generated"
+  },
+  "loginCodes": {
+    "title": "Login codes",
+    "desc": "Admin-issued one-time login codes.",
+    "col": {
+      "status": "Status",
+      "issuedAt": "Issued",
+      "expiresAt": "Expires",
+      "consumedAt": "Consumed",
+      "consumedIp": "Consumed IP",
+      "device": "Device",
+      "session": "Resulting session"
+    },
+    "status": {
+      "pending": "Pending",
+      "consumed": "Consumed",
+      "expired": "Expired",
+      "revoked": "Revoked"
+    },
+    "empty": "No login codes",
+    "revoke": "Revoke",
+    "revokeConfirm": "Revoke this unused login code?",
+    "toast": {
+      "revoked": "Login code revoked"
+    }
   },
   "userSessions": {
     "title": "Active sessions of {{name}}",
     "loadFailed": "Load failed",
     "empty": "No active sessions",
+    "appCount": "App sessions: {{count}}",
     "col": {
       "device": "device",
       "client": "Client",
@@ -601,6 +656,12 @@
       "rateLimited": "Too many requests, please wait",
       "refreshReuse": "Session changed, please sign in again",
       "sessionRevoked": "Session ended, please sign in again",
+      "loginMethodDisabled": "This login method is not available",
+      "otpInvalid": "The one-time code is incorrect",
+      "otpExpired": "The one-time code has expired",
+      "otpConsumed": "The one-time code has already been used",
+      "passwordNotSet": "This account has no password set",
+      "mustChangePassword": "Please set your password first",
       "internal": "Something went wrong",
       "vapidInvalid": "VAPID keypair is invalid (malformed or mismatched)"
     }

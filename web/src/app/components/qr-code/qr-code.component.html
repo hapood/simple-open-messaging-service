@@ -1,0 +1,11 @@
+@if (qr(); as q) {
+  <svg
+    [attr.viewBox]="'0 0 ' + q.size + ' ' + q.size"
+    class="qr-svg"
+    role="img"
+    [attr.aria-label]="ariaLabel()"
+  >
+    <rect [attr.width]="q.size" [attr.height]="q.size" class="qr-bg" />
+    <path [attr.d]="q.d" class="qr-fg" />
+  </svg>
+}

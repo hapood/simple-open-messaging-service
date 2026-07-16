@@ -16,7 +16,8 @@ datasource db {
 model User {
   id                 Int                 @id @default(autoincrement())
   account            String              @db.VarChar(31)
-  hashPwd            String              @db.VarChar(127)
+  hashPwd            String?             @db.VarChar(127) // null = OTP/QR-only account (no password; set when loginMode disables password login)
+  mustChangePassword Boolean             @default(false) // true = password is an admin-generated INITIAL password the user must change on first login (one-time bootstrap, not an ongoing credential); cleared when the user sets their own
   name               String // display name (folded from UserExtra.name)
   avatar             String              @default("") // avatar path /uploads/... (folded from UserExtra.avatar)
   bio                String              @default("") @db.VarChar(255) // (folded from UserExtra.bio)

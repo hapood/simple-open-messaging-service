@@ -98,10 +98,8 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     const routine = await post(viewer.token, `admin/users/${target.id}/disable`);
     expect(routine.body.code).toBe(10004);
 
-    // high-impact (reset-password — SUPER_ADMIN) → FORBIDDEN
-    const hi = await post(viewer.token, `admin/users/${target.id}/reset-password`, {
-      newPassword: 'NewP@ss2',
-    });
+    // high-impact (purge all sessions — SUPER_ADMIN-only) → FORBIDDEN
+    const hi = await post(viewer.token, 'admin/sessions/purge');
     expect(hi.body.code).toBe(10004);
   });
 
@@ -113,9 +111,8 @@ describe('Admin RBAC + revocation + audit (Phase 1)', () => {
     expect(routine.status).toBe(200);
     expect(routine.body.code).toBe(0);
 
-    const hi = await post(admin.token, `admin/users/${target.id}/reset-password`, {
-      newPassword: 'NewP@ss2',
-    });
+    // SUPER_ADMIN-only op (purge all sessions) → ADMIN is forbidden
+    const hi = await post(admin.token, 'admin/sessions/purge');
     expect(hi.body.code).toBe(10004);
   });
 

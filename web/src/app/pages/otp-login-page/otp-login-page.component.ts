@@ -80,7 +80,9 @@ export class OtpLoginPageComponent {
     this.auth.otpLogin({ account: this.account(), code: this.code() }).subscribe({
       next: (res) => {
         if (res.code === 0) {
-          this.routeService.redirect(RoutePage.HOME);
+          this.routeService.redirect(
+            res.data?.mustChangePassword ? RoutePage.AUTH_SET_PASSWORD : RoutePage.HOME,
+          );
         } else {
           this.resp.set(translateBizResult(res, this.transloco));
           this.isSubmitting.set(false);

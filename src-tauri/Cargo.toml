@@ -39,6 +39,13 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 
+# Mobile-only dep. tauri-plugin-barcode-scanner is the camera scanner for the phone side of QR sign-in — a
+# logged-in phone scans a desktop's QR to authorize it (two-step scan→confirm). It has no desktop backend, so
+# it is gated to mobile targets (the inverse of single-instance above) and registered in src/lib.rs under
+# #[cfg(mobile)]. The JS API is @tauri-apps/plugin-barcode-scanner; capability in capabilities/mobile.json.
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-barcode-scanner = "2"
+
 # Lean release binary + lower runtime RSS for BOTH desktop and Android release builds — Cargo applies
 # [profile.release] regardless of target, so the NDK cross-build inherits it too. codegen-units = 1 +
 # LTO let the optimizer see the whole program (smaller binary, fewer redundant copies in the text/heap);

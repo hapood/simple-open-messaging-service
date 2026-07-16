@@ -1,9 +1,10 @@
 // Shared helpers for the federation e2e — the process-boundary-safe replacements for the old in-process
 // `app.get(Service)` patterns. Each helper talks to an app over HTTP (or the shared filesystem + a
 // test-process PrismaClient for CAS staging) so it works with the apps running in separate processes.
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import argon2 from 'argon2';
 import request from 'supertest';
 import type { PrismaClient } from '../src/prisma/generated/client.js';
 
@@ -63,33 +64,73 @@ export function uploadAvatar(app: AppLike, token: string, png: Buffer): request.
     .attach('file', png, { filename: 'avatar.png', contentType: 'image/png' });
 }
 
-/** Register a local user + log in, returning { id, token }. The standard setup for a federation user. */
+/** Hash a session token exactly as SessionTokenService does (sha256 hex) — replicated in the test process
+ *  so a SessionToken row inserted HERE is validated by the app running in a SEPARATE process (same DB). */
+function hashToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+/** Insert a SessionToken row directly (process-boundary safe) + return its plaintext — the Bearer the
+ *  app's SessionAuthGuard validates on first use (a cache miss → DB read → this row). `app` → no expiry;
+ *  `web`/`desktop` → 14-day sliding, mirroring SessionTokenService.issue. */
+async function seedSessionToken(
+  prisma: PrismaClient,
+  userId: number,
+  client: 'app' | 'web' | 'desktop' = 'app',
+): Promise<string> {
+  const plaintext = randomBytes(32).toString('hex');
+  await prisma.sessionToken.create({
+    data: {
+      userId,
+      tokenHash: hashToken(plaintext),
+      client,
+      device: null,
+      userAgent: null,
+      ip: null,
+      lastSeenIp: null,
+      expiresAt: client === 'app' ? null : new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+      persistent: true,
+    },
+  });
+  return plaintext;
+}
+
+/** Seed a local user + an `app` session directly (registration is closed + password login is disabled
+ *  under APP_OTP_AND_QR, so the old register→login pair no longer works) — the standard setup for a
+ *  federation user. Returns { id, token }. */
 export async function registerAndLogin(
   app: AppLike,
   account: string,
   name: string,
 ): Promise<{ id: number; token: string }> {
-  const reg = await request(app.baseUrl)
-    .post('/api/v1/user/register')
-    .send({ account, name, password: 'Pass1234' });
-  const login = await request(app.baseUrl)
-    .post('/api/v1/auth/login')
-    .send({ account, password: 'Pass1234' });
-  return { id: reg.body.data.id as number, token: login.body.data.session_token as string };
+  const u = await app.prisma.user.create({
+    data: { account, domain: 'local', name, hashPwd: null, mustChangePassword: false, isForeigner: false },
+    select: { id: true },
+  });
+  const token = await seedSessionToken(app.prisma, u.id, 'app');
+  return { id: u.id, token };
 }
 
-/** Create a SUPER_ADMIN on an app + log in via the admin route, returning the admin access token
- *  (the real way the federation peer-block tests block a domain — through markBlocked via the admin route,
- *  not a prisma shortcut). */
+/** Create a SUPER_ADMIN identity + log in via the admin route, returning the admin access token. The
+ *  identity user is seeded directly with an argon2-hashed password (registration is closed), the Admin row
+ *  is attached, then /admin/login verifies the password over HTTP. The admin JWT system is independent of
+ *  loginMode / registrationOpen, so the admin login itself is unaffected (this is the real way the
+ *  federation peer-block tests block a domain — through markBlocked via the admin route, not a prisma
+ *  shortcut). */
 export async function getAdminToken(app: AppLike, account = 'admin'): Promise<string> {
-  await request(app.baseUrl)
-    .post('/api/v1/user/register')
-    .send({ account, name: account, password: 'Pass1234' });
-  const u = await app.prisma.user.findUnique({
-    where: { account_domain: { account, domain: 'local' } },
+  const u = await app.prisma.user.create({
+    data: {
+      account,
+      domain: 'local',
+      name: account,
+      hashPwd: await argon2.hash('Pass1234'),
+      mustChangePassword: false,
+      isForeigner: false,
+    },
+    select: { id: true },
   });
   await app.prisma.admin.create({
-    data: { userId: u!.id, role: 'SUPER_ADMIN', enabled: true },
+    data: { userId: u.id, role: 'SUPER_ADMIN', enabled: true },
   });
   const res = await request(app.baseUrl)
     .post('/api/v1/admin/login')

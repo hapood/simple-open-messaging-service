@@ -19,9 +19,9 @@
             <p class="qr-state">{{ 'auth.qrLoading' | transloco }}</p>
           }
           @case ('pending') {
-            <!-- TODO(qr-image): render qrToken() as a scannable QR matrix (needs a QR-rendering dep). Until
-                 then the token is shown for integration testing. -->
-            <div class="qr-token" [title]="qrToken() ?? ''">{{ qrToken() }}</div>
+            <div class="qr-image">
+              <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+            </div>
             <p class="qr-state">{{ 'auth.qrPending' | transloco }}</p>
           }
           @case ('scanned') {

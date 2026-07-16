@@ -14,7 +14,7 @@ import { NavStateMachineService } from './nav-state.service';
 import { LayoutService } from './layout.service';
 
 export enum RoutePage {
-  HOME, AUTH_LOGIN, AUTH_REGISTER, AUTH_OTP, AUTH_QR
+  HOME, AUTH_LOGIN, AUTH_REGISTER, AUTH_OTP, AUTH_QR, AUTH_SET_PASSWORD
 }
 
 /**
@@ -118,6 +118,9 @@ export class RouteService {
         break;
       case RoutePage.AUTH_QR:
         commands = ['auth/qr']
+        break;
+      case RoutePage.AUTH_SET_PASSWORD:
+        commands = ['auth/set-password']
         break;
       default:
     }

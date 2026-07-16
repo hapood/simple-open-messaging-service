@@ -108,6 +108,13 @@ pub fn run() {
         }
     }));
 
+    // Barcode scanner (camera) — mobile only (the phone side of QR sign-in: a logged-in phone scans a
+    // desktop's QR to authorize it, two-step scan→confirm). No desktop backend → both the Cargo dep and this
+    // registration are mobile-gated (the inverse of single-instance above). The JS API reaches it via the
+    // @tauri-apps/plugin-barcode-scanner package; the permission is granted in capabilities/mobile.json.
+    #[cfg(mobile)]
+    let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
+
     builder
         .plugin(tauri_plugin_notification::init())
         // Native HTTP: the plugin's reqwest-backed fetch is what installNativeFetch() (web layer)

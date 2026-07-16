@@ -416,6 +416,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const nodePath = await import('node:path');
     const abs = nodePath.join(
       process.cwd(),
+      'data',
       'uploads',
       'shards',
       digest.slice(0, 2),
@@ -466,6 +467,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const nodePath = await import('node:path');
     const abs = nodePath.join(
       process.cwd(),
+      'data',
       'uploads',
       'shards',
       digest.slice(0, 2),
@@ -522,6 +524,7 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
     const nodePath = await import('node:path');
     const abs = nodePath.join(
       process.cwd(),
+      'data',
       'uploads',
       'shards',
       digest.slice(0, 2),

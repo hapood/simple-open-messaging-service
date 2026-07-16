@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { ArrowLeft } from 'lucide-react'
 import { useUserDetail } from '@/hooks/use-user-detail'
-import { useIsSuperAdmin } from '@/hooks/use-me'
+import { useIsAdminPlus } from '@/hooks/use-me'
 import { useDisableUser, useEnableUser, useForceLogoutUser } from '@/hooks/use-user-mutations'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,9 @@ import {
 } from '@/components/ui/table'
 import { Timestamp } from '@/components/common/timestamp'
 import { formatApiError } from '@/lib/format-error'
-import { ResetPasswordDialog } from './reset-password-dialog'
+import { IssueLoginCodeDialog } from './issue-login-code-dialog'
+import { GenerateInitialPasswordDialog } from './generate-initial-password-dialog'
+import { LoginCodesSection } from './login-codes-section'
 
 function Field({ label, value }: { label: string; value: ReactNode }) {
   return (
@@ -33,17 +35,18 @@ function Field({ label, value }: { label: string; value: ReactNode }) {
 }
 
 /** User 360° view. The list row's account links here; the row's quick-action dropdown stays on the
- *  list, but the full action set lives in this header (incl. reset-password, super-admin gated). */
+ *  list, but the full action set lives in this header (issue login code / generate initial password,
+ *  admin-plus gated) and the login-code audit trail is a section below. */
 export function UserDetailPage() {
   const { t } = useTranslation()
   const { id } = useParams<{ id: string }>()
   const userId = id ? Number(id) : null
   const { data, isLoading, error } = useUserDetail(userId)
-  const isSuper = useIsSuperAdmin()
+  const canManage = useIsAdminPlus()
   const disable = useDisableUser()
   const enable = useEnableUser()
   const forceLogout = useForceLogoutUser()
-  const [resetOpen, setResetOpen] = useState(false)
+  const [dlg, setDlg] = useState<null | { kind: 'issue' | 'genpwd' }>(null)
 
   const onAction = async (m: { mutateAsync: (id: number) => Promise<void> }, msg: string) => {
     if (userId === null) return
@@ -57,6 +60,7 @@ export function UserDetailPage() {
 
   const u = data?.user
   const handle = u ? `${u.account}${u.domain && u.domain !== 'local' ? `@${u.domain}` : ''}` : ''
+  const appSessionCount = data ? data.sessions.filter((s) => s.client === 'app').length : 0
 
   return (
     <div className="flex flex-col gap-4">
@@ -119,10 +123,15 @@ export function UserDetailPage() {
               >
                 {t('users.action.forceLogout')}
               </Button>
-              {isSuper ? (
-                <Button variant="outline" size="sm" onClick={() => setResetOpen(true)}>
-                  {t('users.action.resetPassword')}
-                </Button>
+              {canManage ? (
+                <>
+                  <Button variant="outline" size="sm" onClick={() => setDlg({ kind: 'issue' })}>
+                    {t('users.action.issueLoginCode')}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setDlg({ kind: 'genpwd' })}>
+                    {t('users.action.generateInitialPassword')}
+                  </Button>
+                </>
               ) : null}
             </div>
           </div>
@@ -189,7 +198,12 @@ export function UserDetailPage() {
 
           <Card>
             <CardHeader>
-              <CardTitle>{t('userDetail.section.sessions')}</CardTitle>
+              <div className="flex items-center justify-between gap-3">
+                <CardTitle>{t('userDetail.section.sessions')}</CardTitle>
+                <span className="text-xs text-muted-foreground">
+                  {t('userSessions.appCount', { count: appSessionCount })}
+                </span>
+              </div>
             </CardHeader>
             <CardContent>
               {data.sessions.length === 0 ? (
@@ -252,6 +266,8 @@ export function UserDetailPage() {
             </CardContent>
           </Card>
 
+          {userId !== null ? <LoginCodesSection userId={userId} /> : null}
+
           <Card>
             <CardHeader>
               <CardTitle>{t('userDetail.section.push')}</CardTitle>
@@ -292,9 +308,13 @@ export function UserDetailPage() {
         </>
       )}
 
-      <ResetPasswordDialog
-        user={resetOpen && u ? { id: u.id, account: u.account } : null}
-        onClose={() => setResetOpen(false)}
+      <IssueLoginCodeDialog
+        user={dlg?.kind === 'issue' && u ? { id: u.id, account: u.account } : null}
+        onClose={() => setDlg(null)}
+      />
+      <GenerateInitialPasswordDialog
+        user={dlg?.kind === 'genpwd' && u ? { id: u.id, account: u.account } : null}
+        onClose={() => setDlg(null)}
       />
     </div>
   )

@@ -1,49 +1,52 @@
 import { Strategy } from 'passport-local';
 import { PassportStrategy } from '@nestjs/passport';
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { AuthService } from './auth.service.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
+import {
+  BruteForceService,
+  BAN_DIM_IP,
+  BAN_DIM_USER,
+  type BanStep,
+} from './brute-force.service.js';
 
 export interface LoginAuthInfo {
+  /** 0 = success (userId set); 1 = invalid credentials / banned (bannedUntil set when a ban is active);
+   *  2 = PASSWORD_NOT_SET — a no-password account; NOT counted toward the brute-force ban. */
   status: number;
   account: string;
   userId?: number;
   bannedUntil?: number;
+  /** Set on a successful login whose password is an admin-generated INITIAL password the user must change. */
+  mustChangePassword?: boolean;
 }
 
 /**
- * Login brute-force protection: sliding window + dual-dimension (IP / account) progressive banning.
+ * Password-login Passport strategy. It owns ONLY the password path's concern: verify credentials via
+ * {@link AuthService.validateUser} and orchestrate the dual-dimension (IP + account) brute-force policy
+ * against the shared {@link BruteForceService}. The failure/ban storage, sliding-window expiry, cleanup
+ * timer, and the admin ban views all live in BruteForceService so every login method (password + OTP)
+ * shares one observable, unbannable ban surface.
  *
- * Improvements over the original "cumulative count + IP-only" approach:
- *  - Sliding window: only counts failures within WINDOW_MS; older ones auto-age-out, avoiding false bans from a legitimate user's occasional typos accumulating;
- *  - Dual dimension: by IP defends against distributed scanning, by account defends against password brute-force targeting a single account (the original IP-only approach could not stop the latter);
- *  - Real client IP: combined with the FastifyAdapter trustProxy in main.ts, req.ip is the real client IP behind reverse proxies/tunnels.
- *
- * Still in-process memory (single instance); the following are deferred to P3 (see protocol-plan):
- *  - Multi-instance shared storage (Redis);
- *  - Tiered responses (CAPTCHA / added delay / notify the account owner);
- *  - Softening ban durations and fine-tuning thresholds;
- *  - Ban observability (structured logs / alerting).
+ * Dual dimension: by IP defends against distributed scanning, by account defends against password
+ * brute-force targeting a single account. Combined with the FastifyAdapter trustProxy in main.ts, `req.ip`
+ * is the real client IP behind reverse proxies/tunnels (intentionally the ONLY source — `req.raw.socket`
+ * behind Caddy is always 127.0.0.1 and would collapse every user into one ban bucket).
  */
 
-/** Sliding window: counts failures within the window; those outside the window auto-expire. */
-const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
-const CLEANUP_INTERVAL_MS = 5 * 60 * 1000; // Reclaim expired entries every 5 minutes to prevent memory bloat
-
-interface Step {
-  count: number; // Failure-count threshold within the window (triggers when >count)
-  banMs: number; // Ban duration once triggered
-}
 interface Dimension {
-  prefix: string;
-  steps: readonly Step[]; // Ascending; the highest matched tier takes effect
+  dimension: string;
+  steps: readonly BanStep[]; // Ascending; the highest matched tier takes effect
 }
 
-// IP thresholds are lenient (multiple users may share one public IP under NAT); account thresholds are strict (to defend against password brute-force targeting a single account).
-// The tiered steps reuse the original progressive tiers (30min / 3h / 24h); only the counting basis changed from "cumulative" to "within-window".
+// IP thresholds are lenient (multiple users may share one public IP under NAT); account thresholds are
+// strict (to defend against password brute-force targeting a single account). The tiered steps reuse the
+// original progressive tiers (30min / 3h / 24h); only the counting basis changed to "within-window".
 const RULES: Record<'ip' | 'user', Dimension> = {
   ip: {
-    prefix: 'ip',
+    dimension: BAN_DIM_IP,
     steps: [
       { count: 10, banMs: 30 * 60 * 1000 },
       { count: 20, banMs: 3 * 60 * 60 * 1000 },
@@ -51,7 +54,7 @@ const RULES: Record<'ip' | 'user', Dimension> = {
     ],
   },
   user: {
-    prefix: 'user',
+    dimension: BAN_DIM_USER,
     steps: [
       { count: 5, banMs: 30 * 60 * 1000 },
       { count: 10, banMs: 3 * 60 * 60 * 1000 },
@@ -61,27 +64,16 @@ const RULES: Record<'ip' | 'user', Dimension> = {
 };
 
 @Injectable()
-export class LocalStrategy
-  extends PassportStrategy(Strategy)
-  implements OnModuleDestroy
-{
-  // key(prefix:value) -> list of failure timestamps within the window
-  private readonly _failLog = new Map<string, number[]>();
-  // key -> ban deadline (ms)
-  private readonly _banned = new Map<string, number>();
-  private readonly _timer: NodeJS.Timeout;
-
-  constructor(private authService: AuthService) {
+export class LocalStrategy extends PassportStrategy(Strategy) {
+  constructor(
+    private authService: AuthService,
+    private readonly bruteForce: BruteForceService,
+  ) {
     super({
       usernameField: 'account',
       passwordField: 'password',
       passReqToCallback: true,
     });
-    this._timer = setInterval(() => this.cleanup(), CLEANUP_INTERVAL_MS);
-  }
-
-  onModuleDestroy() {
-    clearInterval(this._timer);
   }
 
   async validate(
@@ -94,129 +86,43 @@ export class LocalStrategy
     // user into one brute-force ban bucket, so it is intentionally NOT used as a fallback.
     const ip = req.ip ?? 'unknown';
 
-    // If either dimension is still in its ban window -> reject outright (also return the remaining ban time for the client to display)
-    const bannedUntil = this.activeBanUntil(ip, account);
+    // If either dimension is still in its ban window → reject outright (also return the remaining ban time
+    // for the client to display). The worst (latest) deadline of the two governs.
+    const bannedUntil = this.bruteForce.activeBanUntil([
+      { dimension: RULES.ip.dimension, value: ip },
+      { dimension: RULES.user.dimension, value: account },
+    ]);
     if (bannedUntil !== undefined) {
       return { status: 1, account, bannedUntil };
     }
 
-    const user = await this.authService.validateUser(account, password);
-    if (user === undefined) {
-      // Failure: record one count in each dimension, determine the tiered ban by the within-window count, and take the later of the two deadlines
-      const ipBan = this.registerFailure(RULES.ip.prefix, ip, RULES.ip.steps);
-      const userBan = this.registerFailure(
-        RULES.user.prefix,
-        account,
-        RULES.user.steps,
-      );
-      const until = maxDefined(ipBan, userBan);
+    try {
+      const user = await this.authService.validateUser(account, password);
+      if (user === undefined) {
+        // Failure: record one count in each dimension, take the later of the two newly-triggered deadlines.
+        const ipBan = this.bruteForce.registerFailure(RULES.ip.dimension, ip, RULES.ip.steps);
+        const userBan = this.bruteForce.registerFailure(RULES.user.dimension, account, RULES.user.steps);
+        const until = maxDefined(ipBan, userBan);
+        return { status: 1, account, ...(until !== undefined ? { bannedUntil: until } : {}) };
+      }
+      // Success: clear this account's failure log (the window would expire it anyway, but clearing at once
+      // is better UX). Do not clear the IP dimension — under NAT, that IP may have other people still being
+      // counted. mustChangePassword flags an admin-generated INITIAL password.
+      this.bruteForce.clearFailures(RULES.user.dimension, account);
       return {
-        status: 1,
+        status: 0,
         account,
-        ...(until !== undefined ? { bannedUntil: until } : {}),
+        userId: user.id,
+        ...(user.mustChangePassword ? { mustChangePassword: true } : {}),
       };
-    }
-
-    // Success: clear this account's failure log (the sliding window would expire it anyway, but clearing immediately is a better UX).
-    // Do not clear the IP dimension — under NAT, that IP may have other people still being counted.
-    this._failLog.delete(`${RULES.user.prefix}:${account}`);
-    return { status: 0, account, userId: user.id };
-  }
-
-  /** Record one failure; return the ban deadline if a ban is triggered (otherwise undefined). */
-  private registerFailure(
-    prefix: string,
-    value: string,
-    steps: readonly Step[],
-  ): number | undefined {
-    const now = Date.now();
-    const key = `${prefix}:${value}`;
-    const fresh = (this._failLog.get(key) ?? []).filter(
-      (t) => now - t < WINDOW_MS,
-    );
-    fresh.push(now);
-    this._failLog.set(key, fresh);
-
-    // Take the highest matched tier (steps are ascending)
-    let ban: number | undefined;
-    for (const s of steps) {
-      if (fresh.length > s.count) ban = now + s.banMs;
-    }
-    if (ban !== undefined) this._banned.set(key, ban);
-    return ban;
-  }
-
-  /** Return the latest deadline among bans still in effect (or undefined), reclaiming expired bans along the way. */
-  private activeBanUntil(ip: string, account: string): number | undefined {
-    const now = Date.now();
-    let max: number | undefined;
-    for (const key of [
-      `${RULES.ip.prefix}:${ip}`,
-      `${RULES.user.prefix}:${account}`,
-    ]) {
-      const until = this._banned.get(key);
-      if (until === undefined) continue;
-      if (until > now) {
-        max = max === undefined ? until : Math.max(max, until);
-      } else {
-        this._banned.delete(key);
+    } catch (e) {
+      // PASSWORD_NOT_SET: a no-password account tried password login. NOT a wrong-password guess (nothing
+      // to brute-force), so it MUST NOT be counted toward the ban — surface a distinct status so the client
+      // shows "contact the administrator to set the initial password".
+      if (e instanceof BusinessException && e.bizCode === BusinessCode.PASSWORD_NOT_SET) {
+        return { status: 2, account };
       }
-    }
-    return max;
-  }
-
-  /** List currently non-expired bans (for the admin dashboard). */
-  listBans(): Array<{
-    key: string;
-    type: string;
-    value: string;
-    until: number;
-    remainingMs: number;
-  }> {
-    const now = Date.now();
-    const out: Array<{
-      key: string;
-      type: string;
-      value: string;
-      until: number;
-      remainingMs: number;
-    }> = [];
-    for (const [key, until] of this._banned) {
-      if (until > now) {
-        const idx = key.indexOf(':');
-        out.push({
-          key,
-          type: key.slice(0, idx),
-          value: key.slice(idx + 1),
-          until,
-          remainingMs: until - now,
-        });
-      }
-    }
-    return out;
-  }
-
-  /** Unban (admin use): clear bans + failure logs for a specified IP and/or account. */
-  clearBan(opts: { ip?: string; account?: string }) {
-    if (opts.ip) {
-      this._banned.delete(`${RULES.ip.prefix}:${opts.ip}`);
-      this._failLog.delete(`${RULES.ip.prefix}:${opts.ip}`);
-    }
-    if (opts.account) {
-      this._banned.delete(`${RULES.user.prefix}:${opts.account}`);
-      this._failLog.delete(`${RULES.user.prefix}:${opts.account}`);
-    }
-  }
-
-  private cleanup() {
-    const now = Date.now();
-    for (const [key, list] of this._failLog) {
-      const fresh = list.filter((t) => now - t < WINDOW_MS);
-      if (fresh.length === 0) this._failLog.delete(key);
-      else this._failLog.set(key, fresh);
-    }
-    for (const [key, until] of this._banned) {
-      if (until <= now) this._banned.delete(key);
+      throw e;
     }
   }
 }

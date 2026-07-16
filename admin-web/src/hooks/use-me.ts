@@ -16,3 +16,10 @@ export function useIsSuperAdmin(): boolean {
   const { data } = useMe()
   return data?.role === 'SUPER_ADMIN'
 }
+
+/** ADMIN or SUPER_ADMIN — gates operations the backend allows for both roles (issue-login-code,
+ *  generate-initial-password). False until the identity loads. */
+export function useIsAdminPlus(): boolean {
+  const { data } = useMe()
+  return data?.role === 'ADMIN' || data?.role === 'SUPER_ADMIN'
+}

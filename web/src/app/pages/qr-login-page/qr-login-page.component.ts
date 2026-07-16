@@ -6,6 +6,7 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
+import { QrCodeComponent } from '../../components/qr-code/qr-code.component';
 import { AuthService } from '../../services/auth.service';
 import { ConfigService } from '../../services/config.service';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -18,11 +19,11 @@ type QrView = 'loading' | 'pending' | 'scanned' | 'expired';
  * to scan), polls its status, and — once the phone confirms — activates a 2-week sliding session. Reached
  * automatically from `/auth/login` under APP_OTP_AND_QR mode on desktop/web.
  *
- * NOTE: the QR *image* rendering (encoding `qrToken` into a scannable matrix) and the Android-side *camera
- * scanner* (the phone that scans + confirms) are the two remaining QR-UX pieces — they need a QR-rendering
- * dependency and the Tauri barcode-scanner plugin respectively. The backend round-trip (create → poll →
- * scan → confirm) is fully wired here and on the server (Stage 3); until the image + scanner land, the
- * token is shown as text for integration testing.
+ * The QR image is rendered by {@link QrCodeComponent} (uqr matrix → SVG); the phone-side scan + confirm is
+ * the two-step "Link a device" flow under Settings → Devices (the Tauri barcode-scanner plugin, Android
+ * only). The backend round-trip (create → poll → scan → confirm) is fully wired here and on the server.
+ * The sole outstanding item is an on-device APK smoke of the scanner; this desktop render + poll path is
+ * complete.
  */
 @Component({
   selector: 'app-qr-login-page',
@@ -30,6 +31,7 @@ type QrView = 'loading' | 'pending' | 'scanned' | 'expired';
     AuthBrandComponent,
     AuthToolbarComponent,
     IconComponent,
+    QrCodeComponent,
     TranslocoPipe,
     MatButtonModule,
     MatProgressBarModule,
@@ -90,7 +92,9 @@ export class QrLoginPageComponent implements OnDestroy {
         next: (res) => {
           if (res.code === 0 && res.data?.session_token) {
             this.stopPoll();
-            this.routeService.redirect(RoutePage.HOME);
+            this.routeService.redirect(
+              res.data?.mustChangePassword ? RoutePage.AUTH_SET_PASSWORD : RoutePage.HOME,
+            );
           } else if (res.code === 0 && res.data?.status === 'scanned') {
             this.view.set('scanned');
           } else if (res.code === 0 && res.data?.status === 'expired') {

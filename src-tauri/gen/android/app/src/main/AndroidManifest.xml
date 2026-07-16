@@ -9,6 +9,9 @@
          (Android 14+/API 34). The service is bounded by Android 15's ~6h/24h dataSync time budget. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Camera for the QR scanner (the phone side of QR sign-in — scan a desktop's QR to authorize it).
+         Runtime permission is requested by tauri-plugin-barcode-scanner before opening the scanner view. -->
+    <uses-permission android:name="android.permission.CAMERA" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

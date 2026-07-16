@@ -50,6 +50,8 @@ export enum BusinessCode {
   OTP_CONSUMED = 10014,          // one-time login code was already used (single-use)
   QR_INVALID = 10015,            // QR login token unknown / malformed
   QR_EXPIRED = 10016,            // QR login token is past its TTL
+  PASSWORD_NOT_SET = 10017,      // password-login attempted on a no-password account (OTP/QR-only). UI: "contact the administrator to set the initial password". NOT counted toward the brute-force ban (no password to guess).
+  MUST_CHANGE_PASSWORD = 10018,  // the authenticated user's password is the admin-generated INITIAL value and must be rotated. Thrown by the global SessionAuthGuard for EVERY route except the password-set escape hatch (+ @Public) — a server-side gate, NOT a frontend hint, so a user cannot keep using the initial password by skipping the set-password screen or calling the API directly. Same response shape regardless of login method (password/OTP/QR), so the gate is login-method-agnostic.
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state

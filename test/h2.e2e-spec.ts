@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
+import { seedUserWithSession } from './seed';
 
 // Verifies the HTTP/2-over-TLS path itself: boots the app on a FastifyAdapter({http2,https})
 // with a self-signed cert and drives it with node's http2 client. This is the one feature the
@@ -109,20 +110,9 @@ describe('HTTP/2 over TLS', () => {
     await prisma.$executeRawUnsafe(
       'TRUNCATE TABLE "User" RESTART IDENTITY CASCADE',
     );
-    // Register + login over h2 (the server is TLS-only, so supertest/plain-http can't reach it).
-    await h2Request(
-      port,
-      'POST',
-      '/api/v1/user/register',
-      JSON.stringify({ account: 'h2user', name: 'H2 User', password: 'Pass1234' }),
-    );
-    const login = await h2Request(
-      port,
-      'POST',
-      '/api/v1/auth/login',
-      JSON.stringify({ account: 'h2user', password: 'Pass1234' }),
-    );
-    token = JSON.parse(login.body).data.session_token;
+    // Seed a user + session directly (registration is closed; the server is TLS-only so supertest can't
+    // reach it anyway). The token drives the h2 SSE test below.
+    token = (await seedUserWithSession(app, 'h2user', { name: 'H2 User' })).token;
   }, 30000);
 
   afterAll(async () => {
@@ -136,11 +126,13 @@ describe('HTTP/2 over TLS', () => {
   });
 
   it('parses a JSON request body over h2', async () => {
+    // POST /auth/qr/create is public + takes a JSON body — a registration-independent probe that a JSON
+    // request body round-trips over h2 (registration is closed, so /user/register is no longer usable).
     const res = await h2Request(
       port,
       'POST',
-      '/api/v1/user/register',
-      JSON.stringify({ account: 'h2post', name: 'H2 Post', password: 'Pass1234' }),
+      '/api/v1/auth/qr/create',
+      JSON.stringify({ client: 'web' }),
     );
     expect(res.status).toBe(200);
     expect(JSON.parse(res.body).code).toBe(0);

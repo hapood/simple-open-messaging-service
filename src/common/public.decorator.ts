@@ -18,3 +18,20 @@ export const IS_PUBLIC = 'isPublic';
  * token) so the user-JWT guard does not reject them before their own guard runs.
  */
 export const Public = () => SetMetadata(IS_PUBLIC, true);
+
+/**
+ * Metadata key marking a route as reachable while the caller's `mustChangePassword` flag is set (their
+ * password is the admin-generated initial value awaiting rotation). Read by `SessionAuthGuard` via the
+ * same `[handler, class]` Reflector scan as `IS_PUBLIC`. Only the password-set + logout routes carry it:
+ * those are the only actions a locked user may take — every other authenticated route is rejected with
+ * {@link BusinessCode.MUST_CHANGE_PASSWORD} until `auth/set-password` clears the flag.
+ */
+export const IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH = 'isMustChangePasswordEscapeHatch';
+
+/**
+ * Mark a route as usable during the forced-password-change lock — the escape hatch from the
+ * `mustChangePassword` gate (`auth/set-password` clears the flag; the logout routes release the session).
+ * The default logout route is `@Public()` already, so this decorates only the authenticated escape routes.
+ */
+export const MustChangePasswordEscapeHatch = () =>
+  SetMetadata(IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH, true);

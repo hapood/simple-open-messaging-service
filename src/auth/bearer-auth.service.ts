@@ -17,7 +17,7 @@ export class BearerAuthService {
   async resolve(
     raw: string | null | undefined,
     opts: { ip?: string | null } = {},
-  ): Promise<{ userId: number; sessionId: number | null; slid: boolean; persistent: boolean } | null> {
+  ): Promise<{ userId: number; sessionId: number | null; slid: boolean; persistent: boolean; mustChangePassword: boolean } | null> {
     if (!raw) return null;
     const session = await this.sessions.validate(raw, opts);
     return session === null
@@ -27,6 +27,7 @@ export class BearerAuthService {
           sessionId: session.sessionId,
           slid: session.slid,
           persistent: session.persistent,
+          mustChangePassword: session.mustChangePassword,
         };
   }
 }

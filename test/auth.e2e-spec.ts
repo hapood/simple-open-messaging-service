@@ -6,17 +6,20 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
+import { BusinessCode } from '../src/common/business-code';
+import { seedUser, seedSession } from './seed';
 
 /**
- * Auth e2e smoke — the regression anchor for the ESM migration.
+ * Session-management e2e — the device-list / revoke / logout-all surface, exercised through the real HTTP
+ * layer + the SessionAuthGuard + the 60s validate cache.
  *
- * One flow exercises the entire native-interop risk surface:
- *   register (argon2.hash + Prisma write)
- *   -> login (argon2.verify + JwtService) -> access token
- *   -> guarded route (JwtAuthGuard validates the signed token)
- * Must stay green after the CJS->ESM flip and the Express→Fastify adapter swap.
+ * The login-method flows themselves (OTP replace, QR two-step) live in otp-login.e2e-spec.ts /
+ * qr-login.e2e-spec.ts. This spec seeds sessions DIRECTLY (registration is closed and password login is
+ * disabled under APP_OTP_AND_QR) and pins: the device list + isCurrent flag, single-session revoke +
+ * ownership check, logout-all revocation (and the KV-cache-lag reality it depends on), and the two
+ * policy gates that close the legacy flows — self-registration and password login.
  */
-describe('Auth e2e (register -> login -> guarded)', () => {
+describe('Session management + login-policy e2e', () => {
   let app: INestApplication;
   let prisma: PrismaService;
 
@@ -24,10 +27,6 @@ describe('Auth e2e (register -> login -> guarded)', () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();
-    // Plain Fastify adapter (no http2/TLS) configured exactly like production via configureApp.
-    // No explicit app.init(): setGlobalPrefix must run before routes are registered, and
-    // listen() performs init + route registration + Fastify ready()/preReady (without which
-    // route-context lifecycle hooks like preParsing are undefined and the first request crashes).
     const adapter = new FastifyAdapter();
     app = moduleFixture.createNestApplication(adapter);
     await configureApp(app, adapter);
@@ -36,10 +35,10 @@ describe('Auth e2e (register -> login -> guarded)', () => {
   });
 
   beforeEach(async () => {
-    // Isolate every run: truncating User CASCADE-clears RefreshToken,
-    // AdminRefreshToken, threads, messages, etc.
+    // CASCADE on User also clears SessionToken (FK→User); both listed so a stray session can't leak
+    // between tests even if the on-delete weren't CASCADE.
     await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "User" RESTART IDENTITY CASCADE',
+      'TRUNCATE TABLE "SessionToken", "User" RESTART IDENTITY CASCADE',
     );
   });
 
@@ -47,103 +46,10 @@ describe('Auth e2e (register -> login -> guarded)', () => {
     await app.close();
   });
 
-  it('registers a user, logs in, and reaches a guarded route', async () => {
-    // 1. register (argon2.hash + Prisma)
-    const reg = await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'e2etest', name: 'E2E Test', password: 'Pass1234' });
-    expect(reg.status).toBe(200);
-    expect(reg.body.code).toBe(0);
-
-    // 2. login (argon2.verify + JwtService) -> access token
-    const login = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'e2etest', password: 'Pass1234' });
-    expect(login.status).toBe(200);
-    expect(login.body.code).toBe(0);
-    const accessToken = login.body.data.session_token;
-    expect(accessToken).toBeTruthy();
-
-    // 3. guarded route (JwtAuthGuard validates the signed token)
-    const guarded = await request(app.getHttpServer())
-      .post('/api/v1/auth/sessions')
-      .set('Authorization', `Bearer ${accessToken}`);
-    expect(guarded.status).toBe(200);
-    expect(guarded.body.code).toBe(0);
-  });
-
-  it('issues a session token on login that authenticates a guarded route (app + web)', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'sesstest', name: 'Sess', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-
-    // app client → no-expiry session token (Telegram-style).
-    const appLogin = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'sesstest', password: 'Pass1234', client: 'app' });
-    const appSession: string | undefined = appLogin.body.data.session_token;
-    expect(appSession).toBeTruthy();
-    const appGuarded = await request(app.getHttpServer())
-      .post('/api/v1/auth/sessions')
-      .set('Authorization', `Bearer ${appSession}`);
-    expect(appGuarded.status).toBe(200);
-    expect(appGuarded.body.code).toBe(0);
-
-    // web client → sliding 30-day session token; same guarded acceptance.
-    const webLogin = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'sesstest', password: 'Pass1234', client: 'web' });
-    expect(webLogin.body.data.session_token).toBeTruthy();
-    const webGuarded = await request(app.getHttpServer())
-      .post('/api/v1/auth/sessions')
-      .set('Authorization', `Bearer ${webLogin.body.data.session_token}`);
-    expect(webGuarded.body.code).toBe(0);
-  });
-
-  it('revokes every session on logout-all (an un-cached second session then 401s)', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'revoketest', name: 'Revoke', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-
-    // Two sessions. tokenA authorizes logout-all — which validates it, populating ITS 60s KV cache.
-    const loginA = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'revoketest', password: 'Pass1234', client: 'app' });
-    const tokenA: string = loginA.body.data.session_token;
-    // tokenB is NEVER presented before the check, so its first validate after revoke is a KV cache
-    // miss → DB read → the revoked row → 401. (Authing logout-all with the SAME token would populate
-    // its cache and mask the revocation for up to 60s — the documented KV cache lag.)
-    const loginB = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'revoketest', password: 'Pass1234', client: 'app' });
-    const tokenB: string = loginB.body.data.session_token;
-
-    const logoutAll = await request(app.getHttpServer())
-      .post('/api/v1/auth/logout-all')
-      .set('Authorization', `Bearer ${tokenA}`);
-    expect(logoutAll.body.code).toBe(0);
-
-    const guarded = await request(app.getHttpServer())
-      .post('/api/v1/auth/sessions')
-      .set('Authorization', `Bearer ${tokenB}`);
-    expect(guarded.status).toBe(401);
-  });
-
   it('GET /auth/sessions lists the device list and flags the requesting session isCurrent', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'devtest', name: 'Dev', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-
-    const a = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'devtest', password: 'Pass1234', client: 'app', device: 'Pixel' });
-    const aSession: string = a.body.data.session_token;
-    await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'devtest', password: 'Pass1234', client: 'web', device: 'Chrome' });
+    const { id: userId } = await seedUser(app, 'devtest');
+    const aSession = await seedSession(app, userId, 'app', { device: 'Pixel' });
+    await seedSession(app, userId, 'web', { device: 'Chrome' });
 
     const list = await request(app.getHttpServer())
       .post('/api/v1/auth/sessions')
@@ -155,24 +61,13 @@ describe('Auth e2e (register -> login -> guarded)', () => {
     expect(current).toBeTruthy();
     expect(current.client).toBe('app'); // the requesting credential's row
     expect(current.device).toBe('Pixel');
-    expect(typeof current.id).toBe('number');
     expect(rows.filter((r: { isCurrent: boolean }) => r.isCurrent)).toHaveLength(1);
   });
 
   it('POST /auth/revoke-session revokes the targeted session (it then 401s; others survive)', async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'revbyid', name: 'Rev', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-
-    const a = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'revbyid', password: 'Pass1234', client: 'app' });
-    const aSession: string = a.body.data.session_token;
-    const b = await request(app.getHttpServer())
-      .post('/api/v1/auth/login')
-      .send({ account: 'revbyid', password: 'Pass1234', client: 'web' });
-    const bSession: string = b.body.data.session_token;
+    const { id: userId } = await seedUser(app, 'revbyid');
+    const aSession = await seedSession(app, userId, 'app');
+    const bSession = await seedSession(app, userId, 'web');
 
     // Find B's row id via the list authed as A (B is the non-current row).
     const list = await request(app.getHttpServer())
@@ -201,25 +96,10 @@ describe('Auth e2e (register -> login -> guarded)', () => {
   });
 
   it("POST /auth/revoke-session is a no-op for another user's session id (ownership-checked)", async () => {
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'owner', name: 'Owner', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-    await request(app.getHttpServer())
-      .post('/api/v1/user/register')
-      .send({ account: 'intruder', name: 'Intruder', password: 'Pass1234' })
-      .expect((r) => expect(r.body.code).toBe(0));
-
-    const ownerSession: string = (
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ account: 'owner', password: 'Pass1234', client: 'app' })
-    ).body.data.session_token;
-    const intruderSession: string = (
-      await request(app.getHttpServer())
-        .post('/api/v1/auth/login')
-        .send({ account: 'intruder', password: 'Pass1234', client: 'app' })
-    ).body.data.session_token;
+    const owner = await seedUser(app, 'owner');
+    const intruder = await seedUser(app, 'intruder');
+    const ownerSession = await seedSession(app, owner.id, 'app');
+    const intruderSession = await seedSession(app, intruder.id, 'app');
 
     // Owner's row id (intruder cannot see it; model the threat: the id leaks/guessed).
     const ownerList = await request(app.getHttpServer())
@@ -239,5 +119,46 @@ describe('Auth e2e (register -> login -> guarded)', () => {
       .post('/api/v1/auth/sessions')
       .set('Authorization', `Bearer ${ownerSession}`);
     expect(ownerAfter.body.code).toBe(0);
+  });
+
+  it('revokes every session on logout-all (an un-cached second session then 401s)', async () => {
+    const { id: userId } = await seedUser(app, 'revoketest');
+    // tokenA authorizes logout-all — which validates it, populating ITS 60s KV cache. tokenB is NEVER
+    // presented before the check, so its first validate after revoke is a KV cache miss → DB read → the
+    // revoked row → 401. (logout-all's revokeAllForUser does NOT drop per-token KV, so authing logout-all
+    // with a token that was already cached would mask the revocation for up to 60s.)
+    const tokenA = await seedSession(app, userId, 'app');
+    const tokenB = await seedSession(app, userId, 'app');
+
+    const logoutAll = await request(app.getHttpServer())
+      .post('/api/v1/auth/logout-all')
+      .set('Authorization', `Bearer ${tokenA}`);
+    expect(logoutAll.body.code).toBe(0);
+
+    const guarded = await request(app.getHttpServer())
+      .post('/api/v1/auth/sessions')
+      .set('Authorization', `Bearer ${tokenB}`);
+    expect(guarded.status).toBe(401);
+  });
+
+  it('rejects self-registration with REGISTRATION_DISABLED (registration is closed)', async () => {
+    const r = await request(app.getHttpServer())
+      .post('/api/v1/user/register')
+      .send({ account: 'shouldnotexist', name: 'X', password: 'Pass1234' });
+    expect(r.body.code).toBe(BusinessCode.REGISTRATION_DISABLED);
+    // No user was created.
+    const exists = await prisma.user.findUnique({
+      where: { account_domain: { account: 'shouldnotexist', domain: 'local' } },
+    });
+    expect(exists).toBeNull();
+  });
+
+  it('rejects password login with LOGIN_METHOD_DISABLED under APP_OTP_AND_QR', async () => {
+    // Seed a user WITH a password so the only thing that can fail is the mode gate (not PASSWORD_NOT_SET).
+    await seedUser(app, 'pwuser', { password: 'Pass1234' });
+    const r = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({ account: 'pwuser', password: 'Pass1234' });
+    expect(r.body.code).toBe(BusinessCode.LOGIN_METHOD_DISABLED);
   });
 });

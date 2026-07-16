@@ -53,8 +53,10 @@ export class LoginPageComponent {
     else if (methods.includes('qr')) this.routeService.redirect(RoutePage.AUTH_QR);
   }
 
-  onSuccess() {
-    this.routeService.redirect(RoutePage.HOME)
+  /** Login succeeded. The payload is the session's `mustChangePassword` flag — route to the forced
+   *  set-password screen (not home) when the session is still on the admin-generated initial password. */
+  onSuccess(mustChangePassword: boolean) {
+    this.routeService.redirect(mustChangePassword ? RoutePage.AUTH_SET_PASSWORD : RoutePage.HOME)
   }
 
   jumpToOtp() {

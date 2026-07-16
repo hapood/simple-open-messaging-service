@@ -28,12 +28,16 @@ export function SessionsDialog({
 }) {
   const { t } = useTranslation()
   const { data, isLoading, error } = useUserSessions(user?.id ?? null)
+  const appCount = data?.filter((s) => s.client === 'app').length ?? 0
   const open = user !== null
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-w-3xl">
         <DialogHeader>
           <DialogTitle>{t('userSessions.title', { name: user?.account ?? '' })}</DialogTitle>
+          <p className="text-sm text-muted-foreground">
+            {t('userSessions.appCount', { count: appCount })}
+          </p>
         </DialogHeader>
         <div className="max-h-[60vh] overflow-auto">
           <Table>

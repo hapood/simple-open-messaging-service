@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "mobile",
+  "description": "Mobile-only capability (Android/iOS): tauri-plugin-barcode-scanner — the phone-side camera scanner for QR sign-in (a logged-in phone scans a desktop's QR, then confirms, to authorize a 2-week web/desktop session). Platform-scoped so the desktop build never loads it (the plugin has no desktop backend); the shared `default` capability stays desktop+mobile without this permission.",
+  "platforms": ["android", "iOS"],
+  "windows": ["main"],
+  "permissions": ["barcode-scanner:default"]
+}
