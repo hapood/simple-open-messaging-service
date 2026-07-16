@@ -26,7 +26,8 @@ import java.net.URI
  *  - Reload: `location.reload()` (full refresh; the dialog stays open so it can be tapped repeatedly).
  *  - Revert: delete `dev_url` → kill the process so Rust re-resolves to the bundled frontend.
  *
- * Debug-only by construction: the bubble that opens it is debug-gated. See FCM_ANDROID_PATCH.md.
+ * Dev-server-build-only by construction: the bubble that opens it gates on BuildConfig.ENABLE_DEV_TOOLS
+ * (true solely in the Makefile's `apk-dev` target). Plain debug and release APKs never show it.
  */
 class DevToolsDialog(private val activity: MainActivity) {
 

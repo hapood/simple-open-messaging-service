@@ -8,10 +8,10 @@
  *    macOS, https://tauri.localhost on Windows, http://tauri.localhost on Linux). The backend origin
  *    is read from the platform persistence surface — the native `window.SomsSecureStore`
  *    (@JavascriptInterface, EncryptedSharedPreferences) on Android, a localStorage shim on desktop —
- *    at seed time, so API/SSE URLs resolve cross-origin. Media can't
- *    use the cookie (SameSite=Strict suppresses it cross-origin) and a bare `<img src>` / CSS
- *    `url()` can't carry an Authorization header, so `/uploads/*` is rewritten to a
- *    `media://localhost` custom URI scheme handled by a Rust-side proxy that injects the header.
+ *    at seed time, so API/SSE URLs resolve cross-origin. The backend's httpOnly `media_token` cookie is
+ *    SameSite=Strict (so the webview can't auto-attach it cross-origin) and a bare `<img src>` / CSS
+ *    `url()` can't carry an Authorization header anyway, so `/uploads/*` is rewritten to a
+ *    `media://localhost` custom URI scheme handled by a Rust-side proxy that injects the Bearer header.
  *
  * Browser behavior is bit-for-bit unchanged when the globals are absent: every helper falls back
  * to the same-origin relative path.
@@ -45,11 +45,11 @@ declare global {
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: {
       core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
-      /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs). Used by
-       *  UnreadAttentionService to post desktop system notifications when a message arrives while the
-       *  window is unfocused. Present on desktop; on Android the path is dormant (SSE is disconnected
-       *  when backgrounded, so no NEW_MESSAGE fires while unfocused). */
-      notification?: { sendNotification: (n: { title: string; body?: string }) => Promise<void> | void };
+      /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs), used by the DESKTOP
+       *  NotificationAdapter (pc/mac/linux). `identifier` is the replace-by-id param — posting with the same
+       *  identifier replaces the prior notification. Desktop-only: Android has its own Kotlin `SomsNotify`
+       *  bridge (the Tauri notification plugin is deliberately not used on Android). */
+      notification?: { sendNotification: (n: { title: string; body?: string; identifier?: string }) => Promise<void> | void };
     };
     /** FCM bridge injected by the Android shell (SomsMessagingService / MainActivity). `SomsFcm` is a
      *  Kotlin `@JavascriptInterface` exposing the current FCM token + permission request. The two hooks
@@ -100,6 +100,13 @@ declare global {
     /** Kotlin `@JavascriptInterface` exposed by the Android shell: finishes the activity (clean app exit)
      *  when NavStateMachineService.back() has nothing left to peel. Android-only. */
     SomsBack?: { exit: () => void };
+    /** Kotlin `@JavascriptInterface` (MainActivity, registered alongside SomsFcm/SomsShell/SomsBack): exposes the
+     *  Android NATIVE notification method's parameters to JS. `show(text, replace)` posts on CHANNEL_MESSAGES at
+     *  the stable AWAY_NOTIF_ID when `replace` is true (replace-by-id), else a fresh id; `clear` cancels it. The
+     *  AndroidNotificationAdapter wraps this — it maps the unified `merge` param onto `replace` (smoothing the
+     *  platform difference into one JS adapter function). Android-only; guaranteed present after the
+     *  isAndroidNative() gate, so call sites use `!`. */
+    SomsNotify?: { show: (text: string, replace: boolean) => void; clear: () => void };
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
      *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in
@@ -164,6 +171,65 @@ export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unkn
   return invoke(cmd, args) as Promise<T>;
 }
 
+/** Post a system notification via the RAW Tauri shell bridge (`window.__TAURI__.notification.sendNotification`,
+ *  registered by `tauri-plugin-notification` in `src-tauri/src/lib.rs`). The raw bridge access lives HERE — exposed
+ *  as a flat, typed function carrying the plugin's native params (`title`, `body`, `identifier`) — so the JS
+ *  adapter layer (`NotificationAdapter`) wraps this instead of reaching into `window.__TAURI__?.notification?.…`
+ *  itself. `identifier` is the replace-by-id param (same identifier replaces the prior notification). No-op when
+ *  not in a Tauri shell or the plugin global is absent. Desktop-only — Android uses the Kotlin `SomsNotify` bridge. */
+export function tauriSendNotification(options: { title: string; body?: string; identifier?: string }): void {
+  window.__TAURI__?.notification?.sendNotification(options);
+}
+
+/** Marker so {@link installNativeFetch} swaps `globalThis.fetch` exactly once per renderer. */
+let nativeFetchInstalled = false;
+
+/**
+ * Under the Tauri shell, replace the webview's `globalThis.fetch` with one that routes http(s)
+ * requests through `tauri-plugin-http`'s reqwest-backed fetch — so the bundled app can reach ANY
+ * user-configured backend, not just ones that echo the webview origin. The webview origin
+ * (https://tauri.localhost) is cross-origin to every real backend, so the webview's own fetch() is
+ * CORS-gated; unlike dev (where the ng dev-server proxy keeps every request same-origin — see
+ * web/proxy.conf.json), the APK has no proxy, so a cross-origin read is blocked when the backend
+ * doesn't echo that Origin. The plugin performs the request from Rust, which never crosses the
+ * webview origin, so CORS does not apply — the same reason `/uploads` rides the `media://` proxy.
+ *
+ * HttpClient reaches the override via `withFetch()` (app.config.ts); the raw-fetch call sites (the
+ * server-config probe, web-push vapid-key, settings-connection /health) reach it directly. Only
+ * http/https URLs are redirected — `media:`, `data:`, `blob:`, `ipc:`, and relative/same-origin
+ * paths fall through to the original webview fetch. The plugin's fetch is a drop-in: it builds a
+ * `Request` and reads `arrayBuffer()` (so FormData/multipart uploads serialize with a correct
+ * boundary), forwards all headers, honors `init.signal` (the probe's AbortController timeout), and
+ * returns a real `Response`.
+ *
+ * No-op outside the Tauri shell (the browser build is bit-for-bit unchanged). Idempotent. MUST run
+ * before `bootstrapApplication` so Angular's `HttpFetchBackend` binds the override before its first
+ * request. The plugin is dynamically imported so the browser bundle keeps zero Tauri deps (it lands
+ * in a lazy chunk the browser build never loads — `isTauri()` is false there).
+ */
+export async function installNativeFetch(): Promise<void> {
+  if (nativeFetchInstalled || !isTauri()) return;
+  nativeFetchInstalled = true;
+  try {
+    const { fetch: nativeFetch } = await import('@tauri-apps/plugin-http');
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+        // Hand the request to the native client (reqwest, outside the webview → no CORS).
+        return nativeFetch(input, init as RequestInit | undefined);
+      }
+      // media:/data:/blob:/ipc:/relative — stay in the webview.
+      return originalFetch.call(globalThis, input, init);
+    }) as typeof globalThis.fetch;
+  } catch (e) {
+    // The plugin chunk ships with the app, so a load failure is a build/wiring bug — but we must
+    // not block bootstrap over it. Leave the webview fetch in place (the app boots; cross-origin
+    // calls will then surface real errors instead of a blank screen).
+    console.error('installNativeFetch: failed to load @tauri-apps/plugin-http', e);
+  }
+}
+
 /** Canonicalize a backend origin: trim and strip trailing slash(es) so it is a safe path-concatenation
  *  base. A trailing slash turns `${apiOrigin()}/api/v1` into `${apiOrigin()}//api/v1`, which Fastify
  *  404s — and users DO type a trailing slash in the server-config form. Mirrors the Rust
@@ -209,8 +275,8 @@ const MEDIA_HOST = 'localhost';
  * Rewrite a server-relative media URL for the current runtime.
  *  - Browser → the bare path (same-origin; the httpOnly `media_token` cookie authenticates it).
  *  - Tauri   → `media://localhost<path>`, served by the Rust URI-scheme proxy, which forwards to
- *              `${apiOrigin}${path}` with `Authorization: Bearer` (the cookie can't cross origins
- *              and a bare `<img src>`/CSS `url()` can't set headers).
+ *              `${apiOrigin}${path}` with `Authorization: Bearer` (the webview can't auto-attach the
+ *              SameSite=Strict cookie cross-origin, and a bare `<img src>`/CSS `url()` can't set headers).
  * Already-absolute URLs (`data:`, `blob:`, `http:`, `https:`) pass through unchanged.
  */
 export function assetUrl(path: string | null | undefined): string {

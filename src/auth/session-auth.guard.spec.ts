@@ -1,21 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { ExecutionContext } from '@nestjs/common';
-import { JwtAuthGuard } from './jwt-auth.guard.js';
+import { SessionAuthGuard } from './session-auth.guard.js';
 import type { Reflector } from '@nestjs/core';
 import { IS_PUBLIC } from '../common/public.decorator.js';
 import type { BearerAuthService } from './bearer-auth.service.js';
 
 /**
- * JwtAuthGuard is the global APP_GUARD. It short-circuits to `true` on any route/controller carrying
- * @Public(); otherwise it extracts the Bearer token and delegates to BearerAuthService.resolve, which
- * accepts an access JWT OR a session token. Covered here: the @Public bypass (method + class level),
- * the resolve→req.user happy path, and the 401 when resolve yields null. Pure-vitest, no Nest DI —
- * Reflector + BearerAuthService mocked inline.
+ * SessionAuthGuard is the global APP_GUARD. It short-circuits to `true` on any route/controller carrying
+ * @Public(); otherwise it resolves the session token cookie-first (httpOnly media_token, Bearer
+ * fallback) via BearerAuthService.resolve and sets req.user. Covered here: the @Public bypass (method +
+ * class level), the resolve→req.user happy path, and the 401 when resolve yields null. The cookie-slide
+ * side-effect (re-issue when `slid && persistent && fromCookie`) isn't asserted here — it would need a
+ * mocked response + the media-token module hoisted-mocked, beyond this pure-vitest harness.
+ * Pure-vitest, no Nest DI — Reflector + BearerAuthService mocked inline.
  */
-describe('JwtAuthGuard (global @Public opt-out + Bearer resolve)', () => {
+describe('SessionAuthGuard (global @Public opt-out + Bearer resolve)', () => {
   const reflector = { getAllAndOverride: vi.fn() };
   const bearerAuth = { resolve: vi.fn() };
-  const guard = new JwtAuthGuard(
+  const guard = new SessionAuthGuard(
     reflector as unknown as Reflector,
     bearerAuth as unknown as BearerAuthService,
   );
@@ -61,7 +63,7 @@ describe('JwtAuthGuard (global @Public opt-out + Bearer resolve)', () => {
 
   it('admits a request whose credential resolves to a principal and sets req.user (with sessionId)', async () => {
     reflector.getAllAndOverride.mockReturnValue(undefined);
-    bearerAuth.resolve.mockResolvedValue({ userId: 42, sessionId: 101 });
+    bearerAuth.resolve.mockResolvedValue({ userId: 42, sessionId: 101, slid: false, persistent: true });
     const ctx = makeCtx('Bearer some-token');
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
     expect(bearerAuth.resolve).toHaveBeenCalledWith('some-token', { ip: '127.0.0.1' });

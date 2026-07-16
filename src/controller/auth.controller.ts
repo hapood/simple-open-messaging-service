@@ -15,7 +15,12 @@ import { ApiBearerAuth, ApiBody, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { LocalAuthGuard } from '../auth/local-auth.guard.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { AuthService } from '../auth/auth.service.js';
-import { MEDIA_TOKEN_COOKIE, MEDIA_COOKIE_OPTIONS } from '../auth/media-token.js';
+import {
+  LOGGED_IN_COOKIE,
+  LOGGED_IN_COOKIE_OPTIONS,
+  MEDIA_COOKIE_OPTIONS,
+  MEDIA_TOKEN_COOKIE,
+} from '../auth/media-token.js';
 import {
   SessionTokenService,
   type SessionClient,
@@ -40,17 +45,26 @@ export class AuthController {
     private readonly sessionTokens: SessionTokenService,
   ) {}
 
-  /** Mirror the session token into an httpOnly `media_token` cookie so same-origin /uploads/* requests
-   *  (native <img>/<a download>, which can't send the Authorization header) are authenticated. Set on
-   *  login; cleared on logout / change-password. Same validation path as the API (BearerAuthService) → a
-   *  revoked session loses media access too. */
-  private setMediaCookie(reply: FastifyReply, token: string) {
-    reply.setCookie(MEDIA_TOKEN_COOKIE, token, MEDIA_COOKIE_OPTIONS);
+  /** Set the session credential: the httpOnly `media_token` cookie (the primary credential the global
+   *  guard accepts on every route) AND the non-httpOnly `logged_in` presence cookie (so the pure-httpOnly
+   *  browser client can read login state via `document.cookie`). `persistent` selects a 14-day cookie
+   *  (default, "keep me logged in") vs a session cookie (dropped on browser close). Same validation path
+   *  as the API (BearerAuthService) → a revoked session loses all access. */
+  private setMediaCookie(reply: FastifyReply, token: string, persistent: boolean) {
+    const mediaOpts = persistent
+      ? MEDIA_COOKIE_OPTIONS
+      : { ...MEDIA_COOKIE_OPTIONS, maxAge: undefined };
+    const presenceOpts = persistent
+      ? LOGGED_IN_COOKIE_OPTIONS
+      : { ...LOGGED_IN_COOKIE_OPTIONS, maxAge: undefined };
+    reply.setCookie(MEDIA_TOKEN_COOKIE, token, mediaOpts);
+    reply.setCookie(LOGGED_IN_COOKIE, '1', presenceOpts);
   }
 
-  /** Clear the media cookie — path must match the one used at set time for the browser to drop it. */
+  /** Clear both cookies — path must match the one used at set time for the browser to drop them. */
   private clearMediaCookie(reply: FastifyReply) {
     reply.clearCookie(MEDIA_TOKEN_COOKIE, { path: '/' });
+    reply.clearCookie(LOGGED_IN_COOKIE, { path: '/' });
   }
 
   @Public()
@@ -76,14 +90,15 @@ export class AuthController {
     if (authInfo.status === 0) {
       // status 0 (success) implies userId is set — see LocalStrategy.validate. Issue the single
       // long-lived session credential. 'app' → no-expiry (native, OS secure storage); 'web' (default) /
-      // 'desktop' → sliding 30-day.
+      // 'desktop' → sliding 14-day.
       const client: SessionClient = body.client ?? 'web';
+      const persistent = body.persistent !== false; // default true (14d sliding cookie); false → session cookie
       const session_token = await this.sessionTokens.issue(
         authInfo.userId!,
         client,
-        { device: body.device, userAgent, ip },
+        { device: body.device, userAgent, ip, persistent },
       );
-      this.setMediaCookie(reply, session_token);
+      this.setMediaCookie(reply, session_token, persistent);
       return { code: BusinessCode.OK, message: 'successful', data: { session_token } };
     } else {
       if (authInfo.bannedUntil !== undefined) {
@@ -104,12 +119,16 @@ export class AuthController {
   @Post('auth/logout')
   @ApiOperation({ summary: 'Logout (revoke the presented session token)' })
   async logout(
+    @Request() req: FastifyRequest,
     @Body() dto: LogoutDto,
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
-    // No JWT auth needed — possession of the session token authorizes its own revocation.
-    if (dto.sessionToken) {
-      await this.sessionTokens.revoke(dto.sessionToken);
+    // @Public (callable even with a dead/expired credential, so logout always clears the cookie).
+    // Identify the session from the body (native holds the raw token) OR the cookie (browser pure
+    // httpOnly — the token is JS-unreadable, so it can't be placed in the body).
+    const token = dto.sessionToken ?? req.cookies?.[MEDIA_TOKEN_COOKIE];
+    if (token) {
+      await this.sessionTokens.revoke(token);
     }
     this.clearMediaCookie(reply);
     return { code: BusinessCode.OK, message: 'success' };

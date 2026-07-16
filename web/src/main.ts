@@ -3,7 +3,7 @@ import { appConfig } from './app/app.config';
 import { AppComponent } from './app/app.component';
 import { initEruda } from './app/dev-tools';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
-import { applySafeInsets } from './app/services/runtime';
+import { applySafeInsets, installNativeFetch } from './app/services/runtime';
 
 // Apply native system-bar insets (Android WebView: status-bar height from the Kotlin SomsShell bridge)
 // to :root BEFORE bootstrap, so the first paint already has --soms-safe-top (FOUC-free). No-op in the
@@ -18,7 +18,14 @@ installKeyboardInsetBridge();
 // console line. In the production build `dev-tools.ts` is replaced by `dev-tools.prod.ts`
 // (initEruda is a no-op there), so this call contributes no code and no bytes to the prod bundle —
 // eruda is not imported, not emitted, and not prefetched by ngsw.
-initEruda().finally(() => {
-  bootstrapApplication(AppComponent, appConfig)
-    .catch((err) => console.error(err));
-});
+//
+// installNativeFetch() runs AFTER eruda init and BEFORE bootstrap so its globalThis.fetch swap is live
+// before Angular's HttpFetchBackend makes its first request. No-op in the browser build (isTauri()
+// false); under the Tauri shell it dynamically imports the http plugin and routes http(s) requests
+// through the native reqwest client, bypassing the webview's CORS gate so the bundled app can reach
+// any user-configured backend.
+initEruda().finally(() =>
+  installNativeFetch().finally(() =>
+    bootstrapApplication(AppComponent, appConfig).catch((err) => console.error(err)),
+  ),
+);

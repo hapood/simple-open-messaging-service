@@ -5,9 +5,11 @@ import { SseService } from './sse.service.js';
 /**
  * SSE downlink stream endpoint: GET /api/v1/events
  *
- * Authentication goes through the same JwtAuthGuard as ordinary protected routes (verifies signature/expiry + revocation-aware),
- * so the token can only be carried via the `Authorization: Bearer <access>` header (supported by fetch-event-source)
- * and never in the URL (no log/Referer leakage). On failure → the guard throws 401, and the frontend renews and reopens on open.
+ * Authentication goes through the same SessionAuthGuard as ordinary protected routes (cookie-first,
+ * Bearer fallback — see session-auth.guard.ts). The browser auto-attaches the httpOnly session cookie
+ * same-origin; native clients + the desktop SSE worker (cross-origin, can't use a cookie) send
+ * `Authorization: Bearer`. The token is never carried in the URL (no log/Referer leakage). On failure
+ * → the guard throws 401, and the frontend re-opens on reconnect.
  *
  * Manually writes text/event-stream to the raw response: first reply.hijack() takes over the raw response (must be called before any reply.raw
  * write, otherwise headers-already-sent is triggered), then hands reply.raw to SseService.
@@ -21,9 +23,10 @@ export class EventsController {
   @Get()
   stream(@Req() req: FastifyRequest, @Res() reply: FastifyReply): void {
     reply.hijack(); // take over the raw response for the infinite SSE stream
-    const userId = (req.user as { userId: number }).userId;
+    const user = req.user as { userId: number; sessionId: number };
     // Forward the request Origin: hijack bypasses @fastify/cors, so the reflected CORS header must be
     // written on the raw stream or cross-origin clients (Tauri desktop/Android) can never read it.
-    this.sseService.register(userId, reply.raw, req.headers.origin);
+    // sessionId lets SseService target this exact session for FORCE_LOGOUT on a device-revoke.
+    this.sseService.register(user.userId, user.sessionId, reply.raw, req.headers.origin);
   }
 }

@@ -10,7 +10,7 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
  *
  * The first row grants the browser notification permission. The instant that's granted,
  * {@link UnreadAttentionService} posts a SINGLE rolling summary notification — "Alice, Bob sent you N
- * messages while you were away" — that replaces itself (shared tag, never stacks) on each new background
+ * messages" — that replaces itself (shared tag, never stacks) on each new background
  * message and is dismissed when the tab regains focus. No message content/preview is shown, only the
  * sender + count summary. The permission row reflects the browser permission:
  *

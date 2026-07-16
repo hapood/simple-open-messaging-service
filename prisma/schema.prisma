@@ -113,6 +113,7 @@ model SessionToken {
   createdAt    DateTime  @default(now())
   expiresAt    DateTime? // null = never (native app); set = sliding deadline (web/desktop)
   lastSeenAt   DateTime  @default(now()) // sliding-window activity tracker (web/desktop)
+  persistent   Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for app (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
   revokedAt    DateTime? // soft revoke (logout / logout-all / password change / admin disable)
   revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable (observability)
 
@@ -293,7 +294,6 @@ model MessageThread {
   // participant on ThreadParticipant.lastReadSeq).
   lastMessageSeq      Int?
   lastMessagePreview  String?   @db.VarChar(255)
-  lastMessageSenderId Int?
   lastMessageAt       DateTime?
 
   // The "!"-sigil User row carrying this GROUP thread's identity (name/avatar/bio). Non-null iff

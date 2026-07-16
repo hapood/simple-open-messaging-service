@@ -117,9 +117,16 @@ export class AuthService {
 
   /** Revoke one session by its device-list row id (the "revoke this device" action). Delegates to
    *  SessionTokenService.revokeById, which ownership-checks (id + userId + active) and drops the KV
-   *  entry so the revocation lands within the 60s cache window. Returns true iff a row was revoked. */
+   *  entry so the revocation lands within the 60s cache window. Emits `auth.session-revoked` so the SSE
+   *  service pushes FORCE_LOGOUT to ONLY that session's connection(s) and drops them — the user's other
+   *  devices stay online (unlike invalidateAllSessions, which kicks every device). Returns true iff a row
+   *  was revoked (no emit on a no-op — unknown/foreign/already-revoked id). */
   async revokeSession(userId: number, sessionId: number) {
-    return this.sessionTokens.revokeById(userId, sessionId);
+    const ok = await this.sessionTokens.revokeById(userId, sessionId);
+    if (ok) {
+      this.eventEmitter.emit('auth.session-revoked', { userId, sessionId, reason: 'device_revoke' });
+    }
+    return ok;
   }
 
   // ── Admin session/overview reads ─────────────────────────────────────────────

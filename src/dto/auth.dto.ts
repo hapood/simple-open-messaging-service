@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
+  IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
@@ -49,6 +50,16 @@ export class LoginDto {
   @IsIn(['app', 'web', 'desktop'])
   @IsOptional()
   client?: 'app' | 'web' | 'desktop';
+
+  @ApiProperty({
+    required: false,
+    default: true,
+    description:
+      'Cookie persistence for the pure-httpOnly browser path: true (default) → 30-day cookie; false → session cookie (dropped when the browser closes, honoring "don\'t keep me logged in"). Native clients ignore the cookie and this flag.',
+  })
+  @IsBoolean()
+  @IsOptional()
+  persistent?: boolean;
 }
 
 /**

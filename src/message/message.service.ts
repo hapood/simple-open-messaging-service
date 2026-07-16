@@ -126,7 +126,6 @@ export class MessageService implements OnModuleInit {
           data: {
             lastMessageSeq: seq,
             lastMessagePreview: derivePreview(type, content),
-            lastMessageSenderId: userId,
             lastMessageAt: msg.createdAt,
           },
         });
@@ -287,7 +286,6 @@ export class MessageService implements OnModuleInit {
           data: {
             lastMessageSeq: seq,
             lastMessagePreview: derivePreview(stage.contentType, content),
-            lastMessageSenderId: stage.creatorId,
             lastMessageAt: msg.createdAt,
           },
         });

@@ -8,11 +8,14 @@
  *
  * Auth handshake (the one genuinely tricky part — a naive port reconnects with a stale token in a
  * tight 401 loop): the worker never touches `AuthService` (it can't — it's a worker, no Angular DI,
- * no `localStorage`). Instead it asks the main thread for the long-lived session token via `need-token`
- * (once; reused across reconnects), correlated by `reqId`. A stale `{token, reqId}` reply (from a prior
- * request) is dropped because its `reqId` won't match `tokenReqId`. There is no renew: a 401 means the
- * session token is revoked/expired, so the worker posts `force-logout` (main re-logs in) and stops — it
- * does NOT retry (that would just 401-loop).
+ * no `localStorage`). **Browser (same-origin):** the httpOnly session cookie authenticates the stream
+ * (fetch's default `credentials: same-origin` attaches it) — no token is held. **Desktop Tauri
+ * (cross-origin worker that can't use a cookie):** the worker asks the main thread for the long-lived
+ * session token via `need-token` (once; reused across reconnects), correlated by `reqId`, and sends it
+ * as `Authorization: Bearer`. A stale `{token, reqId}` reply (from a prior request) is dropped because
+ * its `reqId` won't match `tokenReqId`. There is no renew: a 401 means the session is revoked/expired,
+ * so the worker posts `force-logout` (main re-logs in) and stops — it does NOT retry (that would just
+ * 401-loop).
  *
  * The stream is read with a bare `fetch` + `getReader()` loop, NOT `@microsoft/fetch-event-source`.
  * That library is main-thread-only — it resolves `window.fetch` / `window.setTimeout` and calls
@@ -57,6 +60,10 @@ class AuthNeededError extends Error {
 /** The SSE endpoint URL, supplied by main in the `start` message (kept out of the worker so it does
  *  not import the main-thread `constants.ts`). */
 let url = '';
+/** Browser (same-origin): the httpOnly session cookie authenticates the stream — no token is held in the
+ *  worker. Desktop Tauri (cross-origin worker that can't use a cookie): the raw token is fetched via the
+ *  `need-token` handshake and sent as `Authorization: Bearer`. Derived from `url` on `start`. */
+let cookieAuth = false;
 /** True while inside the run reconnect loop. Makes `start` idempotent. */
 let running = false;
 /** Set by `stop` so the loop exits without reconnecting. */
@@ -86,6 +93,17 @@ let tokenResolve: ((token: string | undefined) => void) | undefined;
 /** Post a message to the main thread. */
 function post(msg: ToMain): void {
   sw.postMessage(msg);
+}
+
+/** Same-origin (browser → cookie auth) vs cross-origin (desktop Tauri → the worker can't use a cookie, so
+ *  it falls back to the Bearer handshake). The SSE url is relative same-origin on the browser build and
+ *  absolute cross-origin under Tauri. */
+function isCrossOrigin(u: string): boolean {
+  try {
+    return new URL(u, sw.location.href).origin !== sw.location.origin;
+  } catch {
+    return false;
+  }
 }
 
 /** Ask the main thread for the long-lived session token and await the matching `{token, reqId}` /
@@ -131,25 +149,34 @@ async function run(): Promise<void> {
   post({ type: 'state', state: 'closed' });
 }
 
-/** Open one SSE stream. Obtains a token (cached, or via `need-token` on the very first open), opens
- *  the stream, and blocks until it closes. A 401 clears the cached token and throws AuthNeededError. */
+/** Open one SSE stream. Desktop (cross-origin): obtains a token (cached, or via `need-token` on the
+ *  first open) and sends it as `Authorization: Bearer`. Browser (same-origin): no token — the httpOnly
+ *  session cookie authenticates the stream (fetch's default `credentials: same-origin` attaches it).
+ *  A 401 clears the cached token (desktop) and throws AuthNeededError. */
 async function openOnce(): Promise<void> {
-  let token = currentToken;
-  if (!token) {
-    token = await requestToken();
-    if (!token || manualClose) return;
-    currentToken = token;
+  let token: string | undefined;
+  if (!cookieAuth) {
+    token = currentToken;
+    if (!token) {
+      token = await requestToken();
+      if (!token || manualClose) return;
+      currentToken = token;
+    }
   }
 
   aborter = new AbortController();
+  const headers: Record<string, string> = { Accept: 'text/event-stream' };
+  if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(url, {
     signal: aborter.signal,
-    headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
-    // Defeat any intermediate caching of the event stream (correctness, not performance).
+    headers,
+    // Defeat any intermediate caching of the event stream (correctness, not performance). Default
+    // `credentials: same-origin` attaches the httpOnly cookie on the browser path and sends none on the
+    // cross-origin desktop path (which uses the Bearer header instead).
     cache: 'no-store',
   });
   if (res.status === 401) {
-    currentToken = undefined; // session token dead — the run loop posts force-logout + stops
+    currentToken = undefined; // session dead — the run loop posts force-logout + stops
     throw new AuthNeededError();
   }
   if (!res.ok || !res.body) {
@@ -310,6 +337,7 @@ sw.addEventListener('message', (e: MessageEvent) => {
     case 'start':
       if (running) return;
       url = m.url;
+      cookieAuth = !isCrossOrigin(url);
       running = true;
       manualClose = false;
       attempt = 0;

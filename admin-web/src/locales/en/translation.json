@@ -12,7 +12,13 @@
     "page": "Page {{page}} / {{pages}}",
     "loadFailed": "Load failed: {{message}}",
     "operationFailed": "Operation failed",
-    "comingSoon": "Coming soon"
+    "comingSoon": "Coming soon",
+    "neverExpires": "No expiry",
+    "client": {
+      "app": "Android",
+      "web": "Web",
+      "desktop": "Desktop"
+    }
   },
   "topBar": {
     "toggleTheme": "Toggle theme",
@@ -173,7 +179,7 @@
   "sessions": {
     "title": "Sessions",
     "searchPlaceholder": "Filter by IP",
-    "desc": "Active refresh sessions of all users (not revoked and not expired). {{count}} total.",
+    "desc": "Active sessions of all users (not revoked and not expired). {{count}} total.",
     "purge": "Purge All",
     "purgeTitle": "Purge all active sessions?",
     "purgeBody": "This will revoke all {{count}} active sessions and force every user to re-login (access tokens expire immediately). This action cannot be undone.",
@@ -182,10 +188,12 @@
     "purgeFailed": "Purge failed",
     "col": {
       "user": "User",
+      "client": "Client",
       "device": "device",
       "ua": "User-Agent",
       "ip": "IP",
       "created": "Created",
+      "lastActive": "Last active",
       "expires": "Expires"
     },
     "empty": "No active sessions"
@@ -452,9 +460,12 @@
     "empty": "No active sessions",
     "col": {
       "device": "device",
+      "client": "Client",
       "ua": "User-Agent",
       "ip": "IP",
+      "lastIp": "Last IP",
       "created": "Created",
+      "lastActive": "Last active",
       "expires": "Expires"
     }
   },

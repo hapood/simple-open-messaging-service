@@ -153,10 +153,11 @@ define do_build
 	devUrlEnv=; capsArg=; \
 	if [ -n "$(DEV_URL)" ]; then \
 	  dsuffix=-dev; \
-	  devUrlEnv="-e SOMS_DEFAULT_DEV_URL=$(DEV_URL)"; \
+	  devUrlEnv="-e SOMS_DEFAULT_DEV_URL=$(DEV_URL) -e SOMS_DEV_TOOLS=1"; \
 	  capsArg='--config {"app":{"security":{"capabilities":["default","dev-remote"]}}}'; \
 	  echo "  dev shell -> frontend dev server: $(DEV_URL) (baked via SOMS_DEFAULT_DEV_URL)"; \
 	  echo "  dev shell -> remote IPC enabled via 'dev-remote' capability (debug-only; release keeps [default])"; \
+	  echo "  dev shell -> dev-tools source set = src/dev-real (SOMS_DEV_TOOLS=1 compiles the real bubble; else src/dev-stub no-op)"; \
 	fi; \
 	for v in $(VARIANTS); do \
 	  case "$$v" in \

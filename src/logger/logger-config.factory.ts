@@ -51,7 +51,7 @@ export function buildLoggerParams(): Params {
       // Trim each access record to the correlation-relevant fields. `req` is the FastifyRequest
       // wrapper (has .id/.method/.url/.ip), so these read directly. Bodies are deliberately NOT
       // serialized (passwords / PII never enter the access log). userId/adminId come from req.user,
-      // which JwtAuthGuard/AdminAuthGuard set before the response-time access line is written.
+      // which SessionAuthGuard/AdminAuthGuard set before the response-time access line is written.
       serializers: {
         req: (req) => {
           const r = req as unknown as ReqLike;

@@ -4,13 +4,10 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -66,10 +63,6 @@ class MainActivity : TauriActivity() {
     // getImeHeight(). Android WebView's visualViewport doesn't reflect the IME (edge-to-edge, window
     // undivided), so this is the only source of the keyboard height for the web layer.
     @Volatile private var imeHeightCss = 0
-    /** The dev-tools bubble's window view (null when not attached). It lives in its own WindowManager
-     *  window, not in android.R.id.content, so it survives the webview's content container being
-     *  swapped mid-session (which used to drop the bubble a few seconds after launch). */
-    private var bubbleView: View? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -191,52 +184,20 @@ class MainActivity : TauriActivity() {
         // reads. Added here, before the page boots, so runtime.ts's synchronous seed read resolves the
         // native store (not a stale injected global).
         webView.addJavascriptInterface(SomsSecureStoreInterface(this), "SomsSecureStore")
+        // window.SomsNotify.show(text,replace)/clear() — exposes the Android native notification method's params
+        // to JS; the web's AndroidNotificationAdapter wraps it (maps the unified `merge` → `replace`).
+        webView.addJavascriptInterface(SomsNotifyInterface(this), "SomsNotify")
         // Deliver anything that arrived before the webview was ready.
         SomsBridge.FcmToken.current?.let { emitToken(it) }
         SomsBridge.DeepLink.pendingThreadId?.let {
             SomsBridge.DeepLink.pendingThreadId = null
             openThread(it)
         }
-        // Debug-only draggable dev-tools bubble (frontend dev server / refresh / revert). Added here so
-        // it is inserted AFTER the webview and draws on top. See DevToolsBubble / FCM_ANDROID_PATCH.md.
-        if (BuildConfig.DEBUG) attachDevToolsBubble()
-    }
-
-    /** Attach the draggable dev-tools bubble (debug builds only) in its OWN window via WindowManager,
-     *  NOT in android.R.id.content. A content-attached bubble was lost when Tauri swapped the webview's
-     *  content container on navigation (it vanished a few seconds after launch, once the page rendered).
-     *  A TYPE_APPLICATION_PANEL sub-window is independent of the content view (survives the swap) and
-     *  draws above the activity's content (the webview) regardless of z-order. No SYSTEM_ALERT_WINDOW
-     *  permission — it's a sub-window of this activity, not a system overlay. Idempotent; removed in
-     *  onDestroy. */
-    private fun attachDevToolsBubble() {
-        if (bubbleView?.isAttachedToWindow == true) return
-        // TYPE_APPLICATION_PANEL needs the parent window's token; the decorView token is set once the
-        // window is attached. If it isn't yet (very early), bail — onResume/onWebViewCreate retry.
-        val token = window.decorView.windowToken ?: return
-        val density = resources.displayMetrics.density
-        val params = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.WRAP_CONTENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_PANEL,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            this.token = token
-            gravity = Gravity.TOP or Gravity.START
-            x = (16f * density).toInt()
-            y = (80f * density).toInt() // below the status bar / notch
-        }
-        val bubble = DevToolsBubble(
-            this,
-            { captureWebView(); DevToolsDialog(this).show() },
-            getWindowManager(),
-            params,
-        )
-        runCatching { getWindowManager().addView(bubble, params) }
-            .onFailure { android.util.Log.w("SomsDev", "attachDevToolsBubble failed", it) }
-        bubbleView = bubble
+        // Dev-tools bubble (frontend dev server / refresh / revert). Added here so it is inserted AFTER
+        // the webview and draws on top. DevTools.attach is a no-op unless the build compiled the real twin
+        // (src/dev-real, only the Makefile's `apk-dev` target) — stub builds contain no dev-tools code at
+        // all. Idempotent; onResume retries it too.
+        DevTools.attach(this)
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.
@@ -245,7 +206,7 @@ class MainActivity : TauriActivity() {
      *  asynchronous w.r.t. the activity lifecycle and can land after the first onResume, so this
      *  view-tree scan is a belt-and-suspenders catch for that race window. Also called from the dev
      *  bubble's tap, by which point the WebView is guaranteed mounted. */
-    private fun captureWebView() {
+    internal fun captureWebView() {
         if (SomsBridge.webView != null) return
         val root = window.decorView as? ViewGroup ?: return
         firstWebView(root)?.let { SomsBridge.webView = it }
@@ -270,9 +231,9 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Attach the dev bubble here too: by onResume the content view is in the tree, so addView
-        // lands the bubble ON TOP. (onWebViewCreate also attaches it; both are tag-guarded/idempotent.)
-        if (BuildConfig.DEBUG) attachDevToolsBubble()
+        // Retry the dev-tools bubble attach: by onResume the window token is set, so addView lands it ON
+        // TOP. (onWebViewCreate also calls DevTools.attach; both are idempotent. No-op in stub builds.)
+        DevTools.attach(this)
         // Belt-and-suspenders WebView capture for the async-creation race (see captureWebView). Usually
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
@@ -303,10 +264,9 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
-        // The dev bubble lives in its own WindowManager sub-window (NOT in the content view), so it is
-        // NOT auto-removed when the content is destroyed — drop it explicitly to avoid leaking a window.
-        bubbleView?.let { v -> runCatching { getWindowManager().removeView(v) } }
-        bubbleView = null
+        // The dev bubble (when present) lives in its own WindowManager sub-window — NOT auto-removed on
+        // content destroy, so drop it via DevTools (a no-op in stub builds) to avoid leaking a window.
+        DevTools.detach(this)
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
         SomsBridge.webView = null
@@ -580,6 +540,29 @@ class MainActivity : TauriActivity() {
         fun setApiOrigin(origin: String?) {
             val a = activityRef.get() ?: return
             SomsSecureStore.setApiOrigin(a, origin)
+        }
+    }
+
+    /** JS-callable surface exposed as window.SomsNotify — exposes the Android NATIVE notification method's
+     *  parameters to JS. `show(text, replace)` posts/replaces the message notification on CHANNEL_MESSAGES
+     *  (stable AWAY_NOTIF_ID when replace; a fresh id otherwise); `clear` cancels it. The web's
+     *  AndroidNotificationAdapter wraps this, mapping the unified `merge` param onto `replace`. The native
+     *  background triggers (FCM/WorkManager/RealtimeService → notifyAwaySummary) are untouched.
+     *  @JavascriptInterface runs on a background JS thread; NotificationManager is thread-safe, so no hop. */
+    private class SomsNotifyInterface(activity: MainActivity) {
+        private val activityRef = java.lang.ref.WeakReference(activity)
+
+        @JavascriptInterface
+        fun show(text: String, replace: Boolean) {
+            val a = activityRef.get() ?: return
+            SomsMessagingService.showText(a, text, replace)
+        }
+
+        @JavascriptInterface
+        fun clear() {
+            val a = activityRef.get() ?: return
+            ContextCompat.getSystemService(a, NotificationManager::class.java)
+                ?.cancel(SomsMessagingService.AWAY_NOTIF_ID)
         }
     }
 

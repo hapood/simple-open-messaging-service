@@ -26,7 +26,7 @@ import { QuotaService } from '../quota/quota.service.js';
  * per-category overrides (null = use the global default). Reads are any admin; writes are SUPER_ADMIN
  * only — mirroring AdminFederationController's block/unblock gate.
  *
- * @Public() opts out of the global JwtAuthGuard so this controller's own route-scoped AdminAuthGuard
+ * @Public() opts out of the global SessionAuthGuard so this controller's own route-scoped AdminAuthGuard
  * (the admin JWT) runs instead — the same opt-out the other admin controllers use.
  */
 @ApiTags('admin')

@@ -1,15 +1,20 @@
-# SOMS all-in-one stack: init → postgres → migrate → app.
-# STATIC (no ${VAR}, no env_file) — one YAML anchor for the host port (x-host-port, below). You edit
-# ./soms.conf (see soms.conf.example); the `init` one-shot service reads it and generates everything
-# else (the postgres password file, the app env incl. the constructed DATABASE_URL, and the Caddyfile)
+# ============================================================================
+# SOMS PUBLIC-INTERNET profile — TLS on 80/443 (+ 7667 for federation), admin
+# open to every source IP. For an intranet/NAS box reachable by LAN IP and with
+# admin locked to the LAN, use deploy/nas/ instead.
+# ============================================================================
+# STATIC (no ${VAR}, no env_file). You edit ./soms.conf (see soms.conf.example);
+# the `init` one-shot service reads it and generates everything else (the postgres
+# password file, the app env incl. the constructed DATABASE_URL, and the Caddyfile)
 # into the shared soms-run volume.
 #
-# TEMPLATE — copy this directory (deploy/) to your deployment dir and run from there. Do NOT run docker
-# compose inside the source checkout (./data would land in the source tree). Build the image first, in
-# the repo:  ./scripts/build-image.sh   (tags soms:latest)
+# TEMPLATE — copy this directory (deploy/public/) to your deployment dir and run
+# from there. Do NOT run docker compose inside the source checkout (./data would
+# land in the source tree). Build the image first, in the repo:
+#   ./scripts/build-image.sh   (tags soms:latest)
 #
-# Paths are relative to the launch dir (your deployment dir; edit this file to change a path — paths
-# can't be env-driven):
+# Paths are relative to the launch dir (your deployment dir; edit this file to
+# change a path — paths can't be env-driven):
 #   ./soms.conf        your deployment config (gitignored; cp soms.conf.example soms.conf)
 #   ./data             app state: S2S/JWT keys, logs, Caddy state, uploads (owned by the app, uid 1000)
 #   ./data/postgres    the chat database (owned by postgres, uid 999 — init chowns it for you)
@@ -17,12 +22,6 @@
 # Quick start (in your deployment dir):
 #   cp soms.conf.example soms.conf      # then fill in every field
 #   docker compose up -d
-
-# ── The one compose-level knob: the published HOST port. The container always serves on the
-# ── federation-canonical 7667 internally; this only changes the port you expose on the host. Edit the
-# ── value below (one place). NOTE: a non-default port requires SRV federation delegation — peers
-# ── default to 7667 (SOMS on a T9 phone keypad).
-x-host-port: &host-port 7667
 
 services:
   # Reads ./soms.conf, generates /soms/run/{pg-password,app.env,Caddyfile}, and fixes ./data ownership
@@ -91,24 +90,24 @@ services:
       - ./data:/app/data
       - soms-run:/soms/run:ro
     ports:
-      # SOMS_TLS_MODE=custom | disabled: publish the single edge port (federation-canonical 7667).
-      - target: 7667              # container port — federation canonical, FIXED
-        published: *host-port     # host port — the one knob (x-host-port at the top of this file)
-        protocol: tcp             # HTTPS — web UI + API + SSE + federation S2S
-      - target: 7667
-        published: *host-port
+      # SOMS_TLS_MODE=standard: 80 (HTTP→HTTPS redirect) + 443 (web UI + API + SSE), AND 7667 for
+      # federation S2S (also HTTPS — one shared DNS-01 cert). The container always serves federation on
+      # the canonical 7667 internally.
+      - target: 80
+        published: 80
+        protocol: tcp
+      - target: 443
+        published: 443
+        protocol: tcp
+      - target: 443
+        published: 443
         protocol: udp             # HTTP/3 (QUIC); drop this entry to disable h3
-      # SOMS_TLS_MODE=standard: ALSO publish 80 (HTTP→HTTPS redirect) + 443 (web). Uncomment these,
-      # keeping the 7667 entries above (7667 stays for federation S2S):
-      # - target: 80
-      #   published: 80
-      #   protocol: tcp
-      # - target: 443
-      #   published: 443
-      #   protocol: tcp
-      # - target: 443
-      #   published: 443
-      #   protocol: udp
+      - target: 7667
+        published: 7667
+        protocol: tcp             # federation S2S (HTTPS)
+      - target: 7667
+        published: 7667
+        protocol: udp             # federation HTTP/3; drop to disable
     restart: unless-stopped
 
 volumes:

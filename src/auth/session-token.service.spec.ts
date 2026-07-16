@@ -65,17 +65,19 @@ describe('SessionTokenService', () => {
       });
     });
 
-    it('web/desktop client → expiresAt ~30d out (sliding) + client persisted', async () => {
-      await svc.issue(7, 'web');
+    it('web/desktop client → expiresAt ~14d out (sliding) + client + persistent persisted', async () => {
+      await svc.issue(7, 'web', { persistent: true });
       let arg = prisma.sessionToken.create.mock.calls[0][0].data;
       expect(arg.client).toBe('web');
+      expect(arg.persistent).toBe(true);
       expect(arg.expiresAt).toBeInstanceOf(Date);
-      expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 29 * 24 * 3600 * 1000);
+      expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
 
-      await svc.issue(7, 'desktop');
+      await svc.issue(7, 'desktop', { persistent: false });
       arg = prisma.sessionToken.create.mock.calls[1][0].data;
       expect(arg.client).toBe('desktop');
-      expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 29 * 24 * 3600 * 1000);
+      expect(arg.persistent).toBe(false);
+      expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
     });
 
     it('stores the sha256 hash, never the plaintext', async () => {
@@ -103,22 +105,33 @@ describe('SessionTokenService', () => {
         expiresAt: new Date(Date.now() + 3600_000),
         revokedAt: null,
         lastSeenAt: new Date(),
+        persistent: true,
         ...overrides,
       };
     }
 
-    it('returns { userId, sessionId } for a valid web token and caches the result', async () => {
+    it('returns { userId, sessionId, slid, persistent } for a valid web token and caches the result', async () => {
       const raw = 'a'.repeat(64);
       prisma.sessionToken.findUnique.mockResolvedValue(makeRow());
-      // First call: cache miss → DB read + cache write.
-      await expect(svc.validate(raw)).resolves.toEqual({ userId: 7, sessionId: 101 });
+      // First call: cache miss → DB read + cache write. lastSeenAt is fresh → no slide (slid:false).
+      await expect(svc.validate(raw)).resolves.toEqual({
+        userId: 7,
+        sessionId: 101,
+        slid: false,
+        persistent: true,
+      });
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1);
       expect(kv.setex).toHaveBeenCalledTimes(1);
-      // Second call: cache hit (with sessionId in the cached shape) → no DB read.
+      // Second call: cache hit (with sessionId in the cached shape) → no DB read, slid:false.
       kv.get.mockResolvedValue(
         JSON.stringify({ userId: 7, sessionId: 101, exp: Date.now() + 3600_000 }),
       );
-      await expect(svc.validate(raw)).resolves.toEqual({ userId: 7, sessionId: 101 });
+      await expect(svc.validate(raw)).resolves.toEqual({
+        userId: 7,
+        sessionId: 101,
+        slid: false,
+        persistent: true,
+      });
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // still once
     });
 
@@ -129,9 +142,14 @@ describe('SessionTokenService', () => {
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // fell through to DB
     });
 
-    it('app token (expiresAt null) never expires', async () => {
+    it('app token (expiresAt null) never expires (and never sets slid)', async () => {
       prisma.sessionToken.findUnique.mockResolvedValue(makeRow({ expiresAt: null }));
-      await expect(svc.validate('b'.repeat(64))).resolves.toEqual({ userId: 7, sessionId: 101 });
+      await expect(svc.validate('b'.repeat(64))).resolves.toEqual({
+        userId: 7,
+        sessionId: 101,
+        slid: false,
+        persistent: true,
+      });
     });
 
     it('rejects an expired web token (expiresAt in the past)', async () => {
@@ -151,15 +169,16 @@ describe('SessionTokenService', () => {
       await expect(svc.validate('e'.repeat(64))).resolves.toBe(null);
     });
 
-    it('extends the sliding window (web) + records lastSeenIp when lastSeenAt is stale', async () => {
+    it('extends the sliding window (web) + records lastSeenIp + returns slid:true when lastSeenAt is stale', async () => {
       const stale = makeRow({ lastSeenAt: new Date(Date.now() - 10 * 60_000) }); // 10 min ago
       prisma.sessionToken.findUnique.mockResolvedValue(stale);
-      await svc.validate('f'.repeat(64), { ip: '203.0.113.7' });
+      const res = await svc.validate('f'.repeat(64), { ip: '203.0.113.7' });
+      expect(res?.slid).toBe(true); // deadline moved → the guard re-issues the cookie
       expect(prisma.sessionToken.update).toHaveBeenCalledTimes(1);
       const data = prisma.sessionToken.update.mock.calls[0][0].data;
       expect(data.lastSeenAt).toBeInstanceOf(Date);
       expect(data.lastSeenIp).toBe('203.0.113.7');
-      expect(data.expiresAt.getTime()).toBeGreaterThan(Date.now() + 29 * 24 * 3600 * 1000);
+      expect(data.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
     });
 
     it('refreshes lastSeenAt/lastSeenIp for an APP token too (no expiresAt in the write)', async () => {

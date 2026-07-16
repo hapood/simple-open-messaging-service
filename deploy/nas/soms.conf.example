@@ -1,22 +1,33 @@
 # ============================================================================
-# SOMS deployment config — cp this to soms.conf and fill it in (soms.conf is gitignored).
-# It's the only file you edit (docker-compose.yml is static). The `init` service reads it on
-# every `docker compose up -d` and generates the rest. All fields below are REQUIRED — init
-# fails fast on any missing/invalid value (CLOUDFLARE_API_TOKEN only when TLS is enabled).
+# SOMS INTRANET / NAS config — cp this to soms.conf and fill it in (soms.conf is
+# gitignored). It's the only file you edit (docker-compose.yml is static). The `init`
+# service reads it on every `docker compose up -d` and generates the rest. All fields
+# below are REQUIRED — init fails fast on any missing/invalid value.
+# ============================================================================
+# What makes this the NAS profile (all three already set below):
+#   SOMS_TLS_MODE=custom       HTTPS on the single 7667 port, DNS-01 wildcard cert for the domain.
+#   SOMS_ALLOW_IP_ACCESS=true  ALSO emit a self-signed catch-all site so the box is reachable by bare LAN
+#                              IP. Domain access = clean (trusted cert); IP access = browser shows a cert
+#                              warning you click through (cert mismatch is expected and accepted).
+#   SOMS_ADMIN_ACCESS=lan      /admin + /api/v1/admin accept ONLY private-range source IPs.
 # ============================================================================
 
-# Federation identity — the <domain> in @user@<domain> handles.
-SOMS_DOMAIN=example.com
+# Federation identity — the <domain> in @user@<domain> handles. This NAS profile still uses a REAL
+# domain + DNS-01 (set below): domain access gets a trusted cert with no warning. The domain need not
+# resolve publicly — it just has to exist in your DNS provider so the DNS-01 challenge can answer.
+SOMS_DOMAIN=nas.example.com
 
-# TLS / edge mode:
-#   custom    HTTPS on the compose port (x-host-port, default 7667), DNS-01 wildcard cert, no redirect.
-#   standard  HTTPS on 443 + auto 80→443 redirect, plus 7667 for federation.
-#              (also uncomment the 80/443 port entries in docker-compose.yml)
-#   disabled  Plain HTTP on the compose port, no cert (local test / no domain).
+# single-port HTTPS with a DNS-01 wildcard cert, no HTTP redirect. (The only mode SOMS_ALLOW_IP_ACCESS
+# supports — `standard` is the public 443 profile, `disabled` is plain HTTP.)
 SOMS_TLS_MODE=custom
 
-# Cloudflare API token (Zone:DNS:Edit) for the DNS-01 cert.
-# Required for custom/standard; ignored for disabled.
+# Reachable by bare LAN IP via a self-signed catch-all site (browser warns on IP access; click through).
+SOMS_ALLOW_IP_ACCESS=true
+
+# Admin page + admin API accept only private-range IPs (10/8, 172.16/12, 192.168/16, loopback, ULA).
+SOMS_ADMIN_ACCESS=lan
+
+# Cloudflare API token (Zone:DNS:Edit) for the DNS-01 cert. Required (custom mode).
 CLOUDFLARE_API_TOKEN=
 
 # Database password. NOTE: first-run only — once postgres has initialized, the password is

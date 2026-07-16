@@ -1,0 +1,110 @@
+# ============================================================================
+# SOMS INTRANET / NAS profile — HTTPS on a single port (7667), reachable by the
+# domain (clean DNS-01 cert) AND by bare LAN IP (self-signed cert; the browser shows
+# a warning you click through), with admin locked to private-range IPs. For a public
+# internet deployment use deploy/public/ instead.
+# ============================================================================
+# STATIC (no ${VAR}, no env_file) — one YAML anchor for the host port (x-host-port,
+# below). You edit ./soms.conf (see soms.conf.example); the `init` one-shot service
+# reads it and generates everything else (the postgres password file, the app env
+# incl. the constructed DATABASE_URL, and the Caddyfile) into the shared soms-run
+# volume.
+#
+# TEMPLATE — copy this directory (deploy/nas/) to your deployment dir and run from
+# there. Do NOT run docker compose inside the source checkout (./data would land in
+# the source tree). Build the image first, in the repo:
+#   ./scripts/build-image.sh   (tags soms:latest)
+#
+# Paths are relative to the launch dir (your deployment dir; edit this file to change
+# a path — paths can't be env-driven):
+#   ./soms.conf        your deployment config (gitignored; cp soms.conf.example soms.conf)
+#   ./data             app state: S2S/JWT keys, logs, Caddy state, uploads, self-signed cert (uid 1000)
+#   ./data/postgres    the chat database (owned by postgres, uid 999 — init chowns it for you)
+#
+# Quick start (in your deployment dir):
+#   cp soms.conf.example soms.conf      # then fill in every field
+#   docker compose up -d
+
+# ── The one compose-level knob: the published HOST port. The container always serves on the
+# ── federation-canonical 7667 internally; this only changes the port you expose on the host.
+x-host-port: &host-port 7667
+
+services:
+  # Reads ./soms.conf, generates /soms/run/{pg-password,app.env,Caddyfile}, and fixes ./data ownership
+  # (app state → uid 1000, ./data/postgres → uid 999). Runs as ROOT (the chowns need it); exits 0 when
+  # done. Every other service waits for it via service_completed_successfully.
+  init:
+    image: soms:latest
+    user: "0:0"
+    volumes:
+      - ./soms.conf:/config/soms.conf:ro
+      - ./data:/app/data
+      - soms-run:/soms/run
+    command: ["/app/init.sh"]
+    restart: "no"
+
+  postgres:
+    image: postgres:18
+    depends_on:
+      init:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_DB: soms
+      POSTGRES_USER: timescale
+      POSTGRES_PASSWORD_FILE: /soms/run/pg-password
+    # Mount the PARENT — postgres 18+ stores data in a version-specific subdir under this (PR #1259),
+    # which enables `pg_upgrade --link`. Mounting at .../data itself now hard-errors on 18+.
+    volumes:
+      - ./data/postgres:/var/lib/postgresql
+      - soms-run:/soms/run:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timescale -d soms"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Applies pending migrations (idempotent — a sub-second no-op when nothing is pending). The image
+  # ENTRYPOINT sources /soms/run/app.env (DATABASE_URL) before exec'ing prisma.
+  migrate:
+    image: soms:latest
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    volumes:
+      - soms-run:/soms/run:ro
+    command: ["./node_modules/.bin/prisma", "migrate", "deploy"]
+    restart: "no"
+
+  # The app + Caddy edge (all-in-one). ENTRYPOINT sources /soms/run/app.env; supervisor.sh runs node +
+  # caddy (caddy loads the generated /soms/run/Caddyfile). The bootstrap admin self-seeds inside the app
+  # from ADMIN_BOOTSTRAP_PASSWORD (no separate seed service).
+  app:
+    image: soms:latest
+    depends_on:
+      init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    init: true              # tini PID 1: reaps zombies, forwards SIGTERM to the entrypoint supervisor
+    stop_grace_period: 15s
+    volumes:
+      - ./data:/app/data
+      - soms-run:/soms/run:ro
+    ports:
+      # SOMS_TLS_MODE=custom + SOMS_ALLOW_IP_ACCESS=true: publish the single edge port (federation-canonical
+      # 7667). Caddy serves the DNS-01 cert for the domain and a self-signed cert for bare-IP access.
+      - target: 7667              # container port — federation canonical, FIXED
+        published: *host-port     # host port — the one knob (x-host-port at the top of this file)
+        protocol: tcp             # HTTPS — web UI + API + SSE + federation S2S
+      - target: 7667
+        published: *host-port
+        protocol: udp             # HTTP/3 (QUIC); drop this entry to disable h3
+    restart: unless-stopped
+
+volumes:
+  soms-run:

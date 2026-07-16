@@ -41,7 +41,7 @@ export class ThreadAccessGuard implements CanActivate {
     const userId = req.user?.userId;
     const field = this.reflector.get<string>(RESOURCE_ID_KEY, ctx.getHandler());
 
-    // JwtAuthGuard attaches req.user before us; @ResourceId is put on by the route. Either missing is a
+    // SessionAuthGuard attaches req.user before us; @ResourceId is put on by the route. Either missing is a
     // route wiring bug (not a client error) — surface it loudly instead of silently 500'ing.
     if (userId === undefined || field === undefined) {
       throw new BusinessException(

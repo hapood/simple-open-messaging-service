@@ -110,6 +110,12 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_notification::init())
+        // Native HTTP: the plugin's reqwest-backed fetch is what installNativeFetch() (web layer)
+        // swaps the webview's fetch for under the Tauri shell, so a bundled app can reach ANY
+        // user-configured backend without the webview's CORS gate (which, unlike dev's ng
+        // dev-server same-origin proxy, blocks cross-origin reads). The URL scope is granted in
+        // capabilities/default.json (http:default, any http/https URL).
+        .plugin(tauri_plugin_http::init())
         .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
             // Clone the state into the spawned task (cheap: Arc + refcounted Client).
             let st = proxy_for_protocol.clone();

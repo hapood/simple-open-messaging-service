@@ -18,8 +18,8 @@ export type TranslateFn = (key: string, params?: Record<string, unknown>) => str
 
 /**
  * Build the summary body from the conversations that received messages during the current away-session
- * (NOT the cumulative `unreadCount` — only what arrived while the tab was unfocused, so "while you were
- * away" is exact even when the user left with prior unread). Variants by sender count:
+ * (NOT the cumulative `unreadCount` — only what arrived while the tab was unfocused, so the count is
+ * exact even when the user left with prior unread). Variants by sender count:
  *   1 conversation, 1 msg   → `notif.one`
  *   1 conversation, >1 msg  → `notif.many`
  *   2 conversations         → `notif.two`

@@ -379,12 +379,12 @@
     "permissionDenied": "通知权限被拒绝——仅 app 打开时能收到消息。"
   },
   "notif": {
-    "missedOne": "你离开时 {{name}} 给你发了新消息",
+    "missedOne": "{{name}} 给你发了新消息",
     "missedMany": "你有 {{count}} 个会话的新消息",
-    "one": "{{name}} 在你离开时给你发送了 1 条消息",
-    "many": "{{name}} 在你离开时给你发送了 {{count}} 条消息",
-    "two": "{{a}}、{{b}} 在你离开时给你发送了 {{count}} 条消息",
-    "manyConv": "{{a}}、{{b}} 等 {{n}} 个会话在你离开时给你发送了 {{count}} 条消息"
+    "one": "{{name}} 给你发送了 1 条消息",
+    "many": "{{name}} 给你发送了 {{count}} 条消息",
+    "two": "{{a}}、{{b}} 给你发送了 {{count}} 条消息",
+    "manyConv": "{{a}}、{{b}} 等 {{n}} 个会话给你发送了 {{count}} 条消息"
   },
   "settings": {
     "title": "设置",
@@ -464,7 +464,6 @@
     "saving": "保存中…",
     "cancel": "取消",
     "statusOk": "已连接 · v{{version}}",
-    "statusWarn": "可达 · CORS 拦截",
     "statusNotSoms": "非 SOMS 后端",
     "statusFail": "无法连接"
   }

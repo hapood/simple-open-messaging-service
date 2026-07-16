@@ -17,11 +17,11 @@ import { AuthService } from './services/auth.service';
 const PUBLIC_PATH = /\/(auth\/(login|renew-access|renew-refresh|logout)|user\/register|health)$/;
 
 /**
- * Attaches the long-lived session token as `Authorization: Bearer` to every non-public request. There is
- * no access JWT, no refresh, and no renewal — so there is no `withToken`/`retryOnce` 401-renew machinery.
- * A 401 means the session token is revoked/expired → {@link AuthService.redoLoginAuth} (re-login); the
- * failed request is dropped (the page navigates to login). When no session token is held the request goes
- * out unauthenticated and the same 401 path handles it.
+ * Attaches the session credential to every non-public request. Native (Tauri): the raw token is held in
+ * JS and sent as `Authorization: Bearer`. Browser (pure httpOnly): `sessionToken` is null — no header is
+ * set, and the httpOnly session cookie auto-attaches same-origin. A 401 means the session is
+ * revoked/expired → {@link AuthService.redoLoginAuth} (re-login); the failed request is dropped (the
+ * page navigates to login).
  */
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
@@ -36,7 +36,7 @@ export class AuthInterceptor implements HttpInterceptor {
     return next.handle(authed).pipe(catchError((error) => this.on401(error)));
   }
 
-  /** A 401 = the session token is revoked/expired (there is no renew). Re-login + drop the request so the
+  /** A 401 = the session is revoked/expired (there is no renew). Re-login + drop the request so the
    *  caller's subscriber sees nothing (the page has navigated to login). Non-401 errors propagate. */
   private on401(error: unknown): Observable<HttpEvent<Object>> {
     if (error instanceof HttpErrorResponse && error.status === 401) {

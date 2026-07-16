@@ -245,47 +245,65 @@ alone. The native shell measures it and injects it.
   correct for the browser/iOS-PWA build (which forward `env()`), so no native bridge is needed there.
   Consumed by the auth shell (`assets/utils.scss`) and the app shell to pad content below the status bar.
 
-## 8. Dev-tools floating overlay (debug only)
+## 8. Dev-tools floating overlay (apk-dev only)
 
 A draggable floating button + native dialog for the on-device frontend dev loop: load a frontend dev
 server, refresh the page, revert to the bundled app. Not FCM-related, but it lives in the same
-gitignored `gen/android` tree, so it is re-applied here. Debug-only — release APKs never show it (the
-`BuildConfig.DEBUG` gate + R8 stripping the then-unused classes under `isMinifyEnabled`).
+gitignored `gen/android` tree, so it is re-applied here. Dev-server-build-only — it ships solely in the
+Makefile's `apk-dev` target. The dev-tool code is **physically excluded** from every other build at
+packaging time (not runtime-gated): a build-time source-set swap compiles either a real implementation
+(`src/dev-real`) or a no-op stub (`src/dev-stub`), so apk-debug and release contain zero dev-tool code,
+classes, or resources — no `BuildConfig` flag, no R8 needed. This mirrors the web's
+`dev-tools.ts` ↔ `dev-tools.prod.ts` fileReplacements.
 
-### New Kotlin files in `com.soms.client`
+### `src/dev-real/` — compiled ONLY by `apk-dev` (SOMS_DEV_TOOLS=1)
 
-- `DevToolsBubble.kt` — an `ImageView` in its OWN `WindowManager` window (`TYPE_APPLICATION_PANEL`), NOT
-  in `android.R.id.content`. Tauri replaces the content container when it sets up the webview, which
-  discarded a content-attached bubble a few seconds after launch (once the page rendered). A separate
-  sub-window is independent of the content container (survives the swap) and draws above the activity's
-  content (the webview). No `SYSTEM_ALERT_WINDOW` permission — it's a sub-window of our own activity.
-  Drag repositions the window (`params.x/y` + `updateViewLayout`, clamped to the display); a tap opens
-  `DevToolsDialog`.
-- `DevToolsDialog.kt` — a framework `AlertDialog` (no Material dep). Owns the persisted `dev_url` file
-  (data-dir root `dev_url`) and drives the live webview via `SomsBridge.eval` (no Rust commands, no JS bridge):
+- `java/com/soms/client/DevTools.kt` — `object DevTools` with the real `attach(activity)` / `detach(activity)`.
+  `attach` is the relocated ex-`MainActivity.attachDevToolsBubble`: it builds the bubble's `WindowManager`
+  sub-window and adds it. `detach` removes it (`onDestroy` calls it). Holds the `bubbleView` field.
+- `java/com/soms/client/DevToolsBubble.kt` — an `ImageView` in its OWN `WindowManager` window
+  (`TYPE_APPLICATION_PANEL`), NOT in `android.R.id.content`. Tauri replaces the content container when it
+  sets up the webview, which discarded a content-attached bubble a few seconds after launch (once the page
+  rendered). A separate sub-window is independent of the content container (survives the swap) and draws
+  above the activity's content (the webview). No `SYSTEM_ALERT_WINDOW` permission — it's a sub-window of
+  our own activity. Drag repositions the window (`params.x/y` + `updateViewLayout`, clamped to the
+  display); a tap opens `DevToolsDialog`.
+- `java/com/soms/client/DevToolsDialog.kt` — a framework `AlertDialog` (no Material dep). Owns the persisted
+  `dev_url` file (data-dir root `dev_url`) and drives the live webview via `SomsBridge.eval` (no Rust
+  commands, no JS bridge):
     - Connect → validate http(s) → write `dev_url` → `location.replace(url)` (immediate; persists for
       next launch).
     - Reload → `location.reload()` (the dialog stays open — repeatable).
     - Revert → delete `dev_url` → `Process.killProcess` (relaunch → Rust re-resolves to the bundle).
+- `res/drawable/dev_bubble_bg.xml` — translucent circular background for the bubble.
+- `res/drawable/ic_dev_tools.xml` — Material "build" (wrench) glyph, white.
 
-### New drawables (`res/drawable/`)
+### `src/dev-stub/` — compiled by every build EXCEPT `apk-dev`
 
-- `dev_bubble_bg.xml` — translucent circular background for the bubble.
-- `ic_dev_tools.xml` — Material "build" (wrench) glyph, white.
+- `java/com/soms/client/DevTools.kt` — `object DevTools` with no-op `attach` / `detach`. This is the twin
+  that lets `MainActivity`'s unconditional `DevTools.attach(this)` / `DevTools.detach(this)` calls compile
+  in builds that contain no dev-tool code. Both files define the same `object DevTools`, so the
+  build.gradle.kts source-set swap compiles EXACTLY ONE — never both (duplicate class), never neither
+  (`MainActivity` wouldn't compile).
 
-### `MainActivity.kt` wiring
+### `MainActivity.kt` wiring (in `src/main/` — always compiled)
 
-- Imports: `android.view.WindowManager`, `android.view.Gravity`, `android.graphics.PixelFormat` (for the
-  bubble's sub-window params).
-- `attachDevToolsBubble()` is called from `onResume` and `onWebViewCreate` (both gated on
-  `BuildConfig.DEBUG`).
-- `attachDevToolsBubble()`: idempotent (guarded by `bubbleView?.isAttachedToWindow`). Builds a
-  `WindowManager.LayoutParams` (`WRAP_CONTENT`, `TYPE_APPLICATION_PANEL`, `FLAG_NOT_FOCUSABLE |
-  FLAG_LAYOUT_NO_LIMITS`, `token = window.decorView.windowToken` — required for a sub-window), positioned
-  at (16dp, 80dp), then `getWindowManager().addView(bubble, params)`. The bubble's drag calls
-  `windowManager.updateViewLayout` to move the window. `onDestroy` calls `getWindowManager().removeView`
-  (the sub-window is NOT auto-removed when the content is destroyed, so it must be dropped explicitly).
-- No `DEV_BUBBLE_TAG` (the WindowManager bubble is tracked by the `bubbleView` field, not a view tag).
+- `onWebViewCreate` and `onResume` call `DevTools.attach(this)`; `onDestroy` calls `DevTools.detach(this)`.
+  These calls are unconditional — no `BuildConfig` gate, no import of `WindowManager`/`Gravity`/`PixelFormat`
+  (those moved into `src/dev-real/DevTools.kt`). In stub builds the calls resolve to the no-op object; in
+  `apk-dev` to the real one. The attachment timing is unchanged (onWebViewCreate + onResume + onDestroy).
+- `captureWebView()` / `firstWebView()` STAY in `MainActivity` (they're general — `onResume` calls
+  `captureWebView()` unconditionally to catch the webview-registration race, independent of dev tools);
+  `captureWebView` is `internal` so `src/dev-real/DevTools.kt`'s bubble-tap lambda can call
+  `activity.captureWebView()`.
+
+### Source-set swap (`app/build.gradle.kts`)
+
+`sourceSets.main` adds `src/dev-real/{java,res}` when `System.getenv("SOMS_DEV_TOOLS") == "1"`, else
+`src/dev-stub/java`. The Makefile's `apk-dev` is the only target that exports `SOMS_DEV_TOOLS=1`. Each
+`make apk-*` runs in its own `--rm` container, so the env is fresh per build (no stale gradle-daemon
+state). `isShrinkResources = true` stays on release as a general resource optimization; it needs no
+dev-tool-specific handling because the dev-tool drawables are never compiled into a release.
 
 ### Rust contract (`src-tauri/src/lib.rs` — NOT gitignored, persists across `tauri android init`)
 
@@ -308,6 +326,7 @@ did not persist. `dataDir` == `app_data_dir()` root fixes it.) Verify on the dev
 ### Makefile (`src-tauri/Makefile` — NOT gitignored)
 
 `make apk-dev ABI=aarch64 DEV_URL=http://host:port` — a debug build that bakes the URL via
-`docker -e SOMS_DEFAULT_DEV_URL=..` (Rust `option_env!` reads it at compile time), output
-`soms-<ver>-dev-<abi>.apk`. The dev server must be reachable from the device:
-`npm --prefix web run start -- --host 0.0.0.0`.
+`docker -e SOMS_DEFAULT_DEV_URL=..` (Rust `option_env!` reads it at compile time) AND exports
+`-e SOMS_DEV_TOOLS=1` (gradle's `sourceSets.main` reads it → compiles `src/dev-real` — the real bubble —
+instead of the `src/dev-stub` no-op; see §8), output `soms-<ver>-dev-<abi>.apk`. The dev server must be
+reachable from the device: `npm --prefix web run start -- --host 0.0.0.0`.

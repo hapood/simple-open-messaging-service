@@ -217,42 +217,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Login (exchange credentials for an access/refresh token pair) */
+        /** Login (issue a long-lived per-device session token) */
         post: operations["AuthController_login"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/renew-access": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Rotate a fresh access + refresh token pair from the refresh token (reuse detection revokes the entire family) */
-        post: operations["AuthController_renewaccessTokens"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/renew-refresh": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Rotate a fresh access + refresh token pair from the refresh token (synonym of renew-access, kept for compatibility) */
-        post: operations["AuthController_renewRefreshTokens"];
         delete?: never;
         options?: never;
         head?: never;
@@ -268,7 +234,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Logout (revoke the refresh token; accessJti optional — immediately blacklists the current access token) */
+        /** Logout (revoke the presented session token) */
         post: operations["AuthController_logout"];
         delete?: never;
         options?: never;
@@ -285,7 +251,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Logout all devices (revoke every session + bump tokenVersion) */
+        /** Logout all devices (revoke every session) */
         post: operations["AuthController_logoutAll"];
         delete?: never;
         options?: never;
@@ -302,7 +268,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Change password (revoke all other sessions; reissue tokens for the current device) */
+        /** Change password (revoke every session — the client re-logs in) */
         post: operations["AuthController_changePassword"];
         delete?: never;
         options?: never;
@@ -336,27 +302,9 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Revoke a single session (by jti, belonging to the current user) */
+        /** Revoke a single session by its device-list id (belonging to the current user) */
         post: operations["AuthController_revokeSession"];
         delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/auth/notification-token": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Issue a long-lived notification token for the background poller */
-        post: operations["AuthController_issueNotificationToken"];
-        /** Revoke the presented notification token (self-revoke on logout) */
-        delete: operations["AuthController_revokeNotificationToken"];
         options?: never;
         head?: never;
         patch?: never;
@@ -966,25 +914,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Threads with unread messages + display names (background poller) */
+        /** Catch up on missed messages since a high-water-mark (paginated), or the unread-thread summary */
         post: operations["NotificationController_missed"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/notifications/stream": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Live unread-threads SSE stream (Android foreground service) */
-        get: operations["NotificationController_stream"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1426,23 +1357,6 @@ export interface paths {
         put?: never;
         /** Unban (IP and/or account) */
         post: operations["AdminController_unban"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/v1/admin/reuse-alerts": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Refresh-token reuse alerts (revokeReason=reuse) */
-        post: operations["AdminController_reuseAlerts"];
         delete?: never;
         options?: never;
         head?: never;
@@ -2440,30 +2354,21 @@ export interface components {
              * @example web-chrome
              */
             device?: string;
-        };
-        RefreshTokenDto: {
             /**
-             * @description refresh token
-             * @example eyJhbGciOiJIUzI1NiIs...
+             * @description Client kind, selects the session-token lifetime policy: 'app' (native, stored in OS secure storage) → no-expiry, revocation-only; 'web' (browser) / 'desktop' (Tauri, JS memory) → sliding 30-day. Persisted on the row for the device list. Omitted → 'web'.
+             * @default web
+             * @enum {string}
              */
-            refreshToken: string;
+            client: "app" | "web" | "desktop";
             /**
-             * @description Device identifier (optional)
-             * @example web-chrome
+             * @description Cookie persistence for the pure-httpOnly browser path: true (default) → 30-day cookie; false → session cookie (dropped when the browser closes, honoring "don't keep me logged in"). Native clients ignore the cookie and this flag.
+             * @default true
              */
-            device?: string;
+            persistent: boolean;
         };
         LogoutDto: {
-            /**
-             * @description refresh token
-             * @example eyJhbGciOiJIUzI1NiIs...
-             */
-            refreshToken: string;
-            /**
-             * @description jti of the current access token (optional; used to immediately blacklist it)
-             * @example a1b2c3d4-e5f6-...
-             */
-            accessJti?: string;
+            /** @description Session token to revoke (the per-device credential). */
+            sessionToken?: string;
         };
         ChangePasswordDto: {
             /**
@@ -2479,15 +2384,10 @@ export interface components {
         };
         RevokeSessionDto: {
             /**
-             * @description jti of the session to revoke
-             * @example a1b2c3d4-e5f6-...
+             * @description id of the SessionToken row to revoke, as shown in GET /auth/sessions
+             * @example 42
              */
-            jti: string;
-            /**
-             * @description jti of the current access token (optional; used to immediately blacklist it)
-             * @example a1b2c3d4-e5f6-...
-             */
-            accessJti?: string;
+            id: number;
         };
         UserResponseDto: {
             /** @example 1 */
@@ -2632,25 +2532,10 @@ export interface components {
              */
             unreadCount: number;
             /**
-             * @description Short preview of the thread's last message (content-type aware: "[Photo]" / "[Group invite]" / text). Null on empty threads.
-             * @example hi group
-             */
-            lastMessagePreview: string | null;
-            /**
              * @description When the last message was sent (ms timestamp). Null on empty threads.
              * @example 1700000000000
              */
             lastMessageAt: number | null;
-            /**
-             * @description Sender userId of the last message. Null on empty threads.
-             * @example 7
-             */
-            lastMessageSenderId: number | null;
-            /**
-             * @description Display name of the last-message sender (GROUP conversations only — used to prefix group previews like "Alice: hi"). Null/absent on P2P and empty threads.
-             * @example Alice
-             */
-            lastMessageSenderName: string | null;
             /**
              * @description Whether the caller has muted this conversation (notification channels — push + notif snapshot — are suppressed; in-app delivery is not).
              * @example false
@@ -3045,6 +2930,22 @@ export interface components {
             auth?: string;
             /** @description Optional client device_id (the web app's localStorage uuid from AuthService.getDeviceId). Aids diagnostics and future stale-token sweeps. */
             deviceId?: string;
+        };
+        MissedDto: {
+            /** @description High-water-mark: epoch-ms `createdAt` of the newest message the client has. Absent (with no cursor) → init seed. */
+            since?: Record<string, never>;
+            /** @description Opaque pagination cursor returned by the previous page (takes precedence over `since`). */
+            cursor?: string;
+            /**
+             * @description Page size (messages).
+             * @default 50
+             */
+            take: number;
+            /**
+             * @description Legacy unread-thread summary (FCM/WorkManager coalescing) instead of paginated messages.
+             * @default false
+             */
+            summary: boolean;
         };
         AdminLogHistoryDto: {
             /**
@@ -3627,52 +3528,6 @@ export interface operations {
             };
         };
     };
-    AuthController_renewaccessTokens: {
-        parameters: {
-            query?: never;
-            header: {
-                "user-agent": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshTokenDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_renewRefreshTokens: {
-        parameters: {
-            query?: never;
-            header: {
-                "user-agent": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshTokenDto"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
     AuthController_logout: {
         parameters: {
             query?: never;
@@ -3761,42 +3616,6 @@ export interface operations {
                 "application/json": components["schemas"]["RevokeSessionDto"];
             };
         };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_issueNotificationToken: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AuthController_revokeNotificationToken: {
-        parameters: {
-            query?: never;
-            header: {
-                authorization: string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -4562,24 +4381,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["MissedDto"];
             };
         };
-    };
-    NotificationController_stream: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             200: {
                 headers: {
@@ -5082,23 +4888,6 @@ export interface operations {
                 "application/json": components["schemas"]["AdminUnbanDto"];
             };
         };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-        };
-    };
-    AdminController_reuseAlerts: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
         responses: {
             200: {
                 headers: {

@@ -49,7 +49,7 @@
             class="sc-status"
             [class.sc-status-testing]="status() === 'testing'"
             [class.sc-status-ok]="status() === 'ok'"
-            [class.sc-status-warn]="status() === 'warn' || status() === 'notsoms'"
+            [class.sc-status-warn]="status() === 'notsoms'"
             [class.sc-status-fail]="status() === 'fail'"
           >
             @if (status() === 'testing') {

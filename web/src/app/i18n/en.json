@@ -379,12 +379,12 @@
     "permissionDenied": "Notifications are blocked — you'll only receive messages while the app is open."
   },
   "notif": {
-    "missedOne": "{{name}} sent you new messages while you were away",
+    "missedOne": "{{name}} sent you new messages",
     "missedMany": "You have new messages in {{count}} conversations",
-    "one": "{{name}} sent you a message while you were away",
-    "many": "{{name}} sent you {{count}} messages while you were away",
-    "two": "{{a}} and {{b}} sent you {{count}} messages while you were away",
-    "manyConv": "{{a}}, {{b}} and others sent you {{count}} messages while you were away"
+    "one": "{{name}} sent you a message",
+    "many": "{{name}} sent you {{count}} messages",
+    "two": "{{a}} and {{b}} sent you {{count}} messages",
+    "manyConv": "{{a}}, {{b}} and others sent you {{count}} messages"
   },
   "settings": {
     "title": "Settings",
@@ -464,7 +464,6 @@
     "saving": "Saving…",
     "cancel": "Cancel",
     "statusOk": "Connected · v{{version}}",
-    "statusWarn": "Reachable · CORS blocked",
     "statusNotSoms": "Not a SOMS backend",
     "statusFail": "Unreachable"
   }

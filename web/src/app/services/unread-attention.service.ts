@@ -4,9 +4,13 @@ import { TranslocoService } from '@jsverse/transloco';
 import { ConversationListService } from './conversation-list.service';
 import { WebsocketService } from './websocket.service';
 import { displayThreadName } from './model';
-import { isAndroid, isTauri } from './runtime';
+import { isAndroidNative, isTauri } from './runtime';
 import { NotificationPrefsService } from './notification-prefs.service';
 import { buildAwayBody, type AwayEntry, type TranslateFn } from './notif-text';
+import { NotificationAdapter } from './notification-adapter';
+import { BrowserNotificationAdapter } from './browser-notification.adapter';
+import { TauriNotificationAdapter } from './tauri-notification.adapter';
+import { AndroidNotificationAdapter } from './android-notification.adapter';
 
 /**
  * Foreground "you have unread" attention for **PC desktop + browser** — the channels that lack a
@@ -18,21 +22,23 @@ import { buildAwayBody, type AwayEntry, type TranslateFn } from './notif-text';
  *     drives BOTH a browser tab's title AND — on Tauri desktop — the OS window title (Tauri syncs it
  *     automatically), so one mechanism covers both surfaces.
  *  2. Posts a SINGLE rolling "away messages" summary system notification — e.g. "Alice, Bob and others
- *     sent you 7 messages while you were away" — and re-creates it (replacing the previous one via a
- *     shared tag) on each NEW_MESSAGE that arrives while unfocused. The shade therefore holds exactly
- *     ONE entry from us, no matter how many messages or conversations burst. A burst (several messages at
- *     once) is debounced — the first posts immediately and any that follow within a short window collapse
- *     into a single trailing re-post with the rolled-up count, so `renotify` never machine-guns the banner.
- *     The summary tallies only
- *     messages received during the current away-session (not the cumulative unread), so the wording is
- *     exact even when the user left with prior unread. The notification is dismissed the instant the
- *     window regains focus. Browser path = full feature (tag replace, renotify, sound toggle, click →
- *     focus, close-on-focus); the Tauri desktop shell posts once per away-session (its bridge exposes
- *     only a fire-and-forget `sendNotification({title,body})` — no tag replace, cancel, or sound).
+ *     sent you 7 messages" — and re-creates it (replacing the previous one) on each NEW_MESSAGE that
+ *     arrives while unfocused. The shade therefore holds exactly ONE entry from us, no matter how many
+ *     messages or conversations burst. A burst (several messages at once) is debounced — the first posts
+ *     immediately and any that follow within a short window collapse into a single trailing re-post with the
+ *     rolled-up count, so `renotify` never machine-guns the banner. The summary tallies only messages received
+ *     during the current away-session (not the cumulative unread), so the count is exact even when the user
+ *     left with prior unread. The notification is dismissed the instant the window regains focus. The actual
+ *     post/dismiss is delegated to a per-platform {@link NotificationAdapter}, each wrapping its platform's native
+ *     notification bridge and mapping `merge` onto that bridge's native replace-by-id (browser = Notification-API
+ *     `tag` + renotify + sound toggle + click→focus + close-on-focus; desktop Tauri = `identifier`; Android = the
+ *     Kotlin `SomsNotify` bridge's `replace`/AWAY_NOTIF_ID), selected once at construction so this class carries no
+ *     platform branching.
  *
- * Stops the moment the window regains focus (the user is now looking at the app). Mobile Android is
- * excluded — in-app banner + FCM/WorkManager cover it there, and a title prefix on a mobile activity is
- * meaningless.
+ * Stops the moment the window regains focus (the user is now looking at the app). Mobile Android selects the
+ * AndroidNotificationAdapter, but it is dormant here — the WebView is never unfocused while the activity is alive,
+ * so this service never fires `show`; Android's notifications come from the native paths (FCM/WorkManager/
+ * RealtimeService), and a title prefix on a mobile activity is meaningless.
  */
 @Injectable({ providedIn: 'root' })
 export class UnreadAttentionService {
@@ -51,17 +57,8 @@ export class UnreadAttentionService {
     this.convList.items().reduce((sum, it) => sum + (it.unreadCount ?? 0), 0),
   );
 
-  /** Shared tag for the single summary notification — a new notification with this tag REPLACES the
-   *  prior one instead of stacking, so the shade holds exactly one entry from us. Browser-only (the
-   *  Tauri bridge has no tag concept). */
-  private static readonly TAG = 'soms-away-summary';
-  /** The live browser Notification instance, held so focus can `.close()` it. */
-  private activeNotif: Notification | null = null;
-  /** Tauri-only: the bridge can't replace/cancel, so post at most ONE notification per away-session
-   *  (further messages still bump the (N) title prefix + list badges). Reset on focus. */
-  private awayPosted = false;
   /** Per-thread tally of messages received during the CURRENT away-session (cleared on focus). Drives
-   *  the summary body so "while you were away" reflects only messages that arrived while unfocused. */
+   *  the summary body so it reflects only messages that arrived while unfocused. */
   private readonly awayDelta = new Map<number, AwayEntry>();
   /** Coalesce a burst (several messages in <DEBOUNCE_MS) into a single notification re-post: the FIRST
    *  message posts immediately (leading edge — the user is tapped without delay); messages that follow
@@ -79,7 +76,21 @@ export class UnreadAttentionService {
   private readonly translate: TranslateFn = (key, params): string =>
     this.i18n.translate(key, params) ?? key;
 
+  /** Per-platform notification display adapter (browser / desktop-Tauri / Android), selected once at
+   *  construction — this class delegates every post/dismiss to it and carries no platform branching. */
+  private readonly adapter!: NotificationAdapter;
+
   constructor() {
+    // Select the per-platform display adapter ONCE (mirrors WebsocketService's transport selection): each adapter
+    // wraps its platform's native notification bridge and maps the unified `merge` param onto that bridge's native
+    // replace-by-id (browser: tag; desktop Tauri: identifier; Android: Kotlin SomsNotify replace). No branching
+    // elsewhere. (On Android the JS path is dormant: the WebView is never unfocused while alive, so background
+    // delivery is owned natively by FCM/WorkManager/RealtimeService.)
+    this.adapter = isAndroidNative()
+      ? new AndroidNotificationAdapter()
+      : isTauri()
+        ? new TauriNotificationAdapter()
+        : new BrowserNotificationAdapter(this.prefs);
     if (typeof document === 'undefined') return;
     // Track focus. visibilitychange catches tab-switch; blur/focus catches the window losing focus to
     // another app without the tab hiding (the desktop case the user specifically wants covered).
@@ -116,24 +127,15 @@ export class UnreadAttentionService {
   }
 
   /** Tear down the away notification when the user returns to the tab: cancel any pending trailing-flush
-   *  (so a burst's tail can't post AFTER focus returns), close the live browser instance, re-arm the Tauri
-   *  one-per-away-session gate, and clear the per-thread tally. Manual dismiss / auto-timeout do NOT call
-   *  this — those only null the ref (see the `close` listener) and never suppress the next pop. */
+   *  (so a burst's tail can't post AFTER focus returns), dismiss the active notification via the adapter
+   *  (browser closes it; Android cancels by id; desktop Tauri has no cancel), and clear the per-thread tally. */
   private dismissActive(): void {
     if (this.awayFlushTimer !== null) {
       clearTimeout(this.awayFlushTimer);
       this.awayFlushTimer = null;
     }
     this.awayPendingPost = false;
-    if (this.activeNotif) {
-      try {
-        this.activeNotif.close();
-      } catch {
-        /* best-effort */
-      }
-      this.activeNotif = null;
-    }
-    this.awayPosted = false;
+    this.adapter.clear(); // dismiss the active notification (browser closes; Android cancels by id; desktop no-op)
     this.awayDelta.clear();
   }
 
@@ -182,60 +184,14 @@ export class UnreadAttentionService {
     }, UnreadAttentionService.DEBOUNCE_MS);
   }
 
-  /** Build the summary body from the away-session tally and post it: the browser path replaces the prior
-   *  same-tag notification (one shade entry); the Tauri desktop path posts once per away-session (no
-   *  replace available). Clears the pending-post flag so a lone message earns no redundant trailing post. */
+  /** Build the summary body from the away-session tally and hand it to the per-platform adapter, merged into the
+   *  single rolling summary. Clears the pending-post flag so a lone message earns no redundant trailing post. */
   private postSummary(): void {
     const body = buildAwayBody([...this.awayDelta.values()], this.translate);
     if (body === null) return; // nothing to summarize (defensive — awayDelta should be non-empty here)
     this.awayPendingPost = false;
-
-    // Tauri DESKTOP shell first (the user's directive: PC must show native system popups) — gated to
-    // !isAndroid so mobile never takes this branch. The global bridge exposes only a fire-and-forget
-    // sendNotification({title, body}): no tag, no cancel-by-id, no sound flag. Posting on every message
-    // would pile up one entry per message (the very thing we're fixing), so post ONCE per away-session;
-    // subsequent messages still bump the (N) title prefix + the per-thread unread badges. Full rolling
-    // behavior is the browser path below.
-    const tauriNotif = window.__TAURI__?.notification;
-    if (isTauri() && !isAndroid() && tauriNotif) {
-      if (this.awayPosted) return;
-      this.awayPosted = true;
-      try {
-        tauriNotif.sendNotification({ title: this.baseTitle, body });
-      } catch {
-        /* best-effort */
-      }
-      return;
-    }
-
-    // Browser: a fixed tag means every new message REPLACES the prior notification (one shade entry,
-    // no pile-up). `renotify: true` re-banners on each replace (Chromium-supported; Firefox ignores);
-    // `silent` follows the Sound pref. Click focuses the window (a multi-sender summary can't deep-link
-    // to one thread). The close listener is housekeeping only — it never suppresses the next pop
-    // (auto-timeout would otherwise cap us to one pop per away-session, breaking "pop on every message").
-    if (!isTauri() && 'Notification' in window && Notification.permission === 'granted') {
-      if (!this.prefs.enabled()) return; // app-level master (the permission is terminal; this is the mute)
-      try {
-        // The TS DOM lib's NotificationOptions omits `renotify` (a Chromium-supported, spec-defined option
-        // not yet typed). Extend it so the literal type-checks honestly instead of being cast away.
-        const options: NotificationOptions & { renotify?: boolean } = {
-          body,
-          tag: UnreadAttentionService.TAG,
-          silent: !this.prefs.sound(),
-          renotify: true,
-        };
-        const n = new Notification(this.baseTitle, options);
-        n.onclick = () => {
-          window.focus();
-          n.close();
-        };
-        n.addEventListener('close', () => {
-          if (this.activeNotif === n) this.activeNotif = null;
-        });
-        this.activeNotif = n;
-      } catch {
-        /* best-effort */
-      }
-    }
+    // Delegate the post to the per-platform adapter. `merge=true` folds into the single rolling summary via each
+    // platform's native replace-by-id (browser: tag; desktop: identifier; Android: AWAY_NOTIF_ID).
+    this.adapter.show(body, true);
   }
 }

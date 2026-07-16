@@ -35,8 +35,8 @@ function makeStubs() {
     {} as never, // invite
     {} as never, // sse
     {} as never, // threadRevisionService
-    {} as never, // (10th ctor injection — kept in sync as the constructor grew)
     buffer,
+    {} as never, // quota
   );
   return { svc, prisma, markDirty, flushBatch };
 }

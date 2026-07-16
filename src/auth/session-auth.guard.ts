@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC } from '../common/public.decorator.js';
 import { BearerAuthService } from './bearer-auth.service.js';
+import { MEDIA_TOKEN_COOKIE } from './media-token.js';
 
 /** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. */
 function extractBearer(header: unknown): string | undefined {
@@ -22,13 +23,15 @@ function extractBearer(header: unknown): string | undefined {
  * added without any decorator is authenticated, never silently public — closing the "forgot @UseGuards"
  * structural risk.
  *
- * Accepts EITHER credential via {@link BearerAuthService.resolve}: a stateless access JWT (legacy, still
- * issued during the transition) OR a long-lived opaque session token (native app + web). Public routes
- * that carry another auth mechanism (admin JWT / s2s signature / notification token) are marked
- * `@Public()` so this guard skips them and their own route-scoped guard runs instead.
+ * Resolves the opaque session token via {@link BearerAuthService.resolve}, reading it **cookie-first**:
+ * the httpOnly `media_token` cookie (auto-attached same-origin on the browser), falling back to an
+ * `Authorization: Bearer` header (native clients + the desktop SSE worker, which can't use a cookie).
+ * This mirrors the `/uploads/*` validator in `bootstrap.ts`, so every route honors the same credential.
+ * Public routes that carry another auth mechanism (admin JWT / s2s signature) are marked `@Public()` so
+ * this guard skips them and their own route-scoped guard runs.
  */
 @Injectable()
-export class JwtAuthGuard implements CanActivate {
+export class SessionAuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly bearerAuth: BearerAuthService,
@@ -42,10 +45,13 @@ export class JwtAuthGuard implements CanActivate {
     if (isPublic) return true;
     const req = context.switchToHttp().getRequest<{
       headers: Record<string, unknown>;
+      cookies?: Record<string, string | undefined>;
       ip?: string;
       user?: { userId: number; sessionId: number | null };
     }>();
-    const raw = extractBearer(req.headers['authorization']);
+    // Cookie-first (httpOnly media_token), Bearer fallback — same resolution as the /uploads/* validator.
+    const fromCookie = req.cookies?.[MEDIA_TOKEN_COOKIE];
+    const raw = fromCookie ?? extractBearer(req.headers['authorization']);
     // Thread the request IP so a validated session token refreshes its lastSeenIp/lastSeenAt (the
     // device-list "last active" + location) on the throttled activity write.
     const principal = await this.bearerAuth.resolve(raw, { ip: req.ip });
@@ -53,6 +59,13 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('unauthenticated');
     }
     req.user = { userId: principal.userId, sessionId: principal.sessionId };
+    // Stash the cookie for SessionCookieInterceptor to re-issue (keeps this guard a pure auth decision:
+    // it returns/throws; the interceptor mutates the response). Only PERSISTENT web/desktop sessions that
+    // slid this call; session cookies live for the browser session already, native/Bearer carry no cookie,
+    // app tokens never slide.
+    if (principal.slid && principal.persistent && fromCookie) {
+      (req as { sessionSlideToken?: string }).sessionSlideToken = fromCookie;
+    }
     return true;
   }
 }

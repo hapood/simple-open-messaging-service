@@ -2537,7 +2537,6 @@ export class FederationService implements OnModuleDestroy {
       data: {
         lastMessageSeq: created.seq,
         lastMessagePreview: derivePreview(m.contentType as ContentType, m.content),
-        lastMessageSenderId: creatorId,
         lastMessageAt: arrival,
       },
     });

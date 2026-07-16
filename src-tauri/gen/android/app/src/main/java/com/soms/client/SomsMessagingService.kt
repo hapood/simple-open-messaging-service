@@ -93,6 +93,11 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Stable id for an admin test-push notification (separate from the away-notification). */
         const val ADMIN_TEST_NOTIF_ID = 0x7
 
+        /** Monotonic id source for JS-driven standalone (non-replacing) notifications ([showText] replace=false),
+         *  starting clear of the stable ids above. Only the JS bridge allocates here; the native paths always
+         *  replace at [AWAY_NOTIF_ID]. */
+        private val jsNotifSeq = java.util.concurrent.atomic.AtomicInteger(0x100)
+
         /** True while MainActivity is visible. Set from MainActivity.onResume/onStop — the
          *  Android-native ground truth for "is the user looking at the app right now." */
         @Volatile
@@ -197,6 +202,39 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setContentIntent(pendingIntent)
                 .build()
             nm.notify(AWAY_NOTIF_ID, notif)
+        }
+
+        /** Post a message notification with CALLER-SUPPLIED text — the JS-driven entry, called by the SomsNotify
+         *  @JavascriptInterface that the web's AndroidNotificationAdapter wraps. Exposes the native replace-by-id
+         *  param: `replace=true` re-posts at the stable [AWAY_NOTIF_ID] (replacing the prior away-notification);
+         *  `replace=false` posts a fresh standalone entry at a distinct id. The native background paths
+         *  (FCM/WorkManager/RealtimeService) compose their own text via [composeAwayText] and call
+         *  [notifyAwaySummary] — this method is only the JS-driven surface. */
+        fun showText(ctx: Context, text: String, replace: Boolean) {
+            ensureChannel(ctx)
+            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
+            val id = if (replace) AWAY_NOTIF_ID else jsNotifSeq.getAndIncrement()
+            val intent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                ctx,
+                id,
+                intent,
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setContentTitle(ctx.getString(R.string.app_name))
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(pendingIntent)
+                .build()
+            nm.notify(id, notif)
         }
 
         /** "Alice sent you messages" / "Alice, Bob +2 sent you messages". Caps the listed names at 2,

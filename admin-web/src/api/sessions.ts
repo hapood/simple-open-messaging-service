@@ -11,7 +11,8 @@ export function listAllSessions(params: {
   return request<SessionListResult>('/admin/sessions', params)
 }
 
-/** Purge all active sessions in one shot (revokes refresh + bumps tokenVersion, forcing every user to re-login). */
+/** Purge all active sessions in one shot (revokes every user's session + refresh tokens and bumps
+ * tokenVersion, forcing every user to re-login). */
 export function purgeAllSessions(): Promise<{ purgedUsers: number }> {
   return request<{ purgedUsers: number }>('/admin/sessions/purge')
 }

@@ -78,15 +78,17 @@ export function SessionsPage() {
         </div>
       </div>
       <p className="text-sm text-muted-foreground">{t('sessions.desc', { count: total })}</p>
-      <div className="rounded-md border">
+      <div className="overflow-x-auto rounded-md border">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead>{t('sessions.col.user')}</TableHead>
+              <TableHead>{t('sessions.col.client')}</TableHead>
               <TableHead>{t('sessions.col.device')}</TableHead>
               <TableHead>{t('sessions.col.ua')}</TableHead>
               <TableHead>{t('sessions.col.ip')}</TableHead>
               <TableHead>{t('sessions.col.created')}</TableHead>
+              <TableHead>{t('sessions.col.lastActive')}</TableHead>
               <TableHead>{t('sessions.col.expires')}</TableHead>
             </TableRow>
           </TableHeader>
@@ -95,13 +97,18 @@ export function SessionsPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={6}
+              colSpan={8}
               emptyMessage={t('sessions.empty')}
             >
               {data?.list.map((s) => (
-                <TableRow key={s.jti}>
+                <TableRow key={s.id}>
                   <TableCell className="font-medium">
                     {s.user?.account ?? '#' + s.userId}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">
+                      {t(`common.client.${s.client}`, { defaultValue: s.client })}
+                    </Badge>
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline">{s.device ?? '—'}</Badge>
@@ -112,12 +119,24 @@ export function SessionsPage() {
                   >
                     {s.userAgent ?? '—'}
                   </TableCell>
-                  <TableCell className="font-mono text-xs">{s.ip ?? '—'}</TableCell>
+                  {/* IP shown is the most recent (lastSeenIp); hover reveals the sign-in ip. */}
+                  <TableCell className="font-mono text-xs" title={s.ip ?? ''}>
+                    {s.lastSeenIp ?? s.ip ?? '—'}
+                  </TableCell>
                   <TableCell>
                     <Timestamp value={s.createdAt} />
                   </TableCell>
                   <TableCell>
-                    <Timestamp value={s.expiresAt} />
+                    <Timestamp value={s.lastSeenAt} />
+                  </TableCell>
+                  <TableCell>
+                    {s.expiresAt ? (
+                      <Timestamp value={s.expiresAt} />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {t('common.neverExpires')}
+                      </span>
+                    )}
                   </TableCell>
                 </TableRow>
               ))}

@@ -15,7 +15,7 @@ import { join } from 'path';
 import { Readable } from 'node:stream';
 import { AllExceptionsFilter } from './common/exception.filter.js';
 import { SerializeInterceptor } from './common/serialize.interceptor.js';
-import { MEDIA_TOKEN_COOKIE } from './auth/media-token.js';
+import { MEDIA_TOKEN_COOKIE, refreshSessionCookies } from './auth/media-token.js';
 import { BearerAuthService } from './auth/bearer-auth.service.js';
 import { MediaAccessService } from './upload/media-access.service.js';
 import { BusinessCode } from './common/business-code.js';
@@ -219,7 +219,8 @@ async function registerStaticServing(
       // native client) can't use that cookie — SameSite=Strict suppresses it cross-origin — so
       // also accept a Bearer header. BearerAuthService resolves the session token, so the API and
       // media surfaces enforce identical auth (and revocation) rules.
-      const raw = request.cookies?.[MEDIA_TOKEN_COOKIE] ?? extractBearer(request.headers.authorization);
+      const fromCookie = request.cookies?.[MEDIA_TOKEN_COOKIE];
+      const raw = fromCookie ?? extractBearer(request.headers.authorization);
       const principal = raw ? await bearerAuth.resolve(raw, { ip: request.ip }) : null;
       if (!principal) {
         return reply.code(401).type('application/json').send({
@@ -230,6 +231,11 @@ async function registerStaticServing(
         });
       }
       request.user = { userId: principal.userId, sessionId: principal.sessionId };
+      // Cookie sliding (same as the SessionAuthGuard): a cookie-authed persistent session that just slid its
+      // deadline re-issues the cookie so its maxAge tracks the session. Media loads count as activity.
+      if (principal.slid && principal.persistent && fromCookie) {
+        refreshSessionCookies(reply, fromCookie);
+      }
 
       // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
       // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by

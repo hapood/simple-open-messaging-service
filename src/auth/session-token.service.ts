@@ -3,10 +3,11 @@ import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 
-/** Web session deadline + how long it slides forward on each (throttled) use. Active web sessions
- *  stay alive indefinitely; an idle one expires 30 days after its last request. Native-app tokens
- *  carry no deadline (Telegram-style — revocation-only). */
-const WEB_SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+/** Web/desktop session deadline + how long it slides forward on each (throttled) use. Active sessions
+ *  stay alive indefinitely; an idle one expires 14 days after its last request. Native-app tokens carry
+ *  no deadline (Telegram-style — revocation-only); their `lastSeenAt` activity tracking still runs (the
+ *  sliding-window capability is retained) but `expiresAt` is never set. */
+const WEB_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** Throttle for the activity+sliding write: refresh lastSeenAt/lastSeenIp (all clients) and extend
  *  the web/desktop deadline at most once per 5 minutes per token, so validate() never writes to the DB
  *  on every request — only on a cache miss past this interval. */
@@ -18,7 +19,7 @@ const VALIDATE_CACHE_TTL_SEC = 60;
 const CACHE_PREFIX = 'session:';
 
 /** Client kind selects the token's lifetime policy at issue time. 'app' (native) → no-expiry;
- *  'web' (browser) + 'desktop' (Tauri) → sliding 30-day. Persisted on the row so the device list can
+ *  'web' (browser) + 'desktop' (Tauri) → sliding 14-day. Persisted on the row so the device list can
  *  render an icon/label per credential and so per-client behavior (which sessions expire) is auditable. */
 export type SessionClient = 'app' | 'web' | 'desktop';
 
@@ -30,12 +31,12 @@ function hashToken(token: string): string {
  * Issues + validates long-lived, revocable, per-device session credentials (the single credential that
  * replaces the legacy access+refresh pair). Stores only the sha256 hash; the plaintext is returned once,
  * generalized to:
- *  - a nullable `expiresAt` (app = never; web = sliding 30d);
+ *  - a nullable `expiresAt` (app = never; web = sliding 14d);
  *  - a `lastSeenAt` sliding-window tracker for web;
  *  - a 60s KV cache so validation is cheap on the hot path.
  *
  * Used by {@link BearerAuthService}, which is the single source of truth shared by the global
- * JwtAuthGuard and the /uploads/* media preHandler — so a session token grants identical access on
+ * SessionAuthGuard and the /uploads/* media preHandler — so a session token grants identical access on
  * the API and on media, and revoking it (logout / logout-all / password change / admin disable) cuts
  * both at once.
  */
@@ -50,14 +51,16 @@ export class SessionTokenService {
 
   /**
    * Mint a session token. `client:'app'` → `expiresAt=null` (no lifecycle; the native client stores it
-   * in OS secure storage and it is valid until explicitly revoked). `client:'web'` → `expiresAt=now+30d`,
-   * sliding (extended on use). The plaintext is returned ONCE; only the sha256 hash is stored. Prior
-   * tokens are NOT revoked — a user may have several (one per device); each is independently revocable.
+   * in OS secure storage and it is valid until explicitly revoked). `client:'web'`/`'desktop'` →
+   * `expiresAt=now+14d`, sliding (extended on use). `persistent` (web/desktop) selects a 14-day cookie
+   * ("keep me logged in") vs a session cookie — only persistent cookies are refreshed on slide. The
+   * plaintext is returned ONCE; only the sha256 hash is stored. Prior tokens are NOT revoked — a user
+   * may have several (one per device); each is independently revocable.
    */
   async issue(
     userId: number,
     client: SessionClient,
-    opts: { device?: string; userAgent?: string; ip?: string } = {},
+    opts: { device?: string; userAgent?: string; ip?: string; persistent?: boolean } = {},
   ): Promise<string> {
     const plaintext = randomBytes(32).toString('hex');
     const expiresAt =
@@ -72,25 +75,27 @@ export class SessionTokenService {
         ip: opts.ip ?? null,
         lastSeenIp: opts.ip ?? null,
         expiresAt,
+        persistent: opts.persistent ?? true,
       },
     });
     return plaintext;
   }
 
   /**
-   * Validate a presented token. Returns `{ userId, sessionId }` on success (the row id lets the device
-   * list flag the requesting session as "current"), null otherwise (not-found / revoked / expired).
-   * The hash lookup is constant-time-ish via the unique index. KV-cached for 60s; on a cache miss the
-   * session's activity is refreshed — `lastSeenAt` + `lastSeenIp` update for EVERY client (so the
-   * device list's "last active" stays fresh even for no-expiry app tokens), and web/desktop deadlines
-   * additionally slide forward. Both writes are throttled to once per
+   * Validate a presented token. Returns `{ userId, sessionId, slid, persistent }` on success (the row
+   * id lets the device list flag the requesting session as "current"; `slid` signals the web/desktop
+   * deadline moved this call — the auth guard uses it to re-issue the browser cookie; `persistent` is
+   * the cookie-persistence choice), or null (not-found / revoked / expired). KV-cached for 60s; on a
+   * cache miss the session's activity is refreshed — `lastSeenAt` + `lastSeenIp` update for EVERY
+   * client (so the device list's "last active" stays fresh even for no-expiry app tokens), and
+   * web/desktop deadlines additionally slide forward. Both writes are throttled to once per
    * {@link WEB_SESSION_SLIDING_TOUCH_MS} so validate() never writes on every request; a failed write
    * can't invalidate an otherwise-valid token (fire-and-forget).
    */
   async validate(
     raw: string,
     opts: { ip?: string | null } = {},
-  ): Promise<{ userId: number; sessionId: number } | null> {
+  ): Promise<{ userId: number; sessionId: number; slid: boolean; persistent: boolean } | null> {
     const h = hashToken(raw);
     const key = `${CACHE_PREFIX}${h}`;
 
@@ -100,6 +105,7 @@ export class SessionTokenService {
         userId: number;
         sessionId?: number;
         exp: number | null;
+        persistent?: boolean;
       };
       // sessionId present guards a stale pre-upgrade cache shape (no sessionId) → treat as a miss and
       // fall through to the DB. An expired entry likewise falls through.
@@ -107,7 +113,13 @@ export class SessionTokenService {
         entry.sessionId !== undefined &&
         !(entry.exp !== null && entry.exp <= Date.now())
       ) {
-        return { userId: entry.userId, sessionId: entry.sessionId };
+        // Cache hit (within VALIDATE_CACHE_TTL_SEC) → no DB read, so no sliding write this call.
+        return {
+          userId: entry.userId,
+          sessionId: entry.sessionId,
+          slid: false,
+          persistent: entry.persistent ?? true,
+        };
       }
     }
 
@@ -119,16 +131,20 @@ export class SessionTokenService {
         expiresAt: true,
         revokedAt: true,
         lastSeenAt: true,
+        persistent: true,
       },
     });
     if (!rec || rec.revokedAt !== null) return null;
     const exp = rec.expiresAt?.getTime() ?? null;
     if (exp !== null && exp <= Date.now()) return null;
 
-    // Activity refresh (all clients) + sliding deadline (web/desktop only), throttled to once per
-    // WEB_SESSION_SLIDING_TOUCH_MS. lastSeenAt/lastSeenIp feed the device list's "last active" +
-    // location; the deadline slide keeps active web/desktop sessions alive while idle ones expire.
+    // Activity refresh (all clients, incl. no-expiry app tokens — keeps the device-list "last active"
+    // fresh, i.e. the sliding-window capability is retained for app too) + sliding deadline
+    // (web/desktop only), throttled to once per WEB_SESSION_SLIDING_TOUCH_MS. `slid` records that the
+    // web/desktop deadline actually moved this call — the signal the auth guard uses to re-issue the
+    // browser cookie so its maxAge tracks the session. App tokens never slide (exp === null).
     let cachedExp = exp;
+    let slid = false;
     if (Date.now() - rec.lastSeenAt.getTime() > WEB_SESSION_SLIDING_TOUCH_MS) {
       const data: { lastSeenAt: Date; lastSeenIp?: string; expiresAt?: Date } = {
         lastSeenAt: new Date(),
@@ -137,6 +153,7 @@ export class SessionTokenService {
       if (exp !== null) {
         cachedExp = Date.now() + WEB_SESSION_TTL_MS;
         data.expiresAt = new Date(cachedExp);
+        slid = true;
       }
       this.prisma.sessionToken
         .update({ where: { tokenHash: h }, data })
@@ -148,10 +165,15 @@ export class SessionTokenService {
       .setex(
         key,
         VALIDATE_CACHE_TTL_SEC,
-        JSON.stringify({ userId: rec.userId, sessionId: rec.id, exp: cachedExp }),
+        JSON.stringify({
+          userId: rec.userId,
+          sessionId: rec.id,
+          exp: cachedExp,
+          persistent: rec.persistent,
+        }),
       )
       .catch(() => {});
-    return { userId: rec.userId, sessionId: rec.id };
+    return { userId: rec.userId, sessionId: rec.id, slid, persistent: rec.persistent };
   }
 
   /** Revoke a single presented token (self-revoke on logout). Idempotent — a not-found or

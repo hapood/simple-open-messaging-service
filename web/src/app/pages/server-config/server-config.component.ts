@@ -31,11 +31,13 @@ import { apiOrigin, setApiOrigin } from '../../services/runtime';
  * First-run gating: `guestGuard` redirects here when `isTauri() && apiOriginIsEmpty()` (no server
  * configured yet). Reachable later from the login page's "Server settings" Material button.
  *
- * Connection probe: a two-stage pre-flight check against the CANDIDATE url (the typed value, not the
- * committed `apiOrigin`) — see {@link testConnection}. Lets the user verify "this URL really is a SOMS
- * backend I can reach" before committing it or typing credentials.
+ * Connection probe: a single native-fetch reachability + identity check against the CANDIDATE url
+ * (the typed value, not the committed `apiOrigin`) — see {@link testConnection}. Under the Tauri
+ * shell the probe rides `installNativeFetch()`'s reqwest client, so it reaches the backend with no
+ * webview CORS gate. Lets the user verify "this URL really is a SOMS backend I can reach" before
+ * committing it or typing credentials.
  */
-type ProbeStatus = 'idle' | 'testing' | 'ok' | 'warn' | 'notsoms' | 'fail';
+type ProbeStatus = 'idle' | 'testing' | 'ok' | 'notsoms' | 'fail';
 
 /** The placeholder backend origin pre-filled into the form when none is configured yet — the canonical
  *  SOMS server URL shape (https + the federation port 7667). A UI hint only; it never seeds the
@@ -118,8 +120,6 @@ export class ServerConfigComponent {
         return 'serverConfig.testing';
       case 'ok':
         return 'serverConfig.statusOk';
-      case 'warn':
-        return 'serverConfig.statusWarn';
       case 'notsoms':
         return 'serverConfig.statusNotSoms';
       case 'fail':
@@ -134,7 +134,6 @@ export class ServerConfigComponent {
     switch (this.status()) {
       case 'ok':
         return AppIconType.CHECK;
-      case 'warn':
       case 'notsoms':
       case 'fail':
         return AppIconType.CLOSE;
@@ -149,17 +148,15 @@ export class ServerConfigComponent {
   }
 
   /**
-   * Two-stage reachability + identity probe against the CANDIDATE url (NOT via HttpClient — that is
-   * pinned to the committed apiPrefix and would attach a token). Uses raw fetch against the typed
-   * origin so the user can verify a URL BEFORE saving it.
-   *
-   *  1. Reachability (mode:'no-cors'): CORS-immune — the promise resolves (opaque response) iff some
-   *     HTTP server answered. A rejection here = host unreachable / refused / timeout → 'fail'.
-   *  2. CORS + SOMS identity (default cors): reads the body. A SOMS backend returns our ApiResult
-   *     envelope with code===0 and data.status==='ok' → 'ok' (+ version). A reachable non-SOMS server
-   *     returns HTML/other JSON → 'notsoms'. A throw here AFTER stage 1 succeeded = the readable
-   *     response is CORS-blocked — usually a reverse proxy in front of the backend (the backend itself
-   *     reflects any Origin) → 'warn'.
+   * Reachability + identity probe against the CANDIDATE url (NOT via HttpClient — that is pinned to
+   * the committed apiPrefix and would attach a token). Uses raw `fetch` against the typed origin so
+   * the user can verify a URL BEFORE saving it. Under the Tauri shell `globalThis.fetch` is the
+   * reqwest-backed native client (see installNativeFetch), so the probe reaches the backend with no
+   * webview CORS gate: a SOMS backend returns our ApiResult envelope with code===0 and
+   * data.status==='ok' → 'ok' (+ version); a reachable non-SOMS server returns HTML/other JSON →
+   * 'notsoms'; a network error (host unreachable / refused / timeout) rejects → 'fail'. The 6 s
+   * AbortController bounds a hung host; under Tauri the plugin honors the signal, but the timeout is
+   * belt-and-braces regardless of transport.
    */
   async testConnection(): Promise<void> {
     if (this.testing() || this.urlControl.invalid) return;
@@ -179,11 +176,9 @@ export class ServerConfigComponent {
         this.status.set('notsoms');
       }
     } catch {
-      // Fetch rejects on network error (unreachable) or CORS block. The backend enables CORS
-      // (bootstrap.ts enableCors({origin:true})), so a rejection here is effectively "unreachable".
-      // NOTE: a `mode:'no-cors'` pre-flight was removed — in the Android WebView (Chrome 114) a
-      // cross-origin no-cors fetch rejects with "Failed to fetch" even when the same URL's normal CORS
-      // fetch returns 200, so the pre-flight produced false "cannot connect to server" failures.
+      // Reaches here only on a genuine network failure: host unreachable / connection refused /
+      // timeout (the 6 s AbortController) / TLS error. Under the Tauri shell there is no CORS path —
+      // the native client never crosses the webview origin — so this is never a CORS block.
       this.status.set('fail');
     } finally {
       this.testing.set(false);

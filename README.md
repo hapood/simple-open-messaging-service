@@ -242,17 +242,20 @@ docker build --target runtime -t soms:slim .
 
 ### Run (all-in-one, full image)
 
-`deploy/` holds the launch templates — copy it to a deployment directory and run from there (not inside the source checkout, so `./data` doesn't land in the tree):
+`deploy/` holds **two launch-template profiles** — copy the one that matches your deployment to a deployment directory and run from there (not inside the source checkout, so `./data` doesn't land in the tree):
+
+- **`deploy/public/`** — public internet: TLS on `80`/`443` (+ `7667` for federation), DNS-01 cert, admin open to all source IPs (`SOMS_TLS_MODE=standard`, `SOMS_ADMIN_ACCESS=public`).
+- **`deploy/nas/`** — intranet/NAS: TLS on a single `7667`, reachable by the domain (clean DNS-01 cert) **and** by bare LAN IP (a self-signed catch-all cert; the browser warns on IP access — click through), with admin locked to private-range IPs (`SOMS_TLS_MODE=custom`, `SOMS_ALLOW_IP_ACCESS=true`, `SOMS_ADMIN_ACCESS=lan`).
 
 ```bash
-cp -r deploy/ /opt/soms/ && cd /opt/soms   # your deployment dir
-cp soms.conf.example soms.conf             # then edit soms.conf: set SOMS_DOMAIN + CLOUDFLARE_API_TOKEN
+cp -r deploy/public/ /opt/soms/ && cd /opt/soms   # or deploy/nas/ for an intranet/NAS box
+cp soms.conf.example soms.conf                     # then edit soms.conf (profile-specific fields)
 docker compose up -d
 ```
 
 Required in `soms.conf` (compose fails fast if missing): `SOMS_DOMAIN` — your public domain / federation identity (`@user@<SOMS_DOMAIN>`). `POSTGRES_PASSWORD` ships a working default (postgres is internal-only — not published); set it to override. For the default **Cloudflare** DNS setup, also set `CLOUDFLARE_API_TOKEN` (a token with **Zone:DNS:Edit** on the `SOMS_DOMAIN` zone) — see [DNS provider](#dns-provider-certificate-signing) below for other providers. `ADMIN_BOOTSTRAP_PASSWORD` is optional — see the bootstrap-admin note below.
 
-Only **one port** is published: `7667` (HTTPS; `7667/udp` for HTTP/3). Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Web UI, API, SSE, and federation S2S all ride on `7667`. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
+Published ports depend on the profile: **NAS** publishes only `7667` (HTTPS; `7667/udp` for HTTP/3); **public** also publishes `80` (HTTP→HTTPS redirect) and `443` (with `443/udp` for HTTP/3), keeping `7667` for federation S2S. Caddy terminates TLS and reverse-proxies to the in-process node app over loopback HTTP/1.1. Do **not** set `TLS_CERT`/`TLS_KEY` — Caddy is the TLS edge.
 
 - **First-run certs**: Caddy issues the Let's Encrypt certificate via Let's Encrypt **DNS-01** on startup (no ports 80/443 needed). This takes ~10–60s; until then HTTPS returns a TLS error. Watch `docker compose logs -f app` for `certificate obtained successfully`. Issued certs persist in the `app-data` volume (under `/app/data/caddy`) across restarts, so they are not re-issued.
 - **Persistent state** lives under one volume (`app-data` → `/app/data`): S2S + JWT keys, app logs (`data/logs/soms.log`, own rotation), Caddy state (`data/caddy`), and uploads (`data/uploads`). Postgres keeps its own dedicated `pgdata` volume (it requires exclusive ownership of its data dir).
@@ -264,7 +267,7 @@ Only **one port** is published: `7667` (HTTPS; `7667/udp` for HTTP/3). Caddy ter
 The bundled Caddy ships **76 buildable** DNS-01 providers from `github.com/caddy-dns` — Cloudflare + all the China providers (**AliDNS** `alidns`, **Tencent** `tencentcloud` + `edgeone`, plus `huaweicloud`, `volcengine`, `westcn`) and the other major ones. So switching DNS providers is a **config change, not a rebuild**. (The other caddy-dns modules are excluded at build: archived, no resolvable version, or stuck on the pre-1.0 `libdns` API — notably `dnspod` is unmaintained, so Tencent users use `tencentcloud`/`edgeone`.)
 
 - **Cloudflare (default)**: just set `CLOUDFLARE_API_TOKEN` in `soms.conf` — the `init` service generates the Caddyfile from it.
-- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `soms.conf` to that provider's `dns ...` line (quoted — it contains spaces) plus its credential vars; `{KEY}` refs are transcribed into the generated Caddyfile. Examples are in `deploy/soms.conf.example`. Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
+- **Any other provider**: set `CADDY_DNS_DIRECTIVE` in `soms.conf` to that provider's `dns ...` line (quoted — it contains spaces) plus its credential vars; `{KEY}` refs are transcribed into the generated Caddyfile. Examples are in `deploy/public/soms.conf.example` (and `deploy/nas/soms.conf.example`). Each module's exact syntax is at `https://github.com/caddy-dns/<provider>`.
 
 ### Bring your own reverse proxy (slim image)
 

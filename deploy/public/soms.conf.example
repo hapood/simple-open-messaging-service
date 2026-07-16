@@ -1,0 +1,62 @@
+# ============================================================================
+# SOMS PUBLIC-INTERNET config — cp this to soms.conf and fill it in (soms.conf is
+# gitignored). It's the only file you edit (docker-compose.yml is static). The `init`
+# service reads it on every `docker compose up -d` and generates the rest. All fields
+# below are REQUIRED — init fails fast on any missing/invalid value (CLOUDFLARE_API_TOKEN
+# only when TLS is enabled).
+# ============================================================================
+
+# Federation identity — the <domain> in @user@<domain> handles.
+SOMS_DOMAIN=example.com
+
+# TLS / edge mode:
+#   custom    HTTPS on the compose port (x-host-port, default 7667), DNS-01 wildcard cert, no redirect.
+#   standard  HTTPS on 443 + auto 80→443 redirect, plus 7667 for federation.   ← THE PUBLIC PROFILE
+#              (the deploy/public/docker-compose.yml already publishes 80/443/7667)
+#   disabled  Plain HTTP on the compose port, no cert (local test / no domain).
+SOMS_TLS_MODE=standard
+
+# Admin area exposure:
+#   public  /admin + /api/v1/admin are reachable from any source IP.   ← THE PUBLIC PROFILE
+#   lan     both restricted to private-range IPs (a Caddy @not_lan guard).
+# Default is `public` if this line is omitted.
+SOMS_ADMIN_ACCESS=public
+
+# Cloudflare API token (Zone:DNS:Edit) for the DNS-01 cert.
+# Required for custom/standard; ignored for disabled.
+CLOUDFLARE_API_TOKEN=
+
+# Database password. NOTE: first-run only — once postgres has initialized, the password is
+# baked in; changing it here is ignored. Rotate via `ALTER USER timescale PASSWORD '…'`.
+POSTGRES_PASSWORD=
+
+# Bootstrap admin password (account=admin). Used only on first boot to seed the admin; ignored after.
+ADMIN_BOOTSTRAP_PASSWORD=
+
+# Prisma connection-pool max. Keep (max × app replicas) ≤ PostgreSQL max_connections (100).
+DATABASE_POOL_MAX=10
+
+# ============================================================================
+# DNS-01 provider — only edit this to use a non-default provider. {KEY} is transcribed from a
+# matching VAR=... line in THIS file (do NOT inline the secret). Quote the value (it contains
+# spaces; soms.conf is sourced as shell). Syntax per module:
+#   https://github.com/caddy-dns/<provider>
+#   Cloudflare (default): CADDY_DNS_DIRECTIVE="dns cloudflare {CLOUDFLARE_API_TOKEN}"
+#   AliDNS (block):       CADDY_DNS_DIRECTIVE="dns alidns {
+#                           access_key_id {ALIYUN_ACCESS_KEY_ID}
+#                           access_key_secret {ALIYUN_ACCESS_KEY_SECRET}
+#                         }"   (+ ALIYUN_ACCESS_KEY_ID=… / ALIYUN_ACCESS_KEY_SECRET=…)
+#   Tencent Cloud (block):CADDY_DNS_DIRECTIVE="dns tencentcloud {
+#                           secret_id {TENCENTCLOUD_SECRET_ID}
+#                           secret_key {TENCENTCLOUD_SECRET_KEY}
+#                         }"   (+ TENCENTCLOUD_SECRET_ID=… / TENCENTCLOUD_SECRET_KEY=…)
+#   AWS Route 53 (env):   CADDY_DNS_DIRECTIVE="dns route53"
+#                         (+ AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY — read from env, no {…})
+# dnspod is NOT bundled (unmaintained) — Tencent users: tencentcloud or edgeone.
+# ============================================================================
+# CADDY_DNS_DIRECTIVE="dns cloudflare {CLOUDFLARE_API_TOKEN}"
+
+# ---- Advanced (optional). Any app env var may be set here: ----
+# SOMS_QUOTA_DAILY_MSG_LIMIT=5000
+# LOG_LEVEL=info
+# GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/firebase-sa.json

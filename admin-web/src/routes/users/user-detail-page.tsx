@@ -197,37 +197,57 @@ export function UserDetailPage() {
                   {t('userDetail.empty.sessions')}
                 </p>
               ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t('userSessions.col.device')}</TableHead>
-                      <TableHead>{t('userSessions.col.ua')}</TableHead>
-                      <TableHead>{t('userSessions.col.ip')}</TableHead>
-                      <TableHead>{t('userSessions.col.created')}</TableHead>
-                      <TableHead>{t('userSessions.col.expires')}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {data.sessions.map((s) => (
-                      <TableRow key={s.jti}>
-                        <TableCell>{s.device ?? '—'}</TableCell>
-                        <TableCell
-                          className="max-w-[280px] truncate text-xs text-muted-foreground"
-                          title={s.userAgent ?? ''}
-                        >
-                          {s.userAgent ?? '—'}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">{s.ip ?? '—'}</TableCell>
-                        <TableCell>
-                          <Timestamp value={s.createdAt} />
-                        </TableCell>
-                        <TableCell>
-                          <Timestamp value={s.expiresAt} />
-                        </TableCell>
+                <div className="overflow-x-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>{t('userSessions.col.device')}</TableHead>
+                        <TableHead>{t('userSessions.col.client')}</TableHead>
+                        <TableHead>{t('userSessions.col.ua')}</TableHead>
+                        <TableHead>{t('userSessions.col.ip')}</TableHead>
+                        <TableHead>{t('userSessions.col.lastIp')}</TableHead>
+                        <TableHead>{t('userSessions.col.created')}</TableHead>
+                        <TableHead>{t('userSessions.col.lastActive')}</TableHead>
+                        <TableHead>{t('userSessions.col.expires')}</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {data.sessions.map((s) => (
+                        <TableRow key={s.id}>
+                          <TableCell>{s.device ?? '—'}</TableCell>
+                          <TableCell>
+                            <Badge variant="secondary">
+                              {t(`common.client.${s.client}`, { defaultValue: s.client })}
+                            </Badge>
+                          </TableCell>
+                          <TableCell
+                            className="max-w-[280px] truncate text-xs text-muted-foreground"
+                            title={s.userAgent ?? ''}
+                          >
+                            {s.userAgent ?? '—'}
+                          </TableCell>
+                          <TableCell className="font-mono text-xs">{s.ip ?? '—'}</TableCell>
+                          <TableCell className="font-mono text-xs">{s.lastSeenIp ?? '—'}</TableCell>
+                          <TableCell>
+                            <Timestamp value={s.createdAt} />
+                          </TableCell>
+                          <TableCell>
+                            <Timestamp value={s.lastSeenAt} />
+                          </TableCell>
+                          <TableCell>
+                            {s.expiresAt ? (
+                              <Timestamp value={s.expiresAt} />
+                            ) : (
+                              <span className="text-xs text-muted-foreground">
+                                {t('common.neverExpires')}
+                              </span>
+                            )}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </div>
               )}
             </CardContent>
           </Card>

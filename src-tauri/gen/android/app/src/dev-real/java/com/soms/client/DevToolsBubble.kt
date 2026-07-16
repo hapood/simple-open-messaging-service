@@ -20,7 +20,8 @@ import android.widget.ImageView
  *  2. An application sub-window draws above the activity's content (the webview) regardless of view
  *     z-order, so the bubble stays on top even while the page is rendering.
  *
- * Debug-only (the caller gates on `BuildConfig.DEBUG`), so release APKs never show it. No
+ * Dev-server-build-only (the caller gates on `BuildConfig.ENABLE_DEV_TOOLS`, true solely in the
+ * Makefile's `apk-dev` target), so plain debug and all release APKs never show it. No
  * `SYSTEM_ALERT_WINDOW` permission: `TYPE_APPLICATION_PANEL` is a sub-window of our own activity,
  * drawn over our own content — not over other apps.
  *
@@ -29,7 +30,7 @@ import android.widget.ImageView
  *
  * Kept native (not web) on purpose: it stays reachable even when the webview is parked on a dead
  * dev-server error page, so the user can always fix the URL or bail to the bundle. The web app has
- * zero awareness of it. See `src-tauri/FCM_ANDROID_PATCH.md`.
+ * zero awareness of it.
  */
 class DevToolsBubble(
     context: Context,

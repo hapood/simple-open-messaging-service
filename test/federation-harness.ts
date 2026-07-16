@@ -212,6 +212,11 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       APP_PORT: String(cfg.appPort),
       FED_PORT_A: String(cfg.portA),
       FED_PORT_B: String(cfg.portB),
+      // Verbose (→ pino trace) so the e2e subprocess emits debug-level logs. Federation's best-effort
+      // paths (signalOutbound, localizeMedia) log failures at debug — the default `info` hides them,
+      // making a swallowed media-localize failure invisible. Trace is cheap in the short-lived test
+      // subprocess and essential for diagnosing federation delivery.
+      LOG_LEVEL: 'verbose',
     };
     child = fork(APP_MAIN, {
       env,
@@ -220,6 +225,9 @@ function makeFedApp(cfg: FedAppConfig): FedApp {
       // ensureCompiledEntry), so no tsx/ts-node loader — plain `node` runs it.
       stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
     });
+    // TEMP DEBUG — forward the subprocess logs so a swallowed best-effort failure is visible.
+    child.stdout!.on('data', (d: Buffer) => process.stdout.write(`[${cfg.domain}] ${d}`));
+    child.stderr!.on('data', (d: Buffer) => process.stderr.write(`[${cfg.domain}] ${d}`));
     await waitForReady(child, cfg);
   };
 

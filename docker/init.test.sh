@@ -58,6 +58,8 @@ assert_contains "$SANDBOX/run/Caddyfile" "handle /uploads*"
 assert_contains "$SANDBOX/run/Caddyfile" "handle /admin*"
 assert_contains "$SANDBOX/run/Caddyfile" "root * /app/public/web"
 assert_not_contains "$SANDBOX/run/app.env" "CLOUDFLARE_API_TOKEN"
+# SOMS_ADMIN_ACCESS unset → public default → no admin LAN-guard in the Caddyfile.
+assert_not_contains "$SANDBOX/run/Caddyfile" "@not_lan"
 
 echo "== standard mode: 443 + auto 80→443 redirect + 7667 federation (snippet) =="
 run_init "$REQ"$'\nSOMS_TLS_MODE=standard\nCLOUDFLARE_API_TOKEN=cf-tok'
@@ -73,6 +75,29 @@ run_init "$REQ"$'\nSOMS_TLS_MODE=disabled'
 assert_contains "$SANDBOX/run/Caddyfile" "http://test.local:7667, http://*.test.local:7667"
 assert_not_contains "$SANDBOX/run/Caddyfile" "tls {"
 assert_contains "$SANDBOX/run/Caddyfile" "auto_https disable_redirects"
+
+echo "== SOMS_ADMIN_ACCESS=lan: admin page + API gated to private IPs =="
+run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nCLOUDFLARE_API_TOKEN=cf-tok\nSOMS_ADMIN_ACCESS=lan'
+assert_contains "$SANDBOX/run/Caddyfile" "@not_lan not remote_ip"
+assert_contains "$SANDBOX/run/Caddyfile" "192.168.0.0/16"
+assert_contains "$SANDBOX/run/Caddyfile" "handle /api/v1/admin* {"
+assert_contains "$SANDBOX/run/Caddyfile" "respond @not_lan 403"
+# The guard must precede the generic /api* handle (first-match-wins), and the knob must stay Caddy-only.
+assert_not_contains "$SANDBOX/run/app.env" "SOMS_ADMIN_ACCESS"
+
+echo "== SOMS_ALLOW_IP_ACCESS=true: domain site (DNS-01) + self-signed IP catch-all =="
+run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nCLOUDFLARE_API_TOKEN=cf-tok\nSOMS_ALLOW_IP_ACCESS=true'
+assert_contains "$SANDBOX/run/Caddyfile" "(soms_handlers) {"
+assert_contains "$SANDBOX/run/Caddyfile" "https://test.local:7667, https://*.test.local:7667 {"
+assert_contains "$SANDBOX/run/Caddyfile" "dns cloudflare cf-tok"
+assert_contains "$SANDBOX/run/Caddyfile" "import soms_handlers"
+assert_contains "$SANDBOX/run/Caddyfile" "https://:7667 {"
+assert_contains "$SANDBOX/run/Caddyfile" "tls $SANDBOX/appdata/selfsigned.crt $SANDBOX/appdata/selfsigned.key"
+assert_not_contains "$SANDBOX/run/app.env" "SOMS_ALLOW_IP_ACCESS"
+# The self-signed cert is generated once and persisted in APPDATA_DIR.
+if [ -s "$SANDBOX/appdata/selfsigned.crt" ] && [ -s "$SANDBOX/appdata/selfsigned.key" ]; then
+  echo "  ok: selfsigned.crt + .key generated"; PASS=$((PASS+1))
+else echo "  FAIL: selfsigned cert files missing in $SANDBOX/appdata"; FAIL=$((FAIL+1)); fi
 
 echo "== AliDNS block directive (inline creds do NOT leak to node) =="
 run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nALIYUN_ACCESS_KEY_ID=ak-1\nALIYUN_ACCESS_KEY_SECRET=sk-2\nCADDY_DNS_DIRECTIVE="dns alidns {\n  access_key_id {ALIYUN_ACCESS_KEY_ID}\n  access_key_secret {ALIYUN_ACCESS_KEY_SECRET}\n}"'
@@ -113,6 +138,15 @@ expect_fail $'SOMS_DOMAIN=test.local\nPOSTGRES_PASSWORD=pw\nADMIN_BOOTSTRAP_PASS
 echo "== missing {KEY} ref fails fast =="
 expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nCADDY_DNS_DIRECTIVE="dns cloudflare {CLOUDFLARE_API_TOKEN}"' \
   "references {CLOUDFLARE_API_TOKEN} but it is not set"
+
+echo "== invalid SOMS_ADMIN_ACCESS fails fast =="
+expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nSOMS_ADMIN_ACCESS=bogus' "SOMS_ADMIN_ACCESS must be one of: public | lan"
+
+echo "== SOMS_ALLOW_IP_ACCESS=true + disabled fails fast =="
+expect_fail "$REQ"$'\nSOMS_TLS_MODE=disabled\nSOMS_ALLOW_IP_ACCESS=true' "SOMS_ALLOW_IP_ACCESS=true requires SOMS_TLS_MODE=custom"
+
+echo "== invalid SOMS_ALLOW_IP_ACCESS fails fast =="
+expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nSOMS_ALLOW_IP_ACCESS=maybe' "SOMS_ALLOW_IP_ACCESS must be one of: true | false"
 
 echo
 echo "RESULT: pass=$PASS fail=$FAIL"

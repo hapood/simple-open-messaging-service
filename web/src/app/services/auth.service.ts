@@ -9,25 +9,31 @@ import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 
 const SESSION_TOKEN = 'session_token',
-  IS_KEEP_LOGIN = 'is_keep_login'
+  IS_KEEP_LOGIN = 'is_keep_login',
+  // Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
+  // (name mirrors src/auth/media-token.ts LOGGED_IN_COOKIE). On the pure-httpOnly browser build the
+  // session token is JS-unreadable, so this flag is how the SPA tells whether a session exists.
+  LOGGED_IN_COOKIE = 'logged_in'
 
 type LoginRes = { code: number, message: string, data?: { session_token?: string } }
 type LogoutRes = { code: number, message: string }
 
 /**
- * The single long-lived web credential: one opaque per-device session token (sliding 30-day on
- * web/desktop) authenticates EVERY request via the interceptor's Bearer header — no access JWT, no
- * refresh token, no renewal. Issued at login; revoked at logout / logout-all / change-password
- * (`invalidateAllSessions` kills the row server-side + bumps tokenVersion); a 401 means the row is
- * revoked/expired → re-login (`redoLoginAuth`). There is no renew endpoint and no token rotation, so
- * there is no renew race, no refresh-reuse family, and no 15-min-expiry churn.
+ * One opaque per-device session token authenticates every request — carried as an httpOnly cookie
+ * (browser: auto-attached same-origin, JS-unreadable) or an `Authorization: Bearer` header (native: the
+ * interceptor + Rust media proxy + Kotlin SSE/FCM/Worker). The backend accepts cookie-or-Bearer on every
+ * route. No access JWT, no refresh token, no renewal. Issued at login; revoked at logout / logout-all /
+ * change-password (`invalidateAllSessions`); a 401 → re-login (`redoLoginAuth`).
  *
- * **Persistence:** held in JS memory AND mirrored to storage (localStorage when "keep me logged in",
- * sessionStorage otherwise), REPLACING the old refresh token's storage role so a page refresh survives.
- * The XSS tradeoff is identical to the refresh-token-before-it (both are 14–30d storage-resident,
- * both grabbable by an XSS) — the session model is strictly simpler. The same token also auths the
- * httpOnly media cookie (the backend sets it from this token) + the Rust media proxy
- * (`set_session_token` on desktop) + Kotlin's `/events` (pushed via `syncNativeSessionToken` on Android).
+ * **Storage (branched on `isTauri()`):**
+ *  - Browser (pure httpOnly): the token is NEVER held in JS — XSS can't exfiltrate it. Login state rides
+ *    the non-httpOnly `logged_in` presence cookie (`document.cookie`). "Keep me logged in" maps to the
+ *    cookie lifetime (30-day vs session) via the login `persistent` flag; the httpOnly cookie can only
+ *    be cleared by the backend (logout).
+ *  - Native (Tauri desktop + Android): the raw token IS held in JS storage (localStorage when "keep me
+ *    logged in", sessionStorage otherwise) — the desktop SSE worker + Android push need the raw value,
+ *    which is also pushed to the Rust media proxy (`set_session_token`) and Kotlin
+ *    (`syncNativeSessionToken`). The interceptor sends it as `Authorization: Bearer`.
  */
 @Injectable({
   providedIn: 'root',
@@ -64,37 +70,54 @@ export class AuthService {
     private userService: UserService,
   ) {}
 
-  /** True when a session token is held (persisted across refresh per "keep me logged in"). */
+  /** True when logged in. Native: a raw token is held in JS storage. Browser (pure httpOnly): the
+   *  token is JS-unreadable, so login state is the non-httpOnly `logged_in` presence cookie the backend
+   *  sets/clears in lockstep with the session cookie. */
   isLoggedIn(): boolean {
-    return this._sessionToken !== null
+    return isTauri() ? this._sessionToken !== null : this.hasPresenceCookie()
+  }
+
+  private hasPresenceCookie(): boolean {
+    return typeof document !== 'undefined'
+      && document.cookie.split(';').some((c) => c.trim().startsWith(`${LOGGED_IN_COOKIE}=`))
+  }
+
+  /** Drop the non-httpOnly presence cookie (JS can clear this; the httpOnly session cookie is cleared
+   *  server-side on logout, or overwritten on next login). Used on logout / 401 so isLoggedIn() flips
+   *  false immediately — avoids a stale-logged-in redirect loop with the guest guard. */
+  private clearPresenceCookie() {
+    if (typeof document !== 'undefined') {
+      document.cookie = `${LOGGED_IN_COOKIE}=; Max-Age=0; Path=/; SameSite=Strict`
+    }
   }
 
   login(params: { account: string, password: string, isKeep: boolean }) {
-    // isKeep is the frontend's "keep me logged in" storage policy (whether the session token lives in
-    // localStorage or sessionStorage). The backend does not consume it, so it is stripped from the
-    // request body; it is still used after success to decide where to persist the token.
     const { isKeep, ...credentials } = params
     // `client` selects the session-token lifetime policy (app=no-expiry, web/desktop=sliding 30d) and is
     // shown as a badge in the device list; `device` is a human-readable label for that list (distinct from
-    // the device_id uuid, which is the push-token device identifier).
+    // the device_id uuid, which is the push-token device identifier). `persistent` maps "keep me logged
+    // in" to the cookie lifetime on the pure-httpOnly browser path (native ignores the cookie).
     return this.http.post<LoginRes>(
       `${apiPrefix()}/auth/login`, {
         ...credentials,
         client: this.resolveClient(),
         device: this.getDeviceLabel(),
+        persistent: isKeep,
       }).pipe(tap((res) => {
         if (res.code === 0 && res.data?.session_token) {
           this._isKeep = isKeep
-          // Fresh login: clear both stores so an isKeep switch leaves no orphaned old token.
-          sessionStorage.removeItem(SESSION_TOKEN)
-          localStorage.removeItem(SESSION_TOKEN)
           if (isKeep) localStorage.setItem(IS_KEEP_LOGIN, '1')
           else localStorage.removeItem(IS_KEEP_LOGIN)
-          this.setSessionToken(res.data.session_token)
-          // Now that the session token is active, register (or re-register) this device's FCM token so
-          // the server can push to it. No-op outside the Tauri shell.
+          if (isTauri()) {
+            // Native: persist the raw token (desktop SSE worker + Android push need it). Clear both
+            // stores so an isKeep switch leaves no orphaned old token, then activate + push to native.
+            sessionStorage.removeItem(SESSION_TOKEN)
+            localStorage.removeItem(SESSION_TOKEN)
+            this.setSessionToken(res.data.session_token)
+          }
+          // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no
+          // token is held in JS.
           this.push.onLogin()
-          // Web Push (browser/PWA) — also re-attempts subscription post-login. No-op in the Tauri shell.
           void this.webPush.onLogin()
         }
       }))
@@ -119,38 +142,49 @@ export class AuthService {
     if (isTauri()) tauriInvoke('set_session_token', { token }).catch(() => {})
   }
 
-  /** Read the persisted session token (sessionStorage first so a non-keep tab doesn't read a stale
-   *  keep-tab token), or null when none / not logged in. */
+  /** Read the persisted session token, or null. Browser build is pure-httpOnly → the token never lives
+   *  in JS storage, so this returns null (login state comes from the presence cookie, see isLoggedIn).
+   *  Native reads sessionStorage first so a non-keep tab doesn't pick up a stale keep-tab token. */
   private readSessionToken(): string | null {
+    if (!isTauri()) return null
     return sessionStorage.getItem(SESSION_TOKEN) || localStorage.getItem(SESSION_TOKEN)
   }
 
-  /** Clear THIS tab's session token (storage per isKeep + in-memory + native + media proxy). */
+  /** Clear local session state + notify native. Native: drop the stored token (per isKeep) + push null
+   *  to Android/Rust so native SSE + the media proxy stop authenticating. Browser (pure httpOnly): the
+   *  httpOnly cookie can't be cleared from JS (the backend clears it on logout, or it's overwritten on
+   *  next login), so only the JS-readable presence cookie is dropped — enough for isLoggedIn() to flip. */
   clearToken() {
     this._sessionToken = null
-    if (this._isKeep) localStorage.removeItem(SESSION_TOKEN)
-    else sessionStorage.removeItem(SESSION_TOKEN)
+    if (isTauri()) {
+      if (this._isKeep) localStorage.removeItem(SESSION_TOKEN)
+      else sessionStorage.removeItem(SESSION_TOKEN)
+      this.syncNativeSessionToken()
+      // Clear the proxy's stashed token so a logged-out shell can't fetch media. No-op in the browser.
+      tauriInvoke('clear_session_token').catch(() => {})
+    } else {
+      this.clearPresenceCookie()
+    }
     this._sessionTokenSub.next(null)
-    this.syncNativeSessionToken()
-    // Clear the proxy's stashed token so a logged-out shell can't fetch media. No-op in the browser.
-    if (isTauri()) tauriInvoke('clear_session_token').catch(() => {})
   }
 
   logout() {
+    if (!this.isLoggedIn()) return EMPTY
+    // Native: unregister push BEFORE clearing the token, so DELETE /devices/register still carries the
+    // credential (the interceptor injects it from _sessionToken). Best-effort — a stale token is pruned
+    // server-side on the next send anyway. Browser: push/webpush are no-ops in the shell.
+    this.push.unregister()
+    void this.webPush.unregister()
+    // Capture the raw token before clearing (native only — null on browser, where the backend resolves
+    // the session from the httpOnly cookie).
     const sessionToken = this._sessionToken
-    if (sessionToken) {
-      // Unregister the FCM token BEFORE clearing the session token, so the DELETE /devices/register
-      // still carries the Authorization header. Best-effort — a stale token is pruned server-side on the
-      // next send anyway. No-op outside the Tauri shell.
-      this.push.unregister()
-      // Web Push (browser/PWA) — unsubscribe + unregister the endpoint. No-op in the Tauri shell.
-      void this.webPush.unregister()
-      this.clearToken()
-      // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
-      this.userService.clearSession()
-      return this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, { sessionToken })
-    }
-    return EMPTY
+    this.clearToken()
+    // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
+    this.userService.clearSession()
+    return this.http.post<LogoutRes>(
+      `${apiPrefix()}/auth/logout`,
+      sessionToken ? { sessionToken } : {},
+    )
   }
 
   /** Change password: the server invalidates ALL sessions (`invalidateAllSessions` revokes every session

@@ -1,7 +1,14 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the SOMS main window. The app-defined commands (get_api_origin, set_session_token, clear_session_token) are registered in invoke_handler and reachable from the webview; core IPC is enabled via core:default; notification:default lets UnreadAttentionService post desktop system notifications via tauri-plugin-notification.",
+  "description": "Capability for the SOMS main window. The app-defined commands (get_api_origin, set_session_token, clear_session_token) are registered in invoke_handler and reachable from the webview; core IPC is enabled via core:default; notification:default lets UnreadAttentionService post desktop system notifications via tauri-plugin-notification. http:default + a wide URL scope let the webview's native-fetch override (installNativeFetch, web/.../runtime.ts) reach ANY user-configured backend through tauri-plugin-http, bypassing the webview's CORS gate (a bundled app's https://tauri.localhost origin is cross-origin to every real backend).",
   "windows": ["main"],
-  "permissions": ["core:default", "notification:default"]
+  "permissions": [
+    "core:default",
+    "notification:default",
+    {
+      "identifier": "http:default",
+      "allow": [{ "url": "http://**" }, { "url": "https://**" }]
+    }
+  ]
 }

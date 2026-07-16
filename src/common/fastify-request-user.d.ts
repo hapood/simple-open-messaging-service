@@ -1,12 +1,12 @@
 // Fastify's FastifyRequest type does not declare `user`, but @nestjs/passport attaches it to
-// the request after a successful auth guard (JwtAuthGuard / LocalAuthGuard / AdminAuthGuard).
+// the request after a successful auth guard (SessionAuthGuard / LocalAuthGuard / AdminAuthGuard).
 // Augmenting the interface here gives the whole codebase type-safe access to `req.user`
 // (userId for the C-end auth, adminId for the admin console) without scattering casts.
 import type { MessageThreadType, ThreadParticipant } from '../prisma/generated/client.js';
 
 declare module 'fastify' {
   interface FastifyRequest {
-    // Required on guarded routes: every auth guard (JwtAuthGuard / LocalAuthGuard / AdminAuthGuard /
+    // Required on guarded routes: every auth guard (SessionAuthGuard / LocalAuthGuard / AdminAuthGuard /
     // the /uploads preHandler) populates `user` before the handler runs, so a
     // controller reading `req.user.userId` is always in a context where it is set. Typed as the C-end
     // principal `{ userId }` (the dominant shape) with adminId/role optional for the admin console,
@@ -14,7 +14,7 @@ declare module 'fastify' {
     // richer objects some guards attach (e.g. LocalStrategy's LoginAuthInfo — cast at the read site).
     user: {
       userId: number;
-      /** The requesting credential's SessionToken row id — always set under JwtAuthGuard / the
+      /** The requesting credential's SessionToken row id — always set under SessionAuthGuard / the
        *  /uploads preHandler (C-end auth is session-token only); absent under admin guards. Used by
        *  GET /auth/sessions to flag the current device. */
       sessionId?: number | null;

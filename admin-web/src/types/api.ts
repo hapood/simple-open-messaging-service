@@ -30,25 +30,32 @@ export interface UserListResult {
   total: number
 }
 
-// Active sessions of a user (POST /admin/users/:id/sessions)
+// Active sessions of a user (POST /admin/users/:id/sessions + embedded in the 360° detail).
+// SessionToken rows: client is 'app' | 'web' | 'desktop'; expiresAt is null for no-expiry app tokens.
 export interface Session {
-  jti: string
+  id: number
+  client: string
   device: string | null
   userAgent: string | null
   ip: string | null
+  lastSeenIp: string | null
   createdAt: number
-  expiresAt: number
+  lastSeenAt: number
+  expiresAt: number | null
 }
 
 // System-wide active session overview entry (POST /admin/sessions; joins user for the account)
 export interface SessionListItem {
+  id: number
   userId: number
-  jti: string
+  client: string
   device: string | null
   userAgent: string | null
   ip: string | null
+  lastSeenIp: string | null
   createdAt: number
-  expiresAt: number
+  lastSeenAt: number
+  expiresAt: number | null
   user: { id: number; account: string } | null
 }
 

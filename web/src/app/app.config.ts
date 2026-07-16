@@ -1,6 +1,6 @@
 import { ApplicationConfig, CSP_NONCE, isDevMode, provideZonelessChangeDetection } from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { provideHttpClient, withInterceptorsFromDi, HTTP_INTERCEPTORS } from '@angular/common/http';
+import { provideHttpClient, withInterceptorsFromDi, withFetch, HTTP_INTERCEPTORS } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
 import { provideServiceWorker } from '@angular/service-worker';
@@ -39,7 +39,15 @@ export const appConfig: ApplicationConfig = {
       multi: true
     },
     provideRouter(routes, withComponentInputBinding()),
-    provideHttpClient(withInterceptorsFromDi()),
+    // withFetch(): use the Fetch backend instead of XHR. Required under the Tauri shell —
+    // installNativeFetch() (runtime.ts, called before bootstrap) swaps globalThis.fetch for the
+    // tauri-plugin-http reqwest client, and the Fetch backend is the only HttpClient backend that
+    // reads globalThis.fetch; without it, API calls would still go out via XHR and hit the webview's
+    // CORS gate. Auth: the browser auto-attaches the httpOnly `media_token` cookie same-origin (no
+    // header needed), while native builds send `Authorization: Bearer` via this same fetch path. The
+    // fetch backend's default credentials are correct for both. Upload-progress events are not consumed
+    // anywhere, so the XHR→fetch switch is regression-free.
+    provideHttpClient(withInterceptorsFromDi(), withFetch()),
     provideAnimationsAsync(),
     provideTransloco({
       config: {

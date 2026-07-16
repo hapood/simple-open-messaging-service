@@ -12,7 +12,13 @@
     "page": "第 {{page}} / {{pages}} 页",
     "loadFailed": "加载失败：{{message}}",
     "operationFailed": "操作失败",
-    "comingSoon": "敬请期待"
+    "comingSoon": "敬请期待",
+    "neverExpires": "永不过期",
+    "client": {
+      "app": "安卓",
+      "web": "网页",
+      "desktop": "桌面"
+    }
   },
   "topBar": {
     "toggleTheme": "切换主题",
@@ -173,7 +179,7 @@
   "sessions": {
     "title": "会话总览",
     "searchPlaceholder": "按 IP 筛选",
-    "desc": "所有用户的活跃 refresh 会话（未吊销且未过期）。共 {{count}} 条。",
+    "desc": "所有用户的活跃会话（未吊销且未过期）。共 {{count}} 条。",
     "purge": "一键清理",
     "purgeTitle": "清理所有活跃会话？",
     "purgeBody": "将吊销全部 {{count}} 条活跃会话，所有用户被强制重登（access 立即失效）。此操作不可撤销。",
@@ -182,10 +188,12 @@
     "purgeFailed": "清理失败",
     "col": {
       "user": "用户",
+      "client": "客户端",
       "device": "device",
       "ua": "User-Agent",
       "ip": "IP",
       "created": "创建",
+      "lastActive": "最近活跃",
       "expires": "过期"
     },
     "empty": "无活跃会话"
@@ -452,9 +460,12 @@
     "empty": "无活跃会话",
     "col": {
       "device": "device",
+      "client": "客户端",
       "ua": "User-Agent",
       "ip": "IP",
+      "lastIp": "最近 IP",
       "created": "创建",
+      "lastActive": "最近活跃",
       "expires": "过期"
     }
   },

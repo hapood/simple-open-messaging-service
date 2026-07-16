@@ -40,36 +40,44 @@ export function SessionsDialog({
             <TableHeader>
               <TableRow>
                 <TableHead>{t('userSessions.col.device')}</TableHead>
+                <TableHead>{t('userSessions.col.client')}</TableHead>
                 <TableHead>{t('userSessions.col.ua')}</TableHead>
                 <TableHead>{t('userSessions.col.ip')}</TableHead>
+                <TableHead>{t('userSessions.col.lastIp')}</TableHead>
                 <TableHead>{t('userSessions.col.created')}</TableHead>
+                <TableHead>{t('userSessions.col.lastActive')}</TableHead>
                 <TableHead>{t('userSessions.col.expires')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={5}>
+                  <TableCell colSpan={8}>
                     <Skeleton className="h-5 w-full" />
                   </TableCell>
                 </TableRow>
               ) : error ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="text-destructive">
+                  <TableCell colSpan={8} className="text-destructive">
                     {t('userSessions.loadFailed')}
                   </TableCell>
                 </TableRow>
               ) : !data || data.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="py-6 text-center text-muted-foreground">
+                  <TableCell colSpan={8} className="py-6 text-center text-muted-foreground">
                     {t('userSessions.empty')}
                   </TableCell>
                 </TableRow>
               ) : (
                 data.map((s) => (
-                  <TableRow key={s.jti}>
+                  <TableRow key={s.id}>
                     <TableCell>
                       <Badge variant="outline">{s.device ?? '—'}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary">
+                        {t(`common.client.${s.client}`, { defaultValue: s.client })}
+                      </Badge>
                     </TableCell>
                     <TableCell
                       className="max-w-[280px] truncate text-xs text-muted-foreground"
@@ -78,11 +86,21 @@ export function SessionsDialog({
                       {s.userAgent ?? '—'}
                     </TableCell>
                     <TableCell className="font-mono text-xs">{s.ip ?? '—'}</TableCell>
+                    <TableCell className="font-mono text-xs">{s.lastSeenIp ?? '—'}</TableCell>
                     <TableCell>
                       <Timestamp value={s.createdAt} />
                     </TableCell>
                     <TableCell>
-                      <Timestamp value={s.expiresAt} />
+                      <Timestamp value={s.lastSeenAt} />
+                    </TableCell>
+                    <TableCell>
+                      {s.expiresAt ? (
+                        <Timestamp value={s.expiresAt} />
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          {t('common.neverExpires')}
+                        </span>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))

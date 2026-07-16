@@ -18,11 +18,14 @@ export const GROUP_SSE: Record<GroupSseEvent, GroupSseEvent> = {
   GROUP_ROSTER_UPDATED: 'GROUP_ROSTER_UPDATED',
 };
 
-/** One held SSE connection: the raw response, its heartbeat timer, and the establishment time. */
+/** One held SSE connection: the raw response, its heartbeat timer, the establishment time, and the
+ *  session-token row id — so a single revoked session can be targeted for FORCE_LOGOUT without kicking the
+ *  user's other devices (see onSessionRevoked). */
 interface SseClient {
   res: ServerResponse;
   ping: NodeJS.Timeout;
   since: number;
+  sessionId: number;
 }
 
 /**
@@ -47,13 +50,13 @@ export class SseService implements OnModuleDestroy {
    * named-ping heartbeat are in common/sse-stream.ts (one source of truth — the same wire format the
    * admin log viewer and the consumer sse.worker.ts use). This keeps the per-user registry insertion
    * + the close cleanup. Auth is already done by the route's guard before reaching this service
-   * (JwtAuthGuard), so this only pushes. `origin` is the request Origin, forwarded so the hijacked raw
+   * (SessionAuthGuard), so this only pushes. `origin` is the request Origin, forwarded so the hijacked raw
    * response carries its CORS header.
    */
-  register(userId: number, res: ServerResponse, origin?: string): void {
+  register(userId: number, sessionId: number, res: ServerResponse, origin?: string): void {
     const ping = initSseResponse(res, origin);
 
-    const entry: SseClient = { res, ping, since: Date.now() };
+    const entry: SseClient = { res, ping, since: Date.now(), sessionId };
     (this.clients[userId] ??= []).push(entry);
 
     res.on('close', () => {
@@ -204,24 +207,44 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'THREAD_REVISION_UPDATED', data);
   }
 
-  /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop all of
+  /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the
+   *  entries from the registry (the broadcast deletes the whole user slot; the per-session path splices
+   *  just the matching entries). Idempotent per-connection — a half-closed socket is already gone.
+   *  formatSseFrame keeps the wire shape identical to the client's SSE_EVENT_FORCE_LOGOUT handler. */
+  private forceLogout(entries: SseClient[], reason: string): void {
+    const frame = formatSseFrame('FORCE_LOGOUT', { event: 'FORCE_LOGOUT', status: 0, message: reason });
+    for (const { res, ping } of entries) {
+      clearInterval(ping);
+      try {
+        res.write(frame);
+        res.end();
+      } catch {}
+    }
+  }
+
+  /** All-device logout / password change / force-kick: push FORCE_LOGOUT then immediately drop ALL of
    *  the user's live connections. */
   @OnEvent('auth.sessions-invalidated')
   onSessionsInvalidated(payload: { userId: number; reason: string }) {
-    const frame =
-      `event: FORCE_LOGOUT\n` +
-      `data: ${JSON.stringify({ event: 'FORCE_LOGOUT', status: 0, message: payload.reason })}\n\n`;
     const list = this.clients[payload.userId];
-    if (list) {
-      list.forEach(({ res, ping }) => {
-        clearInterval(ping);
-        try {
-          res.write(frame);
-          res.end();
-        } catch {}
-      });
-    }
+    if (list) this.forceLogout(list, payload.reason);
     delete this.clients[payload.userId];
+  }
+
+  /** Single-session revoke (the "revoke this device" action from the device list): push FORCE_LOGOUT to +
+   *  end ONLY that session's connection(s), leaving the user's other devices online. A device may hold
+   *  several connections (multiple tabs sharing one session token) — all are disconnected, since they all
+   *  ride the now-revoked credential. Splices the matching entries out and drops the user slot if empty. */
+  @OnEvent('auth.session-revoked')
+  onSessionRevoked(payload: { userId: number; sessionId: number; reason: string }) {
+    const list = this.clients[payload.userId];
+    if (!list || list.length === 0) return;
+    const revoked = list.filter((c) => c.sessionId === payload.sessionId);
+    if (revoked.length === 0) return;
+    this.forceLogout(revoked, payload.reason);
+    const survivors = list.filter((c) => c.sessionId !== payload.sessionId);
+    if (survivors.length === 0) delete this.clients[payload.userId];
+    else this.clients[payload.userId] = survivors;
   }
 
   /** Process exit / hot reload: clear all heartbeat timers to avoid handle-leak warnings. */
