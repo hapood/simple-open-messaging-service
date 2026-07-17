@@ -40,6 +40,13 @@ ADMIN_BOOTSTRAP_PASSWORD=
 # Prisma connection-pool max. Keep (max × app replicas) ≤ PostgreSQL max_connections (100).
 DATABASE_POOL_MAX=10
 
+# Optional — admin WebAuthn (passkeys) overrides. Defaults: rpId = SOMS_DOMAIN; allowed origins derived
+# from SOMS_DOMAIN + SOMS_TLS_MODE. Set only for unusual topologies. The NAS profile (custom TLS on
+# :7667) IS a secure context, so passkeys work; SOMS_ALLOW_IP_ACCESS bare-LAN-IP access is NOT (an IP
+# origin has no registrable domain) — use the domain. TOTP 2FA remains the fallback.
+# SOMS_WEBAUTHN_RP_ID=example.com
+# SOMS_WEBAUTHN_ALLOWED_ORIGINS=https://example.com:7667
+
 # ============================================================================
 # DNS-01 provider — only edit this to use a non-default provider. {KEY} is transcribed from a
 # matching VAR=... line in THIS file (do NOT inline the secret). Quote the value (it contains

@@ -2,7 +2,7 @@ import i18n from '@/i18n'
 import { API_BASE, CODE } from '@/lib/constants'
 import { ApiError } from '@/lib/api-error'
 import { getAccessToken, getRefreshToken } from '@/auth/token-store'
-import type { ApiResult, ChallengeRequired, TokenPair } from '@/types/api'
+import type { ApiResult, ChallengeRequired, TokenPair, WebAuthnLoginBegin } from '@/types/api'
 
 /** Admin login outcome: a session token pair, or a 2FA challenge (password verified, awaiting the code). */
 export type AdminLoginResult = TokenPair | ChallengeRequired
@@ -36,6 +36,24 @@ export function adminLoginVerify(
   backupCode?: string,
 ): Promise<TokenPair> {
   return postPublic<TokenPair>('/admin/login/verify', { challengeToken, code, backupCode })
+}
+
+/** Admin passkey login begin (public) — returns assertion options + a pending token for the challenge. */
+export function webAuthnLoginBegin(challengeToken: string): Promise<WebAuthnLoginBegin> {
+  return postPublic<WebAuthnLoginBegin>('/admin/webauthn/login/begin', { challengeToken })
+}
+
+/** Admin passkey login finish (public) — verifies the assertion → session token pair. */
+export function webAuthnLoginFinish(
+  challengeToken: string,
+  pendingToken: string,
+  assertionResponse: unknown,
+): Promise<TokenPair> {
+  return postPublic<TokenPair>('/admin/webauthn/login/finish', {
+    challengeToken,
+    pendingToken,
+    assertionResponse,
+  })
 }
 
 /**

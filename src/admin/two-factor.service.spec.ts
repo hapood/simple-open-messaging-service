@@ -30,6 +30,13 @@ function makeService(overrides: Record<string, unknown> = {}) {
       createMany: vi.fn(async () => ({ count: 0 })),
     },
     admin: { update: vi.fn(async () => ({})) },
+    // signChallenge creates a single-use challenge row; consumeChallenge flips consumedAt (count 1 = first
+    // consume wins, count 0 = replay). Individual tests override updateMany to test replay.
+    adminLoginChallenge: {
+      create: vi.fn(async (args: { data: { jti: string; adminId: number } }) => ({ ...args.data })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+    },
     $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     ...overrides,
   };
@@ -120,12 +127,26 @@ describe('TwoFactorService', () => {
 
   // ── challenge + pending tokens (signed with the admin secret, distinct scope) ──
 
-  it('challenge token round-trips → adminId; tampered/garbage tokens return null', () => {
+  it('challenge token round-trips → {adminId, jti}; tampered/garbage tokens return null', async () => {
     const { svc } = makeService();
-    const token = svc.signChallenge(42);
-    expect(svc.verifyChallenge(token)).toBe(42);
+    const token = await svc.signChallenge(42);
+    const decoded = svc.verifyChallenge(token);
+    expect(decoded?.adminId).toBe(42);
+    expect(typeof decoded?.jti).toBe('string');
     expect(svc.verifyChallenge(token + 'x')).toBeNull();
     expect(svc.verifyChallenge('not.a.jwt')).toBeNull();
+  });
+
+  it('consumeChallenge is single-use: the first consume wins, the second returns false (closes the counter=0 passkey replay window)', async () => {
+    const updateMany = vi.fn(async () => ({ count: 1 }));
+    const { svc, prisma } = makeService({
+      adminLoginChallenge: { create: vi.fn(async () => ({})), updateMany, deleteMany: vi.fn(async () => ({ count: 0 })) },
+    });
+    const decoded = svc.verifyChallenge(await svc.signChallenge(42))!;
+    expect(await svc.consumeChallenge(decoded.jti)).toBe(true);
+    // Second consume: the row is already consumed → updateMany returns count 0 → false (replay rejected).
+    (prisma.adminLoginChallenge.updateMany as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ count: 0 });
+    expect(await svc.consumeChallenge(decoded.jti)).toBe(false);
   });
 
   it('challenge verify rejects a token with a different scope (an access token cannot pose as a challenge)', () => {

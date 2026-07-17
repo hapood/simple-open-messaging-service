@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import { Secret, TOTP } from 'otpauth';
 import { PrismaService } from '../prisma.service.js';
 import { jwtConstants } from '../auth/constants.js';
@@ -154,25 +154,54 @@ export class TwoFactorService {
     }
   }
 
-  /** Sign a login challenge token — the only credential that proves the password already verified. */
-  signChallenge(adminId: number): string {
+  /** Sign a login challenge token — the only credential that proves the password already verified. The
+   *  token carries a single-use `jti`; a matching AdminLoginChallenge row is minted here and flipped to
+   *  consumed on the first successful second-factor verify (see {@link consumeChallenge}), so a captured
+   *  challenge cannot be replayed for a second session — closes the counter=0 passkey replay window that
+   *  TOTP already covered via twoFactorLastUsedCounter. Also lazily GCs expired rows to bound the table. */
+  async signChallenge(adminId: number): Promise<string> {
+    const jti = randomUUID();
+    // Best-effort GC: drop rows older than 1h (the challenge TTL is 5m, so these are long-expired).
+    await this.prisma.adminLoginChallenge
+      .deleteMany({ where: { createdAt: { lt: new Date(Date.now() - 60 * 60 * 1000) } } })
+      .catch(() => {});
+    await this.prisma.adminLoginChallenge.create({ data: { jti, adminId } });
     return this.jwtService.sign(
-      { sub: adminId, scope: 'admin-2fa-challenge' },
+      { sub: adminId, scope: 'admin-2fa-challenge', jti },
       { secret: jwtConstants.adminSecret, expiresIn: CHALLENGE_TTL },
     );
   }
 
-  /** Decode a login challenge token → adminId. Returns null on any failure (invalid / expired / wrong scope). */
-  verifyChallenge(token: string): number | null {
+  /** Decode a login challenge token → { adminId, jti }. Returns null on any failure (invalid / expired /
+   *  wrong scope). The jti is what {@link consumeChallenge} marks single-use. */
+  verifyChallenge(token: string): { adminId: number; jti: string } | null {
     try {
-      const payload = this.jwtService.verify<{ sub?: number; scope?: string }>(token, {
+      const payload = this.jwtService.verify<{ sub?: number; scope?: string; jti?: string }>(token, {
         secret: jwtConstants.adminSecret,
       });
-      if (payload.scope !== 'admin-2fa-challenge' || typeof payload.sub !== 'number') return null;
-      return payload.sub;
+      if (
+        payload.scope !== 'admin-2fa-challenge' ||
+        typeof payload.sub !== 'number' ||
+        typeof payload.jti !== 'string'
+      ) {
+        return null;
+      }
+      return { adminId: payload.sub, jti: payload.jti };
     } catch {
       return null;
     }
+  }
+
+  /** Atomically consume a challenge's single-use slot. Returns true iff THIS call was the first to flip
+   *  consumedAt from null — a second consume (a replay, or a cross-factor reuse of the same challenge)
+   *  returns false and the caller rejects it. Called by AdminAuthService on a successful TOTP/backup OR
+   *  passkey verify, after the factor is proven but before the session is issued. */
+  async consumeChallenge(jti: string): Promise<boolean> {
+    const r = await this.prisma.adminLoginChallenge.updateMany({
+      where: { jti, consumedAt: null },
+      data: { consumedAt: new Date() },
+    });
+    return r.count > 0;
   }
 
   // ── Admin.twoFactor* + TwoFactorBackupCode persistence ──────────────────────────

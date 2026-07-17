@@ -16,10 +16,14 @@ type Step = 'password' | 'twoFactor'
 
 export function LoginPage() {
   const { t } = useTranslation()
-  const { login, verifyTwoFactor } = useAuth()
+  const { login, verifyTwoFactor, verifyPasskey } = useAuth()
   const navigate = useNavigate()
   const [step, setStep] = useState<Step>('password')
   const [challengeToken, setChallengeToken] = useState('')
+  const [factors, setFactors] = useState<{ totp: boolean; webauthn: boolean }>({
+    totp: false,
+    webauthn: false,
+  })
   const [submitting, setSubmitting] = useState(false)
 
   // Rebuild the schema when the language changes so zod messages stay translated.
@@ -45,6 +49,7 @@ export function LoginPage() {
       const r = await login(v.account, v.password)
       if ('twoFactorRequired' in r) {
         setChallengeToken(r.challengeToken)
+        setFactors(r.factors)
         setStep('twoFactor')
       } else {
         navigate('/users', { replace: true })
@@ -67,6 +72,7 @@ export function LoginPage() {
                 onClick={() => {
                   setStep('password')
                   setChallengeToken('')
+                  setFactors({ totp: false, webauthn: false })
                 }}
                 className="text-muted-foreground hover:text-foreground"
                 aria-label={t('login.backToPassword')}
@@ -107,10 +113,12 @@ export function LoginPage() {
           ) : (
             <TwoFactorStep
               challengeToken={challengeToken}
+              factors={factors}
               submitting={submitting}
               setSubmitting={setSubmitting}
               onDone={() => navigate('/users', { replace: true })}
               verify={verifyTwoFactor}
+              onUsePasskey={() => verifyPasskey(challengeToken)}
             />
           )}
         </CardContent>
@@ -119,25 +127,30 @@ export function LoginPage() {
   )
 }
 
-/** The 6-digit TOTP step (with a "use a backup code instead" fallback). Self-contained so the password
- *  step's react-hook-form state is not involved. */
+/** The second-factor step: TOTP/backup code (when enrolled) and/or a passkey (when enrolled + a secure
+ *  context). Self-contained so the password step's react-hook-form state is not involved. */
 function TwoFactorStep({
   challengeToken,
+  factors,
   submitting,
   setSubmitting,
   onDone,
   verify,
+  onUsePasskey,
 }: {
   challengeToken: string
+  factors: { totp: boolean; webauthn: boolean }
   submitting: boolean
   setSubmitting: (v: boolean) => void
   onDone: () => void
   verify: (challengeToken: string, code?: string, backupCode?: string) => Promise<void>
+  onUsePasskey: () => Promise<void>
 }) {
   const { t } = useTranslation()
   const [useBackup, setUseBackup] = useState(false)
   const [code, setCode] = useState('')
   const [backupCode, setBackupCode] = useState('')
+  const passkeyAvailable = factors.webauthn && window.isSecureContext
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -156,45 +169,77 @@ function TwoFactorStep({
     }
   }
 
+  const usePasskey = async () => {
+    setSubmitting(true)
+    try {
+      await onUsePasskey()
+      onDone()
+    } catch (err) {
+      // Dismissing the OS prompt is a DOMException (NotAllowedError/AbortError) — not an error.
+      if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'AbortError')) return
+      toast.error(formatApiError(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   return (
-    <form onSubmit={submit} className="flex flex-col gap-4">
-      <p className="text-sm text-muted-foreground">{t('login.twoFactorHint')}</p>
-      {!useBackup ? (
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="totp">{t('login.code')}</Label>
-          <Input
-            id="totp"
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            value={code}
-            onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-            className="text-center font-mono text-lg tracking-[0.5em]"
-            placeholder="000000"
-          />
-        </div>
-      ) : (
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="backup">{t('login.backupCode')}</Label>
-          <Input
-            id="backup"
-            value={backupCode}
-            onChange={(e) => setBackupCode(e.target.value.toUpperCase())}
-            className="font-mono"
-            placeholder="ABCD-EFGH-IJKL-MNOP"
-          />
-        </div>
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        {passkeyAvailable && !factors.totp ? t('login.passkeyHint') : t('login.twoFactorHint')}
+      </p>
+      {factors.totp && (
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          {!useBackup ? (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="totp">{t('login.code')}</Label>
+              <Input
+                id="totp"
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                className="text-center font-mono text-lg tracking-[0.5em]"
+                placeholder="000000"
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="backup">{t('login.backupCode')}</Label>
+              <Input
+                id="backup"
+                value={backupCode}
+                onChange={(e) => setBackupCode(e.target.value.toUpperCase())}
+                className="font-mono"
+                placeholder="ABCD-EFGH-IJKL-MNOP"
+              />
+            </div>
+          )}
+          <Button type="submit" disabled={submitting} className="mt-2">
+            {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+            {t('login.verify')}
+          </Button>
+          <button
+            type="button"
+            className="text-center text-xs text-muted-foreground hover:text-foreground"
+            onClick={() => setUseBackup((v) => !v)}
+          >
+            {useBackup ? t('login.useAuthenticator') : t('login.useBackupCode')}
+          </button>
+        </form>
       )}
-      <Button type="submit" disabled={submitting} className="mt-2">
-        {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
-        {t('login.verify')}
-      </Button>
-      <button
-        type="button"
-        className="text-center text-xs text-muted-foreground hover:text-foreground"
-        onClick={() => setUseBackup((v) => !v)}
-      >
-        {useBackup ? t('login.useAuthenticator') : t('login.useBackupCode')}
-      </button>
-    </form>
+      {passkeyAvailable && (
+        <Button
+          type="button"
+          variant={factors.totp ? 'outline' : 'default'}
+          className={factors.totp ? '' : 'mt-2'}
+          disabled={submitting}
+          onClick={usePasskey}
+        >
+          {submitting && factors.totp && <Loader2 className="mr-2 size-4 animate-spin" />}
+          {t('login.usePasskey')}
+        </Button>
+      )}
+    </div>
   )
 }

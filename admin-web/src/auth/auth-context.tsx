@@ -1,17 +1,23 @@
 import { type ReactNode, createContext, useCallback, useContext, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { adminLogin, adminLoginVerify, adminLogout } from '@/api/auth'
+import { adminLogin, adminLoginVerify, adminLogout, webAuthnLoginBegin, webAuthnLoginFinish } from '@/api/auth'
+import { startAuthentication } from '@simplewebauthn/browser'
 import { clearTokens, getRefreshToken, setAccessToken, setRefreshToken } from '@/auth/token-store'
 
-/** Password-step outcome: either fully logged in (tokens stored), or a 2FA challenge to resolve next. */
-export type LoginStepResult = { done: true } | { twoFactorRequired: true; challengeToken: string }
+/** Password-step outcome: either fully logged in (tokens stored), or a second-factor challenge to resolve
+ *  next. `factors` tells the login page which affordances to show (TOTP/backup vs passkey). */
+export type LoginStepResult =
+  | { done: true }
+  | { twoFactorRequired: true; challengeToken: string; factors: { totp: boolean; webauthn: boolean } }
 
 interface AuthContextValue {
   isAuthenticated: boolean
-  /** Login (password step): stores tokens + bumps state on success, or returns a 2FA challenge. */
+  /** Login (password step): stores tokens + bumps state on success, or returns a second-factor challenge. */
   login: (account: string, password: string) => Promise<LoginStepResult>
-  /** Verify the 2FA challenge (TOTP or backup code) → stores tokens + bumps state. */
+  /** Verify the challenge with a TOTP or backup code → stores tokens + bumps state. */
   verifyTwoFactor: (challengeToken: string, code?: string, backupCode?: string) => Promise<void>
+  /** Verify the challenge with a passkey (assertion) → stores tokens + bumps state. */
+  verifyPasskey: (challengeToken: string) => Promise<void>
   /** Logout: calls backend revoke + clears tokens + navigates to /login. */
   logout: () => Promise<void>
 }
@@ -30,7 +36,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const data = await adminLogin(account, password)
     if ('twoFactorRequired' in data) {
       // Password verified, but a second factor is required before any session is issued.
-      return { twoFactorRequired: true, challengeToken: data.challengeToken }
+      return { twoFactorRequired: true, challengeToken: data.challengeToken, factors: data.factors }
     }
     setAccessToken(data.access_token)
     setRefreshToken(data.refresh_token)
@@ -41,6 +47,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const verifyTwoFactor = useCallback(
     async (challengeToken: string, code?: string, backupCode?: string) => {
       const data = await adminLoginVerify(challengeToken, code, backupCode)
+      setAccessToken(data.access_token)
+      setRefreshToken(data.refresh_token)
+      bump()
+    },
+    [bump],
+  )
+
+  const verifyPasskey = useCallback(
+    async (challengeToken: string) => {
+      const begin = await webAuthnLoginBegin(challengeToken)
+      // The browser drives the platform authenticator; the backend generated the options.
+      const assertion = await startAuthentication({ optionsJSON: begin.options as never })
+      const data = await webAuthnLoginFinish(challengeToken, begin.pendingToken, assertion)
       setAccessToken(data.access_token)
       setRefreshToken(data.refresh_token)
       bump()
@@ -60,11 +79,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       isAuthenticated: getRefreshToken() !== null,
       login,
       verifyTwoFactor,
+      verifyPasskey,
       logout,
     }),
     // `version` only exists to recompute isAuthenticated after login/logout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [version, login, verifyTwoFactor, logout],
+    [version, login, verifyTwoFactor, verifyPasskey, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -50,6 +50,12 @@ function localizedBizMessage(code: number): string | null {
       return i18n.t('errors.biz.twoFactorNotEnabled')
     case CODE.TWO_FACTOR_ALREADY_ENABLED:
       return i18n.t('errors.biz.twoFactorAlreadyEnabled')
+    case CODE.WEBAUTHN_NOT_AVAILABLE:
+      return i18n.t('errors.biz.webauthnNotAvailable')
+    case CODE.WEBAUTHN_CHALLENGE_EXPIRED:
+      return i18n.t('errors.biz.webauthnChallengeExpired')
+    case CODE.WEBAUTHN_VERIFICATION_FAILED:
+      return i18n.t('errors.biz.webauthnVerificationFailed')
     case CODE.INTERNAL:
       return i18n.t('errors.biz.internal')
     case CODE.VAPID_INVALID:

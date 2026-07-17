@@ -496,11 +496,58 @@ model Admin {
   twoFactorSecretCipher     String?   @db.VarChar(255)
   twoFactorEnabledAt        DateTime?
   twoFactorLastUsedCounter  Int?
+  // ── WebAuthn (passkey) second factor. Opt-in per admin; multiple credentials per admin (phone +
+  //    YubiKey, etc.). webauthnEnabled is a denormalized hint (= "≥1 credential exists") for the login
+  //    branch + status card; the credential ROWS are the source of truth (beginAssertion re-counts to
+  //    guard against a stale-true flag). Enrolling/removing a passkey does NOT bump tokenVersion
+  //    (additive optional factor — does not invalidate existing sessions, unlike TOTP-enable).
+  webauthnEnabled           Boolean   @default(false)
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
   refreshTokens AdminRefreshToken[]
   actionLogs    AdminActionLog[]
   twoFactorBackupCodes TwoFactorBackupCode[]
+  webauthnCredentials WebAuthnCredential[]
+  loginChallenges  AdminLoginChallenge[]
+}
+
+/// A registered WebAuthn (passkey) credential — a phishing-resistant admin second factor. credentialId +
+/// publicKey are PUBLIC values (the authenticator's public half), so they are stored in plaintext (no
+/// at-rest encryption, no key file) — unlike the TOTP secret which is reversible and needs AES-GCM.
+/// counter is the monotonic signature count (clone detection); transports/deviceType/backed describe the
+/// authenticator for the UI. This model is "passkey" vocabulary — deliberately NOT named `trusted`, to
+/// keep it distinct from SessionToken.trusted (session lifetime). See the two-"trust" rule.
+model WebAuthnCredential {
+  id            BigInt    @id @default(autoincrement())
+  adminId       Int
+  admin         Admin     @relation(fields: [adminId], references: [id])
+  credentialId  String    @unique @db.VarChar(510) // base64url(credential ID); unique per RP
+  publicKey     Bytes                                 // COSE_Key; the authenticator's public half (PUBLIC)
+  counter       Int       @default(0)                  // monotonic per-credential signature counter (clone detection)
+  transports    String?                                // JSON array: internal | hybrid | usb | ble | nfc | smart-card
+  deviceType    String?   @db.VarChar(32)              // singleDevice | multiDevice (sync'd passkey = multiDevice)
+  backed        Boolean   @default(false)              // backup-eligibility/result (true for iCloud/Google-sync'd passkeys)
+  nickname      String?   @db.VarChar(64)              // admin-assigned label ("MacBook Touch ID")
+  lastUsedAt    DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([adminId])
+}
+
+/// Single-use login challenge tracker — closes the WebAuthn assertion-replay window for counter=0
+/// authenticators (platform passkeys never increment the signature counter, so a captured assertion could
+/// otherwise be replayed for multiple sessions within the challenge TTL). A row keyed by the challenge
+/// JWT's jti is minted at login() time and flipped to consumed on the FIRST successful second-factor
+/// verify (TOTP or passkey); a second/cross-factor consume is rejected. Mirrors the replay protection
+/// TOTP already had via twoFactorLastUsedCounter. Cascade-deletes with the admin.
+model AdminLoginChallenge {
+  jti        String   @id @db.VarChar(36)
+  adminId    Int
+  admin      Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  consumedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
 }
 
 /// Single-use TOTP backup (recovery) codes for admin 2FA — the lockout escape hatch when an admin loses

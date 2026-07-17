@@ -23,6 +23,8 @@ import { AdminRole } from '../prisma/generated/client.js';
 import {
   AdminLoginDto,
   AdminLoginVerifyDto,
+  WebAuthnLoginBeginDto,
+  WebAuthnLoginFinishDto,
   AdminRefreshDto,
   AdminListUsersDto,
   AdminUnbanDto,
@@ -99,6 +101,35 @@ export class AdminController {
   ): Promise<ApiResult> {
     return this.ok(
       await this.adminAuthService.verifyLogin(dto.challengeToken, dto.code, dto.backupCode, ip),
+    );
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(5, 60) // per-IP ceiling; the account-dim 2FA progressive ban lives in the service
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/webauthn/login/begin')
+  @ApiOperation({ summary: 'Admin passkey login begin (challenge token → assertion options)' })
+  async webauthnLoginBegin(@Body() dto: WebAuthnLoginBeginDto): Promise<ApiResult> {
+    return this.ok(await this.adminAuthService.beginWebAuthnLogin(dto.challengeToken));
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(5, 60)
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/webauthn/login/finish')
+  @ApiOperation({ summary: 'Admin passkey login finish (assertion) → session' })
+  async webauthnLoginFinish(
+    @Body() dto: WebAuthnLoginFinishDto,
+    @Headers('user-agent') _userAgent: string,
+    @Ip() ip: string,
+  ): Promise<ApiResult> {
+    return this.ok(
+      await this.adminAuthService.verifyWebAuthnLogin(
+        dto.challengeToken,
+        dto.pendingToken,
+        dto.assertionResponse,
+        ip,
+      ),
     );
   }
 

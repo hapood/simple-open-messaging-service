@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+import { IsArray, IsIn, IsInt, IsNotEmpty, IsNumber, IsObject, IsOptional, IsString, Matches, Max, MaxLength, Min } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { type AuthenticationResponseJSON, type RegistrationResponseJSON } from '@simplewebauthn/server';
 import { AdminRole } from '../prisma/generated/client.js';
 import { USER_ACCOUNT_RE, normalizeAccount } from '../common/account.js';
 import { IsDisplayName } from '../common/validators.js';
@@ -444,4 +445,66 @@ export class AdminGroupsListDto {
   @IsOptional()
   @IsString()
   search?: string;
+}
+
+// ── WebAuthn (passkey) admin self-service ──────────────────────────────────────
+
+/** Begin passkey enrollment: the current password (re-auth) + an optional label. The re-auth closes the
+ *  "stolen ≤15m access token enrolls an attacker passkey" gap without logging out every device. */
+export class WebAuthnRegBeginDto {
+  @ApiProperty({ example: 'P@ssw0rd', description: 'Current password (re-auth required to enroll a passkey)' })
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+
+  @ApiPropertyOptional({ example: 'MacBook Touch ID', description: 'Optional label for this passkey (≤64)' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  nickname?: string;
+}
+
+/** Confirm enrollment: the pending token + the browser's PublicKeyCredential creation response. */
+export class WebAuthnRegFinishDto {
+  @ApiProperty({ description: 'Pending token from POST admin/webauthn/registration/begin' })
+  @IsString()
+  @IsNotEmpty()
+  pendingToken!: string;
+
+  @ApiProperty({ description: 'RegistrationResponseJSON returned by startRegistration (browser)' })
+  @IsObject()
+  registrationResponse!: RegistrationResponseJSON;
+}
+
+/** Begin a passkey login: the challenge token from POST admin/login (the twoFactorRequired response). */
+export class WebAuthnLoginBeginDto {
+  @ApiProperty({ description: 'Challenge token from POST admin/login (twoFactorRequired response)' })
+  @IsString()
+  @IsNotEmpty()
+  challengeToken!: string;
+}
+
+/** Finish a passkey login: both tokens + the browser's assertion response. */
+export class WebAuthnLoginFinishDto {
+  @ApiProperty({ description: 'Challenge token from POST admin/login' })
+  @IsString()
+  @IsNotEmpty()
+  challengeToken!: string;
+
+  @ApiProperty({ description: 'Pending token from POST admin/webauthn/login/begin' })
+  @IsString()
+  @IsNotEmpty()
+  pendingToken!: string;
+
+  @ApiProperty({ description: 'AuthenticationResponseJSON returned by startAuthentication (browser)' })
+  @IsObject()
+  assertionResponse!: AuthenticationResponseJSON;
+}
+
+/** Rename a saved passkey. The credential id comes from the route path param; the body carries the label. */
+export class WebAuthnRenameDto {
+  @ApiProperty({ example: 'MacBook Touch ID' })
+  @IsString()
+  @MaxLength(64)
+  nickname!: string;
 }

@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { Secret, TOTP } from 'otpauth';
 import { AdminAuthService } from './admin-auth.service.js';
 import { TwoFactorService, hashBackupCode } from './two-factor.service.js';
+import { WebAuthnService } from './webauthn.service.js';
 import { BruteForceService } from '../auth/brute-force.service.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 import { jwtConstants } from '../auth/constants.js';
@@ -32,6 +33,8 @@ function codeFor(b32: string): string {
 
 type Overrides = {
   twoFactorEnabled?: boolean;
+  webauthnEnabled?: boolean;
+  webauthnVerifyOk?: boolean; // the WebAuthnService.verifyAssertion stub result (default true)
   adminEnabled?: boolean;
   adminPresent?: boolean;
   backupCode?: string | null; // a BARE 16-char backup code to seed into the store (null = no store)
@@ -62,6 +65,7 @@ async function setup(o: Overrides = {}): Promise<{
     enabled: o.adminEnabled ?? true,
     tokenVersion: 3,
     twoFactorEnabled: o.twoFactorEnabled ?? false,
+    webauthnEnabled: o.webauthnEnabled ?? false,
     twoFactorSecretCipher: o.twoFactorEnabled ? cipher : null,
     twoFactorEnabledAt: null,
     twoFactorLastUsedCounter: null,
@@ -93,11 +97,24 @@ async function setup(o: Overrides = {}): Promise<{
       ),
       updateMany: vi.fn(async () => ({ count: 1 })),
     },
+    // AdminLoginChallenge: signChallenge creates a row (single-use jti); consumeChallenge flips it.
+    // Default updateMany returns count 1 (first consume wins) — individual tests override to test replay.
+    adminLoginChallenge: {
+      create: vi.fn(async (args: { data: { jti: string; adminId: number } }) => ({ ...args.data })),
+      updateMany: vi.fn(async () => ({ count: 1 })),
+      deleteMany: vi.fn(async () => ({ count: 0 })),
+    },
   };
 
   // Re-bind TwoFactor to the fake Prisma so backup-code consume uses the seeded store.
   const twoFactorBound = new TwoFactorService(prisma as never, jwt);
-  const svc = new AdminAuthService(prisma as never, jwt, bruteForce, twoFactorBound, passwordHasher);
+  // WebAuthnService is stubbed at the orchestration level: the admin-auth specs test ban/issuance
+  // branching, not the assertion crypto (that is covered in webauthn.service.spec.ts).
+  const webAuthn = {
+    beginAssertion: vi.fn(async () => ({ options: { challenge: 'c' }, pendingToken: 'pt' })),
+    verifyAssertion: vi.fn(async () => ({ ok: o.webauthnVerifyOk ?? true })),
+  } as unknown as WebAuthnService;
+  const svc = new AdminAuthService(prisma as never, jwt, bruteForce, twoFactorBound, passwordHasher, webAuthn);
 
   return {
     svc,
@@ -228,6 +245,51 @@ describe('AdminAuthService two-factor orchestration', () => {
     await expectBiz(
       disabled.svc.verifyLogin(token, '123456', undefined),
       BusinessCode.TWO_FACTOR_NOT_ENABLED,
+    );
+  });
+
+  // ── WebAuthn login branching + assertion ─────────────────────────────────────
+
+  it('login advertises factors {totp:false, webauthn:true} for a passkey-only admin', async () => {
+    const { svc } = await setup({ webauthnEnabled: true });
+    const r = await svc.login('admin', PASSWORD);
+    expect('twoFactorRequired' in r).toBe(true);
+    if ('twoFactorRequired' in r) expect(r.factors).toEqual({ totp: false, webauthn: true });
+  });
+
+  it('login advertises both factors when TOTP and a passkey are enrolled', async () => {
+    const { svc } = await setup({ twoFactorEnabled: true, webauthnEnabled: true });
+    const r = await svc.login('admin', PASSWORD);
+    if ('twoFactorRequired' in r) expect(r.factors).toEqual({ totp: true, webauthn: true });
+  });
+
+  it('login issues a token pair directly when no second factor is enrolled', async () => {
+    const { svc } = await setup({}); // both flags default false
+    const r = await svc.login('admin', PASSWORD);
+    expect('twoFactorRequired' in r).toBe(false);
+  });
+
+  it('verifyWebAuthnLogin completes the session on a valid assertion', async () => {
+    const { svc, challengeToken } = await setup({ webauthnEnabled: true });
+    const challenge = await challengeToken();
+    const r = await svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180');
+    expect(typeof r.access_token).toBe('string');
+    expect(typeof r.refresh_token).toBe('string');
+  });
+
+  it('verifyWebAuthnLogin rejects a failed assertion with TWO_FACTOR_INVALID, then RATE_LIMITED at the threshold', async () => {
+    const { svc, challengeToken } = await setup({ webauthnEnabled: true, webauthnVerifyOk: false });
+    const challenge = await challengeToken();
+    for (let i = 0; i < 5; i++) {
+      await expectBiz(
+        svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180'),
+        BusinessCode.TWO_FACTOR_INVALID,
+      );
+    }
+    // 6th failed assertion crosses the count:5 tier → RATE_LIMITED.
+    await expectBiz(
+      svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180'),
+      BusinessCode.RATE_LIMITED,
     );
   });
 });

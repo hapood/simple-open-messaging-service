@@ -13,6 +13,9 @@ import {
 } from '../auth/brute-force.service.js';
 import { PasswordHasher } from '../auth/password-hasher.service.js';
 import { TwoFactorService, type SetupBundle } from './two-factor.service.js';
+import { WebAuthnService, type WebAuthnCredentialView } from './webauthn.service.js';
+import { type AuthenticationResponseJSON, type RegistrationResponseJSON } from '@simplewebauthn/server';
+import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 
@@ -38,10 +41,16 @@ const ADMIN_PWD_STEPS: readonly BanStep[] = [
  *  the 10^6 code space can't be exhausted once ≤5 guesses/window are allowed). */
 const ADMIN_2FA_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }];
 
-/** Login outcome: either the token pair, or a 2FA challenge (password verified → no tokens yet). */
+/** Login outcome: either the token pair, or a second-factor challenge (password verified → no tokens yet).
+ *  `factors` tells the client which affordances to show at the challenge step (TOTP/backup vs passkey); it
+ *  leaks nothing — the password already proved identity by the time this is emitted. */
 export type AdminLoginResult =
   | { access_token: string; refresh_token: string }
-  | { twoFactorRequired: true; challengeToken: string };
+  | {
+      twoFactorRequired: true;
+      challengeToken: string;
+      factors: { totp: boolean; webauthn: boolean };
+    };
 
 @Injectable()
 export class AdminAuthService {
@@ -51,6 +60,7 @@ export class AdminAuthService {
     private bruteForce: BruteForceService,
     private twoFactor: TwoFactorService,
     private passwordHasher: PasswordHasher,
+    private webAuthn: WebAuthnService,
   ) {}
 
   /** Admin login: identity is on the linked User (single account namespace) → verify User.hashPwd → require an
@@ -98,9 +108,17 @@ export class AdminAuthService {
       );
     }
 
-    // Password verified. Branch: 2FA-enrolled → challenge; otherwise issue the session right away.
-    if (admin.twoFactorEnabled) {
-      return { twoFactorRequired: true, challengeToken: this.twoFactor.signChallenge(admin.id) };
+    // Password verified. Branch: a second factor is required (TOTP and/or a passkey) → challenge; otherwise
+    // issue the session right away. The SAME challenge token (scope admin-2fa-challenge) is consumed by
+    // either POST admin/login/verify (TOTP/backup) or POST admin/webauthn/login/finish (passkey assertion).
+    const hasTotp = admin.twoFactorEnabled;
+    const hasWebauthn = admin.webauthnEnabled;
+    if (hasTotp || hasWebauthn) {
+      return {
+        twoFactorRequired: true,
+        challengeToken: await this.twoFactor.signChallenge(admin.id),
+        factors: { totp: hasTotp, webauthn: hasWebauthn },
+      };
     }
     await this.completeLogin(admin.id, ip);
     return {
@@ -117,14 +135,15 @@ export class AdminAuthService {
     backupCode: string | undefined,
     ip?: string,
   ): Promise<{ access_token: string; refresh_token: string }> {
-    const adminId = this.twoFactor.verifyChallenge(challengeToken);
-    if (adminId === null) {
+    const decoded = this.twoFactor.verifyChallenge(challengeToken);
+    if (decoded === null) {
       throw new BusinessException(
         BusinessCode.TWO_FACTOR_CHALLENGE_EXPIRED,
         'login session expired; please sign in again',
         HttpStatus.OK,
       );
     }
+    const { adminId, jti } = decoded;
     const admin = await this.prisma.admin.findUnique({
       where: { id: adminId },
       select: {
@@ -158,6 +177,14 @@ export class AdminAuthService {
     const passed = await this.verifyFactor(admin, code, backupCode, /*advanceCounter*/ true);
     if (!passed) this.failAdmin2FA(acct);
 
+    // Single-use challenge: a captured/replayed challenge cannot buy a second session.
+    if (!(await this.twoFactor.consumeChallenge(jti))) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_CHALLENGE_EXPIRED,
+        'login session expired; please sign in again',
+        HttpStatus.OK,
+      );
+    }
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
     await this.completeLogin(admin.id, ip);
     return {
@@ -304,6 +331,162 @@ export class AdminAuthService {
     if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
     if (!admin.twoFactorEnabled) return; // nothing to reset
     await this.twoFactor.disable(targetAdminId);
+  }
+
+  // ── WebAuthn (passkey) login — consumed at the challenge step alongside TOTP ──────────────────
+
+  /** Begin a passkey login: decode the challenge token (proves the password verified), confirm the admin
+   *  still has a passkey enabled, pre-check the 2FA lock, then mint assertion options. The challenge token
+   *  is the SAME admin-2fa-challenge token issued by login(); the inner webauthn-assert-pending token is
+   *  minted here and carries the per-attempt challenge. */
+  async beginWebAuthnLogin(challengeToken: string): Promise<{ options: unknown; pendingToken: string }> {
+    const decoded = this.twoFactor.verifyChallenge(challengeToken);
+    if (decoded === null) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_CHALLENGE_EXPIRED,
+        'login session expired; please sign in again',
+        HttpStatus.OK,
+      );
+    }
+    const { adminId } = decoded;
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { enabled: true, webauthnEnabled: true, user: { select: { account: true } } },
+    });
+    if (!admin || !admin.enabled || !admin.webauthnEnabled) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_NOT_ENABLED,
+        'no passkey is enabled for this account',
+        HttpStatus.OK,
+      );
+    }
+    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_2FA, value: admin.user.account }]);
+    if (ban !== undefined) {
+      throw new BusinessException(
+        BusinessCode.RATE_LIMITED,
+        'too many code attempts; try again later',
+        HttpStatus.OK,
+        { bannedUntil: ban },
+      );
+    }
+    return this.webAuthn.beginAssertion(adminId);
+  }
+
+  /** Finish a passkey login: re-decode the challenge token, verify the assertion, and on success issue the
+   *  admin session via the SAME helpers password/TOTP login use. A failed assertion counts toward the 2FA
+   *  lock (defense-in-depth — assertions are cryptographically unforgeable, so failures are rare). */
+  async verifyWebAuthnLogin(
+    challengeToken: string,
+    pendingToken: string,
+    assertion: AuthenticationResponseJSON,
+    ip?: string,
+  ): Promise<{ access_token: string; refresh_token: string }> {
+    const decoded = this.twoFactor.verifyChallenge(challengeToken);
+    if (decoded === null) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_CHALLENGE_EXPIRED,
+        'login session expired; please sign in again',
+        HttpStatus.OK,
+      );
+    }
+    const { adminId, jti } = decoded;
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { enabled: true, user: { select: { account: true } } },
+    });
+    if (!admin || !admin.enabled) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_NOT_ENABLED,
+        'account is not available',
+        HttpStatus.OK,
+      );
+    }
+    const acct = admin.user.account;
+    const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_2FA, value: acct }]);
+    if (ban !== undefined) {
+      throw new BusinessException(
+        BusinessCode.RATE_LIMITED,
+        'too many code attempts; try again later',
+        HttpStatus.OK,
+        { bannedUntil: ban },
+      );
+    }
+    const result = await this.webAuthn.verifyAssertion(adminId, pendingToken, assertion);
+    if (!result.ok) this.failAdmin2FA(acct);
+
+    // Single-use challenge: a replayed (captured) assertion cannot buy a second session — critical for
+    // counter=0 platform passkeys, whose signature never changes so the counter CAS alone can't detect replay.
+    if (!(await this.twoFactor.consumeChallenge(jti))) {
+      throw new BusinessException(
+        BusinessCode.TWO_FACTOR_CHALLENGE_EXPIRED,
+        'login session expired; please sign in again',
+        HttpStatus.OK,
+      );
+    }
+    this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
+    await this.completeLogin(adminId, ip);
+    return {
+      access_token: await this.getAdminAccessToken(adminId),
+      refresh_token: await this.getAdminRefreshToken(adminId, { ip }),
+    };
+  }
+
+  // ── WebAuthn enrollment + management (self-service; caller is the authenticated admin) ──────────
+
+  /** Begin passkey enrollment. Requires the CURRENT password (re-auth) so a hijacked-but-still-valid
+   *  access token cannot enroll an attacker-controlled passkey — the Google/GitHub pattern. Does NOT bump
+   *  tokenVersion (passkeys are an additive optional factor; existing sessions stay valid). */
+  async beginWebAuthnRegistration(
+    adminId: number,
+    password: string,
+    nickname?: string,
+  ): Promise<{ options: unknown; pendingToken: string }> {
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { user: { select: { account: true, name: true, hashPwd: true } } },
+    });
+    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
+    if (!admin.user.hashPwd || !(await this.passwordHasher.verify(admin.user.hashPwd, password))) {
+      throw new BusinessException(BusinessCode.INVALID_CREDENTIALS, 'invalid credentials', HttpStatus.OK);
+    }
+    return this.webAuthn.beginRegistration(adminId, admin.user.account, admin.user.name, nickname);
+  }
+
+  /** Confirm enrollment: verify the registration response + persist the credential. */
+  async completeWebAuthnRegistration(
+    adminId: number,
+    pendingToken: string,
+    registration: RegistrationResponseJSON,
+  ): Promise<{ id: string; nickname: string | null; deviceType: string | null; backed: boolean }> {
+    return this.webAuthn.completeRegistration(adminId, pendingToken, registration);
+  }
+
+  async listWebAuthnCredentials(adminId: number): Promise<WebAuthnCredentialView[]> {
+    return this.webAuthn.listCredentials(adminId);
+  }
+
+  async renameWebAuthnCredential(adminId: number, rowId: bigint, nickname: string): Promise<void> {
+    await this.webAuthn.renameCredential(adminId, rowId, nickname);
+  }
+
+  async removeWebAuthnCredential(adminId: number, rowId: bigint): Promise<{ remaining: number }> {
+    return this.webAuthn.removeCredential(adminId, rowId);
+  }
+
+  /** Passkey status for the security card. */
+  async webAuthnStatus(
+    adminId: number,
+  ): Promise<{ available: boolean; enabled: boolean; credentialCount: number }> {
+    const admin = await this.prisma.admin.findUnique({
+      where: { id: adminId },
+      select: { webauthnEnabled: true },
+    });
+    if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
+    return {
+      available: WEBAUTHN_CONFIG.available,
+      enabled: admin.webauthnEnabled,
+      credentialCount: await this.webAuthn.countCredentials(adminId),
+    };
   }
 
   // ── 2FA helpers ───────────────────────────────────────────────────────────────

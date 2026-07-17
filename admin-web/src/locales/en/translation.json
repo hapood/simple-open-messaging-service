@@ -128,6 +128,8 @@
     "verify": "Verify",
     "useBackupCode": "Use a backup code instead",
     "useAuthenticator": "Use the authenticator app instead",
+    "usePasskey": "Use a passkey instead",
+    "passkeyHint": "Confirm with your screen lock or security key.",
     "backToPassword": "Back to password"
   },
   "users": {
@@ -676,6 +678,24 @@
       "enabledToast": "Two-factor enabled — sign in again to continue",
       "disabledToast": "Two-factor disabled"
     },
+    "passkey": {
+      "title": "Passkeys",
+      "desc": "A phishing-resistant second factor — confirm with your screen lock (Touch ID / Windows Hello) or a hardware key.",
+      "add": "Add a passkey",
+      "notAvailable": "Passkeys need a secure connection (HTTPS). Open the console over HTTPS to use them.",
+      "empty": "No passkeys yet.",
+      "backed": "Synced",
+      "single": "This device",
+      "lastUsed": "Last used {{when}}",
+      "never": "never",
+      "rename": "Rename",
+      "remove": "Remove",
+      "addedToast": "Passkey added",
+      "removedToast": "Passkey removed",
+      "reauthLabel": "Confirm your current password to add a passkey",
+      "nicknameLabel": "Label (optional)",
+      "nicknamePlaceholder": "e.g. MacBook Touch ID"
+    },
     "setup": {
       "title": "Enable two-factor",
       "scanDesc": "Scan this QR with your authenticator app (Google / Microsoft Authenticator), then enter the 6-digit code it shows.",
@@ -716,6 +736,9 @@
       "twoFactorChallengeExpired": "The verification session expired — please sign in again",
       "twoFactorNotEnabled": "Two-factor is not enabled for this account",
       "twoFactorAlreadyEnabled": "Two-factor is already enabled",
+      "webauthnNotAvailable": "Passkeys are not available on this connection (HTTPS required)",
+      "webauthnChallengeExpired": "The passkey session expired — please try again",
+      "webauthnVerificationFailed": "Passkey verification failed",
       "internal": "Something went wrong",
       "vapidInvalid": "VAPID keypair is invalid (malformed or mismatched)"
     }

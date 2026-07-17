@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { AlertTriangle, Copy, KeyRound, Loader2, Lock, Smartphone, WandSparkles } from 'lucide-react'
+import { startRegistration } from '@simplewebauthn/browser'
+import { AlertTriangle, Copy, Fingerprint, KeyRound, Loader2, Lock, Smartphone, WandSparkles } from 'lucide-react'
 import {
   useBeginTwoFactorSetup,
   useCompleteTwoFactorSetup,
@@ -9,6 +10,14 @@ import {
   useRegenerateBackupCodes,
   useTwoFactorStatus,
 } from '@/hooks/use-two-factor'
+import {
+  useBeginWebAuthnRegistration,
+  useCompleteWebAuthnRegistration,
+  useRemoveWebAuthnCredential,
+  useRenameWebAuthnCredential,
+  useWebAuthnCredentials,
+  useWebAuthnStatus,
+} from '@/hooks/use-webauthn'
 import { forceLogout } from '@/auth/force-logout'
 import { formatApiError } from '@/lib/format-error'
 import { Badge } from '@/components/ui/badge'
@@ -39,6 +48,22 @@ export function SecurityPage() {
   const [setupOpen, setSetupOpen] = useState(false)
   const [disableOpen, setDisableOpen] = useState(false)
   const [regenOpen, setRegenOpen] = useState(false)
+
+  const { data: waStatus } = useWebAuthnStatus()
+  const { data: waCreds } = useWebAuthnCredentials()
+  // The backend `available` hint is a TLS-mode guess; window.isSecureContext is the real browser gate.
+  const waUsable = !!waStatus?.available && window.isSecureContext
+  const [enrollOpen, setEnrollOpen] = useState(false)
+  const [renameTarget, setRenameTarget] = useState<{ id: string; nickname: string } | null>(null)
+  const removeMut = useRemoveWebAuthnCredential()
+  const onRemovePasskey = async (id: string) => {
+    try {
+      await removeMut.mutateAsync(id)
+      toast.success(t('security.passkey.removedToast'))
+    } catch (err) {
+      toast.error(formatApiError(err))
+    }
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -101,6 +126,75 @@ export function SecurityPage() {
       <SetupDialog open={setupOpen} onOpenChange={setSetupOpen} />
       <DisableDialog open={disableOpen} onOpenChange={setDisableOpen} />
       <RegenerateDialog open={regenOpen} onOpenChange={setRegenOpen} />
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Fingerprint className="size-4" />
+            {t('security.passkey.title')}
+            <Badge variant={waStatus?.enabled ? 'default' : 'outline'} className="ml-1">
+              {waStatus?.enabled ? t('security.totp.on') : t('security.totp.off')}
+            </Badge>
+          </CardTitle>
+          <CardDescription>{t('security.passkey.desc')}</CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-4">
+          {!waUsable ? (
+            <p className="text-sm text-muted-foreground">{t('security.passkey.notAvailable')}</p>
+          ) : waCreds && waCreds.length > 0 ? (
+            <>
+              <ul className="flex flex-col divide-y">
+                {waCreds.map((c) => (
+                  <li key={c.id} className="flex flex-wrap items-center gap-x-4 gap-y-1 py-2 text-sm">
+                    <span className="font-medium">{c.nickname ?? c.id}</span>
+                    <Badge variant="outline">
+                      {c.backed ? t('security.passkey.backed') : t('security.passkey.single')}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {t('security.passkey.lastUsed', {
+                        when: c.lastUsedAt ? <Timestamp value={c.lastUsedAt} /> : t('security.passkey.never'),
+                      })}
+                    </span>
+                    <div className="ml-auto flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setRenameTarget({ id: c.id, nickname: c.nickname ?? '' })}
+                      >
+                        {t('security.passkey.rename')}
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-destructive"
+                        disabled={removeMut.isPending}
+                        onClick={() => onRemovePasskey(c.id)}
+                      >
+                        {t('security.passkey.remove')}
+                      </Button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <Button variant="outline" size="sm" className="self-start" onClick={() => setEnrollOpen(true)}>
+                <Fingerprint className="size-3.5" />
+                {t('security.passkey.add')}
+              </Button>
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-muted-foreground">{t('security.passkey.empty')}</p>
+              <Button size="sm" className="self-start" onClick={() => setEnrollOpen(true)}>
+                <Fingerprint className="size-4" />
+                {t('security.passkey.add')}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+
+      <WebAuthnEnrollDialog open={enrollOpen} onOpenChange={setEnrollOpen} />
+      <RenamePasskeyDialog target={renameTarget} onClose={() => setRenameTarget(null)} />
     </div>
   )
 }
@@ -456,4 +550,132 @@ function downloadCodes(codes: string[]): void {
   a.download = 'soms-admin-2fa-backup-codes.txt'
   a.click()
   URL.revokeObjectURL(url)
+}
+
+/** Passkey enrollment wizard: re-auth password (+ optional label) → browser platform prompt → credential
+ *  saved. No forced re-login (a passkey is an additive factor; existing sessions stay valid). */
+function WebAuthnEnrollDialog({ open, onOpenChange }: { open: boolean; onOpenChange: (v: boolean) => void }) {
+  const { t } = useTranslation()
+  const [password, setPassword] = useState('')
+  const [nickname, setNickname] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const begin = useBeginWebAuthnRegistration()
+  const complete = useCompleteWebAuthnRegistration()
+
+  useEffect(() => {
+    if (!open) {
+      setPassword('')
+      setNickname('')
+    }
+  }, [open])
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    setSubmitting(true)
+    try {
+      const r = await begin.mutateAsync({ password, nickname: nickname.trim() || undefined })
+      // The browser drives the platform authenticator; the backend generated the registration options.
+      const credential = await startRegistration({ optionsJSON: r.options as never })
+      await complete.mutateAsync({ pendingToken: r.pendingToken, registrationResponse: credential })
+      toast.success(t('security.passkey.addedToast'))
+      onOpenChange(false)
+    } catch (err) {
+      // The user dismissing the OS prompt is a DOMException (NotAllowedError/AbortError) — not an error.
+      if (err instanceof DOMException && (err.name === 'NotAllowedError' || err.name === 'AbortError')) return
+      toast.error(formatApiError(err))
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t('security.passkey.add')}</DialogTitle>
+          <DialogDescription>{t('security.passkey.reauthLabel')}</DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="wa-password">{t('security.passkey.reauthLabel')}</Label>
+            <Input
+              id="wa-password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+          </div>
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="wa-nickname">{t('security.passkey.nicknameLabel')}</Label>
+            <Input
+              id="wa-nickname"
+              value={nickname}
+              onChange={(e) => setNickname(e.target.value)}
+              maxLength={64}
+              placeholder={t('security.passkey.nicknamePlaceholder')}
+            />
+          </div>
+          <DialogFooter>
+            <Button type="submit" disabled={submitting}>
+              {submitting && <Loader2 className="mr-2 size-4 animate-spin" />}
+              {t('security.passkey.add')}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/** Rename a saved passkey (the target is null when closed). */
+function RenamePasskeyDialog({
+  target,
+  onClose,
+}: {
+  target: { id: string; nickname: string } | null
+  onClose: () => void
+}) {
+  const { t } = useTranslation()
+  const [nickname, setNickname] = useState('')
+  const rename = useRenameWebAuthnCredential()
+
+  useEffect(() => {
+    if (target) setNickname(target.nickname)
+  }, [target])
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!target) return
+    try {
+      await rename.mutateAsync({ id: target.id, nickname: nickname.trim().slice(0, 64) })
+      onClose()
+    } catch (err) {
+      toast.error(formatApiError(err))
+    }
+  }
+
+  return (
+    <Dialog
+      open={!!target}
+      onOpenChange={(v) => {
+        if (!v) onClose()
+      }}
+    >
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>{t('security.passkey.rename')}</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={submit} className="flex flex-col gap-4">
+          <Input value={nickname} onChange={(e) => setNickname(e.target.value)} maxLength={64} />
+          <DialogFooter>
+            <Button type="submit" disabled={rename.isPending}>
+              {t('security.passkey.rename')}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
 }

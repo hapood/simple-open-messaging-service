@@ -56,6 +56,9 @@ export enum BusinessCode {
   TWO_FACTOR_CHALLENGE_EXPIRED = 10020, // admin login/setup token (challenge or pending) is invalid or past its TTL — the admin must restart the login/enroll flow.
   TWO_FACTOR_NOT_ENABLED = 10021,    // a 2FA operation (login verify, disable, regenerate) targeted an admin who does not have 2FA enabled.
   TWO_FACTOR_ALREADY_ENABLED = 10022, // admin tried to begin 2FA setup while already enrolled (use disable first to re-enroll with a fresh secret).
+  WEBAUTHN_NOT_AVAILABLE = 10023,        // WebAuthn is unavailable in this deployment (SOMS_TLS_MODE=disabled over a non-localhost origin → not a secure context). Surfaced by the status endpoint so the UI hides the passkey affordance; the endpoints themselves still respond.
+  WEBAUTHN_CHALLENGE_EXPIRED = 10024,    // a WebAuthn pending token (registration or assertion) is invalid or past its TTL — the admin must restart the enroll/login flow.
+  WEBAUTHN_VERIFICATION_FAILED = 10025,  // verifyRegistrationResponse / verifyAuthenticationResponse rejected the credential (tampered, wrong RP/origin, counter regression / suspected clone). Counted toward the admin-2FA brute-force lock at the login boundary.
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state
