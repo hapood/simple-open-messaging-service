@@ -161,7 +161,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     expect('twoFactorRequired' in r).toBe(true);
     if ('twoFactorRequired' in r) {
       expect(r.twoFactorRequired).toBe(true);
-      expect(twoFactor.verifyChallenge(r.challengeToken)).toBe(7); // decodes to the admin id
+      expect(twoFactor.verifyChallenge(r.challengeToken)?.adminId).toBe(7); // decodes to the admin id
     }
   });
 

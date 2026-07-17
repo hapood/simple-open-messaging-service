@@ -58,7 +58,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (challengeToken: string) => {
       const begin = await webAuthnLoginBegin(challengeToken)
       // The browser drives the platform authenticator; the backend generated the options.
-      const assertion = await startAuthentication({ optionsJSON: begin.options as never })
+      const assertion = await startAuthentication({ optionsJSON: begin.options })
       const data = await webAuthnLoginFinish(challengeToken, begin.pendingToken, assertion)
       setAccessToken(data.access_token)
       setRefreshToken(data.refresh_token)

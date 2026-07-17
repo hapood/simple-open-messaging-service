@@ -575,7 +575,7 @@ function WebAuthnEnrollDialog({ open, onOpenChange }: { open: boolean; onOpenCha
     try {
       const r = await begin.mutateAsync({ password, nickname: nickname.trim() || undefined })
       // The browser drives the platform authenticator; the backend generated the registration options.
-      const credential = await startRegistration({ optionsJSON: r.options as never })
+      const credential = await startRegistration({ optionsJSON: r.options })
       await complete.mutateAsync({ pendingToken: r.pendingToken, registrationResponse: credential })
       toast.success(t('security.passkey.addedToast'))
       onOpenChange(false)
