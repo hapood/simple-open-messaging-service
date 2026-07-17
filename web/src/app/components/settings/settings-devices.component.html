@@ -31,6 +31,9 @@
             } @else {
               <span class="badge">{{ clientLabel(s.client) }}</span>
             }
+            @if (s.trusted) {
+              <span class="badge trusted">{{ 'session.trusted' | transloco }}</span>
+            }
           </div>
 
           @if (s.userAgent) {

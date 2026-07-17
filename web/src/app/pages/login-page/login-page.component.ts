@@ -1,5 +1,4 @@
 import { Component, signal, computed, inject } from '@angular/core';
-import { RouterLink } from '@angular/router';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
 import { LoginComponent } from '../../components/login/login.component';
@@ -9,22 +8,45 @@ import { IconComponent, AppIconType } from '../../components/icon/icon.component
 import { RouteService, RoutePage } from '../../services/route.service';
 import { ConfigService } from '../../services/config.service';
 import { AuthService } from '../../services/auth.service';
-import { isTauri } from '../../services/runtime';
+import { apiOrigin, isTauri, tauriInvoke } from '../../services/runtime';
 
 @Component({
     selector: 'app-login-page',
-    imports: [LoginComponent, AuthBrandComponent, AuthToolbarComponent, RouterLink, TranslocoPipe, MatButtonModule, IconComponent],
+    imports: [LoginComponent, AuthBrandComponent, AuthToolbarComponent, TranslocoPipe, MatButtonModule, IconComponent],
     templateUrl: './login-page.component.html',
     styleUrl: './login-page.component.scss'
 })
 export class LoginPageComponent {
-  // Exposed for the template so the "Server settings" entry renders only inside the Tauri shell
-  // (browser build is same-origin; the config page is canMatch-gated to isTauri anyway).
+  // Exposed for the template so the server banner + "Configure server" entry render only inside the
+  // Tauri shell (browser build is same-origin; nothing to report or reconfigure there).
   protected readonly isTauri = isTauri;
   protected readonly AppIcon = AppIconType;
   private readonly config = inject(ConfigService);
   private readonly auth = inject(AuthService);
   private readonly transloco = inject(TranslocoService);
+
+  // --- Origin banner (shows the configured backend prominently on the login page). https = green globe
+  //     (cert was validated at init); http/IP = red (insecure — validated skipped, signature guards it). ---
+  readonly originHost = computed(() => {
+    const o = apiOrigin();
+    try {
+      return o ? new URL(o).host : '';
+    } catch {
+      return o;
+    }
+  });
+  readonly originInsecure = computed(() => {
+    const o = apiOrigin();
+    if (!o) return true;
+    try {
+      return new URL(o).protocol !== 'https:';
+    } catch {
+      return true;
+    }
+  });
+  readonly originSchemeLabel = computed(() => (this.originInsecure() ? 'HTTP' : 'HTTPS'));
+  readonly originIcon = computed(() => (this.originInsecure() ? AppIconType.REPORT : AppIconType.GLOBE));
+
 
   /** One-shot notice shown after a server-initiated kick (e.g. "signed in elsewhere" when a new OTP login
    *  replaced this app session). Set from AuthService.consumeLoginNotice() on construct. */
@@ -65,5 +87,12 @@ export class LoginPageComponent {
 
   jumpToQr() {
     this.routeService.redirect(RoutePage.AUTH_QR)
+  }
+
+  /** Reopen the bundled bootstrap as the `init` window over this one (reconfigure). Rust creates the
+   *  init window (tauri://localhost), the bootstrap runs the same 3 init steps against the new origin,
+   *  then hands back to the SPA. Replaces the old in-SPA `/config` page (now removed). */
+  reopenServerConfig(): void {
+    tauriInvoke('open_init').catch((e) => console.error('open_init failed', e));
   }
 }

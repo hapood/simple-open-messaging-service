@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the SOMS main window. The app-defined commands (get_api_origin, set_session_token, clear_session_token) are registered in invoke_handler and reachable from the webview; core IPC is enabled via core:default; notification:default lets UnreadAttentionService post desktop system notifications via tauri-plugin-notification. http:default + a wide URL scope let the webview's native-fetch override (installNativeFetch, web/.../runtime.ts) reach ANY user-configured backend through tauri-plugin-http, bypassing the webview's CORS gate (a bundled app's https://tauri.localhost origin is cross-origin to every real backend).",
-  "windows": ["main"],
+  "description": "Capability for the SOMS two-window shell. Both windows — \"main\" (the downloaded SPA at somsapp://localhost) and \"init\" (the bundled bootstrap at tauri://localhost, created on demand for first-run/reconfigure) — get core IPC, desktop notifications, native HTTP to any http/https origin, and ALL app-defined commands (origin/token + shell dynamic-update init_*/handoff/open) via the app-commands \"default\" aggregate. The http scope is wide because the backend origin is runtime-configured; the webview's native-fetch override (installNativeFetch, web/.../runtime.ts) reaches it through tauri-plugin-http, bypassing the webview CORS gate. Both windows load LOCAL (non-remote) origins — tauri://localhost (bundled) and somsapp://localhost (a registered custom scheme) — so a single capability with no `remote:` block spans them both.",
+  "windows": ["main", "init"],
   "permissions": [
     "core:default",
     "notification:default",
+    "default",
     {
       "identifier": "http:default",
       "allow": [{ "url": "http://**" }, { "url": "https://**" }]

@@ -45,6 +45,10 @@ declare global {
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: {
       core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+      /** The event surface (withGlobalTauri): emit an event the Rust side listens for. The SPA emits
+       *  `spa-ready` after its first paint so Rust can show the main window + close the init window
+       *  (the two-window handoff in src-tauri/src/lib.rs handoff_to_spa). */
+      event?: { emit: (event: string, payload?: unknown) => Promise<void> | void };
       /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs), used by the DESKTOP
        *  NotificationAdapter (pc/mac/linux). `identifier` is the replace-by-id param — posting with the same
        *  identifier replaces the prior notification. Desktop-only: Android has its own Kotlin `SomsNotify`
@@ -66,6 +70,11 @@ declare global {
        *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to
        *  clear (and stop the native stream). Android-only. */
       setSessionToken: (token: string | null) => void;
+      /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
+       *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
+       *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when
+       *  no token is stored (logged out / first run). Android-only. */
+      getSessionToken: () => string | null;
       /** Synchronous read of the RealtimeService's last-pushed connection state
        *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
        *  connection-state signal before the next state transition. Android-only. */
@@ -179,6 +188,13 @@ export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unkn
  *  not in a Tauri shell or the plugin global is absent. Desktop-only — Android uses the Kotlin `SomsNotify` bridge. */
 export function tauriSendNotification(options: { title: string; body?: string; identifier?: string }): void {
   window.__TAURI__?.notification?.sendNotification(options);
+}
+
+/** Emit a Tauri event the Rust side listens for. The SPA emits `spa-ready` after its first paint so
+ *  Rust can show the main window + close the init window (the two-window handoff). No-op when not in
+ *  the shell. */
+export function emitTauriEvent(event: string, payload?: unknown): void {
+  window.__TAURI__?.event?.emit?.(event, payload ?? null);
 }
 
 /** Marker so {@link installNativeFetch} swaps `globalThis.fetch` exactly once per renderer. */

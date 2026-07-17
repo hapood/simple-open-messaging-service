@@ -193,11 +193,6 @@ class MainActivity : TauriActivity() {
             SomsBridge.DeepLink.pendingThreadId = null
             openThread(it)
         }
-        // Dev-tools bubble (frontend dev server / refresh / revert). Added here so it is inserted AFTER
-        // the webview and draws on top. DevTools.attach is a no-op unless the build compiled the real twin
-        // (src/dev-real, only the Makefile's `apk-dev` target) — stub builds contain no dev-tools code at
-        // all. Idempotent; onResume retries it too.
-        DevTools.attach(this)
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.
@@ -231,9 +226,6 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
-        // Retry the dev-tools bubble attach: by onResume the window token is set, so addView lands it ON
-        // TOP. (onWebViewCreate also calls DevTools.attach; both are idempotent. No-op in stub builds.)
-        DevTools.attach(this)
         // Belt-and-suspenders WebView capture for the async-creation race (see captureWebView). Usually
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
@@ -264,9 +256,6 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
-        // The dev bubble (when present) lives in its own WindowManager sub-window — NOT auto-removed on
-        // content destroy, so drop it via DevTools (a no-op in stub builds) to avoid leaking a window.
-        DevTools.detach(this)
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
         SomsBridge.webView = null
@@ -413,6 +402,16 @@ class MainActivity : TauriActivity() {
                     Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND),
                 )
             }
+        }
+
+        /** Synchronous read of the persisted session token from encrypted storage — the SAME store
+         *  setSessionToken writes and RealtimeService reads. The WebView's AuthService.restoreSession calls
+         *  this on a cold start to re-establish the session with NO plaintext copy in JS storage (so the
+         *  token rests encrypted only). Returns null when no token is stored (logged out / first run). */
+        @JavascriptInterface
+        fun getSessionToken(): String? {
+            val a = activityRef.get() ?: return null
+            return SomsSecureStore.getSessionToken(a)
         }
 
         /** Synchronous read of the RealtimeService's last-pushed connection state

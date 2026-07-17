@@ -38,7 +38,7 @@ export interface RealtimeSink {
   onState(state: ConnectionState): void;
   onReconnect(): void;
   /** Server-initiated kick. `reason` is the FORCE_LOGOUT frame's message (the revoke reason, e.g.
-   *  'app_session_replaced'), threaded so the facade can surface a reason-aware login notice; undefined on
+   *  'device_revoke'), threaded so the facade can surface a reason-aware login notice; undefined on
    *  transports that don't carry it (the worker path). */
   onForceLogout(reason?: string): void;
 }

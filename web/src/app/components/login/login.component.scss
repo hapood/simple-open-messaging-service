@@ -41,6 +41,15 @@
   margin-top: 4px;
 }
 
+// One-line explanation under the desktop "Trust this device" toggle — the user is opting into a
+// permanent session, so the implication is spelled out (integer-px metrics per the project rule).
+.trust-hint {
+  margin: 2px 0 0;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+}
+
 .error {
   min-height: 18px;
   margin: 8px 2px;

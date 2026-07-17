@@ -3,8 +3,6 @@ import { CanActivateFn, RedirectCommand } from '@angular/router';
 import { Router } from '@angular/router';
 import { AuthService } from './services/auth.service';
 import { ConfigService } from './services/config.service';
-import { apiOriginIsEmpty, isTauri } from './services/runtime';
-import { ServerConfigGateService } from './services/server-config-gate.service';
 
 // Auth-flow history contract: a logged-in user must NEVER be able to press Back from the app and land
 // on /auth/login or /auth/register. That is enforced structurally, not by reacting after the fact:
@@ -34,15 +32,9 @@ export const guestGuard: CanActivateFn = () => {
   if (authService.isLoggedIn()) {
     return new RedirectCommand(router.parseUrl(''), { replaceUrl: true });
   }
-  // Bundled-APK first run: if no backend origin is configured yet (the apiOrigin signal is empty) the
-  // login form can only fail, so force the server-config page first. The gate is latched once per boot
-  // via ServerConfigGateService.consumeOnce() — otherwise canceling back to /auth/login would re-trip
-  // this redirect forever (an inescapable loop). A full reload resets the latch and re-offers the page
-  // (correct: the app is unusable while unconfigured). After a Save the persisted origin is non-empty,
-  // so this gate drops away on every later run. No-op in the browser build (isTauri() is false).
-  if (isTauri() && apiOriginIsEmpty() && inject(ServerConfigGateService).consumeOnce()) {
-    return new RedirectCommand(router.parseUrl('/config'), { replaceUrl: true });
-  }
+  // The Tauri shell's first-run server setup now lives in the bundled `init` window (shell-config
+  // bootstrap), which Rust opens INSTEAD of the SPA when no origin+web are configured (lib.rs setup).
+  // So by the time the SPA's /auth/login is reachable, an origin is always set — no in-SPA gate needed.
   return true;
 };
 

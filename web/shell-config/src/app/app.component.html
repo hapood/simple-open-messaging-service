@@ -1,0 +1,49 @@
+<div class="sc-shell">
+  <div class="sc-brand">SOMS</div>
+  <h1 class="sc-title">{{ 'sc.title' | transloco }}</h1>
+  <p class="sc-hint">{{ 'sc.hint' | transloco }}</p>
+
+  @if (phase() === 'error') {
+    <div class="sc-error" role="alert">{{ errorKey() | transloco }}</div>
+    <button mat-stroked-button type="button" class="sc-action" (click)="back()">
+      {{ 'sc.retry' | transloco }}
+    </button>
+  } @else if (busy() || phase() === 'done') {
+    <mat-progress-bar class="sc-progress" mode="determinate" [value]="progress()" />
+    @if (stepKey()) {
+      <p class="sc-step">{{ stepKey() | transloco }}</p>
+    }
+  } @else {
+    <form class="sc-form" (ngSubmit)="save()">
+      <mat-form-field appearance="fill" class="sc-field">
+        <mat-label>{{ 'sc.title' | transloco }}</mat-label>
+        <input
+          matInput
+          type="url"
+          inputmode="url"
+          autocomplete="off"
+          spellcheck="false"
+          [formControl]="url"
+          [placeholder]="'sc.placeholder' | transloco"
+        />
+        @if (url.invalid && url.touched) {
+          <mat-error>{{ 'sc.placeholder' | transloco }}</mat-error>
+        }
+      </mat-form-field>
+
+      @if (insecure() && url.value.trim()) {
+        <p class="sc-insecure" role="status">{{ 'sc.insecure' | transloco }}</p>
+      }
+
+      <button
+        mat-flat-button
+        color="primary"
+        type="submit"
+        class="sc-action"
+        [disabled]="url.invalid"
+      >
+        {{ 'sc.save' | transloco }}
+      </button>
+    </form>
+  }
+</div>

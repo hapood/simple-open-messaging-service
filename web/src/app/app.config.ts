@@ -1,4 +1,4 @@
-import { ApplicationConfig, CSP_NONCE, isDevMode, provideZonelessChangeDetection } from '@angular/core';
+import { APP_INITIALIZER, ApplicationConfig, CSP_NONCE, isDevMode, provideZonelessChangeDetection } from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideHttpClient, withInterceptorsFromDi, withFetch, HTTP_INTERCEPTORS } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
@@ -6,6 +6,7 @@ import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco
 import { provideServiceWorker } from '@angular/service-worker';
 import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
 import { AuthInterceptor } from './auth.interceptor';
+import { AuthService } from './services/auth.service';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
@@ -32,6 +33,15 @@ function readCspNonce(): string | null {
 export const appConfig: ApplicationConfig = {
   providers: [
     { provide: CSP_NONCE, useValue: readCspNonce() },
+    // Restore the native session from OS secure storage (Android EncryptedSharedPreferences / desktop
+    // keyring) BEFORE the router resolves, so isLoggedIn() + the HTTP interceptor see the restored token
+    // with no race on a trusted-device cold start. No-op on the pure-httpOnly browser build.
+    {
+      provide: APP_INITIALIZER,
+      multi: true,
+      deps: [AuthService],
+      useFactory: (auth: AuthService) => () => auth.restoreSession(),
+    },
     provideZonelessChangeDetection(),
     {
       provide: HTTP_INTERCEPTORS,

@@ -63,9 +63,9 @@ export class PushService {
     this.register();
   }
 
-  /** Called by AuthService.logout BEFORE it clears the access token, so the DELETE still carries the
-   *  Authorization header. (The session token the Android background fetchers use is cleared separately
-   *  by AuthService.syncNativeSessionToken.) */
+  /** Called by AuthService.logout BEFORE it clears the session token, so the DELETE still carries the
+   *  Authorization header. (The token the Android background fetchers use — in EncryptedSharedPreferences —
+   *  is cleared separately by AuthService.clearToken → SomsFcm.setSessionToken(null).) */
   unregister() {
     if (!isTauri()) return;
     // SomsFcm is absent on desktop (this runs under isTauri = desktop + Android), so `?.` is correct

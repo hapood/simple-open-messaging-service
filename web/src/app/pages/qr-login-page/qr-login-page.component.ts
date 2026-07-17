@@ -2,6 +2,7 @@ import { Component, signal, computed, inject, OnDestroy } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
+import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
@@ -34,6 +35,7 @@ type QrView = 'loading' | 'pending' | 'scanned' | 'expired';
     QrCodeComponent,
     TranslocoPipe,
     MatButtonModule,
+    MatCheckboxModule,
     MatProgressBarModule,
     RouterLink,
   ],
@@ -51,6 +53,12 @@ export class QrLoginPageComponent implements OnDestroy {
   qrToken = signal<string | null>(null);
   view = signal<QrView>('loading');
   notice = signal('');
+  /** Desktop opt-in: a trusted device keeps its token in the OS keyring and receives a permanent session.
+   *  Web can't be trusted (no OS secure storage for a bearer token) → this stays false there. */
+  trustDevice = signal(false);
+  /** The desktop can opt into trust only when its OS keyring is available (probed at boot by
+   *  AuthService.restoreSession). Web never can. */
+  protected get canTrust(): boolean { return this.auth.canTrust }
   readonly canPassword = computed(() => this.config.methodsForPlatform().includes('password'));
 
   private pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -69,7 +77,7 @@ export class QrLoginPageComponent implements OnDestroy {
   private start(): void {
     this.view.set('loading');
     const client: 'web' | 'desktop' = isTauri() ? 'desktop' : 'web';
-    this.auth.qrCreate(client).subscribe({
+    this.auth.qrCreate(client, this.trustDevice()).subscribe({
       next: (res) => {
         if (res.code === 0 && res.data) {
           this.qrToken.set(res.data.qrToken);
@@ -88,7 +96,7 @@ export class QrLoginPageComponent implements OnDestroy {
     if (!token) return;
     this.stopPoll();
     this.pollTimer = setInterval(() => {
-      this.auth.qrPoll(token).subscribe({
+      this.auth.qrPoll(token, undefined, this.trustDevice()).subscribe({
         next: (res) => {
           if (res.code === 0 && res.data?.session_token) {
             this.stopPoll();
@@ -118,6 +126,13 @@ export class QrLoginPageComponent implements OnDestroy {
     this.stopPoll();
     this.qrToken.set(null);
     this.start();
+  }
+
+  /** Toggle "trust this device" (desktop only): the trust flag is baked into the create request, so flip
+   *  the signal and re-mint the QR with the new level. */
+  onTrustChange(checked: boolean): void {
+    this.trustDevice.set(checked);
+    this.retry();
   }
 
   jumpToPassword(): void {

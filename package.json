@@ -17,6 +17,7 @@
     "start:api": "npm run start:dev",
     "start:web": "npm --prefix web run start",
     "start:admin": "npm --prefix admin-web run dev",
+    "bundle:sign": "node scripts/sign-web-bundle.mjs",
     "dev": "concurrently -n api,web,admin -c blue,green,magenta \"npm run start:api\" \"npm run start:web\" \"npm run start:admin\"",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "vitest run",

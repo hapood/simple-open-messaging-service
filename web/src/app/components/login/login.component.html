@@ -24,7 +24,12 @@
     </button>
   </mat-form-field>
 
-  <mat-checkbox class="keep-cb" [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">{{ 'auth.keepLoggedIn' | transloco }}</mat-checkbox>
+  @if (showTrust) {
+    <mat-checkbox class="keep-cb" [checked]="trustDevice()" (change)="trustDevice.set($event.checked)">{{ 'auth.trustThisDevice' | transloco }}</mat-checkbox>
+    <p class="trust-hint">{{ 'auth.trustThisDeviceHint' | transloco }}</p>
+  } @else {
+    <mat-checkbox class="keep-cb" [checked]="isKeepLogin()" (change)="isKeepLogin.set($event.checked)">{{ 'auth.keepLoggedIn' | transloco }}</mat-checkbox>
+  }
 
   <div class="error" role="alert">{{resp()}}</div>
 

@@ -36,6 +36,13 @@
         }
       </div>
 
+      <p class="trust-notice">{{ (trustDevice() ? 'auth.qrTrustedNotice' : 'auth.qrUntrustedNotice') | transloco }}</p>
+      @if (isTauri() && canTrust) {
+        <mat-checkbox class="trust-cb" [checked]="trustDevice()" (change)="onTrustChange($event.checked)">
+          {{ 'auth.trustThisDevice' | transloco }}
+        </mat-checkbox>
+      }
+
       @if (canPassword()) {
       <div class="alt-action">
         <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>

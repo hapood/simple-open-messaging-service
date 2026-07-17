@@ -48,6 +48,15 @@
   <meta name="apple-mobile-web-app-title" content="SOMS">
 </head>
 <body>
-  <app-root></app-root>
+  <!-- App-shell spinner: shows the instant the page parses (before Angular boots), so a freshly-created
+       / reloading main window (the two-window handoff in src-tauri) never flashes a blank frame. Angular
+       replaces <app-root>'s content on boot, then AppComponent emits `spa-ready` (Rust gates the window
+       show on it). Styles live in styles.scss (global). Harmless in the browser/PWA build (replaced fast). -->
+  <app-root>
+    <div class="app-splash">
+      <div class="app-splash__spinner"></div>
+      <div class="app-splash__word">SOMS</div>
+    </div>
+  </app-root>
 </body>
 </html>

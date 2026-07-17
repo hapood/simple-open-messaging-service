@@ -5,11 +5,9 @@
 # they slot into dist/<platform>/ later.
 #
 #   make image      — (re)build the self-contained builder image (one-time, ~20 min cold).
-# Build types (all land in dist/android/ as soms-<ver>[-debug|-dev]-<abi>.apk; future: apk-aab/AAB):
+# Build types (all land in dist/android/ as soms-<ver>[-debug]-<abi>.apk; future: apk-aab/AAB):
 #   make apk        — RELEASE APKs, per-ABI + universal (release-signed via gen/android keystore.properties).
 #   make apk-debug  — DEBUG APKs (stable debug key, no minify — fastest iteration).
-#   make apk-dev    — DEBUG APK loading a frontend dev server at runtime (on-device HMR; DEV_URL=).
-#                     apk-dev == apk-debug with DEV_URL set — kept as a discoverable alias.
 #   make install    — adb install -r the newest built APK (dist/android/ preferred) onto a device.
 #   make run        — install + launch the app on the connected device.
 #   make shell      — interactive shell in the builder (debugging).
@@ -58,15 +56,8 @@ WORK       := /work
 MULTI_ABIS := aarch64 armv7
 # Build variants: ABI=<arch> → just that one; otherwise per-ABI + universal.
 VARIANTS   := $(if $(ABI),$(ABI),$(MULTI_ABIS) universal)
-# Optional frontend dev-server URL for `apk-dev`: baked into the APK as the compiled-in default
-# (Rust option_env!("SOMS_DEFAULT_DEV_URL"), read at boot — see src-tauri/src/lib.rs) so a freshly
-# installed dev APK goes straight to the dev server with zero config. Empty for apk/apk-debug.
-# Example: make apk-dev ABI=aarch64 DEV_URL=http://192.168.2.7:4200
-DEV_URL    ?=
-# Skip the production `ng build` when the frontend is served LIVE by `ng serve` elsewhere (dev-shell
-# testing): ng build and ng serve share .angular/cache and concurrent runs can corrupt it. The bundled
-# frontend stays as-is from the last full build (the dev shell loads the dev server, not the bundle).
-# WEB_BUILD=0 to skip.
+# Skip the shell-config bootstrap `ng build` when the bootstrap is already built (WEB_BUILD=0). The APK
+# bundles ONLY the bootstrap (the main SPA is downloaded at runtime), so this is the only host web build.
 WEB_BUILD  ?= 1
 # Versioned APKs (gitignored) land under dist/<platform>/ — Android here (dist/android/). Raw gradle
 # output stays under gen/android/app/build (ignored in-tree by gen/android/.gitignore). Future desktop
@@ -94,9 +85,10 @@ CLEAR_JAVA_PROXY := -e JAVA_TOOL_OPTIONS=
 
 DOCKER_RUN := docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
               $(PROXY_RUN_FLAGS) $(CLEAR_JAVA_PROXY) \
+              -e SOMS_WEB_PUBKEY_B64 \
               -v "$(ROOT):$(WORK)" -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
 
-.PHONY: help image apk apk-debug apk-dev shell install run clean macos macos-run dev
+.PHONY: help image apk apk-debug shell install run clean macos macos-run dev
 help:  ## show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
 
@@ -131,11 +123,13 @@ define do_build
 	@# Single source of truth gate: tauri.conf.json version (VERSION) must equal Cargo.toml [package]
 	@# version (CARGO_VER). Drift => the APK's embedded version disagrees with the Rust crate version.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
-	@# Frontend build (host-side). Mirrors tauri.conf.json's beforeBuildCommand (npm --prefix web run
-	@# build) — the SAME command — but runs on the HOST because the builder container has only bare
-	@# nodejs (no web/node_modules). do_build then blanks beforeBuildCommand in-container (see the
-	@# cargo line below) so tauri doesn't re-run npm inside the container. tauri.conf.json stays the spec.
-	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build,@true)
+	@# Frontend build (host-side): the shell-config BOOTSTRAP only (frontendDist → web/dist/shell-config/
+	@# browser). The main chat SPA is NOT bundled into the APK — it is downloaded + Ed25519-verified at
+	@# runtime from the server (built + signed server-side by scripts/sign-web-bundle.mjs in the Docker
+	@# image). ng build needs --project now that the web workspace has two projects (web + shell-config);
+	@# run on the HOST (the builder container has only bare nodejs), then blank beforeBuildCommand
+	@# in-container (cargo line below) so tauri doesn't re-run npm. tauri.conf.json stays the spec.
+	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --project shell-config,@true)
 	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore) +
 	@# host-mounted, so it persists across --rm builds and pins the debug signature (no more
 	@# uninstall-per-rebuild). No-op once present.
@@ -150,15 +144,6 @@ define do_build
 	fi
 	@mkdir -p $(DIST_DIR); set -e; \
 	dbflag=; dsuffix=; [ "$(1)" = debug ] && { dbflag=--debug; dsuffix=-debug; }; \
-	devUrlEnv=; capsArg=; \
-	if [ -n "$(DEV_URL)" ]; then \
-	  dsuffix=-dev; \
-	  devUrlEnv="-e SOMS_DEFAULT_DEV_URL=$(DEV_URL) -e SOMS_DEV_TOOLS=1"; \
-	  capsArg='--config {"app":{"security":{"capabilities":["default","dev-remote"]}}}'; \
-	  echo "  dev shell -> frontend dev server: $(DEV_URL) (baked via SOMS_DEFAULT_DEV_URL)"; \
-	  echo "  dev shell -> remote IPC enabled via 'dev-remote' capability (debug-only; release keeps [default])"; \
-	  echo "  dev shell -> dev-tools source set = src/dev-real (SOMS_DEV_TOOLS=1 compiles the real bubble; else src/dev-stub no-op)"; \
-	fi; \
 	for v in $(VARIANTS); do \
 	  case "$$v" in \
 	    aarch64)   tag=arm64-v8a;   targs="--target aarch64";; \
@@ -169,7 +154,7 @@ define do_build
 	    *) echo "  ✗ unknown variant: $$v"; exit 1;; \
 	  esac; \
 	  echo "▶ building [$(1)] $$tag"; \
-	  $(DOCKER_RUN) $$devUrlEnv $(IMAGE) cargo tauri android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}' $$capsArg >/dev/null; \
+	  $(DOCKER_RUN) $(IMAGE) cargo tauri android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}' >/dev/null; \
 	  built=$$(find $(RAW_APK_DIR) -name '*$(1).apk' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
 	  test -n "$$built" || { echo "  ✗ no APK produced for $$tag"; exit 1; }; \
 	  out=$(DIST_DIR)/soms-$(VERSION)$$dsuffix-$$tag.apk; \
@@ -180,12 +165,14 @@ define do_build
 endef
 
 apk:  ## build per-ABI + universal RELEASE APKs into dist/android/. ABI=aarch64 → one fast variant.
+	@# Fail-closed: a release shell MUST override the public dev web-bundle signing key (build.rs enforces
+	@# this too; this make-level check fails faster with a clearer message). Generate a release Ed25519
+	@# keypair, export SOMS_WEB_PUBKEY_B64=<base64 pubkey> here + SHOMS_WEB_SIGNING_KEY=<base64 seed> as the
+	@# server image-build secret. Debug (apk-debug) is exempt — it intentionally uses the dev key.
+	@if [ -z "$$SOMS_WEB_PUBKEY_B64" ]; then echo "✗ release apk requires SOMS_WEB_PUBKEY_B64 (the public dev web-bundle key must not be trusted in a release shell; see build.rs)."; exit 1; fi
 	$(call do_build,release)
 
 apk-debug:  ## build DEBUG variants (debug-signed, no minify — fastest iteration).
-	$(call do_build,debug)
-
-apk-dev:  ## build a DEBUG APK that loads a frontend dev server at runtime (on-device HMR). Pass DEV_URL=http://host:port.
 	$(call do_build,debug)
 
 shell:  ## interactive shell in the builder

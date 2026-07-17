@@ -30,6 +30,8 @@ import { AuthQrController } from './controller/auth-qr.controller.js';
 import { MessageFanoutModule } from './message/message-fanout.module.js';
 import { ThreadRevisionModule } from './thread-revision/thread-revision.module.js';
 import { QuotaModule } from './quota/quota.module.js';
+import { ShellModule } from './shell/shell.module.js';
+import { ShellController } from './shell/shell.controller.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -57,6 +59,7 @@ import { QuotaModule } from './quota/quota.module.js';
     MessageFanoutModule,
     ThreadRevisionModule,
     QuotaModule,
+    ShellModule,
   ],
   controllers: [
     MessageController,
@@ -70,6 +73,7 @@ import { QuotaModule } from './quota/quota.module.js';
     ConfigController,
     AuthOtpController,
     AuthQrController,
+    ShellController,
   ],
   providers: [],
 })

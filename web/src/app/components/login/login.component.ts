@@ -6,6 +6,7 @@ import { ConfigService } from '../../services/config.service'
 import { translateBizResult } from '../../services/biz-code'
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
+import { isTauri, isAndroidNative } from '../../services/runtime';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCheckboxModule } from '@angular/material/checkbox';
 import { MatFormFieldModule } from '@angular/material/form-field';
@@ -36,6 +37,11 @@ export class LoginComponent {
   resp = signal('');
   showPassword = signal(false)
   isKeepLogin = signal(true)
+  /** Desktop (Tauri, non-Android, with a working OS keyring) shows a "Trust this device" toggle instead of
+   *  "Keep me logged in": trusted → token in the OS keyring + a permanent session. Hidden when the boot
+   *  keyring probe failed (can't persist → would orphan a permanent session), and on web/Android. */
+  get showTrust(): boolean { return isTauri() && !isAndroidNative() && this.authService.canTrust }
+  trustDevice = signal(false)
   isLoging = signal(false)
   isSuccess = signal(false)
   isLoginBtnDisabled = computed(() => {
@@ -73,7 +79,11 @@ export class LoginComponent {
     this.isLoging.set(true)
     this.authService.login({
       account: this.account(),
-      password: this.password(), isKeep: this.isKeepLogin()
+      password: this.password(),
+      // Desktop: the trust toggle drives BOTH keep (OS keyring persistence) and trusted (permanent token).
+      // Web/Android: the cookie-persistence checkbox; trusted is web-disabled (the app client is auto-trusted).
+      isKeep: this.showTrust ? this.trustDevice() : this.isKeepLogin(),
+      trustDevice: this.showTrust && this.trustDevice(),
     })
       .subscribe({
         next: (res) => {

@@ -114,4 +114,12 @@
     background: var(--app-success-soft);
     border-color: transparent;
   }
+
+  // "Trusted" pill — a permanent (revocation-only) session whose token lives in OS secure storage.
+  // Brand-tinted so a trusted device reads as privileged at a glance, distinct from the muted client badge.
+  &.trusted {
+    color: var(--app-brand);
+    background: var(--app-brand-soft);
+    border-color: transparent;
+  }
 }

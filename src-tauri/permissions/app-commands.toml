@@ -27,6 +27,82 @@ identifier = "allow-clear-session-token"
 description = "Enables the clear_session_token command without any pre-configured scope."
 commands.allow = ["clear_session_token"]
 
+# Shell dynamic-update (two-window bootstrap). The init window (bundled bootstrap) calls these during
+# first-run/reconfigure; the main window (downloaded SPA) calls get_shell_version / init_check_update /
+# open_init. ACL entries so the capability grant is explicit (don't rely on the bundled-origin default).
+[[permission]]
+identifier = "allow-get-shell-version"
+description = "Enables get_shell_version (returns CARGO_PKG_VERSION) for the compat check + About display."
+commands.allow = ["get_shell_version"]
+
+[[permission]]
+identifier = "allow-init-get-state"
+description = "Enables init_get_state — origin / installed-web-version / reconfigure flag for the bootstrap."
+commands.allow = ["init_get_state"]
+
+[[permission]]
+identifier = "allow-init-check-compat"
+description = "Enables init_check_compat — shell↔server version compatibility probe (GET /shell/compat)."
+commands.allow = ["init_check_compat"]
+
+[[permission]]
+identifier = "allow-init-validate-cert"
+description = "Enables init_validate_cert — strict TLS probe for https domains (skipped for IP/http)."
+commands.allow = ["init_validate_cert"]
+
+[[permission]]
+identifier = "allow-init-download-web"
+description = "Enables init_download_web — manifest → download → sha256 → Ed25519 verify → atomic install."
+commands.allow = ["init_download_web"]
+
+[[permission]]
+identifier = "allow-init-check-update"
+description = "Enables init_check_update — on-launch probe of the server manifest vs the local web version."
+commands.allow = ["init_check_update"]
+
+[[permission]]
+identifier = "allow-handoff-to-spa"
+description = "Enables handoff_to_spa — bootstrap→main window handoff (create/reload main, await spa-ready, close init)."
+commands.allow = ["handoff_to_spa"]
+
+[[permission]]
+identifier = "allow-open-init"
+description = "Enables open_init — SPA→init window reconfigure (create init over main, await init-ready)."
+commands.allow = ["open_init"]
+
+# Trusted-device secure storage (desktop keyring): persist/read/clear a TRUSTED desktop's permanent
+# session token in the OS credential store instead of plaintext localStorage.
+[[permission]]
+identifier = "allow-secure-set-token"
+description = "Enables the secure_set_token command (OS credential store) without any pre-configured scope."
+commands.allow = ["secure_set_token"]
+
+[[permission]]
+identifier = "allow-secure-get-token"
+description = "Enables the secure_get_token command (OS credential store) without any pre-configured scope."
+commands.allow = ["secure_get_token"]
+
+[[permission]]
+identifier = "allow-secure-clear-token"
+description = "Enables the secure_clear_token command (OS credential store) without any pre-configured scope."
+commands.allow = ["secure_clear_token"]
+
 [default]
-description = "All app-defined IPC commands: API origin get/set + session token set/clear."
-permissions = ["allow-set-api-origin", "allow-get-api-origin", "allow-set-session-token", "allow-clear-session-token"]
+description = "All app-defined IPC commands: API origin get/set + session token set/clear + secure (keyring) token get/set/clear + shell dynamic-update (init_* + handoff/open)."
+permissions = [
+  "allow-set-api-origin",
+  "allow-get-api-origin",
+  "allow-set-session-token",
+  "allow-clear-session-token",
+  "allow-secure-set-token",
+  "allow-secure-get-token",
+  "allow-secure-clear-token",
+  "allow-get-shell-version",
+  "allow-init-get-state",
+  "allow-init-check-compat",
+  "allow-init-validate-cert",
+  "allow-init-download-web",
+  "allow-init-check-update",
+  "allow-handoff-to-spa",
+  "allow-open-init",
+]

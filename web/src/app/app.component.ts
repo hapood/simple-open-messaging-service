@@ -1,4 +1,4 @@
-import { Component, inject } from '@angular/core';
+import { afterNextRender, Component, inject } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ThemeService } from './services/theme.service';
 import { LanguageService } from './services/language.service';
@@ -10,7 +10,8 @@ import { MissedSyncService } from './services/missed-sync.service';
 import { UnreadAttentionService } from './services/unread-attention.service';
 import { BackgroundSyncService } from './services/background-sync.service';
 import { NavStateMachineService } from './services/nav-state.service';
-import { isTauri, isAndroid } from './services/runtime';
+import { ShellUpdateService } from './services/shell-update.service';
+import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet],
@@ -50,6 +51,9 @@ export class AppComponent {
     // runs here (synchronously, before the effect's first async tick) to seed the chat from a cold URL
     // like `/chat/2` before the mirror's first replaceState.
     private readonly nav = inject(NavStateMachineService);
+    // ShellUpdateService: the Tauri-shell dynamic web-update probe (background download + reload prompt).
+    // Eagerly constructed; its check() is fired after the first paint below.
+    private readonly shellUpdate = inject(ShellUpdateService);
     constructor() {
         this.nav.initFromUrl();
         // Android hardware-back: Kotlin's OnBackPressedCallback evals window.__SOMS_BACK__(); peel one
@@ -63,5 +67,12 @@ export class AppComponent {
         }
         this.push.init();
         void this.webPush.init();
+        // Two-window handoff: emit spa-ready AFTER the first paint so Rust can show the main window +
+        // close the init window (no blank gap — the app-shell spinner covers the pre-paint frame), then
+        // probe for a background web-bundle update. Both no-op outside the Tauri shell.
+        afterNextRender(() => {
+            emitTauriEvent('spa-ready');
+            void this.shellUpdate.check();
+        });
     }
 }

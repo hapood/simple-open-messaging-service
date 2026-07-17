@@ -31,13 +31,29 @@ tauri-plugin-notification = "2"
 # desktop: reqwest under the hood on every target.
 tauri-plugin-http = "2"
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+# Web-bundle integrity for the dynamic-update flow: the shell downloads the main SPA from the
+# user-configured server and Ed25519-verifies it against a pinned pubkey before extracting/executing
+# a byte (RCE guard; for IP/http origins the signature is the only integrity guarantee). Pure-Rust
+# ed25519-dalek preserves the "no openssl-sys" invariant; sha2 = the bundle SHA-256 the manifest
+# advertises; flate2 + tar extract the gzip tarball; base64 decodes the signature + the env pubkey.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+sha2 = { version = "0.10", default-features = false }
+base64 = "0.22"
+flate2 = "1"
+tar = "0.4"
 
 # Desktop-only deps. tauri-plugin-single-instance has no mobile backend (a phone has no concept of
 # "another instance"), so it is gated to non-mobile targets to keep the Android build compiling.
+# `keyring` is the OS-native credential store (Windows DPAPI via Credential Manager / macOS Keychain /
+# Linux libsecret via the Secret Service) used to persist a TRUSTED desktop's session token AT REST —
+# instead of the plaintext webview localStorage copy — so a trusted desktop may hold a permanent token.
+# Backends are enabled per OS; Android is excluded (it uses its own EncryptedSharedPreferences bridge).
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Mobile-only dep. tauri-plugin-barcode-scanner is the camera scanner for the phone side of QR sign-in — a
 # logged-in phone scans a desktop's QR to authorize it (two-step scan→confirm). It has no desktop backend, so

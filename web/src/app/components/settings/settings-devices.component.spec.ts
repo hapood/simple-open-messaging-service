@@ -41,6 +41,7 @@ describe('SettingsDevicesComponent', () => {
       createdAt: '2026-01-01T00:00:00Z',
       lastSeenAt: '2026-01-02T00:00:00Z',
       expiresAt: '2026-02-01T00:00:00Z',
+      trusted: false,
       isCurrent: false,
       ...overrides,
     };

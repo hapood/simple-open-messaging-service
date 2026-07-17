@@ -50,6 +50,14 @@ RUN --mount=type=cache,target=/root/.npm \
     npm ci
 COPY src ./src
 RUN npm run build
+# Sign + package the web SPA as a downloadable, Ed25519-verified bundle for the Tauri shell
+# dynamic-update flow (scripts/sign-web-bundle.mjs → data/shell/{manifest.json, soms-web-<ver>.tar.gz}).
+# @noble/curves is a prod dep so it is present; web/package.json + the Stage-1 browser build are copied
+# in so the signer can read the version + tar the output. The signing seed rides a BuildKit secret
+# (--mount=type=secret in scripts/build-image.sh); when absent the signer falls back to the dev seed.
+COPY web/package.json ./web/package.json
+COPY --from=web-build /build/web/dist/web/browser ./web/dist/web/browser
+RUN --mount=type=secret,id=signing-key,required=false npm run bundle:sign
 # Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
 RUN npm prune --omit=dev
 
@@ -82,6 +90,9 @@ COPY --chown=node:node --from=server-build /build/prisma.config.ts ./prisma.conf
 # contents flat into public/web so index.html sits at public/web/index.html for Caddy file_server.
 COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web
 COPY --chown=node:node --from=admin-build /build/admin-web/dist ./public/admin
+# The Ed25519-signed web bundle + manifest the Tauri shell downloads at init/reconfigure/update
+# (soms-web-<ver>.tar.gz + manifest.json, produced by the Stage-3 signing step).
+COPY --chown=node:node --from=server-build /build/data/shell ./data/shell
 # Persistent state dir, mounted as a bind by compose. Pre-created + chowned to `node`.
 RUN mkdir -p data && chown -R node:node data
 # Image ENTRYPOINT (env-loader) + the node+caddy supervisor + the custom init program.

@@ -1,0 +1,81 @@
+// shell-config bootstrap global styles. Material 3 theme (blue brand palette, matching the main app so
+// the two windows read as one app), dark-mode color override, the app-shell splash spinner (visible
+// before Angular boots), and the page surface. Component styles live in app.component.scss.
+@use '@angular/material' as mat;
+
+$theme: mat.define-theme(
+  (
+    color: (
+      primary: mat.$blue-palette,
+      tertiary: mat.$blue-palette,
+    ),
+    density: (
+      scale: 0,
+    ),
+  )
+);
+
+:root {
+  @include mat.all-component-themes($theme);
+  --app-brand: #2196f3;
+  --app-brand-accent: #1976d2;
+  --app-surface: #ffffff;
+  --app-text: rgba(0, 0, 0, 0.87);
+  --app-text-secondary: rgba(0, 0, 0, 0.6);
+  --app-danger: #e53935;
+}
+
+[data-theme='dark'] {
+  $dark-theme: mat.define-theme(
+    (
+      color: (
+        theme-type: dark,
+        primary: mat.$blue-palette,
+        tertiary: mat.$blue-palette,
+      ),
+    )
+  );
+  @include mat.all-component-colors($dark-theme);
+  --app-surface: #0b141a;
+  --app-text: rgba(255, 255, 255, 0.92);
+  --app-text-secondary: rgba(255, 255, 255, 0.6);
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--app-surface);
+  color: var(--app-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+// App-shell splash: pure HTML/CSS spinner inside <app-root>, shown on first parse, replaced when Angular
+// boots. Visible only in the brief pre-Angular window of a freshly-created init window.
+.sc-splash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  height: 100vh;
+}
+.sc-splash__spinner {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: 4px solid rgba(33, 150, 243, 0.2);
+  border-top-color: #2196f3;
+  animation: sc-spin 0.8s linear infinite;
+}
+.sc-splash__word {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: #2196f3;
+}
+@keyframes sc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -96,12 +96,12 @@ describe('NativeEventTransport', () => {
     expect(rec.events.length).toBe(0);
   });
 
-  it('threads the FORCE_LOGOUT reason (e.g. app_session_replaced) to the sink for a tailored notice', () => {
+  it('threads the FORCE_LOGOUT reason (e.g. device_revoke) to the sink for a tailored notice', () => {
     installFakeFcm('open');
     const rec = recordingSink();
     new NativeEventTransport(rec.sink).start();
-    fireEvent(SSE_EVENT_FORCE_LOGOUT, { message: 'app_session_replaced' });
-    expect(rec.forceLogouts()).toEqual(['app_session_replaced']);
+    fireEvent(SSE_EVENT_FORCE_LOGOUT, { message: 'device_revoke' });
+    expect(rec.forceLogouts()).toEqual(['device_revoke']);
   });
 
   it('mirrors __SOMS_CONN_STATE__ transitions onto the sink so the banner tracks the native socket', () => {

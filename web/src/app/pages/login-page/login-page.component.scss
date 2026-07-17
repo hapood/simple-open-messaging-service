@@ -18,6 +18,51 @@
   color: var(--app-brand);
 }
 
+// The configured-backend banner (Tauri only). Prominent host display: https = green globe (cert was
+// validated at init); http/IP = red (insecure — validation skipped, bundle signature is the guarantee).
+// Material M3 surface treatment via --app-* tokens; integer-px vertical metrics per the CSS rule; dark
+// mode covered by the token overrides in styles.scss.
+.origin-banner {
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  line-height: 20px;
+  border-radius: var(--app-radius-sm, 8px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--app-success-bg, rgba(46, 125, 50, 0.1));
+  color: var(--app-success, #2e7d32);
+  app-icon {
+    color: var(--app-success, #2e7d32);
+    flex: 0 0 auto;
+  }
+  .origin-host {
+    font-weight: 600;
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .origin-scheme {
+    flex: 0 0 auto;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    opacity: 0.85;
+  }
+  &.insecure {
+    background: var(--app-danger-bg, rgba(229, 57, 53, 0.1));
+    color: var(--app-danger, #e53935);
+    app-icon {
+      color: var(--app-danger, #e53935);
+    }
+  }
+}
+
 // Login-method switcher (password ↔ one-time-code ↔ QR). Shown only when >1 method is available.
 .method-switch {
   align-self: center;

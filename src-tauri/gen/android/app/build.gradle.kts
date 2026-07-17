@@ -80,10 +80,8 @@ android {
             // Shrink unused RESOURCES alongside R8 code shrinking (requires minifyEnabled, set above) — a
             // general release optimization. Safe here: every resource is a static R.* reference (no
             // getIdentifier dynamic lookups), so the manifest-referenced launcher icons + R.string.* (used by
-            // the kept SomsMessagingService) are traced and kept. The dev-tools drawables need no special
-            // handling: they live in src/dev-real and are never compiled into a release build. (DSL getter is
-            // isShrinkResources() — the is-prefix carries to Kotlin, so the property is `isShrinkResources`,
-            // not `shrinkResources`.)
+            // the kept SomsMessagingService) are traced and kept. (DSL getter is isShrinkResources() — the
+            // is-prefix carries to Kotlin, so the property is `isShrinkResources`, not `shrinkResources`.)
             isShrinkResources = true
             if (keystoreProperties.containsKey("storeFile")) {
                 signingConfig = signingConfigs.getByName("release")
@@ -101,24 +99,10 @@ android {
     buildFeatures {
         buildConfig = true
     }
-    // Dev-tools surface is a build-time source-set swap — the Android mirror of the web's `dev-tools.ts`
-    // ↔ `dev-tools.prod.ts` fileReplacements. Exactly ONE of src/dev-real / src/dev-stub is compiled per
-    // build: never both (both define `object DevTools` → duplicate class), never neither (MainActivity
-    // references DevTools.attach/detach → unresolved). apk-dev (the Makefile exports SOMS_DEV_TOOLS=1)
-    // compiles the REAL bubble + dialog + drawables; every other build compiles a no-op stub, so the
-    // dev-tool classes + resources are physically absent from apk-debug and release — no runtime gate, no
-    // BuildConfig flag, no R8 needed. Each `make apk-*` runs in its own --rm container → the env is fresh
-    // per build (the SOMS_DEV_TOOLS read can never go stale across a reused gradle daemon).
-    sourceSets {
-        getByName("main") {
-            if (System.getenv("SOMS_DEV_TOOLS") == "1") {
-                java.srcDir("src/dev-real/java")
-                res.srcDir("src/dev-real/res")
-            } else {
-                java.srcDir("src/dev-stub/java")
-            }
-        }
-    }
+    // Dev-tools source-set swap REMOVED — the floating dev-tools bubble + dialog (src/dev-real) and its
+    // no-op twin (src/dev-stub) are gone, and MainActivity no longer references DevTools. Tauri dev mode
+    // is abandoned (only apk / apk-debug build now); dev of the web app happens in a browser against a
+    // local backend. eruda (web/src/app/dev-tools.ts) stays for debug builds.
 }
 
 rust {

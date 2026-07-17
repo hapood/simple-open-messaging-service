@@ -69,8 +69,14 @@
     "qrScanned": "Phone scanned — confirm on your phone to finish.",
     "qrExpired": "This sign-in code expired.",
     "qrRetry": "Refresh code",
+    "trustThisDevice": "Trust this device",
+    "trustThisDeviceHint": "Stay signed in on this device until you sign out.",
+    "qrUntrustedNotice": "Not a trusted device — you'll be signed out after 14 days of inactivity.",
+    "qrTrustedNotice": "Trusted device — you'll stay signed in until you sign out.",
     "notice": {
-      "signedInElsewhere": "Your account was signed in on another device."
+      "trustPersistFailed": "This device's secure storage couldn't be reached, so the trusted sign-in wasn't saved. You've been signed out — please sign in again (if it keeps happening, leave \"Trust this device\" unchecked).",
+      "logoutClearFailed": "You've been signed out, but this device's secure storage was locked, so it may briefly appear signed in until the next check. You can revoke the session from Settings → Devices.",
+      "keepPersistFailed": "This device's secure storage couldn't be reached, so your sign-in wasn't saved — you'll be signed out when the app closes. Sign in again after restarting."
     },
     "signUp": "Sign up",
     "loginAltQuestion": "Don't have an account?",
@@ -129,6 +135,7 @@
     "lastActive": "Active {{date}}",
     "expires": "Expires {{date}}",
     "neverExpires": "No expiry",
+    "trusted": "Trusted",
     "revoke": "Revoke",
     "revokeConfirm": "Sign out this session ({{device}})?",
     "terminateOthers": "Sign out everywhere else ({{count}})",

@@ -6,7 +6,7 @@ import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.compo
 import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.component';
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
 import { authGuard, guestGuard, registrationOpenGuard } from './auth.guard';
-import { isTauri, isAndroidNative } from './services/runtime';
+import { isAndroidNative } from './services/runtime';
 import { devRoutes } from './dev-tools';
 
 export const routes: Routes = [
@@ -45,15 +45,9 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/set-password-page/set-password-page.component').then((m) => m.SetPasswordPageComponent),
     canActivate: [authGuard],
   },
-  // Bundled-APK backend-URL configuration (Tauri/Android only). `canMatch` short-circuits to 404 in the
-  // browser build, where the same-origin NestJS host makes a configurable origin meaningless. Reached
-  // automatically on first run via guestGuard (when the origin is still the localhost default), and any
-  // time later from the login page's "Server settings" link to re-point the app at a different backend.
-  {
-    path: 'config',
-    loadComponent: () => import('./pages/server-config/server-config.component').then((m) => m.ServerConfigComponent),
-    canMatch: [() => isTauri()],
-  },
+  // Backend-URL configuration in the Tauri shell now lives in the bundled `init` window (shell-config
+  // bootstrap), opened by Rust on first run + by the login page's "Configure server" button — NOT an
+  // in-SPA route. The browser build is same-origin (no configurable origin). So there is no /config route.
   { path: 'forbidden', component: ForbiddenPageComponent },
   // Dev-only routes (chatbox playground rig) come from dev-tools.ts, which the prod build swaps for
   // dev-tools.prod.ts (empty devRoutes) — so the playground chunk is not emitted in prod. See dev-tools.ts.

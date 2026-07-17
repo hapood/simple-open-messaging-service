@@ -2,22 +2,29 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { provideHttpClient } from '@angular/common/http';
 import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TranslocoService } from '@jsverse/transloco';
 import { AuthService } from './auth.service';
 import { RouteService } from './route.service';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
+import { ToastService } from './toast.service';
 
 /**
- * AuthService session-token contract — the single long-lived credential.
+ * AuthService session-token contract — BROWSER (pure-httpOnly) path.
  *
- * Locked down here (HttpTestingController backend, no interceptor):
- *  - login() sends the `client` kind (web/desktop/app) + a human-readable `device` label, and stores the
- *    issued session token (in memory + storage), flipping isLoggedIn;
- *  - logout() sends `{ sessionToken }` (no refresh token) and clears the held token;
+ * The native (Android/desktop) storage contract is covered by auth.service.native.spec.ts; this spec locks
+ * down the headless-browser env (isTauri() false → client 'web'), where the session token lives in the
+ * JS-unreadable httpOnly cookie the backend sets — JS NEVER holds it (XSS can't exfiltrate it). HttpTesting
+ * Controller can't set cookies, so the presence-cookie-driven login state is simulated explicitly. Locked
+ * down here:
+ *  - login() sends `client:'web'` + a friendly `device` label + `trusted:false` (web can never be trusted);
+ *    on success no token is held in JS (sessionToken stays null);
+ *  - logout() resolves the session from the httpOnly cookie (no JS token to send) and clears the presence
+ *    cookie so isLoggedIn() flips at once;
  *  - revokeSession(id) sends `{ id }` by row id.
  */
-describe('AuthService (session-token contract)', () => {
+describe('AuthService (session-token contract, browser path)', () => {
   let svc: AuthService;
   let httpMock: HttpTestingController;
 
@@ -30,6 +37,11 @@ describe('AuthService (session-token contract)', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         AuthService,
+        // AuthService resolves i18n keys for its rare keyring-failure toasts; stub the translator (returns
+        // the key) so the spec has no transloco-config dependency. The browser path never reaches those
+        // toasts, but the constructor deps must still resolve.
+        { provide: TranslocoService, useValue: { translate: (k: string) => k } },
+        { provide: ToastService, useValue: { warn: jasmine.createSpy('warn'), info: jasmine.createSpy('info') } },
         { provide: RouteService, useValue: { redirect: jasmine.createSpy('redirect'), openSettings: () => {} } },
         { provide: PushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
         { provide: WebPushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
@@ -43,38 +55,48 @@ describe('AuthService (session-token contract)', () => {
     TestBed.resetTestingModule();
     sessionStorage.clear();
     localStorage.clear();
+    // Clear any presence cookie a test set (document.cookie survives resetTestingModule).
+    document.cookie = 'logged_in=; Max-Age=0; Path=/; SameSite=Strict';
   });
 
-  it('login() sends client + a friendly device label, and stores the session token on success', () => {
+  it('login() sends client:web + a friendly device label; on the pure-httpOnly browser path no token is held in JS', () => {
     expect(svc.sessionToken).toBeNull(); // nothing held before login
     svc.login({ account: 'alice', password: 'pw', isKeep: false }).subscribe();
 
     const req = httpMock.expectOne((r) => /\/auth\/login$/.test(r.url));
     expect(req.request.body.account).toBe('alice');
-    // Headless browser test env → isTauri() false → client 'web'; device is a friendly label (non-empty).
+    // Headless browser test env → isTauri() false → client 'web'; web can never be trusted.
     expect(req.request.body.client).toBe('web');
+    expect(req.request.body.trusted).toBe(false);
     expect(typeof req.request.body.device).toBe('string');
     expect(req.request.body.device.length).toBeGreaterThan(0);
 
     req.flush({ code: 0, message: 'ok', data: { session_token: 'st-1' } });
-    expect(svc.sessionToken).toBe('st-1');
+    // Pure-httpOnly browser: the token lives in the (JS-unreadable) httpOnly cookie the backend set — JS
+    // NEVER holds it. sessionToken stays null; login state rides the non-httpOnly `logged_in` presence cookie,
+    // which HttpTestingController doesn't set, so isLoggedIn() is false until we simulate the backend setting it.
+    expect(svc.sessionToken).toBeNull();
+    expect(svc.isLoggedIn()).toBe(false);
+    document.cookie = 'logged_in=1; Path=/';
     expect(svc.isLoggedIn()).toBe(true);
   });
 
-  it('logout() sends { sessionToken } (no refresh token) and clears the held token', () => {
-    // Log in first so a session token is held.
-    svc.login({ account: 'alice', password: 'pw', isKeep: false }).subscribe();
-    httpMock
-      .expectOne((r) => /\/auth\/login$/.test(r.url))
-      .flush({ code: 0, message: 'ok', data: { session_token: 'st-1' } });
+  it('logout() resolves the session from the httpOnly cookie (no JS token to send) and clears the presence cookie', () => {
+    // Simulate a logged-in browser: the backend set the `logged_in` presence cookie at login; the session
+    // token is JS-unreadable (httpOnly), so logout identifies the session via the cookie, not a JS-held token.
+    document.cookie = 'logged_in=1; Path=/';
+    expect(svc.isLoggedIn()).toBe(true);
 
     svc.logout().subscribe();
     const req = httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url));
-    expect(req.request.body.sessionToken).toBe('st-1');
+    // Browser path: sessionToken is null (the httpOnly cookie holds it) → the body carries no token; the
+    // backend resolves the session from the cookie. No refresh token (single session-token model).
+    expect(req.request.body.sessionToken).toBeUndefined();
     expect(req.request.body.refreshToken).toBeUndefined();
     req.flush({ code: 0, message: 'ok' });
 
     expect(svc.sessionToken).toBeNull();
+    // clearToken() cleared the presence cookie client-side (synchronous on the browser branch).
     expect(svc.isLoggedIn()).toBe(false);
   });
 

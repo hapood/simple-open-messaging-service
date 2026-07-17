@@ -2,6 +2,13 @@
   <app-auth-brand aria-hidden="true"></app-auth-brand>
   <main class="form-pane">
     <app-auth-toolbar></app-auth-toolbar>
+    @if (isTauri() && originHost()) {
+      <div class="origin-banner" [class.insecure]="originInsecure()" role="status" tabindex="0">
+        <app-icon [type]="originIcon()" [style]="{ width: '16px', height: '16px' }" />
+        <span class="origin-host">{{ originHost() }}</span>
+        <span class="origin-scheme">{{ originSchemeLabel() }}</span>
+      </div>
+    }
     @if (notice()) {
     <div class="login-notice" role="status">{{ notice() }}</div>}
     @if (showPassword()) {
@@ -14,10 +21,10 @@
       <button mat-button class="method-switch" type="button" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
     }
     @if (isTauri()) {
-      <a mat-button class="server-link" routerLink="/config" replaceUrl>
+      <button mat-button class="server-link" type="button" (click)="reopenServerConfig()">
         <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
         {{ 'serverConfig.entry' | transloco }}
-      </a>
+      </button>
     }
   </main>
 </div>

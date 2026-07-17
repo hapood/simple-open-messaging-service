@@ -5,15 +5,18 @@
        out so the blue background layer shows through) and a short, thick tail
        placed at the golden-ratio point of the bottom edge.
 
-       The solid fill is intentional: it covers the blue background (so the icon
-       isn't blue-heavy) and, unlike an outline, it clips gracefully to any
-       launcher mask when it exceeds the safe zone. It is sized to ~37dp from
-       center — deliberately past the 33dp guaranteed safe zone, since the solid
-       shape rounds off cleanly at the mask edge.
-
        The blue fill and outer silhouette come from the background layer
        (res/values/ic_launcher_background.xml = #2196f3); the launcher mask clips
-       that layer to its shape.
+       that layer to its shape, and this foreground supplies only the white
+       bubble glyph on a transparent canvas.
+
+       Sizing: the bubble path itself spans x[21,87] — ±33dp from the 54,54
+       center, right on the 66dp safe-zone circle — which placed the glyph
+       edge-to-edge with every launcher mask with no padding. The wrapping <g>
+       scales the glyph 0.82× about the canvas center, retracting the horizontal
+       extent to ±27dp so a visible brand-blue padding ring sits inside every
+       mask shape (circle / squircle / rounded-square). The scale is uniform, so
+       the bubble stays centered and undistorted; only the padding grows.
 
        `cargo tauri icon` cannot produce this: it scales the source SVG
        full-bleed, ignoring the adaptive safe zone. Regenerate the PNGs with
@@ -32,7 +35,10 @@
     </mask>
   </defs>
   <!-- Body [21,87]x[29,79] rx11; tail base x[41,52] (w11), tip (46,84) (h5)
-       at the 0.382 golden section of the bottom edge. -->
-  <path fill="#ffffff" mask="url(#m-cutout)"
-    d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
+       at the 0.382 golden section of the bottom edge. These are the unscaled
+       path coordinates; the wrapping <g> scales them 0.82× about (54,54). -->
+  <g transform="translate(54 54) scale(0.82) translate(-54 -54)">
+    <path fill="#ffffff" mask="url(#m-cutout)"
+      d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
+  </g>
 </svg>
