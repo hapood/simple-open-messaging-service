@@ -3,7 +3,8 @@
  * main app's `runtime.ts` (which pulls in @tauri-apps/plugin-http, Angular signals, the SomsFcm /
  * SomsSecureStore global typings, installNativeFetch, eruda hooks, …). This ~30-line helper has only
  * what the bootstrap needs: isTauri, tauriInvoke, emitTauriEvent (the `init-ready` signal Rust gates the
- * window show on), and canonicalOrigin.
+ * window show on), listenEvent (the `web-download-progress` byte ticker Rust emits mid-download), and
+ * canonicalOrigin.
  *
  * `window.__TAURI__` is injected by Tauri v2 when `app.withGlobalTauri: true` (src-tauri/tauri.conf.json)
  * — into BOTH windows (init + main), so the bootstrap reaches it the same way the SPA does.
@@ -14,7 +15,10 @@ declare global {
     __TAURI_INTERNALS__?: unknown;
     __TAURI__?: {
       core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
-      event?: { emit: (event: string, payload?: unknown) => Promise<void> | void };
+      event?: {
+        emit: (event: string, payload?: unknown) => Promise<void> | void;
+        listen: (event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>;
+      };
     };
   }
 }
@@ -35,6 +39,18 @@ export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unkn
 export function emitTauriEvent(event: string, payload?: unknown): void {
   const emit = typeof window !== 'undefined' ? window.__TAURI__?.event?.emit : undefined;
   if (emit) emit(event, payload ?? null);
+}
+
+/** Subscribe to a Tauri event the Rust side emits (e.g. `web-download-progress` while streaming the web
+ *  bundle). Resolves to an unlisten fn (call it to stop), or undefined when not in the shell. Mirrors
+ *  emitTauriEvent in riding the global `window.__TAURI__` (no @tauri-apps/api dependency). */
+export async function listenEvent<T = unknown>(
+  event: string,
+  handler: (e: { payload: T }) => void,
+): Promise<(() => void) | undefined> {
+  const listen = typeof window !== 'undefined' ? window.__TAURI__?.event?.listen : undefined;
+  if (!listen) return undefined;
+  return listen(event, (e) => handler({ payload: e.payload as T }));
 }
 
 /** Canonicalize a backend origin: trim + strip trailing slash(es) so it is a safe path-concatenation

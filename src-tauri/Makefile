@@ -85,7 +85,6 @@ CLEAR_JAVA_PROXY := -e JAVA_TOOL_OPTIONS=
 
 DOCKER_RUN := docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
               $(PROXY_RUN_FLAGS) $(CLEAR_JAVA_PROXY) \
-              -e SOMS_WEB_PUBKEY_B64 \
               -v "$(ROOT):$(WORK)" -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
 
 .PHONY: help image apk apk-debug shell install run clean macos macos-run dev
@@ -124,9 +123,9 @@ define do_build
 	@# version (CARGO_VER). Drift => the APK's embedded version disagrees with the Rust crate version.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
 	@# Frontend build (host-side): the shell-config BOOTSTRAP only (frontendDist → web/dist/shell-config/
-	@# browser). The main chat SPA is NOT bundled into the APK — it is downloaded + Ed25519-verified at
-	@# runtime from the server (built + signed server-side by scripts/sign-web-bundle.mjs in the Docker
-	@# image). ng build needs --project now that the web workspace has two projects (web + shell-config);
+	@# browser). The main chat SPA is NOT bundled into the APK — it is downloaded + sha256-verified at
+	@# runtime from the server (built + packaged server-side by scripts/package-web-bundle.mjs in the
+	@# Docker image). ng build needs --project now that the web workspace has two projects (web + shell-config);
 	@# run on the HOST (the builder container has only bare nodejs), then blank beforeBuildCommand
 	@# in-container (cargo line below) so tauri doesn't re-run npm. tauri.conf.json stays the spec.
 	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --project shell-config,@true)
@@ -165,11 +164,6 @@ define do_build
 endef
 
 apk:  ## build per-ABI + universal RELEASE APKs into dist/android/. ABI=aarch64 → one fast variant.
-	@# Fail-closed: a release shell MUST override the public dev web-bundle signing key (build.rs enforces
-	@# this too; this make-level check fails faster with a clearer message). Generate a release Ed25519
-	@# keypair, export SOMS_WEB_PUBKEY_B64=<base64 pubkey> here + SHOMS_WEB_SIGNING_KEY=<base64 seed> as the
-	@# server image-build secret. Debug (apk-debug) is exempt — it intentionally uses the dev key.
-	@if [ -z "$$SOMS_WEB_PUBKEY_B64" ]; then echo "✗ release apk requires SOMS_WEB_PUBKEY_B64 (the public dev web-bundle key must not be trusted in a release shell; see build.rs)."; exit 1; fi
 	$(call do_build,release)
 
 apk-debug:  ## build DEBUG variants (debug-signed, no minify — fastest iteration).

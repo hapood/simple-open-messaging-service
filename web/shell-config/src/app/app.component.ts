@@ -1,14 +1,20 @@
-import { ChangeDetectionStrategy, Component, computed, afterNextRender, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, afterNextRender, signal, inject, DestroyRef } from '@angular/core';
 import { FormControl, ReactiveFormsModule, Validators } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatFormFieldModule } from '@angular/material/form-field';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { TranslocoModule } from '@jsverse/transloco';
-import { canonicalOrigin, emitTauriEvent, originIsInsecure, tauriInvoke } from './tauri';
+import { canonicalOrigin, emitTauriEvent, listenEvent, originIsInsecure, tauriInvoke } from './tauri';
 
 /** The bootstrap's 3-step init flow phase, surfaced as a determinate progress value + a step label. */
 type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done' | 'error';
+
+/** Byte-progress payload Rust emits as `web-download-progress` while streaming the web bundle. */
+interface DownloadProgress {
+  received: number;
+  total: number | null;
+}
 
 /**
  * The bundled `init` window — first-run setup wizard AND reconfigure UI. A thin orchestrator over the
@@ -17,6 +23,10 @@ type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done' | 'error';
  * the SPA (handoff_to_spa, which Rust uses to create/reload the main window + destroy this one). Emits
  * `init-ready` after first paint so Rust can show this window with no blank gap (the app-shell spinner
  * covers the pre-paint frame).
+ *
+ * Download phase: Rust streams the bundle and emits `web-download-progress` {received, total}; this
+ * component maps that onto the 67→90 slice of the bar so it advances smoothly instead of freezing at
+ * 90% until the (few-MB) download finishes.
  */
 @Component({
   selector: 'sc-root',
@@ -34,6 +44,7 @@ type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done' | 'error';
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class AppComponent {
+  private readonly destroyRef = inject(DestroyRef);
   readonly url = new FormControl('', {
     nonNullable: true,
     validators: [Validators.required],
@@ -42,6 +53,9 @@ export class AppComponent {
   /** The live origin value the insecure-warning + cert-skip note react to. */
   readonly origin = signal('');
   readonly errorKey = signal<string>('');
+  /** Byte-progress state for the download phase, fed by the `web-download-progress` Tauri event. */
+  readonly downloadReceived = signal(0);
+  readonly downloadTotal = signal<number | null>(null);
   readonly busy = computed(() => this.phase() !== 'form' && this.phase() !== 'error');
   readonly insecure = computed(() => originIsInsecure(this.origin()));
   private readonly progressByPhase: Record<Phase, number> = {
@@ -52,7 +66,19 @@ export class AppComponent {
     done: 100,
     error: 0,
   };
-  readonly progress = computed(() => this.progressByPhase[this.phase()]);
+  /** The bar value. During download it maps the live byte ratio onto the 67→90 band (the download
+   *  phase's slice) so the bar advances smoothly instead of freezing at 90%; without a Content-Length
+   *  it sits at the band start (the readout then shows received MB). */
+  readonly progress = computed(() => {
+    if (this.phase() === 'download') {
+      const total = this.downloadTotal();
+      if (total && total > 0) {
+        return 67 + Math.round((this.downloadReceived() / total) * 23);
+      }
+      return 67;
+    }
+    return this.progressByPhase[this.phase()];
+  });
   /** transloco key for the current step label (empty when on the form). */
   readonly stepKey = computed(() => {
     switch (this.phase()) {
@@ -68,11 +94,21 @@ export class AppComponent {
         return '';
     }
   });
+  /** Live numeric readout under the bar during download: percentage when the size is known, received
+   *  bytes otherwise (the indeterminate fallback for chunked transfers with no Content-Length). */
+  readonly downloadLabel = computed(() => {
+    if (this.phase() !== 'download') return '';
+    const total = this.downloadTotal();
+    const received = this.downloadReceived();
+    if (total && total > 0) return `${Math.round((received / total) * 100)}%`;
+    return formatBytes(received);
+  });
 
   constructor() {
     // Emit init-ready after the first paint so Rust shows this window (no blank gap before the form).
     afterNextRender(() => emitTauriEvent('init-ready'));
     this.url.valueChanges.subscribe((v) => this.origin.set(v));
+    this.registerProgressListener();
     void this.bootstrap();
   }
 
@@ -94,6 +130,19 @@ export class AppComponent {
     }
   }
 
+  /** Subscribe once to the Rust stream-download byte-progress event; unlisten on destroy. Ignored
+   *  outside the download phase (the handler early-returns when phase !== 'download'). */
+  private registerProgressListener(): void {
+    void (async () => {
+      const unlisten = await listenEvent<DownloadProgress>('web-download-progress', (e) => {
+        if (this.phase() !== 'download') return;
+        this.downloadReceived.set(e.payload.received);
+        this.downloadTotal.set(e.payload.total);
+      });
+      if (unlisten) this.destroyRef.onDestroy(unlisten);
+    })();
+  }
+
   async save(): Promise<void> {
     const raw = canonicalOrigin(this.url.value);
     if (!raw) {
@@ -101,6 +150,8 @@ export class AppComponent {
       return;
     }
     this.errorKey.set('');
+    this.downloadReceived.set(0);
+    this.downloadTotal.set(null);
     try {
       this.phase.set('compat');
       await tauriInvoke('init_check_compat', { origin: raw });
@@ -123,7 +174,7 @@ export class AppComponent {
     if (lower.includes('compat') || lower.includes('too old') || lower.includes('not compatible')) {
       return 'sc.compatErr';
     }
-    if (lower.includes('cert') || lower.includes('signature') || lower.includes('self-signed') || lower.includes('expired')) {
+    if (lower.includes('cert') || lower.includes('self-signed') || lower.includes('expired')) {
       void origin;
       return 'sc.certErr';
     }
@@ -135,4 +186,12 @@ export class AppComponent {
     this.phase.set('form');
     this.errorKey.set('');
   }
+}
+
+/** Format a byte count as a short human string (e.g. `1.2 MB`). Used by the download readout's
+ *  indeterminate fallback (chunked transfer, no Content-Length). */
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }

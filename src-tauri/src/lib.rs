@@ -3,11 +3,11 @@
 // Two-window dynamic-web architecture:
 //  - "init"  window loads the bundled bootstrap (`tauri://localhost`) — the first-run setup wizard AND
 //    the reconfigure UI. Created on demand; destroyed after it hands off.
-//  - "main" window loads the DOWNLOADED + Ed25519-verified web SPA (`somsapp://localhost`, served from
+//  - "main" window loads the DOWNLOADED + sha256-verified web SPA (`somsapp://localhost`, served from
 //    app_data) — the real app. Persistent after first run.
 // The bootstrap (init) talks to the backend via the `init_*` commands: shell↔server version compat,
 // strict TLS cert validation for HTTPS domains (skipped for IP/http), then download → sha256 →
-// Ed25519-verify → atomic install → persist origin. On success it calls `handoff_to_spa`, which Rust
+// atomic install → persist origin. On success it calls `handoff_to_spa`, which Rust
 // uses to create/reload "main" and (once the SPA signals `spa-ready`) destroy "init". Reconfigure from
 // the SPA calls `open_init`, which creates "init" over "main"; the bootstrap runs the same 3 steps and
 // hands off again.
@@ -21,14 +21,13 @@ use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use ed25519_dalek::{Signature, VerifyingKey};
+use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
 use tauri::http::{header, Response, StatusCode};
-use tauri::{Listener, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Listener, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
 
 /// The custom URI scheme the frontend rewrites `/uploads/*` media URLs to (see web/.../runtime.ts).
 const MEDIA_SCHEME: &str = "media";
@@ -43,31 +42,6 @@ const SOMSAPP_HOST: &str = "localhost";
 /// asserts equals `tauri.conf.json.version`. Sent to the server's `/shell/compat` endpoint and compared
 /// against the bundle's `minShellVersion` before any download.
 pub const SHELL_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-/// Ed25519 public key (32 bytes) the downloaded web bundle MUST be signed with. The bundle is RCE
-/// territory; for IP/http origins (TLS skipped) this signature is the only integrity guarantee. The
-/// DEFAULT is a deterministic DEV keypair (seed = SHA-256("soms-dev-web-signing-key-v1")); a RELEASE
-/// shell overrides it at compile time via `SOMS_WEB_PUBKEY_B64` (base64 32 bytes) — the Makefile / CI
-/// sets that env so a release shell rejects dev-signed bundles and vice-versa.
-const DEV_WEB_PUBKEY: [u8; 32] = [
-    97, 25, 112, 253, 118, 40, 176, 235, 250, 204, 218, 248, 139, 100, 147, 200, 245, 114, 7, 130, 44,
-    36, 140, 152, 227, 189, 71, 48, 106, 31, 134, 195,
-];
-static WEB_PUBKEY_CELL: OnceLock<[u8; 32]> = OnceLock::new();
-fn web_pubkey() -> &'static [u8; 32] {
-    WEB_PUBKEY_CELL.get_or_init(|| {
-        if let Some(b64) = option_env!("SOMS_WEB_PUBKEY_B64") {
-            if let Ok(bytes) = STANDARD.decode(b64.trim()) {
-                if bytes.len() == 32 {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&bytes);
-                    return arr;
-                }
-            }
-        }
-        DEV_WEB_PUBKEY
-    })
-}
 
 /// The backend origin the shell talks to when nothing else is configured. Unreachable from a phone,
 /// which is exactly why the bundled bootstrap forces the setup wizard on first run.
@@ -108,8 +82,8 @@ fn validate_origin(raw: &str) -> Option<String> {
 }
 
 /// `true` if the origin's host is a literal IP address (v4/v6). IP origins skip TLS cert validation
-/// (self-hosted LAN servers commonly have no valid cert) — the Ed25519 bundle signature remains the
-/// integrity guarantee there.
+/// (self-hosted LAN servers commonly have no valid cert) — IP/http origins are not guaranteed secure
+/// by policy.
 fn origin_host_is_ip(origin: &str) -> bool {
     let host = reqwest::Url::parse(origin).ok().map(|u| u.host_str().unwrap_or("").to_string());
     match host {
@@ -246,6 +220,7 @@ pub fn run() {
                     init_validate_cert,
                     init_download_web,
                     init_check_update,
+                    init_update_status,
                     handoff_to_spa,
                     open_init,
                 ]
@@ -263,6 +238,7 @@ pub fn run() {
                     init_validate_cert,
                     init_download_web,
                     init_check_update,
+                    init_update_status,
                     handoff_to_spa,
                     open_init,
                 ]
@@ -655,7 +631,7 @@ async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> 
 
 /// Step 2: verify the TLS certificate is valid. HTTPS + DNS host → strict probe of `/api/v1/health`
 /// (rustls validates the chain: self-signed/expired/hostname-mismatch → error). IP host or `http` →
-/// skipped (the bundle signature is the only integrity guarantee there).
+/// skipped (IP/http origins are not guaranteed secure by policy).
 #[tauri::command]
 async fn init_validate_cert(origin: String) -> Result<serde_json::Value, String> {
     let is_http = reqwest::Url::parse(&origin)
@@ -663,7 +639,7 @@ async fn init_validate_cert(origin: String) -> Result<serde_json::Value, String>
         .map(|u| u.scheme() == "http")
         .unwrap_or(true);
     if is_http || origin_host_is_ip(&origin) {
-        return Ok(serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; bundle signature is the integrity guarantee" }));
+        return Ok(serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; not guaranteed secure by policy" }));
     }
     let client = http_client_for(&origin);
     let url = format!("{}/api/v1/health", origin.trim_end_matches('/'));
@@ -681,13 +657,21 @@ struct ManifestData {
     #[serde(rename = "minShellVersion")]
     min_shell_version: String,
     sha256: String,
-    signature: String,
     #[serde(rename = "downloadUrl")]
     download_url: String,
 }
 
-/// Step 3: download the web bundle, verify sha256 + Ed25519 signature against the pinned pubkey,
-/// extract atomically, activate, persist origin. Returns the installed webVersion.
+/// Byte-progress payload for the `web-download-progress` event emitted while streaming the web bundle.
+/// `total` is None when the server uses chunked transfer encoding (no Content-Length) — the UI then
+/// shows an indeterminate bar instead of a percentage.
+#[derive(serde::Serialize, Clone)]
+struct DownloadProgress {
+    received: u64,
+    total: Option<u64>,
+}
+
+/// Step 3: download the web bundle, verify its sha256 against the manifest, extract atomically,
+/// activate, persist origin. Returns the installed webVersion.
 #[tauri::command]
 async fn init_download_web(
     app: tauri::AppHandle,
@@ -717,39 +701,47 @@ async fn init_download_web(
         ));
     }
 
-    // 3b. download
+    // 3b. download — streamed, emitting byte-progress (`web-download-progress`) so the UI drives a real
+    // progress bar instead of a frozen 90%. The whole bundle is buffered in memory first (a few MB)
+    // because sha256 + tar-extract both need the full bytes; the progress is for UX, not chunked install.
     let dl_url = if manifest.download_url.starts_with("http") {
         manifest.download_url.clone()
     } else {
         format!("{}{}", origin, manifest.download_url)
     };
-    let bytes = client
+    let resp = client
         .get(&dl_url)
         .send()
         .await
-        .map_err(|e| format!("bundle download failed: {e}"))?
-        .bytes()
-        .await
-        .map_err(|e| format!("bundle read failed: {e}"))?;
+        .map_err(|e| format!("bundle download failed: {e}"))?;
+    let total = resp.content_length(); // None for chunked transfers → the UI falls back to indeterminate
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::new();
+    let mut received: u64 = 0;
+    let mut last_emitted_at: u64 = 0;
+    const EMIT_STEP: u64 = 64 * 1024; // throttle: emit ~once per 64KB so the IPC channel is never flooded
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("bundle read failed: {e}"))?;
+        received += chunk.len() as u64;
+        buf.extend_from_slice(&chunk);
+        if received - last_emitted_at >= EMIT_STEP {
+            last_emitted_at = received;
+            let _ = app.emit("web-download-progress", DownloadProgress { received, total });
+        }
+    }
+    // Final emit so a known-total bar reaches 100% even if the tail chunk was under EMIT_STEP.
+    let _ = app.emit("web-download-progress", DownloadProgress { received, total });
 
     // 3c. sha256
     let mut hasher = Sha256::new();
-    hasher.update(&bytes[..]);
+    hasher.update(&buf);
     let got = hasher.finalize();
     let got_hex = got.iter().map(|b| format!("{:02x}", b)).collect::<String>();
     if got_hex != manifest.sha256.to_lowercase() {
         return Err(format!("bundle sha256 mismatch (expected {}, got {})", manifest.sha256, got_hex));
     }
 
-    // 3d. Ed25519 verify (signs the full bundle bytes — matches scripts/sign-web-bundle.mjs)
-    let sig_bytes = STANDARD
-        .decode(manifest.signature.trim())
-        .map_err(|e| format!("signature decode: {e}"))?;
-    let sig = Signature::from_slice(&sig_bytes).map_err(|e| format!("signature parse: {e}"))?;
-    let vk = VerifyingKey::from_bytes(web_pubkey()).map_err(|e| format!("pubkey parse: {e}"))?;
-    vk.verify_strict(&bytes[..], &sig).map_err(|_| "bundle signature INVALID — refusing to install".to_string())?;
-
-    // 3e. extract atomically. Tar extraction is blocking → spawn_blocking off the async runtime.
+    // 3d. extract atomically. Tar extraction is blocking → spawn_blocking off the async runtime.
     let data_dir = app.path().app_data_dir().map_err(|e| format!("app_data_dir: {e}"))?;
     let web_root = data_dir.join(WEB_DIRNAME);
     fs::create_dir_all(&web_root).map_err(|e| format!("web dir create: {e}"))?;
@@ -758,9 +750,8 @@ async fn init_download_web(
         let _ = fs::remove_dir_all(&staging);
     }
     let staging_clone = staging.clone();
-    let bytes_vec = bytes.to_vec();
     tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let decoder = flate2::read::GzDecoder::new(&bytes_vec[..]);
+        let decoder = flate2::read::GzDecoder::new(&buf[..]);
         let mut archive = tar::Archive::new(decoder);
         archive.set_overwrite(true);
         archive.unpack(&staging_clone).map_err(|e| format!("extract: {e}"))
@@ -842,6 +833,73 @@ async fn init_check_update(origin: String, app: tauri::AppHandle) -> Result<serd
         .unwrap_or_default();
     let update_available = !server_ver.is_empty() && server_ver != local;
     Ok(serde_json::json!({ "updateAvailable": update_available, "newVersion": server_ver, "currentVersion": local }))
+}
+
+/// Best-effort fetch of the server's shell floor (compat) + current web version (manifest). Returns
+/// (min_shell_version, server_web_version); a field is empty on its request's failure so a flaky network
+/// degrades gracefully (About shows local versions, no false update prompt).
+async fn fetch_compat_and_manifest(client: &reqwest::Client, origin: &str) -> Result<(String, String), String> {
+    let base = origin.trim_end_matches('/');
+    let cresp = client
+        .get(format!("{base}/api/v1/shell/compat?version={SHELL_VERSION}"))
+        .send()
+        .await
+        .map_err(|e| format!("compat: {e}"))?;
+    let cenv: ApiEnvelope<CompatData> =
+        serde_json::from_str(&cresp.text().await.map_err(|e| format!("compat read: {e}"))?)
+            .map_err(|e| format!("compat parse: {e}"))?;
+    let min_shell = cenv.data.map(|d| d.min_shell_version).unwrap_or_default();
+
+    let mresp = client
+        .get(format!("{base}/api/v1/shell/web-manifest"))
+        .send()
+        .await
+        .map_err(|e| format!("manifest: {e}"))?;
+    let menv: ApiEnvelope<ManifestOnlyVersion> =
+        serde_json::from_str(&mresp.text().await.map_err(|e| format!("manifest read: {e}"))?)
+            .map_err(|e| format!("manifest parse: {e}"))?;
+    let server_web = menv.data.map(|d| d.web_version).unwrap_or_default();
+
+    Ok((min_shell, server_web))
+}
+
+/// Read-only update status for the SPA's Settings→About page (NOT the install gate — never rejects).
+/// Pulls compat + web-manifest and returns the local + server versions + the derived update flags, so
+/// the SPA can show "up to date" / "web update available" / "app too old — contact admin" without driving
+/// the install flow. Network failures resolve to empty server fields + false flags (the cached bundle
+/// keeps the app usable; About just shows local versions).
+#[tauri::command]
+async fn init_update_status(origin: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let origin = origin.trim_end_matches('/').to_string();
+    let client = http_client_for(&origin);
+
+    // Local shell version (compile-time) + installed web version (the active bundle on disk).
+    let shell_version = SHELL_VERSION.to_string();
+    let installed_web = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|d| fs::read_to_string(d.join(WEB_DIRNAME).join(ACTIVE_FILENAME)).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // Best-effort server probe (graceful on failure — empty fields, no false update prompt).
+    let (min_shell, server_web) = match fetch_compat_and_manifest(&client, &origin).await {
+        Ok(v) => v,
+        Err(_) => (String::new(), String::new()),
+    };
+
+    let shell_update_required = !min_shell.is_empty() && !semver_gte(&shell_version, &min_shell);
+    let web_update_available = !server_web.is_empty() && server_web != installed_web;
+
+    Ok(serde_json::json!({
+        "shellVersion": shell_version,
+        "installedWebVersion": installed_web,
+        "serverWebVersion": server_web,
+        "minShellVersion": min_shell,
+        "shellUpdateRequired": shell_update_required,
+        "webUpdateAvailable": web_update_available,
+    }))
 }
 
 // --- two-window lifecycle + natural handoff -----------------------------------------------

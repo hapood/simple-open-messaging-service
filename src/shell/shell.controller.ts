@@ -10,7 +10,7 @@ import { ShellCompatDto, ShellWebManifestDto } from './shell.dto.js';
 
 /**
  * Shell dynamic-update endpoints — the unauthenticated surface the Tauri shell reaches BEFORE it has
- * a session (it points itself at a server, verifies compatibility + TLS, downloads + Ed25519-verifies
+ * a session (it points itself at a server, verifies compatibility + TLS, downloads + sha256-verifies
  * the web bundle, installs it locally, then loads it). All routes are `@Public()` (no SessionAuthGuard)
  * and sit under the existing `/api/v1` global prefix, so Caddy's `/api/*` reverse proxy serves them
  * unchanged — no `docker/init.sh` change.
@@ -47,7 +47,7 @@ export class ShellController {
   @Throttle(30, 60) // tiny JSON; 30/min/IP
   @ApiOperation({
     summary:
-      'The current web-bundle descriptor (version + sha256 + Ed25519 signature). The shell verifies the downloaded bytes against sha256 + the pinned pubkey before extracting.',
+      'The current web-bundle descriptor (version + sha256). The shell recomputes the downloaded bytes sha256 and refuses to install on mismatch.',
   })
   manifest(): ApiResult<ShellWebManifestDto> {
     return { code: BusinessCode.OK, message: 'successful', data: this.shell.manifest() };

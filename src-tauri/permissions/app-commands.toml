@@ -52,7 +52,7 @@ commands.allow = ["init_validate_cert"]
 
 [[permission]]
 identifier = "allow-init-download-web"
-description = "Enables init_download_web — manifest → download → sha256 → Ed25519 verify → atomic install."
+description = "Enables init_download_web — manifest → download → sha256 verify → atomic install."
 commands.allow = ["init_download_web"]
 
 [[permission]]

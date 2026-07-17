@@ -19,7 +19,7 @@
 }
 
 // The configured-backend banner (Tauri only). Prominent host display: https = green globe (cert was
-// validated at init); http/IP = red (insecure — validation skipped, bundle signature is the guarantee).
+// validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure).
 // Material M3 surface treatment via --app-* tokens; integer-px vertical metrics per the CSS rule; dark
 // mode covered by the token overrides in styles.scss.
 .origin-banner {

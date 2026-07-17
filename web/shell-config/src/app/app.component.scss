@@ -68,6 +68,14 @@
   margin: 24px 0;
 }
 
+.sc-progress-readout {
+  margin: 8px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-secondary);
+}
+
 .sc-step {
   margin: 0;
   font-size: 14px;

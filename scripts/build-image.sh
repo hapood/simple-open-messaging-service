@@ -22,13 +22,7 @@ if ! docker image inspect soms-base:latest >/dev/null 2>&1; then
 fi
 
 echo "building soms:$VER (FROM soms-base:latest, also tagged latest) — app…"
-# Tauri shell web-bundle signing seed (Ed25519, base64 32-byte). Forwarded as a BuildKit secret so it
-# never lands in an image layer. Unset → the in-image signer falls back to the dev seed (a dev shell
-# that bakes the dev pubkey then verifies these bundles). See scripts/sign-web-bundle.mjs.
-SECRET_ARG=""
-if [ -n "$SHOMS_WEB_SIGNING_KEY" ]; then
-  SECRET_ARG="--secret id=signing-key,env=SHOMS_WEB_SIGNING_KEY"
-fi
+# No signing secret: the web bundle is integrity-checked by SHA-256 + TLS (https), not signed.
 # shellcheck disable=SC2086
 # No --pull: soms-base:latest is LOCAL (built by build-base.sh) — --pull would try the registry and
 # 403 (soms-base isn't published). The node base for the compile stages is already local/cached.
@@ -38,7 +32,6 @@ docker build --network=host \
   --build-arg SOMS_BASE=soms-base:latest \
   --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \
   --build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
-  $SECRET_ARG \
   -t soms:"$VER" -t soms:latest .
 
 echo "done: soms:$VER, soms:latest (app + caddy, port 7667)"

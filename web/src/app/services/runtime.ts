@@ -48,7 +48,10 @@ declare global {
       /** The event surface (withGlobalTauri): emit an event the Rust side listens for. The SPA emits
        *  `spa-ready` after its first paint so Rust can show the main window + close the init window
        *  (the two-window handoff in src-tauri/src/lib.rs handoff_to_spa). */
-      event?: { emit: (event: string, payload?: unknown) => Promise<void> | void };
+      event?: {
+        emit: (event: string, payload?: unknown) => Promise<void> | void;
+        listen?: (event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>;
+      };
       /** The tauri-plugin-notification surface (registered in src-tauri/src/lib.rs), used by the DESKTOP
        *  NotificationAdapter (pc/mac/linux). `identifier` is the replace-by-id param — posting with the same
        *  identifier replaces the prior notification. Desktop-only: Android has its own Kotlin `SomsNotify`
@@ -195,6 +198,18 @@ export function tauriSendNotification(options: { title: string; body?: string; i
  *  the shell. */
 export function emitTauriEvent(event: string, payload?: unknown): void {
   window.__TAURI__?.event?.emit?.(event, payload ?? null);
+}
+
+/** Subscribe to a Tauri event the Rust side emits (e.g. `web-download-progress` while streaming the web
+ *  bundle in Settings→About). Resolves to an unlisten fn (call to stop), or undefined when not in the
+ *  shell. Mirrors emitTauriEvent in riding the global `window.__TAURI__` (no @tauri-apps/api dep). */
+export async function listenEvent<T = unknown>(
+  event: string,
+  handler: (e: { payload: T }) => void,
+): Promise<(() => void) | undefined> {
+  const listen = typeof window !== 'undefined' ? window.__TAURI__?.event?.listen : undefined;
+  if (!listen) return undefined;
+  return listen(event, (e) => handler({ payload: e.payload as T }));
 }
 
 /** Marker so {@link installNativeFetch} swaps `globalThis.fetch` exactly once per renderer. */

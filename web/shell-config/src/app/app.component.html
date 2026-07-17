@@ -10,6 +10,9 @@
     </button>
   } @else if (busy() || phase() === 'done') {
     <mat-progress-bar class="sc-progress" mode="determinate" [value]="progress()" />
+    @if (downloadLabel()) {
+      <p class="sc-progress-readout">{{ downloadLabel() }}</p>
+    }
     @if (stepKey()) {
       <p class="sc-step">{{ stepKey() | transloco }}</p>
     }

@@ -26,7 +26,7 @@ export class LoginPageComponent {
   private readonly transloco = inject(TranslocoService);
 
   // --- Origin banner (shows the configured backend prominently on the login page). https = green globe
-  //     (cert was validated at init); http/IP = red (insecure — validated skipped, signature guards it). ---
+  //     (cert was validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure). ---
   readonly originHost = computed(() => {
     const o = apiOrigin();
     try {

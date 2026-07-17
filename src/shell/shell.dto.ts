@@ -29,11 +29,12 @@ export class ShellCompatDto {
 
 /**
  * Response of `GET /api/v1/shell/web-manifest`. Describes the current downloadable web bundle so the
- * shell can integrity-verify it BEFORE executing a byte: the bundle is signature-verified against a
- * public key pinned in the shell (mandatory — downloading + executing web is an RCE surface, and for
- * IP/http origins the signature is the only integrity guarantee since TLS is skipped).
+ * shell can integrity-verify it BEFORE executing a byte: it recomputes the bundle's SHA-256 and refuses
+ * to install on mismatch. Transport integrity + authenticity come from TLS (https origins); the SHA-256
+ * catches transport corruption, partial downloads, and manifest/bundle version drift. IP/http origins
+ * are not guaranteed secure by policy.
  *
- * On-disk `data/shell/manifest.json` stores only `{ webVersion, sha256, signature }`; `minShellVersion`
+ * On-disk `data/shell/manifest.json` stores only `{ webVersion, sha256 }`; `minShellVersion`
  * + `downloadUrl` are merged in here from `SHELL_COMPAT` (single source of truth) so they can never
  * drift from the compat endpoint.
  */
@@ -52,11 +53,6 @@ export class ShellWebManifestDto {
     description: 'Hex SHA-256 of the bundle bytes. The shell recomputes this over the downloaded bytes and MUST match before extracting.',
   })
   sha256!: string;
-
-  @ApiProperty({
-    description: 'Base64 Ed25519 signature over the bundle bytes, verified against the pubkey pinned in the shell.',
-  })
-  signature!: string;
 
   @ApiProperty({
     example: '/api/v1/shell/web-bundle',

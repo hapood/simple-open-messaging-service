@@ -19,13 +19,13 @@ export const SHELL_DIR = 'SHELL_DIR';
 /**
  * Shell dynamic-update surface: the Tauri shell (which ships WITHOUT the main web SPA bundled)
  * reaches this service at first run / reconfigure / launch-update to (1) check shell↔server
- * compatibility, (2) fetch the bundle manifest (sha256 + Ed25519 signature), and (3) stream the
- * signature-verified web tarball it installs locally. All three routes are `@Public()` — they run
+ * compatibility, (2) fetch the bundle manifest (sha256), and (3) stream the
+ * integrity-verified web tarball it installs locally. All three routes are `@Public()` — they run
  * before the shell has any session (it hasn't chosen a server / logged in yet).
  *
  * The on-disk artifacts live in `data/shell/` (writable runtime dir, baked into the image by the
- * Dockerfile signing step — see `scripts/sign-web-bundle.mjs`):
- *   - `manifest.json`      → `{ webVersion, sha256, signature }` (bundle-only fields)
+ * Dockerfile packaging step — see `scripts/package-web-bundle.mjs`):
+ *   - `manifest.json`      → `{ webVersion, sha256 }` (bundle-only fields)
  *   - `soms-web-<ver>.tar.gz` → the SPA browser build, tar+gzip of `web/dist/web/browser`
  *
  * `minShellVersion` + `downloadUrl` are NOT stored on disk — they are merged in from `SHELL_COMPAT`
@@ -68,7 +68,6 @@ export class ShellService {
       webVersion: raw.webVersion,
       minShellVersion: SHELL_COMPAT.minShellVersion,
       sha256: raw.sha256,
-      signature: raw.signature,
       downloadUrl: '/api/v1/shell/web-bundle',
     };
   }
@@ -125,18 +124,13 @@ export class ShellService {
 interface RawManifest {
   webVersion: string;
   sha256: string;
-  signature: string;
 }
 
-/** Validate the parsed JSON has the three required string fields; throw INTERNAL (500) otherwise. */
+/** Validate the parsed JSON has the two required string fields; throw INTERNAL (500) otherwise. */
 function asRawManifest(parsed: unknown): RawManifest {
   const p = parsed as Record<string, unknown>;
-  if (
-    typeof p?.webVersion === 'string' &&
-    typeof p?.sha256 === 'string' &&
-    typeof p?.signature === 'string'
-  ) {
-    return { webVersion: p.webVersion, sha256: p.sha256, signature: p.signature };
+  if (typeof p?.webVersion === 'string' && typeof p?.sha256 === 'string') {
+    return { webVersion: p.webVersion, sha256: p.sha256 };
   }
   throw new BusinessException(BusinessCode.INTERNAL, 'shell manifest is malformed', 500);
 }

@@ -15,9 +15,8 @@ import { BusinessCode } from '../src/common/business-code';
 
 /**
  * Shell dynamic-update surface — the unauthenticated routes (`GET /shell/compat`, `/shell/web-manifest`,
- * `/shell/web-bundle`) the Tauri shell hits BEFORE it has a session. The unit specs (shell.service.spec /
- * shell-compat.spec) cover the pure compat logic + the signing-key contract; THIS spec covers the HTTP
- * layer they can't:
+ * `/shell/web-bundle`) the Tauri shell hits BEFORE it has a session. The unit spec (shell.service.spec)
+ * covers the pure compat logic; THIS spec covers the HTTP layer it can't:
  *   - the ApiResult envelope + the global `/api/v1` prefix,
  *   - `@Public()` reachability (no SessionAuthGuard, no auth header),
  *   - the streamed-gzip bundle (`@Res()` send bypasses SerializeInterceptor — the body is raw bytes,
@@ -25,7 +24,7 @@ import { BusinessCode } from '../src/common/business-code';
  *   - the per-route rate limit (ThrottleGuard → HTTP 429 + RATE_LIMITED).
  *
  * `SHELL_DIR` is overridden with a temp dir so manifest/bundle tests are hermetic: the repo's real
- * `data/shell` may hold a signed bundle from a prior image build (or nothing at all on a dev machine),
+ * `data/shell` may hold a bundle from a prior image build (or nothing at all on a dev machine),
  * so neither is a sound fixture source.
  */
 describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
@@ -37,14 +36,11 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
   // server's), so the roundtrip only needs bytes whose sha256 we know.
   const bundleBytes = Buffer.from('pretend-this-is-a-gzip-tarball-of-the-web-spa-browser-build');
   const sha256 = createHash('sha256').update(bundleBytes).digest('hex');
-  // 64-byte fake Ed25519 signature — the server never verifies the signature (the shell does), so the
-  // manifest need only carry a base64 string of the right shape.
-  const signature = Buffer.alloc(64, 0x07).toString('base64');
 
   beforeAll(async () => {
     shellDir = mkdtempSync(join(tmpdir(), 'soms-shell-e2e-'));
     writeFileSync(join(shellDir, `soms-web-${webVersion}.tar.gz`), bundleBytes);
-    writeFileSync(join(shellDir, 'manifest.json'), JSON.stringify({ webVersion, sha256, signature }));
+    writeFileSync(join(shellDir, 'manifest.json'), JSON.stringify({ webVersion, sha256 }));
 
     const moduleFixture: TestingModule = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(SHELL_DIR)
@@ -96,7 +92,6 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
     expect(res.body.data).toMatchObject({
       webVersion,
       sha256,
-      signature,
       minShellVersion: '0.1.0',
       downloadUrl: '/api/v1/shell/web-bundle',
     });

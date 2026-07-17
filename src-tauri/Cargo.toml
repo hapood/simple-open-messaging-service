@@ -33,16 +33,15 @@ tauri-plugin-http = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream"] }
 # Web-bundle integrity for the dynamic-update flow: the shell downloads the main SPA from the
-# user-configured server and Ed25519-verifies it against a pinned pubkey before extracting/executing
-# a byte (RCE guard; for IP/http origins the signature is the only integrity guarantee). Pure-Rust
-# ed25519-dalek preserves the "no openssl-sys" invariant; sha2 = the bundle SHA-256 the manifest
-# advertises; flate2 + tar extract the gzip tarball; base64 decodes the signature + the env pubkey.
-ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+# user-configured server and SHA-256-verifies it against the manifest before extracting/executing a
+# byte (transport integrity + authenticity come from TLS on https origins; IP/http are not guaranteed
+# secure by policy). sha2 = the bundle SHA-256 the manifest advertises; flate2 + tar extract the gzip
+# tarball; reqwest "stream" + futures-util stream the download so the shell can emit byte-progress.
 sha2 = { version = "0.10", default-features = false }
-base64 = "0.22"
 flate2 = "1"
+futures-util = "0.3"
 tar = "0.4"
 
 # Desktop-only deps. tauri-plugin-single-instance has no mobile backend (a phone has no concept of
