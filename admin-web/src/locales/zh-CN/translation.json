@@ -14,8 +14,10 @@
     "operationFailed": "操作失败",
     "comingSoon": "敬请期待",
     "neverExpires": "永不过期",
+    "trusted": "可信",
     "copy": "复制",
     "copied": "已复制",
+    "copyFailed": "复制失败",
     "client": {
       "app": "安卓",
       "web": "网页",
@@ -54,6 +56,7 @@
     "audit": "审计日志",
     "admins": "管理员",
     "settings": "设置",
+    "security": "我的账户",
     "quotas": "每日配额",
     "logout": "登出",
     "group": {
@@ -117,7 +120,15 @@
     "submit": "登录",
     "accountRequired": "请输入账户名",
     "passwordRequired": "请输入密码",
-    "failed": "登录失败"
+    "failed": "登录失败",
+    "twoFactorTitle": "二次验证",
+    "twoFactorHint": "请输入身份验证器 App 上显示的 6 位数字代码。",
+    "code": "验证码",
+    "backupCode": "备用代码",
+    "verify": "验证",
+    "useBackupCode": "改用备用代码",
+    "useAuthenticator": "改用身份验证器",
+    "backToPassword": "返回密码步骤"
   },
   "users": {
     "title": "用户管理",
@@ -565,9 +576,10 @@
     "userIdHint": "要提升的已有用户的数字 ID（在用户页查找）。",
     "roleLabel": "角色",
     "empty": "无管理员",
-    "col": { "account": "管理员", "role": "角色", "status": "状态", "lastLogin": "最近登录" },
-    "action": { "disable": "禁用", "enable": "启用" },
-    "toast": { "created": "已创建管理员", "disabled": "已禁用管理员", "enabled": "已启用管理员", "role": "角色已更新" }
+    "col": { "account": "管理员", "role": "角色", "status": "状态", "lastLogin": "最近登录", "twoFactor": "二次验证" },
+    "action": { "disable": "禁用", "enable": "启用", "reset2fa": "重置二次验证" },
+    "reset2faConfirm": "重置 {{name}} 的二次验证？重置后该账号将仅凭密码登录。用于为丢失设备的被锁管理员解锁。",
+    "toast": { "created": "已创建管理员", "disabled": "已禁用管理员", "enabled": "已启用管理员", "role": "角色已更新", "reset2fa": "二次验证已重置" }
   },
   "groups": {
     "title": "群组",
@@ -643,6 +655,44 @@
     "desc": "页面不存在",
     "back": "返回用户管理"
   },
+  "security": {
+    "title": "我的账户",
+    "desc": "管理你自己的登录安全——二次验证与恢复码。",
+    "totp": {
+      "title": "身份验证器",
+      "desc": "每次登录时要求来自 Google / Microsoft 身份验证器的轮换 6 位数字代码。",
+      "on": "已开启",
+      "off": "未开启",
+      "enable": "启用二次验证",
+      "disable": "关闭二次验证",
+      "regenerate": "重新生成备用代码",
+      "notEnabledHint": "增加第二重验证，仅凭泄露的密码无法登录。",
+      "enabledAt": "启用时间",
+      "backupRemaining": "剩余 {{count}} 个备用代码",
+      "backupWarning": "请妥善保存这些一次性备用代码。当丢失身份验证器时每个可使用一次。它们无法再次显示。",
+      "copyAll": "全部复制",
+      "download": "下载",
+      "savedDone": "我已保存，重新登录",
+      "enabledToast": "二次验证已启用——请重新登录",
+      "disabledToast": "二次验证已关闭"
+    },
+    "setup": {
+      "title": "启用二次验证",
+      "scanDesc": "用身份验证器 App（Google / Microsoft Authenticator）扫描下方二维码，然后输入其显示的 6 位数字代码。",
+      "manualKey": "或手动输入此密钥",
+      "codeLabel": "输入 6 位数字代码",
+      "enable": "启用",
+      "qrAlt": "二次验证绑定二维码"
+    },
+    "disable": {
+      "title": "关闭二次验证",
+      "desc": "请用当前密码和有效验证码确认。账号将恢复为仅凭密码登录。"
+    },
+    "regen": {
+      "title": "重新生成备用代码",
+      "desc": "请用有效验证码确认。旧的备用代码将立即失效。"
+    }
+  },
   "errors": {
     "unauthenticated": "未认证",
     "parseFailed": "响应解析失败",
@@ -662,6 +712,10 @@
       "otpConsumed": "一次性登录码已被使用",
       "passwordNotSet": "该账号尚未设置密码",
       "mustChangePassword": "请先设置密码",
+      "twoFactorInvalid": "验证码不正确",
+      "twoFactorChallengeExpired": "验证会话已过期——请重新登录",
+      "twoFactorNotEnabled": "该账号未启用二次验证",
+      "twoFactorAlreadyEnabled": "二次验证已启用",
       "internal": "出错了",
       "vapidInvalid": "VAPID 密钥对无效（格式错误或不匹配）"
     }

@@ -1,13 +1,14 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { AdminBootstrapService } from './admin-bootstrap.service.js';
 import { AdminRole } from '../prisma/generated/client.js';
+import { PasswordHasher } from '../auth/password-hasher.service.js';
 
 /**
  * AdminBootstrapService self-seeds the first admin on every app start. These specs lock the operational
  * contract that matters:
  *   1. idempotent — an existing admin is a no-op (no second create, no password needed);
  *   2. no password → WARN + continue, never creates and never throws (the chat product stays up);
- *   3. password present → creates User + SUPER_ADMIN profile with an argon2-hashed password;
+ *   3. password present → creates User + SUPER_ADMIN profile with a peppered argon2id-hashed password;
  *   4. a DB failure during seed is swallowed (logged) so the app still boots.
  * Pure-vitest, hand-rolled Prisma fake — matches the project's spec style (no Nest DI container).
  */
@@ -23,7 +24,7 @@ function makeService(opts: { existingUser?: { id: number } | null; findUniqueErr
     user: { findUnique, upsert: userUpsert },
     admin: { upsert: adminUpsert },
   };
-  const svc = new AdminBootstrapService(prisma as never);
+  const svc = new AdminBootstrapService(prisma as never, new PasswordHasher());
   return { svc, findUnique, userUpsert, adminUpsert };
 }
 

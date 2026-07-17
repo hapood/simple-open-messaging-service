@@ -14,8 +14,10 @@ const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 export const BAN_DIM_IP = 'ip'; // password-login IP dimension (NAT-shared, lenient)
 export const BAN_DIM_USER = 'user'; // password-login account dimension
 export const BAN_DIM_OTP = 'otp'; // one-time-code account dimension
+export const BAN_DIM_ADMIN_PWD = 'admin_pwd'; // admin console password-login account dimension
+export const BAN_DIM_ADMIN_2FA = 'admin_2fa'; // admin console TOTP / backup-code account dimension
 /** Dimensions keyed by an account string (cleared together on an account unban — see {@link unban}). */
-const ACCOUNT_DIMENSIONS = [BAN_DIM_USER, BAN_DIM_OTP];
+const ACCOUNT_DIMENSIONS = [BAN_DIM_USER, BAN_DIM_OTP, BAN_DIM_ADMIN_PWD, BAN_DIM_ADMIN_2FA];
 
 /** A failure-count threshold within {@link WINDOW_MS} and the ban duration once exceeded. Steps within a
  *  dimension are ascending; the highest matched tier takes effect (progressive banning). */

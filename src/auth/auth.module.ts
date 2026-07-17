@@ -14,6 +14,7 @@ import { BearerAuthService } from './bearer-auth.service.js';
 import { OtpLoginService } from './otp-login.service.js';
 import { QrLoginService } from './qr-login.service.js';
 import { BruteForceService } from './brute-force.service.js';
+import { PasswordHasher } from './password-hasher.service.js';
 
 @Module({
   imports: [UserModule, PassportModule, EventEmitterModule],
@@ -27,6 +28,9 @@ import { BruteForceService } from './brute-force.service.js';
     BruteForceService,
     OtpLoginService,
     QrLoginService,
+    // The single home for password hashing (Argon2id + pepper). Exported so the admin module's
+    // AdminAuthService / AdminBootstrapService share the exact same parameters + pepper.
+    PasswordHasher,
     // Global guard: every route is authenticated unless it opts out with @Public(). Resolves the
     // single session token via BearerAuthService. (Admin routes are @Public() + their own AdminJwtStrategy;
     // the s2s signature guard is @Public() + its own check.) Registered here to co-locate with
@@ -37,6 +41,6 @@ import { BruteForceService } from './brute-force.service.js';
     // idiomatic guard-decides / interceptor-mutates split). See session-cookie.interceptor.ts.
     { provide: APP_INTERCEPTOR, useClass: SessionCookieInterceptor },
   ],
-  exports: [AuthService, SessionTokenService, BearerAuthService, BruteForceService, OtpLoginService, QrLoginService],
+  exports: [AuthService, SessionTokenService, BearerAuthService, BruteForceService, OtpLoginService, QrLoginService, PasswordHasher],
 })
 export class AuthModule {}

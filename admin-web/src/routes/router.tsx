@@ -102,6 +102,10 @@ export const router = createBrowserRouter([
             lazy: () => import('@/routes/admins/admins-page').then((m) => ({ Component: m.AdminsPage })),
           },
           {
+            path: '/security',
+            lazy: () => import('@/routes/security/security-page').then((m) => ({ Component: m.SecurityPage })),
+          },
+          {
             path: '/settings',
             lazy: () => import('@/routes/settings/settings-page').then((m) => ({ Component: m.SettingsPage })),
           },

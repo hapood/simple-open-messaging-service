@@ -1,12 +1,17 @@
 import { type ReactNode, createContext, useCallback, useContext, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { adminLogin, adminLogout } from '@/api/auth'
+import { adminLogin, adminLoginVerify, adminLogout } from '@/api/auth'
 import { clearTokens, getRefreshToken, setAccessToken, setRefreshToken } from '@/auth/token-store'
+
+/** Password-step outcome: either fully logged in (tokens stored), or a 2FA challenge to resolve next. */
+export type LoginStepResult = { done: true } | { twoFactorRequired: true; challengeToken: string }
 
 interface AuthContextValue {
   isAuthenticated: boolean
-  /** Login: only stores tokens + bumps state; navigation is controlled by the caller (the login page). */
-  login: (account: string, password: string) => Promise<void>
+  /** Login (password step): stores tokens + bumps state on success, or returns a 2FA challenge. */
+  login: (account: string, password: string) => Promise<LoginStepResult>
+  /** Verify the 2FA challenge (TOTP or backup code) → stores tokens + bumps state. */
+  verifyTwoFactor: (challengeToken: string, code?: string, backupCode?: string) => Promise<void>
   /** Logout: calls backend revoke + clears tokens + navigates to /login. */
   logout: () => Promise<void>
 }
@@ -21,12 +26,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [version, setVersion] = useState(0)
   const bump = useCallback(() => setVersion((v) => v + 1), [])
 
-  const login = useCallback(async (account: string, password: string) => {
+  const login = useCallback(async (account: string, password: string): Promise<LoginStepResult> => {
     const data = await adminLogin(account, password)
+    if ('twoFactorRequired' in data) {
+      // Password verified, but a second factor is required before any session is issued.
+      return { twoFactorRequired: true, challengeToken: data.challengeToken }
+    }
     setAccessToken(data.access_token)
     setRefreshToken(data.refresh_token)
     bump()
+    return { done: true }
   }, [bump])
+
+  const verifyTwoFactor = useCallback(
+    async (challengeToken: string, code?: string, backupCode?: string) => {
+      const data = await adminLoginVerify(challengeToken, code, backupCode)
+      setAccessToken(data.access_token)
+      setRefreshToken(data.refresh_token)
+      bump()
+    },
+    [bump],
+  )
 
   const logout = useCallback(async () => {
     await adminLogout()
@@ -39,11 +59,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       isAuthenticated: getRefreshToken() !== null,
       login,
+      verifyTwoFactor,
       logout,
     }),
     // `version` only exists to recompute isAuthenticated after login/logout.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [version, login, logout],
+    [version, login, verifyTwoFactor, logout],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

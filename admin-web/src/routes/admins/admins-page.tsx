@@ -7,8 +7,10 @@ import {
   useCreateAdmin,
   useDisableAdmin,
   useEnableAdmin,
+  useResetAdminTwoFactor,
   useSetAdminRole,
 } from '@/hooks/use-admins'
+import { useMe } from '@/hooks/use-me'
 import { useListParams } from '@/hooks/use-list-params'
 import type { AdminAccount, AdminRole } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
@@ -61,9 +63,13 @@ export function AdminsPage() {
   const disable = useDisableAdmin()
   const enable = useEnableAdmin()
   const setRole = useSetAdminRole()
+  const reset2fa = useResetAdminTwoFactor()
+  const { data: me } = useMe()
+  const isSuper = me?.role === 'SUPER_ADMIN'
   const [addOpen, setAddOpen] = useState(false)
   const [userId, setUserId] = useState('')
   const [newRole, setNewRole] = useState<AdminRole>('VIEWER')
+  const [resetTarget, setResetTarget] = useState<AdminAccount | null>(null)
 
   const total = data?.total ?? 0
   const roleItems = {
@@ -108,6 +114,17 @@ export function AdminsPage() {
     }
   }
 
+  const onReset2fa = async () => {
+    if (!resetTarget) return
+    try {
+      await reset2fa.mutateAsync(resetTarget.id)
+      toast.success(t('admins.toast.reset2fa'))
+      setResetTarget(null)
+    } catch (e) {
+      toast.error(formatApiError(e))
+    }
+  }
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -139,8 +156,9 @@ export function AdminsPage() {
               <TableHead>{t('admins.col.account')}</TableHead>
               <TableHead className="w-40">{t('admins.col.role')}</TableHead>
               <TableHead className="w-24">{t('admins.col.status')}</TableHead>
+              <TableHead className="w-24">{t('admins.col.twoFactor')}</TableHead>
               <TableHead className="w-44">{t('admins.col.lastLogin')}</TableHead>
-              <TableHead className="w-28" />
+              <TableHead className="w-40" />
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -148,7 +166,7 @@ export function AdminsPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={5}
+              colSpan={6}
               emptyMessage={t('admins.empty')}
             >
               {data?.list.map((a) => (
@@ -185,18 +203,36 @@ export function AdminsPage() {
                     )}
                   </TableCell>
                   <TableCell>
+                    <Badge variant={a.twoFactorEnabled ? 'default' : 'outline'}>
+                      {t(`security.totp.${a.twoFactorEnabled ? 'on' : 'off'}`)}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
                     {a.lastLoginAt ? <Timestamp value={a.lastLoginAt} /> : '—'}
                   </TableCell>
                   <TableCell>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className={a.enabled ? 'text-destructive' : undefined}
-                      disabled={disable.isPending || enable.isPending}
-                      onClick={() => onToggle(a)}
-                    >
-                      {a.enabled ? t('admins.action.disable') : t('admins.action.enable')}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className={a.enabled ? 'text-destructive' : undefined}
+                        disabled={disable.isPending || enable.isPending}
+                        onClick={() => onToggle(a)}
+                      >
+                        {a.enabled ? t('admins.action.disable') : t('admins.action.enable')}
+                      </Button>
+                      {isSuper && a.twoFactorEnabled && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={reset2fa.isPending}
+                          onClick={() => setResetTarget(a)}
+                        >
+                          {reset2fa.isPending && <Loader2 className="mr-1 size-3.5 animate-spin" />}
+                          {t('admins.action.reset2fa')}
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}
@@ -248,6 +284,26 @@ export function AdminsPage() {
             <Button disabled={create.isPending || !userId} onClick={onAdd}>
               {create.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
               {t('admins.add')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!resetTarget} onOpenChange={(v) => !v && setResetTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('admins.action.reset2fa')}</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {t('admins.reset2faConfirm', { name: resetTarget?.name || resetTarget?.account })}
+          </p>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setResetTarget(null)}>
+              {t('common.cancel')}
+            </Button>
+            <Button variant="destructive" onClick={onReset2fa} disabled={reset2fa.isPending}>
+              {reset2fa.isPending && <Loader2 className="mr-2 size-4 animate-spin" />}
+              {t('admins.action.reset2fa')}
             </Button>
           </DialogFooter>
         </DialogContent>

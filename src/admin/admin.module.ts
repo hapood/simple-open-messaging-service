@@ -11,7 +11,9 @@ import { DashboardController } from './dashboard.controller.js';
 import { AuditController } from './audit.controller.js';
 import { AdminManageController } from './admin-manage.controller.js';
 import { GroupManageController } from './group-manage.controller.js';
+import { TwoFactorController } from './two-factor.controller.js';
 import { AdminAuthService } from './admin-auth.service.js';
+import { TwoFactorService } from './two-factor.service.js';
 import { AdminJwtStrategy } from './admin.jwt.strategy.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
@@ -46,9 +48,10 @@ import { KvStoreModule } from '../kv-store/kv-store.module.js';
     // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     KvStoreModule,
   ],
-  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController],
+  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController, TwoFactorController],
   providers: [
     AdminAuthService,
+    TwoFactorService,
     AdminJwtStrategy,
     AdminAuthGuard,
     AdminRolesGuard,

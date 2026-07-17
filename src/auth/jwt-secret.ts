@@ -10,27 +10,28 @@ import { dirname, resolve } from 'node:path';
  */
 const SECRET_DIR = resolve('data');
 
-/** Paths minted during this boot (env unset AND no existing file). Read once by reportGeneratedJwtSecrets(). */
+/** Paths minted during this boot (env unset AND no existing file). Read once by reportGeneratedSecrets(). */
 const generatedPaths: string[] = [];
 
 /**
- * Resolve a long-lived HMAC signing secret with three-tier precedence:
+ * Resolve a long-lived secret with three-tier precedence:
  *   1. Explicit env var — operator-managed; REQUIRED for multi-instance deployments (every replica
  *      must share the same value), for rotation, and for external secret managers. Always wins.
  *   2. A file persisted under ./data on a prior first boot — lets restarts keep every existing
- *      token valid instead of mass-logging-out the whole user base on each boot.
+ *      token/secret valid instead of mass-logging-out the whole user base on each boot.
  *   3. Neither → mint a 256-bit key (matches the documented `openssl rand -hex 32`), persist it
- *      mode 0600, and use it. Recorded so reportGeneratedJwtSecrets() can name it once.
+ *      mode 0600, and use it. Recorded so reportGeneratedSecrets() can name it once.
  *
- * Why disk and not the DB: a signing key in the application DB would turn every DB backup into
- * token-forging material, blurring the data/secrets boundary that env-or-file keeps clean. This
- * mirrors the node-local-auto-generated-secret-on-disk pattern of KeypairService
- * (src/federation/keypair.service.ts).
+ * Why disk and not the DB: a signing/encryption key in the application DB would turn every DB backup
+ * into token-forging / secret-decrypting material, blurring the data/secrets boundary that env-or-file
+ * keeps clean. This mirrors the node-local-auto-generated-secret-on-disk pattern of KeypairService
+ * (src/federation/keypair.service.ts). Shared by the admin JWT signing secret and the 2FA at-rest
+ * encryption key (src/admin/two-factor.secret.ts).
  *
- * @param envName  the override env var, e.g. JWT_ACCESS_SECRET.
- * @param filename the on-disk filename under ./data, e.g. 'jwt-access.key'.
+ * @param envName  the override env var, e.g. JWT_ADMIN_SECRET / SOMS_2FA_KEY.
+ * @param filename the on-disk filename under ./data, e.g. 'jwt-admin.key'.
  */
-export function resolveJwtSecret(envName: string, filename: string): string {
+export function resolvePersistentSecret(envName: string, filename: string): string {
   // (1) Operator-managed env wins — explicit configuration always takes precedence.
   const fromEnv = process.env[envName];
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
@@ -51,19 +52,29 @@ export function resolveJwtSecret(envName: string, filename: string): string {
   return generated;
 }
 
+/** Resolve a long-lived JWT signing secret (HMAC key). See {@link resolvePersistentSecret}. */
+export function resolveJwtSecret(envName: string, filename: string): string {
+  return resolvePersistentSecret(envName, filename);
+}
+
 /**
  * Surface first-boot auto-generation as a SINGLE operational warning — no-op when every secret came
- * from env or an existing file. Call once after all resolveJwtSecret() calls so a clean first boot
- * produces one line, not three. The persistence caveat is the same one already documented for the
- * S2S keypair: losing ./data logs out every user/admin on the next boot.
+ * from env or an existing file. Call once after all resolvePersistentSecret() calls so a clean first
+ * boot produces one line, not several. The persistence caveat is the same one already documented for
+ * the S2S keypair: losing ./data logs out every user/admin (JWT secret) AND makes existing 2FA secrets
+ * undecryptable (admins must re-enroll) on the next boot.
  */
-export function reportGeneratedJwtSecrets(): void {
+export function reportGeneratedSecrets(): void {
   if (generatedPaths.length === 0) return;
-  new Logger('JwtSecret').warn(
-    `Auto-generated ${generatedPaths.length} JWT signing secret(s): ${generatedPaths.join(', ')}. ` +
-      'Persist ./data across restarts — losing these files logs out every user/admin on the next ' +
-      'boot (same requirement as soms-s2s-key.json). To manage them explicitly (multi-instance, ' +
-      'rotation, external secret store), set JWT_ACCESS_SECRET / JWT_REFRESH_SECRET / ' +
-      'JWT_ADMIN_SECRET instead.',
+  new Logger('Secret').warn(
+    `Auto-generated ${generatedPaths.length} persistent secret(s): ${generatedPaths.join(', ')}. ` +
+      'Persist ./data across restarts — losing these files logs out every user/admin on the next boot ' +
+      '(JWT secret) and/or forces admins to re-enroll 2FA (2FA key); same requirement as ' +
+      'soms-s2s-key.json. To manage them explicitly (multi-instance, rotation, external secret store), ' +
+      'set the matching env var instead (e.g. JWT_ADMIN_SECRET / SOMS_2FA_KEY).',
   );
 }
+
+/** @deprecated alias kept for the single existing call site in src/auth/constants.ts — use
+ *  {@link reportGeneratedSecrets}. */
+export const reportGeneratedJwtSecrets = reportGeneratedSecrets;

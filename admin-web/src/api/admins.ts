@@ -26,3 +26,8 @@ export function enableAdmin(id: number): Promise<void> {
 export function setAdminRole(id: number, role: AdminRole): Promise<void> {
   return request<void>(`/admin/admins/${id}/role`, { role })
 }
+
+/** SUPER_ADMIN lockout recovery: disable an admin's 2FA outright (idempotent — no-op if not enrolled). */
+export function resetAdminTwoFactor(id: number): Promise<void> {
+  return request<void>(`/admin/admins/${id}/reset-2fa`)
+}

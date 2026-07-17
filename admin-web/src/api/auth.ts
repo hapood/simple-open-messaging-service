@@ -2,10 +2,13 @@ import i18n from '@/i18n'
 import { API_BASE, CODE } from '@/lib/constants'
 import { ApiError } from '@/lib/api-error'
 import { getAccessToken, getRefreshToken } from '@/auth/token-store'
-import type { ApiResult, TokenPair } from '@/types/api'
+import type { ApiResult, ChallengeRequired, TokenPair } from '@/types/api'
+
+/** Admin login outcome: a session token pair, or a 2FA challenge (password verified, awaiting the code). */
+export type AdminLoginResult = TokenPair | ChallengeRequired
 
 /**
- * Public POST (no Bearer injected, no 401 retry): used by login / renew-access.
+ * Public POST (no Bearer injected, no 401 retry): used by login / login-verify / renew-access.
  * Unwraps the ApiResult envelope; throws ApiError when code !== 0.
  */
 async function postPublic<T>(path: string, body: unknown): Promise<T> {
@@ -21,9 +24,18 @@ async function postPublic<T>(path: string, body: unknown): Promise<T> {
   return json.data as T
 }
 
-/** Admin login (public). */
-export function adminLogin(account: string, password: string): Promise<TokenPair> {
-  return postPublic<TokenPair>('/admin/login', { account, password })
+/** Admin login (public). Returns the token pair, or a 2FA challenge when the account is enrolled. */
+export function adminLogin(account: string, password: string): Promise<AdminLoginResult> {
+  return postPublic<AdminLoginResult>('/admin/login', { account, password })
+}
+
+/** Admin 2FA login verify (public) — completes login with a TOTP or backup code after the challenge. */
+export function adminLoginVerify(
+  challengeToken: string,
+  code?: string,
+  backupCode?: string,
+): Promise<TokenPair> {
+  return postPublic<TokenPair>('/admin/login/verify', { challengeToken, code, backupCode })
 }
 
 /**

@@ -7,17 +7,18 @@
 // user but don't care HOW they authenticated. For the process-boundary federation e2e (apps in separate
 // processes), see federation-test-helpers.ts, which seeds via a test-process PrismaClient instead.
 import type { INestApplication } from '@nestjs/common';
-import argon2 from 'argon2';
 import { PrismaService } from '../src/prisma.service';
 import { SessionTokenService, type SessionClient } from '../src/auth/session-token.service';
+import { PasswordHasher } from '../src/auth/password-hasher.service';
 
 export interface SeededUser {
   id: number;
   account: string;
 }
 
-/** Insert a local user directly. `password` (optional) is argon2-hashed into hashPwd; omit it for a
- *  passwordless (OTP/QR-only) account. */
+/** Insert a local user directly. `password` (optional) is hashed via the app's PasswordHasher
+ *  (Argon2id + pepper — the exact path /auth/login verifies against); omit it for a passwordless
+ *  (OTP/QR-only) account. */
 export async function seedUser(
   app: INestApplication,
   account: string,
@@ -29,7 +30,7 @@ export async function seedUser(
       account,
       domain: 'local',
       name: opts.name ?? account,
-      hashPwd: opts.password === undefined ? null : await argon2.hash(opts.password),
+      hashPwd: opts.password === undefined ? null : await new PasswordHasher().hash(opts.password),
       mustChangePassword: false,
       isForeigner: false,
     },

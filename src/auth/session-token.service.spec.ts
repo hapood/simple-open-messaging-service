@@ -49,13 +49,14 @@ describe('SessionTokenService', () => {
   });
 
   describe('issue', () => {
-    it("app client → client persisted + expiresAt null (no lifecycle)", async () => {
+    it("app client → trusted by default + expiresAt null (permanent)", async () => {
       const plaintext = await svc.issue(7, 'app', { device: 'pixel', ip: '10.0.0.1' });
       expect(plaintext).toMatch(/^[0-9a-f]{64}$/); // 32 random bytes hex
       expect(prisma.sessionToken.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userId: 7,
           client: 'app',
+          trusted: true, // app is trusted by default (token in OS secure storage)
           expiresAt: null,
           device: 'pixel',
           ip: '10.0.0.1',
@@ -65,19 +66,29 @@ describe('SessionTokenService', () => {
       });
     });
 
-    it('web/desktop client → expiresAt ~14d out (sliding) + client + persistent persisted', async () => {
+    it('untrusted web/desktop → trusted false + expiresAt ~14d out (sliding) + persistent persisted', async () => {
       await svc.issue(7, 'web', { persistent: true });
       let arg = prisma.sessionToken.create.mock.calls[0][0].data;
       expect(arg.client).toBe('web');
+      expect(arg.trusted).toBe(false); // web is never trusted
       expect(arg.persistent).toBe(true);
       expect(arg.expiresAt).toBeInstanceOf(Date);
       expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
 
-      await svc.issue(7, 'desktop', { persistent: false });
+      await svc.issue(7, 'desktop', { persistent: false }); // no trusted opt-in
       arg = prisma.sessionToken.create.mock.calls[1][0].data;
       expect(arg.client).toBe('desktop');
+      expect(arg.trusted).toBe(false);
       expect(arg.persistent).toBe(false);
       expect(arg.expiresAt.getTime()).toBeGreaterThan(Date.now() + 13 * 24 * 3600 * 1000);
+    });
+
+    it('trusted desktop opt-in → trusted true + expiresAt null (permanent, revocation-only)', async () => {
+      await svc.issue(7, 'desktop', { trusted: true });
+      const arg = prisma.sessionToken.create.mock.calls[0][0].data;
+      expect(arg.client).toBe('desktop');
+      expect(arg.trusted).toBe(true);
+      expect(arg.expiresAt).toBeNull();
     });
 
     it('stores the sha256 hash, never the plaintext', async () => {

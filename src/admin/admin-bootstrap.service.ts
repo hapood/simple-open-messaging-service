@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnApplicationBootstrap } from '@nestjs/common';
-import argon2 from 'argon2';
 import { PrismaService } from '../prisma.service.js';
 import { AdminRole } from '../prisma/generated/client.js';
+import { PasswordHasher } from '../auth/password-hasher.service.js';
 
 /**
  * Idempotent first-admin self-bootstrap. Runs once per application start via OnApplicationBootstrap
@@ -9,8 +9,8 @@ import { AdminRole } from '../prisma/generated/client.js';
  * bootstrap admin (account=admin, domain=local) exists:
  *
  *   - present            → no-op (no ADMIN_BOOTSTRAP_PASSWORD needed) — every boot after the first;
- *   - absent + password  → create the User + a linked SUPER_ADMIN profile, password hashed with argon2
- *                          (the same primitive AuthService uses);
+ *   - absent + password  → create the User + a linked SUPER_ADMIN profile, password hashed via the shared
+ *                          PasswordHasher (Argon2id + pepper, the same path every login verifies against);
  *   - absent + no password → log a loud WARN and CONTINUE booting. The chat product stays up; the
  *                          operator sets ADMIN_BOOTSTRAP_PASSWORD and restarts to gain admin access.
  *
@@ -24,7 +24,7 @@ import { AdminRole } from '../prisma/generated/client.js';
 export class AdminBootstrapService implements OnApplicationBootstrap {
   private readonly logger = new Logger(AdminBootstrapService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly passwordHasher: PasswordHasher) {}
 
   async onApplicationBootstrap(): Promise<void> {
     try {
@@ -53,7 +53,7 @@ export class AdminBootstrapService implements OnApplicationBootstrap {
       return;
     }
 
-    const hash = await argon2.hash(pwd);
+    const hash = await this.passwordHasher.hash(pwd);
     // Identity lives on User (single account namespace); the Admin row is the linked profile. upsert with
     // update:{} absorbs the vanishing race between the findUnique above and the create (P2002-safe).
     const user = await this.prisma.user.upsert({

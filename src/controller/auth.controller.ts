@@ -71,14 +71,17 @@ export class AuthController {
     const authInfo = req.user;
     if (authInfo.status === 0) {
       // status 0 (success) implies userId is set — see LocalStrategy.validate. Issue the single
-      // long-lived session credential. 'app' → no-expiry (native, OS secure storage); 'web' (default) /
-      // 'desktop' → sliding 14-day.
+      // long-lived session credential. Lifetime is decided by `trusted` (see SessionTokenService.issue):
+      // trusted → permanent (the native app, or an opted-in desktop); untrusted → sliding 14-day.
       const client: SessionClient = body.client ?? 'web';
       const persistent = body.persistent !== false; // default true (14d sliding cookie); false → session cookie
+      // Trust gating: the native app is always trusted; a desktop is trusted only on explicit opt-in
+      // (it stores the token in OS keyring); web can never be trusted (no OS secure storage for a bearer).
+      const trusted = client === 'app' || (client === 'desktop' && body.trusted === true);
       const session_token = await this.sessionTokens.issue(
         authInfo.userId!,
         client,
-        { device: body.device, userAgent, ip, persistent },
+        { device: body.device, userAgent, ip, persistent, trusted },
       );
       setSessionCookies(reply, session_token, persistent);
       return {

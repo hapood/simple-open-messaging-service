@@ -78,7 +78,7 @@ describe('OTP login e2e', () => {
     expect(await guardedOk(token)).toBe(true);
   });
 
-  it('a second OTP login revokes the prior app session (one-app-session rule)', async () => {
+  it('a second OTP login leaves the prior app session intact (multiple trusted devices coexist)', async () => {
     const userId = await seedOtpAccount('otpreplace');
 
     const codeA = (await otp.issueCode(userId, userId)).code;
@@ -86,7 +86,7 @@ describe('OTP login e2e', () => {
       .post('/api/v1/auth/otp/login')
       .send({ account: 'otpreplace', code: codeA });
     const tokenA: string = loginA.body.data.session_token;
-    expect(await guardedOk(tokenA)).toBe(true); // A works before the replacement (and populates its KV cache)
+    expect(await guardedOk(tokenA)).toBe(true); // A works before the second login (populates its KV cache)
 
     const codeB = (await otp.issueCode(userId, userId)).code;
     const loginB = await request(app.getHttpServer())
@@ -95,19 +95,16 @@ describe('OTP login e2e', () => {
     expect(loginB.body.code).toBe(0);
     const tokenB: string = loginB.body.data.session_token;
 
-    // revokeAllForClient drops each revoked token's KV entry → tokenA's next validate is a cache MISS → DB
-    // read → revoked row → 401. (No 60s cache lag, unlike the logout-all path.)
-    const afterA = await request(app.getHttpServer())
-      .post('/api/v1/auth/sessions')
-      .set('Authorization', `Bearer ${tokenA}`);
-    expect(afterA.status).toBe(401);
-    expect(await guardedOk(tokenB)).toBe(true); // the new session is live
+    // The one-app-session rule was removed: A is NOT revoked by the second login — both trusted app
+    // sessions coexist, each independently revocable from the device list.
+    expect(await guardedOk(tokenA)).toBe(true);
+    expect(await guardedOk(tokenB)).toBe(true);
 
-    // The replaced session is stamped with the reason (audit + the kicked-device notice source).
+    // No session is stamped with the now-removed replacement reason.
     const replaced = await prisma.sessionToken.findFirst({
       where: { userId, revokeReason: 'app_session_replaced' },
     });
-    expect(replaced).not.toBeNull();
+    expect(replaced).toBeNull();
   });
 
   it('rejects a wrong code with the precise OTP_INVALID business code', async () => {

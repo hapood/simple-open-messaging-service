@@ -22,6 +22,7 @@ import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
 import { AdminRole } from '../prisma/generated/client.js';
 import {
   AdminLoginDto,
+  AdminLoginVerifyDto,
   AdminRefreshDto,
   AdminListUsersDto,
   AdminUnbanDto,
@@ -72,18 +73,33 @@ export class AdminController {
   }
 
   @UseGuards(ThrottleGuard)
-  @Throttle(5, 60) // 5 attempts/min per IP — brute-force ceiling on top of argon2's slow hash
+  @Throttle(5, 60) // 5 attempts/min per IP — brute-force ceiling over the account-dim progressive ban + argon2
   @HttpCode(HttpStatus.OK)
   @Post('admin/login')
-  @ApiOperation({ summary: 'Admin login (separate admin JWT + family-based refresh)' })
+  @ApiOperation({ summary: 'Admin login (password → session, or 2FA challenge when enrolled)' })
   async login(
     @Body() dto: AdminLoginDto,
     @Headers('user-agent') _userAgent: string,
     @Ip() ip: string,
   ): Promise<ApiResult> {
-    const r = await this.adminAuthService.login(dto.account, dto.password, ip);
-    if (r) return this.ok(r);
-    return { code: BusinessCode.INVALID_CREDENTIALS, message: 'invalid credentials' };
+    // Throws BusinessException(INVALID_CREDENTIALS | RATE_LIMITED) on failure — the global filter renders it.
+    // On success returns either {access_token, refresh_token} or {twoFactorRequired, challengeToken}.
+    return this.ok(await this.adminAuthService.login(dto.account, dto.password, ip));
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(5, 60) // per-IP ceiling on the 6-digit guess; the account-dim progressive ban lives in the service
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/login/verify')
+  @ApiOperation({ summary: 'Admin 2FA login verify (TOTP or backup code) → session' })
+  async loginVerify(
+    @Body() dto: AdminLoginVerifyDto,
+    @Headers('user-agent') _userAgent: string,
+    @Ip() ip: string,
+  ): Promise<ApiResult> {
+    return this.ok(
+      await this.adminAuthService.verifyLogin(dto.challengeToken, dto.code, dto.backupCode, ip),
+    );
   }
 
   @HttpCode(HttpStatus.OK)

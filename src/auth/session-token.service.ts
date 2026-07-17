@@ -3,10 +3,11 @@ import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
 import { KvStoreService } from '../kv-store/kv-store.service.js';
 
-/** Web/desktop session deadline + how long it slides forward on each (throttled) use. Active sessions
- *  stay alive indefinitely; an idle one expires 14 days after its last request. Native-app tokens carry
- *  no deadline (Telegram-style — revocation-only); their `lastSeenAt` activity tracking still runs (the
- *  sliding-window capability is retained) but `expiresAt` is never set. */
+/** Untrusted-session deadline + how long it slides forward on each (throttled) use. Active sessions
+ *  stay alive indefinitely; an idle one expires 14 days after its last request. TRUSTED-device tokens
+ *  (the native app, or a desktop that opted in via OS keyring) carry no deadline (Telegram-style —
+ *  revocation-only); their `lastSeenAt` activity tracking still runs (the sliding-window capability is
+ *  retained) but `expiresAt` is never set. */
 const WEB_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** Throttle for the activity+sliding write: refresh lastSeenAt/lastSeenIp (all clients) and extend
  *  the web/desktop deadline at most once per 5 minutes per token, so validate() never writes to the DB
@@ -18,9 +19,10 @@ const WEB_SESSION_SLIDING_TOUCH_MS = 5 * 60 * 1000;
 const VALIDATE_CACHE_TTL_SEC = 60;
 const CACHE_PREFIX = 'session:';
 
-/** Client kind selects the token's lifetime policy at issue time. 'app' (native) → no-expiry;
- *  'web' (browser) + 'desktop' (Tauri) → sliding 14-day. Persisted on the row so the device list can
- *  render an icon/label per credential and so per-client behavior (which sessions expire) is auditable. */
+/** Client kind = the device platform ('app' native / 'web' browser / 'desktop' Tauri). Persisted on the
+ *  row so the device list can render an icon/label per credential. It is INFORMATIONAL only — the
+ *  token's lifetime is driven by `trusted`, not `client` (see {@link issue}). The native `app` client
+ *  is trusted by default (its token lives in OS secure storage). */
 export type SessionClient = 'app' | 'web' | 'desktop';
 
 function hashToken(token: string): string {
@@ -50,21 +52,26 @@ export class SessionTokenService {
   ) {}
 
   /**
-   * Mint a session token. `client:'app'` → `expiresAt=null` (no lifecycle; the native client stores it
-   * in OS secure storage and it is valid until explicitly revoked). `client:'web'`/`'desktop'` →
-   * `expiresAt=now+14d`, sliding (extended on use). `persistent` (web/desktop) selects a 14-day cookie
-   * ("keep me logged in") vs a session cookie — only persistent cookies are refreshed on slide. The
-   * plaintext is returned ONCE; only the sha256 hash is stored. Prior tokens are NOT revoked — a user
-   * may have several (one per device); each is independently revocable.
+   * Mint a session token. Lifetime is driven by `trusted`, not by platform: a TRUSTED device (token
+   * stored in OS secure storage) → `expiresAt=null` (no lifecycle; valid until explicitly revoked); an
+   * UNTRUSTED device → `expiresAt=now+14d`, sliding (extended on use). `trusted` defaults to
+   * `client === 'app'` (the native app stores its token in OS secure storage, so it is trusted by
+   * default); a `desktop` client is trusted only when the caller opts in (it has OS keyring storage and
+   * the user chose "trust this device"); `web` is never trusted (a browser can't store a bearer token
+   * in OS secure storage). `persistent` (untrusted web/desktop) selects a 14-day cookie ("keep me
+   * logged in") vs a session cookie — only persistent cookies are refreshed on slide. The plaintext is
+   * returned ONCE; only the sha256 hash is stored. Prior tokens are NOT revoked — a user may have
+   * several (one per device, including multiple trusted devices); each is independently revocable.
    */
   async issue(
     userId: number,
     client: SessionClient,
-    opts: { device?: string; userAgent?: string; ip?: string; persistent?: boolean } = {},
+    opts: { device?: string; userAgent?: string; ip?: string; persistent?: boolean; trusted?: boolean } = {},
   ): Promise<string> {
     const plaintext = randomBytes(32).toString('hex');
-    const expiresAt =
-      client === 'app' ? null : new Date(Date.now() + WEB_SESSION_TTL_MS);
+    // Lifetime by trust, not platform: the native app is trusted by default; a desktop opts in; web never.
+    const trusted = opts.trusted ?? (client === 'app');
+    const expiresAt = trusted ? null : new Date(Date.now() + WEB_SESSION_TTL_MS);
     await this.prisma.sessionToken.create({
       data: {
         userId,
@@ -76,6 +83,7 @@ export class SessionTokenService {
         lastSeenIp: opts.ip ?? null,
         expiresAt,
         persistent: opts.persistent ?? true,
+        trusted,
       },
     });
     return plaintext;
@@ -83,12 +91,12 @@ export class SessionTokenService {
 
   /**
    * Validate a presented token. Returns `{ userId, sessionId, slid, persistent }` on success (the row
-   * id lets the device list flag the requesting session as "current"; `slid` signals the web/desktop
+   * id lets the device list flag the requesting session as "current"; `slid` signals the untrusted
    * deadline moved this call — the auth guard uses it to re-issue the browser cookie; `persistent` is
    * the cookie-persistence choice), or null (not-found / revoked / expired). KV-cached for 60s; on a
    * cache miss the session's activity is refreshed — `lastSeenAt` + `lastSeenIp` update for EVERY
-   * client (so the device list's "last active" stays fresh even for no-expiry app tokens), and
-   * web/desktop deadlines additionally slide forward. Both writes are throttled to once per
+   * client (so the device list's "last active" stays fresh even for no-expiry trusted tokens), and
+   * untrusted deadlines additionally slide forward. Both writes are throttled to once per
    * {@link WEB_SESSION_SLIDING_TOUCH_MS} so validate() never writes on every request; a failed write
    * can't invalidate an otherwise-valid token (fire-and-forget).
    */
@@ -145,11 +153,11 @@ export class SessionTokenService {
     const exp = rec.expiresAt?.getTime() ?? null;
     if (exp !== null && exp <= Date.now()) return null;
 
-    // Activity refresh (all clients, incl. no-expiry app tokens — keeps the device-list "last active"
-    // fresh, i.e. the sliding-window capability is retained for app too) + sliding deadline
-    // (web/desktop only), throttled to once per WEB_SESSION_SLIDING_TOUCH_MS. `slid` records that the
-    // web/desktop deadline actually moved this call — the signal the auth guard uses to re-issue the
-    // browser cookie so its maxAge tracks the session. App tokens never slide (exp === null).
+    // Activity refresh (all clients, incl. no-expiry trusted tokens — keeps the device-list "last
+    // active" fresh, i.e. the sliding-window capability is retained for trusted too) + sliding deadline
+    // (untrusted only), throttled to once per WEB_SESSION_SLIDING_TOUCH_MS. `slid` records that the
+    // untrusted deadline actually moved this call — the signal the auth guard uses to re-issue the
+    // browser cookie so its maxAge tracks the session. Trusted tokens never slide (exp === null).
     let cachedExp = exp;
     let slid = false;
     if (Date.now() - rec.lastSeenAt.getTime() > WEB_SESSION_SLIDING_TOUCH_MS) {
@@ -224,24 +232,6 @@ export class SessionTokenService {
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: reason },
     });
-  }
-
-  /** Revoke every ACTIVE session of a single client kind for the user — drives the one-app-session rule
-   *  (a new OTP app login revokes the prior app session). Returns the revoked row ids so the caller can
-   *  emit a per-session revoked event and FORCE_LOGOUT just those devices (NOT the user's web/desktop
-   *  sessions). Each KV entry is dropped so the revocation lands within the 60s cache window. */
-  async revokeAllForClient(userId: number, client: SessionClient, reason: string): Promise<number[]> {
-    const rows = await this.prisma.sessionToken.findMany({
-      where: { userId, client, revokedAt: null },
-      select: { id: true, tokenHash: true },
-    });
-    if (rows.length === 0) return [];
-    await this.prisma.sessionToken.updateMany({
-      where: { id: { in: rows.map((r) => r.id) } },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
-    for (const r of rows) await this.kvStore.del(`${CACHE_PREFIX}${r.tokenHash}`).catch(() => {});
-    return rows.map((r) => r.id);
   }
 
   /** Resolve the row id of a freshly-issued plaintext token (hashing it the same way {@link issue} does).

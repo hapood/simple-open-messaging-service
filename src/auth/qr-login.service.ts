@@ -11,13 +11,16 @@ const QR_PREFIX = 'qr:';
 const QR_TTL_MS = 3 * 60 * 1000;
 
 type QrStatus = 'pending' | 'scanned' | 'confirmed';
-/** A QR-issued session is always a sliding 14-day `web`/`desktop` session — never an `app` session (the
- *  long-term app session comes only from the OTP flow). */
+/** The client kind a QR-issued session is minted for: 'web' (browser) or 'desktop' (Tauri) — never 'app'
+ *  (the long-term app session comes only from the OTP flow). */
 type QrClient = 'web' | 'desktop';
 
 interface QrState {
   status: QrStatus;
   client: QrClient;
+  /** Trust chosen at create (desktop only — a browser QR can never be trusted). A trusted desktop stores
+   *  its token in OS keyring and receives a permanent (revocation-only) session. */
+  trusted: boolean;
   /** Set at confirm — the scanner's account becomes the desktop session's owner. */
   userId?: number;
   /** The scanner's userId at scan (audit). */
@@ -38,10 +41,12 @@ export interface QrPollResult {
 }
 
 /**
- * QR-scan login → a 14-day sliding `web`/`desktop` session for PC/Mac/browser, confirmed by an
- * already-logged-in phone (which itself logged in via the OTP flow). Ephemeral by design: the pending
- * state lives in the in-process KV (seconds-to-minutes lifetime), NOT a Prisma table — the issued session
- * is the durable artifact (its SessionToken row records device/ip/client for audit).
+ * QR-scan login → a `web`/`desktop` session for PC/Mac/browser, confirmed by an already-logged-in phone
+ * (which itself logged in via the OTP flow). A TRUSTED desktop (opt-in — it stores the token in OS
+ * keyring) gets a permanent, revocation-only session; everything else (browser, or an untrusted desktop)
+ * gets a 14-day sliding session. Ephemeral by design: the pending state lives in the in-process KV
+ * (seconds-to-minutes lifetime), NOT a Prisma table — the issued session is the durable artifact (its
+ * SessionToken row records device/ip/client/trusted for audit).
  *
  * Two-step (WeChat/DingTalk-style): scan → 'scanned' (desktop shows "confirm on phone") → confirm →
  * 'confirmed' (the desktop's next poll claims + issues). Issue-once is enforced by an atomic `del` claim:
@@ -75,18 +80,25 @@ export class QrLoginService {
     await this.kv.setex(this.key(token), this.remaining(state), JSON.stringify(state));
   }
 
-  /** Desktop/web begins a QR login: mint a 256-bit token + pending state. The desktop renders the token as
-   *  a QR and polls for its status. */
-  async create(client: QrClient): Promise<QrCreateResult> {
+  /** Desktop/web begins a QR login: mint a 256-bit token + pending state. The desktop renders the token
+   *  as a QR and polls for its status. `trusted` is honored only for `desktop` (a browser can't be
+   *  trusted) — a trusted desktop receives a permanent session whose token it keeps in OS keyring. */
+  async create(client: QrClient, trusted = false): Promise<QrCreateResult> {
     const qrToken = randomBytes(32).toString('hex');
     const expiresAt = Date.now() + QR_TTL_MS;
-    await this.write(qrToken, { status: 'pending', client, expiresAt });
+    await this.write(qrToken, {
+      status: 'pending',
+      client,
+      trusted: client === 'desktop' && trusted,
+      expiresAt,
+    });
     return { qrToken, expiresAt };
   }
 
   /** Desktop/web polls its QR token. Returns the status; when 'confirmed' it CLAIMS the token (atomic del)
-   *  and issues a 14-day sliding session for the scanner's account. The claim guarantees the session is
-   *  issued exactly once even under concurrent polls. */
+   *  and issues a session for the scanner's account (permanent if the desktop opted into trust, else a
+   *  14-day sliding session). The claim guarantees the session is issued exactly once even under
+   *  concurrent polls. */
   async poll(
     qrToken: string,
     opts: { device?: string; userAgent?: string; ip?: string },
@@ -106,6 +118,7 @@ export class QrLoginService {
       userAgent: opts.userAgent,
       ip: opts.ip,
       persistent: true,
+      trusted: state.trusted,
     });
     return { status: 'confirmed', sessionToken };
   }

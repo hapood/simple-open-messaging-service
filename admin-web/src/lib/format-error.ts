@@ -42,6 +42,14 @@ function localizedBizMessage(code: number): string | null {
       return i18n.t('errors.biz.passwordNotSet')
     case CODE.MUST_CHANGE_PASSWORD:
       return i18n.t('errors.biz.mustChangePassword')
+    case CODE.TWO_FACTOR_INVALID:
+      return i18n.t('errors.biz.twoFactorInvalid')
+    case CODE.TWO_FACTOR_CHALLENGE_EXPIRED:
+      return i18n.t('errors.biz.twoFactorChallengeExpired')
+    case CODE.TWO_FACTOR_NOT_ENABLED:
+      return i18n.t('errors.biz.twoFactorNotEnabled')
+    case CODE.TWO_FACTOR_ALREADY_ENABLED:
+      return i18n.t('errors.biz.twoFactorAlreadyEnabled')
     case CODE.INTERNAL:
       return i18n.t('errors.biz.internal')
     case CODE.VAPID_INVALID:

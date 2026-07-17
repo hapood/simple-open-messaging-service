@@ -79,9 +79,12 @@ export function SessionsDialog({
                       <Badge variant="outline">{s.device ?? '—'}</Badge>
                     </TableCell>
                     <TableCell>
-                      <Badge variant="secondary">
-                        {t(`common.client.${s.client}`, { defaultValue: s.client })}
-                      </Badge>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Badge variant="secondary">
+                          {t(`common.client.${s.client}`, { defaultValue: s.client })}
+                        </Badge>
+                        {s.trusted && <Badge variant="default">{t('common.trusted')}</Badge>}
+                      </div>
                     </TableCell>
                     <TableCell
                       className="max-w-[280px] truncate text-xs text-muted-foreground"

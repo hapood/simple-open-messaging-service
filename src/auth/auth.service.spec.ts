@@ -26,6 +26,7 @@ describe('AuthService (session overview → SessionToken)', () => {
     prisma as unknown as PrismaService,
     { emit: vi.fn() } as never, // eventEmitter
     {} as never, // sessionTokens (revokeById/revokeAllForUser) — unused here
+    {} as never, // passwordHasher — unused by the session-overview methods under test
   );
 
   /** A SessionToken row as Prisma would return it (Date fields; expiresAt nullable for app tokens). */

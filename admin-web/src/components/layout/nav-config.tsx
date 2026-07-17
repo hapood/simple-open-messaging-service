@@ -9,6 +9,7 @@ import {
   Hash,
   LayoutDashboard,
   type LucideIcon,
+  Lock,
   Monitor,
   Radio,
   ScrollText,
@@ -30,6 +31,7 @@ export type NavKey =
   | 'adminSessions'
   | 'bans'
   | 'reuse'
+  | 'security'
   | 'push'
   | 'federation'
   | 'selfCheck'
@@ -82,6 +84,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/admin-sessions', key: 'adminSessions', icon: ShieldCheck },
       { to: '/bans', key: 'bans', icon: ShieldBan },
       { to: '/reuse', key: 'reuse', icon: BellRing },
+      { to: '/security', key: 'security', icon: Lock },
     ],
   },
   {

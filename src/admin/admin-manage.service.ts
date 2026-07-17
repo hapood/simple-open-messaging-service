@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma.service.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { AdminRole } from '../prisma/generated/client.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import type { AdminManageListDto, AdminCreateDto, AdminSetRoleDto } from './admin.dto.js';
 
 type StateChange = { kind: 'disable' } | { kind: 'role'; role: AdminRole };
@@ -43,6 +44,7 @@ export class AdminManageService {
           userId: true,
           role: true,
           enabled: true,
+          twoFactorEnabled: true,
           lastLoginAt: true,
           lastLoginIp: true,
           createdAt: true,
@@ -59,6 +61,7 @@ export class AdminManageService {
       name: r.user.name,
       role: r.role,
       enabled: r.enabled,
+      twoFactorEnabled: r.twoFactorEnabled,
       lastLoginAt: r.lastLoginAt,
       lastLoginIp: r.lastLoginIp,
       createdAt: r.createdAt,
@@ -112,6 +115,20 @@ export class AdminManageService {
       /* best-effort */
     });
     return outcome;
+  }
+
+  /** SUPER_ADMIN lockout recovery: clear another admin's 2FA outright (no code — the role gate is the
+   *  authority). Idempotent. Maps the service's NOT_FOUND throw to the Result envelope this controller uses. */
+  async resetTwoFactor(adminId: number): Promise<Result> {
+    try {
+      await this.adminAuth.resetTwoFactorBySuper(adminId);
+      return { code: BusinessCode.OK, message: 'success' };
+    } catch (e) {
+      if (e instanceof BusinessException && e.bizCode === BusinessCode.NOT_FOUND) {
+        return { code: BusinessCode.NOT_FOUND, message: 'admin not found' };
+      }
+      throw e;
+    }
   }
 
   /**

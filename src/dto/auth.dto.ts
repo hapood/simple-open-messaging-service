@@ -45,7 +45,7 @@ export class LoginDto {
     enum: ['app', 'web', 'desktop'],
     default: 'web',
     description:
-      "Client kind, selects the session-token lifetime policy: 'app' (native, stored in OS secure storage) → no-expiry, revocation-only; 'web' (browser) / 'desktop' (Tauri, JS memory) → sliding 30-day. Persisted on the row for the device list. Omitted → 'web'.",
+      "Client kind = device platform: 'app' (native), 'web' (browser), or 'desktop' (Tauri). Informational — persisted on the row for the device-list icon/label; the lifetime is driven by `trusted`, not `client`. Omitted → 'web'.",
   })
   @IsIn(['app', 'web', 'desktop'])
   @IsOptional()
@@ -55,11 +55,21 @@ export class LoginDto {
     required: false,
     default: true,
     description:
-      'Cookie persistence for the pure-httpOnly browser path: true (default) → 30-day cookie; false → session cookie (dropped when the browser closes, honoring "don\'t keep me logged in"). Native clients ignore the cookie and this flag.',
+      'Cookie persistence for the pure-httpOnly browser path: true (default) → 14-day sliding cookie; false → session cookie (dropped when the browser closes, honoring "don\'t keep me logged in"). Native clients ignore the cookie and this flag.',
   })
   @IsBoolean()
   @IsOptional()
   persistent?: boolean;
+
+  @ApiProperty({
+    required: false,
+    default: false,
+    description:
+      "Trust this device: request a permanent (revocation-only) session whose token the client will keep in OS secure storage. Honored only for the 'desktop' client (OS keyring); ignored for 'web' (a browser can't store a bearer token securely) and implicit-true for 'app' (the native app is always trusted).",
+  })
+  @IsBoolean()
+  @IsOptional()
+  trusted?: boolean;
 }
 
 /**
@@ -122,8 +132,8 @@ export class OtpLoginDto {
   device?: string;
 }
 
-/** QR-login create input (desktop/web). `client` selects the session lifetime policy and is constrained to
- *  web/desktop — a QR-issued session is never an `app` (long-term) session. */
+/** QR-login create input (desktop/web). `client` is the device platform (constrained to web/desktop — a
+ *  QR-issued session is never an `app` session); `trusted` opts a desktop into a permanent session. */
 export class QrCreateDto {
   @ApiProperty({
     enum: ['web', 'desktop'],
@@ -134,6 +144,16 @@ export class QrCreateDto {
   @IsIn(['web', 'desktop'])
   @IsOptional()
   client?: 'web' | 'desktop';
+
+  @ApiProperty({
+    required: false,
+    default: false,
+    description:
+      "Trust this desktop: mint a permanent (revocation-only) session whose token the desktop keeps in OS keyring. Honored only for 'desktop' (ignored for 'web' — a browser can't store a bearer token securely).",
+  })
+  @IsBoolean()
+  @IsOptional()
+  trusted?: boolean;
 }
 
 /** QR-login poll input (desktop/web) — check a token's status; on 'confirmed' the response carries the

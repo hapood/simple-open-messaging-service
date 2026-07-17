@@ -4,9 +4,9 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import argon2 from 'argon2';
 import request from 'supertest';
 import type { PrismaClient } from '../src/prisma/generated/client.js';
+import { PasswordHasher } from '../src/auth/password-hasher.service.js';
 
 /** mimetype → CAS file extension (mirrors UploadService.IMG_EXT for the asset types the tests stage). */
 const IMG_EXT: Record<string, string> = {
@@ -112,18 +112,18 @@ export async function registerAndLogin(
 }
 
 /** Create a SUPER_ADMIN identity + log in via the admin route, returning the admin access token. The
- *  identity user is seeded directly with an argon2-hashed password (registration is closed), the Admin row
- *  is attached, then /admin/login verifies the password over HTTP. The admin JWT system is independent of
- *  loginMode / registrationOpen, so the admin login itself is unaffected (this is the real way the
- *  federation peer-block tests block a domain — through markBlocked via the admin route, not a prisma
- *  shortcut). */
+ *  identity user is seeded directly with a peppered password (registration is closed — hashed via the
+ *  app's PasswordHasher, the exact path /admin/login verifies against), the Admin row is attached, then
+ *  /admin/login verifies the password over HTTP. The admin JWT system is independent of loginMode /
+ *  registrationOpen, so the admin login itself is unaffected (this is the real way the federation
+ *  peer-block tests block a domain — through markBlocked via the admin route, not a prisma shortcut). */
 export async function getAdminToken(app: AppLike, account = 'admin'): Promise<string> {
   const u = await app.prisma.user.create({
     data: {
       account,
       domain: 'local',
       name: account,
-      hashPwd: await argon2.hash('Pass1234'),
+      hashPwd: await new PasswordHasher().hash('Pass1234'),
       mustChangePassword: false,
       isForeigner: false,
     },

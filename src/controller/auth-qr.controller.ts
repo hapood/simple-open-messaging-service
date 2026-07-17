@@ -21,12 +21,14 @@ import { BusinessCode } from '../common/business-code.js';
 import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
 
 /**
- * QR-scan login (desktop/web → 2-week sliding session confirmed by an already-logged-in phone). create/poll
- * are `@Public()` (the desktop isn't authenticated yet); scan/confirm are authenticated (the scanning phone
- * is already logged in via OTP). `@Throttle` ceilings protect each step (they bypass LocalStrategy's ban).
+ * QR-scan login (desktop/web → session confirmed by an already-logged-in phone). create/poll are
+ * `@Public()` (the desktop isn't authenticated yet); scan/confirm are authenticated (the scanning phone is
+ * already logged in via OTP). `@Throttle` ceilings protect each step (they bypass LocalStrategy's ban).
  *
  * The issued session `client` is the one chosen at create ('web'/'desktop' — the service never issues an
- * `app` session here), so the QR endpoint can't be used to mint a long-term Android session.
+ * `app` session here), so the QR endpoint can't be used to mint a long-term Android session. A `desktop`
+ * that opts into `trusted` at create gets a permanent session; otherwise (and always for `web`) it is a
+ * 14-day sliding session.
  */
 @ApiTags('auth')
 @Controller()
@@ -43,7 +45,7 @@ export class AuthQrController {
     return {
       code: BusinessCode.OK,
       message: 'success',
-      data: await this.qrLogin.create(dto.client ?? 'web'),
+      data: await this.qrLogin.create(dto.client ?? 'web', dto.trusted === true),
     };
   }
 

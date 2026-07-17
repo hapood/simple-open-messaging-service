@@ -2,7 +2,6 @@ import { Injectable, HttpStatus } from '@nestjs/common';
 import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
 import { PrismaService } from '../prisma.service.js';
-import { AuthService } from './auth.service.js';
 import { SessionTokenService } from './session-token.service.js';
 import { BruteForceService, BAN_DIM_OTP, type BanStep } from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -55,14 +54,13 @@ export interface IssuedLoginCode extends LoginCodeView {
  * Codes are argon2-hashed at rest; the plaintext is returned ONCE at issue and never stored. Single-use is
  * enforced by an `updateMany` guard at verify time (only the first concurrent verifier flips `consumedAt`).
  * Issuing a new code revokes the account's prior unconsumed code (one valid code per account at a time). On
- * verification the prior app session is replaced (the one-app-session rule, see
- * {@link AuthService.replaceAppSessions}) and the produced session id is recorded on the code for audit.
+ * verification a new trusted `app` session is issued (multiple trusted devices may coexist — each is
+ * independently revocable from the device list) and the produced session id is recorded on the code for audit.
  */
 @Injectable()
 export class OtpLoginService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly auth: AuthService,
     private readonly sessionTokens: SessionTokenService,
     private readonly bruteForce: BruteForceService,
   ) {}
@@ -119,14 +117,15 @@ export class OtpLoginService {
     };
   }
 
-  /** Verify a one-time code for an account and issue a long-term `app` session. Enforces single-use via an
-   *  updateMany guard (only the first concurrent verifier wins); replaces the user's prior app session (the
-   *  one-app-session rule, kicking the old Android device with a reason-aware notice); records the produced
-   *  session id on the code for audit. Returns the plaintext session token (the caller sets it as the
-   *  httpOnly cookie) + the user's `mustChangePassword` flag so the client can proactively route to the
-   *  set-password screen (an OTP account whose admin-generated initial password was never rotated is gated
-   *  by SessionAuthGuard regardless — this flag is the clean proactive UX, not the enforcement). Throws
-   *  BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any failure. */
+  /** Verify a one-time code for an account and issue a trusted (permanent) `app` session. Enforces
+   *  single-use via an updateMany guard (only the first concurrent verifier wins). Prior app sessions are
+   *  NOT revoked — multiple trusted devices (phones) may coexist, each independently revocable from the
+   *  device list. Records the produced session id on the code for audit. Returns the plaintext session
+   *  token (the caller sets it as the httpOnly cookie) + the user's `mustChangePassword` flag so the
+   *  client can proactively route to the set-password screen (an OTP account whose admin-generated initial
+   *  password was never rotated is gated by SessionAuthGuard regardless — this flag is the clean proactive
+   *  UX, not the enforcement). Throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any
+   *  failure. */
   async verifyAndLogin(
     account: string,
     code: string,
@@ -187,10 +186,6 @@ export class OtpLoginService {
     if (consumed.count === 0) {
       throw new BusinessException(BusinessCode.OTP_CONSUMED, 'one-time code already used');
     }
-
-    // One-app-session rule: replace the user's prior app session (kicks the old Android device) BEFORE
-    // issuing the new one, so the new session is never the one being revoked.
-    await this.auth.replaceAppSessions(user.id, 'app_session_replaced');
 
     const token = await this.sessionTokens.issue(user.id, 'app', {
       device: opts.device,

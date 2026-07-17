@@ -7,7 +7,7 @@ import { getAccessToken } from '@/auth/token-store'
 import type { ApiResult } from '@/types/api'
 
 // Public allowlist: no Bearer injected, no 401 retry (otherwise the refresh chain self-loops).
-const PUBLIC_PATHS = ['/admin/login', '/admin/renew-access']
+const PUBLIC_PATHS = ['/admin/login', '/admin/login/verify', '/admin/renew-access']
 
 function isPublic(path: string): boolean {
   return PUBLIC_PATHS.some((p) => path.endsWith(p))

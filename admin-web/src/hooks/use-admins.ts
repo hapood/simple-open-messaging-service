@@ -4,6 +4,7 @@ import {
   disableAdmin,
   enableAdmin,
   listAdmins,
+  resetAdminTwoFactor,
   setAdminRole,
   type AdminsQuery,
 } from '@/api/admins'
@@ -46,4 +47,9 @@ export function useSetAdminRole() {
     mutationFn: (v: { id: number; role: AdminRole }) => setAdminRole(v.id, v.role),
     onSuccess: invalidate,
   })
+}
+
+export function useResetAdminTwoFactor() {
+  const invalidate = useInvalidateAdmins()
+  return useMutation({ mutationFn: (id: number) => resetAdminTwoFactor(id), onSuccess: invalidate })
 }

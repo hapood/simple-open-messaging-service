@@ -4,15 +4,14 @@ import { OtpLoginService } from './otp-login.service.js';
 import { BruteForceService } from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import type { PrismaService } from '../prisma.service.js';
-import type { AuthService } from './auth.service.js';
 import type { SessionTokenService } from './session-token.service.js';
 
 /**
  * OtpLoginService: admin-issued one-time login codes → the Android long-term `app` session. Covers
- * issue (plaintext reveal-once + prior-code revocation), verifyAndLogin (single-use guard, app-session
- * replacement, producedSessionId audit link, the precise expired/consumed/invalid codes), the
- * account-dimension brute-force lock, revoke, and the audit list. argon2 runs real (one hash/verify per
- * round-trip) — the failure paths that don't need it (no-code / expired / consumed) throw before verify.
+ * issue (plaintext reveal-once + prior-code revocation), verifyAndLogin (single-use guard,
+ * producedSessionId audit link, the precise expired/consumed/invalid codes), the account-dimension
+ * brute-force lock, revoke, and the audit list. argon2 runs real (one hash/verify per round-trip) —
+ * the failure paths that don't need it (no-code / expired / consumed) throw before verify.
  */
 describe('OtpLoginService', () => {
   const prisma = {
@@ -26,7 +25,6 @@ describe('OtpLoginService', () => {
       update: vi.fn(),
     },
   };
-  const auth = { replaceAppSessions: vi.fn() };
   const sessionTokens = { issue: vi.fn(), idOfToken: vi.fn() };
   // A REAL BruteForceService drives the account-dimension throttle end-to-end (no mock) — so the lock test
   // exercises the shared engine OtpLoginService delegates to, not a stub. Built fresh per test so a ban
@@ -36,7 +34,6 @@ describe('OtpLoginService', () => {
   beforeEach(() => {
     svc = new OtpLoginService(
       prisma as unknown as PrismaService,
-      auth as unknown as AuthService,
       sessionTokens as unknown as SessionTokenService,
       new BruteForceService(),
     );
@@ -46,13 +43,11 @@ describe('OtpLoginService', () => {
     prisma.loginCode.findMany.mockReset();
     prisma.loginCode.updateMany.mockReset();
     prisma.loginCode.update.mockReset();
-    auth.replaceAppSessions.mockReset();
     sessionTokens.issue.mockReset();
     sessionTokens.idOfToken.mockReset();
     // Default Promise returns — the service chains .catch() on the fire-and-forget producedSessionId
     // update, so the mocks must yield Promises (vi.fn() defaults to undefined → .catch on undefined throws).
     prisma.loginCode.update.mockResolvedValue({});
-    auth.replaceAppSessions.mockResolvedValue([]);
   });
 
   /** Issue a code for userId 42 (admin 7) and capture the argon2 hash so a verify test can match it. */
@@ -80,7 +75,7 @@ describe('OtpLoginService', () => {
   });
 
   describe('verifyAndLogin', () => {
-    it('verifies a correct code, replaces the app session, issues a token, records producedSessionId', async () => {
+    it('verifies a correct code, issues a token (prior app sessions left intact), records producedSessionId', async () => {
       const { code, codeHash } = await issueAndCaptureHash();
       prisma.user.findUnique.mockResolvedValue({
         id: 42,
@@ -96,14 +91,12 @@ describe('OtpLoginService', () => {
         expiresAt: new Date(Date.now() + 60_000),
       });
       prisma.loginCode.updateMany.mockResolvedValue({ count: 1 }); // single-use guard wins
-      auth.replaceAppSessions.mockResolvedValue([10]);
       sessionTokens.issue.mockResolvedValue('token-xyz');
       sessionTokens.idOfToken.mockResolvedValue(99);
 
       const r = await svc.verifyAndLogin('alice', code, { ip: '1.2.3.4' });
       expect(r.token).toBe('token-xyz');
       expect(r.mustChangePassword).toBe(false);
-      expect(auth.replaceAppSessions).toHaveBeenCalledWith(42, 'app_session_replaced');
       expect(sessionTokens.issue).toHaveBeenCalledWith(
         42,
         'app',

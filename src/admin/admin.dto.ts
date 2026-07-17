@@ -26,6 +26,72 @@ export class AdminRefreshDto {
   refreshToken!: string;
 }
 
+/** Admin 2FA login verify input. Exactly one of `code` (6-digit TOTP) or `backupCode` must be present —
+ *  `challengeToken` is the value POST admin/login returned in its twoFactorRequired response. */
+export class AdminLoginVerifyDto {
+  @ApiProperty({ description: 'Challenge token from POST admin/login (twoFactorRequired response)' })
+  @IsString()
+  @IsNotEmpty()
+  challengeToken!: string;
+
+  @ApiPropertyOptional({ example: '123456', description: '6-digit TOTP from the authenticator app' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code?: string;
+
+  @ApiPropertyOptional({ example: 'ABCD-EFGH', description: 'A single-use backup (recovery) code' })
+  @IsOptional()
+  @IsString()
+  backupCode?: string;
+}
+
+/** Confirm 2FA enrollment: submit the pending token (from setup) + the first 6-digit code. */
+export class TwoFactorSetupVerifyDto {
+  @ApiProperty({ description: 'Pending setup token from POST admin/2fa/setup' })
+  @IsString()
+  @IsNotEmpty()
+  pendingToken!: string;
+
+  @ApiProperty({ example: '123456', description: '6-digit TOTP shown by the authenticator after scanning' })
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code!: string;
+}
+
+/** Disable 2FA: the current password AND one live 2FA factor (TOTP or backup code) are required. */
+export class TwoFactorDisableDto {
+  @ApiProperty({ example: 'P@ssw0rd', description: 'Current password' })
+  @IsString()
+  @IsNotEmpty()
+  password!: string;
+
+  @ApiPropertyOptional({ example: '123456', description: '6-digit TOTP' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code?: string;
+
+  @ApiPropertyOptional({ example: 'ABCD-EFGH', description: 'A single-use backup code' })
+  @IsOptional()
+  @IsString()
+  backupCode?: string;
+}
+
+/** Regenerate backup codes: one live 2FA factor (TOTP or backup code) is required. */
+export class TwoFactorRegenerateDto {
+  @ApiPropertyOptional({ example: '123456', description: '6-digit TOTP' })
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
+  code?: string;
+
+  @ApiPropertyOptional({ example: 'ABCD-EFGH', description: 'A single-use backup code' })
+  @IsOptional()
+  @IsString()
+  backupCode?: string;
+}
+
 /** User list input (pagination + search). */
 export class AdminListUsersDto {
   @ApiProperty({ required: false, example: 0, description: 'Number of records to skip (optional)' })

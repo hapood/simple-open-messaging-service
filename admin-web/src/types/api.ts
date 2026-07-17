@@ -11,6 +11,32 @@ export interface TokenPair {
   refresh_token: string
 }
 
+/** Admin login response when the account has 2FA enrolled — the password verified, but no session is issued
+ *  until the second factor is confirmed via POST /admin/login/verify (which then returns a TokenPair). */
+export interface ChallengeRequired {
+  twoFactorRequired: true
+  challengeToken: string
+}
+
+/** Current admin's 2FA status (POST /admin/2fa/status). */
+export interface TwoFactorStatus {
+  enabled: boolean
+  enabledAt: number | null
+  backupCodesRemaining: number
+}
+
+/** POST /admin/2fa/setup — the enrollment bundle to render the QR + manual key. */
+export interface TwoFactorSetupBundle {
+  otpauthUri: string
+  secret: string
+  pendingToken: string
+}
+
+/** The reveal-once backup-code set returned by enable / regenerate. */
+export interface TwoFactorBackupResult {
+  backupCodes: string[]
+}
+
 // User row (backend no longer exposes hashPwd; Date fields are serialized to ms-epoch numbers by the global interceptor)
 export interface User {
   id: number
@@ -31,7 +57,8 @@ export interface UserListResult {
 }
 
 // Active sessions of a user (POST /admin/users/:id/sessions + embedded in the 360° detail).
-// SessionToken rows: client is 'app' | 'web' | 'desktop'; expiresAt is null for no-expiry app tokens.
+// SessionToken rows: client is 'app' | 'web' | 'desktop'; expiresAt is null for trusted (permanent)
+// devices whose token lives in OS secure storage (flagged by `trusted`).
 export interface Session {
   id: number
   client: string
@@ -42,6 +69,7 @@ export interface Session {
   createdAt: number
   lastSeenAt: number
   expiresAt: number | null
+  trusted: boolean
 }
 
 // Admin-issued one-time login codes (POST /admin/users/:id/login-codes + issue-login-code).
@@ -75,6 +103,7 @@ export interface SessionListItem {
   createdAt: number
   lastSeenAt: number
   expiresAt: number | null
+  trusted: boolean
   user: { id: number; account: string } | null
 }
 
@@ -456,6 +485,7 @@ export interface AdminAccount {
   name: string
   role: AdminRole
   enabled: boolean
+  twoFactorEnabled: boolean
   lastLoginAt: number | null
   lastLoginIp: string | null
   createdAt: number

@@ -14,8 +14,10 @@
     "operationFailed": "Operation failed",
     "comingSoon": "Coming soon",
     "neverExpires": "No expiry",
+    "trusted": "Trusted",
     "copy": "Copy",
     "copied": "Copied",
+    "copyFailed": "Copy failed",
     "client": {
       "app": "Android",
       "web": "Web",
@@ -54,6 +56,7 @@
     "audit": "Audit Log",
     "admins": "Admins",
     "settings": "Settings",
+    "security": "My Account",
     "quotas": "Daily Quotas",
     "logout": "Log Out",
     "group": {
@@ -117,7 +120,15 @@
     "submit": "Log In",
     "accountRequired": "Please enter the account",
     "passwordRequired": "Please enter the password",
-    "failed": "Login failed"
+    "failed": "Login failed",
+    "twoFactorTitle": "Two-Factor Verification",
+    "twoFactorHint": "Enter the 6-digit code from your authenticator app.",
+    "code": "Verification code",
+    "backupCode": "Backup code",
+    "verify": "Verify",
+    "useBackupCode": "Use a backup code instead",
+    "useAuthenticator": "Use the authenticator app instead",
+    "backToPassword": "Back to password"
   },
   "users": {
     "title": "User Management",
@@ -565,9 +576,10 @@
     "userIdHint": "Numeric id of an existing user to promote (find it on the Users page).",
     "roleLabel": "Role",
     "empty": "No admins",
-    "col": { "account": "Admin", "role": "Role", "status": "Status", "lastLogin": "Last login" },
-    "action": { "disable": "Disable", "enable": "Enable" },
-    "toast": { "created": "Admin created", "disabled": "Admin disabled", "enabled": "Admin enabled", "role": "Role updated" }
+    "col": { "account": "Admin", "role": "Role", "status": "Status", "lastLogin": "Last login", "twoFactor": "2FA" },
+    "action": { "disable": "Disable", "enable": "Enable", "reset2fa": "Reset 2FA" },
+    "reset2faConfirm": "Reset two-factor for {{name}}? They will be able to sign in with their password only. Use this to recover a locked-out admin who lost their device.",
+    "toast": { "created": "Admin created", "disabled": "Admin disabled", "enabled": "Admin enabled", "role": "Role updated", "reset2fa": "Two-factor reset" }
   },
   "groups": {
     "title": "Groups",
@@ -643,6 +655,44 @@
     "desc": "Page not found",
     "back": "Back to User Management"
   },
+  "security": {
+    "title": "My Account",
+    "desc": "Manage your own sign-in security — two-factor authentication and recovery codes.",
+    "totp": {
+      "title": "Authenticator App",
+      "desc": "Require a rotating 6-digit code from Google / Microsoft Authenticator at every sign-in.",
+      "on": "On",
+      "off": "Off",
+      "enable": "Enable 2FA",
+      "disable": "Disable 2FA",
+      "regenerate": "Regenerate backup codes",
+      "notEnabledHint": "Add a second factor so a stolen password alone cannot sign in.",
+      "enabledAt": "Enabled",
+      "backupRemaining": "{{count}} backup code(s) left",
+      "backupWarning": "Store these one-time backup codes somewhere safe. Each works once if you lose your authenticator. They cannot be shown again.",
+      "copyAll": "Copy all",
+      "download": "Download",
+      "savedDone": "I've saved them, sign in again",
+      "enabledToast": "Two-factor enabled — sign in again to continue",
+      "disabledToast": "Two-factor disabled"
+    },
+    "setup": {
+      "title": "Enable two-factor",
+      "scanDesc": "Scan this QR with your authenticator app (Google / Microsoft Authenticator), then enter the 6-digit code it shows.",
+      "manualKey": "Or enter this key manually",
+      "codeLabel": "Enter the 6-digit code",
+      "enable": "Enable",
+      "qrAlt": "2FA enrollment QR code"
+    },
+    "disable": {
+      "title": "Disable two-factor",
+      "desc": "Confirm with your current password and a valid code. Your account will revert to password-only sign-in."
+    },
+    "regen": {
+      "title": "Regenerate backup codes",
+      "desc": "Confirm with a valid code. The previous backup codes stop working immediately."
+    }
+  },
   "errors": {
     "unauthenticated": "Unauthenticated",
     "parseFailed": "Response parse failed",
@@ -662,6 +712,10 @@
       "otpConsumed": "The one-time code has already been used",
       "passwordNotSet": "This account has no password set",
       "mustChangePassword": "Please set your password first",
+      "twoFactorInvalid": "Invalid verification code",
+      "twoFactorChallengeExpired": "The verification session expired — please sign in again",
+      "twoFactorNotEnabled": "Two-factor is not enabled for this account",
+      "twoFactorAlreadyEnabled": "Two-factor is already enabled",
       "internal": "Something went wrong",
       "vapidInvalid": "VAPID keypair is invalid (malformed or mismatched)"
     }

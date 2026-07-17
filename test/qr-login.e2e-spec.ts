@@ -112,6 +112,49 @@ describe('QR login e2e', () => {
     expect(again.body.data.status).toBe('expired');
   });
 
+  it('a trusted desktop QR issues a permanent session; web ignores trusted (stays sliding)', async () => {
+    const { userId, token: scannerToken } = await seedScanner('qrtrusted');
+
+    // Trusted desktop: create with trusted → scan → confirm → poll claims a permanent session.
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/auth/qr/create')
+      .send({ client: 'desktop', trusted: true });
+    const qrToken: string = created.body.data.qrToken;
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/qr/scan')
+      .set('Authorization', `Bearer ${scannerToken}`)
+      .send({ qrToken });
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/qr/confirm')
+      .set('Authorization', `Bearer ${scannerToken}`)
+      .send({ qrToken });
+    const claimed = await request(app.getHttpServer()).post('/api/v1/auth/qr/poll').send({ qrToken });
+    expect(claimed.body.data.status).toBe('confirmed');
+    const desktopToken: string = claimed.body.data.session_token;
+
+    // The issued desktop session is trusted + permanent (expiresAt null), bound to the scanner.
+    const desktopId = await sessionTokens.idOfToken(desktopToken);
+    const desktopRow = await prisma.sessionToken.findUnique({
+      where: { id: desktopId! },
+      select: { client: true, trusted: true, expiresAt: true, userId: true },
+    });
+    expect(desktopRow).toMatchObject({ client: 'desktop', trusted: true, expiresAt: null, userId });
+
+    // Web can't be trusted: trusted:true is silently ignored for client 'web' → untrusted, sliding 14d.
+    const webQr = (
+      await request(app.getHttpServer()).post('/api/v1/auth/qr/create').send({ client: 'web', trusted: true })
+    ).body.data.qrToken;
+    await request(app.getHttpServer()).post('/api/v1/auth/qr/scan').set('Authorization', `Bearer ${scannerToken}`).send({ qrToken: webQr });
+    await request(app.getHttpServer()).post('/api/v1/auth/qr/confirm').set('Authorization', `Bearer ${scannerToken}`).send({ qrToken: webQr });
+    const webToken = (await request(app.getHttpServer()).post('/api/v1/auth/qr/poll').send({ qrToken: webQr })).body.data.session_token;
+    const webRow = await prisma.sessionToken.findUnique({
+      where: { id: (await sessionTokens.idOfToken(webToken))! },
+      select: { client: true, trusted: true, expiresAt: true },
+    });
+    expect(webRow).toMatchObject({ client: 'web', trusted: false });
+    expect(webRow!.expiresAt).not.toBeNull();
+  });
+
   it('scan requires an authenticated session (the phone is already logged in)', async () => {
     const qrToken = (
       await request(app.getHttpServer()).post('/api/v1/auth/qr/create').send({ client: 'web' })

@@ -52,6 +52,10 @@ export enum BusinessCode {
   QR_EXPIRED = 10016,            // QR login token is past its TTL
   PASSWORD_NOT_SET = 10017,      // password-login attempted on a no-password account (OTP/QR-only). UI: "contact the administrator to set the initial password". NOT counted toward the brute-force ban (no password to guess).
   MUST_CHANGE_PASSWORD = 10018,  // the authenticated user's password is the admin-generated INITIAL value and must be rotated. Thrown by the global SessionAuthGuard for EVERY route except the password-set escape hatch (+ @Public) — a server-side gate, NOT a frontend hint, so a user cannot keep using the initial password by skipping the set-password screen or calling the API directly. Same response shape regardless of login method (password/OTP/QR), so the gate is login-method-agnostic.
+  TWO_FACTOR_INVALID = 10019,        // admin TOTP / backup code did not match (login verify, disable, regenerate) — or no backup codes left. Counted toward the admin-2FA brute-force lock; collapsed with wrong-code to avoid code-value enumeration.
+  TWO_FACTOR_CHALLENGE_EXPIRED = 10020, // admin login/setup token (challenge or pending) is invalid or past its TTL — the admin must restart the login/enroll flow.
+  TWO_FACTOR_NOT_ENABLED = 10021,    // a 2FA operation (login verify, disable, regenerate) targeted an admin who does not have 2FA enabled.
+  TWO_FACTOR_ALREADY_ENABLED = 10022, // admin tried to begin 2FA setup while already enrolled (use disable first to re-enroll with a fresh secret).
   INTERNAL = 10999, // server error
 
   // 20xxx friend / invite state

@@ -74,4 +74,12 @@ export class AdminManageController {
   async setRole(@Param('id') id: string, @Body() dto: AdminSetRoleDto) {
     return this.svc.setRole(Number(id), dto);
   }
+
+  @Audit('admin.reset_2fa', { targetType: 'admin', targetParam: 'id' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/admins/:id/reset-2fa')
+  @ApiOperation({ summary: "Reset (disable) an admin's 2FA — lockout recovery when a device is lost" })
+  async reset2fa(@Param('id') id: string) {
+    return this.svc.resetTwoFactor(Number(id));
+  }
 }
