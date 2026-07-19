@@ -1,9 +1,22 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="SOMS Admin">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" role="img" aria-label="SOMS Admin">
   <title>SOMS Admin</title>
-  <!-- Same brand container as the consumer logo (#2196f3 rounded square). -->
-  <rect width="64" height="64" rx="14" fill="#2196f3" />
-  <!-- White shield glyph: hand-authored, distinguishes the admin console from
-       the consumer speech-bubble mark while staying in the same brand family. -->
-  <path fill="#ffffff"
-    d="M32 12 L48 18 V31 C48 42 41 49 32 53 C23 49 16 42 16 31 V18 Z" />
+  <!-- Identical speech-bubble "M" mark as the consumer web/app logo
+       (web/public/logo.svg). Only the brand fill differs: a violet background
+       (#7c3aed) distinguishes the admin console's mark from the consumer
+       brand-blue (#2196f3). The geometry is unchanged so both products share
+       one mark, told apart by color. Render/derive any raster variants from
+       this file. -->
+  <rect width="108" height="108" rx="24" fill="#7c3aed" />
+  <g transform="translate(54 54) scale(1.24) translate(-54 -54)">
+    <path fill="#ffffff"
+      d="M32 29 H76 A11 11 0 0 1 87 40 V68 A11 11 0 0 1 76 79 H52 L46 84 L41 79 H32 A11 11 0 0 1 21 68 V40 A11 11 0 0 1 32 29 Z" />
+    <path d="M35 65 L35 42 L54 57 L73 42 L73 65" fill="none" stroke="#7c3aed" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" />
+    <g fill="#7c3aed">
+      <circle cx="35" cy="65" r="6.5" />
+      <circle cx="35" cy="42" r="6.5" />
+      <circle cx="54" cy="57" r="6.5" />
+      <circle cx="73" cy="42" r="6.5" />
+      <circle cx="73" cy="65" r="6.5" />
+    </g>
+  </g>
 </svg>

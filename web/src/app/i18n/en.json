@@ -66,11 +66,12 @@
     "serverUnreachable": "Couldn't reach the server. Check the address or reconfigure.",
     "reconfigure": "Server settings",
     "qrTitle": "Scan to sign in",
+    "qrTitleLead": "Scan with an already-signed-in phone:",
+    "qrTitlePath": "Settings → Devices → Link a device.",
     "qrLoading": "Preparing sign-in code…",
-    "qrPending": "Scan this code with your phone to sign in.",
     "qrScanned": "Phone scanned — confirm on your phone to finish.",
-    "qrExpired": "This sign-in code expired.",
-    "qrRetry": "Refresh code",
+    "qrCreateError": "Couldn't generate the sign-in code. Please try again.",
+    "qrRetry": "Retry",
     "trustThisDevice": "Trust this device",
     "trustThisDeviceHint": "Stay signed in on this device until you sign out.",
     "qrTrustedNotice": "Trusted device — you'll stay signed in until you sign out.",
@@ -408,6 +409,7 @@
   "connection": {
     "connecting": "Connecting…",
     "reconnecting": "Connection lost — reconnecting…",
+    "reconnectingIn": "Connection lost — reconnecting in {{s}}s…",
     "recovered": "Back online",
     "offline": "Offline — signed out",
     "retry": "Click to retry now"

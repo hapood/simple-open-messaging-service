@@ -39,7 +39,8 @@ export type ToMain =
   | { type: 'event'; payload: SseEventPayload }
   | { type: 'reconnect' }
   | { type: 'need-token'; reqId: string }
-  | { type: 'force-logout' };
+  | { type: 'force-logout' }
+  | { type: 'reconnect-in'; ms: number }; // backoff sleep scheduled — the live countdown is owned by main
 
 /** Server-side named SSE events the worker must special-case (mirrors `src/gateway/sse.service.ts`).
  *  Inlined here so the worker does not import `constants.ts` (which is main-thread-oriented). */

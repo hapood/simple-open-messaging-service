@@ -48,13 +48,15 @@ export class RustChannelSseTransport extends RealtimeTransport {
   }
 
   private async startAsync(): Promise<void> {
-    // Rust → JS: state transitions, business events, the reconnect backfill pulse, and force-logout.
-    // (Rust emits `soms-sse-reconnect` itself on reconnect opens — no `openedOnce` inference here.)
+    // Rust → JS: state transitions, business events, the reconnect backfill pulse, force-logout, and the
+    // scheduled-backoff deadline for the countdown chip. (Rust emits `soms-sse-reconnect` itself on
+    // reconnect opens — no `openedOnce` inference here.)
     const subs: Array<Promise<(() => void) | undefined>> = [
       listenEvent<ConnectionState>('soms-sse-state', (e) => this.sink.onState(e.payload)),
       listenEvent<StandardMessage>('soms-sse-event', (e) => this.sink.onEvent(e.payload)),
       listenEvent('soms-sse-reconnect', () => this.sink.onReconnect()),
       listenEvent<{ reason?: string }>('soms-sse-force-logout', (e) => this.sink.onForceLogout(e.payload?.reason)),
+      listenEvent<number>('soms-sse-reconnect-in', (e) => this.sink.onReconnectIn(e.payload)),
     ];
     for (const sub of subs) {
       const un = await sub;
@@ -94,8 +96,11 @@ export class RustChannelSseTransport extends RealtimeTransport {
   }
 
   /** User-initiated retry (the disconnected chip). Routes through `sse_net(online)` so the supervisor
-   *  resets its backoff + retries at once (it owns the connection, like Android's Kotlin service). */
+   *  resets its backoff + retries at once (it owns the connection, like Android's Kotlin service). The
+   *  scheduled backoff is voided, so drop the countdown immediately; a fresh deadline is emitted on the
+   *  next failure, and success clears it via the state event. */
   override retryNow(): void {
+    this.sink.onReconnectIn(null);
     void tauriInvoke('sse_net', { online: true });
   }
 }

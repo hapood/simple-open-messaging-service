@@ -19,13 +19,15 @@ function recordingSink() {
   const states: ConnectionState[] = [];
   let reconnects = 0;
   const forceLogouts: (string | undefined)[] = [];
+  const reconnectIns: (number | null)[] = [];
   const sink: RealtimeSink = {
     onEvent: (m) => events.push(m),
     onState: (s) => states.push(s),
     onReconnect: () => reconnects++,
     onForceLogout: (reason) => forceLogouts.push(reason),
+    onReconnectIn: (ms) => reconnectIns.push(ms),
   };
-  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts };
+  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts, reconnectIns: () => reconnectIns };
 }
 
 interface FakeTauri {
@@ -140,6 +142,15 @@ describe('RustChannelSseTransport', () => {
     expect(rec.reconnects()).toBe(1);
   });
 
+  it('forwards soms-sse-reconnect-in (the supervisor backoff deadline) for the countdown chip', async () => {
+    const t = installFakeTauri();
+    const rec = recordingSink();
+    make(rec.sink).start();
+    await flush();
+    t.emit('soms-sse-reconnect-in', 8000);
+    expect(rec.reconnectIns()).toEqual([8000]);
+  });
+
   it('threads the FORCE_LOGOUT reason from the Rust payload for a tailored notice', async () => {
     const t = installFakeTauri();
     const rec = recordingSink();
@@ -182,6 +193,16 @@ describe('RustChannelSseTransport', () => {
     transport.retryNow();
     await flush();
     expect(t.invokes().some((i) => i.cmd === 'sse_net' && (i.args as { online?: boolean })?.online === true)).toBeTrue();
+  });
+
+  it('retryNow() drops the scheduled countdown (the manual retry voids the backoff deadline)', async () => {
+    installFakeTauri();
+    const rec = recordingSink();
+    const transport = make(rec.sink);
+    transport.start();
+    await flush();
+    transport.retryNow();
+    expect(rec.reconnectIns()).toContain(null);
   });
 
   it('stop() invokes sse_stop, detaches the listeners (further emits are no-ops), and emits closed', async () => {

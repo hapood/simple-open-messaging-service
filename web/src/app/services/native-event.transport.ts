@@ -54,6 +54,11 @@ export class NativeEventTransport extends RealtimeTransport {
     window.__SOMS_CONN_STATE__ = (state: string) => {
       this.onConnState(state as ConnectionState);
     };
+    // Kotlin → JS: the scheduled-ms-until-next-reconnect from `scheduleReopen`'s backoff, so the chip can
+    // render a live countdown (the facade owns the clock; this just hands it the deadline).
+    window.__SOMS_RECONNECT_IN__ = (ms: number) => {
+      this.sink.onReconnectIn(ms);
+    };
     // Seed the current state — Kotlin won't re-push on a fresh WebView attach. This transport only runs
     // on Android (the facade selects it via isAndroidNative), so SomsFcm is always injected — call it
     // directly; a missing bridge is a wiring bug that should surface, not be swallowed by `?`.
@@ -83,8 +88,16 @@ export class NativeEventTransport extends RealtimeTransport {
     // The native stream itself is untouched — Kotlin's service lifecycle is independent of the JS hooks.
     window.__SOMS_EVENT__ = undefined;
     window.__SOMS_CONN_STATE__ = undefined;
+    window.__SOMS_RECONNECT_IN__ = undefined;
     this.sink.onState('closed');
   }
 
-  // retryNow is intentionally a no-op: Kotlin's RealtimeService owns its own reconnect backoff.
+  /** User-initiated retry (the disconnected chip). Routes through `SomsFcm.retryNow()` → an ACTION_RETRY
+   *  Intent that cancels Kotlin's pending backoff + reconnects at once (parity with the worker's
+   *  retry-now and Rust's sse_net). The scheduled backoff is voided, so drop the countdown; a fresh
+   *  deadline is pushed on the next failure, success clears it via the state transition. */
+  override retryNow(): void {
+    this.sink.onReconnectIn(null);
+    window.SomsFcm!.retryNow();
+  }
 }

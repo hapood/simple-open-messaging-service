@@ -15,7 +15,13 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex min-h-svh bg-background">
       <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar p-4 text-sidebar-foreground">
-        <div className="px-2 py-3 text-lg font-semibold tracking-tight">{t('common.appName')}</div>
+        <div className="flex items-center gap-2 px-2 py-3">
+          {/* Same mark as the consumer web/app logo, recolored violet to tell the
+              admin console apart at a glance. favicon.svg is the single brand
+              asset (also wired as the tab icon in index.html). */}
+          <img src="/favicon.svg" alt="" aria-hidden="true" className="size-7 rounded-md" />
+          <span className="text-lg font-semibold tracking-tight">{t('common.appName')}</span>
+        </div>
         <nav className="flex flex-1 flex-col gap-4 overflow-y-auto">
           {NAV_GROUPS.filter((g) => !g.footer).map((group) => (
             <div key={group.labelKey} className="flex flex-col gap-1">

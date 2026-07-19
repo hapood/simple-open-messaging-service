@@ -64,6 +64,10 @@ export class WorkerSseTransport extends RealtimeTransport {
    *  - worker died (between {@link onWorkerError}'s terminate and its 1s respawn): cancel the pending
    *    respawn and reconnect at once. No-op when neither holds (already `open`, or `closed`). */
   override retryNow(): void {
+    // A manual retry voids the scheduled backoff (the current sleep is resolved, the loop reconnects at
+    // once), so drop the countdown immediately — otherwise the chip keeps ticking a stale deadline while
+    // the reconnect is in flight. A fresh deadline is posted on the next failure; success clears via state.
+    this.sink.onReconnectIn(null)
     if (this.worker) {
       this.worker.postMessage({ type: 'retry-now' } satisfies ToWorker)
     } else if (this.respawnTimer) {
@@ -78,6 +82,7 @@ export class WorkerSseTransport extends RealtimeTransport {
       case 'state': this.sink.onState(m.state as ConnectionState); break;
       case 'event': this.sink.onEvent(m.payload as StandardMessage); break;
       case 'reconnect': this.sink.onReconnect(); break;
+      case 'reconnect-in': this.sink.onReconnectIn(m.ms); break;
       case 'need-token': void this.handleNeedToken(m.reqId); break;
       case 'force-logout':
         // The session token 401'd (revoked/expired) OR the server pushed FORCE_LOGOUT — the worker has
@@ -119,6 +124,9 @@ export class WorkerSseTransport extends RealtimeTransport {
     this.worker?.terminate()
     this.worker = undefined
     this.sink.onState('reconnecting')
+    // Announce the respawn delay so the countdown ticks during this main-thread wait too (the worker
+    // isn't alive to emit its own deadline; `start()` posts `connecting` on respawn, which clears it).
+    this.sink.onReconnectIn(1000)
     this.respawnTimer = setTimeout(() => this.start(), 1000)
   }
 }

@@ -4,51 +4,69 @@
     <app-auth-toolbar></app-auth-toolbar>
     <div class="qr-card">
       <div class="progress-slot">
-        @switch (view()) {
-          @case ('loading') {
-            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
-          }
-          @case ('pending') {
-            <mat-progress-bar mode="determinate" [value]="qrRemainingPct()"></mat-progress-bar>
-          }
-          @case ('scanned') {
-            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
-          }
+        @if (view() === 'pending' || view() === 'scanned') {
+          <mat-progress-bar
+            mode="determinate"
+            [value]="qrRemainingPct()"
+            [class.is-warning]="qrRemainingSec() <= QR_WARN_SEC"
+          ></mat-progress-bar>
         }
       </div>
 
-      <h1 class="qr-title">{{ 'auth.qrTitle' | transloco }}</h1>
+      <h1 class="qr-title">
+        <span class="qr-title-lead">{{ 'auth.qrTitleLead' | transloco }}</span>
+        <span class="qr-title-path">{{ 'auth.qrTitlePath' | transloco }}</span>
+      </h1>
 
       <div class="qr-stage">
-        @if (view() === 'pending' || view() === 'scanned') {
-          <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
-            <div class="qr-canvas">
-              <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
-            </div>
-            @if (view() === 'scanned') {
+        <!-- The 240×240 white square is ALWAYS mounted. Loading centers a spinner and error centers a report
+          glyph inside it, so the surrounding layout never jumps when the QR renders or departs. -->
+        <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
+          @switch (view()) {
+            @case ('pending') {
+              <div class="qr-canvas">
+                <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+              </div>
+            }
+            @case ('scanned') {
+              <div class="qr-canvas">
+                <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+              </div>
               <span class="qr-scan-badge" aria-hidden="true">
                 <app-icon [type]="AppIcon.CHECK" [style]="{ width: '40px', height: '40px' }" />
               </span>
             }
-          </div>
-        }
-        @switch (view()) {
-          @case ('loading') {
-            <p class="qr-state">{{ 'auth.qrLoading' | transloco }}</p>
+            @case ('loading') {
+              <div class="qr-placeholder">
+                <mat-progress-spinner mode="indeterminate" [diameter]="40" />
+              </div>
+            }
+            @case ('error') {
+              <div class="qr-placeholder">
+                <app-icon [type]="AppIcon.REPORT" [style]="{ width: '40px', height: '40px' }" />
+              </div>
+            }
           }
-          @case ('pending') {
-            <p class="qr-state">{{ 'auth.qrPending' | transloco }}</p>
-            <p class="qr-countdown">{{ qrRemainingText() }}</p>
+        </div>
+
+        <!-- Single stable live region: the element persists across states (only its text swaps), so
+          assistive tech reliably announces each transition — especially "confirm on your phone" (an action
+          elsewhere) and the error. Error escalates to role=alert/assertive so it interrupts. -->
+        <p
+          class="qr-state"
+          [attr.role]="view() === 'error' ? 'alert' : 'status'"
+          [attr.aria-live]="view() === 'error' ? 'assertive' : 'polite'"
+        >
+          @switch (view()) {
+            @case ('loading') { {{ 'auth.qrLoading' | transloco }} }
+            @case ('scanned') { {{ 'auth.qrScanned' | transloco }} }
+            @case ('error') { {{ 'auth.qrCreateError' | transloco }} }
           }
-          @case ('scanned') {
-            <p class="qr-state">{{ 'auth.qrScanned' | transloco }}</p>
-          }
-          @case ('expired') {
-            <p class="qr-state">{{ 'auth.qrExpired' | transloco }}</p>
-            <button mat-flat-button color="primary" type="button" class="submit-btn" (click)="retry()">
-              {{ 'auth.qrRetry' | transloco }}
-            </button>
-          }
+        </p>
+        @if (view() === 'error') {
+          <button mat-flat-button color="primary" type="button" class="submit-btn" (click)="retry()">
+            {{ 'auth.qrRetry' | transloco }}
+          </button>
         }
       </div>
 

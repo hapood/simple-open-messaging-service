@@ -27,6 +27,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
+// `log` facade macros (warn!/error!) — backed at runtime by `tauri-plugin-log`, registered FIRST in
+// run(). Its Webview target forwards each record into the webview console via the `log://log` event
+// (re-emitted by the frontend attachConsole-equivalent in main.ts), so Rust-side failures — SSE connect
+// errors (`open_one_stream`), upstream proxy failures (`proxy_api`), panics — surface in the SAME console
+// the JS errors do (visible via edge://inspect / adb logcat). Previously these were swallowed or silent.
+use log::{error, warn};
 use sha2::{Digest, Sha256};
 use tauri::http::{Response, StatusCode};
 use tauri::{Emitter, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
@@ -243,6 +249,37 @@ pub fn run() {
 
     let builder = tauri::Builder::default();
 
+    // Logging is registered FIRST so it captures every later plugin's setup, the URI-scheme proxies, and
+    // the desktop SSE supervisor. Sinks: Webview (forward every Rust log into the webview console via the
+    // `log://log` event — the frontend re-emits it, see web/.../main.ts `attachRustConsole`), Stdout
+    // (terminal / docker logs; routed to logcat on Android), LogDir (a rotating file under the OS log dir
+    // for post-mortem). Info level — the instrumentation emits warn/error for failures; raise to Debug to
+    // trace connectivity in detail.
+    let builder = builder.plugin(
+        tauri_plugin_log::Builder::new()
+            .targets([
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Webview),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::Stdout),
+                tauri_plugin_log::Target::new(tauri_plugin_log::TargetKind::LogDir { file_name: None }),
+            ])
+            // Client-app rotation: a SIZE-BOUNDED rotating set (the desktop/mobile norm) — NOT time-based
+            // "keep N days" (a server logrotate pattern this plugin doesn't offer, and the wrong model for
+            // a client whose log volume is bursty/idle). The plugin's default is a single 40 KB file — too
+            // small for field diagnostics (a reconnect storm fills it in seconds); 1 MiB × keep 5 ≈ 6 MiB
+            // total reconstructs a bad session with a hard cap, so a long-lived client can never grow it
+            // without bound. Affects only the LogDir file (Webview/Stdout aren't files).
+            .max_file_size(1024 * 1024)
+            .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(5))
+            .level(log::LevelFilter::Info)
+            // Silence the HTTP stack at info (hyper logs connection-lifecycle events) so the webview
+            // console stays focused on OUR failures and the rotating file's effective history stretches
+            // further. Our own sites emit warn/error, all of which still pass.
+            .level_for("hyper", log::LevelFilter::Warn)
+            .level_for("reqwest", log::LevelFilter::Warn)
+            .level_for("rustls", log::LevelFilter::Warn)
+            .build(),
+    );
+
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
         if let Some(window) = app.get_webview_window("main") {
@@ -319,6 +356,14 @@ pub fn run() {
             }
         })
         .setup(move |app| {
+            // Route panics through the `log` facade (→ webview console + stdout + log file). The release
+            // profile sets `panic = "abort"`, but the hook still runs before the abort, so a Rust panic
+            // leaves a trace instead of vanishing. Installed in setup() — by then the log plugin has
+            // initialized its facade during app construction.
+            std::panic::set_hook(Box::new(|info| {
+                error!("panic: {info}");
+            }));
+
             let data_dir = app.path().app_data_dir()?;
             fs::create_dir_all(&data_dir)?;
             let config_path = data_dir.join(CONFIG_FILENAME);
@@ -452,11 +497,16 @@ async fn proxy_api(
     // by `BACKEND_CONNECT_TIMEOUT` on the client; this catches "connected but the server never responds".
     let upstream = match tokio::time::timeout(API_HEADERS_TIMEOUT, req.send()).await {
         Ok(Ok(r)) => r,
-        Ok(Err(_)) => {
+        // Log the reqwest error detail (DNS / TLS / refused) the JS side can't see — it only observes the
+        // resulting 502/504 status (logged by the web httpTraceInterceptor). `request` is only borrowed
+        // through this fn, never moved, so its method is still readable here.
+        Ok(Err(e)) => {
+            warn!("proxy_api {} {target} upstream send failed: {e}", request.method().as_str());
             responder.respond(empty(StatusCode::BAD_GATEWAY));
             return;
         }
         Err(_) => {
+            warn!("proxy_api {} {target} upstream headers timed out", request.method().as_str());
             responder.respond(empty(StatusCode::GATEWAY_TIMEOUT));
             return;
         }
@@ -834,6 +884,11 @@ async fn sse_supervisor_loop(
                 // Full-jitter backoff (parity with the worker): random(0, min(1000·2^attempt, 30000)).
                 let ceil = (1000u64 << attempt.min(5)).min(30_000);
                 let delay = Duration::from_millis(jitter(ceil));
+                // Announce the scheduled delay so the renderer's countdown chip can tick (the JS side owns
+                // the live clock). Backend→frontend events need no capability; same channel as the other
+                // soms-sse-* events. An early wake (`sse_net` retry / online) resolves the select before
+                // `delay` elapses; the next failure re-emits, the next open clears it via the state event.
+                let _ = app.emit("soms-sse-reconnect-in", delay.as_millis() as u64);
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     _ = wake.notified() => {
@@ -882,12 +937,26 @@ async fn open_one_stream(
     .await
     {
         Ok(Ok(r)) => r,
-        Ok(Err(_)) | Err(_) => return StreamOutcome::Err,
+        // Surface WHY the connect failed (DNS / TLS / refused / timeout) — without this the supervisor
+        // retried silently and the webview console never learned the cause.
+        Ok(Err(e)) => {
+            warn!("sse connect to {url} failed: {e}");
+            return StreamOutcome::Err;
+        }
+        Err(_) => {
+            warn!("sse connect to {url} timed out");
+            return StreamOutcome::Err;
+        }
     };
     if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        warn!("sse connect to {url} got 401 — session revoked/expired, forcing logout");
         return StreamOutcome::ForceLogout(None); // session dead — no retry
     }
     if !resp.status().is_success() {
+        warn!(
+            "sse connect to {url} returned unexpected status {}",
+            resp.status()
+        );
         return StreamOutcome::Err;
     }
 

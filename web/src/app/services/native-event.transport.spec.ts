@@ -20,20 +20,26 @@ function recordingSink() {
   const states: ConnectionState[] = [];
   let reconnects = 0;
   const forceLogouts: (string | undefined)[] = [];
+  const reconnectIns: (number | null)[] = [];
   const sink: RealtimeSink = {
     onEvent: (m) => events.push(m),
     onState: (s) => states.push(s),
     onReconnect: () => reconnects++,
     onForceLogout: (reason) => forceLogouts.push(reason),
+    onReconnectIn: (ms) => reconnectIns.push(ms),
   };
-  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts };
+  return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts, reconnectIns: () => reconnectIns };
 }
 
-/** Install a minimal `window.SomsFcm` exposing only `getConnState` (all the transport reads). */
-function installFakeFcm(connState: string): void {
-  (window as unknown as { SomsFcm: { getConnState: () => string } }).SomsFcm = {
+/** Install a minimal `window.SomsFcm` exposing only what the transport reads (`getConnState`) + the
+ *  retry channel (`retryNow`, recorded). Returns a counter for the retry-channel assertions. */
+function installFakeFcm(connState: string): { retryNows: () => number } {
+  let retryNows = 0;
+  (window as unknown as { SomsFcm: { getConnState: () => string; retryNow: () => void } }).SomsFcm = {
     getConnState: () => connState,
+    retryNow: () => { retryNows++; },
   };
+  return { retryNows: () => retryNows };
 }
 
 /** Invoke the currently-installed (or not) Kotlin push hook the way RealtimeService.forwardToJs does. */
@@ -46,12 +52,18 @@ function fireConnState(state: string): void {
   window.__SOMS_CONN_STATE__?.(state as ConnectionState);
 }
 
+/** Invoke the reconnect-in push hook the way RealtimeService.scheduleReopen does. */
+function fireReconnectIn(ms: number): void {
+  window.__SOMS_RECONNECT_IN__?.(ms);
+}
+
 describe('NativeEventTransport', () => {
   // The transport installs global hooks; restore both globals after each test so a leftover hook from one
   // case never bleeds into the next, and a test's fake SomsFcm never leaks to specs that expect it absent.
   afterEach(() => {
     window.__SOMS_EVENT__ = undefined;
     window.__SOMS_CONN_STATE__ = undefined;
+    window.__SOMS_RECONNECT_IN__ = undefined;
     (window as unknown as { SomsFcm?: unknown }).SomsFcm = undefined;
   });
 
@@ -113,6 +125,27 @@ describe('NativeEventTransport', () => {
     expect(rec.states).toEqual(['connecting', 'open', 'reconnecting']);
   });
 
+  it('forwards __SOMS_RECONNECT_IN__ (scheduleReopen backoff) so the chip can render a countdown', () => {
+    installFakeFcm('reconnecting');
+    const rec = recordingSink();
+    new NativeEventTransport(rec.sink).start();
+    fireReconnectIn(4000);
+    fireReconnectIn(2000);
+    expect(rec.reconnectIns()).toEqual([4000, 2000]);
+  });
+
+  it('retryNow() clears the countdown and invokes SomsFcm.retryNow() (cancel Kotlin backoff + reconnect)', () => {
+    const fcm = installFakeFcm('reconnecting');
+    const rec = recordingSink();
+    const t = new NativeEventTransport(rec.sink);
+    t.start();
+    t.retryNow();
+    // The manual retry voids the scheduled backoff → countdown cleared (parity with the worker/Rust).
+    expect(rec.reconnectIns()).toContain(null);
+    // ...and the JS→native retry channel fires (the real one posts the ACTION_RETRY Intent).
+    expect(fcm.retryNows()).toBe(1);
+  });
+
   it('does NOT emit a reconnect pulse on the FIRST open (downstream boots its own catch-up)', () => {
     installFakeFcm('connecting');
     const rec = recordingSink();
@@ -155,6 +188,7 @@ describe('NativeEventTransport', () => {
     expect(rec.events.length).toBe(0);
     expect(window.__SOMS_EVENT__).toBeUndefined();
     expect(window.__SOMS_CONN_STATE__).toBeUndefined();
+    expect(window.__SOMS_RECONNECT_IN__).toBeUndefined();
   });
 
   it('stop() is idempotent — calling it twice emits closed exactly once', () => {

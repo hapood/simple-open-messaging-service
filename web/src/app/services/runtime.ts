@@ -82,6 +82,10 @@ declare global {
        *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
        *  connection-state signal before the next state transition. Android-only. */
       getConnState: () => string;
+      /** User tapped the disconnected chip: cancel Kotlin's pending backoff + reconnect now (the JS→native
+       *  retry channel — parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered as
+       *  an ACTION_RETRY Intent; a no-op if the stream is already open. Android-only. */
+      retryNow: () => void;
       /** Read whether the 6-hour background-sync poller is enabled (stored in EncryptedSharedPreferences
        *  so the WorkManager worker can read it with no WebView alive). Defaults to true. Android-only;
        *  absent in the browser/desktop builds (guarded by isTauri() && isAndroid()). */
@@ -152,6 +156,11 @@ declare global {
      *  reflects the Kotlin-owned connection. Installed by the NativeEventTransport; the current value is
      *  also readable synchronously via `SomsFcm.getConnState()` (Kotlin only pushes on transitions). */
     __SOMS_CONN_STATE__?: (state: string) => void;
+    /** Kotlin→JS push (RealtimeService.scheduleReopen): the scheduled ms until the native stream's next
+     *  reconnect attempt, so the ConnectionBanner can render a live countdown (the facade owns the clock;
+     *  this just delivers the one-shot deadline Kotlin computes before its `postDelayed` backoff). Installed
+     *  by the NativeEventTransport; a no-op until then (Kotlin guards the call). */
+    __SOMS_RECONNECT_IN__?: (ms: number) => void;
   }
 }
 

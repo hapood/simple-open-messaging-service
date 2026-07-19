@@ -22,6 +22,15 @@ tauri = { version = "2", features = [] }
 # popup on Tauri desktop — the webview's Notification API is unreliable in desktop shells, so the
 # plugin is the documented path). Not used on Android (FCM/WorkManager cover it there).
 tauri-plugin-notification = "2"
+# Structured logging: provides the `log` facade impl so src/lib.rs can emit `warn!`/`error!`/`info!`.
+# Registered FIRST in run() so it captures every later plugin's setup + the URI-scheme proxies + the
+# desktop SSE supervisor. Sinks (see run()): Webview → forward every Rust log into the webview console
+# (the JS side re-emits them via the `plugin:log|log` listener — see web/.../main.ts — so Rust-side
+# failures land in the SAME console the JS errors do, visible via edge://inspect / adb logcat), Stdout
+# → terminal/docker, LogDir → a rotating file under the app-data log dir for post-mortem. `log` itself
+# is declared directly because src/lib.rs uses its macros.
+tauri-plugin-log = "2"
+log = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).

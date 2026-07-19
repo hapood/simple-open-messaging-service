@@ -41,6 +41,13 @@ export interface RealtimeSink {
    *  'device_revoke'), threaded so the facade can surface a reason-aware login notice; undefined on
    *  transports that don't carry it (the worker path). */
   onForceLogout(reason?: string): void;
+  /** The transport pushed the scheduled delay (ms) until its NEXT reconnect attempt — emitted ONCE when it
+   *  enters a backoff sleep, not on every tick. The facade owns the live countdown clock: it records the
+   *  deadline and decrements a public signal on a 250ms ticker, so transports never pay per-tick
+   *  cross-thread traffic. `null`/non-positive clears it (and the facade also clears on any state that
+   *  leaves `reconnecting`, so transports needn't emit a clear). Absent on transports/platforms that don't
+   *  expose their backoff — the chip then falls back to the plain "reconnecting" label. */
+  onReconnectIn(ms: number | null): void;
 }
 
 /** Abstract realtime transport — the swappable platform adapter. Subclasses push inbound events + state

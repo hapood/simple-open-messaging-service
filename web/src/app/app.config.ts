@@ -1,11 +1,13 @@
-import { APP_INITIALIZER, ApplicationConfig, CSP_NONCE, isDevMode, provideZonelessChangeDetection } from '@angular/core';
+import { APP_INITIALIZER, ApplicationConfig, CSP_NONCE, ErrorHandler, isDevMode, provideZonelessChangeDetection } from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { provideHttpClient, withInterceptorsFromDi, withFetch, HTTP_INTERCEPTORS } from '@angular/common/http';
+import { provideHttpClient, withInterceptorsFromDi, withInterceptors, withFetch, HTTP_INTERCEPTORS } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
 import { provideServiceWorker } from '@angular/service-worker';
 import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
 import { AuthInterceptor } from './auth.interceptor';
+import { httpTraceInterceptor } from './http-trace.interceptor';
+import { GlobalErrorHandler } from './global-error.handler';
 import { AuthService } from './services/auth.service';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
@@ -48,6 +50,10 @@ export const appConfig: ApplicationConfig = {
       useClass: AuthInterceptor,
       multi: true
     },
+    // Global sink for uncaught Angular errors (the `[angular]` family) — logs with a greppable prefix,
+    // disjoint from `[http]` (the httpTraceInterceptor) and `[unhandled]` (the main.ts window listeners).
+    // See global-error.handler.ts.
+    { provide: ErrorHandler, useClass: GlobalErrorHandler },
     provideRouter(routes, withComponentInputBinding()),
     // withFetch(): use the Fetch backend instead of XHR. Under the Tauri shell every API URL is
     // `api://localhost/...` (constants.ts `apiPrefix`), served by the Rust URI-scheme proxy — the
@@ -58,7 +64,15 @@ export const appConfig: ApplicationConfig = {
     // same-origin; under Tauri the Rust proxy injects the Bearer from ProxyState.token (the
     // AuthInterceptor's own Bearer is redundant but harmless). Upload-progress events are not consumed
     // anywhere, so the XHR→fetch switch is regression-free.
-    provideHttpClient(withInterceptorsFromDi(), withFetch()),
+    provideHttpClient(
+      withInterceptorsFromDi(),
+      withFetch(),
+      // Always-on HTTP visibility: log every FAILED request to the webview console (5xx + status-0
+      // network → error, 4xx → warn; the cancel/abort trace stays dev-only inside the file). Runs INNER
+      // to AuthInterceptor, so it logs first then rethrows and the 401 re-login side-effect still fires.
+      // See http-trace.interceptor.ts.
+      withInterceptors([httpTraceInterceptor]),
+    ),
     provideAnimationsAsync(),
     provideTransloco({
       config: {
@@ -82,7 +96,7 @@ export const appConfig: ApplicationConfig = {
     // needs 'unsafe-eval', forbidden by the bundled Tauri CSP, so it broke every
     // translation under the shell. This resolver uses Intl.PluralRules (no eval).
     provideTranslocoTranspiler(CspSafeIcuTranspiler),
-    // PWA service worker (ngsw). Disabled in dev so HMR + eruda keep working; the `application`
+    // PWA service worker (ngsw). Disabled in dev so HMR keeps working; the `application`
     // builder emits `ngsw-worker.js` (the SW script) + `ngsw.json` (its config) from
     // `ngsw-config.json` in the prod build. The arg is the SW SCRIPT path — `ngsw.json` is fetched by
     // the worker itself at runtime, NOT passed here (passing it makes Chrome refuse registration with

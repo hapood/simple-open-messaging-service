@@ -72,6 +72,12 @@ export class AuthService {
    *  to new subscribers (so a post-login spawn resolves at once). */
   private readonly _sessionTokenSub = new BehaviorSubject<string | null>(this._sessionToken)
   readonly sessionToken$ = this._sessionTokenSub.asObservable()
+  /** Reactive login state — true while a session is active. Drives the realtime transport's
+   *  connect/disconnect lifecycle (WebsocketService's login effect). Initialized from {@link isLoggedIn}
+   *  and flipped in {@link activateSession}/{@link setRestored} (→true) and {@link clearToken} (→false).
+   *  On the browser this mirrors the non-httpOnly `logged_in` presence cookie (the session credential
+   *  itself is JS-unreadable); on native it mirrors the restored/held token. */
+  readonly loggedIn = signal<boolean>(this.isLoggedIn())
 
   constructor(
     private http: HttpClient,
@@ -192,6 +198,7 @@ export class AuthService {
     if (isTauri()) this.setSessionToken(token)
     // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
     // held in JS.
+    this.loggedIn.set(true)
     this.push.onLogin()
     void this.webPush.onLogin()
   }
@@ -288,6 +295,7 @@ export class AuthService {
     this._trusted = true
     this._isKeep = true
     this._sessionTokenSub.next(token)
+    this.loggedIn.set(true)
     if (isAndroidNative()) window.SomsFcm!.setSessionToken(token)
     else if (isTauri()) tauriInvoke('set_session_token', { token }).catch(() => {})
   }
@@ -320,6 +328,7 @@ export class AuthService {
   async clearToken(): Promise<boolean> {
     this._sessionToken = null
     this._trusted = false
+    this.loggedIn.set(false)
     let nativeOk = true
     if (isAndroidNative()) {
       try { window.SomsFcm!.setSessionToken(null) } catch { nativeOk = false } // clears EncryptedSharedPreferences

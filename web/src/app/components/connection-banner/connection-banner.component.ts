@@ -1,5 +1,6 @@
-import { afterRenderEffect, Component, computed, effect, ElementRef, inject, input, OnDestroy, signal, untracked, viewChild } from '@angular/core';
+import { afterRenderEffect, Component, computed, effect, ElementRef, inject, input, OnDestroy, signal, viewChild } from '@angular/core';
 import { TranslocoService } from '@jsverse/transloco';
+import { LiveAnnouncer } from '@angular/cdk/a11y';
 import { type AnimationPlaybackControls } from 'motion';
 import { WebsocketService, ConnectionState } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
@@ -26,11 +27,13 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
  * every indicator — this component only owns its own appearance and behavior.
  *
  * The whole reason this exists: a silent SSE disconnect must not read as "messages just stopped arriving".
- * So the chip announces itself on the one transition that matters — `open → reconnecting` — by briefly
- * auto-expanding into a pill with the detail text, then collapsing back to a spinner dot. Click expands
- * it again any time. Boot `connecting` shows the dot quietly (no auto-expand). On recovery
- * (`reconnecting → open`) it morphs the spinner into a green check over ~1.4s, then fades out and is
- * removed from the DOM. Boot `connecting → open` does NOT flourish — only an actual reconnect does.
+ * So the chip announces itself on the one transition that matters — `open → reconnecting` — by expanding
+ * into a pill that STAYS open for the whole backoff window, showing a live "reconnecting in Ns" countdown
+ * (driven by {@link WebsocketService.reconnectIn}, which each transport feeds with its scheduled-backoff
+ * deadline and the facade decrements on a ticker). It collapses the instant it recovers. Boot `connecting`
+ * shows the dot quietly (no expand). On recovery (`reconnecting → open`) it morphs the spinner into a
+ * green check over ~1.4s, then fades out and is removed from the DOM. Boot `connecting → open` does NOT
+ * flourish — only an actual reconnect does.
  *
  * === Animation (split: CSS for shapes, Motion for the gradient) ===
  * The icon is ONE svg carrying every shape — a revolving arc (`.spin`), a check (`.check`), and an
@@ -48,7 +51,8 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
  * `prefers-reduced-motion` snaps every transition/morph to its end state and halts the spin/shimmer CSS.
  *
  * Visual states (driven by `show()`):
- *  - `connecting` / `reconnecting`: amber gradient + revolving arc (reconnecting spins faster, auto-expands).
+ *  - `connecting` / `reconnecting`: amber gradient + revolving arc (reconnecting spins faster, stays
+ *    expanded with the live countdown).
  *  - `recovered`: green gradient + check drawn on, then the chip fades out (`.recovering`).
  *  - `closed` (playground only): red gradient + offline ring/slash.
  *  - hidden otherwise (steady `open`, or production `closed` = logged out → navigate away).
@@ -85,12 +89,13 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
             </g>
           </svg>
         </span>
-        <!-- Always rendered (NOT behind @if): the text column's width is JS-measured (scrollWidth → --text-w
-             on the chip) and transitioned, so the dot↔pill morph is continuous both ways AND a label swap
-             can't snap the width (content-driven width isn't transitionable; a measured, transitioned width
-             is). aria-live announces state changes; the chip's aria-label carries the accessible name, so the
-             duplicated inner text is not re-read. -->
-        <span #text class="text" aria-live="polite">{{ label() }}</span>
+        <!-- The VISIBLE detail text (NOT behind @if): the text column's width is JS-measured (scrollWidth →
+             --text-w on the chip) and transitioned, so the dot↔pill morph is continuous both ways AND a label
+             swap can't snap the width (content-driven width isn't transitionable; a measured, transitioned
+             width is). aria-hidden because this text can TICK every second in 'reconnecting' — assistive tech
+             must NOT hear it per-second. State transitions are voiced instead via the CDK LiveAnnouncer (see
+             the transition effect's announce() calls), once per transition; the chip's aria-label names it. -->
+        <span #text class="text" aria-hidden="true">{{ label() }}</span>
       </button>
     }
   `,
@@ -253,6 +258,11 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
       font-size: 14px;
       font-weight: 500;
       line-height: 20px;
+      /* tabular-nums: the reconnecting countdown counts down one digit per second (5s→4s→…). Without it,
+         proportional digits would each have a different advance width, so the pill would re-flow its
+         measured width every tick (the re-measure effect runs on every label() change). Fixed-width digits
+         keep the countdown's width constant across ticks. Not a height-contributing property (exempt). */
+      font-variant-numeric: tabular-nums;
       min-width: 0;
       width: 0;
       opacity: 0;
@@ -301,6 +311,11 @@ const PALETTE: Record<ConnVisual, { from: string; to: string; ic: string }> = {
 export class ConnectionBannerComponent implements OnDestroy {
   private readonly ws = inject(WebsocketService);
   private readonly transloco = inject(TranslocoService);
+  /** CDK LiveAnnouncer: proactively voices connection-state transitions to assistive tech — more reliable
+   *  across screen readers than a raw aria-live region (whose mount-announcement is AT-dependent). Used ONLY
+   *  for the two transitions worth hearing (drop + recovery); the ticking countdown stays silent (it's the
+   *  aria-hidden visible text, never announced per-second). */
+  private readonly liveAnnouncer = inject(LiveAnnouncer);
   private readonly language = inject(LanguageService);
   /** The top-right indicator slot — this component is its PRIORITY occupant. While visible, it occupies
    *  the slot so the lower-priority update banner defers (and shows once the chip clears, if still wanted). */
@@ -318,13 +333,13 @@ export class ConnectionBannerComponent implements OnDestroy {
   /** True for ~1.4s after a reconnect recovers — drives the spinner→check flourish. */
   readonly recovering = signal(false);
 
-  /** Pill expanded (click toggles; auto-expand briefly on a mid-session reconnect). */
+  /** Pill expanded (stays open while reconnecting to show the live countdown; toggled by click in the other
+   *  shown states). */
   readonly expanded = signal(false);
 
   /** Only meaningful between the reconnect drop and the open that follows it. */
   private wasReconnecting = false;
 
-  private autoExpandTimer?: ReturnType<typeof setTimeout>;
   private recoverTimer?: ReturnType<typeof setTimeout>;
 
   /** The chip button, populated by the `@if` once show() turns truthy. Motion drives its children. */
@@ -354,8 +369,11 @@ export class ConnectionBannerComponent implements OnDestroy {
     return undefined;
   });
 
-  /** Detail text for the expanded pill / aria-label. Re-evaluates on language switch. */
-  readonly label = computed(() => {
+  /** The static, NON-ticking per-state message — the accessible text (the key {@link announce} voices via
+   *  the LiveAnnouncer + the aria-label base). It deliberately EXCLUDES the countdown so assistive tech
+   *  hears ONE announcement per state transition, not one per second; the visible pill separately renders
+   *  {@link label} (which overlays the ticking number). Re-evaluates on language switch. */
+  readonly stateMessage = computed(() => {
     this.language.lang();
     switch (this.effState()) {
       case 'connecting':   return this.transloco.translate('connection.connecting');
@@ -365,30 +383,60 @@ export class ConnectionBannerComponent implements OnDestroy {
     }
   });
 
+  /** The VISIBLE pill text. Same as {@link stateMessage} except in `reconnecting`, where it overlays the
+   *  live "reconnecting in Ns" countdown (driven by WebsocketService.reconnectIn, which the facade
+   *  decrements on a 250ms ticker). Because this ticks every second it MUST stay out of any aria-live
+   *  region — the visible span is aria-hidden, and the separate sr-only live region is bound to
+   *  {@link stateMessage}. Re-evaluates on language switch and on every countdown tick. */
+  readonly label = computed(() => {
+    this.language.lang();
+    if (this.effState() !== 'reconnecting') return this.stateMessage();
+    // Live countdown: render "reconnecting in Ns" when a backoff deadline is known (>0). Fall back to the
+    // plain "reconnecting" message for the brief pre-emit gap, the dead-worker respawn window, and the
+    // 0-edge — never show "reconnecting in 0s". Reading reconnectIn() registers it as a dependency, so the
+    // label re-evaluates (and the pill width re-measures) on every tick.
+    const ms = this.ws.reconnectIn();
+    if (ms != null && ms > 0) {
+      const secs = Math.max(1, Math.ceil(ms / 1000));
+      return this.transloco.translate('connection.reconnectingIn', { s: secs });
+    }
+    return this.stateMessage();
+  });
+
   readonly ariaLabel = computed(() => {
     this.language.lang();
-    const base = this.label();
-    // In `reconnecting` the click is a retry trigger — convey that affordance in the accessible name.
+    // Non-ticking base ({@link stateMessage}) so the accessible name is stable across countdown ticks; in
+    // `reconnecting` the click is a retry trigger, conveyed as part of the name.
+    const base = this.stateMessage();
     return this.effState() === 'reconnecting'
       ? `${base}. ${this.transloco.translate('connection.retry')}`
       : base;
   });
 
   constructor() {
-    /* State-transition watcher: the only writer of `recovering`/`wasReconnecting`, and the auto-expand
-       trigger. Reading effState() here is the single reactive input; writes go to independent signals. */
+    /* State-transition watcher: the only writer of `recovering`/`wasReconnecting`, and the stay-expanded
+       driver while reconnecting. Reading effState() here is the single reactive input; writes go to
+       independent signals. */
     effect(() => {
       const s: ConnectionState = this.effState();
       if (s === 'reconnecting') {
-        // The failure mode this component exists for — announce it, don't rely on the user spotting a dot.
+        // The failure mode this component exists for — STAY expanded so the live countdown stays readable
+        // for the whole backoff window (not just a 3.2s announce). There is no timed collapse: the pill is
+        // the countdown readout, and it collapses the instant we recover (playRecoverFlourish) or go quiet
+        // (connecting/closed). Clicking while reconnecting retries instead of toggling.
         this.wasReconnecting = true;
-        this.scheduleAutoExpand();
+        this.expanded.set(true);
+        this.announce('connection.reconnecting');
       } else if (s === 'connecting') {
-        // Boot connect: show the dot quietly (no auto-expand, no flourish on the open that follows).
+        // Boot connect: show the dot quietly (no auto-expand, no flourish on the open that follows). NOT
+        // announced — boot is a routine state, voicing it on every launch would be noise.
         this.wasReconnecting = false;
         this.collapse();
       } else if (s === 'open') {
-        if (this.wasReconnecting) this.playRecoverFlourish();
+        if (this.wasReconnecting) {
+          this.playRecoverFlourish();
+          this.announce('connection.recovered');
+        }
         this.wasReconnecting = false;
       } else { // 'closed' (logout / force-login) — the shell navigates away; just reset.
         this.wasReconnecting = false;
@@ -421,7 +469,7 @@ export class ConnectionBannerComponent implements OnDestroy {
        font metrics directly, with no layout dependency, so it's correct the instant the textContent updates.
        +2px keeps sub-pixel rounding from clipping the last glyph. */
     afterRenderEffect(() => {
-      this.label(); // track: re-measure on any state or language change
+      this.label(); // track: re-measure on any state/language change (and every countdown tick)
       const textEl = this.textRef()?.nativeElement;
       const chipEl = this.chipRef()?.nativeElement;
       if (!textEl || !chipEl) return;
@@ -460,42 +508,31 @@ export class ConnectionBannerComponent implements OnDestroy {
   }
 
   /** Chip click. In `reconnecting` (the one state where the user has agency) it triggers an immediate
-   *  retry — skipping the worker's backoff — and collapses the pill as visible feedback that the tap
-   *  landed; the dot keeps spinning while the reconnect is retried, and the recover flourish fires on
-   *  success. In the other shown states the click just toggles the pill open/closed to read the detail. */
+   *  retry — skipping the backoff — and leaves the pill expanded; the visible feedback is the countdown
+   *  resetting (the next failure emits a fresh, small deadline) or the recover flourish firing on success
+   *  (which collapses it). In the other shown states the click just toggles the pill open/closed. */
   onClick(): void {
-    clearTimeout(this.autoExpandTimer);
     if (this.effState() === 'reconnecting') {
-      this.expanded.set(false);
       this.ws.retryNow();
     } else {
       this.expanded.update((v) => !v);
     }
   }
 
-  private scheduleAutoExpand(): void {
-    // untracked is load-bearing: this is called from the state-transition effect, and reading expanded()
-    // reactively here would register it as a dependency. The effect would then re-run on every toggle, hit
-    // the reconnecting branch, and call this again — immediately re-expanding (so manual collapse and the
-    // 3.2s auto-collapse could never take effect while reconnecting). Read it without tracking.
-    if (untracked(this.expanded)) return;
-    this.expanded.set(true);
-    clearTimeout(this.autoExpandTimer);
-    this.autoExpandTimer = setTimeout(() => this.expanded.set(false), 3200);
-  }
-
-  /** Collapse the pill and cancel any pending auto-collapse. Called when leaving the announcement state for
-   *  a quiet one (connecting/closed) so those states always read as a dot/glyph, never inheriting a stale
-   *  `expanded` left over from a prior reconnecting announcement. A manual click still wins between transitions. */
+  /** Collapse the pill. Called when leaving the reconnecting state for a quiet one (connecting/closed) so
+   *  those states always read as a dot/glyph, never inheriting a stale `expanded` left over from the
+   *  reconnecting window. */
   private collapse(): void {
-    clearTimeout(this.autoExpandTimer);
     this.expanded.set(false);
   }
 
+  /** Voice a connection-state transition to assistive tech via the CDK LiveAnnouncer. Translates the key
+   *  at call time (announce fires once per transition, on the language current at that moment). */
+  private announce(key: 'connection.reconnecting' | 'connection.recovered'): void {
+    this.liveAnnouncer.announce(this.transloco.translate(key));
+  }
+
   private playRecoverFlourish(): void {
-    // A fast reconnecting → open can leave the 3.2s auto-expand timer pending; cancel it so it can't fire
-    // mid-flourish (or after, into a freshly re-mounted chip) and toggle the pill back open.
-    clearTimeout(this.autoExpandTimer);
     this.expanded.set(false);
     this.recovering.set(true);
     clearTimeout(this.recoverTimer);
@@ -504,7 +541,6 @@ export class ConnectionBannerComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     this.controls.forEach((c) => c.stop());
-    clearTimeout(this.autoExpandTimer);
     clearTimeout(this.recoverTimer);
     this.slot.priorityOccupied.set(false); // release the indicator slot so a deferred update can show
   }

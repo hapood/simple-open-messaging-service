@@ -476,6 +476,16 @@ class MainActivity : TauriActivity() {
         @JavascriptInterface
         fun getConnState(): String = RealtimeService.connState
 
+        /** User tapped the disconnected chip: tell RealtimeService to cancel its pending backoff and
+         *  reconnect immediately (parity with the worker's retry-now and Rust's sse_net(online:true)).
+         *  Delivered as an Intent action the same way ACTION_FOREGROUND/BACKGROUND are; a no-op if the
+         *  stream is already open. */
+        @JavascriptInterface
+        fun retryNow() {
+            val a = activityRef.get() ?: return
+            a.startService(Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_RETRY))
+        }
+
         /** Whether the 6-hour background-sync poller is enabled (default true). Read by the Settings page
          *  to render the toggle's initial state. */
         @JavascriptInterface

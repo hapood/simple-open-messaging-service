@@ -84,6 +84,15 @@ class RealtimeService : Service() {
                 Log.i(TAG, "onStartCommand foreground (drop persistent notification)")
                 dropForegroundNotification()
             }
+            ACTION_RETRY -> {
+                // User tapped the disconnected chip (SomsFcm.retryNow → this action): cancel the pending
+                // backoff + reset the attempt counter so the immediate retry starts fresh, then let the
+                // openStream() below reconnect at once. openStream() is a no-op if a stream is already open,
+                // so a retry while healthy is harmless. Parity with the worker's retry-now / Rust's sse_net.
+                Log.i(TAG, "onStartCommand retry-now (cancel backoff + reconnect)")
+                handler.removeCallbacks(reopenTask)
+                attempt = 0
+            }
             else -> {
                 // ACTION_BACKGROUND (app backgrounded + toggle on) OR a START_STICKY system restart:
                 // promote to a dataSync foreground service so the system keeps the connection alive.
@@ -233,13 +242,29 @@ class RealtimeService : Service() {
         }
     }
 
+    /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY
+     *  path so a manual retry never races the scheduled one. A named Runnable (not an anonymous lambda) so
+     *  removeCallbacks can target it selectively without clearing the unrelated away-coalesce task. */
+    private val reopenTask = Runnable { openStream() }
+
     /** Re-open the stream after exponential backoff (capped ~32s). okhttp-sse already retries some
      *  transient failures; this covers server-initiated closes + the rest. No-op once stopping. */
     private fun scheduleReopen() {
         if (stopping) return
+        handler.removeCallbacks(reopenTask) // never stack two pending reopens
         attempt = (attempt + 1).coerceAtMost(6)
         val delayMs = (1000L shl attempt.coerceAtMost(5)).coerceAtMost(30_000)
-        handler.postDelayed({ openStream() }, delayMs)
+        // Announce the scheduled delay so the WebView's countdown chip can tick (the JS side owns the live
+        // clock). Both call sites push "reconnecting" immediately before this, so the order is
+        // state→deadline. openStream() pushes the next state (open/reconnecting), which clears it.
+        pushReconnectIn(delayMs)
+        handler.postDelayed(reopenTask, delayMs)
+    }
+
+    /** Push the scheduled-ms-until-next-reconnect to the WebView so the ConnectionBanner can render a live
+     *  countdown (mirrors [pushConnState]; a no-op until the native transport installs the hook). */
+    private fun pushReconnectIn(ms: Long) {
+        SomsBridge.eval("window.__SOMS_RECONNECT_IN__ && window.__SOMS_RECONNECT_IN__($ms);")
     }
 
     /** Android 15 (API 35) dataSync time budget exhausted (~6h/24h). Stop cleanly; the WorkManager
@@ -264,6 +289,10 @@ class RealtimeService : Service() {
         /** App backgrounded + toggle on → promote to a dataSync foreground service so the connection
          *  survives in the background. Delivered by MainActivity.onStop. */
         const val ACTION_BACKGROUND = "com.soms.client.action.BACKGROUND"
+        /** User tapped the disconnected chip → cancel the pending backoff + reconnect now (the JS→native
+         *  retry channel, parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered
+         *  by SomsFcm.retryNow. */
+        const val ACTION_RETRY = "com.soms.client.action.RETRY"
         /** The most recently pushed connection state. Process-global so the SomsFcm @JavascriptInterface
          *  can read it synchronously (a freshly-booted WebView needs the current state, but [pushConnState]
          *  only fires on transitions). Volatile: written on the SSE thread, read on the JS bridge thread. */

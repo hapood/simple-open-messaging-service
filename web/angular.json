@@ -33,7 +33,6 @@
             ],
             "scripts": [],
             "allowedCommonJsDependencies": [
-              "eruda",
               "dayjs",
               "@messageformat/core"
             ]

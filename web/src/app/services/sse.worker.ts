@@ -126,9 +126,7 @@ async function run(): Promise<void> {
       await openOnce();
       if (manualClose) break;
       // Stream closed cleanly (e.g. a server restart) → back off and reconnect.
-      post({ type: 'state', state: 'reconnecting' });
-      attempt++;
-      await sleep(backoff());
+      await reconnectAfter();
     } catch (err) {
       if (manualClose) break;
       if (err instanceof AuthNeededError) {
@@ -140,13 +138,24 @@ async function run(): Promise<void> {
         break;
       }
       // Network / other error: back off and retry.
-      post({ type: 'state', state: 'reconnecting' });
-      attempt++;
-      await sleep(backoff());
+      await reconnectAfter();
     }
   }
   running = false;
   post({ type: 'state', state: 'closed' });
+}
+
+/** Flip to `reconnecting`, advance the backoff step, announce the scheduled delay (so main can render a
+ *  live countdown), then sleep for it. An `online` event or `retry-now` resolves the sleep early (see
+ *  `sleep`/`sleepResolver`); the loop then reopens at once and, on the next failure, calls this again —
+ *  re-announcing a fresh deadline. No explicit clear: the next state transition (open/closed) lets main
+ *  drop the countdown. */
+async function reconnectAfter(): Promise<void> {
+  post({ type: 'state', state: 'reconnecting' });
+  attempt++;
+  const ms = backoff();
+  post({ type: 'reconnect-in', ms });
+  await sleep(ms);
 }
 
 /** Open one SSE stream. Desktop (cross-origin): obtains a token (cached, or via `need-token` on the
