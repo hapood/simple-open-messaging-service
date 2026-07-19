@@ -1,39 +1,40 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { ShellService } from './shell.service.js';
-import { SHELL_COMPAT } from '../config/shell-compat.js';
 
 /**
- * ShellService.compat is the unauthenticated gate the Tauri shell hits at first run / reconfigure
- * (`GET /shell/compat?version=<shell>`). It must (a) accept a shell at/above minShellVersion, (b) reject
- * an older shell with compatible=false + a messageKey the bootstrap surfaces as "upgrade the app", and
- * (c) reject a missing/garbage version. compat() is pure (no data/shell I/O), so it tests without a
+ * ShellService.compat reports this server's version + the public login policy (`GET /shell/compat`).
+ * Compatibility is decided by the shell — it carries a hard-coded backend-version upper bound
+ * (`COMPAT_BACKEND_MAX` in the shell's Cargo source) and accepts this server iff
+ * `serverVersion < COMPAT_BACKEND_MAX`. The server sets no shell floor, so compat() carries no compat
+ * logic: it echoes SERVER_VERSION AND folds in PUBLIC_CONFIG (registrationOpen + loginMode) so the
+ * Tauri shell learns the enabled login methods in the SAME round-trip (mirrors GET /api/v1/config; the
+ * browser build keeps using /config). compat() is pure (no shell-bundle I/O), so it tests without a
  * fixture. manifest()/bundlePath() hit the filesystem and are covered by the e2e harness instead.
  */
 describe('ShellService.compat', () => {
   const svc = new ShellService();
-  const min = SHELL_COMPAT.minShellVersion;
+  // SERVER_VERSION is read from <cwd>/package.json at module load; compare against the same source so
+  // the test tracks the real version rather than hard-coding a literal that drifts on the next bump.
+  const pkgVersion = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')).version;
 
-  it('accepts a shell at exactly minShellVersion', () => {
-    expect(svc.compat(min).compatible).toBe(true);
+  it('reports the server version (the shell decides compatibility, not the server)', () => {
+    const r = svc.compat();
+    expect(r.serverVersion).toBe(pkgVersion);
   });
-  it('accepts a shell above minShellVersion', () => {
-    expect(svc.compat('99.0.0').compatible).toBe(true);
+
+  it('folds in the public login policy (registrationOpen + loginMode) from PUBLIC_CONFIG', () => {
+    const r = svc.compat();
+    expect(r.registrationOpen).toBe(PUBLIC_CONFIG.registrationOpen);
+    expect(r.loginMode).toBe(PUBLIC_CONFIG.loginMode);
   });
-  it('rejects a shell below minShellVersion and surfaces a messageKey', () => {
-    const r = svc.compat('0.0.1');
-    expect(r.compatible).toBe(false);
-    expect(r.minShellVersion).toBe(min);
-    // messageKey is null by default (the bootstrap uses its own default copy) — but the field is present.
-    expect('messageKey' in r).toBe(true);
-  });
-  it('rejects a missing / empty version', () => {
-    expect(svc.compat(undefined).compatible).toBe(false);
-    expect(svc.compat('').compatible).toBe(false);
-    expect(svc.compat('   ').compatible).toBe(false);
-  });
-  it('always echoes the server version + the floor', () => {
-    const r = svc.compat('1.2.3');
-    expect(r.serverVersion).toMatch(/./); // SERVER_VERSION (may be 'unknown' if package.json unreadable)
-    expect(r.minShellVersion).toBe(min);
+
+  it('carries no compatibility-decision fields — the shell owns that decision', () => {
+    const r = svc.compat();
+    expect(Object.keys(r).sort()).toEqual(['loginMode', 'registrationOpen', 'serverVersion']);
+    expect(r).not.toHaveProperty('compatible');
+    expect(r).not.toHaveProperty('minShellVersion');
   });
 });

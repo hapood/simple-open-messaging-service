@@ -16,11 +16,11 @@ import { translateBizResult } from '../../services/biz-code';
 import { isTauri } from '../../services/runtime';
 
 /**
- * One-time-code login page (Android only — the `auth/otp` route is canMatch-gated to `isAndroidNative`).
- * The user enters the account the admin issued the code for + the 6-digit code → a long-term `app` session.
- * Reached automatically from `/auth/login` under APP_OTP_AND_QR mode (password disabled). Shows a switcher
- * back to password login when both are enabled (mode ALL), and a one-shot notice when the prior app session
- * was replaced ("signed in elsewhere").
+ * One-time-code login page (every platform). The user enters the account the admin issued the code for + the
+ * 6-digit code → a session whose lifetime follows the platform's trust (native permanent, browser 14-day).
+ * Reached automatically from `/auth/login` under APP_OTP_AND_QR mode (password disabled). Shows switchers to
+ * the other enabled methods (password under mode ALL, QR always under the alt modes), a web-session notice
+ * on the browser, and a one-shot notice when the prior app session was replaced ("signed in elsewhere").
  */
 @Component({
   selector: 'app-otp-login-page',
@@ -50,16 +50,16 @@ export class OtpLoginPageComponent {
   account = signal('');
   code = signal('');
   resp = signal('');
-  notice = signal('');
   isSubmitting = signal(false);
   isDisabled = computed(() => this.isSubmitting() || this.account() === '' || this.code() === '');
   /** Password login is offered as a switcher option when enabled for this platform (mode ALL). */
   readonly canPassword = computed(() => this.config.methodsForPlatform().includes('password'));
+  /** QR login is offered as a switcher when enabled — always so under APP_OTP_AND_QR/ALL. Android is the one
+   *  platform where OTP and QR coexist, so the OTP page links across to QR there. */
+  readonly canQr = computed(() => this.config.methodsForPlatform().includes('qr'));
 
   constructor() {
     void this.config.ensureLoaded();
-    const noticeKey = this.auth.consumeLoginNotice();
-    if (noticeKey) this.notice.set(this.transloco.translate(noticeKey));
   }
 
   onAccountInput(v: string) {
@@ -98,5 +98,10 @@ export class OtpLoginPageComponent {
   jumpToPassword() {
     // replaceUrl: switching login methods must not stack entries (the clean-history contract).
     this.routeService.redirect(RoutePage.AUTH_LOGIN);
+  }
+
+  jumpToQr() {
+    // replaceUrl: switching login methods must not stack entries (the clean-history contract).
+    this.routeService.redirect(RoutePage.AUTH_QR);
   }
 }

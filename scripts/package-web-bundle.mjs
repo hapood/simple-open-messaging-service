@@ -6,12 +6,18 @@
 // SHA-256 catches transport corruption, partial downloads, and manifest/bundle version drift. IP/http
 // origins are not guaranteed secure by policy.
 //
-// Produces under data/shell/:
+// Produces under shell-bundle/:
 //   soms-web-<webVersion>.tar.gz   — gzip tarball of web/dist/web/browser
 //   manifest.json                  — { webVersion, sha256 }
 //
-// (minShellVersion + downloadUrl are NOT stored here — the backend merges them from SHELL_COMPAT at
-// serve time, so the manifest can never drift from the compat decision. See src/shell/shell.service.ts.)
+// This is a BUILD artifact, not runtime state. In production the Dockerfile bakes shell-bundle/ read-only
+// into the image at /app/shell-bundle — OUTSIDE the bind-mounted /app/data volume — so the bundle is
+// immutable per image and never drifts into operator-writable state. Locally (`npm run bundle:package`)
+// it writes ./shell-bundle/ at the repo root (gitignored).
+//
+// (downloadUrl is NOT stored here — the backend merges it in at serve time from a fixed route path.
+// The shell owns version compatibility via a hard-coded backend-version upper bound in its Cargo source,
+// so there is no server-side shell floor to store. See src/shell/shell.service.ts.)
 
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -33,7 +39,7 @@ if (!existsSync(browserDir)) {
   process.exit(1);
 }
 
-const outDir = resolve(root, 'data/shell');
+const outDir = resolve(root, 'shell-bundle');
 mkdirSync(outDir, { recursive: true });
 const tarball = resolve(outDir, `soms-web-${webVersion}.tar.gz`);
 
@@ -47,5 +53,5 @@ const sha256 = createHash('sha256').update(bytes).digest('hex');
 const manifest = { webVersion, sha256 };
 writeFileSync(resolve(outDir, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
 
-console.log(`package-web-bundle: wrote data/shell/soms-web-${webVersion}.tar.gz (${bytes.length} bytes) + manifest.json`);
+console.log(`package-web-bundle: wrote shell-bundle/soms-web-${webVersion}.tar.gz (${bytes.length} bytes) + manifest.json`);
 console.log(`  webVersion=${webVersion} sha256=${sha256.slice(0, 16)}…`);

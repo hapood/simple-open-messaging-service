@@ -1,0 +1,152 @@
+// Server-config page styles. The centered form (`.cfg-shell`) is the ONLY in-flow element; the progress
+// bar, step label, and footnote are position:fixed overlays so the connect flow appearing/disappearing
+// never reflows the form. Integer-px vertical metrics per the project CSS rule (line-height + gaps).
+
+.cfg-back {
+  position: fixed;
+  top: calc(var(--soms-safe-top, 0px) + 4px);
+  left: 4px;
+  width: 44px;
+  height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--app-text-secondary);
+  cursor: pointer;
+  z-index: 60;
+  -webkit-tap-highlight-color: transparent;
+
+  &__arrow {
+    font-size: 32px;
+    line-height: 36px;
+    font-weight: 500;
+    margin-top: -6px; // optical centering of the single-chevron glyph
+  }
+}
+
+:host {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  // 100dvh (dynamic viewport height) makes the form recenter in the visible area when the mobile IME
+  // opens, so the input/button stay on screen; 100vh is the fallback where dvh is unsupported.
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
+  box-sizing: border-box;
+  background: var(--app-surface);
+}
+
+.cfg-shell {
+  width: 100%;
+  max-width: 380px;
+  text-align: center;
+}
+
+.cfg-logo {
+  display: block;
+  margin: 0 auto 24px;
+}
+
+// Screen-reader-only: hides the <h1> landmark visually while keeping it in the a11y tree.
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.cfg-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  text-align: left;
+}
+
+.cfg-field {
+  width: 100%;
+
+  // Reserve the subscript slot for a single line so toggling between empty / validation-error /
+  // insecure-warning never changes the field's height — the Connect button stays put (no reflow).
+  // Both subscript messages are kept to one short line, so one line of reservation is enough.
+  ::ng-deep .mat-mdc-form-field-subscript-wrapper {
+    min-height: 24px;
+  }
+  ::ng-deep .mat-mdc-form-field-error-text,
+  ::ng-deep .mat-mdc-form-field-hint-text {
+    font-size: 12px;
+    line-height: 16px;
+  }
+  // The insecure warning is this field's only hint → tint it as a warning (overrides Material's muted
+  // hint color via the .cfg-field specificity prefix).
+  ::ng-deep .mat-mdc-form-field-hint-text {
+    color: var(--app-warning);
+  }
+}
+
+.cfg-action {
+  margin-top: 0;
+  width: 100%;
+}
+
+// --- Fixed TOP overlays (out of flow): determinate progress + the current step label centered below it.
+.cfg-progress {
+  position: fixed;
+  top: var(--soms-safe-top, 0px);
+  left: 0;
+  right: 0;
+  z-index: 45;
+}
+
+.cfg-step {
+  position: fixed;
+  top: calc(var(--soms-safe-top, 0px) + 12px);
+  left: 0;
+  right: 0;
+  margin: 0;
+  padding: 0 16px;
+  text-align: center;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-text-secondary);
+  z-index: 45;
+}
+
+// --- Fixed BOTTOM footnote (out of flow): the page description as a small, faded footnote.
+.cfg-desc {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(var(--soms-safe-bottom, 0px) + 20px);
+  margin: 0;
+  padding: 0 24px;
+  text-align: center;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-secondary);
+  opacity: 0.75;
+  z-index: 40;
+}
+
+.cfg-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--soms-safe-bottom, 0px) + 64px);
+  transform: translateX(-50%);
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.8);
+  color: #fff;
+  font-size: 13px;
+  line-height: 18px;
+  z-index: 50;
+}

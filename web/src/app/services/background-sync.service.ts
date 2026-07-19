@@ -28,9 +28,9 @@ export class BackgroundSyncService {
     typeof window !== 'undefined' ? (window.SomsFcm?.getPollingEnabled?.() ?? true) : true,
   );
 
-  /** Whether the dataSync foreground service is enabled (Kotlin default false — opt-in). */
+  /** Whether the dataSync foreground service is enabled (Kotlin default true). */
   readonly fgsEnabled = signal<boolean>(
-    typeof window !== 'undefined' ? (window.SomsFcm?.getForegroundServiceEnabled?.() ?? false) : false,
+    typeof window !== 'undefined' ? (window.SomsFcm?.getForegroundServiceEnabled?.() ?? true) : true,
   );
 
   /** FCM availability snapshot, read once at boot. Refreshed by [requestFcmCheck]. */

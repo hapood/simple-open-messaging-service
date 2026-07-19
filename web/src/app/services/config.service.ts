@@ -2,7 +2,6 @@ import { computed, inject, Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { firstValueFrom } from 'rxjs';
 import { apiPrefix } from './constants';
-import { isAndroidNative } from './runtime';
 
 /** Mirror of the backend `LoginMode` (src/config/public-config.ts). 1=all, 2=app-otp+qr, 3=password-only. */
 export enum LoginMode {
@@ -47,17 +46,19 @@ export class ConfigService {
   private loadPromise: Promise<void> | null = null;
 
   /** Methods available on THIS platform under the current `loginMode`. Empty until config is loaded.
-   *  Drives which login UI the shell renders (and whether the method switcher shows >1 option). */
+   *  Drives which login UI the shell renders (and whether the method switcher shows >1 option).
+   *
+   *  Both OTP and QR are available on EVERY platform under the alt modes; they differ only in session
+   *  lifetime (trusted native clients → permanent; browser → 14-day sliding) and are switchable everywhere. */
   readonly methodsForPlatform = computed<LoginMethod[]>(() => {
     const mode = this.loginMode();
     if (mode === null) return [];
-    const android = isAndroidNative();
     const passwordOn = mode === LoginMode.ALL || mode === LoginMode.PASSWORD_ONLY;
-    const altOn = mode === LoginMode.ALL || mode === LoginMode.APP_OTP_AND_QR; // otp on Android, qr elsewhere
+    const altOn = mode === LoginMode.ALL || mode === LoginMode.APP_OTP_AND_QR; // otp + qr, both on every platform
     const methods: LoginMethod[] = [];
     if (passwordOn) methods.push('password');
-    if (altOn && android) methods.push('otp');
-    if (altOn && !android) methods.push('qr');
+    if (altOn) methods.push('otp');
+    if (altOn) methods.push('qr');
     return methods;
   });
 
@@ -77,5 +78,18 @@ export class ConfigService {
       })
       .finally(() => this.loaded.set(true));
     return this.loadPromise;
+  }
+
+  /** Force a fresh `/config` fetch, bypassing the cached result. {@link ensureLoaded} caches its settled
+   *  promise for the whole app session, so without this two flows stay stale forever: a transient failure
+   *  that the user wants to retry, and a reconfigure that pointed the app at a different backend. Resets
+   *  the signals so consumers re-enter the loading state (the login page swaps its error card / form for a
+   *  spinner) until the new request settles. Concurrent callers share the new in-flight promise. */
+  reload(): Promise<void> {
+    this.loadPromise = null;
+    this.loaded.set(false);
+    this.registrationOpen.set(null);
+    this.loginMode.set(null);
+    return this.ensureLoaded();
   }
 }

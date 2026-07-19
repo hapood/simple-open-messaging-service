@@ -6,38 +6,11 @@
        updates this to match the resolved theme, so the browser chrome blends from the very first
        frame — placed before the script so the script can find it via querySelector. -->
   <meta name="theme-color" content="#2196f3">
-  <!-- Apply the persisted/system theme before first paint to avoid a flash of the
-       wrong theme (FOUC). Mirrors ThemeService's resolution exactly; the service
-       re-asserts and owns runtime changes after Angular boots. Also writes the matching
-       theme-color so mobile browser chrome (and the PWA splash) never flashes the wrong hue. -->
-  <script>
-    (function () {
-      try {
-        var stored = localStorage.getItem('soms.theme');
-        var mode = (stored === 'light' || stored === 'dark') ? stored : 'system';
-        var dark = mode === 'dark' ||
-          (mode === 'system' && window.matchMedia &&
-            window.matchMedia('(prefers-color-scheme: dark)').matches);
-        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-        var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute('content', dark ? '#0b141a' : '#2196f3');
-      } catch (e) { /* localStorage disabled — ThemeService applies the default */ }
-    })();
-  </script>
-  <!-- Set <html lang> before first paint so the very first frame has the correct
-       language attribute (screen readers / a11y). Mirrors LanguageService's
-       resolution; the service re-asserts and owns runtime changes after boot. -->
-  <script>
-    (function () {
-      try {
-        var stored = localStorage.getItem('soms.lang');
-        var lang = (stored === 'en' || stored === 'zh-CN')
-          ? stored
-          : (navigator.language && navigator.language.toLowerCase().indexOf('zh') === 0 ? 'zh-CN' : 'en');
-        document.documentElement.setAttribute('lang', lang);
-      } catch (e) { /* localStorage disabled — LanguageService applies the default */ }
-    })();
-  </script>
+  <!-- Pre-paint FOUC bootstrap (persisted theme + language). Loaded as an EXTERNAL 'self' script so the
+       somsapp:// CSP `script-src 'self'` admits it without a nonce — an inline <script> would be blocked.
+       Synchronous (classic, no defer) so it runs during head parsing, before <body> paints. ThemeService /
+       LanguageService re-assert and own these attributes at runtime after boot. -->
+  <script src="/boot.js"></script>
   <title>SOMS</title>
   <base href="/">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">

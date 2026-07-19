@@ -23,10 +23,7 @@ export function ReuseAlertsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-start justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('reuse.title')}</h1>
-          <p className="text-sm text-muted-foreground">{t('reuse.desc')}</p>
-        </div>
+        <p className="max-w-xl text-sm text-muted-foreground">{t('reuse.desc')}</p>
         <div className="flex items-center gap-1">
           {SIZES.map((s) => (
             <Button

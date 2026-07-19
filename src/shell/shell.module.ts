@@ -13,7 +13,7 @@ import { ShellService, SHELL_DIR } from './shell.service.js';
  */
 @Module({
   providers: [
-    { provide: SHELL_DIR, useValue: join(process.cwd(), 'data', 'shell') },
+    { provide: SHELL_DIR, useValue: join(process.cwd(), 'shell-bundle') },
     ShellService,
   ],
   exports: [ShellService],

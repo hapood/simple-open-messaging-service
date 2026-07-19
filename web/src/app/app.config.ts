@@ -49,13 +49,14 @@ export const appConfig: ApplicationConfig = {
       multi: true
     },
     provideRouter(routes, withComponentInputBinding()),
-    // withFetch(): use the Fetch backend instead of XHR. Required under the Tauri shell —
-    // installNativeFetch() (runtime.ts, called before bootstrap) swaps globalThis.fetch for the
-    // tauri-plugin-http reqwest client, and the Fetch backend is the only HttpClient backend that
-    // reads globalThis.fetch; without it, API calls would still go out via XHR and hit the webview's
-    // CORS gate. Auth: the browser auto-attaches the httpOnly `media_token` cookie same-origin (no
-    // header needed), while native builds send `Authorization: Bearer` via this same fetch path. The
-    // fetch backend's default credentials are correct for both. Upload-progress events are not consumed
+    // withFetch(): use the Fetch backend instead of XHR. Under the Tauri shell every API URL is
+    // `api://localhost/...` (constants.ts `apiPrefix`), served by the Rust URI-scheme proxy — the
+    // webview's own fetch dispatches custom schemes natively (same as it already does for `media://`
+    // in avatar-cache.service), so NO fetch override is needed (the old `installNativeFetch` +
+    // tauri-plugin-http path is gone). The Fetch backend is the only HttpClient backend that routes
+    // through `globalThis.fetch`. Auth: the browser auto-attaches the httpOnly `media_token` cookie
+    // same-origin; under Tauri the Rust proxy injects the Bearer from ProxyState.token (the
+    // AuthInterceptor's own Bearer is redundant but harmless). Upload-progress events are not consumed
     // anywhere, so the XHR→fetch switch is regression-free.
     provideHttpClient(withInterceptorsFromDi(), withFetch()),
     provideAnimationsAsync(),

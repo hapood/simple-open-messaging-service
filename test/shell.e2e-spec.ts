@@ -24,7 +24,7 @@ import { BusinessCode } from '../src/common/business-code';
  *   - the per-route rate limit (ThrottleGuard → HTTP 429 + RATE_LIMITED).
  *
  * `SHELL_DIR` is overridden with a temp dir so manifest/bundle tests are hermetic: the repo's real
- * `data/shell` may hold a bundle from a prior image build (or nothing at all on a dev machine),
+ * `shell-bundle` may hold a bundle from a prior image build (or nothing at all on a dev machine),
  * so neither is a sound fixture source.
  */
 describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
@@ -59,30 +59,24 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
     if (shellDir) rmSync(shellDir, { recursive: true, force: true });
   });
 
-  it('compat accepts a shell at/above the floor (HTTP 200 + OK + compatible:true)', async () => {
-    const res = await request(app.getHttpServer()).get('/api/v1/shell/compat?version=99.0.0');
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(BusinessCode.OK);
-    expect(res.body.data.compatible).toBe(true);
-    expect(res.body.data.minShellVersion).toBe('0.1.0');
-    expect(typeof res.body.data.serverVersion).toBe('string');
-  });
-
-  it('compat rejects an older shell but stays HTTP 200 + OK (compatible is in-band, not an HTTP error)', async () => {
-    const res = await request(app.getHttpServer()).get('/api/v1/shell/compat?version=0.0.1');
-    expect(res.status).toBe(200);
-    expect(res.body.code).toBe(BusinessCode.OK);
-    expect(res.body.data.compatible).toBe(false);
-    expect(res.body.data.minShellVersion).toBe('0.1.0');
-  });
-
-  it('is reachable WITHOUT auth — @Public() opts out of the global SessionAuthGuard', async () => {
-    // No Authorization header. A non-@Public route would be 401/UNAUTHENTICATED; the missing-version
-    // rejection below proves the request reached the handler (compatible:false), not the auth guard.
+  it('compat reports the server version (the shell decides compatibility, not the server)', async () => {
     const res = await request(app.getHttpServer()).get('/api/v1/shell/compat');
     expect(res.status).toBe(200);
     expect(res.body.code).toBe(BusinessCode.OK);
-    expect(res.body.data.compatible).toBe(false);
+    expect(typeof res.body.data.serverVersion).toBe('string');
+    expect(res.body.data.serverVersion.length).toBeGreaterThan(0);
+    // The server carries no shell floor — compat is just a version report; the shell owns the decision.
+    expect(res.body.data).not.toHaveProperty('compatible');
+    expect(res.body.data).not.toHaveProperty('minShellVersion');
+  });
+
+  it('is reachable WITHOUT auth — @Public() opts out of the global SessionAuthGuard', async () => {
+    // No Authorization header. A non-@Public route would be 401/UNAUTHENTICATED; the serverVersion below
+    // proves the request reached the handler, not the auth guard.
+    const res = await request(app.getHttpServer()).get('/api/v1/shell/compat');
+    expect(res.status).toBe(200);
+    expect(res.body.code).toBe(BusinessCode.OK);
+    expect(typeof res.body.data.serverVersion).toBe('string');
   });
 
   it('web-manifest returns the descriptor the shell integrity-verifies against', async () => {
@@ -92,9 +86,10 @@ describe('Shell dynamic-update endpoints (GET /api/v1/shell/*)', () => {
     expect(res.body.data).toMatchObject({
       webVersion,
       sha256,
-      minShellVersion: '0.1.0',
       downloadUrl: '/api/v1/shell/web-bundle',
     });
+    // No shell floor on the manifest either — compatibility is shell-owned.
+    expect(res.body.data).not.toHaveProperty('minShellVersion');
   });
 
   it('web-bundle streams raw application/gzip bytes whose sha256 matches the manifest (NOT an ApiResult envelope)', async () => {

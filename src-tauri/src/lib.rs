@@ -1,16 +1,19 @@
 // SOMS cross-platform shell (Tauri v2) — desktop (Linux/Windows/macOS) and Android.
 //
-// Two-window dynamic-web architecture:
-//  - "init"  window loads the bundled bootstrap (`tauri://localhost`) — the first-run setup wizard AND
-//    the reconfigure UI. Created on demand; destroyed after it hands off.
-//  - "main" window loads the DOWNLOADED + sha256-verified web SPA (`somsapp://localhost`, served from
-//    app_data) — the real app. Persistent after first run.
-// The bootstrap (init) talks to the backend via the `init_*` commands: shell↔server version compat,
-// strict TLS cert validation for HTTPS domains (skipped for IP/http), then download → sha256 →
-// atomic install → persist origin. On success it calls `handoff_to_spa`, which Rust
-// uses to create/reload "main" and (once the SPA signals `spa-ready`) destroy "init". Reconfigure from
-// the SPA calls `open_init`, which creates "init" over "main"; the bootstrap runs the same 3 steps and
-// hands off again.
+// Single-window, single-origin architecture: ONE primary webview loads the bundled SPA at
+// `tauri://localhost` (`http://tauri.localhost` on Android) — the merged frontend (config + login + app,
+// built from `web/`). There is NO separate bootstrap and NO `somsapp://` scheme: capabilities + CSP apply
+// natively because the webview is the app's own LOCAL origin (a custom-scheme webview would be treated as
+// remote and rejected by the capability matcher). First-run server setup is an in-SPA `/config` route
+// (the `configGuard` forces it until `is_origin_configured`).
+//
+// The `init_*` commands drive shell↔server setup + OTA: `init_check_compat` (version gate), then
+// `init_validate_cert` (strict TLS for HTTPS — skipped for IP/http), then `init_download_web`
+// (download → sha256 → atomic install under `app_data_dir/web/<active>/`) for OTA bundle updates. The
+// installed bundle is served via `Context::set_assets` (the Assets provider swaps the served dir, with
+// the bundled baseline as fallback) — see the OTA section. `init_update_status` is the read-only
+// hash-compare probe (Settings → About). `set_api_origin` persists the backend origin (media proxy +
+// HttpClient + native SSE all read it).
 //
 // Also registers the `media://localhost` custom URI scheme that proxies `/uploads/*` to the backend
 // with the current access token in an `Authorization: Bearer` header (a bare `<img src>` can't set
@@ -20,32 +23,70 @@ use std::borrow::Cow;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
-use tauri::http::{header, Response, StatusCode};
-use tauri::{Emitter, Listener, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::http::{Response, StatusCode};
+use tauri::{Emitter, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tokio::sync::Notify;
+
+// Desktop SSE supervisor (the Rust-owned /events stream) uses these. Gated so the mobile build (which
+// owns SSE in Kotlin) doesn't carry unused imports.
+#[cfg(desktop)]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(desktop)]
+use std::time::Instant;
+#[cfg(desktop)]
+use tokio_util::sync::CancellationToken;
 
 /// The custom URI scheme the frontend rewrites `/uploads/*` media URLs to (see web/.../runtime.ts).
 const MEDIA_SCHEME: &str = "media";
 
-/// The custom URI scheme that serves the DOWNLOADED web SPA from app_data. The handler below services
-/// `somsapp://localhost/<path>` by reading `app_data_dir/web/<active>/<path>` (the bundle the bootstrap
-/// installed). Distinct from `tauri://localhost` (the bundled bootstrap) so the two never share a context.
-const SOMSAPP_SCHEME: &str = "somsapp";
-const SOMSAPP_HOST: &str = "localhost";
+/// The custom URI scheme the frontend rewrites every backend API URL to under the Tauri shell (see
+/// web/.../constants.ts `apiPrefix`). The Rust URI-scheme handler forwards the full request (method,
+/// body, headers) to `${api_origin}` with the Bearer token, so the webview never crosses origins and
+/// `tauri-plugin-http` is unnecessary. Mirrors `media://` (`proxy_media`) but generalizes method+body.
+const API_SCHEME: &str = "api";
+
+/// TCP-connect timeout for EVERY backend reqwest client (`proxy_api`, `upload_stream_file`, the SSE
+/// supervisor, the OTA commands) — set on the client builder in `http_client_for`. Bounds the "backend
+/// unreachable" wait so a dead host fails fast instead of hanging the webview request. This is a
+/// CONNECT timeout only — it never aborts an in-progress body transfer (uploads / large responses take
+/// as long as they take; a total-duration timeout would wrongly kill a legitimate large upload).
+const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Max wait for a proxied API request's HEADERS (connect + send + server processing). The response BODY
+/// read is unbounded — a slow/large download must not be aborted. A backend that accepts the connection
+/// but never responds → 504 Gateway Timeout.
+const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Max wait for the SSE stream's opening response. The in-stream liveness watchdog (60s, no frame)
+/// only arms AFTER a real `ping` is observed, so without this a server that accepts the connection but
+/// never sends headers would hang the connect forever. On timeout → treat as a network error → backoff
+/// + reconnect (parity with any other connect failure).
+#[cfg(desktop)]
+const SSE_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// The shell version, baked from Cargo.toml (`CARGO_PKG_VERSION`) — the same source the Makefile
-/// asserts equals `tauri.conf.json.version`. Sent to the server's `/shell/compat` endpoint and compared
-/// against the bundle's `minShellVersion` before any download.
+/// asserts equals `tauri.conf.json.version`. Surfaced in Settings→About for display only.
 pub const SHELL_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// The backend origin the shell talks to when nothing else is configured. Unreachable from a phone,
-/// which is exactly why the bundled bootstrap forces the setup wizard on first run.
-const DEFAULT_API_ORIGIN: &str = "http://localhost:3000";
+/// Exclusive upper bound on the backend (server) version this shell supports. The server reports its
+/// version via `/shell/compat`; this shell is compatible iff `serverVersion < COMPAT_BACKEND_MAX`
+/// (i.e. `!semver_gte(serverVersion, COMPAT_BACKEND_MAX)`). E.g. `0.2.0` accepts any `0.1.x` backend
+/// and rejects `0.2.0` onward — a breaking server bump the operator must ship a new shell for. The
+/// compatibility range is authored here (in the shell), not on the server: the server carries no shell
+/// floor, so the shell self-gates against the backend version it was built/tested against.
+const COMPAT_BACKEND_MAX: &str = "0.2.0";
+
+/// The backend origin the shell talks to when nothing else is configured. A deliberate non-routable
+/// placeholder — identical in debug and release APKs (no dev-only `localhost`/LAN default, so the
+/// packaged debug build behaves exactly like production) — which is unreachable from a phone, exactly
+/// why the bundled bootstrap forces the setup wizard on first run. Operators replace it at runtime via
+/// the config form (persisted to the `api_origin` file); desktop dev can still override via SOMS_API_ORIGIN.
+const DEFAULT_API_ORIGIN: &str = "https://example.com:7667";
 
 /// Persisted-origin file in the app-data dir. Holds a single validated http(s) URL. Read at boot to
 /// override the env/default; written by `persist_origin`.
@@ -55,19 +96,49 @@ const CONFIG_FILENAME: &str = "api_origin";
 /// `web/<version>/` the extracted SPA; `web/.staging-<version>/` an in-flight install.
 const WEB_DIRNAME: &str = "web";
 const ACTIVE_FILENAME: &str = "active";
+/// Sibling of `active`: the verified SHA-256 (hex) of the installed bundle. Written by
+/// `init_download_web` after the sha256 gate; read by `init_update_status` for hash-based update
+/// detection (`installedHash != serverHash`). Absent on legacy installs predating hash persistence.
+const ACTIVE_HASH_FILENAME: &str = "active.hash";
 
-/// Shared state for the media proxy + token/origin handoff commands + the reconfigure flag. Cloned
-/// cheaply (the reqwest Client, the token Arc, the origin Arc, the config-path Arc are all refcounted),
-/// so every protocol handler + command handler sees the same live values.
+/// Shared state for the proxies + the token/origin commands. Cloned cheaply (the reqwest Client,
+/// the token Arc, the origin Arc, the config-path Arc are all refcounted), so every protocol handler +
+/// command handler sees the same live values.
 #[derive(Clone)]
 struct ProxyState {
     api_origin: Arc<Mutex<String>>,
     token: Arc<Mutex<Option<String>>>,
     http: reqwest::Client,
     config_path: Arc<Mutex<PathBuf>>,
-    /// Set by `open_init` so the bootstrap (loaded fresh) knows it was opened for reconfigure, not a
-    /// first run. Read by `init_get_state`.
-    reconfigure: Arc<AtomicBool>,
+    /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
+    /// this when no token is set, so an `sse_start` issued before login (the facade connects eagerly at
+    /// boot) blocks without busy-looping and without 401-storming, then opens the moment login provides
+    /// a token. `tokio::sync::Notify` stores one permit, so a `notify_one()` that races ahead of the
+    /// `notified().await` is not lost — race-free. Unused on mobile (Kotlin owns SSE + the token).
+    token_notify: Arc<Notify>,
+    /// Cached reqwest client for `proxy_api`, keyed on the origin string. Rebuilt only when the origin
+    /// changes (see `ProxyState::api_client`) — so API calls reuse one connection pool (TCP+TLS
+    /// keepalive across requests) instead of `http_client_for` building a fresh client (fresh pool, no
+    /// reuse) on every single request. `(origin, client)`; the origin tag detects a swap. The SSE
+    /// supervisor + OTA commands still build per-call clients (infrequent: once per reconnect / once).
+    api_http: Arc<Mutex<(String, reqwest::Client)>>,
+}
+
+impl ProxyState {
+    /// Return a reqwest client for API calls to `origin`, rebuilding + caching only when the origin
+    /// changes. `reqwest::Client` is `Clone`-cheap (Arc internals), so the cached pool is shared across
+    /// concurrent requests and kept warm between them (keepalive). On an origin swap (`set_api_origin`)
+    /// the next request sees a mismatched tag and rebuilds — in-flight requests keep working (they hold
+    /// their own clone of the old client).
+    fn api_client(&self, origin: &str) -> reqwest::Client {
+        let mut g = self.api_http.lock().expect("api_http lock");
+        if g.0 == origin {
+            return g.1.clone();
+        }
+        let client = http_client_for(origin);
+        *g = (origin.to_string(), client.clone());
+        client
+    }
 }
 
 /// Validate a backend origin: must parse as a clean http(s) URL. Returns the canonical string form so
@@ -103,7 +174,9 @@ fn http_client_for(origin: &str) -> reqwest::Client {
         .map(|u| u.scheme() == "http")
         .unwrap_or(true);
     let permissive = is_http || origin_host_is_ip(origin);
-    let mut b = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none());
+    let mut b = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(BACKEND_CONNECT_TIMEOUT);
     if permissive {
         b = b.danger_accept_invalid_certs(true);
     }
@@ -154,22 +227,25 @@ pub fn run() {
         .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
 
     let proxy_state = ProxyState {
-        api_origin: Arc::new(Mutex::new(initial_origin)),
+        api_origin: Arc::new(Mutex::new(initial_origin.clone())),
         token: Arc::new(Mutex::new(None)),
         http: reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none()) // /uploads is auth-gated; never follow
             .build()
             .expect("reqwest client"),
         config_path: Arc::new(Mutex::new(PathBuf::new())),
-        reconfigure: Arc::new(AtomicBool::new(false)),
+        token_notify: Arc::new(Notify::new()),
+        // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
+        api_http: Arc::new(Mutex::new((initial_origin.clone(), http_client_for(&initial_origin)))),
     };
     let proxy_for_media = proxy_state.clone();
+    let proxy_for_api = proxy_state.clone();
 
     let builder = tauri::Builder::default();
 
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-        if let Some(window) = app.get_webview_window("main").or_else(|| app.get_webview_window("init")) {
+        if let Some(window) = app.get_webview_window("main") {
             let _ = window.unminimize();
             let _ = window.show();
             let _ = window.set_focus();
@@ -181,7 +257,6 @@ pub fn run() {
 
     builder
         .plugin(tauri_plugin_notification::init())
-        .plugin(tauri_plugin_http::init())
         // media://localhost — proxy /uploads/* to ${api_origin} with the Bearer token (bare <img src>
         // can't set headers; the SameSite=Strict media_token cookie can't cross origins).
         .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
@@ -190,24 +265,25 @@ pub fn run() {
                 proxy_media(st, request, responder).await;
             });
         })
-        // somsapp://localhost — serve the DOWNLOADED web SPA from app_data_dir/web/<active>/. Distinct
-        // origin from tauri:// (the bundled bootstrap) so the two contexts never mix. The closure's first
-        // param is a UriSchemeContext (a borrow wrapper over AppHandle — no clone); resolve the app-data
-        // dir synchronously here, then move it into the async task.
-        .register_asynchronous_uri_scheme_protocol(SOMSAPP_SCHEME, move |app, request, responder| {
-            // UriSchemeContext::app_handle() → &AppHandle; resolve the app-data dir synchronously, then
-            // move it into the async task that serves the file.
-            let data_dir = app.app_handle().path().app_data_dir().ok();
+        // api://localhost — proxy EVERY backend request (method + body + headers) to ${api_origin} with
+        // the Bearer token. The webview fetches `api://localhost/api/v1/...` (same custom-scheme family
+        // as media://), so it never crosses origins → no CORS, no tauri-plugin-http. Only normal
+        // request/response lands here (buffered); the desktop SSE stream is owned by the `sse_*`
+        // commands below (a URI-scheme responder can't stream a long-lived body).
+        .register_asynchronous_uri_scheme_protocol(API_SCHEME, move |_app, request, responder| {
+            let st = proxy_for_api.clone();
             tauri::async_runtime::spawn(async move {
-                serve_app_file(data_dir, request, responder).await;
+                proxy_api(st, request, responder).await;
             });
         })
         .manage(proxy_state.clone())
+        .manage(SseSupervisor::new())
         .invoke_handler({
             #[cfg(desktop)]
             {
                 tauri::generate_handler![
                     get_api_origin,
+                    is_origin_configured,
                     set_api_origin,
                     set_session_token,
                     clear_session_token,
@@ -215,32 +291,30 @@ pub fn run() {
                     secure_set_token,
                     secure_clear_token,
                     get_shell_version,
-                    init_get_state,
                     init_check_compat,
                     init_validate_cert,
                     init_download_web,
-                    init_check_update,
                     init_update_status,
-                    handoff_to_spa,
-                    open_init,
+                    sse_start,
+                    sse_stop,
+                    sse_get_state,
+                    sse_net,
+                    upload_stream_file,
                 ]
             }
             #[cfg(not(desktop))]
             {
                 tauri::generate_handler![
                     get_api_origin,
+                    is_origin_configured,
                     set_api_origin,
                     set_session_token,
                     clear_session_token,
                     get_shell_version,
-                    init_get_state,
                     init_check_compat,
                     init_validate_cert,
                     init_download_web,
-                    init_check_update,
                     init_update_status,
-                    handoff_to_spa,
-                    open_init,
                 ]
             }
         })
@@ -256,25 +330,13 @@ pub fn run() {
             }
             *proxy_state.config_path.lock().expect("config_path lock") = config_path;
 
-            // Decide the first window: if a verified web bundle + origin exist, go straight to the SPA
-            // ("main"); otherwise open the bootstrap ("init") for the first-run setup wizard.
-            let origin_set = !proxy_state
-                .api_origin
-                .lock()
-                .expect("origin lock")
-                .is_empty();
-            let web_ready = web_index_exists(&data_dir);
-            let url = if origin_set && web_ready {
-                WebviewUrl::External(
-                    reqwest::Url::parse(&format!("{}://{}/index.html", SOMSAPP_SCHEME, SOMSAPP_HOST))
-                        .unwrap(),
-                )
-            } else {
-                WebviewUrl::App("index.html".into())
-            };
-            let label = if origin_set && web_ready { "main" } else { "init" };
-            WebviewWindowBuilder::new(app, label, url)
+            // The single window always loads the bundled SPA (frontendDist → `tauri://localhost`). There
+            // is no separate bootstrap and no `somsapp://` origin anymore: the merged frontend owns both
+            // first-run config (an in-SPA `/config` route) and the app. OTA bundle updates swap the served
+            // asset dir via `Context::set_assets` (the Assets provider), not a second origin.
+            WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                 .title("SOMS")
+                .on_navigation(nav_allowed)
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(900.0, 600.0)
                 .build()?;
@@ -282,20 +344,6 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
-
-/// Does the installed web bundle have an index.html to load? (active version file present AND its
-/// index.html exists.) Gates the first-window decision so a fresh install never opens a blank SPA.
-fn web_index_exists(data_dir: &Path) -> bool {
-    let active = data_dir.join(WEB_DIRNAME).join(ACTIVE_FILENAME);
-    let ver = match fs::read_to_string(&active) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return false,
-    };
-    if ver.is_empty() {
-        return false;
-    }
-    data_dir.join(WEB_DIRNAME).join(&ver).join("index.html").exists()
 }
 
 // --- media:// proxy (unchanged) -----------------------------------------------------------
@@ -347,143 +395,147 @@ fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
         .unwrap()
 }
 
-// --- somsapp:// SPA file server -----------------------------------------------------------
+// --- api:// proxy (generalized forward proxy for ALL backend traffic) ---------------------
 
-/// Outcome of resolving one `somsapp://` request against the installed bundle — computed entirely on
-/// a blocking thread (all the fs I/O lives here), then turned into an HTTP response on the async task.
-enum ServedFile {
-    /// A real file to serve (index.html or a hashed asset).
-    Ok { bytes: Vec<u8>, content_type: String, is_index: bool },
-    /// The requested path (or the bundle root) does not exist.
-    NotFound,
-    /// No bundle is active yet (the app launched before / without the SPA installed).
-    Unavailable,
-}
-
-/// Serve one `somsapp://localhost/<path>` request from the installed web bundle. ALL fs I/O — reading
-/// the active-version string, canonicalizing the root, resolving + reading the file — is offloaded to
-/// `spawn_blocking` so the async-runtime worker that owns this request is never blocked on disk. Path
-/// traversal is guarded; unknown paths fall back to index.html (Angular router owns client-side
-/// routes); hashed assets get a long immutable cache, index.html gets no-cache (so bundle swaps land).
-async fn serve_app_file(
-    data_dir: Option<PathBuf>,
+/// Forward one `api://localhost/...` request to `${api_origin}/...`. Generalizes `proxy_media` beyond a
+/// GET: it forwards the method, the request body, and a whitelist of request headers (so POST/PUT +
+/// multipart uploads serialize correctly), then returns the response.
+///
+/// Auth: PREFER the `Authorization` the webview set (the Angular `AuthInterceptor` adds the Bearer from
+/// the freshest JS session token on every authenticated call), falling back to `ProxyState.token` only
+/// if the webview sent none (covers a custom-scheme header strip + the non-intercepted raw fetches).
+/// Forwarding — not injecting — avoids a race where the first post-login request fires before
+/// `set_session_token` reaches Rust: the interceptor's token is synchronous, so the forwarded header is
+/// always current. `ProxyState.token` stays the source for the SSE supervisor (which has no interceptor).
+///
+/// Uses the CACHED `api_client` (NOT a per-call `http_client_for`) so API calls reuse one connection
+/// pool (TCP+TLS keepalive). `http_client_for`'s per-origin TLS posture (permissive for IP/http) still
+/// applies — it's rebuilt when the cached origin tag changes. Response bodies are buffered
+/// (`.bytes().await`): reqwest auto-decompresses gzip (the `gzip` feature), so `content-encoding` +
+/// `content-length` are stripped from the copied headers and a fresh `content-length` is set from the
+/// buffered bytes — otherwise the webview would try to gunzip already-decompressed JSON. Redirects are
+/// never followed (same security posture as `http_client_for`).
+async fn proxy_api(
+    st: ProxyState,
     request: tauri::http::Request<Vec<u8>>,
     responder: UriSchemeResponder,
 ) {
-    // Only the request path is needed on the blocking thread; lift it out and drop the request.
-    let req_path = request.uri().path().to_string();
-    let resolved = tauri::async_runtime::spawn_blocking(move || resolve_served_file(data_dir, &req_path)).await;
-    let response = match resolved {
-        Ok(ServedFile::Ok { bytes, content_type, is_index }) => build_served_response(bytes, &content_type, is_index),
-        Ok(ServedFile::NotFound) => empty(StatusCode::NOT_FOUND),
-        Ok(ServedFile::Unavailable) => empty(StatusCode::SERVICE_UNAVAILABLE),
-        Err(_) => empty(StatusCode::INTERNAL_SERVER_ERROR),
+    let path_and_query = match request.uri().path_and_query() {
+        Some(pq) => pq.as_str().to_string(),
+        None => "/".to_string(),
     };
-    responder.respond(response);
-}
-
-/// The blocking half: read the active version, canonicalize the root, resolve the requested path with
-/// an SPA fallback to index.html, read its bytes. No responder / no Response building here — pure disk.
-fn resolve_served_file(data_dir: Option<PathBuf>, req_path: &str) -> ServedFile {
-    let data_dir = match data_dir {
-        Some(d) => d,
-        None => return ServedFile::Unavailable,
-    };
-    let active_path = data_dir.join(WEB_DIRNAME).join(ACTIVE_FILENAME);
-    let ver = match fs::read_to_string(&active_path) {
-        Ok(s) => s.trim().to_string(),
-        Err(_) => return ServedFile::Unavailable,
-    };
-    if ver.is_empty() {
-        return ServedFile::Unavailable;
+    let api_origin = st.api_origin.lock().expect("origin lock").clone();
+    let target = format!("{}{}", api_origin, path_and_query);
+    let method = reqwest::Method::from_bytes(request.method().as_str().as_bytes())
+        .unwrap_or(reqwest::Method::GET);
+    let client = st.api_client(&api_origin);
+    let mut req = client.request(method, &target);
+    // Forward the auth + content headers the webview set. `authorization` comes from the AuthInterceptor
+    // (freshest JS token); only if absent do we inject from ProxyState.token (raw fetches / public paths).
+    let auth_incoming = request.headers().get("authorization").cloned();
+    if let Some(a) = auth_incoming {
+        req = req.header("authorization", a);
+    } else if let Some(t) = st.token.lock().ok().and_then(|g| g.clone()) {
+        req = req.header("authorization", format!("Bearer {}", t));
     }
-    let root = data_dir.join(WEB_DIRNAME).join(&ver);
-    let root_canon = match root.canonicalize() {
-        Ok(c) => c,
-        Err(_) => return ServedFile::NotFound,
-    };
-
-    // Strip the leading '/' and URL-decode the path segment. The request path is e.g. "/main-abc.js"
-    // or "/chat/42" (an Angular client route → SPA fallback).
-    let raw_path = req_path.trim_start_matches('/').to_string();
-    let rel = percent_decode(&raw_path);
-    let candidate = root_canon.join(&rel);
-    let served = match candidate.canonicalize() {
-        Ok(c) if c.starts_with(&root_canon) && c.is_file() => Some(c),
-        _ => None,
-    };
-    let file_path = served.clone().unwrap_or_else(|| root_canon.join("index.html"));
-
-    let bytes = match fs::read(&file_path) {
-        Ok(b) => b,
-        Err(_) => return ServedFile::NotFound,
-    };
-    let is_index = file_path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n == "index.html");
-    let content_type = content_type_for(&file_path);
-    ServedFile::Ok { bytes, content_type, is_index }
-}
-
-/// Build the 200 response for a served file: content-type, cache headers (hashed assets immutable,
-/// index.html no-cache so a bundle swap is picked up on reload), a tight CSP, and nosniff.
-fn build_served_response(bytes: Vec<u8>, content_type: &str, is_index: bool) -> Response<Cow<'static, [u8]>> {
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, if is_index { "no-cache" } else { "public, max-age=31536000, immutable" })
-        .header("x-content-type-options", "nosniff")
-        // Tight CSP: 'self' = somsapp://localhost. The SPA uses external stylesheets (no inline <style>),
-        // so style-src 'self' suffices (no nonce needed). media: in img-src because runtime.ts rewrites
-        // /uploads/* → media://localhost. connect-src is broad because the backend origin is runtime-configured.
-        .header(header::CONTENT_SECURITY_POLICY, "default-src 'self'; img-src 'self' data: blob: media:; style-src 'self'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost https: http: ws: wss:; script-src 'self'");
-    // Keep upstream Range support minimal (SPA assets are small); forward accept-ranges only for non-html.
-    if !is_index {
-        builder = builder.header(header::ACCEPT_RANGES, "bytes");
-    }
-    builder.body(Cow::Owned(bytes)).unwrap_or_else(|_| empty(StatusCode::OK))
-}
-
-fn content_type_for(path: &Path) -> String {
-    match path.extension().and_then(|e| e.to_str()) {
-        Some("html") => "text/html; charset=utf-8".into(),
-        Some("js") | Some("mjs") => "text/javascript; charset=utf-8".into(),
-        Some("css") => "text/css; charset=utf-8".into(),
-        Some("json") => "application/json; charset=utf-8".into(),
-        Some("svg") => "image/svg+xml".into(),
-        Some("png") => "image/png".into(),
-        Some("jpg") | Some("jpeg") => "image/jpeg".into(),
-        Some("gif") => "image/gif".into(),
-        Some("webp") => "image/webp".into(),
-        Some("ico") => "image/x-icon".into(),
-        Some("woff") => "font/woff".into(),
-        Some("woff2") => "font/woff2".into(),
-        Some("ttf") => "font/ttf".into(),
-        Some("otf") => "font/otf".into(),
-        Some("wasm") => "application/wasm".into(),
-        _ => "application/octet-stream".into(),
-    }
-}
-
-/// Minimal percent-decoder for a single path segment (the bundle paths are ASCII; this covers the
-/// common `%20` etc. without pulling a url crate helper).
-fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+    for name in ["content-type", "accept", "accept-language", "range"] {
+        if let Some(v) = request.headers().get(name) {
+            req = req.header(name, v.clone());
         }
-        out.push(bytes[i]);
-        i += 1;
     }
-    String::from_utf8(out).unwrap_or_else(|_| s.to_string())
+    let body = request.body().clone();
+    if !body.is_empty() {
+        req = req.body(body);
+    }
+    // Bound the HEADERS phase (connect + send + server processing). The body READ below is unbounded — a
+    // slow/large download is legitimate and must not be killed. Connect-only failures are already caught
+    // by `BACKEND_CONNECT_TIMEOUT` on the client; this catches "connected but the server never responds".
+    let upstream = match tokio::time::timeout(API_HEADERS_TIMEOUT, req.send()).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(_)) => {
+            responder.respond(empty(StatusCode::BAD_GATEWAY));
+            return;
+        }
+        Err(_) => {
+            responder.respond(empty(StatusCode::GATEWAY_TIMEOUT));
+            return;
+        }
+    };
+    let status = upstream.status();
+    let mut builder = Response::builder().status(status);
+    for (name, value) in upstream.headers().iter() {
+        // Drop hop-by-hop + `content-encoding`/`content-length`: the bytes are already
+        // decompressed by reqwest, and the responder derives length from the body Vec below.
+        if matches!(
+            name.as_str(),
+            "transfer-encoding" | "connection" | "keep-alive" | "content-encoding" | "content-length"
+        ) {
+            continue;
+        }
+        builder = builder.header(name.clone(), value.clone());
+    }
+    let bytes = upstream.bytes().await.unwrap_or_default();
+    builder = builder.header("content-length", bytes.len().to_string());
+    responder.respond(builder.body(Cow::Owned(bytes.to_vec())).unwrap_or_else(|_| empty(status)));
+}
+
+/// Desktop-only streaming upload: POST a file straight from its on-disk `path` to `${origin}${endpoint}`
+/// as a multipart form, WITHOUT buffering the whole file into the webview / IPC. Tauri's `<input
+/// type=file>` injects the real filesystem path as `File.path` on desktop; the frontend (MsgService)
+/// routes uploads here when `file.path` is present + `isTauri()`, and falls back to the HttpClient-via-
+/// `api://` path otherwise (browser, where the File is already an in-memory blob, + Android, where
+/// `File.path` is not populated). Auth uses `ProxyState.token` (uploads happen post-login, so it's set).
+///
+/// Streaming: `tokio::fs::File` + `ReaderStream` → `reqwest::Body::wrap_stream` → multipart
+/// `Part::stream_with_length(size)`. The file is read + sent in chunks; the peak memory is one chunk,
+/// not the whole file — so a multi-GB video upload never materializes in RAM (the `api://` URI-scheme
+/// proxy CAN'T do this: Tauri hands it a `Request<Vec<u8>>`, fully buffered at the IPC boundary).
+#[cfg(desktop)]
+#[tauri::command]
+async fn upload_stream_file(
+    proxy: tauri::State<'_, ProxyState>,
+    path: String,
+    endpoint: String,
+    filename: String,
+    mime: String,
+    size: u64,
+    fields: std::collections::HashMap<String, String>,
+    client_message_id: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let url = format!("{}/api/v1{}", origin, endpoint);
+    let client = proxy.api_client(&origin);
+    let file = tokio::fs::File::open(&path)
+        .await
+        .map_err(|e| format!("open file: {e}"))?;
+    let stream = tokio_util::io::ReaderStream::new(file);
+    let part = reqwest::multipart::Part::stream_with_length(reqwest::Body::wrap_stream(stream), size)
+        .file_name(filename)
+        .mime_str(&mime)
+        .map_err(|e| format!("mime: {e}"))?;
+    let mut form = reqwest::multipart::Form::new();
+    for (k, v) in fields {
+        form = form.text(k, v);
+    }
+    form = form.part("file", part);
+    let mut req = client.post(&url).multipart(form);
+    if let Some(cid) = client_message_id {
+        req = req.header("x-client-message-id", cid);
+    }
+    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+        req = req.header("authorization", format!("Bearer {}", t));
+    }
+    // No send timeout: a large upload legitimately takes minutes, and a total-duration timeout would
+    // wrongly abort it. `BACKEND_CONNECT_TIMEOUT` (on the cached client) already catches an unreachable
+    // backend; a mid-upload stall is an accepted rare failure (the user can retry).
+    let resp = req.send().await.map_err(|e| format!("upload send: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("upload read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("upload HTTP {}: {}", status.as_u16(), text));
+    }
+    // Return the raw envelope ({code,message,data}); the frontend reads it as StandardResponse<T>.
+    serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
 }
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -491,6 +543,16 @@ fn percent_decode(s: &str) -> String {
 #[tauri::command]
 fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
     state.api_origin.lock().expect("origin lock").clone()
+}
+
+/// Whether a real backend origin has been configured — the authoritative "has a SOMS backend been
+/// configured" check the SPA's configGuard uses, independent of the frontend's secureStore-seeded signal
+/// (which can drift). The ProxyState default is a non-routable placeholder (`DEFAULT_API_ORIGIN`), so a
+/// non-empty origin is NOT enough: it must also differ from the placeholder.
+#[tauri::command]
+fn is_origin_configured(state: tauri::State<'_, ProxyState>) -> bool {
+    let origin = state.api_origin.lock().expect("origin lock");
+    !origin.is_empty() && *origin != DEFAULT_API_ORIGIN
 }
 
 /// Persist a new backend origin. Legacy entry point (the bundled bootstrap also reaches this via
@@ -504,6 +566,10 @@ fn set_api_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<St
 fn set_session_token(token: String, state: tauri::State<'_, ProxyState>) {
     if let Ok(mut g) = state.token.lock() {
         *g = Some(token);
+        // Wake a desktop SSE supervisor blocked in its pre-login token wait (mobile SSE is Kotlin-owned
+        // and never waits on this; the extra notify is a harmless no-permit-consumer wakeup).
+        drop(g);
+        state.token_notify.notify_one();
     }
 }
 
@@ -547,45 +613,572 @@ fn secure_clear_token() -> Result<(), String> {
     }
 }
 
+// --- desktop SSE supervisor (Rust-owned /events stream) ------------------------------------
+//
+// Under the Tauri DESKTOP shell the realtime downlink is owned HERE in Rust — not by a JS Web Worker
+// (the browser path) and not by Kotlin (the Android path). The webview's `WebsocketService` selects the
+// `RustChannelSseTransport` (web/.../rust-channel-sse.transport.ts) for `isTauri() && !isAndroid`, which
+// calls these commands and receives frames/state over Tauri events. This decouples the long-lived
+// connection from the renderer: it survives a webview reclaim (the stream is tied to the AppHandle, not
+// the window), it reads the Bearer directly from `ProxyState.token` (no JS token handshake), and it
+// never touches `tauri-plugin-http`'s fragile `__TAURI_CHANNEL__` (the source of the "resource id is
+// invalid" churn). Mobile is excluded (`#[cfg(desktop)]`) — Android's Kotlin RealtimeService owns SSE.
+
+#[cfg(desktop)]
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum ConnectionState {
+    Connecting,
+    Open,
+    Reconnecting,
+    Closed,
+}
+
+#[cfg(desktop)]
+#[derive(Clone, serde::Serialize)]
+struct SseEventPayload {
+    event: String,
+    status: i64,             // always 0 (parity with the worker + native transports)
+    message: String,         // always "new message" (parity)
+    data: serde_json::Value, // Null when the frame carried no `data:`
+}
+
+#[cfg(desktop)]
+#[derive(Clone, serde::Serialize)]
+struct SseForceLogout {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// One parsed SSE frame: the `event:` name + the joined `data:` lines as parsed JSON (Null when empty).
+#[cfg(desktop)]
+struct ParsedFrame {
+    event: String,
+    data: serde_json::Value,
+}
+
+/// Why one stream attempt ended → tells the supervisor loop whether to reconnect (back off + retry) or
+/// stop (force-logout / cancelled).
+#[cfg(desktop)]
+enum StreamOutcome {
+    StreamClosed,            // server ended the stream cleanly → reconnect
+    Stale,                   // watchdog: no frame for 60s → reconnect
+    Cancelled,               // sse_stop / logout → exit the loop
+    ForceLogout(Option<String>), // 401 or a `FORCE_LOGOUT` frame → exit (no retry, no 401-loop)
+    Err,                     // network / non-2xx → reconnect
+}
+
+/// Supervisor state: the spawned connect-loop task + its cancellation token, a synchronous state mirror
+/// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android),
+/// the backoff/online `wake` Notify, and the offline flag the webview's navigator online/offline drives.
+#[cfg(desktop)]
+struct SseSupervisor {
+    cancel: Mutex<Option<CancellationToken>>,
+    handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+    state: Arc<Mutex<ConnectionState>>,
+    wake: Arc<Notify>,
+    offline: Arc<AtomicBool>,
+}
+
+#[cfg(desktop)]
+impl SseSupervisor {
+    fn new() -> Self {
+        Self {
+            cancel: Mutex::new(None),
+            handle: Mutex::new(None),
+            state: Arc::new(Mutex::new(ConnectionState::Closed)),
+            wake: Arc::new(Notify::new()),
+            offline: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+#[cfg(desktop)]
+fn conn_state_str(s: ConnectionState) -> &'static str {
+    match s {
+        ConnectionState::Connecting => "connecting",
+        ConnectionState::Open => "open",
+        ConnectionState::Reconnecting => "reconnecting",
+        ConnectionState::Closed => "closed",
+    }
+}
+
+/// Mirror `s` into the synchronous state field (so `sse_get_state` reflects it) AND emit it to the
+/// webview (`soms-sse-state`) so the connection banner updates on every transition.
+#[cfg(desktop)]
+fn emit_state(app: &tauri::AppHandle, state: &Arc<Mutex<ConnectionState>>, s: ConnectionState) {
+    if let Ok(mut g) = state.lock() {
+        *g = s;
+    }
+    let _ = app.emit("soms-sse-state", s);
+}
+
+/// Idempotently spawn the connect-loop (no-op if one is already running). The facade's origin-swap path
+/// is stop→start, and a renderer-reclaim re-boot calls start again — a duplicate would open a second
+/// stream. We rely on `sse_stop` clearing `handle` (the task only exits via cancel or force-logout, both
+/// of which the facade follows with stop).
+#[cfg(desktop)]
+#[tauri::command]
+fn sse_start(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ProxyState>,
+    sse: tauri::State<'_, SseSupervisor>,
+) -> Result<(), String> {
+    if sse.handle.lock().expect("sse handle lock").is_some() {
+        return Ok(());
+    }
+    let cancel = CancellationToken::new();
+    *sse.cancel.lock().expect("sse cancel lock") = Some(cancel.clone());
+    let handle = tauri::async_runtime::spawn(sse_supervisor_loop(
+        app,
+        proxy.inner().clone(),
+        cancel,
+        sse.state.clone(),
+        sse.wake.clone(),
+        sse.offline.clone(),
+    ));
+    *sse.handle.lock().expect("sse handle lock") = Some(handle);
+    Ok(())
+}
+
+/// Stop the supervisor: emit `closed` synchronously, wake any backoff sleep, cancel the task. Every await
+/// in the loop selects against `cancel.cancelled()`, so cancel propagates promptly (the reqwest future is
+/// dropped — cancel-safe in reqwest 0.12). The handle is detached (dropped, not awaited) so the IPC
+/// returns at once; the task unwinds on its own.
+#[cfg(desktop)]
+#[tauri::command]
+fn sse_stop(app: tauri::AppHandle, sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
+    emit_state(&app, &sse.state, ConnectionState::Closed);
+    sse.wake.notify_one();
+    if let Some(cancel) = sse.cancel.lock().expect("sse cancel lock").take() {
+        cancel.cancel();
+    }
+    // take() + drop = detach (the task exits via cancel; we don't block the IPC on it).
+    *sse.handle.lock().expect("sse handle lock") = None;
+    Ok(())
+}
+
+/// Synchronous read of the current connection state — seeds a freshly-booted renderer the way Android's
+/// `SomsFcm.getConnState()` does. Rust only pushes state on *transitions*, so without this a reclaimed
+/// webview's banner would be stale until the next transition.
+#[cfg(desktop)]
+#[tauri::command]
+fn sse_get_state(sse: tauri::State<'_, SseSupervisor>) -> String {
+    conn_state_str(*sse.state.lock().expect("sse state lock")).to_string()
+}
+
+/// The webview's `navigator` online/offline is the one source that knows the network dropped before the
+/// 60s watchdog would (dropped wifi → half-open TCP → reqwest blocks near-forever). The JS transport
+/// forwards both transitions here (and reuses `online=true` for user-initiated retry). `wake` releases
+/// the supervisor's current await — an open-stream read OR a backoff sleep — and the loop re-checks
+/// `offline` to decide immediate-retry vs. drop-the-stream.
+#[cfg(desktop)]
+#[tauri::command]
+fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
+    sse.offline.store(!online, Ordering::Release);
+    sse.wake.notify_one();
+    Ok(())
+}
+
+#[cfg(desktop)]
+async fn sse_supervisor_loop(
+    app: tauri::AppHandle,
+    proxy: ProxyState,
+    cancel: CancellationToken,
+    state: Arc<Mutex<ConnectionState>>,
+    wake: Arc<Notify>,
+    offline: Arc<AtomicBool>,
+) {
+    // ---- pre-login token wait ----
+    // `sse_start` is called eagerly at boot, before login. Block (no busy-loop, no 401-storm) until a
+    // token arrives via `set_session_token` (which fires `token_notify`) or stop cancels.
+    loop {
+        if cancel.is_cancelled() {
+            emit_state(&app, &state, ConnectionState::Closed);
+            return;
+        }
+        if proxy.token.lock().expect("token lock").is_some() {
+            break;
+        }
+        tokio::select! {
+            _ = cancel.cancelled() => {
+                emit_state(&app, &state, ConnectionState::Closed);
+                return;
+            }
+            _ = proxy.token_notify.notified() => {}
+        }
+    }
+
+    emit_state(&app, &state, ConnectionState::Connecting);
+
+    let mut opened_once = false;
+    let mut attempt: u32 = 0;
+    loop {
+        if cancel.is_cancelled() {
+            break;
+        }
+        let outcome =
+            open_one_stream(&app, &proxy, &cancel, &state, &wake, &offline, &mut opened_once).await;
+        if cancel.is_cancelled() {
+            break;
+        }
+        match outcome {
+            StreamOutcome::ForceLogout(reason) => {
+                let _ = app.emit("soms-sse-force-logout", SseForceLogout { reason });
+                break; // no retry — a stale/revoked token would 401-loop
+            }
+            StreamOutcome::Cancelled => break,
+            StreamOutcome::StreamClosed | StreamOutcome::Stale | StreamOutcome::Err => {
+                emit_state(&app, &state, ConnectionState::Reconnecting);
+                attempt = attempt.saturating_add(1);
+                // Full-jitter backoff (parity with the worker): random(0, min(1000·2^attempt, 30000)).
+                let ceil = (1000u64 << attempt.min(5)).min(30_000);
+                let delay = Duration::from_millis(jitter(ceil));
+                tokio::select! {
+                    _ = cancel.cancelled() => break,
+                    _ = wake.notified() => {
+                        // online / user-retry → retry at once (reset attempt); offline → retry fails fast
+                        // and backs off again (the loop re-checks `offline`).
+                        if !offline.load(Ordering::Acquire) {
+                            attempt = 0;
+                        }
+                    }
+                    _ = tokio::time::sleep(delay) => {}
+                }
+            }
+        }
+    }
+    emit_state(&app, &state, ConnectionState::Closed);
+}
+
+/// Open + consume one SSE stream until it ends (clean close / error / stale / cancel / force-logout).
+#[cfg(desktop)]
+#[allow(clippy::too_many_arguments)]
+async fn open_one_stream(
+    app: &tauri::AppHandle,
+    proxy: &ProxyState,
+    cancel: &CancellationToken,
+    state: &Arc<Mutex<ConnectionState>>,
+    wake: &Notify,
+    offline: &AtomicBool,
+    opened_once: &mut bool,
+) -> StreamOutcome {
+    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let token = match proxy.token.lock().expect("token lock").clone() {
+        Some(t) => t,
+        None => return StreamOutcome::Cancelled, // logout raced past the outer gate
+    };
+    let url = format!("{}/api/v1/events", origin.trim_end_matches('/'));
+    // Bound the CONNECT/headers phase. The in-stream watchdog only arms after a `ping`, so without this
+    // a server that accepts the connection but never sends headers would hang the connect forever.
+    let resp = match tokio::time::timeout(
+        SSE_CONNECT_TIMEOUT,
+        http_client_for(&origin)
+            .get(&url)
+            .header("accept", "text/event-stream")
+            .header("authorization", format!("Bearer {}", token))
+            .send(),
+    )
+    .await
+    {
+        Ok(Ok(r)) => r,
+        Ok(Err(_)) | Err(_) => return StreamOutcome::Err,
+    };
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED {
+        return StreamOutcome::ForceLogout(None); // session dead — no retry
+    }
+    if !resp.status().is_success() {
+        return StreamOutcome::Err;
+    }
+
+    // Headers received → open. Emit the backfill pulse BEFORE `open` on every open after the first (the
+    // `openedOnce` rule, mirrors sse.worker.ts) so a reconnect drives the same downstream catch-up.
+    if *opened_once {
+        let _ = app.emit("soms-sse-reconnect", ());
+    }
+    *opened_once = true;
+    emit_state(app, state, ConnectionState::Open);
+
+    let mut buf: Vec<u8> = Vec::with_capacity(8192);
+    let mut stream = resp.bytes_stream();
+    let mut watchdog = tokio::time::interval(Duration::from_millis(5_000));
+    watchdog.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_frame_at = Instant::now();
+    let mut ping_observed = false;
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return StreamOutcome::Cancelled,
+            _ = wake.notified() => {
+                // Network transitioned or the user hit retry. Offline → drop the stream and reconnect
+                // (the next attempt fails fast, backs off). Online while a healthy stream is open → no-op
+                // (avoid churning a working connection); the loop re-enters the select.
+                if offline.load(Ordering::Acquire) {
+                    return StreamOutcome::StreamClosed;
+                }
+            }
+            chunk = stream.next() => match chunk {
+                None => return StreamOutcome::StreamClosed,    // server closed → reconnect
+                Some(Err(_)) => return StreamOutcome::Err,     // network error → reconnect
+                Some(Ok(bytes)) => {
+                    last_frame_at = Instant::now();
+                    buf.extend_from_slice(&bytes);
+                    while let Some(content) = take_sse_frame(&mut buf) {
+                        if let Some(parsed) = parse_sse_frame(&content) {
+                            // if/else-if (not `match parsed.event.as_str()`): the scrutinee of a match
+                            // would borrow `parsed.event` for the whole match, blocking the move in the
+                            // else branch. The `.as_str()` borrows in each condition end at the `)`.
+                            if parsed.event.as_str() == "ping" {
+                                ping_observed = true;
+                            } else if parsed.event.as_str() == "FORCE_LOGOUT" {
+                                let reason = parsed
+                                    .data
+                                    .get("message")
+                                    .and_then(|v| v.as_str())
+                                    .map(|s| s.to_string());
+                                return StreamOutcome::ForceLogout(reason);
+                            } else {
+                                let _ = app.emit(
+                                    "soms-sse-event",
+                                    SseEventPayload {
+                                        event: parsed.event,
+                                        status: 0,
+                                        message: "new message".to_string(),
+                                        data: parsed.data,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                }
+            },
+            _ = watchdog.tick() => {
+                // Arm only after a real `ping` (not a `:` comment) to avoid false-triggers on a quiet
+                // chat. 60s ≈ 2× the 25s server heartbeat.
+                if ping_observed && last_frame_at.elapsed() > Duration::from_millis(60_000) {
+                    return StreamOutcome::Stale;
+                }
+            }
+        }
+    }
+}
+
+/// Full-jitter delay in `[0, ceil)` ms. Subsec nanos of the wall clock is plenty of entropy for backoff
+/// spread (the timing is not a secret) and avoids pulling in a `rand` dependency.
+#[cfg(desktop)]
+fn jitter(ceil: u64) -> u64 {
+    if ceil == 0 {
+        return 0;
+    }
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    n % ceil
+}
+
+/// `(true, len)` if a logical SSE line-end (`\n`, `\r`, or `\r\n`) starts at `i`. Line-ends never appear
+/// inside UTF-8 continuation bytes (they're 0x80–0xBF), so byte-wise frame scanning is unambiguous and
+/// no streaming UTF-8 decoder is needed (unlike the JS worker's `TextDecoder({stream:true})`).
+#[cfg(desktop)]
+fn line_end_at(buf: &[u8], i: usize) -> (bool, usize) {
+    if i >= buf.len() {
+        return (false, 1);
+    }
+    match buf[i] {
+        b'\n' => (true, 1),
+        b'\r' => {
+            if i + 1 < buf.len() && buf[i + 1] == b'\n' {
+                (true, 2)
+            } else {
+                (true, 1)
+            }
+        }
+        _ => (false, 1),
+    }
+}
+
+/// If a complete frame (text terminated by a blank line — two adjacent logical line-ends) is buffered at
+/// the front of `buf`, return its content and drain through the boundary. `None` when no full frame is
+/// present yet (the caller waits for more bytes).
+#[cfg(desktop)]
+fn take_sse_frame(buf: &mut Vec<u8>) -> Option<Vec<u8>> {
+    let n = buf.len();
+    let mut i = 0;
+    while i < n {
+        let (is_end, len1) = line_end_at(buf, i);
+        if is_end {
+            let second = i + len1;
+            let (is_end2, len2) = line_end_at(buf, second);
+            if is_end2 {
+                let boundary_end = second + len2;
+                let content = buf[..i].to_vec();
+                buf.drain(..boundary_end);
+                return Some(content);
+            }
+        }
+        i += len1;
+    }
+    None
+}
+
+/// Parse one frame's text into `{event, data}`. Implements the SSE wire slice the JS worker does: a line
+/// starting with `:` is a comment; one leading space after the `field:` colon is stripped; multiple
+/// `data:` lines join with `\n`; `id`/`retry`/unknown fields are dropped. A frame with no `event:` field
+/// → `None` (dropped — e.g. the leading `: connected`). A non-empty `data:` payload that fails to parse
+/// as JSON → `None` (drop the frame, keep the stream alive — NOT the worker's `JSON.parse`-throws-kills-
+/// the-stream behavior).
+#[cfg(desktop)]
+fn parse_sse_frame(content: &[u8]) -> Option<ParsedFrame> {
+    let text = std::str::from_utf8(content).ok()?;
+    let mut event: Option<String> = None;
+    let mut data_lines: Vec<String> = Vec::new();
+    for line in text.split(|c: char| c == '\n' || c == '\r') {
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        let (field, mut value) = match line.find(':') {
+            Some(idx) => (&line[..idx], &line[idx + 1..]),
+            None => (line, ""),
+        };
+        if value.starts_with(' ') {
+            value = &value[1..];
+        }
+        match field {
+            "event" => event = Some(value.to_string()),
+            "data" => data_lines.push(value.to_string()),
+            _ => {}
+        }
+    }
+    let event = event?;
+    let joined = data_lines.join("\n");
+    let data = if joined.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_str::<serde_json::Value>(&joined).ok()?
+    };
+    Some(ParsedFrame { event, data })
+}
+
+// SSE parser unit tests (desktop-only — the parser fns are #[cfg(desktop)]). Pure byte/string logic,
+// the trickiest new code in the supervisor: line-end forms, frame boundaries, multi-line data join,
+// comment lines, malformed-JSON handling. Run with `cargo test` (the docker desktop build).
+#[cfg(all(test, desktop))]
+mod sse_parser_tests {
+    use super::*;
+
+    #[test]
+    fn line_end_at_handles_all_forms() {
+        assert_eq!(line_end_at(b"a\nb", 1), (true, 1)); // \n
+        assert_eq!(line_end_at(b"a\rb", 1), (true, 1)); // \r alone
+        assert_eq!(line_end_at(b"a\r\nb", 1), (true, 2)); // \r\n (one logical end, len 2)
+        assert_eq!(line_end_at(b"ab", 0), (false, 1)); // ordinary byte
+        assert_eq!(line_end_at(b"a", 9), (false, 1)); // past end is safe (no panic)
+    }
+
+    #[test]
+    fn take_frame_lf_boundary_consumes_through_it() {
+        let mut buf = b"event: ping\ndata: {}\n\nrest".to_vec();
+        let frame = take_sse_frame(&mut buf).expect("complete frame");
+        assert_eq!(frame, b"event: ping\ndata: {}"); // content, boundary NOT included
+        assert_eq!(buf, b"rest"); // boundary consumed, remainder stays
+    }
+
+    #[test]
+    fn take_frame_crlf_boundary() {
+        let mut buf = b"event: x\r\ndata: 1\r\n\r\nz".to_vec();
+        let frame = take_sse_frame(&mut buf).expect("complete frame");
+        assert_eq!(frame, b"event: x\r\ndata: 1");
+        assert_eq!(buf, b"z");
+    }
+
+    #[test]
+    fn take_frame_returns_none_and_leaves_buf_when_incomplete() {
+        let mut buf = b"event: ping\ndata: {}".to_vec(); // no blank-line terminator yet
+        assert!(take_sse_frame(&mut buf).is_none());
+        assert_eq!(buf, b"event: ping\ndata: {}", "incomplete buffer must be untouched"); // chunk-split safe
+    }
+
+    #[test]
+    fn take_frame_drains_multiple_frames_in_order() {
+        let mut buf = b":comment\n\nevent:b\ndata:c\n\n".to_vec();
+        let f1 = take_sse_frame(&mut buf).unwrap();
+        let f2 = take_sse_frame(&mut buf).unwrap();
+        assert!(take_sse_frame(&mut buf).is_none());
+        assert_eq!(f1, b":comment");
+        assert_eq!(f2, b"event:b\ndata:c");
+    }
+
+    #[test]
+    fn parse_basic_event_and_json_data() {
+        let f = parse_sse_frame(b"event: NEW_MESSAGE\ndata: {\"id\":5}").unwrap();
+        assert_eq!(f.event, "NEW_MESSAGE");
+        assert_eq!(f.data, serde_json::json!({"id": 5}));
+    }
+
+    #[test]
+    fn parse_multi_data_lines_join_with_newline_before_json() {
+        // A frame split across two `data:` lines must join with `\n` then parse — the value can wrap.
+        let f = parse_sse_frame(b"event: x\ndata: {\"a\":\ndata: 1}").unwrap();
+        assert_eq!(f.data, serde_json::json!({"a": 1}));
+    }
+
+    #[test]
+    fn parse_strips_exactly_one_leading_space_after_colon() {
+        // `event: x` (one space) → "x". `data: {}` (one space) → "{}".
+        let f = parse_sse_frame(b"event: x\ndata: {}").unwrap();
+        assert_eq!(f.event, "x");
+        assert_eq!(f.data, serde_json::json!({}));
+    }
+
+    #[test]
+    fn parse_comment_line_is_ignored_but_event_still_parsed() {
+        // The leading `: connected` heartbeat frame has no `event:` → dropped (next test). But a comment
+        // INSIDE a real frame is ignored without breaking the parse.
+        let f = parse_sse_frame(b": keepalive\nevent: x\ndata: 1").unwrap();
+        assert_eq!(f.event, "x");
+        assert_eq!(f.data, serde_json::json!(1));
+    }
+
+    #[test]
+    fn parse_frame_with_no_event_is_dropped() {
+        // The connect heartbeat (`: connected`) and a bare `data:` frame have no event → None.
+        assert!(parse_sse_frame(b": connected").is_none());
+        assert!(parse_sse_frame(b"data: hello").is_none());
+    }
+
+    #[test]
+    fn parse_empty_data_is_null_not_dropped() {
+        // `event: ping\ndata:` → event kept, data Null. Critical: a ping must NOT be dropped (it arms the
+        // watchdog), so empty data must yield Null, not None.
+        let f = parse_sse_frame(b"event: ping\ndata:").unwrap();
+        assert_eq!(f.event, "ping");
+        assert!(f.data.is_null());
+    }
+
+    #[test]
+    fn parse_malformed_json_data_drops_the_frame_keeps_stream_alive() {
+        // A bad payload returns None (drop the frame) — NOT a throw that kills the stream (the JS worker's
+        // JSON.parse fragility we deliberately did not port).
+        assert!(parse_sse_frame(b"event: x\ndata: {not json").is_none());
+    }
+
+    #[test]
+    fn parse_force_logout_carries_message_for_extraction() {
+        // parse_sse_frame returns the structure; open_one_stream extracts data.message into the reason.
+        let f = parse_sse_frame(b"event: FORCE_LOGOUT\ndata: {\"message\":\"device_revoke\"}").unwrap();
+        assert_eq!(f.event, "FORCE_LOGOUT");
+        let reason = f.data.get("message").and_then(|v| v.as_str());
+        assert_eq!(reason, Some("device_revoke"));
+    }
+}
+
 // --- shell dynamic-update: init_* + window lifecycle ---------------------------------------
 
 #[tauri::command]
 fn get_shell_version() -> String {
     SHELL_VERSION.to_string()
-}
-
-#[derive(serde::Serialize)]
-struct InitState {
-    origin: String,
-    has_web: bool,
-    active_version: Option<String>,
-    reconfigure: bool,
-}
-
-/// State the bootstrap reads on load: the configured origin, whether a verified web bundle is
-/// installed (+ its version), and whether this open is a reconfigure (`open_init` set the flag). The
-/// bootstrap shows the form unless it has origin+web AND this is not a reconfigure (defensive —
-/// `setup` normally opens "main" directly in that case).
-#[tauri::command]
-fn init_get_state(app: tauri::AppHandle, state: tauri::State<'_, ProxyState>) -> InitState {
-    let origin = state.api_origin.lock().expect("origin lock").clone();
-    let data_dir = app.path().app_data_dir().ok();
-    let (has_web, active_version) = match &data_dir {
-        Some(d) => {
-            let active = d.join(WEB_DIRNAME).join(ACTIVE_FILENAME);
-            let ver = fs::read_to_string(&active).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            let has = ver.as_ref().is_some_and(|v| d.join(WEB_DIRNAME).join(v).join("index.html").exists());
-            (has, ver)
-        }
-        None => (false, None),
-    };
-    let reconfigure = state.reconfigure.swap(false, Ordering::SeqCst);
-    InitState {
-        origin,
-        has_web,
-        active_version,
-        reconfigure,
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -596,37 +1189,56 @@ struct ApiEnvelope<T> {
 
 #[derive(serde::Deserialize)]
 struct CompatData {
-    compatible: bool,
-    #[serde(rename = "minShellVersion")]
-    min_shell_version: String,
+    #[serde(rename = "serverVersion")]
+    server_version: String,
 }
 
-/// Step 1: `GET /api/v1/shell/compat?version=<shell>` — is this shell build allowed to use this server?
+/// Fetch the server's reported version from `/shell/compat`. The server carries no shell floor — it only
+/// reports `serverVersion`; the shell decides compatibility against `COMPAT_BACKEND_MAX`. Shared by the
+/// compat gate, the download-time re-check, and the launch update-status probe. Connectivity /
+/// bad-response errors are tagged `address:` so the wizard's `errorKeyFor` maps them to `sc.addrErr`
+/// (wrong port, offline, or not a SOMS backend) — distinct from a true version mismatch (`sc.compatErr`,
+/// raised separately by `init_check_compat` when `serverVersion >= COMPAT_BACKEND_MAX`).
+async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<String, String> {
+    let base = origin.trim_end_matches('/');
+    let resp = client
+        .get(format!("{base}/api/v1/shell/compat"))
+        .send()
+        .await
+        .map_err(|e| format!("address: could not reach server: {e}"))?;
+    let env: ApiEnvelope<CompatData> = serde_json::from_str(
+        &resp.text()
+            .await
+            .map_err(|e| format!("address: could not read server response: {e}"))?,
+    )
+    .map_err(|e| format!("address: invalid server response (not a SOMS backend?): {e}"))?;
+    if env.code != 0 {
+        return Err(format!(
+            "address: server returned code {} (not a SOMS backend?)",
+            env.code
+        ));
+    }
+    Ok(env.data.map(|d| d.server_version.trim().to_string()).unwrap_or_default())
+}
+
+/// Step 1: `GET /api/v1/shell/compat` — the server reports its version; THIS shell decides compatibility
+/// (it carries the upper bound `COMPAT_BACKEND_MAX`). Hard-blocks (returns Err) when the server is too
+/// new for this shell. The wizard's `errorKeyFor` maps the error text to `sc.compatErr` via the
+/// "not compatible" substring.
 #[tauri::command]
 async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> {
     let client = http_client_for(&origin);
-    let url = format!("{}/api/v1/shell/compat?version={}", origin.trim_end_matches('/'), SHELL_VERSION);
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("compat request failed: {e}"))?;
-    let status = resp.status();
-    let body: ApiEnvelope<CompatData> = serde_json::from_str(
-        &resp.text().await.map_err(|e| format!("compat read failed: {e}"))?,
-    )
-    .map_err(|e| format!("compat parse failed (HTTP {status}): {e}"))?;
-    if body.code != 0 {
-        return Err(format!("server returned code {} at compat", body.code));
+    let server_version = fetch_server_version(&client, &origin).await?;
+    if server_version.is_empty() {
+        return Err("address: server did not report a version".to_string());
     }
-    let data = body.data.ok_or_else(|| "compat: empty data".to_string())?;
-    if !data.compatible {
+    // Compatible iff `serverVersion < COMPAT_BACKEND_MAX` ⟺ `!semver_gte(serverVersion, COMPAT_BACKEND_MAX)`.
+    if semver_gte(&server_version, COMPAT_BACKEND_MAX) {
         return Err(format!(
-            "this app (shell {}) is too old for this server (requires {})",
-            SHELL_VERSION, data.min_shell_version
+            "this app (shell {SHELL_VERSION}) is not compatible with server version {server_version} (this app supports servers below {COMPAT_BACKEND_MAX})"
         ));
     }
-    Ok(serde_json::json!({ "compatible": true, "minShellVersion": data.min_shell_version }))
+    Ok(serde_json::json!({ "compatible": true, "serverVersion": server_version }))
 }
 
 /// Step 2: verify the TLS certificate is valid. HTTPS + DNS host → strict probe of `/api/v1/health`
@@ -654,8 +1266,6 @@ async fn init_validate_cert(origin: String) -> Result<serde_json::Value, String>
 struct ManifestData {
     #[serde(rename = "webVersion")]
     web_version: String,
-    #[serde(rename = "minShellVersion")]
-    min_shell_version: String,
     sha256: String,
     #[serde(rename = "downloadUrl")]
     download_url: String,
@@ -694,10 +1304,13 @@ async fn init_download_web(
         return Err(format!("server returned code {} at web-manifest", menv.code));
     }
     let manifest = menv.data.ok_or_else(|| "manifest: empty data".to_string())?;
-    if !semver_gte(SHELL_VERSION, &manifest.min_shell_version) {
+    // Defense-in-depth compat re-check (the wizard gated compat in `init_check_compat` moments before;
+    // this also guards the post-login About→update path). Refuse to fetch a bundle from a backend this
+    // shell has flagged incompatible.
+    let server_version = fetch_server_version(&client, &origin).await?;
+    if semver_gte(&server_version, COMPAT_BACKEND_MAX) {
         return Err(format!(
-            "this app (shell {}) is too old for this web bundle (requires {})",
-            SHELL_VERSION, manifest.min_shell_version
+            "this app (shell {SHELL_VERSION}) is not compatible with server version {server_version} (supports servers below {COMPAT_BACKEND_MAX})"
         ));
     }
 
@@ -768,6 +1381,12 @@ async fn init_download_web(
     let active_tmp = web_root.join(format!("{ACTIVE_FILENAME}.tmp"));
     fs::write(&active_tmp, &manifest.web_version).map_err(|e| format!("active write: {e}"))?;
     fs::rename(&active_tmp, web_root.join(ACTIVE_FILENAME)).map_err(|e| format!("active rename: {e}"))?;
+    // Persist the verified bundle hash so later launch probes detect updates by hash equality
+    // (`installedHash != serverHash`) without re-downloading. Atomic tmp+rename, mirroring `active`.
+    let hash_tmp = web_root.join(format!("{ACTIVE_HASH_FILENAME}.tmp"));
+    fs::write(&hash_tmp, manifest.sha256.as_bytes()).map_err(|e| format!("active hash write: {e}"))?;
+    fs::rename(&hash_tmp, web_root.join(ACTIVE_HASH_FILENAME))
+        .map_err(|e| format!("active hash rename: {e}"))?;
     gc_web_versions(&web_root, &manifest.web_version);
 
     // 3g. persist origin (media proxy Arc + api_origin file)
@@ -784,7 +1403,11 @@ fn gc_web_versions(web_root: &Path, active: &str) {
     if let Ok(entries) = fs::read_dir(web_root) {
         for entry in entries.flatten() {
             if let Some(name) = entry.file_name().to_str() {
-                if name == ACTIVE_FILENAME || name.starts_with('.') || name == active {
+                if name == ACTIVE_FILENAME
+                    || name == ACTIVE_HASH_FILENAME
+                    || name.starts_with('.')
+                    || name == active
+                {
                     continue;
                 }
                 let mtime = entry.metadata().and_then(|m| m.modified()).unwrap_or(UNIX_EPOCH);
@@ -799,225 +1422,104 @@ fn gc_web_versions(web_root: &Path, active: &str) {
     }
 }
 
-#[derive(serde::Deserialize)]
-struct ManifestOnlyVersion {
-    #[serde(rename = "webVersion")]
-    web_version: String,
-}
+/// Best-effort fetch of the server's reported version + the current web-bundle manifest. Returns
+/// `(server_version, server_hash, server_web_version)`; the caller degrades to empty fields on `Err` so a
+/// flaky network never produces a false incompatibility or a false update prompt.
+async fn fetch_compat_and_manifest(
+    client: &reqwest::Client,
+    origin: &str,
+) -> Result<(String, String, String), String> {
+    let server_version = fetch_server_version(client, origin).await?;
 
-/// On-launch update probe: compare the local active version against the server's current manifest.
-/// Returns whether a newer bundle is available (the SPA calls this in the background, then
-/// `init_download_web` to install it + prompts a reload).
-#[tauri::command]
-async fn init_check_update(origin: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let origin = origin.trim_end_matches('/').to_string();
-    let client = http_client_for(&origin);
-    let resp = client
-        .get(format!("{}/api/v1/shell/web-manifest", origin))
-        .send()
-        .await
-        .map_err(|e| format!("update probe failed: {e}"))?;
-    let env: ApiEnvelope<ManifestOnlyVersion> =
-        serde_json::from_str(&resp.text().await.map_err(|e| format!("update read: {e}"))?)
-            .map_err(|e| format!("update parse: {e}"))?;
-    if env.code != 0 {
-        return Err(format!("server returned code {} at web-manifest", env.code));
-    }
-    let server_ver = env.data.map(|d| d.web_version).unwrap_or_default();
-    let local = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .and_then(|d| fs::read_to_string(d.join(WEB_DIRNAME).join(ACTIVE_FILENAME)).ok())
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-    let update_available = !server_ver.is_empty() && server_ver != local;
-    Ok(serde_json::json!({ "updateAvailable": update_available, "newVersion": server_ver, "currentVersion": local }))
-}
-
-/// Best-effort fetch of the server's shell floor (compat) + current web version (manifest). Returns
-/// (min_shell_version, server_web_version); a field is empty on its request's failure so a flaky network
-/// degrades gracefully (About shows local versions, no false update prompt).
-async fn fetch_compat_and_manifest(client: &reqwest::Client, origin: &str) -> Result<(String, String), String> {
     let base = origin.trim_end_matches('/');
-    let cresp = client
-        .get(format!("{base}/api/v1/shell/compat?version={SHELL_VERSION}"))
-        .send()
-        .await
-        .map_err(|e| format!("compat: {e}"))?;
-    let cenv: ApiEnvelope<CompatData> =
-        serde_json::from_str(&cresp.text().await.map_err(|e| format!("compat read: {e}"))?)
-            .map_err(|e| format!("compat parse: {e}"))?;
-    let min_shell = cenv.data.map(|d| d.min_shell_version).unwrap_or_default();
-
     let mresp = client
         .get(format!("{base}/api/v1/shell/web-manifest"))
         .send()
         .await
         .map_err(|e| format!("manifest: {e}"))?;
-    let menv: ApiEnvelope<ManifestOnlyVersion> =
+    let menv: ApiEnvelope<ManifestData> =
         serde_json::from_str(&mresp.text().await.map_err(|e| format!("manifest read: {e}"))?)
             .map_err(|e| format!("manifest parse: {e}"))?;
-    let server_web = menv.data.map(|d| d.web_version).unwrap_or_default();
+    let (server_hash, server_web) = menv
+        .data
+        .map(|d| (d.sha256, d.web_version))
+        .unwrap_or_default();
 
-    Ok((min_shell, server_web))
+    Ok((server_version, server_hash, server_web))
 }
 
-/// Read-only update status for the SPA's Settings→About page (NOT the install gate — never rejects).
-/// Pulls compat + web-manifest and returns the local + server versions + the derived update flags, so
-/// the SPA can show "up to date" / "web update available" / "app too old — contact admin" without driving
-/// the install flow. Network failures resolve to empty server fields + false flags (the cached bundle
-/// keeps the app usable; About just shows local versions).
+/// Read-only update status for the SPA's Settings→About page + the launch-time incompatibility prompt
+/// (NOT an install gate — never rejects). Pulls the server version + manifest and returns the local +
+/// server values + the derived flags: `incompatible` (this shell can't run this backend — prompt
+/// "contact admin") and `webUpdateAvailable` (the server advertises a bundle whose hash differs from the
+/// installed one — prompt "update"). Network failures resolve to empty server fields + false flags so the
+/// cached bundle keeps the app usable.
 #[tauri::command]
 async fn init_update_status(origin: String, app: tauri::AppHandle) -> Result<serde_json::Value, String> {
     let origin = origin.trim_end_matches('/').to_string();
     let client = http_client_for(&origin);
 
-    // Local shell version (compile-time) + installed web version (the active bundle on disk).
+    // Local shell version (compile-time) + installed web version + the persisted verified hash.
     let shell_version = SHELL_VERSION.to_string();
-    let installed_web = app
+    let web_root = app
         .path()
         .app_data_dir()
         .ok()
-        .and_then(|d| fs::read_to_string(d.join(WEB_DIRNAME).join(ACTIVE_FILENAME)).ok())
+        .map(|d| d.join(WEB_DIRNAME));
+    let installed_web = web_root
+        .as_deref()
+        .and_then(|p| fs::read_to_string(p.join(ACTIVE_FILENAME)).ok())
         .map(|s| s.trim().to_string())
         .unwrap_or_default();
+    // The verified hash of the installed bundle, written by `init_download_web`. Absent on legacy
+    // installs that predate hash persistence → empty (a one-time "update available" nudge once the server
+    // advertises any hash; self-heals after the next install writes the file).
+    let installed_hash = web_root
+        .as_deref()
+        .and_then(|p| fs::read_to_string(p.join(ACTIVE_HASH_FILENAME)).ok())
+        .map(|s| s.trim().to_lowercase())
+        .unwrap_or_default();
 
-    // Best-effort server probe (graceful on failure — empty fields, no false update prompt).
-    let (min_shell, server_web) = match fetch_compat_and_manifest(&client, &origin).await {
-        Ok(v) => v,
-        Err(_) => (String::new(), String::new()),
-    };
+    // Best-effort server probe (graceful on failure — empty fields, no false flags).
+    let (server_version, server_hash, server_web) =
+        match fetch_compat_and_manifest(&client, &origin).await {
+            Ok(v) => v,
+            Err(_) => (String::new(), String::new(), String::new()),
+        };
 
-    let shell_update_required = !min_shell.is_empty() && !semver_gte(&shell_version, &min_shell);
-    let web_update_available = !server_web.is_empty() && server_web != installed_web;
+    let incompatible =
+        !server_version.is_empty() && semver_gte(&server_version, COMPAT_BACKEND_MAX);
+    let web_update_available =
+        !server_hash.is_empty() && server_hash.to_lowercase() != installed_hash;
 
     Ok(serde_json::json!({
         "shellVersion": shell_version,
+        "serverVersion": server_version,
         "installedWebVersion": installed_web,
         "serverWebVersion": server_web,
-        "minShellVersion": min_shell,
-        "shellUpdateRequired": shell_update_required,
+        "incompatible": incompatible,
         "webUpdateAvailable": web_update_available,
     }))
 }
 
-// --- two-window lifecycle + natural handoff -----------------------------------------------
+// --- document-navigation guard ------------------------------------------------------------
 
-/// `somsapp://localhost/index.html` as a parsed URL (the "main" window target).
-fn somsapp_index_url() -> reqwest::Url {
-    reqwest::Url::parse(&format!("{}://{}/index.html", SOMSAPP_SCHEME, SOMSAPP_HOST)).unwrap()
-}
-
-/// If the SPA does not emit `spa-ready` within this long after handoff, complete the handoff anyway.
-/// Backstop so a SPA that crashes / hangs mid-boot can never strand the user on a hidden "main" + a
-/// never-closing "init". Generous vs. a normal boot (Angular paints in well under a second), tight
-/// enough that a real hang is surfaced rather than frozen indefinitely.
-const HANDOFF_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Show "main" + close "init" exactly once. The `spa-ready` event handler and the timeout backstop
-/// both call this; the shared flag's `swap(true)` is atomic, so the first caller wins and the second
-/// is a no-op (the loser's `main.show()`/`init.close()` would be harmless, but skipping it is clearer).
-fn complete_handoff(app: &tauri::AppHandle, done: &Arc<AtomicBool>) {
-    if done.swap(true, Ordering::SeqCst) {
-        return;
-    }
-    if let Some(main) = app.get_webview_window("main") {
-        let _ = main.show();
-        let _ = main.set_focus();
-    }
-    if let Some(init) = app.get_webview_window("init") {
-        let _ = init.close();
-    }
-}
-
-/// Called by the bootstrap after the 3 init steps succeed (first-run OR reconfigure). Creates "main"
-/// (or reloads it) hidden, waits for the SPA's `spa-ready` event (Angular emits it after first paint),
-/// then shows "main" and closes "init" — no blank gap (the SPA shows its app-shell spinner until
-/// painted, then real content; the shared auth-shell makes the swap read as an in-place transition).
-/// A backstop timer completes the handoff if `spa-ready` never arrives, so a hung SPA can't deadlock.
-#[tauri::command]
-fn handoff_to_spa(app: tauri::AppHandle) -> Result<(), String> {
-    let init_win = app.get_webview_window("init");
-
-    if let Some(main) = app.get_webview_window("main") {
-        // Reconfigure: reload main against the (possibly new) origin/web.
-        let _ = main.eval("location.replace('somsapp://localhost/index.html')");
-    } else {
-        // First-run: create main matching init's geometry, hidden until painted.
-        let mut b = WebviewWindowBuilder::new(&app, "main", WebviewUrl::External(somsapp_index_url()))
-            .title("SOMS")
-            .visible(false);
-        if let Some(init) = &init_win {
-            if let Ok(s) = init.inner_size() {
-                b = b.inner_size(s.width as f64, s.height as f64);
-            }
-            if let Ok(p) = init.outer_position() {
-                b = b.position(p.x as f64, p.y as f64);
-            }
-        } else {
-            b = b.inner_size(1200.0, 800.0).min_inner_size(900.0, 600.0);
-        }
-        b.build().map_err(|e| format!("create main window: {e}"))?;
-    }
-
-    // Complete the handoff on the SPA's first paint. A separate backstop (below) fires after
-    // HANDOFF_TIMEOUT so a SPA that never emits spa-ready still hands off; the shared flag makes the
-    // first to fire the winner.
-    let done = Arc::new(AtomicBool::new(false));
-    let app_for_event = app.clone();
-    let done_for_event = done.clone();
-    app.once("spa-ready", move |_| {
-        complete_handoff(&app_for_event, &done_for_event);
-    });
-    // tokio isn't a direct dep (tauri::async_runtime re-exports only runtime/sync/JoinHandle), so the
-    // backstop sleeps on a blocking-pool thread via std::thread::sleep — it occupies one cheap blocking
-    // worker for the timeout, not an async-runtime worker, and is a no-op if spa-ready already fired.
-    let app_for_timeout = app.clone();
-    let done_for_timeout = done;
-    tauri::async_runtime::spawn_blocking(move || {
-        std::thread::sleep(HANDOFF_TIMEOUT);
-        complete_handoff(&app_for_timeout, &done_for_timeout);
-    });
-    Ok(())
-}
-
-/// Called by the SPA login page's "Server settings" button. Creates the "init" window over "main"
-/// (hidden), marks `reconfigure` so the bootstrap shows the form pre-filled, waits for `init-ready`
-/// (the bootstrap's first paint), then shows it. On the bootstrap's save it calls `handoff_to_spa`
-/// again, which reloads main + destroys init.
-#[tauri::command]
-fn open_init(app: tauri::AppHandle, state: tauri::State<'_, ProxyState>) -> Result<(), String> {
-    if app.get_webview_window("init").is_some() {
-        if let Some(init) = app.get_webview_window("init") {
-            let _ = init.set_focus();
-        }
-        return Ok(());
-    }
-    state.reconfigure.store(true, Ordering::SeqCst);
-
-    let main = app.get_webview_window("main");
-    let mut b = WebviewWindowBuilder::new(&app, "init", WebviewUrl::App("index.html".into()))
-        .title("SOMS")
-        .visible(false);
-    if let Some(main) = &main {
-        if let Ok(s) = main.inner_size() {
-            b = b.inner_size(s.width as f64, s.height as f64);
-        }
-        if let Ok(p) = main.outer_position() {
-            b = b.position(p.x as f64, p.y as f64);
-        }
-    } else {
-        b = b.inner_size(1200.0, 800.0).min_inner_size(900.0, 600.0);
-    }
-    b.build().map_err(|e| format!("create init window: {e}"))?;
-
-    let app_handle = app.clone();
-    app.once("init-ready", move |_| {
-        if let Some(init) = app_handle.get_webview_window("init") {
-            let _ = init.show();
-            let _ = init.set_focus();
-        }
-    });
-    Ok(())
+/// Top-level navigation guard, registered on the single window's `WebviewWindowBuilder` via
+/// `.on_navigation(nav_allowed)`. Confines the webview's DOCUMENT to the app's own origin —
+/// `tauri://localhost` (`http://tauri.localhost` on Android), where the bundled SPA is served — plus
+/// `about:blank` (the pre-navigation frame). Every other URL — any external http(s) site — is refused.
+///
+/// Why: the webview carries the app's full privileges (IPC, secure storage, the bearer-token media proxy,
+/// native bridges). Letting it navigate to an arbitrary page would run that page in a privileged context
+/// (IPC probes, phishing, token theft) and break Tauri's trust model (the webview IS the trusted UI).
+/// This does NOT restrict the SPA's fetch/SSE to the runtime-configured backend — that is API traffic
+/// (CSP `connect-src`), not document navigation. Legitimate external LINKS must be routed to the system
+/// browser (tauri-plugin-opener), never loaded inside the webview.
+///
+/// Android: wry routes this through `RustWebViewClient.shouldOverrideUrlLoading` → `Rust.shouldOverride`,
+/// so the guard is enforced on-device, not only on desktop.
+fn nav_allowed(url: &reqwest::Url) -> bool {
+    let scheme = url.scheme();
+    let host = url.host_str().unwrap_or("");
+    scheme == "tauri" || scheme == "about" || host == "tauri.localhost"
 }

@@ -4,7 +4,10 @@ plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("rust")
-    // id("com.google.gms.google-services")  // TEMPORARILY OFF: build APK without google-services.json (FCM push non-functional). Re-enable once Firebase is set up — see src-tauri/FCM_ANDROID_PATCH.md.
+    // The google-services plugin is intentionally NOT applied: this APK ships WITHOUT google-services.json.
+    // Each operator runs their own Firebase project, so the Firebase client config is fetched at runtime
+    // from the server (GET /push/firebase-config) and FirebaseApp is initialized manually by SomsFirebase
+    // (process-start hook in SomsApplication). See src-tauri/FCM_ANDROID_PATCH.md.
 }
 
 val tauriProperties = Properties().apply {

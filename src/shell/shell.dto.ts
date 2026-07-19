@@ -1,30 +1,35 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { LoginMode } from '../config/public-config.js';
 
 /**
- * Response of `GET /api/v1/shell/compat?version=<shellVersion>`. The Tauri shell calls this BEFORE
- * downloading the web bundle to decide whether its build can talk to this server. `compatible ===
- * false` → the shell shows an "upgrade the app" message and refuses to proceed (no bundle download).
+ * Response of `GET /api/v1/shell/compat`. The shell decides compatibility itself: it carries a hard-coded
+ * upper bound (`COMPAT_BACKEND_MAX` in the shell's Cargo source) and accepts this server iff
+ * `serverVersion < COMPAT_BACKEND_MAX`. The server sets no shell floor, so it has nothing to compute or
+ * gate on for compat.
+ *
+ * The response ALSO folds in the public login policy (`registrationOpen` + `loginMode`, identical to
+ * `GET /api/v1/config`) so the Tauri shell — which hits `/shell/compat` first, before it has a session —
+ * learns the enabled login methods in the SAME round-trip and never needs a separate `/config` call. The
+ * browser build (served by Caddy, never calls `/shell/*`) keeps using `/config`.
  */
 export class ShellCompatDto {
-  @ApiProperty({ example: true, description: 'Whether the caller shell version can use this server + bundle.' })
-  compatible!: boolean;
-
-  @ApiProperty({ example: '0.0.1', description: 'The server version (root package.json, same as /health).' })
+  @ApiProperty({ example: '0.1.0', description: 'The server version (root package.json, same as /health).' })
   serverVersion!: string;
 
   @ApiProperty({
-    example: '0.1.0',
-    description: 'Minimum shell (Cargo/tauri.conf.json) version this server supports. Caller is compatible iff its version >= this.',
+    example: false,
+    description:
+      'Whether end-user self-registration is open. Mirrors GET /api/v1/config; folded in so the shell gets the login policy with the version in one call.',
   })
-  minShellVersion!: string;
+  registrationOpen!: boolean;
 
   @ApiProperty({
-    required: false,
-    nullable: true,
-    example: 'shell.incompatible',
-    description: 'Optional i18n key the shell shows when compatible === false (null → shell default copy).',
+    enum: LoginMode,
+    enumName: 'LoginMode',
+    example: LoginMode.APP_OTP_AND_QR,
+    description: 'Which login methods are enabled (see LoginMode). Mirrors GET /api/v1/config.',
   })
-  messageKey?: string | null;
+  loginMode!: LoginMode;
 }
 
 /**
@@ -34,23 +39,18 @@ export class ShellCompatDto {
  * catches transport corruption, partial downloads, and manifest/bundle version drift. IP/http origins
  * are not guaranteed secure by policy.
  *
- * On-disk `data/shell/manifest.json` stores only `{ webVersion, sha256 }`; `minShellVersion`
- * + `downloadUrl` are merged in here from `SHELL_COMPAT` (single source of truth) so they can never
- * drift from the compat endpoint.
+ * The shell uses `sha256` for BOTH install-time integrity AND update detection (installed-hash on disk
+ * vs. this value); `webVersion` is for display/naming only, never compared. On-disk
+ * `shell-bundle/manifest.json` stores only `{ webVersion, sha256 }`; `downloadUrl` is merged in here
+ * from a fixed route path.
  */
 export class ShellWebManifestDto {
-  @ApiProperty({ example: '0.1.0', description: 'The web SPA version this bundle contains (web/package.json).' })
+  @ApiProperty({ example: '0.1.0', description: 'The web SPA version this bundle contains (web/package.json). Display + filename only.' })
   webVersion!: string;
 
   @ApiProperty({
-    example: '0.1.0',
-    description: 'Minimum shell version this bundle requires. Caller refuses a bundle built for a newer shell.',
-  })
-  minShellVersion!: string;
-
-  @ApiProperty({
     example: '9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08',
-    description: 'Hex SHA-256 of the bundle bytes. The shell recomputes this over the downloaded bytes and MUST match before extracting.',
+    description: 'Hex SHA-256 of the bundle bytes. The shell recomputes this over the downloaded bytes and MUST match before extracting; it also compares this against the persisted installed hash to detect updates.',
   })
   sha256!: string;
 

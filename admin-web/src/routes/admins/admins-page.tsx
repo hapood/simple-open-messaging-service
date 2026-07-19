@@ -128,10 +128,7 @@ export function AdminsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('admins.title')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t('admins.desc')}</p>
-        </div>
+        <p className="max-w-xl text-sm text-muted-foreground">{t('admins.desc')}</p>
         <div className="flex items-center gap-2">
           <div className="relative w-60">
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />

@@ -4,25 +4,41 @@
     <app-auth-toolbar></app-auth-toolbar>
     <div class="qr-card">
       <div class="progress-slot">
-        @if (view() === 'loading' || view() === 'pending') {
-        <mat-progress-bar mode="indeterminate"></mat-progress-bar>}
+        @switch (view()) {
+          @case ('loading') {
+            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          }
+          @case ('pending') {
+            <mat-progress-bar mode="determinate" [value]="qrRemainingPct()"></mat-progress-bar>
+          }
+          @case ('scanned') {
+            <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+          }
+        }
       </div>
 
       <h1 class="qr-title">{{ 'auth.qrTitle' | transloco }}</h1>
 
-      @if (notice()) {
-      <div class="notice" role="status">{{ notice() }}</div>}
-
       <div class="qr-stage">
+        @if (view() === 'pending' || view() === 'scanned') {
+          <div class="qr-image" [class.is-scanned]="view() === 'scanned'">
+            <div class="qr-canvas">
+              <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
+            </div>
+            @if (view() === 'scanned') {
+              <span class="qr-scan-badge" aria-hidden="true">
+                <app-icon [type]="AppIcon.CHECK" [style]="{ width: '40px', height: '40px' }" />
+              </span>
+            }
+          </div>
+        }
         @switch (view()) {
           @case ('loading') {
             <p class="qr-state">{{ 'auth.qrLoading' | transloco }}</p>
           }
           @case ('pending') {
-            <div class="qr-image">
-              <app-qr-code [value]="qrToken() ?? ''" [ariaLabel]="'auth.qrTitle' | transloco" />
-            </div>
             <p class="qr-state">{{ 'auth.qrPending' | transloco }}</p>
+            <p class="qr-countdown">{{ qrRemainingText() }}</p>
           }
           @case ('scanned') {
             <p class="qr-state">{{ 'auth.qrScanned' | transloco }}</p>
@@ -36,16 +52,19 @@
         }
       </div>
 
-      <p class="trust-notice">{{ (trustDevice() ? 'auth.qrTrustedNotice' : 'auth.qrUntrustedNotice') | transloco }}</p>
-      @if (isTauri() && canTrust) {
-        <mat-checkbox class="trust-cb" [checked]="trustDevice()" (change)="onTrustChange($event.checked)">
-          {{ 'auth.trustThisDevice' | transloco }}
-        </mat-checkbox>
+      @if (qrTrusted) {
+        <p class="trust-notice">{{ 'auth.qrTrustedNotice' | transloco }}</p>
+      } @else {
+        <p class="trust-notice">{{ 'auth.webSessionNotice' | transloco }}</p>
       }
 
       @if (canPassword()) {
       <div class="alt-action">
         <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>
+      </div>}
+      @if (canOtp()) {
+      <div class="alt-action">
+        <button type="button" class="link-btn" (click)="jumpToOtp()">{{ 'auth.switchToOtp' | transloco }}</button>
       </div>}
     </div>
     @if (isTauri()) {

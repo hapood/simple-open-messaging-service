@@ -1,6 +1,6 @@
 {
   "name": "simple-open-s-service",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "a simple message service , easy to connect by third part apps.",
   "author": "",
   "private": true,

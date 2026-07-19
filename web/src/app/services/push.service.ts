@@ -1,7 +1,7 @@
 import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
-import { isTauri } from './runtime';
+import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
 
 /**
@@ -51,6 +51,49 @@ export class PushService {
       window.__SOMS_PENDING_THREAD_ID__ = undefined;
       this.openThread(pending);
     }
+    // Sync the native Firebase client config with the current server (the APK ships without
+    // google-services.json; each server publishes its own at GET /push/firebase-config). Fire-and-forget —
+    // it self-gates on isAndroidNative() and never throws; if it reconfigures Firebase, the new token
+    // flows back through __SOMS_FCM_TOKEN__ → onToken → register() (installed above).
+    void this.refreshFirebaseConfig();
+  }
+
+  /** Fetch the server's Firebase client config and hand it to native so the Android shell (re)initializes
+   *  FirebaseApp. Called at boot (init) and on server switch (server-config-page, after setApiOrigin).
+   *  Android-only (desktop has no Firebase). Robust to transients: a network failure leaves the cached
+   *  native config intact — only an explicit {configured:false} from the server clears it, so a blip never
+   *  silently kills FCM. The 4 fields are only re-pushed when they actually change (avoids needless
+   *  token churn on identical config). */
+  async refreshFirebaseConfig(): Promise<void> {
+    if (!isAndroidNative()) return;
+    let data: {
+      configured: boolean;
+      apiKey?: string;
+      projectId?: string;
+      appId?: string;
+      gcmSenderId?: string;
+    } | null = null;
+    try {
+      const res = await fetch(`${apiPrefix()}/push/firebase-config`);
+      const json = await res.json();
+      data = json?.data ?? null;
+    } catch {
+      // Network error / server unreachable — keep the current native config (best-effort, don't kill FCM).
+      return;
+    }
+    if (!data) return;
+    if (!data.configured) {
+      // Server explicitly has no FCM client config → clear native Firebase.
+      if (window.SomsFcm!.getFirebaseConfig() !== null) window.SomsFcm!.setFirebaseConfig(null);
+      return;
+    }
+    const next = JSON.stringify({
+      apiKey: data.apiKey,
+      projectId: data.projectId,
+      appId: data.appId,
+      gcmSenderId: data.gcmSenderId,
+    });
+    if (window.SomsFcm!.getFirebaseConfig() !== next) window.SomsFcm!.setFirebaseConfig(next);
   }
 
   /** Called by AuthService after a successful login — the access token is now in the interceptor, so

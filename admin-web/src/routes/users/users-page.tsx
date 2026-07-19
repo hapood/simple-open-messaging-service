@@ -116,8 +116,7 @@ export function UsersPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">{t('users.title')}</h1>
+      <div className="flex items-center justify-end gap-4">
         <div className="flex items-center gap-2">
           <div className="relative w-72">
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />

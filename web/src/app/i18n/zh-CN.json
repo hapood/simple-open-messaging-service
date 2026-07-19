@@ -63,6 +63,8 @@
     "switchToPassword": "使用密码登录",
     "switchToOtp": "使用一次性密码登录",
     "switchToQr": "使用扫码登录",
+    "serverUnreachable": "无法连接服务器，请检查地址或重新配置。",
+    "reconfigure": "服务器设置",
     "qrTitle": "扫码登录",
     "qrLoading": "正在生成登录码…",
     "qrPending": "用手机扫描此码以登录。",
@@ -71,8 +73,8 @@
     "qrRetry": "刷新登录码",
     "trustThisDevice": "信任此设备",
     "trustThisDeviceHint": "在此设备上保持登录，直到你主动退出。",
-    "qrUntrustedNotice": "非可信设备——14 天内无活动将被自动登出。",
     "qrTrustedNotice": "可信设备——将一直保持登录，直到你主动退出。",
+    "webSessionNotice": "出于安全考虑，网页端会话仅限 14 天。如需保持登录，请使用桌面客户端或手机应用。",
     "notice": {
       "trustPersistFailed": "无法访问此设备的安全存储，可信登录未能保存。已为你退出登录，请重新登录（若反复出现，请取消勾选“信任此设备”）。",
       "logoutClearFailed": "你已退出登录，但此设备的安全存储被锁定，下次检查前可能短暂显示为已登录（会自动纠正）。可在“设置 → 设备”中撤销该会话。",
@@ -492,7 +494,7 @@
     "updateFailed": "更新失败：{{error}}",
     "downloaded": "已下载，重载以完成。",
     "reloadNow": "重载",
-    "shellUpdateRequired": "此客户端版本过低，请联系管理员更新（需 v{{version}}）。",
+    "appIncompatible": "此应用版本与服务器不兼容（服务器 v{{version}}），请联系管理员升级应用。",
     "media": "媒体",
     "mediaThreshold": "图片加载阈值",
     "mediaThresholdHint": "较大的图片显示点击加载占位符。",
@@ -500,20 +502,29 @@
     "devices": "登录设备",
     "devicesHint": "活跃会话"
   },
+  "shell": {
+    "incompatibleTitle": "应用不兼容",
+    "incompatibleMessage": "此应用版本与服务器不兼容（服务器 v{{version}}），部分功能可能异常，请联系管理员升级应用。",
+    "incompatibleDismiss": "知道了"
+  },
   "serverConfig": {
     "entry": "服务器设置",
     "title": "后端服务器",
     "hint": "将本应用指向 SOMS 后端。仅保存一次，每次启动自动生效。",
     "urlLabel": "后端地址",
-    "placeholder": "http://192.168.1.10:3000",
-    "urlInvalid": "请输入完整地址，如 http://192.168.1.10:3000 或 https://api.example.com",
-    "testBtn": "测试",
-    "testing": "测试中…",
-    "save": "保存",
-    "saving": "保存中…",
-    "cancel": "取消",
-    "statusOk": "已连接 · v{{version}}",
-    "statusNotSoms": "非 SOMS 后端",
-    "statusFail": "无法连接"
+    "placeholder": "https://soms.example.com:7667",
+    "urlInvalid": "请输入完整地址",
+    "connect": "连接",
+    "connecting": "连接中…",
+    "insecure": "不安全——将跳过证书校验。",
+    "stepCompat": "正在检查服务器兼容性…",
+    "stepCert": "正在校验证书…",
+    "stepDone": "就绪——正在启动应用…",
+    "addrErr": "无法连接该地址。请检查地址和端口——服务器可能未开放，或这不是 SOMS 后端。",
+    "compatErr": "此应用版本与服务器不兼容，请联系管理员升级应用。",
+    "certErr": "证书校验失败（自签名/过期/不可达）。请使用受信 HTTPS 域名或 IP 地址。",
+    "connectErr": "连接失败，请检查地址后重试。",
+    "exitHint": "再按一次返回键退出。",
+    "backToApp": "返回应用"
   }
 }

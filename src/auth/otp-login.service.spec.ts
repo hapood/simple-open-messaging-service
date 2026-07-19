@@ -5,27 +5,28 @@ import { BruteForceService } from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import type { PrismaService } from '../prisma.service.js';
 import type { SessionTokenService } from './session-token.service.js';
+import type { SettingsService } from '../settings/settings.service.js';
 
 /**
- * OtpLoginService: admin-issued one-time login codes → the Android long-term `app` session. Covers
- * issue (plaintext reveal-once + prior-code revocation), verifyAndLogin (single-use guard,
- * producedSessionId audit link, the precise expired/consumed/invalid codes), the account-dimension
- * brute-force lock, revoke, and the audit list. argon2 runs real (one hash/verify per round-trip) —
- * the failure paths that don't need it (no-code / expired / consumed) throw before verify.
+ * OtpLoginService: admin-issued one-time login codes (available on every platform). Covers issue (plaintext
+ * reveal-once; multi-issue — issuing does NOT revoke prior codes; configurable TTL), verifyAndLogin (accepts
+ * ANY active code by argon2 hash-match, single-use guard, client-driven trust, producedSessionId audit link,
+ * precise expired/invalid codes), the account-dimension brute-force lock, revoke, and the audit list.
+ * argon2 runs real (one hash/verify per round-trip) — the failure paths that don't need it (no-code) throw
+ * before verify.
  */
 describe('OtpLoginService', () => {
   const prisma = {
-    $transaction: vi.fn(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma)),
     user: { findUnique: vi.fn() },
     loginCode: {
       create: vi.fn(),
-      findFirst: vi.fn(),
       findMany: vi.fn(),
       updateMany: vi.fn(),
       update: vi.fn(),
     },
   };
   const sessionTokens = { issue: vi.fn(), idOfToken: vi.fn() };
+  const settings = { getOtpTtlMinutes: vi.fn() };
   // A REAL BruteForceService drives the account-dimension throttle end-to-end (no mock) — so the lock test
   // exercises the shared engine OtpLoginService delegates to, not a stub. Built fresh per test so a ban
   // recorded in one case can't leak into another (each test gets isolated throttle state).
@@ -36,15 +37,17 @@ describe('OtpLoginService', () => {
       prisma as unknown as PrismaService,
       sessionTokens as unknown as SessionTokenService,
       new BruteForceService(),
+      settings as unknown as SettingsService,
     );
     prisma.user.findUnique.mockReset();
     prisma.loginCode.create.mockReset();
-    prisma.loginCode.findFirst.mockReset();
     prisma.loginCode.findMany.mockReset();
     prisma.loginCode.updateMany.mockReset();
     prisma.loginCode.update.mockReset();
     sessionTokens.issue.mockReset();
     sessionTokens.idOfToken.mockReset();
+    settings.getOtpTtlMinutes.mockReset();
+    settings.getOtpTtlMinutes.mockResolvedValue(10); // 10-minute validity window
     // Default Promise returns — the service chains .catch() on the fire-and-forget producedSessionId
     // update, so the mocks must yield Promises (vi.fn() defaults to undefined → .catch on undefined throws).
     prisma.loginCode.update.mockResolvedValue({});
@@ -64,18 +67,20 @@ describe('OtpLoginService', () => {
   }
 
   describe('issueCode', () => {
-    it('returns a 6-digit plaintext ONCE + revokes the prior unconsumed code in the same transaction', async () => {
+    it('returns a 6-digit plaintext ONCE; uses the configured TTL; does NOT revoke prior codes (multi-issue)', async () => {
       const r = await issueAndCaptureHash();
       expect(r.code).toMatch(/^\d{6}$/);
-      expect(prisma.loginCode.updateMany).toHaveBeenCalledWith({
-        where: { userId: 42, consumedAt: null, revokedAt: null },
-        data: { revokedAt: expect.any(Date) },
-      });
+      // expiresAt = now + the mocked 10-minute TTL.
+      const data = (prisma.loginCode.create.mock.calls[0][0] as { data: { expiresAt: Date } }).data;
+      expect(data.expiresAt.getTime() - Date.now()).toBeGreaterThan(9 * 60_000);
+      expect(data.expiresAt.getTime() - Date.now()).toBeLessThan(11 * 60_000);
+      // Multi-issue: issuing must NOT touch (revoke) the account's other codes.
+      expect(prisma.loginCode.updateMany).not.toHaveBeenCalled();
     });
   });
 
   describe('verifyAndLogin', () => {
-    it('verifies a correct code, issues a token (prior app sessions left intact), records producedSessionId', async () => {
+    it('verifies a correct code (default client app → trusted/permanent), records producedSessionId', async () => {
       const { code, codeHash } = await issueAndCaptureHash();
       prisma.user.findUnique.mockResolvedValue({
         id: 42,
@@ -83,24 +88,19 @@ describe('OtpLoginService', () => {
         isDeleted: false,
         mustChangePassword: false,
       });
-      prisma.loginCode.findFirst.mockResolvedValue({
-        id: 5,
-        codeHash,
-        consumedAt: null,
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 60_000),
-      });
+      prisma.loginCode.findMany.mockResolvedValue([
+        { id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) },
+      ]);
       prisma.loginCode.updateMany.mockResolvedValue({ count: 1 }); // single-use guard wins
       sessionTokens.issue.mockResolvedValue('token-xyz');
       sessionTokens.idOfToken.mockResolvedValue(99);
 
       const r = await svc.verifyAndLogin('alice', code, { ip: '1.2.3.4' });
       expect(r.token).toBe('token-xyz');
-      expect(r.mustChangePassword).toBe(false);
       expect(sessionTokens.issue).toHaveBeenCalledWith(
         42,
         'app',
-        expect.objectContaining({ ip: '1.2.3.4', persistent: true }),
+        expect.objectContaining({ ip: '1.2.3.4', persistent: true, trusted: true }),
       );
       expect(prisma.loginCode.update).toHaveBeenCalledWith({
         where: { id: 5 },
@@ -108,68 +108,95 @@ describe('OtpLoginService', () => {
       });
     });
 
-    it('throws OTP_INVALID for a wrong code (and counts it toward the account lock)', async () => {
+    it('accepts ANY active code — not just the newest (multi-issue)', async () => {
+      const olderHash = await argon2.hash('111111');
+      const newerHash = await argon2.hash('222222');
+      prisma.user.findUnique.mockResolvedValue({ id: 42, isGroup: false, isDeleted: false, mustChangePassword: false });
+      // findMany returns newest-first; the user enters the OLDER code's value.
+      prisma.loginCode.findMany.mockResolvedValue([
+        { id: 9, codeHash: newerHash, expiresAt: new Date(Date.now() + 60_000) },
+        { id: 5, codeHash: olderHash, expiresAt: new Date(Date.now() + 60_000) },
+      ]);
+      prisma.loginCode.updateMany.mockResolvedValue({ count: 1 });
+      sessionTokens.issue.mockResolvedValue('t');
+
+      await svc.verifyAndLogin('alice', '111111', {});
+      // The matched (older) code is the one single-use-claimed.
+      expect(prisma.loginCode.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { id: 5, consumedAt: null, revokedAt: null } }),
+      );
+    });
+
+    it("client 'web' → untrusted (14-day); 'desktop' → trusted (permanent)", async () => {
+      const codeHash = await argon2.hash('333333');
+      prisma.user.findUnique.mockResolvedValue({ id: 42, isGroup: false, isDeleted: false, mustChangePassword: false });
+      prisma.loginCode.findMany.mockResolvedValue([{ id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) }]);
+      prisma.loginCode.updateMany.mockResolvedValue({ count: 1 });
+      sessionTokens.issue.mockResolvedValue('t');
+
+      await svc.verifyAndLogin('alice', '333333', { client: 'web' });
+      expect(sessionTokens.issue).toHaveBeenLastCalledWith(
+        42,
+        'web',
+        expect.objectContaining({ trusted: false }),
+      );
+
+      prisma.loginCode.updateMany.mockClear();
+      sessionTokens.issue.mockClear();
+      await svc.verifyAndLogin('alice', '333333', { client: 'desktop' });
+      expect(sessionTokens.issue).toHaveBeenLastCalledWith(
+        42,
+        'desktop',
+        expect.objectContaining({ trusted: true }),
+      );
+    });
+
+    it('throws OTP_INVALID for a wrong code (counted toward the lock)', async () => {
       const codeHash = await argon2.hash('123456');
       prisma.user.findUnique.mockResolvedValue({ id: 42, isGroup: false, isDeleted: false, mustChangePassword: false });
-      prisma.loginCode.findFirst.mockResolvedValue({
-        id: 5,
-        codeHash,
-        consumedAt: null,
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 60_000),
-      });
+      prisma.loginCode.findMany.mockResolvedValue([{ id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) }]);
       await expect(svc.verifyAndLogin('wcode', '000000', {})).rejects.toMatchObject({
         bizCode: BusinessCode.OTP_INVALID,
       });
     });
 
-    it('throws OTP_EXPIRED for a past-its-expiresAt code', async () => {
+    it('throws OTP_EXPIRED when the matching code is past its expiresAt', async () => {
+      const codeHash = await argon2.hash('444444'); // matches the entered value, but expired
       prisma.user.findUnique.mockResolvedValue({ id: 42, isGroup: false, isDeleted: false, mustChangePassword: false });
-      prisma.loginCode.findFirst.mockResolvedValue({
-        id: 5,
-        codeHash: 'x',
-        consumedAt: null,
-        revokedAt: null,
-        expiresAt: new Date(Date.now() - 1000),
-      });
-      await expect(svc.verifyAndLogin('exp', '000000', {})).rejects.toMatchObject({
+      prisma.loginCode.findMany.mockResolvedValue([{ id: 5, codeHash, expiresAt: new Date(Date.now() - 1000) }]);
+      await expect(svc.verifyAndLogin('exp', '444444', {})).rejects.toMatchObject({
         bizCode: BusinessCode.OTP_EXPIRED,
       });
     });
 
-    it('throws OTP_CONSUMED for an already-used code', async () => {
+    it('throws OTP_CONSUMED when the single-use race is lost (another verifier claimed it)', async () => {
+      const codeHash = await argon2.hash('555555');
       prisma.user.findUnique.mockResolvedValue({ id: 42, isGroup: false, isDeleted: false, mustChangePassword: false });
-      prisma.loginCode.findFirst.mockResolvedValue({
-        id: 5,
-        codeHash: 'x',
-        consumedAt: new Date(),
-        revokedAt: null,
-        expiresAt: new Date(Date.now() + 60_000),
-      });
-      await expect(svc.verifyAndLogin('used', '000000', {})).rejects.toMatchObject({
+      prisma.loginCode.findMany.mockResolvedValue([{ id: 5, codeHash, expiresAt: new Date(Date.now() + 60_000) }]);
+      prisma.loginCode.updateMany.mockResolvedValue({ count: 0 }); // race lost
+      await expect(svc.verifyAndLogin('race', '555555', {})).rejects.toMatchObject({
         bizCode: BusinessCode.OTP_CONSUMED,
       });
     });
 
-    it('throws OTP_INVALID for a non-existent account (NOT counted toward the lock)', async () => {
+    it('throws OTP_INVALID for a non-existent account (NOT counted; no code lookup)', async () => {
       prisma.user.findUnique.mockResolvedValue(null);
       await expect(svc.verifyAndLogin('ghost', '000000', {})).rejects.toMatchObject({
         bizCode: BusinessCode.OTP_INVALID,
       });
-      expect(prisma.loginCode.findFirst).not.toHaveBeenCalled();
+      expect(prisma.loginCode.findMany).not.toHaveBeenCalled();
     });
 
     it('locks the account (RATE_LIMITED) once failures cross the threshold — surfaced on the crossing attempt', async () => {
       prisma.user.findUnique.mockResolvedValue({ id: 42, isGroup: false, isDeleted: false, mustChangePassword: false });
-      prisma.loginCode.findFirst.mockResolvedValue(null); // no active code → OTP_INVALID (counted) before argon2
-      // Attempts 1–5: each OTP_INVALID (count 1..5; the tier is >5, so none bans yet).
+      prisma.loginCode.findMany.mockResolvedValue([]); // no active code → OTP_INVALID (counted) before argon2
+      // Attempts 1–5: each OTP_INVALID (count 1..5; the tier bans past 5, so none bans yet).
       for (let i = 0; i < 5; i++) {
         await expect(svc.verifyAndLogin('lockme', '000000', {})).rejects.toMatchObject({
           bizCode: BusinessCode.OTP_INVALID,
         });
       }
-      // 6th: crosses the threshold → failOtp surfaces RATE_LIMITED (with bannedUntil) on THIS attempt,
-      // consistent with the password path (the old code waited one extra attempt).
+      // 6th: crosses the threshold → failOtp surfaces RATE_LIMITED (with bannedUntil) on THIS attempt.
       await expect(svc.verifyAndLogin('lockme', '000000', {})).rejects.toMatchObject({
         bizCode: BusinessCode.RATE_LIMITED,
       });

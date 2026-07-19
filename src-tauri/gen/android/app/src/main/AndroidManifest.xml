@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- FCM notifications require POST_NOTIFICATIONS on Android 13+ (API 33). Granted at runtime via
          SomsFcm.requestNotificationPermission(), invoked from JS after first login. -->
@@ -17,10 +18,25 @@
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
     <application
+        android:name=".SomsApplication"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:theme="@style/Theme.soms_desktop"
         android:usesCleartextTraffic="${usesCleartextTraffic}">
+        <!-- Dynamic FCM: the APK ships WITHOUT google-services.json (each operator runs their own Firebase
+             project). FirebaseApp is initialized manually at process start (SomsApplication → SomsFirebase)
+             from server-fetched config, so remove the default FirebaseInitProvider that expects a bundled
+             google-services.json (it would otherwise log "Missing google-services.json" on every launch). -->
+        <provider
+            android:name="com.google.firebase.provider.FirebaseInitProvider"
+            android:authorities="${applicationId}.firebaseinitprovider"
+            android:exported="false"
+            tools:node="remove" />
+        <!-- FCM auto-init OFF at startup (there is no default FirebaseApp until SomsFirebase creates one);
+             re-enabled at runtime immediately after the manual initializeApp. -->
+        <meta-data
+            android:name="firebase_messaging_auto_init_enabled"
+            android:value="false" />
         <activity
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
             android:launchMode="singleTask"

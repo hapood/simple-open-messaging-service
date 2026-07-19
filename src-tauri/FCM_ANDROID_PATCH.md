@@ -14,35 +14,40 @@ The edits live in four persistent (non-`generated/`) files plus two new Kotlin f
 anything under `gen/android/app/src/main/java/com/soms/client/generated/` or any `tauri.*.gradle.kts`
 — they carry `AUTO-GENERATED` headers and are overwritten.
 
-## Prerequisites (one Firebase project)
+## Prerequisites (per-server Firebase project — DYNAMIC config)
 
-1. Create a Firebase project. Add an **Android app** with package name `com.soms.client` (matches
-   `app/build.gradle.kts` `applicationId` and `src-tauri/tauri.conf.json` `identifier`).
-2. Download `google-services.json` → drop at `gen/android/app/google-services.json` (gitignored).
-3. Register the debug **and** release signing-key SHA-1 in the console app's "SHA certificate
-   fingerprint" — without it, FCM token retrieval silently fails.
-4. Backend: Project Settings → Service Accounts → "Generate new private key" → set
-   `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/sa.json` in the backend `.env`.
+This is a federated / self-hosted app: **each operator runs their own Firebase project.** The APK therefore
+ships **WITHOUT `google-services.json`** — there is no per-env json to drop, no SHA-1 to register against
+the APK. Instead the operator configures Firebase **server-side**, and the client fetches its config at
+runtime:
+
+1. Operator: create a Firebase project. Add an **Android app** with package name `com.soms.client` (matches
+   `app/build.gradle.kts` `applicationId` and `src-tauri/tauri.conf.json` `identifier`). **Do NOT register
+   SHA-1** — data-only FCM doesn't need it, and skipping it avoids the cross-project "same package+signing"
+   conflict (only Google Sign-In / App Check need SHA-1, which this app doesn't use).
+2. Operator: in the admin console (Push → Transport config), **upload `google-services.json`**. The backend
+   parses + validates it (the Android client must target `com.soms.client`) and publishes the 4 client
+   fields at the public `GET /push/firebase-config`. The APK fetches these after resolving its server
+   origin and initializes FirebaseApp at process start (see SomsApplication / SomsFirebase).
+3. Operator (server-side sending): Project Settings → Service Accounts → "Generate new private key" → set
+   `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/sa.json` in the backend `.env`. This is the SEND credential,
+   independent of the client config above. Spark (free) tier is ample for chat push volume.
+
+Nothing is baked into the APK — the same APK serves every operator's Firebase project.
 
 ## Patches
 
 ### 1. `gen/android/build.gradle.kts` (root)
 
-Add the google-services plugin classpath to `buildscript.dependencies`:
-
-```kotlin
-classpath("com.google.gms:google-services:4.4.2")
-```
+The `com.google.gms.google-services` classpath is intentionally **absent** (the plugin is not applied — see
+§2). Only the AGP + Kotlin classpaths remain.
 
 ### 2. `gen/android/app/build.gradle.kts`
 
-In `plugins {}`, apply the plugin:
-
-```kotlin
-id("com.google.gms.google-services")
-```
-
-In `dependencies {}`, add the Firebase BOM + messaging:
+The `com.google.gms.google-services` plugin is **NOT applied** (commented out in `plugins {}`): there is no
+`google-services.json` to process. FirebaseApp is initialized manually by `SomsFirebase`. Only the Firebase
+**library** deps are needed (they transitively bring `firebase-common` / `firebase-installations`, which is
+where `FirebaseApp.initializeApp` + `FirebaseOptions.Builder` live):
 
 ```kotlin
 implementation(platform("com.google.firebase:firebase-bom:33.4.0"))
@@ -51,8 +56,10 @@ implementation("com.google.firebase:firebase-messaging")
 
 ### 3. `gen/android/app/src/main/AndroidManifest.xml`
 
-- Add the permission: `<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />`
-- Inside `<application>`, register the service:
+- `xmlns:tools` declared on `<manifest>` (for the `tools:node="remove"` below).
+- `<application>` carries `android:name=".SomsApplication"` — the process-start hook that initializes
+  FirebaseApp from the persisted client config before any component runs.
+- POST_NOTIFICATIONS permission + the `SomsMessagingService` registration (as before):
 
 ```xml
 <service
@@ -63,6 +70,12 @@ implementation("com.google.firebase:firebase-messaging")
     </intent-filter>
 </service>
 ```
+
+- **Dynamic-config additions inside `<application>`:** `tools:node="remove"` on the merged
+  `FirebaseInitProvider` (FirebaseApp is initialized manually by `SomsFirebase` — there is no bundled
+  google-services.json for the provider to auto-read), and
+  `<meta-data android:name="firebase_messaging_auto_init_enabled" android:value="false"/>` (re-enabled at
+  runtime by `SomsFirebase` immediately after the manual `initializeApp`).
 
 ### 4. `gen/android/app/src/main/java/com/soms/client/MainActivity.kt`
 
@@ -77,6 +90,20 @@ See the current on-disk `MainActivity.kt` for the canonical text.
 
 ### 5. New Kotlin files in `com.soms.client`
 
+- `SomsApplication.kt` — `Application` subclass registered via `<application android:name>`. `onCreate`
+  calls `SomsFirebase.ensureInitialized(this)` — the **process-start** Firebase init. This is the
+  load-bearing hook for dynamic FCM: a background data-only high-priority FCM that wakes a dead process
+  starts it straight into `SomsMessagingService` WITHOUT creating `MainActivity`, so init must precede any
+  component. `Application.onCreate` does. Tauri v2 requires no Application class (its init is Activity-
+  scoped via `ProcessLifecycleOwner`), so registering this subclass is safe.
+- `SomsFirebase.kt` — `object` owning the `FirebaseApp` lifecycle. `ensureInitialized(ctx)` reads the
+  persisted client config (SomsSecureStore) and `FirebaseApp.initializeApp(FirebaseOptions)` idempotently
+  (no-op when no config yet → FCM unavailable, app runs on SSE/WorkManager). `reconfigure(ctx, json)`
+  persists a freshly-fetched config and re-binds Firebase: on a project change it `deleteToken` +
+  `deleteApp` + re-`initializeApp` + fetches a new token (a same-named second `initializeApp` would throw
+  otherwise). `clear(ctx)` tears it all down. `requestToken(ctx)` is the token Task + emit. New tokens
+  flow back through the existing `SomsBridge.FcmToken` + `window.__SOMS_FCM_TOKEN__` pipe — no new web-side
+  registration logic.
 - `SomsBridge.kt` — process-global bridge: the live webview reference (set by
   `MainActivity.onWebViewCreate`), a UI-thread `eval()` helper, a `jsonStr()` escaper, and two nested
   holders: `SomsBridge.FcmToken.current` and `SomsBridge.DeepLink.pendingThreadId`.
@@ -85,9 +112,10 @@ See the current on-disk `MainActivity.kt` for the canonical text.
   the shared dedup cursor (`SomsSecureStore.advanceCursor`) so the worker doesn't re-notify; `onNewToken`
   stashes the token in `SomsBridge.FcmToken` and emits `window.__SOMS_FCM_TOKEN__(token)` to the webview.
   Also exposes `notifyMissed` / `notifyMissedSummary` for the WorkManager poller path (localized strings).
-- `SomsSecureStore.kt` — EncryptedSharedPreferences wrapper holding the notification token, api origin,
-  and the per-thread dedup cursor (JSON map threadId → latestMessageId). Read by the worker; written by
-  the JS bridge (token + origin) and both push paths (cursor).
+- `SomsSecureStore.kt` — EncryptedSharedPreferences wrapper holding the session token, api origin, the
+  per-thread dedup cursor, and the **Firebase client config** (`firebase_config` key, JSON string of the 4
+  fields the server publishes). Read by the worker, the realtime service, and `SomsFirebase` at process
+  start; written by the JS bridge (token + origin + firebase config) and both push paths (cursor).
 - `NotificationSyncWorker.kt` — `CoroutineWorker`, ~6h periodic. Skips when foreground/logged-out/no
   origin; OkHttp-POSTs `/notifications/missed` with the notification token; posts a localized local
   notification per fresh thread (or an aggregated summary when many), advancing the shared cursor.
@@ -139,18 +167,20 @@ way (the on-disk files are canonical, these are the rules that must hold):
   latestMessageId = mid.takeIf { obj.has("latestMessageId") && !obj.isNull("latestMessageId") && mid.isNotEmpty() },
   ```
 
-- **`MainActivity.fetchFcmToken` MUST guard the Firebase call** when the `google-services` plugin is off
-  (the "TEMPORARILY OFF" build). Without the plugin + `google-services.json`, the default `FirebaseApp` is
-  never auto-initialized, so the bare `FirebaseMessaging.getInstance()` call throws
-  `IllegalStateException: Default FirebaseApp is not initialized` from `onCreate → maybeFetchFcmToken →
-  fetchFcmToken` and the app crashes instantly on launch (verified via `adb logcat` on the x86_64
-  emulator). The guard is the single line below; it makes the build push-optional (runs without FCM) and
-  is a no-op once Firebase is enabled. `SomsMessagingService` needs no guard — the system only invokes it
+- **`MainActivity.fetchFcmToken` delegates to `SomsFirebase`** and guards on `ensureInitialized` returning
+  null. Under the dynamic-config model there is no `google-services` plugin at all — `FirebaseApp` is
+  initialized from the server-fetched config persisted in `SomsSecureStore`. `ensureInitialized` is a no-op
+  when already initialized this process; it returns null only when no config is persisted yet (first run /
+  cleared), in which case FCM is unavailable and `fetchFcmToken` skips silently (the app runs on foreground
+  SSE + the WorkManager poller). The historical crash — `FirebaseMessaging.getInstance()` throwing
+  `IllegalStateException: Default FirebaseApp is not initialized` when the plugin was off — is now
+  structurally impossible: `SomsFirebase.requestToken` itself guards on
+  `FirebaseApp.getApps(ctx).isEmpty()`. `SomsMessagingService` needs no guard — the system only invokes it
   on a real FCM event, which can't fire without an initialized FirebaseApp.
   ```kotlin
   private fun fetchFcmToken() {
-      if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) return  // push-optional guard
-      FirebaseMessaging.getInstance().token.addOnCompleteListener { … }
+      if (SomsFirebase.ensureInitialized(this) == null) return  // no config yet — push unavailable
+      SomsFirebase.requestToken(this)
   }
   ```
 
@@ -184,7 +214,9 @@ release build.
 | Direction | Carrier | Mechanism |
 |---|---|---|
 | Kotlin → JS (token rotation, warm deep link) | `WebView.evaluateJavascript` calling a global hook (`window.__SOMS_FCM_TOKEN__`, `window.__SOMS_DEEP_LINK__`) | Mirrors the origin init-script pattern |
-| JS → Kotlin (token read, permission request) | `@JavascriptInterface` named `SomsFcm`, attached in `onResume` | Mirrors `Ipc.kt`'s `@JavascriptInterface` pattern |
+| JS → Kotlin (token read, permission request) | `@JavascriptInterface` named `SomsFcm`, attached in `onWebViewCreate` | Mirrors `Ipc.kt`'s `@JavascriptInterface` pattern |
+| JS → Kotlin (firebase client config hand-off) | `SomsFcm.setFirebaseConfig(json)` / `getFirebaseConfig()` `@JavascriptInterface` | web fetches the server's 4 fields and hands them to native, which persists + (re)initializes FirebaseApp; null clears it |
+| Backend → client (public firebase config) | `GET /api/v1/push/firebase-config` (`@Public`) | the 4 client fields when configured, else `{configured:false}` |
 | JS → backend (register HTTP) | `POST /api/v1/devices/register` | standard |
 
 No `@tauri-apps/api` dependency, no Tauri event permission, no custom Rust plugin — the bridge reuses

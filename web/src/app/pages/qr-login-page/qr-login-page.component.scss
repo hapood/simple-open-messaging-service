@@ -53,7 +53,9 @@
 
 .qr-image {
   // Fixed integer-px box (project rule). White card: the QR is dark-on-white for scan reliability, and the
-  // padding adds quiet zone beyond uqr's built-in border.
+  // padding adds quiet zone beyond uqr's built-in border. `position: relative` anchors the scanned-state
+  // green-check overlay.
+  position: relative;
   width: 240px;
   height: 240px;
   padding: 16px;
@@ -62,10 +64,58 @@
   border-radius: var(--app-radius-sm, 8px);
 }
 
+// Wrapper that holds the QR matrix so the scan-consumed blur can transition independently of the card.
+.qr-canvas {
+  width: 100%;
+  height: 100%;
+  transition: filter 250ms ease;
+}
+
+// Once scanned, the QR is consumed — blur it so it can't be re-scanned while the phone confirms.
+.qr-image.is-scanned .qr-canvas {
+  filter: blur(10px);
+}
+
+// Green-check confirmation overlay centered over the blurred QR (the WhatsApp/Telegram/Discord treatment).
+// `inset: 0; margin: auto` centers a fixed-size box on both axes WITHOUT a transform, so the pop keyframe
+// below can own `transform: scale()` without clobbering the centering.
+.qr-scan-badge {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--c-green);
+  color: #ffffff;
+  box-shadow: 0 6px 18px rgba(15, 40, 80, 0.18);
+  pointer-events: none;
+  animation: qr-scan-badge-pop 220ms cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+
+@keyframes qr-scan-badge-pop {
+  from { opacity: 0; transform: scale(0.5); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
 .qr-state {
   margin: 4px 0 0;
   font-size: 14px;
   line-height: 20px;
+  color: var(--app-text-muted);
+  text-align: center;
+}
+
+// Live `m:ss` remaining, shown under the QR while pending. tabular-nums keeps digit columns fixed-width so
+// the value doesn't shift width every second.
+.qr-countdown {
+  margin: 2px 0 0;
+  font-size: 14px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
   color: var(--app-text-muted);
   text-align: center;
 }

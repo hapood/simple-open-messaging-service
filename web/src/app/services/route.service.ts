@@ -7,6 +7,7 @@ import { NewGroupComponent } from '../components/new-group/new-group.component';
 import { FolderEditorComponent } from '../components/folder-editor/folder-editor.component';
 import { EditProfileComponent } from '../components/edit-profile/edit-profile.component';
 import { ConfirmDialogComponent } from '../components/confirm-dialog/confirm-dialog.component';
+import { ShellIncompatibleDialogComponent } from '../components/shell-incompatible-dialog/shell-incompatible-dialog.component';
 import { SettingsDialogComponent } from '../components/settings/settings-dialog.component';
 import type { SettingsCategoryId } from '../components/settings/settings-categories';
 import { AppIconType } from '../components/icon/model';
@@ -14,7 +15,7 @@ import { NavStateMachineService } from './nav-state.service';
 import { LayoutService } from './layout.service';
 
 export enum RoutePage {
-  HOME, AUTH_LOGIN, AUTH_REGISTER, AUTH_OTP, AUTH_QR, AUTH_SET_PASSWORD
+  HOME, AUTH_LOGIN, AUTH_REGISTER, AUTH_OTP, AUTH_QR, AUTH_SET_PASSWORD, CONFIG
 }
 
 /**
@@ -23,7 +24,7 @@ export enum RoutePage {
  * the {@link DlgRef} handle). `dlgList` is a computed view of the dialog entries that RootPopup renders.
  * The auth-page `navigate`/`redirect` helpers stay (those are page-level router routes, not app-nav).
  */
-export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, AVATAR_EDITOR, CONFIRM }
+export enum PopupType { FRIEND_REQUESTS, NEW_GROUP, FOLDER_EDITOR, EDIT_PROFILE, AVATAR_EDITOR, CONFIRM, SHELL_INCOMPATIBLE }
 
 const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.FRIEND_REQUESTS]: FriendRequestsComponent,
@@ -32,6 +33,7 @@ const componentDict: Record<PopupType, Type<unknown>> = {
   [PopupType.EDIT_PROFILE]: EditProfileComponent,
   [PopupType.AVATAR_EDITOR]: AvatarEditorComponent,
   [PopupType.CONFIRM]: ConfirmDialogComponent,
+  [PopupType.SHELL_INCOMPATIBLE]: ShellIncompatibleDialogComponent,
 }
 
 // per-popup input contracts — what each dialog's input() fields accept
@@ -51,6 +53,8 @@ export interface PopupInput {
     danger?: boolean
     icon?: AppIconType
   },
+  /** Once-per-launch shell↔backend incompatibility notice. `serverVersion` is interpolated into the copy. */
+  [PopupType.SHELL_INCOMPATIBLE]: { serverVersion: string },
 }
 
 // per-popup result contracts — what a dialog passes back to its opener via closeDlg()
@@ -63,6 +67,8 @@ export interface PopupResult {
   [PopupType.AVATAR_EDITOR]: { file: File } | undefined,
   // true on confirm; undefined on cancel / system-back (treated identically by the caller).
   [PopupType.CONFIRM]: boolean | undefined,
+  // acknowledge-only — no meaningful result (undefined on dismiss).
+  [PopupType.SHELL_INCOMPATIBLE]: undefined,
 }
 
 export interface DlgInfo {
@@ -121,6 +127,9 @@ export class RouteService {
         break;
       case RoutePage.AUTH_SET_PASSWORD:
         commands = ['auth/set-password']
+        break;
+      case RoutePage.CONFIG:
+        commands = ['config']
         break;
       default:
     }

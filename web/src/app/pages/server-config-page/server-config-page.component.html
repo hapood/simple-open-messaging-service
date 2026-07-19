@@ -1,0 +1,67 @@
+@if (canGoBack()) {
+  <button
+    class="cfg-back"
+    type="button"
+    (click)="goBack()"
+    [attr.aria-label]="'serverConfig.backToApp' | transloco"
+  >
+    <span class="cfg-back__arrow" aria-hidden="true">‹</span>
+  </button>
+}
+
+<!-- Top overlays: determinate progress + the current step label. Both position:fixed so appearing /
+  disappearing during the connect flow never reflows the centered form below. -->
+@if (busy()) {
+  <mat-progress-bar class="cfg-progress" mode="determinate" [value]="progress()" />
+  @if (stepKey()) {
+    <p class="cfg-step" role="status" aria-live="polite">{{ stepKey() | transloco }}</p>
+  }
+}
+
+<!-- The only in-flow element: centered brand + title + form. Never unmounts (busy only toggles the
+  button + the fixed overlays above), so its position is identical in every phase. -->
+<div class="cfg-shell">
+  <app-brand-logo class="cfg-logo" [size]="84" />
+  <!-- Visually-hidden heading keeps the page a navigable landmark for screen readers; the logo wordmark
+    + the "Backend URL" label carry the visible identity (a cleaner, login-like top). -->
+  <h1 class="sr-only">{{ 'serverConfig.title' | transloco }}</h1>
+
+  <form class="cfg-form" novalidate (submit)="save($event)">
+    <mat-form-field appearance="fill" class="cfg-field">
+      <mat-label>{{ 'serverConfig.urlLabel' | transloco }}</mat-label>
+      <input
+        matInput
+        type="url"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        [formControl]="url"
+        [placeholder]="'serverConfig.placeholder' | transloco"
+      />
+      <!-- Mutually exclusive (invalid ⟺ empty; insecure needs a value) and both kept to one short
+        line, so the reserved subscript slot never grows → the Connect button never shifts. -->
+      @if (url.invalid && url.touched) {
+        <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
+      } @else if (insecure() && url.value.trim()) {
+        <mat-hint>{{ 'serverConfig.insecure' | transloco }}</mat-hint>
+      }
+    </mat-form-field>
+
+    <button
+      mat-flat-button
+      color="primary"
+      type="submit"
+      class="cfg-action"
+      [disabled]="url.invalid || busy()"
+    >
+      {{ (busy() ? 'serverConfig.connecting' : 'serverConfig.connect') | transloco }}
+    </button>
+  </form>
+</div>
+
+<!-- Page description, pinned to the bottom out of flow. Faded + small so it reads as a footnote. -->
+<p class="cfg-desc">{{ 'serverConfig.hint' | transloco }}</p>
+
+@if (exitHint()) {
+  <div class="cfg-toast" role="status">{{ 'serverConfig.exitHint' | transloco }}</div>
+}

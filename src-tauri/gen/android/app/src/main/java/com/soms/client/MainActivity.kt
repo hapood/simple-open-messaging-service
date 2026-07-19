@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.util.Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -20,7 +21,6 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import com.google.firebase.messaging.FirebaseMessaging
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
@@ -56,12 +56,21 @@ class MainActivity : TauriActivity() {
     // the web layer reads these via SomsShell.getSafeInsets() to pad content below the status bar.
     @Volatile private var safeInsetTopCss = 0
     @Volatile private var safeInsetBottomCss = 0
-    // Soft-keyboard (IME) height in CSS px, measured via WindowInsets (Type.ime). On API 30+ a
-    // WindowInsetsAnimation callback pushes per-frame during the open/close animation so the chat input bar
-    // tracks the keyboard exactly; below API 30 the IME shows instantly and onApplyWindowInsets delivers
-    // the final value. Pushed to JS as window.__SOMS_IME_HEIGHT__(px) and readable at boot via
-    // getImeHeight(). Android WebView's visualViewport doesn't reflect the IME (edge-to-edge, window
-    // undivided), so this is the only source of the keyboard height for the web layer.
+    // Navigation-bar / gesture bottom inset in DEVICE px, stashed from onApplyWindowInsets so the pre-API-30
+    // visible-frame IME source (computeImeFromVisibleFrame) can subtract it — the visible display frame
+    // excludes the nav bar together with the keyboard, so it must be peeled off to isolate the IME height.
+    @Volatile private var navBottomDevicePx = 0
+    // Soft-keyboard (IME) height in CSS px — VERSION-GATED, one authoritative source per branch (NOT a max
+    // of two). API 30+: Type.ime() is the official, reliable inset (onApplyWindowInsets delivers the settled
+    // value; a WindowInsetsAnimation callback pushes per-frame during the open/close animation). Pre-API 30:
+    // Type.ime() is only an AndroidX backport that mis-splits IME vs nav on OEM ROMs (Honor Android 8 / EMUI
+    // returns 0 with the keyboard open), so it is ignored; an OnGlobalLayoutListener measures the IME via
+    // getWindowVisibleDisplayFrame — the canonical pre-IME-insets technique. (Type.ime() and the visible
+    // frame derive from the SAME system window-frame data pre-30, so combining them would add complexity
+    // without an independent signal; the visible frame is the more direct, more reliable query.) Pushed to JS
+    // as window.__SOMS_IME_HEIGHT__(px) and readable at boot via getImeHeight(). Android WebView's
+    // visualViewport doesn't reflect the IME (edge-to-edge, window undivided), so this is the only source of
+    // the keyboard height for the web layer.
     @Volatile private var imeHeightCss = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -111,15 +120,20 @@ class MainActivity : TauriActivity() {
             // navigation mode. (systemGestures — the wider back-swipe zone — is intentionally excluded:
             // it would over-pad.)
             val gestures = insets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures())
-            // IME (soft keyboard) bottom inset — see imeHeightCss. Read alongside the system bars so every
-            // inset change (rotation, keyboard open/close settle) pushes the authoritative value once.
-            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            navBottomDevicePx = maxOf(nav.bottom, gestures.bottom)
             val d = resources.displayMetrics.density
             safeInsetTopCss = Math.round(status.top / d)
-            safeInsetBottomCss = Math.round(maxOf(nav.bottom, gestures.bottom) / d)
-            imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
+            safeInsetBottomCss = Math.round(navBottomDevicePx / d)
+            // IME is version-gated here — see imeHeightCss. API 30+ trusts Type.ime() (the WindowInsetsAnimation
+            // callback below tracks it per-frame during the open/close animation). Pre-API 30 ignores Type.ime()
+            // (its Compat backport is unreliable on OEM ROMs) and defers the IME to the OnGlobalLayoutListener
+            // installed below, so it does NOT push here on pre-R.
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+                imeHeightCss = Math.max(0, Math.round(ime.bottom / d))
+                pushImeHeight()
+            }
             applySafeInsetsToWebView()
-            pushImeHeight()
             insets
         }
         // On API 30+ the IME animates open/close (~250ms). Follow it frame-by-frame so the chat input bar
@@ -142,7 +156,36 @@ class MainActivity : TauriActivity() {
                     }
                 })
         }
+        // Pre-API-30 IME source: a global-layout listener that recomputes the keyboard height from the content
+        // view's visible display frame. Opening/closing the keyboard resizes the visible frame, which triggers a
+        // layout pass → this fires. (onApplyWindowInsets also delivers Type.ime() pre-30, but its Compat backport
+        // is unreliable on OEM ROMs — see imeHeightCss.) Guarded on change so a layout pass that doesn't move the
+        // keyboard is a no-op. Gated to pre-R: on API 30+ Type.ime() plus the WindowInsetsAnimation callback above
+        // are authoritative, so this listener is dormant there.
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            content.viewTreeObserver.addOnGlobalLayoutListener {
+                val d = resources.displayMetrics.density
+                val derived = computeImeFromVisibleFrame(content, navBottomDevicePx)
+                val derivedCss = Math.max(0, Math.round(derived / d))
+                if (derivedCss != imeHeightCss) {
+                    imeHeightCss = derivedCss
+                    pushImeHeight()
+                }
+            }
+        }
         ViewCompat.requestApplyInsets(content)
+    }
+
+    /** Pre-API-30 source of the soft-keyboard (IME) height. The AndroidX WindowInsetsCompat.Type.ime() backport
+     *  mis-splits IME vs navigation bar on some OEM ROMs (observed Honor Android 8 / EMUI:
+     *  Type.ime().bottom == 0 while the keyboard is open), so on pre-R we measure the IME directly from the
+     *  content view's visible display frame, which excludes the status bar, the navigation bar AND the IME.
+     *  Hence (content height − visible-frame bottom − already-measured nav/gesture inset) = IME height.
+     *  Returns DEVICE px (caller converts to CSS px). */
+    private fun computeImeFromVisibleFrame(content: View, navBottomDevicePx: Int): Int {
+        val rect = android.graphics.Rect()
+        content.getWindowVisibleDisplayFrame(rect)
+        return Math.max(0, content.height - rect.bottom - navBottomDevicePx)
     }
 
     /** Push the latest insets to the webview as --soms-safe-top / --soms-safe-bottom on :root. A no-op
@@ -168,6 +211,11 @@ class MainActivity : TauriActivity() {
 
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
+        // Enable Chrome DevTools remote inspection (edge://inspect · chrome://inspect over adb) for DEBUG
+        // builds ONLY — the JS context is fully exposed (DOM read, arbitrary JS eval), so shipping it in a
+        // release APK would be a security hole. Wry/Tauri v2 does NOT auto-enable this even for debuggable
+        // builds; it must be turned on explicitly. Static on WebView → applies process-wide to every WebView.
+        if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
         SomsBridge.webView = webView
         // Expose the Kotlin→JS-callable surface (token read + permission request). Added once here,
         // when the webview is created, rather than repeatedly in onResume.
@@ -232,8 +280,22 @@ class MainActivity : TauriActivity() {
         SomsMessagingService.appInForeground = true
         // App visible: ensure the realtime service is running (the WebView's only event source on Android
         // is this /events stream) and drop the persistent FGS notification + away-notification so the
-        // in-app UI owns message display again.
-        startService(Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND))
+        // in-app UI owns message display again. The start is guarded for two reasons:
+        //  1. No session token yet (pre-login, e.g. right after the server-config handoff) → openStream()
+        //     stopSelf's immediately, so the start is pointless; skip it. Mirrors onStop's token guard.
+        //  2. onResume can fire while the system still considers the process "background" (during the
+        //     init→main window handoff, or a crash-restart), and startService then throws
+        //     BackgroundServiceStartNotAllowedException (Android 12+). Letting that propagate crashes the
+        //     activity ("Unable to resume activity") → process killed → restart → onResume → throw — the
+        //     nonstop crash-restart loop seen as a flicker. Catching it is safe: the next fg/bg cycle
+        //     retries, and any missed realtime frames are backstopped by the WebView's HWM catch-up.
+        if (SomsSecureStore.getSessionToken(this) != null) {
+            try {
+                startService(Intent(this, RealtimeService::class.java).setAction(RealtimeService.ACTION_FOREGROUND))
+            } catch (e: RuntimeException) {
+                Log.w("SomsActivity", "realtime start skipped: ${e.javaClass.simpleName}: ${e.message}")
+            }
+        }
         ContextCompat.getSystemService(this, NotificationManager::class.java)
             ?.cancel(SomsMessagingService.AWAY_NOTIF_ID)
     }
@@ -274,21 +336,15 @@ class MainActivity : TauriActivity() {
         SomsBridge.eval("window.__SOMS_DEEP_LINK__ && window.__SOMS_DEEP_LINK__(${SomsBridge.jsonStr(threadId)});")
     }
 
-    /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. */
+    /** Fetch the current FCM registration token asynchronously and stash it for the JS bridge. Delegates to
+     *  [SomsFirebase] — under the dynamic-config model FirebaseApp is initialized from the server-fetched
+     *  config (persisted in SomsSecureStore at process start by [SomsApplication]), not a bundled
+     *  google-services.json. [SomsFirebase.ensureInitialized] is a no-op when already initialized this
+     *  process; it returns null only when no config is persisted yet (first run / cleared), in which case
+     *  FCM is unavailable and we skip silently — the app runs on foreground SSE + the WorkManager poller. */
     private fun fetchFcmToken() {
-        // Push-optional guard: when the google-services plugin is OFF (no google-services.json — the
-        // "TEMPORARILY OFF" build), the default FirebaseApp is never auto-initialized, so
-        // FirebaseMessaging.getInstance() throws "Default FirebaseApp is not initialized" and crashes the
-        // app on launch. Skip silently in that state — the app runs without push; FCM_ANDROID_PATCH.md
-        // re-enables it. When the plugin is later applied, getApps() is non-empty and this is a no-op guard.
-        if (com.google.firebase.FirebaseApp.getApps(this).isEmpty()) return
-        FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
-            if (task.isSuccessful) {
-                val token = task.result
-                SomsBridge.FcmToken.current = token
-                emitToken(token)
-            }
-        }
+        if (SomsFirebase.ensureInitialized(this) == null) return
+        SomsFirebase.requestToken(this)
     }
 
     /** Request POST_NOTIFICATIONS (Android 13+) if not yet granted. Called from JS after the first
@@ -436,7 +492,7 @@ class MainActivity : TauriActivity() {
             a.applyPollingEnabled(enabled)
         }
 
-        /** Whether the dataSync foreground service (RealtimeService) is enabled (default false). */
+        /** Whether the dataSync foreground service (RealtimeService) is enabled (default true). */
         @JavascriptInterface
         fun getForegroundServiceEnabled(): Boolean {
             val a = activityRef.get() ?: return false
@@ -476,6 +532,26 @@ class MainActivity : TauriActivity() {
                 a.fetchFcmToken()
                 SomsSecureStore.setFcmLastCheck(a, System.currentTimeMillis())
             }
+        }
+
+        /** Hand the server's Firebase client config (the 4 fields the web fetched from
+         *  `GET /push/firebase-config`) to native. Persists it in EncryptedSharedPreferences and
+         *  (re)initializes FirebaseApp via [SomsFirebase.reconfigure]: a different project → deleteToken +
+         *  deleteApp + re-init + a fresh token that flows back through `window.__SOMS_FCM_TOKEN__`. Pass
+         *  null/empty to clear (server returned `{configured:false}`). Hops to the UI thread — Firebase's
+         *  token Task listeners fire on main, and reconfigure must run there for a consistent app instance. */
+        @JavascriptInterface
+        fun setFirebaseConfig(config: String?) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread { SomsFirebase.reconfigure(a, config) }
+        }
+
+        /** Synchronous read of the currently-persisted Firebase client config JSON string (or null). The web
+         *  uses it to avoid re-pushing an identical config (which would cause needless token churn). */
+        @JavascriptInterface
+        fun getFirebaseConfig(): String? {
+            val a = activityRef.get() ?: return null
+            return SomsSecureStore.getFirebaseConfig(a)
         }
     }
 

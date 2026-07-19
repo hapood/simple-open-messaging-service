@@ -1,22 +1,17 @@
 import {
-  Activity,
   Bell,
-  BellRing,
-  ClipboardList,
-  Globe,
+  CircleUser,
   Gauge,
+  Globe,
   HardDrive,
   Hash,
   LayoutDashboard,
   type LucideIcon,
-  Lock,
   Monitor,
   Radio,
   ScrollText,
   Settings,
   ShieldBan,
-  ShieldCheck,
-  UserCog,
   Users,
 } from 'lucide-react'
 
@@ -28,26 +23,22 @@ export type NavKey =
   | 'groups'
   | 'sessions'
   | 'connections'
-  | 'adminSessions'
   | 'bans'
-  | 'reuse'
-  | 'security'
   | 'push'
   | 'federation'
-  | 'selfCheck'
   | 'logs'
   | 'media'
-  | 'audit'
-  | 'admins'
   | 'settings'
+  | 'security'
   | 'quotas'
 
 /** Full i18n key for a group header (under nav.group.*). */
 export type NavGroupKey =
   | 'nav.group.overview'
-  | 'nav.group.security'
+  | 'nav.group.access'
   | 'nav.group.federation'
   | 'nav.group.system'
+  | 'nav.group.account'
 
 export interface NavItem {
   to: string
@@ -63,10 +54,13 @@ export interface NavItem {
 export interface NavGroup {
   labelKey: NavGroupKey
   items: NavItem[]
+  /** Render in the bottom personal cluster (My Account) rather than the main nav list. */
+  footer?: boolean
 }
 
-/** Sidebar structure, grouped by responsibility. Placeholder items (media/audit/settings)
- *  light up in later phases. */
+/** Sidebar structure, grouped by responsibility. Pages that share a URL prefix with a sub-view
+ *  (Federation → /federation/self-check) keep the default prefix match so the parent stays
+ *  highlighted on the sub-route. The footer group ("Account") renders separately at the bottom. */
 export const NAV_GROUPS: NavGroup[] = [
   {
     labelKey: 'nav.group.overview',
@@ -77,21 +71,18 @@ export const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    labelKey: 'nav.group.security',
+    labelKey: 'nav.group.access',
     items: [
-      { to: '/connections', key: 'connections', icon: Radio },
       { to: '/sessions', key: 'sessions', icon: Monitor },
-      { to: '/admin-sessions', key: 'adminSessions', icon: ShieldCheck },
+      { to: '/connections', key: 'connections', icon: Radio },
       { to: '/bans', key: 'bans', icon: ShieldBan },
-      { to: '/reuse', key: 'reuse', icon: BellRing },
-      { to: '/security', key: 'security', icon: Lock },
     ],
   },
   {
     labelKey: 'nav.group.federation',
     items: [
-      { to: '/federation', key: 'federation', icon: Globe, end: true },
-      { to: '/federation/self-check', key: 'selfCheck', icon: Activity },
+      { to: '/federation', key: 'federation', icon: Globe },
+      { to: '/quotas', key: 'quotas', icon: Gauge },
     ],
   },
   {
@@ -99,12 +90,14 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/push', key: 'push', icon: Bell },
       { to: '/media', key: 'media', icon: HardDrive },
-      { to: '/audit', key: 'audit', icon: ClipboardList },
-      { to: '/admins', key: 'admins', icon: UserCog },
       { to: '/logs', key: 'logs', icon: ScrollText },
       { to: '/settings', key: 'settings', icon: Settings },
-      { to: '/quotas', key: 'quotas', icon: Gauge },
     ],
+  },
+  {
+    labelKey: 'nav.group.account',
+    footer: true,
+    items: [{ to: '/security', key: 'security', icon: CircleUser }],
   },
 ]
 

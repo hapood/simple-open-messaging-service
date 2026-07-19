@@ -56,8 +56,8 @@ WORK       := /work
 MULTI_ABIS := aarch64 armv7
 # Build variants: ABI=<arch> → just that one; otherwise per-ABI + universal.
 VARIANTS   := $(if $(ABI),$(ABI),$(MULTI_ABIS) universal)
-# Skip the shell-config bootstrap `ng build` when the bootstrap is already built (WEB_BUILD=0). The APK
-# bundles ONLY the bootstrap (the main SPA is downloaded at runtime), so this is the only host web build.
+# Skip the merged-SPA `ng build` when it is already built (WEB_BUILD=0). The APK bundles the SPA
+# (frontendDist → web/dist/web/browser); OTA bundle updates are downloaded + sha256-verified at runtime.
 WEB_BUILD  ?= 1
 # Versioned APKs (gitignored) land under dist/<platform>/ — Android here (dist/android/). Raw gradle
 # output stays under gen/android/app/build (ignored in-tree by gen/android/.gitignore). Future desktop
@@ -122,13 +122,13 @@ define do_build
 	@# Single source of truth gate: tauri.conf.json version (VERSION) must equal Cargo.toml [package]
 	@# version (CARGO_VER). Drift => the APK's embedded version disagrees with the Rust crate version.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
-	@# Frontend build (host-side): the shell-config BOOTSTRAP only (frontendDist → web/dist/shell-config/
-	@# browser). The main chat SPA is NOT bundled into the APK — it is downloaded + sha256-verified at
-	@# runtime from the server (built + packaged server-side by scripts/package-web-bundle.mjs in the
-	@# Docker image). ng build needs --project now that the web workspace has two projects (web + shell-config);
-	@# run on the HOST (the builder container has only bare nodejs), then blank beforeBuildCommand
-	@# in-container (cargo line below) so tauri doesn't re-run npm. tauri.conf.json stays the spec.
-	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --project shell-config,@true)
+	@# Frontend build (host-side): the merged SPA (frontendDist → web/dist/web/browser). The APK bundles
+	@# it as the baseline; OTA bundle updates are downloaded + sha256-verified at runtime (built +
+	@# packaged server-side by scripts/package-web-bundle.mjs in the Docker image, served from
+	@# app_data_dir/web/<active>/ via Context::set_assets). Run on the HOST (the builder container has only
+	@# bare nodejs), then blank beforeBuildCommand in-container (cargo line below) so tauri doesn't re-run
+	@# npm. tauri.conf.json stays the spec.
+	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --project web,@true)
 	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore) +
 	@# host-mounted, so it persists across --rm builds and pins the debug signature (no more
 	@# uninstall-per-rebuild). No-op once present.

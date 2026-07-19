@@ -50,10 +50,10 @@ describe('ShellUpdateService', () => {
 
   const aStatus = (over: Partial<ShellUpdateStatus> = {}): ShellUpdateStatus => ({
     shellVersion: '0.1.0',
+    serverVersion: '0.1.0',
     installedWebVersion: '0.2.0',
     serverWebVersion: '0.2.0',
-    minShellVersion: '0.1.0',
-    shellUpdateRequired: false,
+    incompatible: false,
     webUpdateAvailable: false,
     ...over,
   });

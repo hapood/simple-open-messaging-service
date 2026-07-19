@@ -5,29 +5,32 @@ import { apiOrigin, apiOriginIsEmpty, isTauri, tauriInvoke } from './runtime';
 export interface ShellUpdateStatus {
   /** The Tauri shell (APK/desktop app) version — CARGO_PKG_VERSION. */
   shellVersion: string;
-  /** The currently-installed web SPA bundle version (the `web/active` dir on disk). */
+  /** The backend (server) version this shell is talking to (root package.json, same as /health). The
+   *  shell checks compatibility against this (a hard-coded `COMPAT_BACKEND_MAX` upper bound in Cargo). */
+  serverVersion: string;
+  /** The currently-installed web SPA bundle version (`web/active`). Display only — not compared. */
   installedWebVersion: string;
-  /** The web SPA version the server's current manifest advertises. */
+  /** The web SPA version the server's current manifest advertises. Display only — not compared. */
   serverWebVersion: string;
-  /** The minimum shell version this server's web bundle requires. */
-  minShellVersion: string;
-  /** The local shell is older than the server's floor → it cannot run this web bundle; the user must
-   *  get a newer shell (Tauri can't self-update its binary) → prompt "contact admin". */
-  shellUpdateRequired: boolean;
-  /** The server advertises a newer web bundle than the installed one → a web update is available. */
+  /** This shell can't run this backend (server version >= the shell's `COMPAT_BACKEND_MAX`). Tauri can't
+   *  self-update its binary, so the only remedy is a newer shell → prompt "contact admin". */
+  incompatible: boolean;
+  /** The server advertises a web bundle whose SHA-256 differs from the installed one → a web update is
+   *  available. */
   webUpdateAvailable: boolean;
 }
 
 /**
  * Client update probe for the Tauri shell. The shell ships WITHOUT the main web bundled; it is
  * downloaded + sha256-verified at first run (the `init` window). On every later launch the SPA calls
- * `check()` in the background: it asks Rust `init_update_status` for the local + server versions and
- * derives whether a web-bundle update is available — WITHOUT auto-downloading. The result is exposed as
- * `updateStatus` for Settings→About to render the prompt and trigger a manual, user-initiated download
- * (`downloadUpdate`). Non-forcing: the user decides whether to update.
+ * `check()` in the background: it asks Rust `init_update_status` for the local + server versions + the
+ * derived `incompatible` / `webUpdateAvailable` flags — WITHOUT auto-downloading. The result is exposed
+ * as `updateStatus` for Settings→About to render the prompt and trigger a manual, user-initiated download
+ * (`downloadUpdate`), and for the app shell to surface a once-per-launch incompatibility dialog.
  *
- * A shell update can never be auto-installed (Tauri can't replace its own binary), so a
- * `shellUpdateRequired` status is surfaced as "contact your admin" only. Silent on any failure (offline /
+ * Update detection is hash-based (installed bundle hash vs. the server manifest's sha256), not
+ * version-string-based. A shell incompatibility can never be auto-fixed (Tauri can't replace its own
+ * binary), so `incompatible` is surfaced as "contact your admin" only. Silent on any failure (offline /
  * server down / manifest missing): `updateStatus` stays as-is and the cached bundle keeps the app usable.
  * No-op outside the Tauri shell (the browser build is served same-origin; updates are the PWA
  * `UpdateService`, a separate flow).

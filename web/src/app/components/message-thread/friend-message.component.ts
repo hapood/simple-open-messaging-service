@@ -11,8 +11,7 @@ import {
   signal,
   viewChild,
 } from '@angular/core';
-import { HttpEventType, HttpResponse } from '@angular/common/http';
-import { firstValueFrom, filter, map } from 'rxjs';
+import { firstValueFrom } from 'rxjs';
 import { TranslocoModule } from '@jsverse/transloco';
 import {
   ChatBoxScroller,
@@ -443,11 +442,10 @@ export class MessageThreadComponent implements OnDestroy {
    *  Message and the SSE echo reconciles the bubble. */
   private async uploadFileResult(f: File, cid?: string): Promise<{ url: string; name: string; size: number; mimeType: string } | null> {
     try {
-      return await firstValueFrom(this.msgService.uploadFile(f, cid).pipe(
-        filter((e): e is HttpResponse<StandardResponse<{ url: string; name: string; size: number; mimeType: string }>> =>
-          e.type === HttpEventType.Response),
-        map((e) => e.body?.data ?? null),
-      ));
+      // uploadFile returns the {code,message,data} envelope directly (progress events were dropped —
+      // they were never consumed). Stream path (Tauri desktop) or HttpClient path, same shape.
+      const up = await firstValueFrom(this.msgService.uploadFile(f, cid));
+      return up.data ?? null;
     } catch {
       return null;
     }

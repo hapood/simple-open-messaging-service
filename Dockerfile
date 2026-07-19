@@ -51,11 +51,14 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY src ./src
 RUN npm run build
 # Package the web SPA as a downloadable, SHA-256-integrity-checked bundle for the Tauri shell
-# dynamic-update flow (scripts/package-web-bundle.mjs → data/shell/{manifest.json, soms-web-<ver>.tar.gz}).
+# dynamic-update flow (scripts/package-web-bundle.mjs → shell-bundle/{manifest.json, soms-web-<ver>.tar.gz}).
 # web/package.json + the Stage-1 browser build are copied in so the packager can read the version + tar
 # the output. No signing key — integrity over the wire is TLS (https) + the bundle SHA-256.
 COPY web/package.json ./web/package.json
 COPY --from=web-build /build/web/dist/web/browser ./web/dist/web/browser
+# scripts/ holds the packager invoked next (package-web-bundle.mjs); copy it in so `npm run
+# bundle:package` can tgz the browser build and emit manifest.json under shell-bundle/.
+COPY scripts ./scripts
 RUN npm run bundle:package
 # Drop devDependencies; keep prod deps with the compiled argon2 .node + prebuilt sharp binaries.
 RUN npm prune --omit=dev
@@ -90,8 +93,11 @@ COPY --chown=node:node --from=server-build /build/prisma.config.ts ./prisma.conf
 COPY --chown=node:node --from=web-build /build/web/dist/web/browser ./public/web
 COPY --chown=node:node --from=admin-build /build/admin-web/dist ./public/admin
 # The SHA-256-integrity-checked web bundle + manifest the Tauri shell downloads at init/reconfigure/update
-# (soms-web-<ver>.tar.gz + manifest.json, produced by the Stage-3 packaging step).
-COPY --chown=node:node --from=server-build /build/data/shell ./data/shell
+# (soms-web-<ver>.tar.gz + manifest.json, produced by the Stage-3 packaging step). Baked at /app/shell-bundle
+# — READ-ONLY and image-bound, deliberately OUTSIDE the bind-mounted /app/data volume so the bundle is
+# immutable per image and an operator can never mutate the integrity-checked artifact the shell verifies.
+# shell.service reads cwd/shell-bundle (= /app/shell-bundle under WORKDIR); no entrypoint seeding, no volume.
+COPY --chown=node:node --from=server-build /build/shell-bundle ./shell-bundle
 # Persistent state dir, mounted as a bind by compose. Pre-created + chowned to `node`.
 RUN mkdir -p data && chown -R node:node data
 # Image ENTRYPOINT (env-loader) + the node+caddy supervisor + the custom init program.

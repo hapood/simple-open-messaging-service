@@ -5,10 +5,11 @@ import type { KvStoreService } from '../kv-store/kv-store.service.js';
 import type { SessionTokenService } from './session-token.service.js';
 
 /**
- * QrLoginService: the desktop/web → 2-week sliding-session flow confirmed by a logged-in phone. The
+ * QrLoginService: the QR-login flow (available on every platform) confirmed by a logged-in phone. The
  * ephemeral state lives in the KV, so the mock KV is a real in-memory Map — letting create→poll→scan→
  * confirm→claim run as one end-to-end state machine within a test. Covers the two-step gates, the
- * atomic issue-once claim (del returns 1 iff this caller removed the key), and unknown-token handling.
+ * atomic issue-once claim (del returns 1 iff this caller removed the key), the per-platform trust matrix
+ * (app/desktop trusted → permanent; web → 14-day sliding), and unknown-token handling.
  */
 describe('QrLoginService', () => {
   // Real in-memory KV so QR state persists across the service's own read/scan/confirm/poll calls.
@@ -64,6 +65,33 @@ describe('QrLoginService', () => {
 
     it('polls an unknown token → expired', async () => {
       expect((await svc.poll('nonexistent', {})).status).toBe('expired');
+    });
+  });
+
+  describe('trust follows the client platform', () => {
+    // Each helper runs the full create→scan→confirm→poll so the issued session's `trusted` reflects what
+    // `create` baked into the KV state.
+    const issueFor = async (client: 'app' | 'web' | 'desktop', trusted = false) => {
+      const { qrToken } = await svc.create(client, trusted);
+      await svc.scan(qrToken, 7);
+      await svc.confirm(qrToken, 7);
+      await svc.poll(qrToken, {});
+      return sessionTokens.issue.mock.calls.at(-1)!;
+    };
+
+    it("'app' (Android) is always trusted → issues a permanent (trusted) session", async () => {
+      const [, client, opts] = await issueFor('app');
+      expect(client).toBe('app');
+      expect(opts).toMatchObject({ trusted: true, persistent: true });
+    });
+
+    it("'desktop' is trusted only when opted in (else a 14-day sliding session)", async () => {
+      expect((await issueFor('desktop'))[2]).toMatchObject({ trusted: false });
+      expect((await issueFor('desktop', true))[2]).toMatchObject({ trusted: true });
+    });
+
+    it("'web' is never trusted even when requested", async () => {
+      expect((await issueFor('web', true))[2]).toMatchObject({ trusted: false });
     });
   });
 

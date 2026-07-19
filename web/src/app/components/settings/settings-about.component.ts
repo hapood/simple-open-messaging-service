@@ -42,7 +42,7 @@ interface DownloadProgress {
           @if (showBackend) {
             <mat-list-item>
               <span matListItemTitle>{{ 'settings.serverVersion' | transloco }}</span>
-              <span class="meta">{{ serverWebVersion() || '—' }}</span>
+              <span class="meta">{{ serverVersion() || '—' }}</span>
             </mat-list-item>
             <mat-list-item>
               <span matListItemTitle>{{ 'settings.backend' | transloco }}</span>
@@ -64,9 +64,9 @@ interface DownloadProgress {
             <button mat-stroked-button type="button" (click)="update()">
               {{ 'settings.retry' | transloco }}
             </button>
-          } @else if (shellUpdateRequired()) {
+          } @else if (incompatible()) {
             <p class="update-warn">
-              {{ 'settings.shellUpdateRequired' | transloco: { version: minShellVersion() } }}
+              {{ 'settings.appIncompatible' | transloco: { version: serverVersion() } }}
             </p>
           } @else if (webUpdateAvailable()) {
             <p class="update-warn">
@@ -136,11 +136,11 @@ export class SettingsAboutComponent {
   readonly updateError = signal('');
 
   readonly shellVersion = computed(() => this.status()?.shellVersion ?? '');
+  readonly serverVersion = computed(() => this.status()?.serverVersion ?? '');
   readonly serverWebVersion = computed(() => this.status()?.serverWebVersion ?? '');
-  readonly minShellVersion = computed(() => this.status()?.minShellVersion ?? '');
   /** True once at least one probe has completed (so "up to date" only shows after we actually checked). */
   readonly probed = computed(() => this.status() !== null);
-  readonly shellUpdateRequired = computed(() => this.status()?.shellUpdateRequired ?? false);
+  readonly incompatible = computed(() => this.status()?.incompatible ?? false);
   readonly webUpdateAvailable = computed(() => this.status()?.webUpdateAvailable ?? false);
   readonly backendLabel = computed(() => {
     const o = apiOrigin();

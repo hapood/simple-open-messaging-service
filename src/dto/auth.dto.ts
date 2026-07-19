@@ -112,8 +112,8 @@ export class RegisterDto {
   password!: string;
 }
 
-/** One-time-code (admin-issued) login input — the Android long-term (`app`) session login method. The code
- *  is bound to the account at issue time, so the user enters their account + the 6-digit code. */
+/** One-time-code (admin-issued) login input — available on every platform. The code is bound to the
+ *  account at issue time, so the user enters their account + the 6-digit code. */
 export class OtpLoginDto {
   @ApiProperty({ example: 'alice', description: 'Account the one-time code was issued for.' })
   @Transform(({ value }) => normalizeAccount(value))
@@ -126,30 +126,43 @@ export class OtpLoginDto {
   @Matches(/^\d{6}$/, { message: 'code must be 6 digits' })
   code!: string;
 
+  @ApiProperty({
+    enum: ['app', 'web', 'desktop'],
+    default: 'app',
+    required: false,
+    description:
+      "Client kind for the issued session: 'app' (Android), 'desktop' (Tauri), or 'web' (browser). Defaults to 'app'. Trusted native clients (app/desktop) get a permanent session; web gets a 14-day sliding one.",
+  })
+  @IsIn(['app', 'web', 'desktop'])
+  @IsOptional()
+  client?: 'app' | 'web' | 'desktop';
+
   @ApiProperty({ required: false, description: 'Human-readable device label (shown in the device list).' })
   @IsString()
   @IsOptional()
   device?: string;
 }
 
-/** QR-login create input (desktop/web). `client` is the device platform (constrained to web/desktop — a
- *  QR-issued session is never an `app` session); `trusted` opts a desktop into a permanent session. */
+/** QR-login create input. `client` is the device platform: 'app' (Android), 'desktop' (Tauri), or 'web'
+ *  (browser) — QR is available on every platform. `trusted` opts a `desktop` into a permanent session (its
+ *  keyring must be available); `app` is always trusted, `web` is never trusted. */
 export class QrCreateDto {
   @ApiProperty({
-    enum: ['web', 'desktop'],
+    enum: ['app', 'web', 'desktop'],
     default: 'web',
     required: false,
-    description: "Client kind for the issued session: 'web' (browser) or 'desktop' (Tauri). Never 'app'.",
+    description:
+      "Client kind for the issued session: 'app' (Android), 'web' (browser), or 'desktop' (Tauri). Defaults to 'web'.",
   })
-  @IsIn(['web', 'desktop'])
+  @IsIn(['app', 'web', 'desktop'])
   @IsOptional()
-  client?: 'web' | 'desktop';
+  client?: 'app' | 'web' | 'desktop';
 
   @ApiProperty({
     required: false,
     default: false,
     description:
-      "Trust this desktop: mint a permanent (revocation-only) session whose token the desktop keeps in OS keyring. Honored only for 'desktop' (ignored for 'web' — a browser can't store a bearer token securely).",
+      "Trust this desktop: mint a permanent (revocation-only) session whose token the desktop keeps in OS keyring. Honored only for 'desktop' when its keyring is available; 'app' is always trusted, 'web' is never trusted.",
   })
   @IsBoolean()
   @IsOptional()

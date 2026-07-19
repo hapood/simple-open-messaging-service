@@ -17,10 +17,10 @@ import { formatApiError } from '@/lib/format-error'
 import { useIssueLoginCode } from '@/hooks/use-user-mutations'
 import type { IssuedLoginCode } from '@/types/api'
 
-/** Issue-login-code dialog. Two phases: a confirm step (the warning that issuing revokes the prior code +
- *  signs out the old mobile session on next login), then a reveal-once step showing the plaintext code with
- *  a copy button + a "can't be viewed again" note. The plaintext is held only in local state and is never
- *  retrievable after the dialog closes. */
+/** Issue-login-code dialog. Two phases: a confirm step (the reveal-once warning — multiple codes may be
+ *  active per account; issuing a new one doesn't revoke others or sign out existing sessions), then a
+ *  reveal-once step showing the plaintext code with a copy button + a "can't be viewed again" note. The
+ *  plaintext is held only in local state and is never retrievable after the dialog closes. */
 export function IssueLoginCodeDialog({
   user,
   onClose,

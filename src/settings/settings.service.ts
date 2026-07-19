@@ -10,12 +10,26 @@ import {
   isValidSubject,
   pairMatchesKey,
 } from './vapid.js';
+import {
+  type FirebaseClientConfig,
+  type FirebaseConfigDescriptor,
+  parseGoogleServicesJson,
+} from './firebase.js';
 
 const VAPID_KEY = 'vapid';
+const FIREBASE_KEY = 'firebase-config';
 const TTL_MS = 30_000;
 const DEFAULT_SUBJECT = 'mailto:noreply@soms.local';
 
+/** SystemSetting key + bounds for the admin-configurable one-time-code validity window (minutes). Default
+ *  10 min; clamped to [1, 1440] so an admin typo can't make codes instantly expire or outlive a day. */
+const OTP_TTL_KEY = 'otp:ttlMinutes';
+const OTP_TTL_DEFAULT = 10;
+const OTP_TTL_MIN = 1;
+const OTP_TTL_MAX = 1440;
+
 type VapidEntry = { value: VapidConfig | null; fetchedAt: number };
+type FirebaseEntry = { value: FirebaseClientConfig | null; fetchedAt: number };
 
 /**
  * DB-backed, admin-managed runtime settings — the typed facade over the {@link SystemSetting} KV table.
@@ -47,6 +61,7 @@ type VapidEntry = { value: VapidConfig | null; fetchedAt: number };
 export class SettingsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SettingsService.name);
   private entry: VapidEntry = { value: null, fetchedAt: 0 };
+  private fbEntry: FirebaseEntry = { value: null, fetchedAt: 0 };
   private inflight: Promise<void> | null = null;
   private timer: NodeJS.Timeout | null = null;
 
@@ -91,6 +106,26 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     return loadFederationConfig().domain;
   }
 
+  /** The admin-configured one-time-code validity window, in minutes (default 10, clamped). Read fresh on
+   *  each issue — OTP issuance is rare and admin-triggered, so no cache is warranted (unlike VAPID). */
+  async getOtpTtlMinutes(): Promise<number> {
+    const row = await this.prisma.systemSetting.findUnique({ where: { key: OTP_TTL_KEY } });
+    const n = row ? Number(row.value) : NaN;
+    if (!Number.isFinite(n)) return OTP_TTL_DEFAULT;
+    return Math.min(OTP_TTL_MAX, Math.max(OTP_TTL_MIN, Math.trunc(n)));
+  }
+
+  /** Persist the one-time-code validity window (minutes). The value is clamped on read too, so an out-of-
+   *  range write is still safe, but we clamp on write for a tidy stored value + accurate admin display. */
+  async setOtpTtlMinutes(minutes: number): Promise<void> {
+    const clamped = Math.min(OTP_TTL_MAX, Math.max(OTP_TTL_MIN, Math.trunc(minutes)));
+    await this.prisma.systemSetting.upsert({
+      where: { key: OTP_TTL_KEY },
+      create: { key: OTP_TTL_KEY, value: String(clamped) },
+      update: { value: String(clamped) },
+    });
+  }
+
   /** Authoritative VAPID descriptor for the admin read view — queries the row directly for the real
    *  updatedAt (not the send-path cache). publicKey is public; privateKey is intentionally absent. */
   async getVapidDescriptor(): Promise<{
@@ -111,17 +146,19 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** Reload the cache from DB (single-flight: concurrent callers share one DB read). No env fallback —
-   *  VAPID is DB-only. */
+  /** Reload the cache from DB (single-flight: concurrent callers share one pass). Loads both cached
+   *  settings (VAPID + Firebase client config) in one round-trip. No env fallback — both are DB-only. */
   async refresh(): Promise<void> {
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       try {
-        const row = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
-        this.entry = {
-          value: row ? this.parseVapid(row.value) : null,
-          fetchedAt: Date.now(),
-        };
+        const [vapidRow, fbRow] = await Promise.all([
+          this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } }),
+          this.prisma.systemSetting.findUnique({ where: { key: FIREBASE_KEY } }),
+        ]);
+        const now = Date.now();
+        this.entry = { value: vapidRow ? this.parseVapid(vapidRow.value) : null, fetchedAt: now };
+        this.fbEntry = { value: fbRow ? this.parseFirebase(fbRow.value) : null, fetchedAt: now };
       } finally {
         this.inflight = null;
       }
@@ -151,6 +188,65 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     this.entry = { value: null, fetchedAt: Date.now() };
   }
 
+  // ---- Firebase client config (FCM for Android) ---------------------------------------------
+  // Mirrors the VAPID surface above. The 4 fields come from an operator-uploaded google-services.json
+  // (see src/settings/firebase.ts) and are served unauthenticated to clients at GET /push/firebase-config
+  // so the Android APK can initialize FirebaseApp at runtime without baking google-services.json into the
+  // build. Independent of the send-side GOOGLE_APPLICATION_CREDENTIALS path (PushService.fcmConfigured).
+
+  /** The current Firebase client config, or null when no google-services.json was uploaded. SYNC — never
+   *  blocks on IO; may be up to TTL_MS stale while a refresh runs in the background. Served to clients at
+   *  the public GET /push/firebase-config, so the stale-while-revalidate cache matters under boot-time load. */
+  getFirebaseConfig(): FirebaseClientConfig | null {
+    if (Date.now() - this.fbEntry.fetchedAt >= TTL_MS) {
+      this.refresh().catch(() => {});
+    }
+    return this.fbEntry.value;
+  }
+
+  /** Whether the operator has published an FCM client config (the 4-field DB row). Independent of
+   *  PushService.fcmConfigured (the send-side service-account). */
+  get firebaseClientConfigured(): boolean {
+    return this.getFirebaseConfig() !== null;
+  }
+
+  /** Authoritative Firebase descriptor for the admin read view — queries the row directly for the real
+   *  updatedAt. apiKey is intentionally absent (parallel to the VAPID descriptor omitting privateKey); the
+   *  other three fields are shown as proof of which project/app is configured. */
+  async getFirebaseDescriptor(): Promise<FirebaseConfigDescriptor> {
+    const row = await this.prisma.systemSetting.findUnique({ where: { key: FIREBASE_KEY } });
+    if (!row) return { configured: false };
+    const cfg = this.parseFirebase(row.value);
+    if (!cfg) return { configured: false };
+    return {
+      configured: true,
+      projectId: cfg.projectId,
+      appId: cfg.appId,
+      gcmSenderId: cfg.gcmSenderId,
+      updatedAt: row.updatedAt,
+    };
+  }
+
+  /** Parse + validate an operator-uploaded google-services.json and persist the 4 client fields. Throws on
+   *  malformed input or a package-name mismatch (caller surfaces FCM_CONFIG_INVALID). Returns the descriptor
+   *  (apiKey omitted) for the admin response. */
+  async setFirebaseConfig(rawGoogleServicesJson: string): Promise<FirebaseConfigDescriptor> {
+    const cfg = parseGoogleServicesJson(rawGoogleServicesJson);
+    await this.prisma.systemSetting.upsert({
+      where: { key: FIREBASE_KEY },
+      create: { key: FIREBASE_KEY, value: JSON.stringify(cfg) },
+      update: { value: JSON.stringify(cfg) },
+    });
+    this.fbEntry = { value: cfg, fetchedAt: Date.now() };
+    return { configured: true, projectId: cfg.projectId, appId: cfg.appId, gcmSenderId: cfg.gcmSenderId };
+  }
+
+  /** Remove the Firebase client config (clients will see {configured:false} and clear their native config). */
+  async clearFirebaseConfig(): Promise<void> {
+    await this.prisma.systemSetting.deleteMany({ where: { key: FIREBASE_KEY } });
+    this.fbEntry = { value: null, fetchedAt: Date.now() };
+  }
+
   /** Validate a VAPID config without any network access (deterministic health check). `fcmConfigured` is
    *  passed in (it comes from PushService / GOOGLE_APPLICATION_CREDENTIALS); `webPushConfigured` in the
    *  report reflects whether THIS cfg is a working Web Push keypair (pairMatches && subjectValid). */
@@ -165,6 +261,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
         pairMatches: false,
         subjectValid: false,
         fcmConfigured,
+        firebaseClientConfigured: this.firebaseClientConfigured,
         webPushConfigured: false,
         somsDomain,
         errors,
@@ -187,6 +284,7 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
       pairMatches,
       subjectValid,
       fcmConfigured,
+      firebaseClientConfigured: this.firebaseClientConfigured,
       webPushConfigured: pairMatches && subjectValid,
       somsDomain,
       errors,
@@ -207,6 +305,29 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
       // fall through to the warn
     }
     this.logger.warn('stored VAPID row is malformed — treating Web Push as unconfigured');
+    return null;
+  }
+
+  private parseFirebase(raw: string): FirebaseClientConfig | null {
+    try {
+      const obj = JSON.parse(raw) as Partial<FirebaseClientConfig>;
+      if (
+        typeof obj.apiKey === 'string' &&
+        typeof obj.projectId === 'string' &&
+        typeof obj.appId === 'string' &&
+        typeof obj.gcmSenderId === 'string'
+      ) {
+        return {
+          apiKey: obj.apiKey,
+          projectId: obj.projectId,
+          appId: obj.appId,
+          gcmSenderId: obj.gcmSenderId,
+        };
+      }
+    } catch {
+      // fall through to the warn
+    }
+    this.logger.warn('stored firebase-config row is malformed — treating FCM client config as unconfigured');
     return null;
   }
 }

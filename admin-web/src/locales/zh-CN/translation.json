@@ -45,25 +45,21 @@
     "groups": "群组",
     "sessions": "会话总览",
     "connections": "实时连接",
-    "adminSessions": "管理员会话",
     "bans": "封禁管理",
-    "reuse": "重用告警",
     "push": "推送管理",
     "federation": "联邦",
-    "selfCheck": "自检",
     "logs": "日志",
     "media": "媒体与存储",
-    "audit": "审计日志",
-    "admins": "管理员",
     "settings": "设置",
     "security": "我的账户",
     "quotas": "每日配额",
     "logout": "登出",
     "group": {
       "overview": "概览",
-      "security": "安全与会话",
+      "access": "访问与活动",
       "federation": "联邦",
-      "system": "系统"
+      "system": "系统",
+      "account": "账户"
     }
   },
   "quota": {
@@ -167,7 +163,8 @@
     "selected": "已选 {{count}} 项",
     "selectAll": "全选",
     "selectRow": "选择 {{name}}",
-    "total": "共 {{count}} 条"
+    "total": "共 {{count}} 条",
+    "tabs": { "users": "用户", "operators": "管理员" }
   },
   "userDetail": {
     "back": "返回用户列表",
@@ -215,7 +212,8 @@
       "lastActive": "最近活跃",
       "expires": "过期"
     },
-    "empty": "无活跃会话"
+    "empty": "无活跃会话",
+    "tabs": { "users": "用户会话", "admins": "管理员会话", "reuse": "重用告警" }
   },
   "connections": {
     "title": "实时连接",
@@ -293,12 +291,14 @@
       "ANDROID": "Android · FCM",
       "IOS": "iOS · FCM",
       "WEB": "Web Push"
-    }
+    },
+    "tabs": { "devices": "设备", "config": "传输配置" }
   },
   "federation": {
     "title": "联邦",
     "desc": "信任白名单中的对端服务器及其生命周期：信任 → 降级（签名调用失败，下次连接会重新握手）→ 重新信任，以及管理员手动屏蔽的域。点开某个对端可查看完整时间线。",
     "searchPlaceholder": "搜索域名",
+    "tabs": { "peers": "节点", "selfCheck": "自检" },
     "status": {
       "all": "全部",
       "trusted": "已信任",
@@ -440,13 +440,12 @@
   "logs": {
     "title": "系统日志",
     "desc": "结构化日志的实时流——stdout、轮转日志文件与本查看器共用同一条管线。新日志实时流入；连接时服务端回放最近记录。向上滚动可暂停自动跟随。",
+    "tabs": { "live": "实时流", "history": "历史检索", "audit": "审计" },
     "allLevels": "全部级别",
     "clear": "清空",
     "jumpLatest": "最新",
     "waiting": "等待日志…",
     "lineCount": "{{count}} 行",
-    "tabLive": "实时流",
-    "tabHistory": "历史检索",
     "searchPlaceholder": "搜索消息 / 上下文",
     "truncated": "已达扫描上限——存在更早的匹配",
     "totalMatches": "{{count}} 条匹配",
@@ -479,7 +478,7 @@
   },
   "issueLoginCode": {
     "title": "为 {{name}} 签发登录码",
-    "warning": "签发新码会吊销该账号此前未使用的登录码；用户用新码登录时，其旧的手机端会话将被踢下线。",
+    "warning": "将生成并仅显示一次新的登录码——关闭前请复制。其有效期由「设置」中的有效期决定；不影响其他已签发的登录码和现有会话。",
     "confirm": "签发",
     "codeLabel": "一次性登录码（仅显示一次）",
     "note": "请立即交给用户——关闭后将无法再次查看。",
@@ -593,13 +592,21 @@
   },
   "settings": {
     "title": "设置",
-    "desc": "运维管理的运行时配置（VAPID、FCM 状态、服务器身份）。",
+    "desc": "运维管理的运行时配置（服务器身份、一次性登录码有效期）。",
     "identity": {
       "title": "服务器身份",
       "desc": "本服务器的公开域名——联邦身份（@user@domain）。",
       "set": "已设置",
       "unset": "未设置",
       "envNote": "通过 SOMS_DOMAIN 环境变量设置（只读）。"
+    },
+    "otpTtl": {
+      "title": "一次性密码有效期",
+      "desc": "管理员签发的登录码保持可用的时间（分钟，1–1440）。",
+      "label": "有效期",
+      "minutes": "分钟",
+      "save": "保存",
+      "saved": "有效期已更新"
     },
     "vapid": {
       "title": "Web Push（VAPID）",
@@ -627,11 +634,24 @@
       "copyFailed": "复制失败"
     },
     "fcm": {
-      "title": "FCM（Android / iOS）",
-      "desc": "用于原生应用的 Firebase 云消息传输。",
+      "title": "FCM 客户端配置（Android）",
+      "desc": "上传你服务端的 google-services.json。Android 客户端会拉取这些字段并在运行时初始化 Firebase（APK 不内置 Firebase 配置）。",
       "configured": "已配置",
       "notConfigured": "未配置",
-      "envNote": "通过 GOOGLE_APPLICATION_CREDENTIALS（文件方式）配置——不在此处编辑。"
+      "upload": "上传 google-services.json",
+      "replace": "替换",
+      "clear": "清除",
+      "hint": "从 Firebase 控制台下载 google-services.json（Android 应用必须使用包名 com.soms.client），然后在此上传。",
+      "projectId": "项目 ID",
+      "appId": "应用 ID",
+      "senderId": "发送方 ID",
+      "updatedAt": "更新于",
+      "saved": "FCM 客户端配置已保存",
+      "cleared": "FCM 客户端配置已清除",
+      "adminOnly": "需要 ADMIN 角色",
+      "clearSuperOnly": "清除需要 SUPER_ADMIN",
+      "sendLabel": "发送凭据",
+      "sendHint": "通过 GOOGLE_APPLICATION_CREDENTIALS 服务账号 JSON 配置（环境变量，不在此处编辑）。"
     },
     "health": {
       "title": "健康检测",
@@ -644,6 +664,7 @@
       "pairMatches": "公钥与私钥匹配",
       "subjectValid": "subject 是有效的 mailto/https URL",
       "fcmConfigured": "FCM 传输已配置",
+      "firebaseClientConfigured": "FCM 客户端配置已发布（已上传 google-services.json）",
       "webPushConfigured": "Web Push 就绪",
       "domain": "域名：",
       "toast": {

@@ -4,18 +4,67 @@
   @include auth-shell;
 }
 
-// One-shot post-kick notice (e.g. "signed in elsewhere" after a new OTP login replaced this session).
-.login-notice {
+// Compact brand shown only where the side <app-auth-brand> panel is hidden (below the split
+// breakpoint), so the narrow Tauri shell / Android WebView keeps identity in every auth state —
+// including the server-unreachable error, which has no form title to fall back on. Hidden on
+// desktop, where the full brand panel is visible (showing both would be redundant).
+.form-brand {
+  display: none;
+  margin-bottom: 24px;
+}
+
+// Splash-continuous loading view (brand + Material indeterminate spinner), shown while /config is in
+// flight. Bridges the index.html app-splash and the settled form so the window never paints a blank or
+// partial frame. The flex `gap` owns the brand↔spinner spacing here, so neutralize .form-brand's own
+// margin (it's tuned for the settled layout, not this stacked pair). Integer-px gap per the CSS rule.
+.auth-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+
+  .form-brand {
+    margin-bottom: 0;
+  }
+}
+
+// /config couldn't be loaded (backend unreachable / returned no config) — surfaces a visible error + a
+// reconfigure action instead of a silent empty page. Icon + body layout so it reads as an alert;
+// danger palette; integer-px vertical metrics per the CSS rule.
+.login-error {
   width: 100%;
   max-width: 380px;
   box-sizing: border-box;
   margin-bottom: 12px;
-  padding: 10px 14px;
-  font-size: 13px;
-  line-height: 20px;
+  padding: 14px 16px;
   border-radius: var(--app-radius-sm, 8px);
-  background: var(--app-info-bg, rgba(20, 80, 160, 0.08));
-  color: var(--app-brand);
+  background: var(--app-danger-bg, rgba(229, 57, 53, 0.08));
+  color: var(--app-danger);
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+
+  &__icon {
+    flex: 0 0 auto;
+    color: var(--app-danger, #e53935);
+  }
+  &__body {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+  &__msg {
+    margin: 0 0 10px;
+    font-size: 13px;
+    line-height: 20px;
+  }
+  // Retry (primary, filled) + Server settings (secondary, stroked) — two distinct emphases per Material's
+  // action hierarchy: retry is the likely-fix-for-a-transient-blip, reconfigure is the address-is-wrong
+  // escape. flex-wrap so they stack cleanly on a narrow shell instead of overflowing.
+  &__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
 }
 
 // The configured-backend banner (Tauri only). Prominent host display: https = green globe (cert was
@@ -61,6 +110,17 @@
       color: var(--app-danger, #e53935);
     }
   }
+  // Error state: keep the host display (it names WHICH backend failed) but drop the green/red scheme
+  // claim, so a "couldn't reach server" alert isn't visually contradicted by a healthy-looking ✓ banner.
+  // Declared after &.insecure so it wins when both classes apply (equal specificity → source order).
+  // color-mix on --app-text yields a theme-neutral wash (no dedicated muted-bg token needed).
+  &.muted {
+    background: color-mix(in srgb, var(--app-text) 6%, transparent);
+    color: var(--app-text-muted);
+    app-icon {
+      color: var(--app-text-muted);
+    }
+  }
 }
 
 // Login-method switcher (password ↔ one-time-code ↔ QR). Shown only when >1 method is available.
@@ -84,4 +144,12 @@
 // against the label.
 .server-link app-icon {
   margin-right: var(--mat-button-text-icon-spacing, 8px);
+}
+
+// Below the split breakpoint the side <app-auth-brand> panel hides itself, so the compact form-brand
+// takes over identity. Same threshold as the auth-shell mixin + auth-brand.component.scss.
+@media (max-width: 899px) {
+  .form-brand {
+    display: block;
+  }
 }

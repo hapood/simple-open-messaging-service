@@ -17,7 +17,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
       <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar p-4 text-sidebar-foreground">
         <div className="px-2 py-3 text-lg font-semibold tracking-tight">{t('common.appName')}</div>
         <nav className="flex flex-1 flex-col gap-4 overflow-y-auto">
-          {NAV_GROUPS.map((group) => (
+          {NAV_GROUPS.filter((g) => !g.footer).map((group) => (
             <div key={group.labelKey} className="flex flex-col gap-1">
               <div className="px-3 text-xs font-medium tracking-wide text-muted-foreground uppercase">
                 {t(group.labelKey)}
@@ -29,6 +29,9 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           ))}
         </nav>
         <div className="mt-auto flex flex-col gap-1">
+          {NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items).map((item) => (
+            <NavEntry key={item.to} item={item} />
+          ))}
           <LanguageSwitcher />
           <Button variant="ghost" className="w-full justify-start gap-2" onClick={logout}>
             <LogOut className="size-4" />

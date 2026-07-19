@@ -155,6 +155,33 @@ describe('QR login e2e', () => {
     expect(webRow!.expiresAt).not.toBeNull();
   });
 
+  it("an 'app' (Android) QR is always trusted → issues a permanent session bound to the scanner", async () => {
+    const { userId, token: scannerToken } = await seedScanner('qrapp');
+
+    // 'app' needs no trusted opt-in (Android is a trusted platform) → permanent session.
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/auth/qr/create')
+      .send({ client: 'app' });
+    const qrToken: string = created.body.data.qrToken;
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/qr/scan')
+      .set('Authorization', `Bearer ${scannerToken}`)
+      .send({ qrToken });
+    await request(app.getHttpServer())
+      .post('/api/v1/auth/qr/confirm')
+      .set('Authorization', `Bearer ${scannerToken}`)
+      .send({ qrToken });
+    const claimed = await request(app.getHttpServer()).post('/api/v1/auth/qr/poll').send({ qrToken });
+    expect(claimed.body.data.status).toBe('confirmed');
+    const appToken: string = claimed.body.data.session_token;
+
+    const appRow = await prisma.sessionToken.findUnique({
+      where: { id: (await sessionTokens.idOfToken(appToken))! },
+      select: { client: true, trusted: true, expiresAt: true, userId: true },
+    });
+    expect(appRow).toMatchObject({ client: 'app', trusted: true, expiresAt: null, userId });
+  });
+
   it('scan requires an authenticated session (the phone is already logged in)', async () => {
     const qrToken = (
       await request(app.getHttpServer()).post('/api/v1/auth/qr/create').send({ client: 'web' })

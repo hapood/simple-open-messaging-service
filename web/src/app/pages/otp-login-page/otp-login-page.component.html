@@ -11,8 +11,8 @@
       <h1 class="login-title">{{ 'auth.otpTitle' | transloco }}</h1>
       <p class="login-sub">{{ 'auth.otpSub' | transloco }}</p>
 
-      @if (notice()) {
-      <div class="notice" role="status">{{ notice() }}</div>}
+      @if (!isTauri()) {
+      <div class="notice" role="status">{{ 'auth.webSessionNotice' | transloco }}</div>}
 
       <mat-form-field class="field" appearance="fill">
         <mat-label>{{ 'auth.account' | transloco }}</mat-label>
@@ -35,6 +35,10 @@
       @if (canPassword()) {
       <div class="alt-action">
         <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>
+      </div>}
+      @if (canQr()) {
+      <div class="alt-action">
+        <button type="button" class="link-btn" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
       </div>}
     </form>
     @if (isTauri()) {

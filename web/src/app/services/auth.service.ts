@@ -4,7 +4,7 @@ import { BehaviorSubject, EMPTY, firstValueFrom, tap } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
-import { isTauri, isAndroidNative, tauriInvoke } from './runtime';
+import { isTauri, isAndroidNative, tauriInvoke, sessionClient } from './runtime';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -16,6 +16,10 @@ const SESSION_TOKEN = 'session_token',
   // (name mirrors src/auth/media-token.ts LOGGED_IN_COOKIE). On the pure-httpOnly browser build the
   // session token is JS-unreadable, so this flag is how the SPA tells whether a session exists.
   LOGGED_IN_COOKIE = 'logged_in'
+
+/** On-screen duration (ms) for important auth notices (forced-logout / persist-failure) — longer than the
+ *  default toast so a user looking away still catches why they're back at the sign-in screen. */
+const IMPORTANT_NOTICE_MS = 6000
 
 type LoginRes = { code: number, message: string, data?: { session_token?: string, mustChangePassword?: boolean } }
 type LogoutRes = { code: number, message: string }
@@ -68,12 +72,6 @@ export class AuthService {
    *  to new subscribers (so a post-login spawn resolves at once). */
   private readonly _sessionTokenSub = new BehaviorSubject<string | null>(this._sessionToken)
   readonly sessionToken$ = this._sessionTokenSub.asObservable()
-
-  /** A transient, one-shot i18n key shown on the login page after a server-initiated kick (FORCE_LOGOUT).
-   *  Set by {@link redoLoginAuth} when the kick reason maps to a tailored notice; consumed + cleared by the
-   *  login page on render. Null when there's nothing to surface — no reason currently maps to a notice, so
-   *  the login page itself is the signal that the session ended. */
-  readonly loginNotice = signal<string | null>(null)
 
   constructor(
     private http: HttpClient,
@@ -133,24 +131,28 @@ export class AuthService {
       }))
   }
 
-  /** One-time-code (admin-issued) login → a permanent `app` session (Android). The app is a trusted device:
-   *  its token lives in EncryptedSharedPreferences, so the session is always trusted + persistent. */
+  /** One-time-code (admin-issued) login → a session whose lifetime follows the platform's trust: a trusted
+   *  native client (app/desktop) keeps a permanent session (token in OS secure storage); the browser gets a
+   *  14-day sliding one. `client` is sent so the backend issues the matching session kind. */
   otpLogin(params: { account: string, code: string, device?: string }) {
+    const client = sessionClient();
     return this.http.post<LoginRes>(
       `${apiPrefix()}/auth/otp/login`, {
         account: params.account,
         code: params.code,
+        client,
         device: params.device ?? this.getDeviceLabel(),
       }).pipe(tap((res) => {
         if (res.code === 0 && res.data?.session_token) {
-          this.activateSession(res.data.session_token, { isKeep: true, trusted: true })
+          this.activateSession(res.data.session_token, { isKeep: true, trusted: client !== 'web' })
         }
       }))
   }
 
-  /** QR-login: desktop/web mints a sign-in token to render as a QR. `trusted` opts a desktop into a
-   *  permanent session (its token is kept in the OS keyring); ignored for web (a browser can't be trusted). */
-  qrCreate(client: 'web' | 'desktop', trusted = false) {
+  /** QR-login: a client mints a sign-in token to render as a QR. `client` is the real platform
+   *  ('app'/'web'/'desktop' — see {@link sessionClient}); `trusted` opts a desktop into a permanent session
+   *  (its token kept in OS keyring), is implicit-true for 'app', and ignored for 'web' (never trusted). */
+  qrCreate(client: 'app' | 'web' | 'desktop', trusted = false) {
     return this.http.post<{ code: number, data?: { qrToken: string, expiresAt: number } }>(
       `${apiPrefix()}/auth/qr/create`, { client, trusted },
     )
@@ -201,13 +203,6 @@ export class AuthService {
   redoLoginAuth(_reason?: string) {
     void this.clearToken()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
-  }
-
-  /** Read + clear the one-shot login notice (the login page calls this on render). */
-  consumeLoginNotice(): string | null {
-    const key = this.loginNotice()
-    if (key) this.loginNotice.set(null)
-    return key
   }
 
   /** Activate a freshly obtained session token (login/restore): set the in-memory copy (synchronous, so
@@ -298,14 +293,16 @@ export class AuthService {
   }
 
   /** Revoke the just-issued session server-side (POST /auth/logout carries the raw token → the backend
-   *  revokes its hash) and bounce to the login page with a one-shot notice. Used when a trusted (permanent)
-   *  token couldn't be persisted to the keyring: revoking eliminates the orphan permanent row (it would
-   *  otherwise live forever); the notice tells the user why they're back at the sign-in screen. */
+   *  revokes its hash) and bounce to the login page, surfacing the reason as a global toast. Used when a
+   *  trusted (permanent) token couldn't be persisted to the keyring: revoking eliminates the orphan permanent
+   *  row (it would otherwise live forever); the toast tells the user why they're back at the sign-in screen.
+   *  The toast is routing-independent, so it shows even though the bounce redirects away from the current
+   *  route (the old per-page notice signal was dropped when the login page redirected under APP_OTP_AND_QR). */
   private async revokeAndBounce(token: string, noticeKey: string): Promise<void> {
     try {
       await firstValueFrom(this.http.post<{ code: number }>(`${apiPrefix()}/auth/logout`, { sessionToken: token }))
     } catch { /* best-effort: if the revoke itself fails, the row is still revocable from the device page */ }
-    this.loginNotice.set(noticeKey)
+    this.toast.warn(this.t(noticeKey), IMPORTANT_NOTICE_MS)
     void this.clearToken()
     this.userService.clearSession()
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
@@ -353,7 +350,7 @@ export class AuthService {
     // token → tell the user (the next boot could briefly re-restore it; it self-corrects via 401). No retry:
     // /auth/logout below revokes the token server-side regardless.
     this.clearToken().then((nativeOk) => {
-      if (!nativeOk) this.loginNotice.set('auth.notice.logoutClearFailed')
+      if (!nativeOk) this.toast.warn(this.t('auth.notice.logoutClearFailed'), IMPORTANT_NOTICE_MS)
     })
     // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
     this.userService.clearSession()

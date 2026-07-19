@@ -20,12 +20,12 @@ import { BusinessCode } from '../common/business-code.js';
 import { OtpLoginDto } from '../dto/auth.dto.js';
 
 /**
- * One-time-code (admin-issued) login — the Android long-term (`app`) session login method. Distinct from
- * the password-login {@link AuthController} (its own throttle surface + it bypasses LocalStrategy's
- * brute-force ban). `@Public()` (callable pre-auth) with a `@Throttle` ceiling so a guessed 6-digit code
- * can't be brute-forced. The session `client` is hardcoded to `'app'` (NOT trusted from the body) — this
- * endpoint IS the Android gate; the frontend only offers it on the Android build, and full device
- * attestation is deferred hardening (see the plan's notes).
+ * One-time-code (admin-issued) login — available on every platform. Distinct from the password-login
+ * {@link AuthController} (its own throttle surface + it bypasses LocalStrategy's brute-force ban).
+ * `@Public()` (callable pre-auth) with a `@Throttle` ceiling so a guessed 6-digit code can't be brute-
+ * forced. The session `client` comes from the body (default 'app'); a trusted native client (app/desktop)
+ * gets a permanent session, the browser a 14-day sliding one. Full device attestation is deferred
+ * hardening — today the client claim is trusted (the frontend sends the real platform).
  */
 @ApiTags('auth')
 @Public()
@@ -50,6 +50,7 @@ export class AuthOtpController {
       device: dto.device,
       userAgent,
       ip,
+      client: dto.client,
     });
     setSessionCookies(reply, token, true);
     return {

@@ -1,4 +1,4 @@
-import { Controller, Get, Query, Res, UseGuards } from '@nestjs/common';
+import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 import { Public } from '../common/public.decorator.js';
@@ -37,10 +37,10 @@ export class ShellController {
   @Throttle(30, 60) // tiny JSON; 30/min/IP covers wizard back-and-forth + multiple devices behind a NAT
   @ApiOperation({
     summary:
-      'Shell↔server version compatibility. The caller passes its shell version; the server answers whether it (and the current web bundle) can serve it.',
+      'Reports this server version AND the public login policy (registrationOpen + loginMode). The shell owns compatibility (a hard-coded backend-version upper bound) and decides itself; the server sets no shell floor. The login policy is folded in so the shell gets it in the same round-trip (mirrors GET /api/v1/config).',
   })
-  compat(@Query('version') version?: string): ApiResult<ShellCompatDto> {
-    return { code: BusinessCode.OK, message: 'successful', data: this.shell.compat(version) };
+  compat(): ApiResult<ShellCompatDto> {
+    return { code: BusinessCode.OK, message: 'successful', data: this.shell.compat() };
   }
 
   @Get('web-manifest')

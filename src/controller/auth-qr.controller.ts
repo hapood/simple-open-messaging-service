@@ -21,14 +21,16 @@ import { BusinessCode } from '../common/business-code.js';
 import { QrCreateDto, QrPollDto, QrTokenDto } from '../dto/auth.dto.js';
 
 /**
- * QR-scan login (desktop/web → session confirmed by an already-logged-in phone). create/poll are
- * `@Public()` (the desktop isn't authenticated yet); scan/confirm are authenticated (the scanning phone is
- * already logged in via OTP). `@Throttle` ceilings protect each step (they bypass LocalStrategy's ban).
+ * QR-scan login (any client → session confirmed by an already-logged-in phone). create/poll are
+ * `@Public()` (the QR-displaying client isn't authenticated yet); scan/confirm are authenticated (the
+ * scanning phone is already logged in). `@Throttle` ceilings protect each step (they bypass
+ * LocalStrategy's ban).
  *
- * The issued session `client` is the one chosen at create ('web'/'desktop' — the service never issues an
- * `app` session here), so the QR endpoint can't be used to mint a long-term Android session. A `desktop`
- * that opts into `trusted` at create gets a permanent session; otherwise (and always for `web`) it is a
- * 14-day sliding session.
+ * The issued session `client` is the one chosen at create ('app' Android / 'desktop' Tauri / 'web'
+ * browser), and its lifetime follows the platform's trust: `app` is always trusted (permanent); `desktop`
+ * is trusted when its keyring is available (permanent) else a 14-day sliding session; `web` is always a
+ * 14-day sliding session. So a trusted native client (Android/desktop) gets a permanent session via QR just
+ * as it would via OTP.
  */
 @ApiTags('auth')
 @Controller()
@@ -40,7 +42,7 @@ export class AuthQrController {
   @Throttle(20, 60)
   @HttpCode(HttpStatus.OK)
   @Post('auth/qr/create')
-  @ApiOperation({ summary: 'Begin QR sign-in: mint a token (desktop/web renders it as a QR)' })
+  @ApiOperation({ summary: 'Begin QR sign-in: mint a token (the client renders it as a QR)' })
   async create(@Body() dto: QrCreateDto): Promise<ApiResult> {
     return {
       code: BusinessCode.OK,

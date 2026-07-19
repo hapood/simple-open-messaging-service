@@ -25,8 +25,12 @@ export interface VapidHealthReport {
   pairMatches: boolean;
   /** subject is a well-formed mailto: or https: URL. */
   subjectValid: boolean;
-  /** FCM transport configured (GOOGLE_APPLICATION_CREDENTIALS set + firebase-admin initialized). */
+  /** FCM send transport configured (GOOGLE_APPLICATION_CREDENTIALS set + firebase-admin initialized). */
   fcmConfigured: boolean;
+  /** FCM CLIENT config published (the operator uploaded a google-services.json → SystemSetting row). This
+   *  is independent of `fcmConfigured`: the server can send (service-account set) without having published
+   *  the client config, and vice versa — a half-configured server is observable here. */
+  firebaseClientConfigured: boolean;
   /** Web Push transport ready (configured AND keypair valid). */
   webPushConfigured: boolean;
   /** This server's public domain (read-only — from SOMS_DOMAIN env, the federation identity). */

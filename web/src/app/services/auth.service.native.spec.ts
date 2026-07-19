@@ -182,9 +182,10 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       const logoutReq = httpMock.expectOne((r) => /\/auth\/logout$/.test(r.url));
       expect(logoutReq.request.body.sessionToken).toBe('st-orphan');
       logoutReq.flush({ code: 0, message: 'ok' });
-      await new Promise((r) => setTimeout(r, 0)); // drain: revokeAndBounce finish (clearToken + notice + redirect)
+      await new Promise((r) => setTimeout(r, 0)); // drain: revokeAndBounce finish (clearToken + toast + redirect)
       expect(svc.sessionToken).toBeNull();
-      expect(svc.loginNotice()).toBe('auth.notice.trustPersistFailed');
+      // The bounce surfaces its reason as a global toast (longer duration), not the old per-page notice.
+      expect(toastWarn).toHaveBeenCalledWith('auth.notice.trustPersistFailed', jasmine.any(Number));
     });
 
     it('a keep-only (untrusted) login whose keyring write FAILS warns via toast but does NOT revoke or bounce', async () => {

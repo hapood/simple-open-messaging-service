@@ -3,6 +3,7 @@ import { CanActivateFn, RedirectCommand } from '@angular/router';
 import { Router } from '@angular/router';
 import { AuthService } from './services/auth.service';
 import { ConfigService } from './services/config.service';
+import { apiOriginIsEmpty, isTauri, syncApiOriginSignal, tauriInvoke } from './services/runtime';
 
 // Auth-flow history contract: a logged-in user must NEVER be able to press Back from the app and land
 // on /auth/login or /auth/register. That is enforced structurally, not by reacting after the fact:
@@ -32,9 +33,41 @@ export const guestGuard: CanActivateFn = () => {
   if (authService.isLoggedIn()) {
     return new RedirectCommand(router.parseUrl(''), { replaceUrl: true });
   }
-  // The Tauri shell's first-run server setup now lives in the bundled `init` window (shell-config
-  // bootstrap), which Rust opens INSTEAD of the SPA when no origin+web are configured (lib.rs setup).
-  // So by the time the SPA's /auth/login is reachable, an origin is always set — no in-SPA gate needed.
+  return true;
+};
+
+// Config detection (Tauri shell) — force the in-SPA server-config page until a SOMS backend has been
+// configured. Queries the AUTHORITATIVE persisted origin via Rust's `is_origin_configured` (which checks
+// the live origin Arc against the non-routable placeholder default), NOT the SPA's secureStore-seeded
+// signal — the persisted file is the durable source the media proxy + native layer also read, and it can't
+// drift from a bridge-read failure. The browser build is same-origin (never unconfigured), so this is a
+// Tauri-only no-op. Runs BEFORE guestGuard on the auth routes.
+export const configGuard: CanActivateFn = async () => {
+  if (!isTauri()) return true;
+  const router = inject(Router);
+  // Authoritative "has a SOMS backend been configured?" — queries Rust's is_origin_configured (persisted
+  // origin vs the non-routable placeholder), independent of the SPA's secureStore-seeded signal which can
+  // drift. Browser build is same-origin (never unconfigured) so this is a Tauri-only no-op there.
+  let configured = false;
+  try {
+    configured = await tauriInvoke<boolean>('is_origin_configured');
+  } catch {
+    configured = false;
+  }
+  if (!configured) {
+    return new RedirectCommand(router.parseUrl('/config'), { replaceUrl: true });
+  }
+  // Self-heal (existing installs): if Rust has a configured origin but the SPA signal is empty (secureStore
+  // drifted — e.g. a pre-merge configure wrote Rust but not secureStore), sync it so HttpClient/SSE reach
+  // the backend without a manual reconfigure.
+  if (apiOriginIsEmpty()) {
+    try {
+      const origin = await tauriInvoke<string>('get_api_origin');
+      if (origin) syncApiOriginSignal(origin);
+    } catch {
+      /* leave as-is — the user can reconfigure from /config */
+    }
+  }
   return true;
 };
 

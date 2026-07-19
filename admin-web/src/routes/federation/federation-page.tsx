@@ -1,7 +1,7 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { Activity, MoreHorizontal, Search } from 'lucide-react'
+import { MoreHorizontal, Search } from 'lucide-react'
 import { useFederationPeers, useBlockFederationPeer, useUnblockFederationPeer } from '@/hooks/use-federation'
 import { useListParams } from '@/hooks/use-list-params'
 import { useIsSuperAdmin } from '@/hooks/use-me'
@@ -75,16 +75,7 @@ export function FederationPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">{t('federation.title')}</h1>
-          <p className="mt-1 text-sm text-muted-foreground">{t('federation.desc')}</p>
-        </div>
-        <Link to="/federation/self-check" className={buttonVariants({ variant: 'outline', size: 'sm' })}>
-          <Activity className="size-4" />
-          {t('federation.selfCheck.entry')}
-        </Link>
-      </div>
+      <p className="text-sm text-muted-foreground">{t('federation.desc')}</p>
 
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap gap-2">

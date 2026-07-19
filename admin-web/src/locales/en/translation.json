@@ -45,25 +45,21 @@
     "groups": "Groups",
     "sessions": "Sessions",
     "connections": "Live Connections",
-    "adminSessions": "Admin Sessions",
     "bans": "Ban Management",
-    "reuse": "Reuse Alerts",
     "push": "Push Management",
     "federation": "Federation",
-    "selfCheck": "Self-check",
     "logs": "Logs",
     "media": "Media & Storage",
-    "audit": "Audit Log",
-    "admins": "Admins",
     "settings": "Settings",
     "security": "My Account",
     "quotas": "Daily Quotas",
     "logout": "Log Out",
     "group": {
       "overview": "Overview",
-      "security": "Security & Sessions",
+      "access": "Access & Activity",
       "federation": "Federation",
-      "system": "System"
+      "system": "System",
+      "account": "Account"
     }
   },
   "quota": {
@@ -167,7 +163,8 @@
     "selected": "{{count}} selected",
     "selectAll": "Select all",
     "selectRow": "Select {{name}}",
-    "total": "{{count}} total"
+    "total": "{{count}} total",
+    "tabs": { "users": "Users", "operators": "Operators" }
   },
   "userDetail": {
     "back": "Back to users",
@@ -215,7 +212,8 @@
       "lastActive": "Last active",
       "expires": "Expires"
     },
-    "empty": "No active sessions"
+    "empty": "No active sessions",
+    "tabs": { "users": "User sessions", "admins": "Admin sessions", "reuse": "Reuse alerts" }
   },
   "connections": {
     "title": "Live Connections",
@@ -293,12 +291,14 @@
       "ANDROID": "Android · FCM",
       "IOS": "iOS · FCM",
       "WEB": "Web Push"
-    }
+    },
+    "tabs": { "devices": "Devices", "config": "Transport config" }
   },
   "federation": {
     "title": "Federation",
     "desc": "Peer servers on the trust allow-list and their lifecycle: trust → demote (a signed op failed; re-handshakes on next contact) → re-trust, plus admin-blocked domains. Open a peer for the full timeline.",
     "searchPlaceholder": "Search domain",
+    "tabs": { "peers": "Peers", "selfCheck": "Self-check" },
     "status": {
       "all": "All",
       "trusted": "Trusted",
@@ -440,13 +440,12 @@
   "logs": {
     "title": "System Logs",
     "desc": "Live tail of the structured log stream — stdout, the rotating log file, and this viewer share one pipeline. New lines stream in real time; the server replays the most recent records on connect. Scroll up to pause auto-follow.",
+    "tabs": { "live": "Live tail", "history": "History", "audit": "Audit" },
     "allLevels": "All levels",
     "clear": "Clear",
     "jumpLatest": "Latest",
     "waiting": "Waiting for logs…",
     "lineCount": "{{count}} lines",
-    "tabLive": "Live tail",
-    "tabHistory": "History",
     "searchPlaceholder": "Search message / context",
     "truncated": "Scan limit reached — older matches exist",
     "totalMatches": "{{count}} matches",
@@ -479,7 +478,7 @@
   },
   "issueLoginCode": {
     "title": "Issue login code for {{name}}",
-    "warning": "Issuing a new code revokes this account's prior unused code. When the user logs in with it, their existing mobile session is signed out.",
+    "warning": "A fresh one-time code will be shown once — copy it before closing. It's valid for the window set in Settings; other active codes and existing sessions are unaffected.",
     "confirm": "Issue",
     "codeLabel": "One-time login code (shown once)",
     "note": "Hand it to the user now — it cannot be viewed again after closing.",
@@ -593,13 +592,21 @@
   },
   "settings": {
     "title": "Settings",
-    "desc": "Operator-managed runtime configuration (VAPID, FCM status, server identity).",
+    "desc": "Operator-managed runtime configuration (server identity, one-time-code validity).",
     "identity": {
       "title": "Server identity",
       "desc": "This server's public domain — the federation identity (@user@domain).",
       "set": "set",
       "unset": "unset",
       "envNote": "Set via SOMS_DOMAIN env (read-only)."
+    },
+    "otpTtl": {
+      "title": "One-time code validity",
+      "desc": "How long an admin-issued login code remains usable (minutes, 1–1440).",
+      "label": "Validity",
+      "minutes": "minutes",
+      "save": "Save",
+      "saved": "Validity updated"
     },
     "vapid": {
       "title": "Web Push (VAPID)",
@@ -627,11 +634,24 @@
       "copyFailed": "Copy failed"
     },
     "fcm": {
-      "title": "FCM (Android / iOS)",
-      "desc": "Firebase Cloud Messaging transport for native apps.",
+      "title": "FCM client config (Android)",
+      "desc": "Upload your server's google-services.json. Android clients fetch these fields and initialize Firebase at runtime (the APK ships without a bundled Firebase config).",
       "configured": "configured",
       "notConfigured": "not configured",
-      "envNote": "Configured via GOOGLE_APPLICATION_CREDENTIALS (file-based) — not editable here."
+      "upload": "Upload google-services.json",
+      "replace": "Replace",
+      "clear": "Clear",
+      "hint": "Download google-services.json from your Firebase console (the Android app must use package com.soms.client), then upload it here.",
+      "projectId": "Project ID",
+      "appId": "App ID",
+      "senderId": "Sender ID",
+      "updatedAt": "Updated",
+      "saved": "FCM client config saved",
+      "cleared": "FCM client config cleared",
+      "adminOnly": "ADMIN role required",
+      "clearSuperOnly": "Clear requires SUPER_ADMIN",
+      "sendLabel": "Send credential",
+      "sendHint": "configured via the GOOGLE_APPLICATION_CREDENTIALS service-account JSON (env, not editable here)."
     },
     "health": {
       "title": "Health check",
@@ -644,6 +664,7 @@
       "pairMatches": "Public key matches private key",
       "subjectValid": "Subject is a valid mailto/https URL",
       "fcmConfigured": "FCM transport configured",
+      "firebaseClientConfigured": "FCM client config published (google-services.json uploaded)",
       "webPushConfigured": "Web Push ready",
       "domain": "Domain:",
       "toast": {

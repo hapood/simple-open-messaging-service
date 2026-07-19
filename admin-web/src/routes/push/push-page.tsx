@@ -71,10 +71,7 @@ export function PushPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t('push.title')}</h1>
-        <p className="text-sm text-muted-foreground">{t('push.desc')}</p>
-      </div>
+      <p className="text-sm text-muted-foreground">{t('push.desc')}</p>
 
       {/* transport config status + total */}
       <div className="flex flex-wrap items-center gap-2 text-sm">

@@ -4,15 +4,15 @@ import { join } from 'node:path';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { SERVER_VERSION } from '../common/version.js';
-import { SHELL_COMPAT, semverGte } from '../config/shell-compat.js';
+import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { ShellCompatDto, ShellWebManifestDto } from './shell.dto.js';
 
 /**
- * Injection token for the on-disk shell-artifacts dir. Production value is `cwd/data/shell` (provided
- * by `ShellModule` — the dir the Dockerfile signing step bakes, same convention as `data/uploads`). The
- * e2e harness overrides this token with a temp dir so the manifest/bundle routes can be exercised
- * hermetically, without touching the repo's real `data/shell` (which may hold a signed bundle from a
- * prior image build) or assuming any fixture exists on the dev machine.
+ * Injection token for the on-disk shell-artifacts dir. Production value is `cwd/shell-bundle` (provided
+ * by `ShellModule` — a READ-ONLY, image-bound dir the Dockerfile bakes at /app/shell-bundle, deliberately
+ * OUTSIDE the bind-mounted /app/data volume so an operator can never mutate the integrity-checked bundle).
+ * The e2e harness overrides this token with a temp dir so the manifest/bundle routes can be exercised
+ * hermetically, without touching the image's real bundle or assuming any fixture exists on the dev machine.
  */
 export const SHELL_DIR = 'SHELL_DIR';
 
@@ -23,18 +23,20 @@ export const SHELL_DIR = 'SHELL_DIR';
  * integrity-verified web tarball it installs locally. All three routes are `@Public()` — they run
  * before the shell has any session (it hasn't chosen a server / logged in yet).
  *
- * The on-disk artifacts live in `data/shell/` (writable runtime dir, baked into the image by the
- * Dockerfile packaging step — see `scripts/package-web-bundle.mjs`):
+ * The on-disk artifacts live in `shell-bundle/` — READ-ONLY and image-bound: baked into the image at
+ * /app/shell-bundle by the Dockerfile packaging step (see `scripts/package-web-bundle.mjs`), deliberately
+ * OUTSIDE the bind-mounted /app/data volume so the integrity-checked bundle is immutable per image and
+ * can never drift into operator-writable runtime state:
  *   - `manifest.json`      → `{ webVersion, sha256 }` (bundle-only fields)
  *   - `soms-web-<ver>.tar.gz` → the SPA browser build, tar+gzip of `web/dist/web/browser`
  *
- * `minShellVersion` + `downloadUrl` are NOT stored on disk — they are merged in from `SHELL_COMPAT`
- * (single source of truth, shared with the compat endpoint) and a fixed route path, so the manifest
- * can never drift from the compat decision.
+ * `downloadUrl` is NOT stored on disk — it is merged in at serve time from a fixed route path. The
+ * shell owns version compatibility (a hard-coded `COMPAT_BACKEND_MAX` upper bound in its Cargo source),
+ * so the server carries no shell floor and has nothing to merge for compat.
  */
 @Injectable()
 export class ShellService {
-  /** `data/shell/` dir this service reads from (injected so the e2e harness can point it at a temp dir). */
+  /** `shell-bundle/` dir this service reads from (injected so the e2e harness can point it at a temp dir). */
   private readonly shellDir: string;
   private readonly manifestPath: string;
 
@@ -42,23 +44,20 @@ export class ShellService {
   private cache: { mtimeMs: number; raw: RawManifest } | null = null;
 
   constructor(@Optional() @Inject(SHELL_DIR) shellDir?: string) {
-    // Falls back to the cwd/data/shell convention when instantiated without DI (the unit spec calls
+    // Falls back to the cwd/shell-bundle convention when instantiated without DI (the unit spec calls
     // `new ShellService()`; `ShellModule` injects the real provider in the running app).
-    this.shellDir = shellDir ?? join(process.cwd(), 'data', 'shell');
+    this.shellDir = shellDir ?? join(process.cwd(), 'shell-bundle');
     this.manifestPath = join(this.shellDir, 'manifest.json');
   }
 
-  /** `GET /api/v1/shell/compat` — is this shell version allowed to use this server + bundle? */
-  compat(shellVersion: string | undefined): ShellCompatDto {
-    const v = (shellVersion ?? '').trim();
-    const min = SHELL_COMPAT.minShellVersion;
-    const compatible = v !== '' && semverGte(v, min);
-    return {
-      compatible,
-      serverVersion: SERVER_VERSION,
-      minShellVersion: min,
-      messageKey: compatible ? null : SHELL_COMPAT.messageKey,
-    };
+  /**
+   * `GET /api/v1/shell/compat` — reports this server's version AND folds in the public login policy
+   * (identical to `GET /api/v1/config`) so the shell learns the enabled login methods in the same
+   * round-trip. The shell decides compatibility itself (it carries the upper bound); the server sets no
+   * floor, so there is nothing else to compute here.
+   */
+  compat(): ShellCompatDto {
+    return { serverVersion: SERVER_VERSION, ...PUBLIC_CONFIG };
   }
 
   /** `GET /api/v1/shell/web-manifest` — the bundle descriptor the shell integrity-verifies against. */
@@ -66,7 +65,6 @@ export class ShellService {
     const raw = this.readManifest();
     return {
       webVersion: raw.webVersion,
-      minShellVersion: SHELL_COMPAT.minShellVersion,
       sha256: raw.sha256,
       downloadUrl: '/api/v1/shell/web-bundle',
     };

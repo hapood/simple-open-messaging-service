@@ -90,12 +90,16 @@ export class UserAvatarComponent {
         this.clearObjectUrl()
         return
       }
-      void this.avatarRepo.getBlob(identity, src).then((blob) => {
-        // Drop if the avatar moved on OR was refreshed since this read started.
-        if (this.identityKey() !== identity || this.src() !== src || this.avatarRepo.refreshTick(identity) !== tick) return
-        if (blob) this.setObjectUrl(URL.createObjectURL(blob))
-        else this.clearObjectUrl()
-      })
+      void this.avatarRepo.getBlob(identity, src)
+        .then((blob) => {
+          // Drop if the avatar moved on OR was refreshed since this read started.
+          if (this.identityKey() !== identity || this.src() !== src || this.avatarRepo.refreshTick(identity) !== tick) return
+          if (blob) this.setObjectUrl(URL.createObjectURL(blob))
+          else this.clearObjectUrl()
+        })
+        // getBlob swallows IDB/fetch errors internally, but guard the chain so a reject — e.g. an
+        // in-flight fetch aborted by a webview reload/handoff — never surfaces as an unhandled rejection.
+        .catch(() => {})
     })
 
     inject(DestroyRef).onDestroy(() => this.clearObjectUrl())

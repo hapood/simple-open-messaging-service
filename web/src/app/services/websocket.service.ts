@@ -1,7 +1,7 @@
 import { Injectable, signal, effect, untracked } from '@angular/core';
 import { Subject } from 'rxjs';
 import { AuthService } from './auth.service';
-import { apiOrigin, isAndroidNative } from './runtime';
+import { apiOrigin, isAndroidNative, isTauri } from './runtime';
 import {
   RealtimeTransport,
   type ConnectionState,
@@ -10,6 +10,7 @@ import {
 } from './realtime-transport';
 import { WorkerSseTransport } from './worker-sse.transport';
 import { NativeEventTransport } from './native-event.transport';
+import { RustChannelSseTransport } from './rust-channel-sse.transport';
 
 // Re-exported for downstream consumers (HttpItemSource, GroupEventService, ConnectionBanner, …) that
 // already import these from here — the canonical home is now realtime-transport.ts.
@@ -25,12 +26,14 @@ declare const ngDevMode: boolean | null | undefined;
  * transport is a pluggable {@link RealtimeTransport} selected once at construction by platform:
  *  - Android (Tauri shell): {@link NativeEventTransport} — consumes Kotlin's `/events` bridge
  *    (`window.__SOMS_EVENT__`); the native RealtimeService owns the connection.
- *  - browser + all Tauri desktop (pc/mac/linux): {@link WorkerSseTransport} — spawns `sse.worker.ts`.
+ *  - Tauri desktop (pc/mac/linux): {@link RustChannelSseTransport} — consumes the Rust-side `sse_*`
+ *    supervisor; Rust owns the /events connection (survives renderer reclaim, no plugin-http).
+ *  - browser: {@link WorkerSseTransport} — spawns `sse.worker.ts` (same-origin, no plugin-http).
  *
  * The facade owns the public subjects/signal and the FORCE_LOGOUT side-effect (re-login); the transport
- * is a pure producer that pushes into them via a {@link RealtimeSink}. Because both transports speak the
- * same sink contract, downstream consumers are byte-identical across platforms — this class carries no
- * platform branching, only the one-time selection.
+ * is a pure producer that pushes into them via a {@link RealtimeSink}. Because all three transports
+ * speak the same sink contract, downstream consumers are byte-identical across platforms — this class
+ * carries no platform branching, only the one-time selection.
  */
 @Injectable({
   providedIn: 'root',
@@ -59,11 +62,19 @@ export class WebsocketService {
       onReconnect: () => this.reconnect$.next(),
       onForceLogout: (reason?: string) => this.onForceLogout(reason),
     };
-    // Select the transport ONCE, by platform. Android consumes the native /events bridge; every other
-    // client runs its own SSE worker. No branching anywhere else in this class.
+    // Select the transport ONCE, by platform:
+    //  - Android (Tauri shell): NativeEventTransport — consumes Kotlin's /events bridge; the native
+    //    RealtimeService owns the connection.
+    //  - Tauri desktop (pc/mac/linux): RustChannelSseTransport — consumes the Rust-side `sse_*`
+    //    supervisor (src-tauri/src/lib.rs), which owns the /events connection natively. Replaces the
+    //    Web-Worker path under Tauri (the worker's cross-origin plugin-http fetch was the source of the
+    //    "resource id is invalid" churn).
+    //  - browser: WorkerSseTransport — spawns sse.worker.ts (same-origin, no plugin-http).
     this.transport = isAndroidNative()
       ? new NativeEventTransport(sink)
-      : new WorkerSseTransport(sink, authService);
+      : isTauri()
+        ? new RustChannelSseTransport(sink)
+        : new WorkerSseTransport(sink, authService);
     this.connect()
     // A backend-origin swap (server-config save) repoints every URL live via the apiOrigin signal. The
     // transport captured the OLD sseUrl at its `start`, so reconnect it against the new host: the first

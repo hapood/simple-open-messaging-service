@@ -1,18 +1,19 @@
-import { Component, signal, computed, inject } from '@angular/core';
-import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
+import { Component, computed, inject } from '@angular/core';
+import { TranslocoPipe } from '@jsverse/transloco';
 import { MatButtonModule } from '@angular/material/button';
+import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 import { LoginComponent } from '../../components/login/login.component';
 import { AuthBrandComponent } from '../../components/auth-brand/auth-brand.component';
 import { AuthToolbarComponent } from '../../components/auth-toolbar/auth-toolbar.component';
+import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 import { IconComponent, AppIconType } from '../../components/icon/icon.component';
 import { RouteService, RoutePage } from '../../services/route.service';
 import { ConfigService } from '../../services/config.service';
-import { AuthService } from '../../services/auth.service';
-import { apiOrigin, isTauri, tauriInvoke } from '../../services/runtime';
+import { apiOrigin, isTauri } from '../../services/runtime';
 
 @Component({
     selector: 'app-login-page',
-    imports: [LoginComponent, AuthBrandComponent, AuthToolbarComponent, TranslocoPipe, MatButtonModule, IconComponent],
+    imports: [LoginComponent, AuthBrandComponent, AuthToolbarComponent, BrandLogoComponent, TranslocoPipe, MatButtonModule, MatProgressSpinnerModule, IconComponent],
     templateUrl: './login-page.component.html',
     styleUrl: './login-page.component.scss'
 })
@@ -22,8 +23,6 @@ export class LoginPageComponent {
   protected readonly isTauri = isTauri;
   protected readonly AppIcon = AppIconType;
   private readonly config = inject(ConfigService);
-  private readonly auth = inject(AuthService);
-  private readonly transloco = inject(TranslocoService);
 
   // --- Origin banner (shows the configured backend prominently on the login page). https = green globe
   //     (cert was validated at init); http/IP = red (insecure — validation skipped, not guaranteed secure). ---
@@ -48,9 +47,6 @@ export class LoginPageComponent {
   readonly originIcon = computed(() => (this.originInsecure() ? AppIconType.REPORT : AppIconType.GLOBE));
 
 
-  /** One-shot notice shown after a server-initiated kick (e.g. "signed in elsewhere" when a new OTP login
-   *  replaced this app session). Set from AuthService.consumeLoginNotice() on construct. */
-  readonly notice = signal('');
   /** Render the password form only when password is an enabled method for this platform. Before config
    *  loads (methodsForPlatform() is empty) this is false, so nothing flashes; under APP_OTP_AND_QR mode it
    *  stays false and the constructor redirects to the platform's method. */
@@ -59,20 +55,34 @@ export class LoginPageComponent {
    *  appears iff >1 method is available, per the multi-method requirement). */
   readonly canOtp = computed(() => this.config.methodsForPlatform().includes('otp'));
   readonly canQr = computed(() => this.config.methodsForPlatform().includes('qr'));
+  /** True once `/config` has settled (loaded) WITHOUT a `loginMode` — the backend is unreachable or
+   *  returned no config. `ensureLoaded` catches the fetch failure silently (so route guards can await it),
+   *  so without this the user sees an empty page with no clue why; this surfaces a visible error + a
+   *  reconfigure action. */
+  readonly configFailed = computed(() => this.config.loaded() && this.config.loginMode() === null);
+  /** True when the login page is a legitimate destination and should paint its CONTENT: the first `/config`
+   *  fetch has settled AND (password is an enabled method, OR the backend is unreachable so the error card
+   *  must show). Until then the splash-continuous loading view is shown — and that splash window covers TWO
+   *  gaps, not one:
+   *    1. the `/config` fetch (bridges the index.html app-splash so the window never paints blank), and
+   *    2. the redirect window: when password is disabled and the backend is fine the page is the WRONG
+   *       destination — the constructor bounces to the platform's enabled method (otp/qr) — and holding the
+   *       splash until that navigation lands means the form / origin-banner / method-switcher never flash
+   *       for a frame on the way out (the `APP_OTP_AND_QR` flash). The splash is the negation of this. */
+  readonly ready = computed(() => this.config.loaded() && (this.showPassword() || this.configFailed()));
 
   constructor(private routeService: RouteService) {
-    const noticeKey = this.auth.consumeLoginNotice();
-    if (noticeKey) this.notice.set(this.transloco.translate(noticeKey));
     void this.config.ensureLoaded().then(() => this.routeAwayIfPasswordDisabled());
   }
 
-  /** Under APP_OTP_AND_QR mode password is disabled — bounce to the platform's enabled method so the user
-   *  never lands on an empty password page. No-op when password is available (the form renders normally). */
+  /** Under APP_OTP_AND_QR mode password is disabled — bounce to an enabled method so the user never lands on
+   *  an empty password page. QR is the preferred landing (self-service scan); OTP is the fallback. No-op when
+   *  password is available (the form renders normally). */
   private routeAwayIfPasswordDisabled(): void {
     const methods = this.config.methodsForPlatform();
     if (methods.includes('password')) return;
-    if (methods.includes('otp')) this.routeService.redirect(RoutePage.AUTH_OTP);
-    else if (methods.includes('qr')) this.routeService.redirect(RoutePage.AUTH_QR);
+    if (methods.includes('qr')) this.routeService.redirect(RoutePage.AUTH_QR);
+    else if (methods.includes('otp')) this.routeService.redirect(RoutePage.AUTH_OTP);
   }
 
   /** Login succeeded. The payload is the session's `mustChangePassword` flag — route to the forced
@@ -89,10 +99,17 @@ export class LoginPageComponent {
     this.routeService.redirect(RoutePage.AUTH_QR)
   }
 
-  /** Reopen the bundled bootstrap as the `init` window over this one (reconfigure). Rust creates the
-   *  init window (tauri://localhost), the bootstrap runs the same 3 init steps against the new origin,
-   *  then hands back to the SPA. Replaces the old in-SPA `/config` page (now removed). */
+  /** Open the in-SPA server-config page (reconfigure). Under the merged single-frontend shell this is a
+   *  plain router navigation — no Rust window swap (the former `open_init`/bootstrap are gone). */
   reopenServerConfig(): void {
-    tauriInvoke('open_init').catch((e) => console.error('open_init failed', e));
+    this.routeService.redirect(RoutePage.CONFIG);
+  }
+
+  /** Re-fetch `/config` (the cached load settled as a failure, or the origin was just reconfigured).
+   *  `reload()` clears the cached promise + resets the signals, so `ready()` flips false and the error
+   *  card is replaced by the spinner until the new request settles — the user gets immediate feedback that
+   *  the retry is in flight. */
+  retry(): void {
+    void this.config.reload();
   }
 }

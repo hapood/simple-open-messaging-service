@@ -3,22 +3,26 @@ import { randomInt } from 'node:crypto';
 import argon2 from 'argon2';
 import { PrismaService } from '../prisma.service.js';
 import { SessionTokenService } from './session-token.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { BruteForceService, BAN_DIM_OTP, type BanStep } from './brute-force.service.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { normalizeAccount } from '../common/account.js';
 
-/** How long an issued code is valid (10 min). */
-const CODE_TTL_MS = 10 * 60 * 1000;
-
 /** Account-dimension brute-force ceiling on the 6-digit code (the IP dimension is handled by the route's
  *  @Throttle). A sliding window of failures per account; past the threshold the account's OTP is locked,
- *  bounding distributed guessing — the code rotates every CODE_TTL_MS, so even a botnet can't exhaust the
- *  10^6 space against one account. Mirrors LocalStrategy's account-dimension intent (same victim-lockout
- *  tradeoff: an attacker can annoy-lock a real account for up to the ban, accepted as the cost of stopping
- *  distributed guessing). Storage + the sliding window live in the shared {@link BruteForceService}, so OTP
- *  locks are admin-visible and unbannable alongside password bans. */
+ *  bounding distributed guessing — codes are short-lived (admin-configured, default ~10 min) and rotate each
+ *  issue, so even a botnet can't exhaust the 10^6 space against one account. Mirrors LocalStrategy's
+ *  account-dimension intent (same victim-lockout tradeoff: an attacker can annoy-lock a real account for up
+ *  to the ban, accepted as the cost of stopping distributed guessing). Storage + the sliding window live in
+ *  the shared {@link BruteForceService}, so OTP locks are admin-visible and unbannable alongside password
+ *  bans. */
 const OTP_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }];
+
+/** Upper bound on how many active codes verifyAndLogin will scan (newest-first). Bounds the argon2 work per
+ *  attempt: codes are admin-issued + short-lived so the live set is normally tiny, but multi-issue can leave
+ *  stale unconsumed codes behind — this caps the worst case at a constant instead of O(all active codes). */
+const VERIFY_CANDIDATE_LIMIT = 8;
 
 /** A 6-digit numeric string (000000–999999) — short enough for an admin to hand to a user and for the user
  *  to type on a phone; the 10^6 space resists guessing under the endpoint's @Throttle. */
@@ -48,14 +52,18 @@ export interface IssuedLoginCode extends LoginCodeView {
 }
 
 /**
- * Admin-issued one-time login codes → the Android long-term (`app`) session login method. The admin mints a
- * 6-digit code for an account; the user enters it in the Android app to obtain a no-expiry `app` session.
+ * Admin-issued one-time login codes → an OTP login method available on every platform. The admin mints a
+ * 6-digit code for an account; the user enters it to obtain a session whose lifetime follows the platform's
+ * trust (a trusted native client — `app`/`desktop` — gets a permanent session; the browser gets a 14-day
+ * sliding one).
  *
  * Codes are argon2-hashed at rest; the plaintext is returned ONCE at issue and never stored. Single-use is
  * enforced by an `updateMany` guard at verify time (only the first concurrent verifier flips `consumedAt`).
- * Issuing a new code revokes the account's prior unconsumed code (one valid code per account at a time). On
- * verification a new trusted `app` session is issued (multiple trusted devices may coexist — each is
- * independently revocable from the device list) and the produced session id is recorded on the code for audit.
+ * Multiple codes may be active per account at once — issuing does NOT revoke prior unconsumed codes (an
+ * admin can mint a fresh one for a user who lost the first), and verification accepts ANY active (unconsumed,
+ * unrevoked) code whose hash matches. The validity window is admin-configurable (SettingsService, default
+ * 10 min). On verification the produced session id is recorded on the consumed code for audit; prior sessions
+ * are NOT revoked (multiple devices may coexist — each independently revocable from the device list).
  */
 @Injectable()
 export class OtpLoginService {
@@ -63,6 +71,7 @@ export class OtpLoginService {
     private readonly prisma: PrismaService,
     private readonly sessionTokens: SessionTokenService,
     private readonly bruteForce: BruteForceService,
+    private readonly settings: SettingsService,
   ) {}
 
   /** Record one OTP failure for the account, then throw. If THIS failure crosses the ban threshold, surface
@@ -82,26 +91,21 @@ export class OtpLoginService {
     );
   }
 
-  /** Mint a one-time code for a user. Revokes the user's prior unconsumed code first (one valid code per
-   *  account at a time). Returns the plaintext ONCE (reveal-once) + the audit view. */
+  /** Mint a one-time code for a user. Does NOT revoke prior unconsumed codes — multiple may be active at
+   *  once (an admin can re-mint for a user who lost the first); verification matches any active one. The
+   *  validity window is the admin-configured OTP TTL (SettingsService, default 10 min). Returns the plaintext
+   *  ONCE (reveal-once) + the audit view. */
   async issueCode(adminId: number, userId: number): Promise<IssuedLoginCode> {
     const code = generateCode();
     const now = new Date();
-    const expiresAt = new Date(now.getTime() + CODE_TTL_MS);
-    const created = await this.prisma.$transaction(async (tx) => {
-      // Invalidate any prior unconsumed code so only one is redeemable at a time.
-      await tx.loginCode.updateMany({
-        where: { userId, consumedAt: null, revokedAt: null },
-        data: { revokedAt: now },
-      });
-      return tx.loginCode.create({
-        data: {
-          userId,
-          codeHash: await argon2.hash(code),
-          issuedBy: adminId,
-          expiresAt,
-        },
-      });
+    const expiresAt = new Date(now.getTime() + (await this.settings.getOtpTtlMinutes()) * 60_000);
+    const created = await this.prisma.loginCode.create({
+      data: {
+        userId,
+        codeHash: await argon2.hash(code),
+        issuedBy: adminId,
+        expiresAt,
+      },
     });
     return {
       id: created.id,
@@ -117,19 +121,19 @@ export class OtpLoginService {
     };
   }
 
-  /** Verify a one-time code for an account and issue a trusted (permanent) `app` session. Enforces
-   *  single-use via an updateMany guard (only the first concurrent verifier wins). Prior app sessions are
-   *  NOT revoked — multiple trusted devices (phones) may coexist, each independently revocable from the
-   *  device list. Records the produced session id on the code for audit. Returns the plaintext session
-   *  token (the caller sets it as the httpOnly cookie) + the user's `mustChangePassword` flag so the
-   *  client can proactively route to the set-password screen (an OTP account whose admin-generated initial
-   *  password was never rotated is gated by SessionAuthGuard regardless — this flag is the clean proactive
-   *  UX, not the enforcement). Throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any
-   *  failure. */
+  /** Verify a one-time code for an account and issue a session. Accepts ANY active (unconsumed + unrevoked)
+   *  code whose argon2 hash matches the entered value — multiple codes may be active per account (multi-
+   *  issue). Enforces single-use via an updateMany guard on the matched code (only the first concurrent
+   *  verifier wins). The session's lifetime follows the platform's trust: a trusted native client
+   *  (`opts.client` 'app'/'desktop', the default 'app') gets a permanent session; the browser ('web') gets a
+   *  14-day sliding one. Prior sessions are NOT revoked — multiple devices may coexist, each independently
+   *  revocable from the device list. Records the produced session id on the consumed code for audit. Returns
+   *  the plaintext session token + the user's `mustChangePassword` flag (proactive set-password routing).
+   *  Throws BusinessException(OTP_INVALID | OTP_EXPIRED | OTP_CONSUMED) on any failure. */
   async verifyAndLogin(
     account: string,
     code: string,
-    opts: { device?: string; userAgent?: string; ip?: string },
+    opts: { device?: string; userAgent?: string; ip?: string; client?: 'app' | 'web' | 'desktop' },
   ): Promise<{ token: string; mustChangePassword: boolean }> {
     const acct = normalizeAccount(account);
     // Account-dimension brute-force lock (the IP dimension is the route @Throttle). A locked account is
@@ -156,48 +160,62 @@ export class OtpLoginService {
       throw new BusinessException(BusinessCode.OTP_INVALID, 'invalid one-time code');
     }
 
-    // Inspect the most-recent code to return a precise failure code (expired / consumed / invalid). Each is
-    // a guessable failure → counted toward the account lock.
-    const latest = await this.prisma.loginCode.findFirst({
-      where: { userId: user.id },
+    // Multi-issue: several codes may be active per account. Fetch the newest unconsumed + unrevoked
+    // candidates (capped — see VERIFY_CANDIDATE_LIMIT; expired ones kept so an expired code's value reports
+    // OTP_EXPIRED, not OTP_INVALID) and find the one whose argon2 hash matches the entered value. A code
+    // value matches at most one hash. Each failure below is a guessable failure → counted toward the account
+    // lock (failOtp throws).
+    const candidates = await this.prisma.loginCode.findMany({
+      where: { userId: user.id, consumedAt: null, revokedAt: null },
       orderBy: { issuedAt: 'desc' },
+      take: VERIFY_CANDIDATE_LIMIT,
     });
-    if (!latest || latest.revokedAt) {
-      this.failOtp(acct, BusinessCode.OTP_INVALID, 'invalid one-time code');
+    let matched: { id: number } | null = null;
+    let expiredMatch = false;
+    for (const c of candidates) {
+      if (await argon2.verify(c.codeHash, code)) {
+        if (c.expiresAt.getTime() <= Date.now()) expiredMatch = true;
+        else matched = { id: c.id };
+        break;
+      }
     }
-    if (latest.consumedAt) {
-      this.failOtp(acct, BusinessCode.OTP_CONSUMED, 'one-time code already used');
-    }
-    if (latest.expiresAt.getTime() <= Date.now()) {
-      this.failOtp(acct, BusinessCode.OTP_EXPIRED, 'one-time code expired');
-    }
-    const match = await argon2.verify(latest.codeHash, code);
-    if (!match) {
-      this.failOtp(acct, BusinessCode.OTP_INVALID, 'invalid one-time code');
+    if (!matched) {
+      // Expired-code value → precise OTP_EXPIRED; otherwise (wrong value, or reuse of a consumed code's
+      // value — consumed codes aren't in the candidate set) → OTP_INVALID. Both are counted failures.
+      this.failOtp(
+        acct,
+        expiredMatch ? BusinessCode.OTP_EXPIRED : BusinessCode.OTP_INVALID,
+        expiredMatch ? 'one-time code expired' : 'invalid one-time code',
+      );
     }
 
-    // Single-use guard: only the first concurrent verifier flips consumedAt from null. A 0 count means the
-    // race was lost → treat as consumed (the other verifier got the session).
+    // Single-use guard: only the first concurrent verifier flips consumedAt from null on the matched code.
+    // A 0 count means the race was lost → treat as consumed (the other verifier got the session).
     const now = new Date();
     const consumed = await this.prisma.loginCode.updateMany({
-      where: { id: latest.id, consumedAt: null, revokedAt: null },
+      where: { id: matched.id, consumedAt: null, revokedAt: null },
       data: { consumedAt: now, consumedIp: opts.ip ?? null, consumedDevice: opts.device ?? null },
     });
     if (consumed.count === 0) {
       throw new BusinessException(BusinessCode.OTP_CONSUMED, 'one-time code already used');
     }
 
-    const token = await this.sessionTokens.issue(user.id, 'app', {
+    // OTP is the trusted-platform method: a trusted native client ('app', the default, / 'desktop') gets a
+    // permanent session; the browser ('web') gets a 14-day sliding one. [Device attestation is deferred
+    // hardening — see the plan notes.]
+    const client = opts.client ?? 'app';
+    const token = await this.sessionTokens.issue(user.id, client, {
       device: opts.device,
       userAgent: opts.userAgent,
       ip: opts.ip,
       persistent: true,
+      trusted: client !== 'web',
     });
     // Record the produced session id on the code for audit (best-effort link; never the token value).
     const sessionId = await this.sessionTokens.idOfToken(token);
     if (sessionId !== null) {
       await this.prisma.loginCode
-        .update({ where: { id: latest.id }, data: { producedSessionId: sessionId } })
+        .update({ where: { id: matched.id }, data: { producedSessionId: sessionId } })
         .catch(() => {});
     }
     this.bruteForce.clearFailures(BAN_DIM_OTP, acct); // success clears the account's OTP failure history

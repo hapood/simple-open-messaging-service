@@ -49,6 +49,11 @@ npm-debug.log*
 # shards), Caddy state, postgres/. Bind-mounted out of the container in docker-compose.
 /data
 
+# Web bundle build artifact (scripts/package-web-bundle.mjs output). The bundle served in production is
+# image-bound — baked read-only at /app/shell-bundle by the Dockerfile, never under /app/data. This entry
+# only ignores the LOCAL dev packager output (when `npm run bundle:package` is run on the host).
+/shell-bundle
+
 # Docker launch dir (deploy/) — runtime secrets/state when testing in-tree; the templates are tracked
 /soms.conf
 /deploy/soms.conf

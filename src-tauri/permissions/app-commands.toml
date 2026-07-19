@@ -1,44 +1,44 @@
 "$schema" = "schemas/schema.json"
 
-# App-defined IPC commands registered via generate_handler! in src/lib.rs (set_api_origin,
-# get_api_origin, set_session_token, clear_session_token). WITHOUT this file the app has no ACL, so these
-# commands are callable from the bundled (app-origin) webview but NOT from a REMOTE origin — the debug
-# dev-shell loads the frontend dev server as a remote URL, and invoke returns
-# "<cmd> not allowed. Plugin not found". Defining them here gives them ACL entries so the dev-remote
-# capability (capabilities/dev-remote.json) can grant them to the dev-server origin.
+# App-defined IPC commands registered via generate_handler! in src/lib.rs. This file is the AUTHORITATIVE
+# command list for the ACL: each command needs a [[permission]] entry here, and the [default] aggregate is
+# what the `default` capability (capabilities/default.json) grants to the SPA's webview. tauri-build
+# regenerates gen/schemas from THIS file (permissions/ is a rerun-if-changed input) — NOT by parsing
+# lib.rs — so the ACL tracks this file, not generate_handler!.
+#
+# KEEP IN SYNC with generate_handler!: a command missing here is rejected at runtime
+# ("<cmd> not allowed. Command not found"), and a command removed from lib.rs but left here is a dead
+# permission. (This is why a newly-added command seemed "un-addable" — the file wasn't updated.)
 
 [[permission]]
 identifier = "allow-set-api-origin"
-description = "Enables the set_api_origin command without any pre-configured scope."
+description = "Enables the set_api_origin command (validate + persist the backend origin)."
 commands.allow = ["set_api_origin"]
 
 [[permission]]
 identifier = "allow-get-api-origin"
-description = "Enables the get_api_origin command without any pre-configured scope."
+description = "Enables get_api_origin — the configured backend origin (live ProxyState Arc)."
 commands.allow = ["get_api_origin"]
 
 [[permission]]
+identifier = "allow-is-origin-configured"
+description = "Enables is_origin_configured — authoritative 'has a backend been configured' (origin != the non-routable placeholder)."
+commands.allow = ["is_origin_configured"]
+
+[[permission]]
 identifier = "allow-set-session-token"
-description = "Enables the set_session_token command without any pre-configured scope."
+description = "Enables the set_session_token command (bearer for the media:// proxy)."
 commands.allow = ["set_session_token"]
 
 [[permission]]
 identifier = "allow-clear-session-token"
-description = "Enables the clear_session_token command without any pre-configured scope."
+description = "Enables the clear_session_token command."
 commands.allow = ["clear_session_token"]
 
-# Shell dynamic-update (two-window bootstrap). The init window (bundled bootstrap) calls these during
-# first-run/reconfigure; the main window (downloaded SPA) calls get_shell_version / init_check_update /
-# open_init. ACL entries so the capability grant is explicit (don't rely on the bundled-origin default).
 [[permission]]
 identifier = "allow-get-shell-version"
-description = "Enables get_shell_version (returns CARGO_PKG_VERSION) for the compat check + About display."
+description = "Enables get_shell_version (CARGO_PKG_VERSION) for the compat check + About display."
 commands.allow = ["get_shell_version"]
-
-[[permission]]
-identifier = "allow-init-get-state"
-description = "Enables init_get_state — origin / installed-web-version / reconfigure flag for the bootstrap."
-commands.allow = ["init_get_state"]
 
 [[permission]]
 identifier = "allow-init-check-compat"
@@ -52,57 +52,77 @@ commands.allow = ["init_validate_cert"]
 
 [[permission]]
 identifier = "allow-init-download-web"
-description = "Enables init_download_web — manifest → download → sha256 verify → atomic install."
+description = "Enables init_download_web — manifest → download → sha256 verify → atomic install (OTA bundle swap)."
 commands.allow = ["init_download_web"]
 
 [[permission]]
-identifier = "allow-init-check-update"
-description = "Enables init_check_update — on-launch probe of the server manifest vs the local web version."
-commands.allow = ["init_check_update"]
-
-[[permission]]
-identifier = "allow-handoff-to-spa"
-description = "Enables handoff_to_spa — bootstrap→main window handoff (create/reload main, await spa-ready, close init)."
-commands.allow = ["handoff_to_spa"]
-
-[[permission]]
-identifier = "allow-open-init"
-description = "Enables open_init — SPA→init window reconfigure (create init over main, await init-ready)."
-commands.allow = ["open_init"]
+identifier = "allow-init-update-status"
+description = "Enables init_update_status — on-launch / on-demand probe of the server manifest vs the installed web hash."
+commands.allow = ["init_update_status"]
 
 # Trusted-device secure storage (desktop keyring): persist/read/clear a TRUSTED desktop's permanent
 # session token in the OS credential store instead of plaintext localStorage.
 [[permission]]
 identifier = "allow-secure-set-token"
-description = "Enables the secure_set_token command (OS credential store) without any pre-configured scope."
+description = "Enables the secure_set_token command (OS credential store)."
 commands.allow = ["secure_set_token"]
 
 [[permission]]
 identifier = "allow-secure-get-token"
-description = "Enables the secure_get_token command (OS credential store) without any pre-configured scope."
+description = "Enables the secure_get_token command (OS credential store)."
 commands.allow = ["secure_get_token"]
 
 [[permission]]
 identifier = "allow-secure-clear-token"
-description = "Enables the secure_clear_token command (OS credential store) without any pre-configured scope."
+description = "Enables the secure_clear_token command (OS credential store)."
 commands.allow = ["secure_clear_token"]
 
+# Desktop SSE supervisor (Rust-owned /events stream). Desktop-only (Android owns SSE in Kotlin); these
+# commands are #[cfg(desktop)] in lib.rs, so the entries are inert on a mobile build.
+[[permission]]
+identifier = "allow-sse-start"
+description = "Enables sse_start — idempotently spawn the desktop SSE supervisor connect-loop."
+commands.allow = ["sse_start"]
+
+[[permission]]
+identifier = "allow-sse-stop"
+description = "Enables sse_stop — cancel the desktop SSE supervisor and emit closed."
+commands.allow = ["sse_stop"]
+
+[[permission]]
+identifier = "allow-sse-get-state"
+description = "Enables sse_get_state — synchronous read of the SSE connection state (renderer-reclaim seed)."
+commands.allow = ["sse_get_state"]
+
+[[permission]]
+identifier = "allow-sse-net"
+description = "Enables sse_net — forward navigator online/offline (+ user retry) to the supervisor."
+commands.allow = ["sse_net"]
+
+[[permission]]
+identifier = "allow-upload-stream-file"
+description = "Enables upload_stream_file — desktop streaming multipart upload from an on-disk file path (avoids buffering the whole file through the webview/IPC)."
+commands.allow = ["upload_stream_file"]
+
 [default]
-description = "All app-defined IPC commands: API origin get/set + session token set/clear + secure (keyring) token get/set/clear + shell dynamic-update (init_* + handoff/open)."
+description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
   "allow-set-api-origin",
   "allow-get-api-origin",
+  "allow-is-origin-configured",
   "allow-set-session-token",
   "allow-clear-session-token",
   "allow-secure-set-token",
   "allow-secure-get-token",
   "allow-secure-clear-token",
   "allow-get-shell-version",
-  "allow-init-get-state",
   "allow-init-check-compat",
   "allow-init-validate-cert",
   "allow-init-download-web",
-  "allow-init-check-update",
-  "allow-handoff-to-spa",
-  "allow-open-init",
+  "allow-init-update-status",
+  "allow-sse-start",
+  "allow-sse-stop",
+  "allow-sse-get-state",
+  "allow-sse-net",
+  "allow-upload-stream-file",
 ]

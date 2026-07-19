@@ -45,9 +45,9 @@ declare global {
      *  Tauri surface is unreachable outside the shell. */
     __TAURI__?: {
       core?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
-      /** The event surface (withGlobalTauri): emit an event the Rust side listens for. The SPA emits
-       *  `spa-ready` after its first paint so Rust can show the main window + close the init window
-       *  (the two-window handoff in src-tauri/src/lib.rs handoff_to_spa). */
+      /** The event surface (withGlobalTauri): emit an event the Rust side listens for, or subscribe to
+       *  one Rust emits. Used by `listenEvent` (the OTA `web-download-progress` + the desktop SSE
+       *  supervisor's `soms-sse-*` events) and `emitTauriEvent`. */
       event?: {
         emit: (event: string, payload?: unknown) => Promise<void> | void;
         listen?: (event: string, handler: (e: { payload: unknown }) => void) => Promise<() => void>;
@@ -100,6 +100,15 @@ declare global {
       getFcmStatus: () => string;
       /** Manual FCM availability check — force a token fetch + refresh lastCheck, bypassing the daily gate. Android-only. */
       requestFcmCheck: () => void;
+      /** Hand the server's Firebase client config (the 4 fields fetched from GET /push/firebase-config) to
+       *  native so it persists it in EncryptedSharedPreferences and (re)initializes FirebaseApp. Pass a
+       *  JSON string `{apiKey,projectId,appId,gcmSenderId}` to configure/reconfigure (a different project →
+       *  deleteToken + deleteApp + re-init + new token, routed through __SOMS_FCM_TOKEN__), or null to clear
+       *  (server has no FCM config → native tears down Firebase). Android-only. */
+      setFirebaseConfig: (config: string | null) => void;
+      /** Synchronous read of the currently-persisted Firebase client config JSON string (or null). Used to
+       *  detect whether a freshly-fetched server config differs before reconfiguring native. Android-only. */
+      getFirebaseConfig: () => string | null;
     };
     __SOMS_FCM_TOKEN__?: (token: string) => void;
     __SOMS_DEEP_LINK__?: (threadId: string) => void;
@@ -174,13 +183,28 @@ export function isAndroidNative(): boolean {
   return isTauri() && isAndroid();
 }
 
+/** The SessionToken `client` kind for the CURRENT platform: `'app'` (Android native), `'desktop'` (Tauri
+ *  desktop), or `'web'` (browser). The login flows send this so the issued session's `client` row — and
+ *  therefore its trust/lifetime — matches the real platform (see `SessionTokenService.issue`: lifetime is
+ *  driven by `trusted`, which defaults from `client`). */
+export function sessionClient(): 'app' | 'web' | 'desktop' {
+  if (isAndroidNative()) return 'app';
+  if (isTauri()) return 'desktop';
+  return 'web';
+}
+
 /** Invoke a Tauri command (only meaningful when `isTauri()`). Resolves the command's return value;
- *  rejects if not in Tauri or the command errors. Callers MUST guard with `isTauri()` and swallow
- *  errors for non-critical handoffs (e.g. token sync to the media proxy). */
+ *  rejects if not in Tauri or the command errors. Every rejection is surfaced to the webview console
+ *  (`console.error`, visible via edge://inspect / `adb logcat`) as a side-effect BEFORE the rejection
+ *  propagates — so Rust-side failures (capability rejections, command errors, network failures) always
+ *  show up even when a caller swallows the rejection. Callers MUST still guard with `isTauri()` and
+ *  swallow errors for non-critical handoffs (e.g. token sync to the media proxy). */
 export function tauriInvoke<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const invoke = typeof window !== 'undefined' ? window.__TAURI__?.core?.invoke : undefined;
   if (!invoke) return Promise.reject(new Error('not in Tauri'));
-  return invoke(cmd, args) as Promise<T>;
+  const p = invoke(cmd, args) as Promise<T>;
+  p.catch((e) => console.error(`[tauri] ${cmd} failed:`, e));
+  return p;
 }
 
 /** Post a system notification via the RAW Tauri shell bridge (`window.__TAURI__.notification.sendNotification`,
@@ -193,9 +217,7 @@ export function tauriSendNotification(options: { title: string; body?: string; i
   window.__TAURI__?.notification?.sendNotification(options);
 }
 
-/** Emit a Tauri event the Rust side listens for. The SPA emits `spa-ready` after its first paint so
- *  Rust can show the main window + close the init window (the two-window handoff). No-op when not in
- *  the shell. */
+/** Emit a Tauri event the Rust side listens for. No-op when not in the shell. */
 export function emitTauriEvent(event: string, payload?: unknown): void {
   window.__TAURI__?.event?.emit?.(event, payload ?? null);
 }
@@ -212,55 +234,6 @@ export async function listenEvent<T = unknown>(
   return listen(event, (e) => handler({ payload: e.payload as T }));
 }
 
-/** Marker so {@link installNativeFetch} swaps `globalThis.fetch` exactly once per renderer. */
-let nativeFetchInstalled = false;
-
-/**
- * Under the Tauri shell, replace the webview's `globalThis.fetch` with one that routes http(s)
- * requests through `tauri-plugin-http`'s reqwest-backed fetch — so the bundled app can reach ANY
- * user-configured backend, not just ones that echo the webview origin. The webview origin
- * (https://tauri.localhost) is cross-origin to every real backend, so the webview's own fetch() is
- * CORS-gated; unlike dev (where the ng dev-server proxy keeps every request same-origin — see
- * web/proxy.conf.json), the APK has no proxy, so a cross-origin read is blocked when the backend
- * doesn't echo that Origin. The plugin performs the request from Rust, which never crosses the
- * webview origin, so CORS does not apply — the same reason `/uploads` rides the `media://` proxy.
- *
- * HttpClient reaches the override via `withFetch()` (app.config.ts); the raw-fetch call sites (the
- * server-config probe, web-push vapid-key, settings-connection /health) reach it directly. Only
- * http/https URLs are redirected — `media:`, `data:`, `blob:`, `ipc:`, and relative/same-origin
- * paths fall through to the original webview fetch. The plugin's fetch is a drop-in: it builds a
- * `Request` and reads `arrayBuffer()` (so FormData/multipart uploads serialize with a correct
- * boundary), forwards all headers, honors `init.signal` (the probe's AbortController timeout), and
- * returns a real `Response`.
- *
- * No-op outside the Tauri shell (the browser build is bit-for-bit unchanged). Idempotent. MUST run
- * before `bootstrapApplication` so Angular's `HttpFetchBackend` binds the override before its first
- * request. The plugin is dynamically imported so the browser bundle keeps zero Tauri deps (it lands
- * in a lazy chunk the browser build never loads — `isTauri()` is false there).
- */
-export async function installNativeFetch(): Promise<void> {
-  if (nativeFetchInstalled || !isTauri()) return;
-  nativeFetchInstalled = true;
-  try {
-    const { fetch: nativeFetch } = await import('@tauri-apps/plugin-http');
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
-      if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-        // Hand the request to the native client (reqwest, outside the webview → no CORS).
-        return nativeFetch(input, init as RequestInit | undefined);
-      }
-      // media:/data:/blob:/ipc:/relative — stay in the webview.
-      return originalFetch.call(globalThis, input, init);
-    }) as typeof globalThis.fetch;
-  } catch (e) {
-    // The plugin chunk ships with the app, so a load failure is a build/wiring bug — but we must
-    // not block bootstrap over it. Leave the webview fetch in place (the app boots; cross-origin
-    // calls will then surface real errors instead of a blank screen).
-    console.error('installNativeFetch: failed to load @tauri-apps/plugin-http', e);
-  }
-}
-
 /** Canonicalize a backend origin: trim and strip trailing slash(es) so it is a safe path-concatenation
  *  base. A trailing slash turns `${apiOrigin()}/api/v1` into `${apiOrigin()}//api/v1`, which Fastify
  *  404s — and users DO type a trailing slash in the server-config form. Mirrors the Rust
@@ -268,6 +241,13 @@ export async function installNativeFetch(): Promise<void> {
  *  or what an older build persisted. */
 export function canonicalOrigin(raw: string): string {
   return raw.trim().replace(/\/+$/, '')
+}
+
+/** True when `origin` is empty or not `https://` — used to flag the http/IP insecure posture (the
+ *  cert-validation step is skipped there; not guaranteed secure). Mirrors the Rust validate_origin
+ *  posture and the former shell-config bootstrap helper. */
+export function originIsInsecure(origin: string): boolean {
+  return !origin || !/^https:\/\//i.test(origin)
 }
 
 /** The concrete persistence surface: the native `@JavascriptInterface` on Android, or a localStorage
@@ -340,6 +320,16 @@ export async function setApiOrigin(url: string): Promise<string> {
   apiOrigin.set(normalized);
   secureStore.setApiOrigin(normalized);
   return normalized;
+}
+
+/** Sync the apiOrigin signal + secureStore from an authoritative value WITHOUT re-persisting to Rust
+ *  (the origin is already in the Rust config file — this is the self-heal path the configGuard uses when
+ *  `is_origin_configured` is true but the SPA signal is empty, i.e. secureStore drift on a device that
+ *  configured via an older build). Cheaper than `setApiOrigin`, which would re-run the Rust writer. */
+export function syncApiOriginSignal(origin: string): void {
+  const c = canonicalOrigin(origin);
+  apiOrigin.set(c);
+  secureStore.setApiOrigin(c);
 }
 
 /**

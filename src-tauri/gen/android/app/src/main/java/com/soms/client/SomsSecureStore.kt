@@ -40,9 +40,13 @@ object SomsSecureStore {
     private const val KEY_POLLING_ENABLED = "polling_enabled"
     private const val KEY_FGS_ENABLED = "fgs_enabled"
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
+    private const val KEY_FIREBASE_CONFIG = "firebase_config"
 
     @Volatile
     private var cachedOrigin: String? = null
+
+    @Volatile
+    private var cachedFirebaseConfig: String? = null
 
     private fun prefs(ctx: Context) = EncryptedSharedPreferences.create(
         ctx,
@@ -74,10 +78,11 @@ object SomsSecureStore {
         prefs(ctx).edit().putBoolean(KEY_POLLING_ENABLED, enabled).apply()
     }
 
-    /** Whether the dataSync foreground service (RealtimeService) is enabled. Default FALSE — opt-in,
-     *  the more aggressive path (a persistent notification + held connection). The service starts on
+    /** Whether the dataSync foreground service (RealtimeService) is enabled. Default TRUE so background
+     *  realtime delivery works out of the box — at the cost of a persistent notification + held socket
+     *  while backgrounded (the notification is dropped while foregrounded). The service starts on
      *  background only; this pref is the gate MainActivity.onStop checks. */
-    fun getForegroundServiceEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_FGS_ENABLED, false)
+    fun getForegroundServiceEnabled(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_FGS_ENABLED, true)
 
     fun setForegroundServiceEnabled(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_FGS_ENABLED, enabled).apply()
@@ -105,6 +110,28 @@ object SomsSecureStore {
         cachedOrigin?.let { return it }
         val v = prefs(ctx).getString(KEY_API_ORIGIN, null)?.trim()?.takeIf { it.isNotEmpty() }
         cachedOrigin = v
+        return v
+    }
+
+    /** The server's Firebase client config (the 4 fields the APK needs to initialize FirebaseApp at runtime),
+     *  as the JSON string the web layer handed via `SomsFcm.setFirebaseConfig`, or null when unset. The APK
+     *  ships WITHOUT google-services.json (each operator runs their own Firebase project), so FirebaseApp is
+     *  initialized at process start (SomsApplication.onCreate → SomsFirebase.ensureInitialized) from THIS
+     *  persisted value — readable with no WebView alive, which is exactly the process-start requirement.
+     *  In-memory cached like [cachedOrigin] so the cold process-start read avoids a second encrypted-file
+     *  open on the FCM-wake critical path. */
+    fun setFirebaseConfig(ctx: Context, json: String?) {
+        cachedFirebaseConfig = json?.trim()?.takeIf { it.isNotEmpty() }
+        val ed = prefs(ctx).edit()
+        if (cachedFirebaseConfig == null) ed.remove(KEY_FIREBASE_CONFIG)
+        else ed.putString(KEY_FIREBASE_CONFIG, cachedFirebaseConfig)
+        ed.apply()
+    }
+
+    fun getFirebaseConfig(ctx: Context): String? {
+        cachedFirebaseConfig?.let { return it }
+        val v = prefs(ctx).getString(KEY_FIREBASE_CONFIG, null)
+        cachedFirebaseConfig = v
         return v
     }
 

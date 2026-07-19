@@ -5,8 +5,8 @@ import { PageNotFoundComponent } from './pages/page-not-found/page-not-found.com
 import { PageNavgatorComponent } from './pages/page-navgator/page-navgator.component';
 import { ForbiddenPageComponent } from './pages/forbidden-page/forbidden-page.component';
 import { RegisterPageComponent } from './pages/register-page/register-page.component';
-import { authGuard, guestGuard, registrationOpenGuard } from './auth.guard';
-import { isAndroidNative } from './services/runtime';
+import { authGuard, configGuard, guestGuard, registrationOpenGuard } from './auth.guard';
+import { isTauri } from './services/runtime';
 import { devRoutes } from './dev-tools';
 
 export const routes: Routes = [
@@ -18,22 +18,22 @@ export const routes: Routes = [
   { path: '', component: HomeComponent, canActivate: [authGuard] },
   { path: 'chat/:threadId', component: HomeComponent, canActivate: [authGuard] },
   { path: 'nav', component: PageNavgatorComponent, canActivate: [authGuard] },
-  { path: 'auth/login', component: LoginPageComponent, canActivate: [guestGuard] },
-  { path: 'auth/register', component: RegisterPageComponent, canActivate: [guestGuard, registrationOpenGuard] },
-  // One-time-code login — Android only (the long-term app-session method). Reached automatically from
-  // /auth/login under APP_OTP_AND_QR mode; the route is platform-gated so it 404s off the Android build.
+  { path: 'auth/login', component: LoginPageComponent, canActivate: [configGuard, guestGuard] },
+  { path: 'auth/register', component: RegisterPageComponent, canActivate: [configGuard, guestGuard, registrationOpenGuard] },
+  // One-time-code login — every platform (admin-issued code). The session's lifetime follows platform trust
+  // (native permanent, browser 14-day); no platform gate. Switchable with QR + password where enabled.
   {
     path: 'auth/otp',
     loadComponent: () => import('./pages/otp-login-page/otp-login-page.component').then((m) => m.OtpLoginPageComponent),
-    canActivate: [guestGuard],
-    canMatch: [() => isAndroidNative()],
+    canActivate: [configGuard, guestGuard],
   },
-  // QR-scan login — desktop/web only (the 2-week sliding-session method, confirmed by a logged-in phone).
+  // QR-scan login — every platform (confirmed by an already-logged-in phone). Permanent session on the
+  // trusted native clients (Android app / desktop with keyring), 14-day sliding on the browser. No
+  // platform gate: reachable on Android, desktop, and web alike.
   {
     path: 'auth/qr',
     loadComponent: () => import('./pages/qr-login-page/qr-login-page.component').then((m) => m.QrLoginPageComponent),
-    canActivate: [guestGuard],
-    canMatch: [() => !isAndroidNative()],
+    canActivate: [configGuard, guestGuard],
   },
   // Forced set-own-password — reached proactively after any login whose session is still on the admin-
   // generated initial password (the backend gates every other route until this clears it). A POST-login
@@ -45,9 +45,15 @@ export const routes: Routes = [
     loadComponent: () => import('./pages/set-password-page/set-password-page.component').then((m) => m.SetPasswordPageComponent),
     canActivate: [authGuard],
   },
-  // Backend-URL configuration in the Tauri shell now lives in the bundled `init` window (shell-config
-  // bootstrap), opened by Rust on first run + by the login page's "Configure server" button — NOT an
-  // in-SPA route. The browser build is same-origin (no configurable origin). So there is no /config route.
+  // Backend-URL configuration (Tauri shell only) — first-run setup + reconfigure. Now an in-SPA route
+  // (the former bundled shell-config bootstrap + the somsapp:// scheme are eliminated). Platform-gated:
+  // the browser build is same-origin (no configurable origin), so /config 404s there.
+  {
+    path: 'config',
+    loadComponent: () =>
+      import('./pages/server-config-page/server-config-page.component').then((m) => m.ServerConfigPageComponent),
+    canMatch: [() => isTauri()],
+  },
   { path: 'forbidden', component: ForbiddenPageComponent },
   // Dev-only routes (chatbox playground rig) come from dev-tools.ts, which the prod build swaps for
   // dev-tools.prod.ts (empty devRoutes) — so the playground chunk is not emitted in prod. See dev-tools.ts.

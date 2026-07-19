@@ -22,18 +22,22 @@ tauri = { version = "2", features = [] }
 # popup on Tauri desktop — the webview's Notification API is unreliable in desktop shells, so the
 # plugin is the documented path). Not used on Android (FCM/WorkManager cover it there).
 tauri-plugin-notification = "2"
-# Native HTTP for the WebView: the bundled app's webview origin (https://tauri.localhost) is
-# cross-origin to every user-configured backend, so the WebView's own fetch() is CORS-gated and a
-# backend that doesn't echo that Origin is unreachable — the exact opposite of dev, where the ng
-# dev-server proxy keeps every request same-origin. installNativeFetch() (web/.../runtime.ts) swaps
-# the webview's fetch for the plugin's reqwest-backed fetch under the Tauri shell, so requests leave
-# the webview and CORS never applies (the same reason /uploads rides the media:// proxy). Mobile +
-# desktop: reqwest under the hood on every target.
-tauri-plugin-http = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # rustls-tls so we don't pull openssl-sys (avoids a system libssl build dependency on the build host).
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream"] }
+# "stream" feeds the desktop SSE supervisor's `resp.bytes_stream()` + `upload_stream_file`'s file stream;
+# "gzip" lets `proxy_api` auto-decompress gzipped JSON responses; "multipart" builds the streaming
+# upload form in `upload_stream_file`.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "gzip", "stream", "multipart"] }
+# CancellationToken for the desktop SSE supervisor's teardown (cancel a blocked reqwest future on
+# sse_stop / origin swap); ReaderStream ("io") for `upload_stream_file`'s streaming file body. Already
+# resolved transitively; promoted to a direct dep.
+tokio-util = { version = "0.7", features = ["rt", "io"] }
+# The desktop SSE supervisor is the first code in this crate to use `tokio::select!` (macros),
+# `tokio::time::interval`/`sleep` (time), and `tokio::sync::Notify` (sync); `upload_stream_file` uses
+# `tokio::fs` (fs) to stream the file off disk. These features may or may not be enabled by the
+# transitive tokio tauri/reqwest pull in; declaring tokio direct guarantees them.
+tokio = { version = "1", features = ["macros", "time", "sync", "rt", "fs"] }
 # Web-bundle integrity for the dynamic-update flow: the shell downloads the main SPA from the
 # user-configured server and SHA-256-verifies it against the manifest before extracting/executing a
 # byte (transport integrity + authenticity come from TLS on https origins; IP/http are not guaranteed

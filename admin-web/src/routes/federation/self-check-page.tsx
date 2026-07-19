@@ -1,9 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import {
-  ArrowLeft,
   Clock,
   Copy,
   FileCheck2,
@@ -24,7 +22,7 @@ import {
   type SelfCheckReport,
   type SelfCheckStatus,
 } from '@/types/api'
-import { Button, buttonVariants } from '@/components/ui/button'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import {
   Select,
@@ -97,17 +95,7 @@ export function SelfCheckPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-2">
-            <Link to="/federation" className={cn(buttonVariants({ variant: 'ghost', size: 'icon' }), 'size-7')}>
-              <ArrowLeft className="size-4" />
-            </Link>
-            <h1 className="text-2xl font-semibold tracking-tight">{t('federation.selfCheck.title')}</h1>
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">{t('federation.selfCheck.desc')}</p>
-        </div>
-      </div>
+      <p className="text-sm text-muted-foreground">{t('federation.selfCheck.desc')}</p>
 
       <Card>
         <CardContent className="flex flex-wrap items-end gap-4">

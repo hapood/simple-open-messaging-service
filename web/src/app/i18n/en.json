@@ -63,6 +63,8 @@
     "switchToPassword": "Sign in with password",
     "switchToOtp": "Sign in with one-time code",
     "switchToQr": "Sign in with QR code",
+    "serverUnreachable": "Couldn't reach the server. Check the address or reconfigure.",
+    "reconfigure": "Server settings",
     "qrTitle": "Scan to sign in",
     "qrLoading": "Preparing sign-in code…",
     "qrPending": "Scan this code with your phone to sign in.",
@@ -71,8 +73,8 @@
     "qrRetry": "Refresh code",
     "trustThisDevice": "Trust this device",
     "trustThisDeviceHint": "Stay signed in on this device until you sign out.",
-    "qrUntrustedNotice": "Not a trusted device — you'll be signed out after 14 days of inactivity.",
     "qrTrustedNotice": "Trusted device — you'll stay signed in until you sign out.",
+    "webSessionNotice": "Web sessions last 14 days for security. To stay signed in, use the desktop or mobile app.",
     "notice": {
       "trustPersistFailed": "This device's secure storage couldn't be reached, so the trusted sign-in wasn't saved. You've been signed out — please sign in again (if it keeps happening, leave \"Trust this device\" unchecked).",
       "logoutClearFailed": "You've been signed out, but this device's secure storage was locked, so it may briefly appear signed in until the next check. You can revoke the session from Settings → Devices.",
@@ -492,7 +494,7 @@
     "updateFailed": "Update failed: {{error}}",
     "downloaded": "Updated — reload to finish.",
     "reloadNow": "Reload",
-    "shellUpdateRequired": "This app is too old for this server. Ask your administrator to update it (requires v{{version}}).",
+    "appIncompatible": "This app version is not compatible with this server (v{{version}}). Contact your administrator to update the app.",
     "media": "Media",
     "mediaThreshold": "Image load threshold",
     "mediaThresholdHint": "Larger images show a tap-to-load placeholder.",
@@ -500,20 +502,29 @@
     "devices": "Devices",
     "devicesHint": "Active sessions"
   },
+  "shell": {
+    "incompatibleTitle": "App not compatible",
+    "incompatibleMessage": "This version of the app is not compatible with this server (v{{version}}). Some features may not work correctly. Contact your administrator to update the app.",
+    "incompatibleDismiss": "OK"
+  },
   "serverConfig": {
     "entry": "Server settings",
     "title": "Backend server",
     "hint": "Point the app at the SOMS backend. Saved once, used on every launch.",
     "urlLabel": "Backend URL",
-    "placeholder": "http://192.168.1.10:3000",
-    "urlInvalid": "Enter a full URL, e.g. http://192.168.1.10:3000 or https://api.example.com",
-    "testBtn": "Test",
-    "testing": "Testing…",
-    "save": "Save",
-    "saving": "Saving…",
-    "cancel": "Cancel",
-    "statusOk": "Connected · v{{version}}",
-    "statusNotSoms": "Not a SOMS backend",
-    "statusFail": "Unreachable"
+    "placeholder": "https://soms.example.com:7667",
+    "urlInvalid": "Enter a full URL",
+    "connect": "Connect",
+    "connecting": "Connecting…",
+    "insecure": "Insecure — certificate check skipped.",
+    "stepCompat": "Checking server compatibility…",
+    "stepCert": "Validating certificate…",
+    "stepDone": "Ready — starting the app…",
+    "addrErr": "Can't reach this address. Check the URL and port — the server may be offline, or this isn't a SOMS backend.",
+    "compatErr": "This app version is not compatible with this server. Contact your administrator to update the app.",
+    "certErr": "Certificate check failed (self-signed / expired / unreachable). Use a valid HTTPS domain, or an IP address.",
+    "connectErr": "Connection failed. Check the address and try again.",
+    "exitHint": "Press back again to exit.",
+    "backToApp": "Back to app"
   }
 }

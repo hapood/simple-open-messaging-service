@@ -59,7 +59,7 @@ export function SessionsPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between gap-4">
-        <h1 className="text-2xl font-semibold tracking-tight">{t('sessions.title')}</h1>
+        <p className="text-sm text-muted-foreground">{t('sessions.desc', { count: total })}</p>
         <div className="flex items-center gap-2">
           <div className="relative w-60">
             <Search className="absolute left-2.5 top-2.5 size-4 text-muted-foreground" />
@@ -77,7 +77,6 @@ export function SessionsPage() {
           ) : null}
         </div>
       </div>
-      <p className="text-sm text-muted-foreground">{t('sessions.desc', { count: total })}</p>
       <div className="overflow-x-auto rounded-md border">
         <Table>
           <TableHeader>

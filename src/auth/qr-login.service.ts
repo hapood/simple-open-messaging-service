@@ -11,17 +11,20 @@ const QR_PREFIX = 'qr:';
 const QR_TTL_MS = 3 * 60 * 1000;
 
 type QrStatus = 'pending' | 'scanned' | 'confirmed';
-/** The client kind a QR-issued session is minted for: 'web' (browser) or 'desktop' (Tauri) — never 'app'
- *  (the long-term app session comes only from the OTP flow). */
-type QrClient = 'web' | 'desktop';
+/** The client kind a QR-issued session is minted for: 'app' (Android), 'desktop' (Tauri), or 'web'
+ *  (browser). QR is available on every platform; the resulting session's lifetime follows the platform's
+ *  trust (see {@link create}): the trusted native clients (`app`, `desktop`) get a permanent session, the
+ *  browser a 14-day sliding one. */
+type QrClient = 'app' | 'web' | 'desktop';
 
 interface QrState {
   status: QrStatus;
   client: QrClient;
-  /** Trust chosen at create (desktop only — a browser QR can never be trusted). A trusted desktop stores
-   *  its token in OS keyring and receives a permanent (revocation-only) session. */
+  /** Trust baked in at create: `app` (Android) and `desktop` are trusted platforms (token kept in OS secure
+   *  storage) → permanent session; `web` is never trusted → 14-day sliding. On desktop trust is gated on the
+   *  boot keyring probe (a desktop without a working keyring can't safely hold a permanent token). */
   trusted: boolean;
-  /** Set at confirm — the scanner's account becomes the desktop session's owner. */
+  /** Set at confirm — the scanner's account becomes the QR-displaying client's session owner. */
   userId?: number;
   /** The scanner's userId at scan (audit). */
   scannedBy?: number;
@@ -41,15 +44,15 @@ export interface QrPollResult {
 }
 
 /**
- * QR-scan login → a `web`/`desktop` session for PC/Mac/browser, confirmed by an already-logged-in phone
- * (which itself logged in via the OTP flow). A TRUSTED desktop (opt-in — it stores the token in OS
- * keyring) gets a permanent, revocation-only session; everything else (browser, or an untrusted desktop)
- * gets a 14-day sliding session. Ephemeral by design: the pending state lives in the in-process KV
- * (seconds-to-minutes lifetime), NOT a Prisma table — the issued session is the durable artifact (its
- * SessionToken row records device/ip/client/trusted for audit).
+ * QR-scan login → a session confirmed by an already-logged-in phone. Available on every platform; the
+ * session's lifetime follows the platform's trust: the trusted native clients (`app`/Android and `desktop`,
+ * which keep the token in OS secure storage) get a permanent, revocation-only session; the browser gets a
+ * 14-day sliding session (a browser can't safely hold a permanent bearer token). Ephemeral by design: the
+ * pending state lives in the in-process KV (seconds-to-minutes lifetime), NOT a Prisma table — the issued
+ * session is the durable artifact (its SessionToken row records device/ip/client/trusted for audit).
  *
- * Two-step (WeChat/DingTalk-style): scan → 'scanned' (desktop shows "confirm on phone") → confirm →
- * 'confirmed' (the desktop's next poll claims + issues). Issue-once is enforced by an atomic `del` claim:
+ * Two-step (WeChat/DingTalk-style): scan → 'scanned' (QR-displaying client shows "confirm on phone") →
+ * confirm → 'confirmed' (its next poll claims + issues). Issue-once is enforced by an atomic `del` claim:
  * `del` returns 1 iff THIS caller removed the key, so only the first confirming poll mints a session.
  *
  * The `qrToken` is a 256-bit secret carried in the POST body — never in the URL (consistent with the
@@ -80,25 +83,26 @@ export class QrLoginService {
     await this.kv.setex(this.key(token), this.remaining(state), JSON.stringify(state));
   }
 
-  /** Desktop/web begins a QR login: mint a 256-bit token + pending state. The desktop renders the token
-   *  as a QR and polls for its status. `trusted` is honored only for `desktop` (a browser can't be
-   *  trusted) — a trusted desktop receives a permanent session whose token it keeps in OS keyring. */
+  /** A client begins a QR login: mint a 256-bit token + pending state. The client renders the token as a QR
+   *  and polls for its status. Trust follows the platform: `app` (Android) is always trusted; `desktop` is
+   *  trusted when its OS keyring is available (the boot probe — without it a permanent token can't be
+   *  stored, so it falls back to the 14-day sliding session); `web` is never trusted. */
   async create(client: QrClient, trusted = false): Promise<QrCreateResult> {
     const qrToken = randomBytes(32).toString('hex');
     const expiresAt = Date.now() + QR_TTL_MS;
     await this.write(qrToken, {
       status: 'pending',
       client,
-      trusted: client === 'desktop' && trusted,
+      trusted: client === 'app' || (client === 'desktop' && trusted),
       expiresAt,
     });
     return { qrToken, expiresAt };
   }
 
-  /** Desktop/web polls its QR token. Returns the status; when 'confirmed' it CLAIMS the token (atomic del)
-   *  and issues a session for the scanner's account (permanent if the desktop opted into trust, else a
-   *  14-day sliding session). The claim guarantees the session is issued exactly once even under
-   *  concurrent polls. */
+  /** The QR-displaying client polls its token. Returns the status; when 'confirmed' it CLAIMS the token
+   *  (atomic del) and issues a session for the scanner's account — permanent for a trusted native client
+   *  (`app`/`desktop`), else a 14-day sliding session. The claim guarantees the session is issued exactly
+   *  once even under concurrent polls. */
   async poll(
     qrToken: string,
     opts: { device?: string; userAgent?: string; ip?: string },
