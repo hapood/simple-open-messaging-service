@@ -44,6 +44,11 @@ export const httpTraceInterceptor: HttpInterceptorFn = (req, next) => {
   // ConfigService.ensureLoaded), which unsubscribes immediately after the first value — before the source's
   // `complete` propagates — so a `complete`-only flag would false-positive "cancelled" on every request that
   // actually loaded fine. Dev-only below.
+  // Correlation id stamped by the outer correlationIdInterceptor (or a caller). Appended to every
+  // [http] line so a console failure matches the server's pino req.id for the same request. Absent
+  // (e.g. unit tests without the outer interceptor, or a request that bypassed it) → omitted gracefully.
+  const rid = req.headers.get('x-request-id');
+  const ridSuffix = rid ? ` req=${rid}` : '';
   let settled = false;
   return next(req).pipe(
     tap({ next: () => { settled = true; }, complete: () => { settled = true; } }),
@@ -54,22 +59,22 @@ export const httpTraceInterceptor: HttpInterceptorFn = (req, next) => {
         // null/ProgressEvent for a status-0 network failure; the parsed body for an HTTP status failure).
         const cause = err.error;
         if (cause?.name === 'AbortError') {
-          if (ngDevMode) console.warn(`[http] aborted ${req.method} ${req.url}`);
+          if (ngDevMode) console.warn(`[http] aborted ${req.method} ${req.url}${ridSuffix}`);
         } else if (err.status === 0) {
-          console.error(`[http] network ${req.method} ${req.url}`, err.message || '');
+          console.error(`[http] network ${req.method} ${req.url}${ridSuffix}`, err.message || '');
         } else if (err.status >= 500) {
-          console.error(`[http] ${err.status} ${req.method} ${req.url}`, ...(ngDevMode ? [cause] : []));
+          console.error(`[http] ${err.status} ${req.method} ${req.url}${ridSuffix}`, ...(ngDevMode ? [cause] : []));
         } else {
-          console.warn(`[http] ${err.status} ${req.method} ${req.url}`);
+          console.warn(`[http] ${err.status} ${req.method} ${req.url}${ridSuffix}`);
         }
       } else if (ngDevMode) {
-        console.error(`[http] error ${req.method} ${req.url}`, err);
+        console.error(`[http] error ${req.method} ${req.url}${ridSuffix}`, err);
       }
       throw err;
     }),
     finalize(() => {
       if (ngDevMode && !settled) {
-        console.warn(`[http] cancelled ${req.method} ${req.url}`);
+        console.warn(`[http] cancelled ${req.method} ${req.url}${ridSuffix}`);
       }
     }),
   );

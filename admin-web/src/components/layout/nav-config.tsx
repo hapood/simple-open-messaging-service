@@ -1,6 +1,7 @@
 import {
   Bell,
   CircleUser,
+  FileWarning,
   Gauge,
   Globe,
   HardDrive,
@@ -31,6 +32,7 @@ export type NavKey =
   | 'settings'
   | 'security'
   | 'quotas'
+  | 'diagnosticReports'
 
 /** Full i18n key for a group header (under nav.group.*). */
 export type NavGroupKey =
@@ -91,6 +93,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { to: '/push', key: 'push', icon: Bell },
       { to: '/media', key: 'media', icon: HardDrive },
       { to: '/logs', key: 'logs', icon: ScrollText },
+      { to: '/diagnostic-reports', key: 'diagnosticReports', icon: FileWarning },
       { to: '/settings', key: 'settings', icon: Settings },
     ],
   },

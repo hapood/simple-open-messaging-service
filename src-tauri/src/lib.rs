@@ -21,6 +21,7 @@
 
 use std::borrow::Cow;
 use std::fs;
+use std::io::Write;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -337,6 +338,7 @@ pub fn run() {
                     sse_get_state,
                     sse_net,
                     upload_stream_file,
+                    report_diagnostics,
                 ]
             }
             #[cfg(not(desktop))]
@@ -352,6 +354,7 @@ pub fn run() {
                     init_validate_cert,
                     init_download_web,
                     init_update_status,
+                    report_diagnostics,
                 ]
             }
         })
@@ -385,6 +388,14 @@ pub fn run() {
                 .inner_size(1200.0, 800.0)
                 .min_inner_size(900.0, 600.0)
                 .build()?;
+
+            // Offline diagnostics delivery: re-POST any report bundles captured during a prior network
+            // outage (kept under app_cache_dir/pending-*). Fire-and-forget — never blocks app launch.
+            let retry_app = app.handle().clone();
+            let retry_state = proxy_state.clone();
+            tauri::async_runtime::spawn(async move {
+                retry_pending_diagnostics(retry_app, retry_state).await;
+            });
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -415,6 +426,11 @@ async fn proxy_media(
     }
     if let Some(range) = request.headers().get("range") {
         req = req.header("range", range.clone());
+    }
+    // Forward the correlation id when present so any media load routed through the HttpClient chain
+    // (and thus stamped by correlationIdInterceptor) correlates with pino req.id.
+    if let Some(rid) = request.headers().get("x-request-id") {
+        req = req.header("x-request-id", rid.clone());
     }
     match req.send().await {
         Ok(upstream) => {
@@ -586,6 +602,235 @@ async fn upload_stream_file(
     }
     // Return the raw envelope ({code,message,data}); the frontend reads it as StandardResponse<T>.
     serde_json::from_str::<serde_json::Value>(&text).map_err(|e| format!("upload parse: {e}"))
+}
+
+// --- diagnostics reporting (field-support log bundle upload) ------------------------------
+//
+// Builds a gzip tar of the client's Rust logs (app_log_dir/*) + the webview console capture (passed
+// from JS) + a version manifest, and POSTs it DIRECTLY to ${origin}/api/v1/diagnostics/report. Rust owns
+// the bundle build + the upload (NOT the webview): the log files only Rust can read, multi-MB bytes are
+// awkward over Tauri IPC, and this mirrors the SSE supervisor's direct-reqwest-to-origin pattern + the
+// "Rust owns all backend traffic under Tauri" rule. Offline resilience: on any failure the tar (+ a
+// manifest sidecar) is kept under app_cache_dir()/pending-* and retried fire-and-forget on the next app
+// launch (setup()), so a report captured during a network outage is never lost. The bundle's sha256 is
+// both the filename and the POST's X-Request-Id (correlates the upload ↔ the bundle ↔ the server's pino
+// req.id) — no uuid crate needed.
+
+/// Prefix for cached, not-yet-uploaded diagnostic bundles + their manifest sidecars under app_cache_dir():
+/// `pending-<sha256>.tar.gz` + `pending-<sha256>.manifest.json`.
+const DIAG_PENDING_PREFIX: &str = "pending-";
+/// Drop cached pending bundles older than this (the client-side cache cap — repeated offline failures
+/// must not fill app_cache_dir). Generous: a transient outage clears within minutes.
+const DIAG_PENDING_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+/// Cap on the webview console capture included in a bundle. The log files are already bounded by the
+/// ~6 MiB rotation; this bounds the console slice too so the total stays under the backend's 16 MiB
+/// per-bundle cap (logs 6 + console 4 + manifest ≈ 10 MiB). When truncated, the MOST RECENT entries
+/// (the tail) are kept — the relevant context for "what just broke".
+const CONSOLE_DUMP_MAX: usize = 4 * 1024 * 1024;
+
+/// sha256(bytes) → lowercase hex (the bundle filename + the POST's X-Request-Id). The input is hashed
+/// inside; nothing here is secret (a bundle digest is not sensitive).
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for b in digest.iter() {
+        out.push_str(&format!("{:02x}", b));
+    }
+    out
+}
+
+/// Append one `name` → `bytes` entry to the in-memory tar (mode 0644; size set explicitly so the entry
+/// is well-formed regardless of the reader's reported length).
+fn tar_add_file(
+    builder: &mut tar::Builder<&mut Vec<u8>>,
+    name: &str,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let mut header = tar::Header::new_gnu();
+    header.set_size(bytes.len() as u64);
+    header.set_mode(0o644);
+    header.set_cksum();
+    builder.append_data(&mut header, name, &mut std::io::Cursor::new(bytes))
+}
+
+/// Build the diagnostic bundle (gzip tar): `manifest.json` + `rust/<each app_log_dir file>` +
+/// `webview-console.log`. Returns the compressed bytes.
+fn build_diagnostics_bundle(
+    log_dir: &Path,
+    console_dump: &str,
+    manifest: &serde_json::Value,
+) -> std::io::Result<Vec<u8>> {
+    let manifest_json = serde_json::to_vec_pretty(manifest).unwrap_or_else(|_| b"{}".to_vec());
+    let mut tar_buf: Vec<u8> = Vec::new();
+    {
+        let mut builder = tar::Builder::new(&mut tar_buf);
+        tar_add_file(&mut builder, "manifest.json", &manifest_json)?;
+        tar_add_file(&mut builder, "webview-console.log", console_dump.as_bytes())?;
+        // Every regular file in the log dir (the tauri-plugin-log SOMS.log + its rotations). Robust to the
+        // rotation naming; the dir is dedicated to this app's logs, so including all of it is safe.
+        if let Ok(entries) = fs::read_dir(log_dir) {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                    if let Ok(bytes) = fs::read(entry.path()) {
+                        let name = entry.file_name().to_string_lossy().into_owned();
+                        tar_add_file(&mut builder, &format!("rust/{name}"), &bytes)?;
+                    }
+                }
+            }
+        }
+        builder.finish()?;
+    }
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(&tar_buf)?;
+    encoder.finish()
+}
+
+/// POST one diagnostic bundle to the backend. On success (HTTP 2xx + envelope code 0) returns the new
+/// report id; otherwise an Err string (the caller keeps the cached bundle for retry). `request_id` is
+/// both the X-Request-Id (→ pino req.id) and the on-disk bundle's sha256.
+async fn post_diagnostics_bundle(
+    proxy: &ProxyState,
+    bundle: &[u8],
+    manifest: &serde_json::Value,
+    request_id: &str,
+) -> Result<i64, String> {
+    let origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let url = format!("{}/api/v1/diagnostics/report", origin.trim_end_matches('/'));
+    let client = proxy.api_client(&origin);
+    let part = reqwest::multipart::Part::bytes(bundle.to_vec())
+        .file_name("bundle.tar.gz")
+        .mime_str("application/gzip")
+        .map_err(|e| format!("mime: {e}"))?;
+    let form = reqwest::multipart::Form::new()
+        .text("manifest", manifest.to_string())
+        .part("bundle", part);
+    let mut req = client
+        .post(&url)
+        .multipart(form)
+        .header("x-request-id", request_id);
+    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+        req = req.header("authorization", format!("Bearer {}", t));
+    }
+    let resp = req.send().await.map_err(|e| format!("diagnostics send: {e}"))?;
+    let status = resp.status();
+    let text = resp.text().await.map_err(|e| format!("diagnostics read: {e}"))?;
+    if !status.is_success() {
+        return Err(format!("diagnostics HTTP {}: {}", status.as_u16(), text));
+    }
+    let envelope: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("diagnostics parse: {e}"))?;
+    if envelope.get("code").and_then(|v| v.as_i64()) != Some(0) {
+        return Err(format!("diagnostics rejected by backend: {envelope}"));
+    }
+    envelope
+        .pointer("/data/id")
+        .and_then(|v| v.as_i64())
+        .ok_or_else(|| "diagnostics response missing data.id".to_string())
+}
+
+/// On-launch retry: re-POST every cached pending bundle (captured during a prior network outage) and
+/// drop the ones that succeed. Best-effort + fire-and-forget (spawned from setup). First sweeps pending
+/// bundles older than the cache cap so repeated offline failures can't fill app_cache_dir.
+async fn retry_pending_diagnostics(app: tauri::AppHandle, proxy: ProxyState) {
+    let cache_dir = match app.path().app_cache_dir() {
+        Ok(d) => d,
+        Err(_) => return,
+    };
+    let cutoff = SystemTime::now() - DIAG_PENDING_TTL;
+    let mut pendings: Vec<(PathBuf, PathBuf, String, serde_json::Value, Vec<u8>)> = Vec::new();
+    if let Ok(entries) = fs::read_dir(&cache_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.starts_with(DIAG_PENDING_PREFIX) || !name.ends_with(".tar.gz") {
+                continue;
+            }
+            // Cache cap: drop tars (and their manifest sidecars) older than the TTL.
+            if entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .map(|m| m < cutoff)
+                .unwrap_or(false)
+            {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            let digest = &name[DIAG_PENDING_PREFIX.len()..name.len() - ".tar.gz".len()];
+            let manifest_path = cache_dir.join(format!("{DIAG_PENDING_PREFIX}{digest}.manifest.json"));
+            let manifest = fs::read_to_string(&manifest_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            if let Ok(bundle) = fs::read(&path) {
+                pendings.push((path, manifest_path, digest.to_string(), manifest, bundle));
+            }
+        }
+    }
+    for (tar_path, manifest_path, digest, manifest, bundle) in pendings {
+        match post_diagnostics_bundle(&proxy, &bundle, &manifest, &digest).await {
+            Ok(_) => {
+                let _ = fs::remove_file(&tar_path);
+                let _ = fs::remove_file(&manifest_path);
+                log::info!("diagnostics retry: delivered cached bundle {digest}");
+            }
+            Err(e) => log::warn!("diagnostics retry: bundle {digest} still failing: {e}"),
+        }
+    }
+}
+
+/// Build + upload one diagnostic bundle (the Settings "Report" action). On success the cached tar +
+/// manifest sidecar are deleted and the new report id is returned; on any failure they are KEPT for the
+/// next-launch retry and an Err is returned (the frontend shows "saved locally, will retry"). NOT
+/// desktop-gated: works on Android too (the log files + reqwest + flate2/tar are all cross-platform).
+#[tauri::command]
+async fn report_diagnostics(
+    app: tauri::AppHandle,
+    proxy: tauri::State<'_, ProxyState>,
+    console_dump: String,
+    manifest: serde_json::Value,
+) -> Result<i64, String> {
+    let log_dir = app.path().app_log_dir().map_err(|e| format!("log dir: {e}"))?;
+    let cache_dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("cache dir: {e}"))?;
+    fs::create_dir_all(&cache_dir).map_err(|e| format!("cache mkdir: {e}"))?;
+    // Bound the console slice so the total stays under the backend cap; keep the tail (newest). Advance
+    // to a UTF-8 char boundary so the byte slice never splits a multi-byte char (which would panic).
+    let console: String = if console_dump.len() > CONSOLE_DUMP_MAX {
+        log::warn!(
+            "diagnostics: console dump {} bytes exceeds cap; truncating to the last {} bytes",
+            console_dump.len(),
+            CONSOLE_DUMP_MAX
+        );
+        let mut start = console_dump.len() - CONSOLE_DUMP_MAX;
+        while !console_dump.is_char_boundary(start) {
+            start += 1;
+        }
+        console_dump[start..].to_string()
+    } else {
+        console_dump
+    };
+    let bundle = build_diagnostics_bundle(&log_dir, &console, &manifest)
+        .map_err(|e| format!("build bundle: {e}"))?;
+    let digest = sha256_hex(&bundle);
+    let tar_path = cache_dir.join(format!("{DIAG_PENDING_PREFIX}{digest}.tar.gz"));
+    let manifest_path = cache_dir.join(format!("{DIAG_PENDING_PREFIX}{digest}.manifest.json"));
+    // Persist the bundle + manifest sidecar BEFORE the upload so an upload-time crash leaves a retryable
+    // pending pair (the next launch's retry_pending_diagnostics re-POSTs them).
+    fs::write(&tar_path, &bundle).map_err(|e| format!("write bundle: {e}"))?;
+    fs::write(&manifest_path, manifest.to_string()).map_err(|e| format!("write manifest: {e}"))?;
+    let id = match post_diagnostics_bundle(&proxy, &bundle, &manifest, &digest).await {
+        Ok(id) => id,
+        Err(e) => {
+            warn!("diagnostics upload failed (cached for retry): {e}");
+            return Err(e);
+        }
+    };
+    // Delivered — drop the cached pair.
+    let _ = fs::remove_file(&tar_path);
+    let _ = fs::remove_file(&manifest_path);
+    Ok(id)
 }
 
 // --- frontend-facing commands (origin + token) --------------------------------------------

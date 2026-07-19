@@ -7,6 +7,7 @@ import { provideServiceWorker } from '@angular/service-worker';
 import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
 import { AuthInterceptor } from './auth.interceptor';
 import { httpTraceInterceptor } from './http-trace.interceptor';
+import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { GlobalErrorHandler } from './global-error.handler';
 import { AuthService } from './services/auth.service';
 import { routes } from './app.routes';
@@ -71,7 +72,7 @@ export const appConfig: ApplicationConfig = {
       // network → error, 4xx → warn; the cancel/abort trace stays dev-only inside the file). Runs INNER
       // to AuthInterceptor, so it logs first then rethrows and the 401 re-login side-effect still fires.
       // See http-trace.interceptor.ts.
-      withInterceptors([httpTraceInterceptor]),
+      withInterceptors([correlationIdInterceptor, httpTraceInterceptor]),
     ),
     provideAnimationsAsync(),
     provideTransloco({

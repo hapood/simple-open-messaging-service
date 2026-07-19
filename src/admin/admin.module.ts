@@ -34,6 +34,8 @@ import { GatewayModule } from '../gateway/gateway.module.js';
 import { PushModule } from '../push/push.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { KvStoreModule } from '../kv-store/kv-store.module.js';
+import { DiagnosticsModule } from '../diagnostics/diagnostics.module.js';
+import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.controller.js';
 
 @Module({
   imports: [
@@ -49,8 +51,10 @@ import { KvStoreModule } from '../kv-store/kv-store.module.js';
     UploadModule,
     // KvStoreService backs ThrottleGuard's counters (admin/login failure rate-limiting).
     KvStoreModule,
+    // DiagnosticsService + DiagnosticsGcService back AdminDiagnosticsController (list/download/gc).
+    DiagnosticsModule,
   ],
-  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController, TwoFactorController, WebAuthnController],
+  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController, TwoFactorController, WebAuthnController, AdminDiagnosticsController],
   providers: [
     AdminAuthService,
     TwoFactorService,

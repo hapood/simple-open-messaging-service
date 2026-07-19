@@ -64,9 +64,9 @@ describe('matchNav', () => {
 })
 
 describe('NAV_GROUPS shape', () => {
-  it('has exactly 12 primary items + 1 footer item', () => {
+  it('has exactly 13 primary items + 1 footer item', () => {
     const primary = NAV_GROUPS.filter((g) => !g.footer).flatMap((g) => g.items)
-    expect(primary).toHaveLength(12)
+    expect(primary).toHaveLength(13)
     const footer = NAV_GROUPS.filter((g) => g.footer).flatMap((g) => g.items)
     expect(footer.map((i) => i.key)).toEqual(['security'])
   })

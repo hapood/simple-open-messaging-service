@@ -53,6 +53,7 @@
     "settings": "设置",
     "security": "我的账户",
     "quotas": "每日配额",
+    "diagnosticReports": "诊断上报",
     "logout": "登出",
     "group": {
       "overview": "概览",
@@ -545,6 +546,18 @@
     "outcomeFailed": "失败",
     "empty": "无匹配操作",
     "col": { "action": "操作", "target": "目标", "actor": "操作者", "ip": "IP", "at": "时间" }
+  },
+  "diagnosticReports": {
+    "desc": "客户端上报的诊断日志包（Rust 日志 + 网页控制台 + 版本信息），供现场支持使用。",
+    "searchPlaceholder": "按上报人姓名或账号搜索",
+    "empty": "暂无诊断上报",
+    "download": "下载日志包",
+    "downloadFailed": "下载失败",
+    "delete": "删除",
+    "deleteConfirm": "删除这条诊断上报？",
+    "deleteConfirmDesc": "将删除该上报记录及其日志包文件，此操作不可撤销。",
+    "deleted": "已删除",
+    "col": { "reporter": "上报人", "platform": "平台", "versions": "版本", "size": "大小", "status": "状态", "at": "时间" }
   },
   "media": {
     "title": "媒体与存储",

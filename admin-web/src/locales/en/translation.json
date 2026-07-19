@@ -53,6 +53,7 @@
     "settings": "Settings",
     "security": "My Account",
     "quotas": "Daily Quotas",
+    "diagnosticReports": "Diagnostic Reports",
     "logout": "Log Out",
     "group": {
       "overview": "Overview",
@@ -545,6 +546,18 @@
     "outcomeFailed": "Failed",
     "empty": "No matching actions",
     "col": { "action": "Action", "target": "Target", "actor": "Actor", "ip": "IP", "at": "When" }
+  },
+  "diagnosticReports": {
+    "desc": "Client-uploaded diagnostic log bundles (Rust logs + web console + version info) for field support.",
+    "searchPlaceholder": "Search by reporter name or account",
+    "empty": "No diagnostic reports",
+    "download": "Download bundle",
+    "downloadFailed": "Download failed",
+    "delete": "Delete",
+    "deleteConfirm": "Delete this diagnostic report?",
+    "deleteConfirmDesc": "The report row and its bundle file will be removed. This cannot be undone.",
+    "deleted": "Report deleted",
+    "col": { "reporter": "Reporter", "platform": "Platform", "versions": "Versions", "size": "Size", "status": "Status", "at": "When" }
   },
   "media": {
     "title": "Media & Storage",

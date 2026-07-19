@@ -127,6 +127,13 @@ export const router = createBrowserRouter([
             lazy: () => import('@/routes/quotas/quotas-page').then((m) => ({ Component: m.QuotasPage })),
           },
           {
+            path: '/diagnostic-reports',
+            lazy: () =>
+              import('@/routes/diagnostic-reports/diagnostic-reports-page').then((m) => ({
+                Component: m.DiagnosticReportsPage,
+              })),
+          },
+          {
             path: '/settings',
             lazy: () => import('@/routes/settings/settings-page').then((m) => ({ Component: m.SettingsPage })),
           },

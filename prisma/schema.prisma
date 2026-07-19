@@ -55,6 +55,7 @@ model User {
   userBlocks         UserBlock[]         @relation("UserBlocks") // users THIS user has blocked
   userBlockedBy      UserBlock[]         @relation("UserBlockedBy") // users who have blocked THIS user
   admins             Admin[] // linked admin profile (absent for normal users; an admin's identity IS this User row — name + password live here, the Admin row holds only admin-specific state)
+  diagnosticsReports DiagnosticsReport[] // client-uploaded diagnostic log bundles (reporter = this user)
 
   @@unique([account, domain])
 }
@@ -449,10 +450,7 @@ model PendingMedia {
   digest           String?     @db.VarChar(64) // set once bytes land → links staging to MediaAsset/file
   clientMessageId  String?     @unique @db.VarChar(36) // LOCAL idempotency (optimistic-send key)
   originSeq        Int? // FEDERATED provenance + pull dedup (NULL for local)
-  originDomain     String?     @db.VarChar(63)
-  originServerTime DateTime?
-  status           String      @default("pending") @db.VarChar(12) // pending | failed
-  failReason       String?     @db.VarChar(255)
+  status           String      @default("pending") @db.VarChar(12) // pending (a 'failed' state was never wired; originDomain/originServerTime/failReason dropped as unused)
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
@@ -708,4 +706,30 @@ model SystemSetting {
   key       String   @id @db.VarChar(63)
   value     String   @db.Text
   updatedAt DateTime @updatedAt
+}
+
+/// A diagnostic log bundle uploaded by a client (Tauri desktop/Android) for field support. The bundle is
+/// a gzip tar of the client's Rust logs + a webview console capture + a version manifest; `bundlePath`
+/// is the filename under data/diagnostics/ (sha256-addressed, atomic tmp+rename publish — no refcount:
+/// identical bundles are astronomically unlikely, and DiagnosticsGcService unlinks only when no other
+/// row references the same file). `manifest` carries the client's app/shell/server versions + platform
+/// snapshot so the admin list shows context without downloading. Reporter is pinned at upload
+/// (req.user.userId) — consumers can never list another user's reports (no consumer list endpoint).
+/// Soft-deleted via isDeleted; the bundle FILE is hard-unlinked by DiagnosticsGcService (uploaded blobs
+/// are not subject to the no-hard-delete rule that governs DB rows).
+model DiagnosticsReport {
+  id             Int      @id @default(autoincrement())
+  reporterUserId Int
+  reporter       User     @relation(fields: [reporterUserId], references: [id])
+  bundlePath     String   @db.VarChar(255) // filename under data/diagnostics/ (e.g. <sha256>.tar.gz)
+  bundleBytes    Int
+  manifest       Json // {app, web, shell, server, platform, origin, ...} — client-supplied, best-effort
+  status         String   @default("new") @db.VarChar(16) // new | viewed | archived
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  isDeleted      Boolean  @default(false)
+
+  @@index([reporterUserId])
+  @@index([createdAt])
+  @@index([status])
 }

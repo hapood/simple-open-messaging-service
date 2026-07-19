@@ -2,6 +2,7 @@ import { bootstrapApplication } from '@angular/platform-browser';
 import { appConfig } from './app/app.config';
 import { AppComponent } from './app/app.component';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
+import { installConsoleBuffer } from './app/services/log-buffer';
 import { applySafeInsets, isTauri, listenEvent } from './app/services/runtime';
 
 /**
@@ -73,7 +74,10 @@ async function attachRustConsole(): Promise<void> {
   });
 }
 
-// Wire the global error net FIRST, so it captures anything the setup below throws or rejects.
+// Capture the webview console into a ring buffer FIRST (before anything logs), so the diagnostic bundle
+// (Settings → Report → Rust report_diagnostics) carries a JS-side slice. Idempotent + no-op if unavailable.
+installConsoleBuffer();
+// Wire the global error net so it captures anything the setup below throws or rejects.
 installGlobalErrorReporting();
 // Then mirror Rust-side logs into this same console (SSE/proxy/panic failures) under Tauri.
 attachRustConsole();

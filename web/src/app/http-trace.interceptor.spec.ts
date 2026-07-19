@@ -59,6 +59,15 @@ describe('httpTraceInterceptor (HTTP failure visibility)', () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it('appends the X-Request-Id to the failure log when the request carries one', () => {
+    // correlationIdInterceptor runs outer to this one and stamps the header; here we set it directly
+    // to test the trace side in isolation.
+    const idReq = new HttpRequest('GET', '/api/v1/messages', {}).clone({ setHeaders: { 'X-Request-Id': 'abc-123' } });
+    const err = new HttpErrorResponse({ status: 500, url: '/api/v1/messages' });
+    httpTraceInterceptor(idReq, nextReturning(throwError(() => err))).subscribe({ error: () => {} });
+    expect(errorSpy.calls.mostRecent().args[0]).toContain('req=abc-123');
+  });
+
   // --- dev-only trace (active under Karma's dev build; DCE'd in prod AOT) ---
 
   it('(dev) logs an AbortError as [http] aborted', () => {

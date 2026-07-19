@@ -15,6 +15,7 @@ import { SettingsMediaComponent } from './settings-media.component';
 import { SettingsPushComponent } from './settings-push.component';
 import { SettingsNotificationsComponent } from './settings-notifications.component';
 import { SettingsConnectionComponent } from './settings-connection.component';
+import { SettingsDiagnosticsComponent } from './settings-diagnostics.component';
 import { SettingsAboutComponent } from './settings-about.component';
 import { SettingsDevicesComponent } from './settings-devices.component';
 
@@ -28,6 +29,7 @@ export type SettingsCategoryId =
   | 'connection'
   | 'push'
   | 'notifications'
+  | 'diagnostics'
   | 'about';
 
 /**
@@ -183,13 +185,28 @@ export function buildSettingsCategories(d: SettingsCategoryDeps): readonly Setti
       order: 3,
     },
     {
+      // Diagnostics: upload a field-support log bundle (Rust logs + webview console + version manifest)
+      // to the backend for the admin console to list/download. Tauri-only — browser users have devtools;
+      // the Rust report_diagnostics command builds + uploads the bundle (offline → cached for retry).
+      id: 'diagnostics',
+      icon: AppIconType.INFO,
+      titleKey: 'settings.diagnostics',
+      summary: (): string => {
+        void d.language.lang();
+        return d.transloco.translate('settings.diagnosticsHint');
+      },
+      component: SettingsDiagnosticsComponent,
+      visible: () => isTauri(),
+      order: 4,
+    },
+    {
       id: 'about',
       icon: AppIconType.INFO,
       titleKey: 'settings.about',
       summary: () => appVersion,
       component: SettingsAboutComponent,
       visible: () => true,
-      order: 4,
+      order: 5,
     },
   ];
 }

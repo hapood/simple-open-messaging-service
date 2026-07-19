@@ -104,6 +104,11 @@ identifier = "allow-upload-stream-file"
 description = "Enables upload_stream_file — desktop streaming multipart upload from an on-disk file path (avoids buffering the whole file through the webview/IPC)."
 commands.allow = ["upload_stream_file"]
 
+[[permission]]
+identifier = "allow-report-diagnostics"
+description = "Enables report_diagnostics — build a gzip-tar diagnostic bundle (Rust logs + webview console capture + manifest) and upload it to the backend for field support; on failure it is cached under app_cache_dir for next-launch retry."
+commands.allow = ["report_diagnostics"]
+
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
@@ -125,4 +130,5 @@ permissions = [
   "allow-sse-get-state",
   "allow-sse-net",
   "allow-upload-stream-file",
+  "allow-report-diagnostics",
 ]
