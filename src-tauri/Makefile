@@ -18,12 +18,12 @@
 #   make macos-run  — open the newest built SOMS.app.
 #   make dev        — cargo tauri dev (hot-reload; beforeDevCommand runs ng serve on :4200).
 #
-# Variants: by default `make apk` builds ONE apk per ABI in MULTI_ABIS (aarch64 armv7) PLUS a
-# universal that bundles exactly those ABIs — so dist/android/ ends up with:
-#   soms-<ver>-arm64-v8a.apk   soms-<ver>-armeabi-v7a.apk   soms-<ver>-universal.apk
-# arm64-v8a + armeabi-v7a cover ~every real Android device; x86/x86_64 are emulator-only and left
-# out (keeps the universal ~half the size of a 4-ABI build). All three reuse the cached rust targets
-# inside the image, so a warm multi-variant run is just N gradle assembles.
+# Variants: by default `make apk` builds ONE universal APK (bundles exactly MULTI_ABIS = aarch64
+# armv7) → dist/android/soms-<ver>-universal.apk. The universal variant compiles every ABI in
+# MULTI_ABIS, so it alone covers all real devices (x86/x86_64 are emulator-only and left out — keeps
+# the universal ~half the size of a 4-ABI build). Set SPLIT=1 to ALSO emit per-ABI APKs
+# (soms-<ver>-arm64-v8a.apk / -armeabi-v7a.apk) for Play-Store-style per-device distribution;
+# ABI=<arch> builds just that one.
 #
 # Single-arch fast build: `make apk ABI=aarch64` builds ONLY that variant (~4× faster/smaller than
 # the full set). Valid ABI values: aarch64 armv7 i686 x86_64. Example: `make apk-debug ABI=aarch64 run`.
@@ -48,14 +48,19 @@ ROOT     := $(abspath $(MAKE_DIR)..)
 # @tauri-apps/cli — move them together or the container CLI and the host `tauri dev` CLI diverge.
 IMAGE      := soms-android-build:24.04
 GRADLE_VOL := soms-gradle
+CARGO_VOL  := soms-cargo
 WORK       := /work
 
 # Per-ABI variants built by the default `make apk`. The universal variant bundles EXACTLY these
 # (repeated --target), so this list is the single knob for the whole variant set — override e.g.
 # `make apk MULTI_ABIS="aarch64"` for arm64-only (the universal then degenerates to arm64 too).
 MULTI_ABIS := aarch64 armv7
-# Build variants: ABI=<arch> → just that one; otherwise per-ABI + universal.
-VARIANTS   := $(if $(ABI),$(ABI),$(MULTI_ABIS) universal)
+# Build variants: ABI=<arch> → just that one; otherwise default to ONE universal APK (bundles exactly
+# MULTI_ABIS) — enough for sideloading + most distribution, and 3× fewer gradle assembles than per-ABI
+# splits + universal (the universal variant already compiles every ABI in MULTI_ABIS, so per-ABI
+# variants only add redundant packaging). Set SPLIT=1 to ALSO emit per-ABI APKs (arm64-v8a /
+# armeabi-v7a) for Play-Store-style per-device distribution.
+VARIANTS   := $(if $(ABI),$(ABI),$(if $(SPLIT),$(MULTI_ABIS) universal,universal))
 # Skip the merged-SPA `ng build` when it is already built (WEB_BUILD=0). The APK bundles the SPA
 # (frontendDist → web/dist/web/browser); OTA bundle updates are downloaded + sha256-verified at runtime.
 WEB_BUILD  ?= 1
@@ -83,9 +88,17 @@ PROXY_RUN_FLAGS  := --network host -e HTTP_PROXY -e HTTPS_PROXY -e http_proxy -e
 # without this it could try a dead proxy). A no-op on a clean image.
 CLEAR_JAVA_PROXY := -e JAVA_TOOL_OPTIONS=
 
+# Mount the cargo registry cache (CARGO_HOME=/cargo, baked in the image) on a named volume so the
+# registry index + downloaded .crate sources PERSIST across the ephemeral --rm runs. Without this,
+# every `make apk` re-fetches the index + any crate whose version changed since the image was built —
+# the image's baked /cargo is seeded into the volume on first attach (Docker named-volume init), then
+# updated in place. THIS is what makes a warm `make apk` genuinely network-free: the image alone can't,
+# because --rm discards each run's fetches. Mirrors the soms-gradle volume. Only the FIRST build after
+# a Cargo.lock change touches the network — set HTTP_PROXY=http://localhost:7892 (or your mirror) for
+# that one; later warm builds need neither proxy nor network.
 DOCKER_RUN := docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
               $(PROXY_RUN_FLAGS) $(CLEAR_JAVA_PROXY) \
-              -v "$(ROOT):$(WORK)" -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
+              -v "$(ROOT):$(WORK)" -v $(CARGO_VOL):/cargo -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
 
 .PHONY: help image apk apk-debug shell install run clean macos macos-run dev
 help:  ## show this help
@@ -128,7 +141,7 @@ define do_build
 	@# app_data_dir/web/<active>/ via Context::set_assets). Run on the HOST (the builder container has only
 	@# bare nodejs), then blank beforeBuildCommand in-container (cargo line below) so tauri doesn't re-run
 	@# npm. tauri.conf.json stays the spec.
-	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --project web,@true)
+	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build)
 	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore) +
 	@# host-mounted, so it persists across --rm builds and pins the debug signature (no more
 	@# uninstall-per-rebuild). No-op once present.
