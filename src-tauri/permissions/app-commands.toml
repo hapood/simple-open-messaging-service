@@ -109,6 +109,16 @@ identifier = "allow-report-diagnostics"
 description = "Enables report_diagnostics — build a gzip-tar diagnostic bundle (Rust logs + webview console capture + manifest) and upload it to the backend for field support; on failure it is cached under app_cache_dir for next-launch retry."
 commands.allow = ["report_diagnostics"]
 
+[[permission]]
+identifier = "allow-api-request"
+description = "Enables api_request — the webview→backend HTTP transport under Tauri. An IPC fetch that performs the reqwest call on the Rust side and injects the Bearer from ProxyState.token (JS never touches the token); replaces the api:// custom-scheme proxy that Android WebView could not fetch."
+commands.allow = ["api_request"]
+
+[[permission]]
+identifier = "allow-media-request"
+description = "Enables media_request — the webview→backend MEDIA transport under Tauri. The avatar blob cache does http.get(media://...) which Android WebView cannot fetch (custom-scheme fetch rejected); this command performs the reqwest GET to /uploads/* on the Rust side with the Bearer from ProxyState.token and returns the raw bytes."
+commands.allow = ["media_request"]
+
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
@@ -131,4 +141,6 @@ permissions = [
   "allow-sse-net",
   "allow-upload-stream-file",
   "allow-report-diagnostics",
+  "allow-api-request",
+  "allow-media-request",
 ]

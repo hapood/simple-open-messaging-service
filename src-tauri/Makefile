@@ -7,7 +7,7 @@
 #   make image      — (re)build the self-contained builder image (one-time, ~20 min cold).
 # Build types (all land in dist/android/ as soms-<ver>[-debug]-<abi>.apk; future: apk-aab/AAB):
 #   make apk        — RELEASE APKs, per-ABI + universal (release-signed via gen/android keystore.properties).
-#   make apk-debug  — DEBUG APKs (stable debug key, no minify — fastest iteration).
+#   make apk-debug  — DEBUG APKs (stable debug key, no minify, dev web build w/ sourcemaps — fastest iteration).
 #   make install    — adb install -r the newest built APK (dist/android/ preferred) onto a device.
 #   make run        — install + launch the app on the connected device.
 #   make shell      — interactive shell in the builder (debugging).
@@ -140,8 +140,9 @@ define do_build
 	@# packaged server-side by scripts/package-web-bundle.mjs in the Docker image, served from
 	@# app_data_dir/web/<active>/ via Context::set_assets). Run on the HOST (the builder container has only
 	@# bare nodejs), then blank beforeBuildCommand in-container (cargo line below) so tauri doesn't re-run
-	@# npm. tauri.conf.json stays the spec.
-	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build)
+	@# npm. tauri.conf.json stays the spec. Debug builds compile the SPA in the Angular "development"
+	@# configuration (sourcemaps on, unminified) so the webview JS is debuggable; release uses "production".
+	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --configuration $(if $(filter debug,$(1)),development,production))
 	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore) +
 	@# host-mounted, so it persists across --rm builds and pins the debug signature (no more
 	@# uninstall-per-rebuild). No-op once present.

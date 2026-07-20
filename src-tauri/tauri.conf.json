@@ -14,7 +14,7 @@
     "withGlobalTauri": true,
     "security": {
       "capabilities": ["default"],
-      "csp": "default-src 'self'; img-src 'self' data: blob: media: ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost api: https: http: ws: wss:; script-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' data: blob: media: ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; script-src 'self'"
     }
   },
   "bundle": {

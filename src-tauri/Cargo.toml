@@ -91,6 +91,35 @@ strip = true
 panic = "abort"
 codegen-units = 1
 
+# Fast release-mode iteration for DESKTOP + rust-only builds: inherits release's opt-level/strip/panic
+# but parallelizes codegen (16 units) and drops LTO, so a cold release build doesn't serialize the
+# whole crate graph through one unit + a thin-LTO pass. Invoke via `cargo tauri build --profile
+# release-fast` (desktop) or plain `cargo build --profile release-fast`. Binary is slightly larger /
+# less optimized than [profile.release] — fine for local release-mode testing; FINAL distribution
+# stays on [profile.release].
+#
+# NOT reachable from Android: `cargo tauri android build` has NO --profile flag (only --debug), so the
+# Android APK's rust profile is fixed to [profile.release] (release buildType) / dev (debug). For fast
+# ANDROID iteration use `make apk-debug`; the Android release-speed levers are the universal-only
+# default + the soms-cargo volume. Relaxing [profile.release].codegen-units here would speed the
+# release APK too — at a binary-size cost — so it stays = 1 for distribution.
+[profile.release-fast]
+inherits = "release"
+codegen-units = 16
+lto = false
+
 [features]
 # This feature is used for production builds or when a dev server is not specified, DO NOT REMOVE!!
 custom-protocol = ["tauri/custom-protocol"]
+
+# Vendored fork of tauri-plugin-barcode-scanner 2.4.5. The ONLY change vs upstream lives in
+# vendor/tauri-plugin-barcode-scanner/android/build.gradle.kts: the barcode-recognition model is swapped
+# from `com.google.android.gms:play-services-mlkit-barcode-scanning` (the "thin" ML Kit that resolves the
+# model through Google Play Services at runtime) to `com.google.mlkit:barcode-scanning` (the model bundled
+# into the APK). The two expose the identical com.google.mlkit.vision.barcode.* Kotlin API, so this is a
+# drop-in — but the bundled variant runs on devices WITHOUT Google Play Services (Huawei / HarmonyOS, the
+# domestic target), where the GMS variant can't load the model and scan() silently fails. The JS API
+# (@tauri-apps/plugin-barcode-scanner) and the Rust + permission surface are unchanged. Re-sync upstream
+# by copying the new version over vendor/ and re-applying that single gradle line.
+[patch.crates-io]
+tauri-plugin-barcode-scanner = { path = "vendor/tauri-plugin-barcode-scanner" }

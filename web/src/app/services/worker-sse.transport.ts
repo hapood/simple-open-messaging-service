@@ -1,6 +1,3 @@
-import { firstValueFrom, filter } from 'rxjs';
-import type { AuthService } from './auth.service';
-import { sseUrl } from './constants';
 import {
   RealtimeTransport,
   type ConnectionState,
@@ -8,21 +5,21 @@ import {
   type StandardMessage,
 } from './realtime-transport';
 import type { ToMain, ToWorker } from './sse-worker-protocol';
+import { sseUrl } from './constants';
 
 /**
- * The browser + desktop (pc/mac/linux Tauri) realtime transport: spawns the dedicated `sse.worker.ts`
- * that owns the native `fetch` + `ReadableStream` SSE loop, the reconnect/backoff, the liveness watchdog,
- * and the online/offline fast-path — everything off the main thread so SSE parsing never contends with
- * the virtual-scroll kernel or the Tiptap editor. This class is a thin `postMessage` bridge: it spawns
- * the worker, forwards its `state`/`event`/`reconnect`/`force-logout` messages onto the {@link RealtimeSink},
- * and answers the worker's `need-token` request with the long-lived session token.
+ * The browser realtime transport: spawns the dedicated `sse.worker.ts` that owns the native `fetch` +
+ * `ReadableStream` SSE loop, the reconnect/backoff, the liveness watchdog, and the online/offline fast-path
+ * — everything off the main thread so SSE parsing never contends with the virtual-scroll kernel or the
+ * Tiptap editor. This class is a thin `postMessage` bridge: it spawns the worker, forwards its
+ * `state`/`event`/`reconnect`/`force-logout` messages onto the {@link RealtimeSink}, and owns the respawn
+ * lifecycle.
  *
- * Token handshake: the worker is spawned at boot (pre-login) and asks for the token via `need-token`. We
- * hand it the current session token, waiting for the first non-null emission if login hasn't happened yet
- * (the worker must BLOCK, not busy-loop). The token is long-lived + reused across reconnects — there is no
- * `renew-token` (a 401 means the session is dead; the worker posts `force-logout` and stops). Replies are
- * routed to the specific `Worker` instance that asked, so a reply computed before a `stop()`/reconnect can
- * never land in a freshly-spawned worker.
+ * Browser-only by construction (the facade selects `RustChannelSseTransport` under Tauri desktop +
+ * `NativeEventTransport` under Android), so the stream is SAME-ORIGIN and authenticates via the httpOnly
+ * session cookie (fetch's default `credentials: same-origin` attaches it) — NO session token is held in JS
+ * or handed to the worker. A 401 means the session is revoked/expired → the worker posts `force-logout`
+ * (main re-logs in) and stops; there is no token renewal.
  */
 export class WorkerSseTransport extends RealtimeTransport {
   /** The spawned SSE worker. Undefined while stopped (or between an error and the respawn). */
@@ -30,7 +27,7 @@ export class WorkerSseTransport extends RealtimeTransport {
   /** The pending 1s respawn from {@link onWorkerError}, cancelled if {@link retryNow} fires first. */
   private respawnTimer?: ReturnType<typeof setTimeout>;
 
-  constructor(sink: RealtimeSink, private readonly authService: AuthService) {
+  constructor(sink: RealtimeSink) {
     super(sink);
   }
 
@@ -83,41 +80,15 @@ export class WorkerSseTransport extends RealtimeTransport {
       case 'event': this.sink.onEvent(m.payload as StandardMessage); break;
       case 'reconnect': this.sink.onReconnect(); break;
       case 'reconnect-in': this.sink.onReconnectIn(m.ms); break;
-      case 'need-token': void this.handleNeedToken(m.reqId); break;
       case 'force-logout':
-        // The session token 401'd (revoked/expired) OR the server pushed FORCE_LOGOUT — the worker has
+        // The session 401'd (cookie revoked/expired) OR the server pushed FORCE_LOGOUT — the worker has
         // already stopped itself; the facade clears state + re-logs in (onForceLogout).
         this.sink.onForceLogout();
         break;
     }
   }
 
-  /** Provide the long-lived session token. If none is held yet (the worker spawned at boot, pre-login),
-   *  block on the first non-null emission so the worker doesn't busy-loop. If `stop()`/reconnect swapped
-   *  the worker while we were waiting, drop the reply. A null result (logout won the race) is replied as
-   *  `token-failed`, which makes the worker treat it as a give-up (it stops + the facade re-logs in). */
-  private async handleNeedToken(reqId: string): Promise<void> {
-    const worker = this.worker
-    if (!worker) return
-    let token = this.authService.sessionToken
-    if (!token) {
-      token = await firstValueFrom(
-        this.authService.sessionToken$.pipe(filter((t): t is string => t !== null)),
-      ).catch(() => null)
-    }
-    if (this.worker !== worker) return
-    this.postTokenReply(worker, reqId, token)
-  }
-
-  private postTokenReply(worker: Worker, reqId: string, token: string | null): void {
-    worker.postMessage(
-      (token
-        ? { type: 'token', reqId, token }
-        : { type: 'token-failed', reqId }) satisfies ToWorker,
-    )
-  }
-
-  /** A dedicated worker that throws an uncaught exception is dead — it will never recover on its own,
+  /** A dedicated worker who throws an uncaught exception is dead — it will never recover on its own,
    *  so SSE would silently stop forever. Flip to `reconnecting` (so the banner explains the outage) and
    *  respawn the worker after a short delay; the worker's own backoff then paces reconnect attempts. */
   private onWorkerError(): void {

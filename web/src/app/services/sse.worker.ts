@@ -1,21 +1,16 @@
 /// <reference lib="webworker" />
 /**
- * SSE downlink worker. Owns a native `fetch` + `ReadableStream` SSE connection, the reconnect/backoff
- * loop, the liveness watchdog, and the browser online/offline fast-path — everything that used to
- * live on the main thread inside `WebsocketService`. Moving it off the main thread means SSE parsing,
- * backoff timers, and the watchdog no longer contend with the virtual-scroll kernel or the Tiptap
+ * SSE downlink worker (browser-only). Owns a native `fetch` + `ReadableStream` SSE connection, the
+ * reconnect/backoff loop, the liveness watchdog, and the browser online/offline fast-path — everything
+ * that used to live on the main thread inside `WebsocketService`. Moving it off the main thread means SSE
+ * parsing, backoff timers, and the watchdog no longer contend with the virtual-scroll kernel or the Tiptap
  * editor; the realtime layer is fully decoupled from rendering.
  *
- * Auth handshake (the one genuinely tricky part — a naive port reconnects with a stale token in a
- * tight 401 loop): the worker never touches `AuthService` (it can't — it's a worker, no Angular DI,
- * no `localStorage`). **Browser (same-origin):** the httpOnly session cookie authenticates the stream
- * (fetch's default `credentials: same-origin` attaches it) — no token is held. **Desktop Tauri
- * (cross-origin worker that can't use a cookie):** the worker asks the main thread for the long-lived
- * session token via `need-token` (once; reused across reconnects), correlated by `reqId`, and sends it
- * as `Authorization: Bearer`. A stale `{token, reqId}` reply (from a prior request) is dropped because
- * its `reqId` won't match `tokenReqId`. There is no renew: a 401 means the session is revoked/expired,
- * so the worker posts `force-logout` (main re-logs in) and stops — it does NOT retry (that would just
- * 401-loop).
+ * Auth: the worker is browser-only (the facade selects `RustChannelSseTransport` under Tauri desktop +
+ * `NativeEventTransport` under Android), so the stream is SAME-ORIGIN and authenticates via the httpOnly
+ * session cookie — fetch's default `credentials: same-origin` attaches it. NO session token is held in the
+ * worker. A 401 means the session is revoked/expired → the worker posts `force-logout` (main re-logs in)
+ * and stops; it does NOT retry (that would just 401-loop).
  *
  * The stream is read with a bare `fetch` + `getReader()` loop, NOT `@microsoft/fetch-event-source`.
  * That library is main-thread-only — it resolves `window.fetch` / `window.setTimeout` and calls
@@ -25,8 +20,8 @@
  * "Connection lost" banner even though the server was healthy). A worker already has `fetch`,
  * `TextDecoder`, and `ReadableStream`, so we parse the SSE byte stream ourselves (see `readFrames` /
  * `parseFrame`). There is no auto-reconnect inside the reader — a read error or clean close simply
- * returns and the outer `run` loop owns every reconnect so backoff + auth stay coherent, exactly as on
- * the main thread before.
+ * returns and the outer `run` loop owns every reconnect so backoff stays coherent, exactly as on the
+ * main thread before.
  *
  * `sw` is the typed worker global — cast through `unknown` because the app's tsconfig includes both
  * the `dom` and (via the reference above) `webworker` libs, which would otherwise make the bare
@@ -60,10 +55,6 @@ class AuthNeededError extends Error {
 /** The SSE endpoint URL, supplied by main in the `start` message (kept out of the worker so it does
  *  not import the main-thread `constants.ts`). */
 let url = '';
-/** Browser (same-origin): the httpOnly session cookie authenticates the stream — no token is held in the
- *  worker. Desktop Tauri (cross-origin worker that can't use a cookie): the raw token is fetched via the
- *  `need-token` handshake and sent as `Authorization: Bearer`. Derived from `url` on `start`. */
-let cookieAuth = false;
 /** True while inside the run reconnect loop. Makes `start` idempotent. */
 let running = false;
 /** Set by `stop` so the loop exits without reconnecting. */
@@ -76,46 +67,15 @@ let aborter: AbortController | undefined;
 /** Timestamp (ms) of the last received SSE frame (event or ping). Refreshed on every dispatch. */
 let lastFrameAt = 0;
 /** True once a server `ping` event has been observed — the watchdog only arms after this, so an old
- *  backend still emitting comment pings (invisible to the reader) never false-triggers in a quiet chat. */
+ * backend still emitting comment pings (invisible to the reader) never false-triggers in a quiet chat. */
 let pingObserved = false;
-/** The most recently obtained access token; reused across reconnects, cleared on a 401. */
-let currentToken: string | undefined;
 let watchdog: ReturnType<typeof setInterval> | undefined;
 /** Resolver for the current `sleep`, so an `online` event can wake the backoff loop to retry at once. */
 let sleepResolver: (() => void) | undefined;
 
-// --- token request handshake (single outstanding request, correlated by reqId) ---------
-
-let tokenSeq = 0;
-let tokenReqId: string | undefined;
-let tokenResolve: ((token: string | undefined) => void) | undefined;
-
 /** Post a message to the main thread. */
 function post(msg: ToMain): void {
   sw.postMessage(msg);
-}
-
-/** Same-origin (browser → cookie auth) vs cross-origin (desktop Tauri → the worker can't use a cookie, so
- *  it falls back to the Bearer handshake). The SSE url is relative same-origin on the browser build and
- *  absolute cross-origin under Tauri. */
-function isCrossOrigin(u: string): boolean {
-  try {
-    return new URL(u, sw.location.href).origin !== sw.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-/** Ask the main thread for the long-lived session token and await the matching `{token, reqId}` /
- *  `{token-failed, reqId}` reply. Resolves undefined on failure / stop. */
-function requestToken(): Promise<string | undefined> {
-  // The `run` loop is serial, so at most one token request is ever outstanding — no need to queue.
-  const reqId = String(++tokenSeq);
-  return new Promise<string | undefined>((resolve) => {
-    tokenReqId = reqId;
-    tokenResolve = resolve;
-    post({ type: 'need-token', reqId });
-  });
 }
 
 // --- reconnect loop -----------------------------------------------------------
@@ -130,7 +90,7 @@ async function run(): Promise<void> {
     } catch (err) {
       if (manualClose) break;
       if (err instanceof AuthNeededError) {
-        // 401: the session token is revoked/expired. There is no renew — tell main to re-login
+        // 401: the session cookie is revoked/expired. There is no renew — tell main to re-login
         // (force-logout → redoLoginAuth) and stop, so we don't 401-loop. (A server-pushed FORCE_LOGOUT
         // frame takes the same path in `dispatch`.)
         manualClose = true;
@@ -158,35 +118,20 @@ async function reconnectAfter(): Promise<void> {
   await sleep(ms);
 }
 
-/** Open one SSE stream. Desktop (cross-origin): obtains a token (cached, or via `need-token` on the
- *  first open) and sends it as `Authorization: Bearer`. Browser (same-origin): no token — the httpOnly
- *  session cookie authenticates the stream (fetch's default `credentials: same-origin` attaches it).
- *  A 401 clears the cached token (desktop) and throws AuthNeededError. */
+/** Open one SSE stream. Same-origin cookie auth: no token — fetch's default `credentials: same-origin`
+ *  attaches the httpOnly session cookie. A 401 throws AuthNeededError. */
 async function openOnce(): Promise<void> {
-  let token: string | undefined;
-  if (!cookieAuth) {
-    token = currentToken;
-    if (!token) {
-      token = await requestToken();
-      if (!token || manualClose) return;
-      currentToken = token;
-    }
-  }
-
   aborter = new AbortController();
-  const headers: Record<string, string> = { Accept: 'text/event-stream' };
-  if (token) headers.Authorization = `Bearer ${token}`;
   const res = await fetch(url, {
     signal: aborter.signal,
-    headers,
+    headers: { Accept: 'text/event-stream' },
     // Defeat any intermediate caching of the event stream (correctness, not performance). Default
-    // `credentials: same-origin` attaches the httpOnly cookie on the browser path and sends none on the
-    // cross-origin desktop path (which uses the Bearer header instead).
+    // `credentials: same-origin` attaches the httpOnly session cookie (the browser path authenticates
+    // entirely via the cookie — no token is held in the worker).
     cache: 'no-store',
   });
   if (res.status === 401) {
-    currentToken = undefined; // session dead — the run loop posts force-logout + stops
-    throw new AuthNeededError();
+    throw new AuthNeededError(); // session dead — the run loop posts force-logout + stops
   }
   if (!res.ok || !res.body) {
     throw new Error(`SSE open failed: ${res.status}`);
@@ -346,7 +291,6 @@ sw.addEventListener('message', (e: MessageEvent) => {
     case 'start':
       if (running) return;
       url = m.url;
-      cookieAuth = !isCrossOrigin(url);
       running = true;
       manualClose = false;
       attempt = 0;
@@ -359,41 +303,16 @@ sw.addEventListener('message', (e: MessageEvent) => {
       running = false;
       aborter?.abort();
       stopWatchdog();
-      // Resolve any in-flight token wait so its Promise doesn't leak; the reply is dropped by main
-      // anyway after terminate().
-      if (tokenResolve) {
-        tokenResolve(undefined);
-        tokenResolve = undefined;
-        tokenReqId = undefined;
-      }
       post({ type: 'state', state: 'closed' });
       break;
     case 'retry-now':
       // User-initiated retry: reset the backoff attempt counter (so a fresh failure starts from 1s, not
       // wherever the loop had climbed to) and resolve the current backoff sleep so the loop reconnects
       // at once. Mirrors the browser `online` fast-path. No-op when not in backoff (sleepResolver
-      // undefined) — e.g. mid-handshake or already open — which is the correct harmless behavior.
+      // undefined) — e.g. already open — which is the correct harmless behavior.
       if (manualClose) return;
       attempt = 0;
       sleepResolver?.();
-      break;
-    case 'token':
-      // Only honor the reply whose reqId matches the outstanding request; a stale reply from a prior
-      // request is dropped (it would otherwise satisfy a newer wait with an older token).
-      if (m.reqId === tokenReqId && tokenResolve) {
-        const r = tokenResolve;
-        tokenResolve = undefined;
-        tokenReqId = undefined;
-        r(m.token);
-      }
-      break;
-    case 'token-failed':
-      if (m.reqId === tokenReqId && tokenResolve) {
-        const r = tokenResolve;
-        tokenResolve = undefined;
-        tokenReqId = undefined;
-        r(undefined);
-      }
       break;
   }
 });

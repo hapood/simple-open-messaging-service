@@ -5,12 +5,11 @@
  *
  * Lifecycle:
  *  - main posts `start` once the worker is spawned (the worker idles until then).
- *  - the worker asks for the long-lived session token via `need-token` (once; reused across reconnects).
- *    Correlated by `reqId` so a stale reply from a prior request can never satisfy the current one (see
- *    the handshake notes in `sse.worker.ts`). There is no `renew-token` — a 401 means the session token is
- *    revoked/expired, handled by `force-logout` (re-login), not a renew.
  *  - the worker streams `state` changes, `event` frames, and the `reconnect` backfill pulse up; main
  *    re-emits these onto the existing `state` signal / `eventSubject` / `reconnect$` unchanged.
+ *  - the stream is same-origin + cookie-auth (the worker is browser-only), so there is NO token handshake:
+ *    fetch's default `credentials: same-origin` attaches the httpOnly session cookie. A 401 means the
+ *    session is revoked/expired → the worker posts `force-logout` (re-login), not a token renewal.
  */
 
 export type WorkerState = 'connecting' | 'open' | 'reconnecting' | 'closed';
@@ -29,16 +28,13 @@ export interface SseEventPayload {
 export type ToWorker =
   | { type: 'start'; url: string }
   | { type: 'stop' }
-  | { type: 'retry-now' } // user tapped the disconnected chip: skip the current backoff sleep and retry at once
-  | { type: 'token'; reqId: string; token: string }
-  | { type: 'token-failed'; reqId: string };
+  | { type: 'retry-now' }; // user tapped the disconnected chip: skip the current backoff sleep and retry at once
 
 /** Worker → Main. */
 export type ToMain =
   | { type: 'state'; state: WorkerState }
   | { type: 'event'; payload: SseEventPayload }
   | { type: 'reconnect' }
-  | { type: 'need-token'; reqId: string }
   | { type: 'force-logout' }
   | { type: 'reconnect-in'; ms: number }; // backoff sleep scheduled — the live countdown is owned by main
 

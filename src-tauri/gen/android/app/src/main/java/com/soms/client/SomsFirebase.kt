@@ -71,13 +71,13 @@ object SomsFirebase {
             // re-init on its completion so the token unregister settles first.
             try {
                 FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener {
-                    runCatching { FirebaseApp.deleteApp(FirebaseApp.getInstance()) }
+                    runCatching { FirebaseApp.getInstance().delete() }
                         .onFailure { e -> Log.w(TAG, "deleteApp: ${e.message}") }
                     freshInit(ctx, newOptions)
                 }
             } catch (e: Exception) {
                 Log.w(TAG, "deleteToken failed: ${e.message}; re-initializing anyway")
-                runCatching { FirebaseApp.deleteApp(FirebaseApp.getInstance()) }
+                runCatching { FirebaseApp.getInstance().delete() }
                 freshInit(ctx, newOptions)
             }
         } else {
@@ -91,11 +91,11 @@ object SomsFirebase {
         if (FirebaseApp.getApps(ctx).isEmpty()) return
         try {
             FirebaseMessaging.getInstance().deleteToken().addOnCompleteListener {
-                runCatching { FirebaseApp.deleteApp(FirebaseApp.getInstance()) }
+                runCatching { FirebaseApp.getInstance().delete() }
                 SomsBridge.FcmToken.current = null
             }
         } catch (e: Exception) {
-            runCatching { FirebaseApp.deleteApp(FirebaseApp.getInstance()) }
+            runCatching { FirebaseApp.getInstance().delete() }
             SomsBridge.FcmToken.current = null
         }
     }

@@ -1,6 +1,6 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { BehaviorSubject, EMPTY, firstValueFrom, tap } from 'rxjs';
+import { EMPTY, firstValueFrom, finalize, mergeMap, tap } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
@@ -26,10 +26,17 @@ type LogoutRes = { code: number, message: string }
 
 /**
  * One opaque per-device session token authenticates every request — carried as an httpOnly cookie
- * (browser: auto-attached same-origin, JS-unreadable) or an `Authorization: Bearer` header (native: the
- * interceptor + Rust media proxy + Kotlin SSE/FCM/Worker). The backend accepts cookie-or-Bearer on every
- * route. No access JWT, no refresh token, no renewal. Issued at login; revoked at logout / logout-all /
- * change-password (`invalidateAllSessions`); a 401 → re-login (`redoLoginAuth`).
+ * (browser: auto-attached same-origin, JS-unreadable) or an `Authorization: Bearer` header (native). The
+ * backend accepts cookie-or-Bearer on every route. No access JWT, no refresh token, no renewal. Issued at
+ * login; revoked at logout / logout-all / change-password (`invalidateAllSessions`); a 401 → re-login
+ * (`redoLoginAuth`).
+ *
+ * **JS DOES NOT HOLD THE TOKEN.** The login response brings the token into JS for exactly long enough to
+ * hand it to Rust (the `set_session_token` IPC command → `ProxyState.token`) / Kotlin (`SomsFcm`) / the OS
+ * keyring; it is never stored in a field, never read back, and never placed on the wire. Under the Tauri
+ * shell the Rust `api_request` / `media_request` transports inject the Bearer from `ProxyState.token`, so
+ * no JS code touches the credential after login. Login state in JS is a BOOLEAN (`loggedIn` signal on
+ * native, the `logged_in` presence cookie on browser) — never the token value.
  *
  * **Storage (no persistent plaintext copy on any platform):**
  *  - Browser (pure httpOnly): the token is NEVER held in JS — XSS can't exfiltrate it. Login state rides
@@ -37,12 +44,13 @@ type LogoutRes = { code: number, message: string }
  *    cookie lifetime (14-day sliding vs session) via the login `persistent` flag; the httpOnly cookie can
  *    only be cleared by the backend (logout).
  *  - Android: the raw token lives in EncryptedSharedPreferences (Android-Keystore-backed), read/written
- *    via the `SomsFcm` bridge — the SAME store the native RealtimeService/FCM/Worker read. The webview
- *    keeps only an in-memory copy (never localStorage), so at rest the token is encrypted only.
+ *    via the `SomsFcm` bridge — the SAME store the native RealtimeService/FCM/Worker read. It is ALSO
+ *    pushed to Rust's `ProxyState.token` (via `set_session_token`) so the `api_request` IPC transport can
+ *    inject the Bearer. No plaintext JS copy.
  *  - Desktop (Tauri): a TRUSTED device persists the token in the OS credential store (Windows Credential
  *    Manager / macOS Keychain / Linux Secret Service) via the `secure_*` Tauri commands; an UNTRUSTED
- *    device keeps it in memory only (lost on restart → re-login). Either way the desktop media proxy
- *    (`set_session_token`) gets an in-memory copy for `/uploads/*` Bearer injection. No plaintext copy.
+ *    device keeps it in memory only (lost on restart → re-login). Either way `ProxyState.token` (via
+ *    `set_session_token`) holds the in-memory copy for `api_request` Bearer injection. No plaintext copy.
  */
 @Injectable({
   providedIn: 'root',
@@ -58,26 +66,16 @@ export class AuthService {
    *  never on web). Gates the "Trust this device" toggle so a desktop without a usable keyring can't request
    *  a permanent token it then can't persist (which would orphan a server-side permanent session). */
   private _canTrust = false
-  /** The session token: in-memory copy of the credential (null when logged out / pre-login). On native it
-   *  is restored from OS secure storage by {@link restoreSession} (an APP_INITIALIZER, awaited before
-   *  routing) so a cold start re-establishes the session with no plaintext JS copy. */
-  private _sessionToken: string | null = null
-  get sessionToken(): string | null { return this._sessionToken }
   /** True when this client has a working OS secure store and may therefore be trusted (hold a permanent
    *  token). Probed once at boot by {@link restoreSession}. */
   get canTrust(): boolean { return this._canTrust }
-  /** Reactive view of the session token for the realtime transport: the SSE worker is spawned at boot
-   *  (pre-login) and asks for the token via `need-token` — it must BLOCK until login provides one, so the
-   *  transport awaits the first non-null emission here rather than busy-looping. Emits the current value
-   *  to new subscribers (so a post-login spawn resolves at once). */
-  private readonly _sessionTokenSub = new BehaviorSubject<string | null>(this._sessionToken)
-  readonly sessionToken$ = this._sessionTokenSub.asObservable()
   /** Reactive login state — true while a session is active. Drives the realtime transport's
-   *  connect/disconnect lifecycle (WebsocketService's login effect). Initialized from {@link isLoggedIn}
-   *  and flipped in {@link activateSession}/{@link setRestored} (→true) and {@link clearToken} (→false).
-   *  On the browser this mirrors the non-httpOnly `logged_in` presence cookie (the session credential
-   *  itself is JS-unreadable); on native it mirrors the restored/held token. */
-  readonly loggedIn = signal<boolean>(this.isLoggedIn())
+   *  connect/disconnect lifecycle (WebsocketService's login effect) + the auth guards. On native this is
+   *  the single source of truth for login (the token value is never held in JS); on browser it mirrors the
+   *  non-httpOnly `logged_in` presence cookie (the session credential itself is JS-unreadable). Initialized
+   *  from the cookie on browser so a page refresh while signed in starts `true`; native starts `false` and
+   *  {@link restoreSession} flips it after re-establishing the session from secure storage. */
+  readonly loggedIn = signal<boolean>(isTauri() ? false : this.hasPresenceCookie())
 
   constructor(
     private http: HttpClient,
@@ -94,11 +92,11 @@ export class AuthService {
     return this.transloco.translate(key) ?? key;
   }
 
-  /** True when logged in. Native: a raw token is held in JS storage. Browser (pure httpOnly): the
-   *  token is JS-unreadable, so login state is the non-httpOnly `logged_in` presence cookie the backend
-   *  sets/clears in lockstep with the session cookie. */
+  /** True when logged in. Native: the `loggedIn` signal (the token is never held in JS, so login state is a
+   *  boolean). Browser (pure httpOnly): the token is JS-unreadable, so login state is the non-httpOnly
+   *  `logged_in` presence cookie the backend sets/clears in lockstep with the session cookie. */
   isLoggedIn(): boolean {
-    return isTauri() ? this._sessionToken !== null : this.hasPresenceCookie()
+    return isTauri() ? this.loggedIn() : this.hasPresenceCookie()
   }
 
   private hasPresenceCookie(): boolean {
@@ -130,10 +128,14 @@ export class AuthService {
         device: this.getDeviceLabel(),
         persistent: isKeep,
         trusted,
-      }).pipe(tap((res) => {
+      }).pipe(mergeMap(async (res) => {
         if (res.code === 0 && res.data?.session_token) {
-          this.activateSession(res.data.session_token, { isKeep, trusted })
+          // Await activation so Rust's ProxyState.token is populated BEFORE this observable emits — the
+          // caller's post-login navigation then issues its first authenticated request with the Bearer
+          // already in place (closes the login race; no JS-side token needed on the wire).
+          await this.activateSession(res.data.session_token, { isKeep, trusted })
         }
+        return res
       }))
   }
 
@@ -141,17 +143,18 @@ export class AuthService {
    *  native client (app/desktop) keeps a permanent session (token in OS secure storage); the browser gets a
    *  14-day sliding one. `client` is sent so the backend issues the matching session kind. */
   otpLogin(params: { account: string, code: string, device?: string }) {
-    const client = sessionClient();
+    const client = sessionClient()
     return this.http.post<LoginRes>(
       `${apiPrefix()}/auth/otp/login`, {
         account: params.account,
         code: params.code,
         client,
         device: params.device ?? this.getDeviceLabel(),
-      }).pipe(tap((res) => {
+      }).pipe(mergeMap(async (res) => {
         if (res.code === 0 && res.data?.session_token) {
-          this.activateSession(res.data.session_token, { isKeep: true, trusted: client !== 'web' })
+          await this.activateSession(res.data.session_token, { isKeep: true, trusted: client !== 'web' })
         }
+        return res
       }))
   }
 
@@ -169,10 +172,11 @@ export class AuthService {
   qrPoll(qrToken: string, device?: string, trusted = false) {
     return this.http.post<{ code: number, data?: { status: string, session_token?: string, mustChangePassword?: boolean } }>(
       `${apiPrefix()}/auth/qr/poll`, { qrToken, device: device ?? this.getDeviceLabel() },
-    ).pipe(tap((res) => {
+    ).pipe(mergeMap(async (res) => {
       if (res.code === 0 && res.data?.session_token) {
-        this.activateSession(res.data.session_token, { isKeep: true, trusted })
+        await this.activateSession(res.data.session_token, { isKeep: true, trusted })
       }
+      return res
     }))
   }
 
@@ -187,15 +191,16 @@ export class AuthService {
   }
 
   /** Activate a freshly obtained session token (login/OTP/QR success). Persists it to OS secure storage
-   *  (Android EncryptedSharedPreferences / desktop keyring) when trusted, sets the in-memory copy + media
-   *  proxy, and fires the push + web-push login hooks. Extracted so the password, OTP, and QR login paths
-   *  activate identically. */
-  private activateSession(token: string, opts: { isKeep: boolean, trusted: boolean }) {
+   *  (Android EncryptedSharedPreferences / desktop keyring) when trusted, pushes it to Rust's
+   *  `ProxyState.token` (so `api_request` can inject the Bearer) — AWAITED so the token is live before this
+   *  resolves — and fires the push + web-push login hooks. Extracted so the password, OTP, and QR login
+   *  paths activate identically. The token is never stored in JS. */
+  private async activateSession(token: string, opts: { isKeep: boolean, trusted: boolean }): Promise<void> {
     this._isKeep = opts.isKeep
     this._trusted = opts.trusted
     if (opts.isKeep) localStorage.setItem(IS_KEEP_LOGIN, '1')
     else localStorage.removeItem(IS_KEEP_LOGIN)
-    if (isTauri()) this.setSessionToken(token)
+    if (isTauri()) await this.setSessionToken(token)
     // Browser (pure httpOnly): the backend set the httpOnly session cookie + presence cookie; no token is
     // held in JS.
     this.loggedIn.set(true)
@@ -212,61 +217,62 @@ export class AuthService {
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 
-  /** Activate a freshly obtained session token (login/restore): set the in-memory copy (synchronous, so
-   *  the interceptor + SSE worker can use it at once), then persist to the platform's OS secure storage
-   *  when trusted. No persistent plaintext copy is ever written (no localStorage/sessionStorage of the
-   *  token). */
-  private setSessionToken(token: string) {
-    this._sessionToken = token
-    this._sessionTokenSub.next(token)
+  /** Push a freshly obtained (login) or restored (cold-start) session token to the platforms that need the
+   *  RAW value — WITHOUT storing it in JS:
+   *   - Android: `SomsFcm.setSessionToken` (Kotlin EncryptedSharedPreferences — the store RealtimeService /
+   *     FCM / Worker read) AND `set_session_token` (Rust `ProxyState.token` — so `api_request` injects the
+   *     Bearer). Both are needed: Kotlin owns the native realtime layers, Rust owns the IPC HTTP transport.
+   *   - Desktop: `set_session_token` (Rust `ProxyState.token`, AWAITED so login completes with the token
+   *     live — closes the race) + `secure_set_token` (OS keyring, when the session should survive restart).
+   *  The token passes THROUGH JS only to reach Rust/Kotlin/the keyring; it is never retained. */
+  private async setSessionToken(token: string): Promise<void> {
     if (isAndroidNative()) {
-      // Android: the app is always trusted — persist to EncryptedSharedPreferences (the store the native
-      // RealtimeService/FCM/Worker read) via the SomsFcm bridge.
       this._trusted = true
       window.SomsFcm!.setSessionToken(token)
-    } else if (isTauri()) {
-      // Desktop: persist to the OS keyring when the session should survive a restart — "keep me logged in"
-      // (isKeep) OR a trusted (permanent) token. `isKeep` controls WHETHER it's stored; `trusted` (sent at
-      // login) controls HOW LONG the server keeps it. The two are decoupled so e.g. the register flow
-      // (isKeep:true, untrusted) persists a sliding token, while a desktop login with trust unchecked stays
-      // memory-only (the "shared computer" contract). The Rust media proxy gets an in-memory copy regardless
-      // so /uploads/* carry the Bearer header. Fire-and-forget — the in-memory copy above is already live.
-      if (this._isKeep || this._trusted) {
+    }
+    if (isTauri()) {
+      // Await so ProxyState.token is populated before this resolves — the login flow (which awaits
+      // activateSession → this) then issues its first authenticated request with the Bearer in place.
+      // Needed on BOTH desktop AND Android: both route /api/v1 through the `api_request` IPC transport,
+      // which reads ProxyState.token. (Awaiting also closes the pre-login/first-request race.)
+      await tauriInvoke('set_session_token', { token })
+      // Desktop persistence to the OS keyring (Android persists via SomsFcm above). Fire-and-forget: a
+      // failure revokes a TRUSTED (permanent) token server-side (no orphan) + bounces to login; a keep-only
+      // token gets a toast. set_session_token above already set ProxyState.token to THIS token, so
+      // revokeAndBounce's logout POST (Bearer-injected by Rust) revokes exactly it.
+      if (!isAndroidNative() && (this._isKeep || this._trusted)) {
         tauriInvoke('secure_set_token', { token }).catch(() => {
           if (this._trusted) {
-            // A trusted (permanent) token couldn't be persisted to the keyring. Revoke it server-side so no
-            // orphan permanent row survives (it would live forever, only removable from the device page),
-            // then bounce to login with a notice — the user re-signs in (the accepted cost of zero orphans).
-            void this.revokeAndBounce(token, 'auth.notice.trustPersistFailed')
+            void this.revokeAndBounce('auth.notice.trustPersistFailed')
           } else {
-            // Keep-only (sliding) token: it's valid in-memory for THIS session and self-expires server-side
-            // in 14d, so there's no permanent orphan and no reason to revoke or bounce. But the keyring write
-            // failed, so the token is memory-only — the next restart finds nothing and the user must re-login.
-            // Warn them now. (Do NOT advise enabling "Trust this device": the keyring is the broken piece, so
-            // a trusted write would ALSO fail and take the revoke+bounce path above — strictly worse. The token
-            // is never downgraded to plaintext storage.)
+            // Keep-only (sliding) token: valid in-memory for THIS session, self-expires server-side in 14d,
+            // so no permanent orphan. The keyring write failed → memory-only → next restart finds nothing.
+            // Warn (do NOT advise "Trust this device": the keyring is the broken piece, so a trusted write
+            // would ALSO fail and take the revoke+bounce path — strictly worse; the token is never
+            // downgraded to plaintext storage).
             this.toast.warn(this.t('auth.notice.keepPersistFailed'))
           }
         })
       }
-      tauriInvoke('set_session_token', { token }).catch(() => {})
     }
-    // Browser (pure httpOnly): no JS token storage — the backend holds the credential in the cookie.
+    // Browser (pure httpOnly): no JS token — the backend holds the credential in the cookie.
   }
 
   /** Re-establish the session on a cold start by reading the token back from OS secure storage (Android
-   *  EncryptedSharedPreferences via the SomsFcm bridge; desktop OS keyring via the `secure_*` commands).
-   *  Wired as an APP_INITIALIZER so it completes before the router resolves — `isLoggedIn()` and the
-   *  interceptor then see the restored token with no race. No-op on the pure-httpOnly browser build (the
-   *  cookie carries the session; there is no JS token to restore). Also purges any legacy plaintext
-   *  `session_token` left in localStorage by an older desktop build (now stored in the keyring instead). */
+   *  EncryptedSharedPreferences via the SomsFcm bridge; desktop OS keyring via the `secure_*` commands),
+   *  handing it to Rust/Kotlin (the same {@link setSessionToken} path login uses), and flipping the login
+   *  flag. Wired as an APP_INITIALIZER so it completes before the router resolves — `isLoggedIn()` then
+   *  reflects the restored session with no race. No-op on the pure-httpOnly browser build (the cookie
+   *  carries the session; there is no JS token to restore). The token passes through JS only to reach Rust;
+   *  it is not retained. Also purges any legacy plaintext `session_token` left in localStorage by an older
+   *  desktop build (now stored in the keyring instead). */
   async restoreSession(): Promise<void> {
     try { localStorage.removeItem(SESSION_TOKEN) } catch { /* storage unavailable */ }
     if (isAndroidNative()) {
       try {
         this._canTrust = true // EncryptedSharedPreferences is always available on Android
         const t = window.SomsFcm!.getSessionToken() // synchronous JNI
-        if (t) this.setRestored(t)
+        if (t) await this.applyRestoredToken(t)
       } catch {
         // SomsFcm bridge missing (shell wiring bug / renderer reclaimed before the @JavascriptInterface
         // registered). Stay logged out + canTrust false rather than reject the APP_INITIALIZER — a rejection
@@ -277,7 +283,7 @@ export class AuthService {
       try {
         const t = await tauriInvoke<string | null>('secure_get_token')
         this._canTrust = true // keyring reachable → this desktop CAN be trusted (the boot probe)
-        if (t) this.setRestored(t)
+        if (t) await this.applyRestoredToken(t)
       } catch {
         // Keyring unavailable (e.g. headless Linux without Secret Service): this desktop CANNOT be
         // trusted → the trust toggle stays hidden, so the user can't request a permanent token the client
@@ -288,27 +294,25 @@ export class AuthService {
     // Browser: _canTrust stays false (web can never be trusted).
   }
 
-  /** Apply a token restored from secure storage: in-memory copy + media proxy. A restored token is by
-   *  definition durable/trusted (it came from the keyring / EncryptedSharedPreferences). */
-  private setRestored(token: string) {
-    this._sessionToken = token
+  /** Apply a token restored from secure storage: push it to Rust/Kotlin (the same {@link setSessionToken}
+   *  path login uses) + flip the login flag. A restored token is by definition durable/trusted (it came
+   *  from the keyring / EncryptedSharedPreferences). */
+  private async applyRestoredToken(token: string): Promise<void> {
     this._trusted = true
     this._isKeep = true
-    this._sessionTokenSub.next(token)
+    await this.setSessionToken(token)
     this.loggedIn.set(true)
-    if (isAndroidNative()) window.SomsFcm!.setSessionToken(token)
-    else if (isTauri()) tauriInvoke('set_session_token', { token }).catch(() => {})
   }
 
-  /** Revoke the just-issued session server-side (POST /auth/logout carries the raw token → the backend
-   *  revokes its hash) and bounce to the login page, surfacing the reason as a global toast. Used when a
-   *  trusted (permanent) token couldn't be persisted to the keyring: revoking eliminates the orphan permanent
-   *  row (it would otherwise live forever); the toast tells the user why they're back at the sign-in screen.
-   *  The toast is routing-independent, so it shows even though the bounce redirects away from the current
-   *  route (the old per-page notice signal was dropped when the login page redirected under APP_OTP_AND_QR). */
-  private async revokeAndBounce(token: string, noticeKey: string): Promise<void> {
+  /** Revoke the just-issued session server-side (POST /auth/logout — the backend resolves the session from
+   *  the Bearer Rust injects, so no token is placed in the body) and bounce to the login page, surfacing
+   *  the reason as a global toast. Used when a trusted (permanent) token couldn't be persisted to the
+   *  keyring: revoking eliminates the orphan permanent row (it would otherwise live forever); the toast
+   *  tells the user why they're back at the sign-in screen. set_session_token already set ProxyState.token
+   *  to this token, so the Bearer carries it. */
+  private async revokeAndBounce(noticeKey: string): Promise<void> {
     try {
-      await firstValueFrom(this.http.post<{ code: number }>(`${apiPrefix()}/auth/logout`, { sessionToken: token }))
+      await firstValueFrom(this.http.post<{ code: number }>(`${apiPrefix()}/auth/logout`, {}))
     } catch { /* best-effort: if the revoke itself fails, the row is still revocable from the device page */ }
     this.toast.warn(this.t(noticeKey), IMPORTANT_NOTICE_MS)
     void this.clearToken()
@@ -316,56 +320,65 @@ export class AuthService {
     this.routeService.redirect(RoutePage.AUTH_LOGIN)
   }
 
-  /** Clear local session state + the native secure-store token. The local in-memory state is cleared
-   *  synchronously (before the native clear resolves) so isLoggedIn() flips at once. Returns whether the
-   *  NATIVE clear succeeded (browser: always true — no JS-side store; native: false if the keyring/bridge
-   *  delete failed, e.g. the keyring was locked) — logout() surfaces a notice when this is false.
-   *
-   *  Residual (accepted, no retry): if the native clear fails the token stays in the OS store; on the next
-   *  boot restoreSession rehydrates a token the SERVER has already revoked → a brief authenticated flash
-   *  until the first request 401s → redoLoginAuth self-corrects. The token is server-revoked by /auth/logout
-   *  regardless, so this is a transient UX flash, not a security issue. */
-  async clearToken(): Promise<boolean> {
-    this._sessionToken = null
+  /** Synchronous local-state clear: flip the login flag + drop the in-memory trust/keep flags. Does NOT
+   *  touch the native token (Rust `ProxyState.token` / OS secure store) — an in-flight authenticated
+   *  request must still carry the Bearer, so the native clear is ordered after it (see {@link logout}). */
+  private clearLocalSessionState(): void {
     this._trusted = false
     this.loggedIn.set(false)
+  }
+
+  /** Clear the native token (Rust `ProxyState.token` via `clear_session_token` + the OS secure store).
+   *  Returns whether the PERSISTENT (keyring / EncryptedSharedPreferences) clear succeeded (false → the
+   *  logout-failed toast). The Rust in-memory clear is best-effort. */
+  private async clearNativeToken(): Promise<boolean> {
     let nativeOk = true
     if (isAndroidNative()) {
-      try { window.SomsFcm!.setSessionToken(null) } catch { nativeOk = false } // clears EncryptedSharedPreferences
+      // Android: clear Kotlin's EncryptedSharedPreferences (SomsFcm) AND Rust's ProxyState.token. The Rust
+      // clear is needed because login now pushes the token to BOTH stores (setSessionToken) — leaving
+      // ProxyState.token set would keep `api_request` sending the revoked Bearer after logout.
+      try { window.SomsFcm!.setSessionToken(null) } catch { nativeOk = false }
+      try { await tauriInvoke('clear_session_token') } catch { /* ProxyState.token in-memory copy */ }
     } else if (isTauri()) {
-      // Clear the persistent keyring + the in-memory media proxy independently — a locked keyring must not
-      // skip the proxy clear. nativeOk tracks the persistent keyring (the failure that leaves a stale token).
+      // Desktop: clear the persistent keyring + the Rust in-memory token independently — a locked keyring
+      // must not skip the proxy clear. nativeOk tracks the persistent keyring (the failure that leaves a
+      // stale token). (secure_clear_token is a desktop-only command — not reachable on Android.)
       try { await tauriInvoke('secure_clear_token') } catch { nativeOk = false } // idempotent: NoEntry → Ok
-      try { await tauriInvoke('clear_session_token') } catch { /* media-proxy in-memory copy */ }
+      try { await tauriInvoke('clear_session_token') } catch { /* ProxyState.token in-memory copy */ }
     } else {
       this.clearPresenceCookie()
     }
-    this._sessionTokenSub.next(null)
     return nativeOk
+  }
+
+  /** Full clear (local state + native token). Used by {@link redoLoginAuth} / {@link revokeAndBounce},
+   *  where NO authenticated request follows, so the native token can be cleared at once. */
+  async clearToken(): Promise<boolean> {
+    this.clearLocalSessionState()
+    return this.clearNativeToken()
   }
 
   logout() {
     if (!this.isLoggedIn()) return EMPTY
-    // Native: unregister push BEFORE clearing the token, so DELETE /devices/register still carries the
-    // credential (the interceptor injects it from _sessionToken). Best-effort — a stale token is pruned
+    // Native: unregister push BEFORE the token clears, so DELETE /devices/register still carries the
+    // credential (Rust injects the Bearer from ProxyState.token). Best-effort — a stale token is pruned
     // server-side on the next send anyway. Browser: push/webpush are no-ops in the shell.
     this.push.unregister()
     void this.webPush.unregister()
-    // Capture the raw token before clearing (native only — null on browser, where the backend resolves
-    // the session from the httpOnly cookie).
-    const sessionToken = this._sessionToken
-    // clearToken's local-state clear is synchronous (isLoggedIn flips at once); the .then fires once the
-    // native keyring/bridge clear resolves. If it failed (keyring locked) the OS store may still hold the
-    // token → tell the user (the next boot could briefly re-restore it; it self-corrects via 401). No retry:
-    // /auth/logout below revokes the token server-side regardless.
-    this.clearToken().then((nativeOk) => {
-      if (!nativeOk) this.toast.warn(this.t('auth.notice.logoutClearFailed'), IMPORTANT_NOTICE_MS)
-    })
+    // Flip local login state at once so the guard redirects + the UI updates immediately.
+    this.clearLocalSessionState()
     // Drop the in-memory session → UserService's lifecycle effect closes + deletes this user's DB.
     this.userService.clearSession()
-    return this.http.post<LogoutRes>(
-      `${apiPrefix()}/auth/logout`,
-      sessionToken ? { sessionToken } : {},
+    // The logout POST carries the Bearer Rust injects from ProxyState.token (still set — the native clear
+    // is deferred to `finalize` below). The backend resolves the session from the Bearer (native) / cookie
+    // (browser); NO token is placed in the body (JS never holds it). The native token is cleared AFTER the
+    // POST dispatches (finalize runs on complete/error/unsubscribe) so the POST stays authenticated.
+    return this.http.post<LogoutRes>(`${apiPrefix()}/auth/logout`, {}).pipe(
+      finalize(() => {
+        this.clearNativeToken().then((nativeOk) => {
+          if (!nativeOk) this.toast.warn(this.t('auth.notice.logoutClearFailed'), IMPORTANT_NOTICE_MS)
+        })
+      }),
     )
   }
 
@@ -392,8 +405,8 @@ export class AuthService {
     )
   }
 
-  /** List the current user's active sessions. Every request carries the session token (the interceptor),
-   *  so the server can flag the requesting row `isCurrent`. */
+  /** List the current user's active sessions. Every request carries the session token (Rust-injected
+   *  Bearer on native), so the server can flag the requesting row `isCurrent`. */
   getSessions() {
     return this.http.post<{ code: number, message: string, data?: SessionInfo[] }>(
       `${apiPrefix()}/auth/sessions`, {},

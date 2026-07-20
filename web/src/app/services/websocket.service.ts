@@ -90,7 +90,7 @@ export class WebsocketService implements OnDestroy {
       ? new NativeEventTransport(sink)
       : isTauri()
         ? new RustChannelSseTransport(sink)
-        : new WorkerSseTransport(sink, authService);
+        : new WorkerSseTransport(sink);
     // Reactive realtime lifecycle: open the stream only while authenticated, tear it down on logout.
     // Replaces the old eager boot connect() — on the browser cookie path that fetched /events with no
     // session → 401 → force-logout → a redirect that aborted in-flight requests (the "Uncaught
@@ -124,7 +124,9 @@ export class WebsocketService implements OnDestroy {
    *  caller — the boot `connect()` below, `HomeComponent` on login, and `SseLifecycleService`'s
    *  visibility handler. The Tauri path already blocks pre-login via the worker's `need-token`
    *  handshake (the worker awaits the first non-null token before fetching); this gate gives the browser
-   *  cookie path the same "don't connect until authenticated" contract. */
+   *  cookie path the same "don't connect until authenticated" contract. (Under Tauri the desktop
+   *  `RustChannelSseTransport` blocks pre-login in the Rust supervisor's token wait; Android's
+   *  `NativeEventTransport` is driven by Kotlin after login.) */
   public connect() {
     if (!this.authService.isLoggedIn()) return;
     this.transport.start()

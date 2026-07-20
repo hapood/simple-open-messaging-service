@@ -19,7 +19,7 @@
     "start:admin": "npm --prefix admin-web run dev",
     "bundle:package": "node scripts/package-web-bundle.mjs",
     "bundle:package:dev": "npm --prefix web run build -- --configuration development && npm run bundle:package",
-    "dev": "concurrently -n api,web,admin -c blue,green,magenta \"npm run start:api\" \"npm run start:web\" \"npm run start:admin\"",
+    "dev": "concurrently -n bundle,api,web,admin -c cyan,blue,green,magenta \"npm run bundle:package:dev\" \"npm run start:api\" \"npm run start:web\" \"npm run start:admin\"",
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "test": "vitest run",
     "test:watch": "vitest",

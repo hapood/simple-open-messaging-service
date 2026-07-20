@@ -36,7 +36,8 @@ use futures_util::StreamExt;
 use log::{error, warn};
 use sha2::{Digest, Sha256};
 use tauri::http::{Response, StatusCode};
-use tauri::{Emitter, Manager, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
+use tauri::utils::assets::{AssetKey, AssetsIter, CspHash};
+use tauri::{Assets, Emitter, Manager, Runtime, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder};
 use tokio::sync::Notify;
 
 // Desktop SSE supervisor (the Rust-owned /events stream) uses these. Gated so the mobile build (which
@@ -50,12 +51,6 @@ use tokio_util::sync::CancellationToken;
 
 /// The custom URI scheme the frontend rewrites `/uploads/*` media URLs to (see web/.../runtime.ts).
 const MEDIA_SCHEME: &str = "media";
-
-/// The custom URI scheme the frontend rewrites every backend API URL to under the Tauri shell (see
-/// web/.../constants.ts `apiPrefix`). The Rust URI-scheme handler forwards the full request (method,
-/// body, headers) to `${api_origin}` with the Bearer token, so the webview never crosses origins and
-/// `tauri-plugin-http` is unnecessary. Mirrors `media://` (`proxy_media`) but generalizes method+body.
-const API_SCHEME: &str = "api";
 
 /// TCP-connect timeout for EVERY backend reqwest client (`proxy_api`, `upload_stream_file`, the SSE
 /// supervisor, the OTA commands) — set on the client builder in `http_client_for`. Bounds the "backend
@@ -115,7 +110,6 @@ const ACTIVE_HASH_FILENAME: &str = "active.hash";
 struct ProxyState {
     api_origin: Arc<Mutex<String>>,
     token: Arc<Mutex<Option<String>>>,
-    http: reqwest::Client,
     config_path: Arc<Mutex<PathBuf>>,
     /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
     /// this when no token is set, so an `sse_start` issued before login (the facade connects eagerly at
@@ -129,6 +123,10 @@ struct ProxyState {
     /// reuse) on every single request. `(origin, client)`; the origin tag detects a swap. The SSE
     /// supervisor + OTA commands still build per-call clients (infrequent: once per reconnect / once).
     api_http: Arc<Mutex<(String, reqwest::Client)>>,
+    /// The active OTA web-bundle dir (extracted under `app_data_dir/web/<version>/`). Shared with the
+    /// `OtaAssets` resolver — `init_download_web` swaps it, boot `setup()` seeds it, and the NEXT asset
+    /// request serves from the new dir. None → the embedded baseline (`frontendDist`) is served.
+    ota_active: Arc<Mutex<Option<PathBuf>>>,
 }
 
 impl ProxyState {
@@ -224,6 +222,68 @@ fn semver_gte(a: &str, b: &str) -> bool {
     true
 }
 
+// --- OTA asset resolver (runtime web-bundle swap) ----------------------------------------
+//
+// The shell embeds a baseline SPA via `tauri::generate_context!` (frontendDist). OTA updates download a
+// newer bundle, sha256-verify it, and extract it under `app_data_dir/web/<version>/`. To actually SERVE it
+// the webview's asset resolver must read from that dir at request time. `Context::set_assets` can swap the
+// resolver, but it takes `&mut Context` — unreachable from a runtime IPC command (which only has an
+// AppHandle) — so instead a CUSTOM `Assets` impl is installed ONCE at `run()` (before the webview builds),
+// wrapping the embedded baseline as a fallback and holding a shared `active: Arc<Mutex<Option<PathBuf>>>`
+// that `init_download_web` updates. The next request after a swap serves the new bundle; the running page
+// reloads (Settings→About → `location.reload()`) to pick it up. At boot `setup()` seeds `active` from
+// `app_data/web/active`, so a bundle installed on a prior run is served immediately — not lost on restart.
+
+/// A custom `Assets` resolver: serve from the active OTA bundle dir when one is set AND the requested key
+/// exists there, otherwise fall back to the embedded baseline. The fallback is the build-time
+/// `EmbeddedAssets` moved out of `Context.assets` at `run()` — so the shipped baseline is always available
+/// (cold start before any OTA, an OTA dir that doesn't override every key, or a corrupt/missing OTA file).
+struct OtaAssets<R: Runtime> {
+    active: Arc<Mutex<Option<PathBuf>>>,
+    fallback: Box<dyn Assets<R>>,
+}
+
+impl<R: Runtime> Assets<R> for OtaAssets<R> {
+    fn get(&self, key: &AssetKey) -> Option<Cow<'_, [u8]>> {
+        if let Some(dir) = self.active.lock().ok().and_then(|g| g.clone()) {
+            if let Some(bytes) = read_ota_asset(&dir, key.as_ref()) {
+                return Some(Cow::Owned(bytes));
+            }
+        }
+        self.fallback.get(key)
+    }
+    fn iter(&self) -> Box<AssetsIter<'_>> {
+        // Only the embedded set is enumerable (the static list known at build time); OTA-served files are
+        // resolved per-request via `get`. `iter` is not on the serve path, so delegating is correct.
+        self.fallback.iter()
+    }
+    fn csp_hashes(&self, html_path: &AssetKey) -> Box<dyn Iterator<Item = CspHash<'_>> + '_> {
+        // Delegate to the embedded baseline. The enforced CSP is the static `tauri.conf.json` policy
+        // (script-src 'self', style-src 'unsafe-inline'), so per-asset hashes are not load-bearing: the
+        // embedded hashes neither over-restrict (hashes only ADD to the allow-list) nor under-restrict
+        // (script-src 'self' already covers every OTA script) for an OTA-served page.
+        self.fallback.csp_hashes(html_path)
+    }
+}
+
+/// Read one asset (`key`, e.g. `index.html` / `assets/x.js` — the leading slash Tauri may include is
+/// stripped, matching how `AssetKey` is requested) from an OTA bundle dir. Path-traversal-hardened: the
+/// key may not contain `..` or a backslash, and the resolved canonical path must stay within `dir`
+/// (defends against symlinks too), so a malformed/malicious key can never escape to an arbitrary file.
+fn read_ota_asset(dir: &Path, key: &str) -> Option<Vec<u8>> {
+    let rel = key.trim_start_matches('/');
+    if rel.is_empty() || rel.contains("..") || rel.contains('\\') {
+        return None;
+    }
+    let candidate = dir.join(rel);
+    let canon_dir = dir.canonicalize().ok()?;
+    let canon_candidate = candidate.canonicalize().ok()?;
+    if !canon_candidate.starts_with(&canon_dir) {
+        return None;
+    }
+    fs::read(&canon_candidate).ok()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Pre-setup best guess (no app handle yet, so no app-data dir): env, else default. setup() overrides
@@ -233,20 +293,19 @@ pub fn run() {
         .and_then(|s| validate_origin(&s))
         .unwrap_or_else(|| DEFAULT_API_ORIGIN.to_string());
 
+    // The active OTA bundle dir, shared between the `OtaAssets` resolver (installed at `.run` below) and
+    // `ProxyState` (so `init_download_web` + boot `setup()` can swap it via the shared Arc).
+    let ota_active: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let proxy_state = ProxyState {
         api_origin: Arc::new(Mutex::new(initial_origin.clone())),
         token: Arc::new(Mutex::new(None)),
-        http: reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none()) // /uploads is auth-gated; never follow
-            .build()
-            .expect("reqwest client"),
         config_path: Arc::new(Mutex::new(PathBuf::new())),
         token_notify: Arc::new(Notify::new()),
         // Seed the cached API client with the boot origin; rebuilt on the first request after a swap.
         api_http: Arc::new(Mutex::new((initial_origin.clone(), http_client_for(&initial_origin)))),
+        ota_active: ota_active.clone(),
     };
     let proxy_for_media = proxy_state.clone();
-    let proxy_for_api = proxy_state.clone();
 
     let builder = tauri::Builder::default();
 
@@ -293,7 +352,7 @@ pub fn run() {
     #[cfg(mobile)]
     let builder = builder.plugin(tauri_plugin_barcode_scanner::init());
 
-    builder
+    let builder = builder
         .plugin(tauri_plugin_notification::init())
         // media://localhost — proxy /uploads/* to ${api_origin} with the Bearer token (bare <img src>
         // can't set headers; the SameSite=Strict media_token cookie can't cross origins).
@@ -303,19 +362,15 @@ pub fn run() {
                 proxy_media(st, request, responder).await;
             });
         })
-        // api://localhost — proxy EVERY backend request (method + body + headers) to ${api_origin} with
-        // the Bearer token. The webview fetches `api://localhost/api/v1/...` (same custom-scheme family
-        // as media://), so it never crosses origins → no CORS, no tauri-plugin-http. Only normal
-        // request/response lands here (buffered); the desktop SSE stream is owned by the `sse_*`
-        // commands below (a URI-scheme responder can't stream a long-lived body).
-        .register_asynchronous_uri_scheme_protocol(API_SCHEME, move |_app, request, responder| {
-            let st = proxy_for_api.clone();
-            tauri::async_runtime::spawn(async move {
-                proxy_api(st, request, responder).await;
-            });
-        })
-        .manage(proxy_state.clone())
-        .manage(SseSupervisor::new())
+        .manage(proxy_state.clone());
+    // SseSupervisor is #[cfg(desktop)] (the desktop-only reqwest/tokio SSE supervisor — mobile owns the
+    // /events stream natively via Kotlin RealtimeService, so there is no Rust supervisor to manage), so
+    // .manage() it on desktop only. Mirrors the #[cfg(desktop)] single-instance + #[cfg(mobile)] barcode
+    // plugin rebinds just above; without this guard the Android build references a configured-out type
+    // (E0433 cannot find type `SseSupervisor`).
+    #[cfg(desktop)]
+    let builder = builder.manage(SseSupervisor::new());
+    builder
         .invoke_handler({
             #[cfg(desktop)]
             {
@@ -339,6 +394,8 @@ pub fn run() {
                     sse_net,
                     upload_stream_file,
                     report_diagnostics,
+                    api_request,
+                    media_request,
                 ]
             }
             #[cfg(not(desktop))]
@@ -355,6 +412,8 @@ pub fn run() {
                     init_download_web,
                     init_update_status,
                     report_diagnostics,
+                    api_request,
+                    media_request,
                 ]
             }
         })
@@ -378,6 +437,23 @@ pub fn run() {
             }
             *proxy_state.config_path.lock().expect("config_path lock") = config_path;
 
+            // Seed the OTA asset resolver from a previously-installed bundle: if `web/active` names a
+            // version whose extracted dir exists, serve it on this boot. The `OtaAssets` resolver (installed
+            // at `.run`) reads this Arc, so a bundle installed on a prior run is picked up immediately and
+            // is never lost on restart. Best-effort: a missing/empty `active` or a deleted dir just leaves
+            // the embedded baseline served (the normal cold-start state).
+            let web_root = data_dir.join(WEB_DIRNAME);
+            if let Some(ver) = fs::read_to_string(web_root.join(ACTIVE_FILENAME))
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+            {
+                let dir = web_root.join(&ver);
+                if dir.is_dir() {
+                    *proxy_state.ota_active.lock().expect("ota_active lock") = Some(dir);
+                }
+            }
+
             // The single window always loads the bundled SPA (frontendDist → `tauri://localhost`). There
             // is no separate bootstrap and no `somsapp://` origin anymore: the merged frontend owns both
             // first-run config (an in-SPA `/config` route) and the app. OTA bundle updates swap the served
@@ -398,7 +474,17 @@ pub fn run() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run({
+            // Install the OTA asset resolver: move the embedded baseline (`Context.assets` is a pub field)
+            // out and wrap it in `OtaAssets`, which serves the active OTA bundle dir when one is set and
+            // falls back to the embedded baseline otherwise. The shared `ota_active` Arc is the same one
+            // `ProxyState` holds, so `init_download_web` / boot `setup()` swaps take effect on the next
+            // asset request with no `&mut Context` needed at runtime.
+            let mut context = tauri::generate_context!();
+            let embedded = context.assets;
+            context.assets = Box::new(OtaAssets { active: ota_active.clone(), fallback: embedded });
+            context
+        })
         .expect("error while running tauri application");
 }
 
@@ -420,7 +506,10 @@ async fn proxy_media(
     let api_origin = st.api_origin.lock().expect("origin lock").clone();
     let target = format!("{}{}", api_origin, path_and_query);
     let token = st.token.lock().ok().and_then(|g| g.clone());
-    let mut req = st.http.get(&target);
+    // Use the cached per-origin client (the IP/http permissive-TLS posture + a warm pool) — the same client
+    // `api_request` / `media_request` use — so a media load and an API call resolve identically regardless
+    // of whether the origin is a self-signed LAN IP.
+    let mut req = st.api_client(&api_origin).get(&target);
     if let Some(t) = token {
         req = req.header("Authorization", format!("Bearer {}", t));
     }
@@ -456,93 +545,161 @@ fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
         .unwrap()
 }
 
-// --- api:// proxy (generalized forward proxy for ALL backend traffic) ---------------------
+// --- IPC api_request (the webview→backend HTTP transport under Tauri) ---------------------
 
-/// Forward one `api://localhost/...` request to `${api_origin}/...`. Generalizes `proxy_media` beyond a
-/// GET: it forwards the method, the request body, and a whitelist of request headers (so POST/PUT +
-/// multipart uploads serialize correctly), then returns the response.
-///
-/// Auth: PREFER the `Authorization` the webview set (the Angular `AuthInterceptor` adds the Bearer from
-/// the freshest JS session token on every authenticated call), falling back to `ProxyState.token` only
-/// if the webview sent none (covers a custom-scheme header strip + the non-intercepted raw fetches).
-/// Forwarding — not injecting — avoids a race where the first post-login request fires before
-/// `set_session_token` reaches Rust: the interceptor's token is synchronous, so the forwarded header is
-/// always current. `ProxyState.token` stays the source for the SSE supervisor (which has no interceptor).
-///
-/// Uses the CACHED `api_client` (NOT a per-call `http_client_for`) so API calls reuse one connection
-/// pool (TCP+TLS keepalive). `http_client_for`'s per-origin TLS posture (permissive for IP/http) still
-/// applies — it's rebuilt when the cached origin tag changes. Response bodies are buffered
-/// (`.bytes().await`): reqwest auto-decompresses gzip (the `gzip` feature), so `content-encoding` +
-/// `content-length` are stripped from the copied headers and a fresh `content-length` is set from the
-/// buffered bytes — otherwise the webview would try to gunzip already-decompressed JSON. Redirects are
-/// never followed (same security posture as `http_client_for`).
-async fn proxy_api(
-    st: ProxyState,
-    request: tauri::http::Request<Vec<u8>>,
-    responder: UriSchemeResponder,
-) {
-    let path_and_query = match request.uri().path_and_query() {
-        Some(pq) => pq.as_str().to_string(),
-        None => "/".to_string(),
-    };
-    let api_origin = st.api_origin.lock().expect("origin lock").clone();
-    let target = format!("{}{}", api_origin, path_and_query);
-    let method = reqwest::Method::from_bytes(request.method().as_str().as_bytes())
-        .unwrap_or(reqwest::Method::GET);
-    let client = st.api_client(&api_origin);
+/// The webview→backend HTTP transport under the Tauri shell. The frontend `TauriHttpBackend`
+/// (web/.../tauri-http.backend.ts) invokes this instead of `fetch()`: Android's Chromium WebView rejects
+/// non-standard schemes in `fetch()`, so the old `api://` custom-scheme proxy could not be fetched there;
+/// routing through IPC also lets RUST own the session token (JS never touches it). Mirrors what the
+/// former `proxy_api` did, but as an IPC command: build a reqwest request to `${api_origin}${path}`
+/// (`path` already includes `/api/v1…` + query), forward a whitelist of JS headers (NEVER `authorization`
+/// — Rust injects the Bearer from `ProxyState.token`), buffer the response, return status + headers +
+/// UTF-8 body. Uses the cached `api_client` (one connection pool per origin); the body READ is unbounded,
+/// only the headers phase is bounded by `API_HEADERS_TIMEOUT` (connect-only failures are already caught
+/// by `BACKEND_CONNECT_TIMEOUT`). Redirects are never followed (same posture as `http_client_for`).
+#[derive(serde::Serialize)]
+struct ApiRequestResult {
+    status: u16,
+    headers: std::collections::HashMap<String, String>,
+    body: String,
+}
+
+#[tauri::command]
+async fn api_request(
+    proxy: tauri::State<'_, ProxyState>,
+    method: String,
+    path: String,
+    headers: std::collections::HashMap<String, String>,
+    body: Option<Vec<u8>>,
+) -> Result<ApiRequestResult, String> {
+    let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let target = format!("{}{}", api_origin, path);
+    let method = reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::GET);
+    let client = proxy.api_client(&api_origin);
     let mut req = client.request(method, &target);
-    // Forward the auth + content headers the webview set. `authorization` comes from the AuthInterceptor
-    // (freshest JS token); only if absent do we inject from ProxyState.token (raw fetches / public paths).
-    let auth_incoming = request.headers().get("authorization").cloned();
-    if let Some(a) = auth_incoming {
-        req = req.header("authorization", a);
-    } else if let Some(t) = st.token.lock().ok().and_then(|g| g.clone()) {
+    // Inject the Bearer from Rust's held token ONLY. JS does not pass `authorization` (the token never
+    // reaches JS); when no token is set (pre-login / public path) the request goes out unauthenticated
+    // and the backend's @Public() gate decides. This — not forwarding a JS header — is what keeps the
+    // token out of JS; the login flow awaits `set_session_token` so the token is set before the first
+    // authenticated request (closing the race the old proxy_api papered over by forwarding JS's header).
+    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
         req = req.header("authorization", format!("Bearer {}", t));
     }
-    for name in ["content-type", "accept", "accept-language", "range"] {
-        if let Some(v) = request.headers().get(name) {
-            req = req.header(name, v.clone());
+    // Forward only a whitelist of JS-supplied headers; `authorization` is intentionally NOT in the list.
+    // `x-request-id` is the correlation id the JS `correlationIdInterceptor` stamps — forward it so the
+    // backend honors it as request.id (→ pino req.id + the echoed response header), making a webview
+    // `[http] … req=<id>` failure greppable in the server logs for the same request.
+    for name in ["content-type", "accept", "accept-language", "range", "x-request-id"] {
+        if let Some(v) = headers.get(name) {
+            req = req.header(name, v);
         }
     }
-    let body = request.body().clone();
-    if !body.is_empty() {
-        req = req.body(body);
+    if let Some(b) = body {
+        req = req.body(b);
     }
     // Bound the HEADERS phase (connect + send + server processing). The body READ below is unbounded — a
     // slow/large download is legitimate and must not be killed. Connect-only failures are already caught
-    // by `BACKEND_CONNECT_TIMEOUT` on the client; this catches "connected but the server never responds".
+    // by `BACKEND_CONNECT_TIMEOUT` on the cached client; this catches "connected but the server never
+    // responds". The JS side maps the `Err` to an HttpErrorResponse with status 0 (`[http] network`).
     let upstream = match tokio::time::timeout(API_HEADERS_TIMEOUT, req.send()).await {
         Ok(Ok(r)) => r,
-        // Log the reqwest error detail (DNS / TLS / refused) the JS side can't see — it only observes the
-        // resulting 502/504 status (logged by the web httpTraceInterceptor). `request` is only borrowed
-        // through this fn, never moved, so its method is still readable here.
         Ok(Err(e)) => {
-            warn!("proxy_api {} {target} upstream send failed: {e}", request.method().as_str());
-            responder.respond(empty(StatusCode::BAD_GATEWAY));
-            return;
+            warn!("api_request {target} upstream send failed: {e}");
+            return Err(format!("api_request send: {e}"));
         }
         Err(_) => {
-            warn!("proxy_api {} {target} upstream headers timed out", request.method().as_str());
-            responder.respond(empty(StatusCode::GATEWAY_TIMEOUT));
-            return;
+            warn!("api_request {target} upstream headers timed out");
+            return Err(format!("api_request timeout: {target}"));
         }
     };
-    let status = upstream.status();
-    let mut builder = Response::builder().status(status);
+    let status = upstream.status().as_u16();
+    let mut out_headers = std::collections::HashMap::new();
     for (name, value) in upstream.headers().iter() {
-        // Drop hop-by-hop + `content-encoding`/`content-length`: the bytes are already
-        // decompressed by reqwest, and the responder derives length from the body Vec below.
+        // Drop hop-by-hop + content-encoding/length: reqwest already decompressed the body, and the JS
+        // side derives length from the returned bytes. Multiple same-name headers collapse (last wins) —
+        // acceptable for /api/v1 JSON responses (no repeated headers in practice).
         if matches!(
             name.as_str(),
             "transfer-encoding" | "connection" | "keep-alive" | "content-encoding" | "content-length"
         ) {
             continue;
         }
-        builder = builder.header(name.clone(), value.clone());
+        if let Ok(vs) = value.to_str() {
+            out_headers.insert(name.as_str().to_string(), vs.to_string());
+        }
     }
-    let bytes = upstream.bytes().await.unwrap_or_default();
-    builder = builder.header("content-length", bytes.len().to_string());
-    responder.respond(builder.body(Cow::Owned(bytes.to_vec())).unwrap_or_else(|_| empty(status)));
+    let bytes = upstream.bytes().await.map_err(|e| format!("api_request read: {e}"))?;
+    Ok(ApiRequestResult {
+        status,
+        headers: out_headers,
+        body: String::from_utf8_lossy(&bytes).into_owned(),
+    })
+}
+
+// --- IPC media_request (the webview→backend MEDIA transport under Tauri) ------------------
+
+/// The webview→backend MEDIA transport under the Tauri shell. The avatar repository
+/// (`AvatarRepository.fetchBlob`) does `http.get(assetUrl(path), { responseType: 'blob' })`; `assetUrl`
+/// rewrites `/uploads/*` to `media://localhost/...` under Tauri. `media://` works for a bare `<img src>`
+/// (the resource loader consults `shouldInterceptRequest` → the `proxy_media` scheme handler), but
+/// Android's Chromium WebView rejects non-standard schemes in `fetch()`, so the BLOB fetch path the
+/// avatar cache uses could not fetch `media://` there. `TauriHttpBackend` therefore routes `media://`
+/// requests to THIS command: a reqwest GET to `${api_origin}${path}` with the Bearer injected from
+/// `ProxyState.token` (so JS still never touches the token), returning the raw bytes. Mirrors `proxy_media`
+/// but as an IPC command returning bytes (not a scheme-handler `Response`); reuses the cached per-origin
+/// `api_client` (the IP/http permissive-TLS posture + one warm connection pool), so uploads served from a
+/// self-signed LAN IP server resolve the same way API calls do.
+#[derive(serde::Serialize)]
+struct MediaRequestResult {
+    status: u16,
+    content_type: Option<String>,
+    body: Vec<u8>,
+}
+
+#[tauri::command]
+async fn media_request(
+    proxy: tauri::State<'_, ProxyState>,
+    path: String,
+) -> Result<MediaRequestResult, String> {
+    // Only /uploads/* is ever proxied as media (parity with `proxy_media`'s gate); reject anything else so
+    // the command can't be turned into an arbitrary-origin GET by a compromised renderer.
+    if !path.starts_with("/uploads/") {
+        return Err(format!("media_request: only /uploads/* allowed (got {path})"));
+    }
+    let api_origin = proxy.api_origin.lock().expect("origin lock").clone();
+    let target = format!("{}{}", api_origin, path);
+    let mut req = proxy.api_client(&api_origin).get(&target);
+    // Inject the Bearer from Rust's held token ONLY (same rule as `api_request` — JS never passes the token).
+    if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
+        req = req.header("authorization", format!("Bearer {}", t));
+    }
+    // Bound the HEADERS phase; the body READ (a large image) is unbounded — a slow download is legitimate.
+    let upstream = match tokio::time::timeout(API_HEADERS_TIMEOUT, req.send()).await {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
+            warn!("media_request {target} send failed: {e}");
+            return Err(format!("media_request send: {e}"));
+        }
+        Err(_) => {
+            warn!("media_request {target} timed out");
+            return Err(format!("media_request timeout: {target}"));
+        }
+    };
+    let status = upstream.status().as_u16();
+    let content_type = upstream
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    let bytes = upstream
+        .bytes()
+        .await
+        .map_err(|e| format!("media_request read: {e}"))?;
+    Ok(MediaRequestResult {
+        status,
+        content_type,
+        body: bytes.to_vec(),
+    })
 }
 
 /// Desktop-only streaming upload: POST a file straight from its on-disk `path` to `${origin}${endpoint}`
@@ -1702,6 +1859,12 @@ async fn init_download_web(
     fs::rename(&hash_tmp, web_root.join(ACTIVE_HASH_FILENAME))
         .map_err(|e| format!("active hash rename: {e}"))?;
     gc_web_versions(&web_root, &manifest.web_version);
+
+    // 3f2. swap the served assets to the freshly-installed bundle. The `OtaAssets` resolver (installed at
+    // `.run`) reads this Arc on the next request, so the new build is served after the running page reloads
+    // (Settings→About → location.reload). THIS is the step that was missing: without it the download +
+    // extract wrote to disk but the webview kept serving the embedded baseline, so an OTA never took effect.
+    *state.ota_active.lock().expect("ota_active lock") = Some(final_dir.clone());
 
     // 3g. persist origin (media proxy Arc + api_origin file)
     persist_origin(&state, &origin)?;

@@ -4,20 +4,24 @@ import { AuthInterceptor } from './auth.interceptor';
 import { AuthService } from './services/auth.service';
 
 /**
- * AuthInterceptor — the single session-token auth path.
+ * AuthInterceptor — the session-auth ERROR handler (401 → re-login).
+ *
+ * The session credential is NO LONGER attached here: under the Tauri shell the Rust `api_request`
+ * transport injects `Authorization: Bearer` from its held `ProxyState.token` (JS never touches the token),
+ * and in the browser the httpOnly session cookie auto-attaches same-origin. So this interceptor is now a
+ * pure pass-through whose only side-effect is reacting to a 401 (revoked/expired session) by re-logging in
+ * and DROPPING the failed request.
  *
  * Pure unit (AuthInterceptor + a stub AuthService, no TestBed):
- *  - a protected request with a held session token → that token is attached as Bearer;
- *  - a public path (login/logout/register/health) → no token attached;
- *  - no session token held → the request goes out unauthenticated (the server 401s → re-login);
- *  - a 401 on a protected request → redoLoginAuth fires and the request is DROPPED (EMPTY), not retried;
+ *  - a protected request passes through UNCHANGED (no header added by the interceptor — auth is the
+ *    transport's job, not this layer's);
+ *  - a 401 fires redoLoginAuth and DROPS the request (EMPTY), not retried;
  *  - a non-401 error propagates unchanged.
  */
-describe('AuthInterceptor (session token)', () => {
-  /** Build an interceptor around a stub AuthService with the given token state. */
-  function makeInterceptor(sessionToken: string | null) {
+describe('AuthInterceptor (401 → re-login)', () => {
+  /** Build an interceptor around a stub AuthService (only redoLoginAuth is exercised). */
+  function makeInterceptor() {
     const auth = {
-      sessionToken,
       redoLoginAuth: jasmine.createSpy('redoLoginAuth'),
     } as unknown as AuthService;
     return { ic: new AuthInterceptor(auth), auth };
@@ -36,26 +40,18 @@ describe('AuthInterceptor (session token)', () => {
     return captured!;
   }
 
-  it('attaches the held session token to a protected request', () => {
-    const { ic } = makeInterceptor('sess-123');
+  it('passes a request through UNCHANGED (auth is the transport layer\'s job, not this interceptor\'s)', () => {
+    const { ic } = makeInterceptor();
     const req = new HttpRequest('GET', '/api/v1/messages', {});
-    expect(captureHandled(ic, req).headers.get('Authorization')).toBe('Bearer sess-123');
-  });
-
-  it('does NOT attach a token to a public path (login)', () => {
-    const { ic } = makeInterceptor('sess-123');
-    const req = new HttpRequest('POST', '/api/v1/auth/login', {});
-    expect(captureHandled(ic, req).headers.has('Authorization')).toBe(false);
-  });
-
-  it('sends an unauthenticated request when no session token is held', () => {
-    const { ic } = makeInterceptor(null);
-    const req = new HttpRequest('GET', '/api/v1/messages', {});
-    expect(captureHandled(ic, req).headers.has('Authorization')).toBe(false);
+    const handled = captureHandled(ic, req);
+    // No Authorization header is added here — under Tauri the Rust `api_request` IPC injects the Bearer;
+    // in the browser the httpOnly cookie auto-attaches. The interceptor must not duplicate that.
+    expect(handled.headers.has('Authorization')).toBe(false);
+    expect(handled.url).toBe('/api/v1/messages');
   });
 
   it('a 401 fires redoLoginAuth and DROPS the request (no renew-retry)', () => {
-    const { ic, auth } = makeInterceptor('sess-123');
+    const { ic, auth } = makeInterceptor();
     const req = new HttpRequest('GET', '/api/v1/messages', {});
     const next: HttpHandler = {
       handle: () => throwError(() => new HttpErrorResponse({ status: 401 })),
@@ -73,7 +69,7 @@ describe('AuthInterceptor (session token)', () => {
   });
 
   it('a non-401 error propagates unchanged (no re-login)', () => {
-    const { ic, auth } = makeInterceptor('sess-123');
+    const { ic, auth } = makeInterceptor();
     const req = new HttpRequest('GET', '/api/v1/messages', {});
     const next: HttpHandler = {
       handle: () => throwError(() => new HttpErrorResponse({ status: 500 })),

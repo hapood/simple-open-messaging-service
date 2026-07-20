@@ -5,6 +5,8 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { WebsocketService, ConnectionState } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom } from 'rxjs';
 
 /** Result of a manual server-health probe. */
 interface HealthResult {
@@ -77,6 +79,7 @@ export class SettingsConnectionComponent {
   private readonly ws = inject(WebsocketService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
+  private readonly http = inject(HttpClient);
 
   /** Last health-probe result, or null before the first check. */
   readonly health = signal<HealthResult | null>(null);
@@ -155,18 +158,17 @@ export class SettingsConnectionComponent {
     return this.transloco.translate('settings.healthFailDetail', { error: h.error ?? '' });
   });
 
-  /** Probe `GET /api/v1/health` (public), measure round-trip latency, store the result. `fetch` (not
-   *  HttpClient) on purpose: it's a public endpoint, so bypassing the auth interceptor is correct and
-   *  keeps this independent of the authenticated SSE stream's state. */
+  /** Probe `GET /api/v1/health` (public), measure round-trip latency, store the result. Goes through
+   *  HttpClient (→ the TauriHttpBackend under Tauri / the stock fetch backend in the browser) so it works
+   *  on Android, where a raw fetch of an API path would miss the (removed) `api://` proxy. Independent of
+   *  the authenticated SSE stream: health can be OK while the stream reconnects. */
   async check(): Promise<void> {
     if (this.checking()) return;
     this.checking.set(true);
     const t0 = performance.now();
     try {
-      const res = await fetch(`${apiPrefix()}/health`);
+      const json = await firstValueFrom(this.http.get<{ data?: { version?: string } }>(`${apiPrefix()}/health`));
       const ms = Math.round(performance.now() - t0);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
       const version = json?.data?.version ?? '';
       this.health.set({ ok: true, version, ms });
     } catch (e) {

@@ -3,6 +3,7 @@ import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
 import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
+import { firstValueFrom } from 'rxjs';
 
 /**
  * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
@@ -74,8 +75,7 @@ export class PushService {
       gcmSenderId?: string;
     } | null = null;
     try {
-      const res = await fetch(`${apiPrefix()}/push/firebase-config`);
-      const json = await res.json();
+      const json = await firstValueFrom(this.http.get<{ data?: { configured: boolean; apiKey?: string; projectId?: string; appId?: string; gcmSenderId?: string } | null }>(`${apiPrefix()}/push/firebase-config`));
       data = json?.data ?? null;
     } catch {
       // Network error / server unreachable — keep the current native config (best-effort, don't kill FCM).

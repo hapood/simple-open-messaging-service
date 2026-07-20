@@ -21,6 +21,7 @@ import {
   setSessionCookies,
   clearSessionCookies,
 } from '../auth/media-token.js';
+import { extractBearer } from '../auth/bearer.js';
 import {
   SessionTokenService,
   type SessionClient,
@@ -122,9 +123,15 @@ export class AuthController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     // @Public (callable even with a dead/expired credential, so logout always clears the cookie).
-    // Identify the session from the body (native holds the raw token) OR the cookie (browser pure
-    // httpOnly — the token is JS-unreadable, so it can't be placed in the body).
-    const token = dto.sessionToken ?? req.cookies?.[MEDIA_TOKEN_COOKIE];
+    // Identify the session from the body, the cookie, OR the Bearer header — in priority order. The Bearer
+    // path is what native clients (the Tauri shell's `api_request` IPC injects it from its held token) now
+    // use: JS no longer places the token in the body, so the backend resolves it from the header instead.
+    // The cookie path covers the pure-httpOnly browser (the token is JS-unreadable there); the body path is
+    // retained for any older client still sending it.
+    const token =
+      dto.sessionToken ??
+      req.cookies?.[MEDIA_TOKEN_COOKIE] ??
+      extractBearer(req.headers['authorization']);
     if (token) {
       await this.sessionTokens.revoke(token);
     }

@@ -137,8 +137,19 @@ export class SettingsDevicesComponent implements OnInit {
     try {
       const { scan, Format } = await import('@tauri-apps/plugin-barcode-scanner');
       content = (await scan({ formats: [Format.QRCode], cameraDirection: 'back' })).content;
-    } catch {
-      return; // scanner dismissed / camera permission denied — nothing to surface
+    } catch (err) {
+      // The plugin rejects with the message "cancelled" when the user dismisses the scanner (back button /
+      // tapping outside) — the ONLY benign outcome, kept silent. Every other rejection is a real failure
+      // that was previously swallowed here, making the button look dead: camera permission denied,
+      // "Something went wrong configuring the BarcodeScanner", the ML Kit recognition model failing to
+      // load on a device without Google Play Services, a capability rejection, or the lazy chunk failing
+      // to load. Surface those — toast + console.error, so they also land in edge://inspect / adb logcat —
+      // instead of eating them.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/cancel/i.test(msg)) return;
+      console.error('[linkDevice] barcode scan failed:', err);
+      this.toast('session.linkDeviceFailed');
+      return;
     }
     if (!content) return;
     // Step 1 — mark scanned so the desktop flips to "confirm on your phone".

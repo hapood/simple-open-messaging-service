@@ -9,14 +9,8 @@ import { IS_PUBLIC, IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH } from '../common/publi
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BearerAuthService } from './bearer-auth.service.js';
+import { extractBearer } from './bearer.js';
 import { MEDIA_TOKEN_COOKIE } from './media-token.js';
-
-/** Extract the token from an `Authorization: Bearer <token>` header, case-insensitive. */
-function extractBearer(header: unknown): string | undefined {
-  if (typeof header !== 'string') return undefined;
-  const match = /^\s*Bearer\s+(.+?)\s*$/i.exec(header);
-  return match ? match[1] : undefined;
-}
 
 /**
  * Global authentication guard, registered as `APP_GUARD` in `AuthModule`. Every route is authenticated

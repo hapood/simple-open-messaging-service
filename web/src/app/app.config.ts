@@ -1,6 +1,6 @@
 import { APP_INITIALIZER, ApplicationConfig, CSP_NONCE, ErrorHandler, isDevMode, provideZonelessChangeDetection } from '@angular/core';
 import { provideRouter, withComponentInputBinding } from '@angular/router';
-import { provideHttpClient, withInterceptorsFromDi, withInterceptors, withFetch, HTTP_INTERCEPTORS } from '@angular/common/http';
+import { provideHttpClient, withFetch, withInterceptorsFromDi, withInterceptors, HTTP_INTERCEPTORS, HttpBackend } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
 import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
 import { provideServiceWorker } from '@angular/service-worker';
@@ -13,6 +13,7 @@ import { AuthService } from './services/auth.service';
 import { routes } from './app.routes';
 import { InlineTranslocoLoader } from './i18n/transloco.loader';
 import { isTauri } from './services/runtime';
+import { TauriHttpBackend } from './tauri-http.backend';
 
 /**
  * Read the CSP nonce the Tauri shell stamped onto an inline element at load time, so Angular can replay
@@ -56,24 +57,29 @@ export const appConfig: ApplicationConfig = {
     // See global-error.handler.ts.
     { provide: ErrorHandler, useClass: GlobalErrorHandler },
     provideRouter(routes, withComponentInputBinding()),
-    // withFetch(): use the Fetch backend instead of XHR. Under the Tauri shell every API URL is
-    // `api://localhost/...` (constants.ts `apiPrefix`), served by the Rust URI-scheme proxy — the
-    // webview's own fetch dispatches custom schemes natively (same as it already does for `media://`
-    // in avatar-cache.service), so NO fetch override is needed (the old `installNativeFetch` +
-    // tauri-plugin-http path is gone). The Fetch backend is the only HttpClient backend that routes
-    // through `globalThis.fetch`. Auth: the browser auto-attaches the httpOnly `media_token` cookie
-    // same-origin; under Tauri the Rust proxy injects the Bearer from ProxyState.token (the
-    // AuthInterceptor's own Bearer is redundant but harmless). Upload-progress events are not consumed
-    // anywhere, so the XHR→fetch switch is regression-free.
+    // HTTP transport: a custom `HttpBackend` (TauriHttpBackend) is the terminus of the interceptor chain.
+    // Browser: delegates to Angular's stock FetchBackend (same-origin fetch; httpOnly cookie authenticates).
+    // Tauri (desktop + Android): routes /api/v1 through the Rust `api_request` IPC command — Android's
+    // WebView rejects the old `api://` custom scheme in fetch(), and Rust injects the Bearer so JS never
+    // touches the session token. Upload-progress events are not consumed, so the backend swap is safe.
     provideHttpClient(
-      withInterceptorsFromDi(),
+      // `withFetch()` registers `FetchBackend` on its own token AND binds `HttpBackend → FetchBackend`.
+      // Both matter here: `TauriHttpBackend` (our `HttpBackend` override below) does `inject(FetchBackend)`
+      // to delegate the browser path + non-`/api/v1` requests, so `FetchBackend` MUST be a resolvable token.
+      // Without `withFetch()`, `provideHttpClient` only provides `HttpXhrBackend` and leaves the
+      // `FetchBackend` token unbound → NG0201 at `TauriHttpBackend` construction. Our later
+      // `{ provide: HttpBackend, useClass: TauriHttpBackend }` wins (last provider), so `FetchBackend`
+      // stays the shared delegate while `TauriHttpBackend` is the chain terminus. Upload-progress events
+      // are not consumed anywhere (see message.service.ts), so the fetch transport is safe.
       withFetch(),
+      withInterceptorsFromDi(),
       // Always-on HTTP visibility: log every FAILED request to the webview console (5xx + status-0
       // network → error, 4xx → warn; the cancel/abort trace stays dev-only inside the file). Runs INNER
       // to AuthInterceptor, so it logs first then rethrows and the 401 re-login side-effect still fires.
       // See http-trace.interceptor.ts.
       withInterceptors([correlationIdInterceptor, httpTraceInterceptor]),
     ),
+    { provide: HttpBackend, useClass: TauriHttpBackend },
     provideAnimationsAsync(),
     provideTransloco({
       config: {
