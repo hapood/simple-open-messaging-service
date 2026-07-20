@@ -9,6 +9,16 @@ export interface FcmStatus {
   lastCheck: number;
 }
 
+/** System notification-permission status returned by the `SomsFcm.getNotificationStatus` bridge. */
+export interface NotifStatus {
+  /** Master app-level notification toggle (areNotificationsEnabled) — covers pre-13 default-on and
+   *  post-13 granted. False = the OS will suppress every one of our notifications. */
+  enabled: boolean;
+  /** Whether requesting the permission right now would surface the system prompt (Android 13+, not yet
+   *  enabled, and not permanently denied). False → the panel must route the user to system settings. */
+  canRequest: boolean;
+}
+
 /**
  * Controls Android's background message-delivery preferences — the WorkManager 6h poller and the
  * dataSync foreground service — plus the FCM availability readout. Mirrors the ThemeService /
@@ -35,6 +45,10 @@ export class BackgroundSyncService {
 
   /** FCM availability snapshot, read once at boot. Refreshed by [requestFcmCheck]. */
   readonly fcmStatus = signal<FcmStatus>(this.readFcmStatus());
+
+  /** System notification-permission snapshot, read once at boot. Refreshed by [refreshNotifStatus] (panel
+   *  open, window focus after returning from system settings, and after [requestPermission]). */
+  readonly notifStatus = signal<NotifStatus>(this.readNotifStatus());
 
   setEnabled(enabled: boolean): void {
     this.enabled.set(enabled);
@@ -66,6 +80,37 @@ export class BackgroundSyncService {
       return { hasToken: !!j.hasToken, lastCheck: Number(j.lastCheck) || 0 };
     } catch {
       return { hasToken: false, lastCheck: 0 };
+    }
+  }
+
+  /** Re-read the system notification status from native. Call on panel open and on window focus (the user
+   *  returns from system settings with a changed toggle). No-op off-Android (benign default). */
+  refreshNotifStatus(): void {
+    this.notifStatus.set(this.readNotifStatus());
+  }
+
+  /** Fire the system POST_NOTIFICATIONS prompt (Android 13+, only when `canRequest`). The prompt is modal
+   *  and resolves on the user's timing, so the status is re-read after a short delay to catch the common
+   *  fast-response case; the panel's focus listener catches a slower response or a system-settings round-trip. */
+  requestPermission(): void {
+    window.SomsFcm?.requestNotificationPermission?.();
+    window.setTimeout(() => this.notifStatus.set(this.readNotifStatus()), 800);
+  }
+
+  /** Open the system per-app notification settings — the manual path when `canRequest` is false
+   *  (permanently denied on 13+, or pre-13 where there's no runtime prompt). */
+  openSystemSettings(): void {
+    window.SomsFcm?.openNotificationSettings?.();
+  }
+
+  private readNotifStatus(): NotifStatus {
+    const raw = typeof window !== 'undefined' ? window.SomsFcm?.getNotificationStatus?.() : undefined;
+    if (!raw) return { enabled: true, canRequest: false };
+    try {
+      const j = JSON.parse(raw) as Partial<NotifStatus>;
+      return { enabled: !!j.enabled, canRequest: !!j.canRequest };
+    } catch {
+      return { enabled: true, canRequest: false };
     }
   }
 }

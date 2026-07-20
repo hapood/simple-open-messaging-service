@@ -41,3 +41,73 @@
     // any viewport / status-bar height without writing a fixed height.
   }
 }
+
+// Shared auth form-card surface (password / OTP / QR). Declarations only — include inside the page's own
+// card selector so each page keeps its class name (.login-card / .qr-card) and can extend it (e.g. .qr-card
+// adds align-items: center to center its content). max-width matches .auth-footer so the two align.
+@mixin auth-card {
+  position: relative;
+  width: 100%;
+  max-width: 380px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: 40px 32px 32px;
+  background: var(--app-surface);
+  border-radius: var(--app-radius-lg);
+  box-shadow: 0 12px 40px rgba(15, 40, 80, 0.10);
+}
+
+// Borderless brand-colored text link — the shared link / CTA treatment across auth pages (method
+// switchers, register CTA). Declarations only so callers can extend (e.g. an inline link that needs a
+// leading margin). Integer-px line-height per the project CSS rule so the one-line box is a whole pixel
+// for any locale / wrap count.
+@mixin auth-link {
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 14px;
+  line-height: 24px;
+  color: var(--app-brand);
+  cursor: pointer;
+}
+
+// Shared auth footer row, mounted BELOW the form card: login-method switchers on the LEFT (as .link-btn
+// text links), Tauri server-config link on the RIGHT. Emitted as a self-contained block of rules —
+// @include at the TOP LEVEL of a page's component SCSS so Angular's emulated encapsulation scopes the
+// rules to that component. Every auth page therefore gets the SAME switch-button position: outside the
+// card, bottom-left. The row is always mounted with a reserved min-height so the async switcher
+// appearance (switchers read false until /config lands) and the browser build (no server link) fill a
+// pre-reserved line instead of growing the layout — no init-time height jump.
+@mixin auth-footer {
+  .auth-footer {
+    width: 100%;
+    max-width: 380px;
+    margin-top: 12px;
+    min-height: 24px;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .auth-footer__methods {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .link-btn {
+    @include auth-link;
+  }
+
+  .link-btn:hover {
+    text-decoration: underline;
+  }
+
+  // <app-icon matButtonIcon> seats the gear in the button's leading-icon projection slot; mirror
+  // Material's icon spacing token so the glyph isn't flush against the label.
+  .server-link app-icon {
+    margin-right: var(--mat-button-text-icon-spacing, 8px);
+  }
+}

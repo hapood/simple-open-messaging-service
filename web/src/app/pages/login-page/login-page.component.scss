@@ -123,28 +123,10 @@
   }
 }
 
-// Login-method switcher (password ↔ one-time-code ↔ QR). Shown only when >1 method is available.
-.method-switch {
-  align-self: center;
-  margin-top: 10px;
-}
-
-// Tauri-only entry to the backend-URL config page (browser build never renders it). It's a Material
-// text button (<a mat-button>) so the look is owned by the M3 button styles (color tracks the brand
-// rebinding); here we only seat it below the login form and center it. Integer px per the CSS rule.
-.server-link {
-  align-self: center;
-  margin-top: 12px;
-}
-
-// <app-icon matButtonIcon> seats the gear in the button's leading-icon projection slot, making it a
-// direct flex child of the button — so Material centers it geometrically (align-items: center) rather
-// than baseline-fudging it inside .mdc-button__label. Material's own icon *spacing*, though, keys off
-// .mat-icon and so doesn't fire for our custom host; mirror its spacing token so the glyph isn't flush
-// against the label.
-.server-link app-icon {
-  margin-right: var(--mat-button-text-icon-spacing, 8px);
-}
+// Footer row below the form (login-method switchers left, server-config link right) — the shared
+// auth-footer block, so the password page's switch buttons sit in the SAME position as the OTP/QR
+// pages: outside the card, bottom-left.
+@include auth-footer;
 
 // Below the split breakpoint the side <app-auth-brand> panel hides itself, so the compact form-brand
 // takes over identity. Same threshold as the auth-shell mixin + auth-brand.component.scss.

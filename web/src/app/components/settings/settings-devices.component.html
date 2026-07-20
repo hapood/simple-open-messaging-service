@@ -20,19 +20,19 @@
       </div>
     }
 
-    <div class="settings-card">
+    <div class="settings-card dev-card">
       @for (s of list(); track s.id) {
         <div class="dev-row" [class.current]="s.isCurrent">
           <div class="dev-head">
             <app-icon class="lead" [type]="AppIconType.DEVICES" [style]="{ width: '22px', height: '22px' }"></app-icon>
             <span class="dev-name">{{ deviceLabel(s) }}</span>
             @if (s.isCurrent) {
-              <span class="badge current">{{ 'common.thisDevice' | transloco }}</span>
+              <span class="status-pill active">{{ 'common.thisDevice' | transloco }}</span>
             } @else {
-              <span class="badge">{{ clientLabel(s.client) }}</span>
+              <span class="status-pill">{{ clientLabel(s.client) }}</span>
             }
             @if (s.trusted) {
-              <span class="badge trusted">{{ 'session.trusted' | transloco }}</span>
+              <span class="status-pill trusted">{{ 'session.trusted' | transloco }}</span>
             }
           </div>
 

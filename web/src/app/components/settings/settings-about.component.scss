@@ -1,0 +1,46 @@
+// Settings → About sub-page styles. Pulls in the shared M3 group/card shell (kept scoped by Angular's
+// view encapsulation) and layers the client-update card the category list doesn't need. All vertical
+// metrics are integer px (project rule); colors are theme tokens only (each has a dark override).
+@use './_settings-shared.scss' as s;
+
+@include s.settings-groups;
+
+// The web-bundle update card — a status block (progress bar / outcome / prompt) above its action button.
+.update-card {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+}
+
+.update-bar {
+  margin-top: 4px;
+}
+
+.update-readout {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--app-text-muted);
+}
+
+.update-warn,
+.update-ok,
+.update-error {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.update-warn {
+  color: var(--app-warning);
+}
+
+.update-ok {
+  color: var(--app-success);
+}
+
+.update-error {
+  color: var(--app-danger);
+}

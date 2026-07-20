@@ -130,6 +130,36 @@ $dark-theme: mat.define-theme((
   white-space: nowrap;
 }
 
+/* === Snackbar: lift the bottom-centered toast clear of the Android gesture/nav bar. ===
+ * Every MatSnackBar renders in the global CDK overlay (outside any component's view encapsulation), so the
+ * safe-area lift can't live in component SCSS. Angular Material's default sits the container flush at the
+ * viewport bottom (an 8px margin on .mat-mdc-snack-bar-container), which overlapped the Android system
+ * gesture/navigation bar and read as "too low". The native shell publishes the real inset as
+ * --soms-safe-bottom on :root (services/runtime.ts; env(safe-area-inset-*) is 0 on the Android WebView), so
+ * the overlay container inherits it here. The +8px preserves Material's default bottom gap where the safe
+ * area is 0 (browser/desktop → visually unchanged). The compound selector out-specifies Material's own
+ * .mat-mdc-snack-bar-container margin rule without resorting to !important. */
+.soms-snack-bar.mat-mdc-snack-bar-container {
+  margin-bottom: calc(var(--soms-safe-bottom, 0px) + 8px);
+}
+
+/* === QR scanner overlay: make the app transparent so the native camera shows through. ===
+ * The barcode-scanner plugin is invoked with `windowed: true`, which calls webView.bringToFront() and
+ * sets the WebView background transparent — so the live CameraX preview is visible wherever the Angular
+ * markup is transparent. But <body> paints an opaque --app-bg (below) and the in-flow app (the Settings
+ * aside, dialogs, snackbars) is opaque too, which would otherwise block the camera. While the scanner is
+ * open, QrScannerService adds `qr-scanning` to <html>:
+ *   - body → transparent (the camera is the background);
+ *   - app-root → visibility:hidden (its pixels no longer paint, keeping layout/stacking intact);
+ *   - every CDK overlay pane EXCEPT the scanner's own (.qr-scan-pane) → visibility:hidden, so any open
+ *     dialog / snackbar stops occluding the camera. The scanner pane keeps its .qr-scan-pane marker and
+ *     its transparent :host, so its scrim + cutout + chrome draw over the feed. Removed the instant the
+ *     overlay disposes. visibility:hidden (not display:none) is chosen because it keeps the CDK overlay
+ *     container's layout stable and lets the scanner pane animate out cleanly. */
+html.qr-scanning body { background-color: transparent; }
+html.qr-scanning app-root { visibility: hidden; }
+html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) { visibility: hidden; }
+
 html,
 body {
   height: 100%;

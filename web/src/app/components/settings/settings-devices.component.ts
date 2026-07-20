@@ -7,6 +7,7 @@ import dayjs from 'dayjs';
 import { AuthService, type SessionClient, type SessionInfo } from '../../services/auth.service';
 import { RouteService, PopupType } from '../../services/route.service';
 import { LanguageService } from '../../services/language.service';
+import { QrScannerService } from '../../services/qr-scanner.service';
 import { isAndroidNative } from '../../services/runtime';
 import { IconComponent, AppIconType } from '../icon/icon.component';
 
@@ -31,6 +32,7 @@ import { IconComponent, AppIconType } from '../icon/icon.component';
 export class SettingsDevicesComponent implements OnInit {
   private readonly auth = inject(AuthService);
   private readonly route = inject(RouteService);
+  private readonly qrScanner = inject(QrScannerService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
   private readonly snackbar = inject(MatSnackBar);
@@ -129,29 +131,24 @@ export class SettingsDevicesComponent implements OnInit {
   /** Android-only: authorize sign-in on another device by scanning its QR (the phone side of QR sign-in).
    *  Two-step, mirroring Telegram's "Link Desktop Device": scan the desktop's QR token → mark it scanned
    *  (the desktop shows "confirm on your phone") → confirm → the desktop's next poll receives its 2-week
-   *  session. The barcode-scanner plugin is dynamically imported so the browser/desktop bundle never loads
-   *  it; isAndroidNative() gates the whole flow. */
+   *  session. isAndroidNative() gates the whole flow; the scanner (plugin + Angular overlay UI) is
+   *  lazy-loaded by QrScannerService so the browser/desktop bundle never loads it. */
   async linkDevice(): Promise<void> {
     if (!isAndroidNative()) return;
-    let content: string;
+    // The scanner overlay resolves with the decoded QR content, or `null` on a benign cancel (Cancel /
+    // hardware back / Esc — kept silent). It rejects only on a real failure: camera permission denied, the
+    // ML Kit recognition model failing to load (no Google Play Services), a capability rejection, or the
+    // lazy chunk failing to load. Surface those — toast + console.error, so they also land in edge://inspect
+    // / adb logcat — instead of eating them (which previously made the button look dead).
+    let content: string | null;
     try {
-      const { scan, Format } = await import('@tauri-apps/plugin-barcode-scanner');
-      content = (await scan({ formats: [Format.QRCode], cameraDirection: 'back' })).content;
+      content = await this.qrScanner.open();
     } catch (err) {
-      // The plugin rejects with the message "cancelled" when the user dismisses the scanner (back button /
-      // tapping outside) — the ONLY benign outcome, kept silent. Every other rejection is a real failure
-      // that was previously swallowed here, making the button look dead: camera permission denied,
-      // "Something went wrong configuring the BarcodeScanner", the ML Kit recognition model failing to
-      // load on a device without Google Play Services, a capability rejection, or the lazy chunk failing
-      // to load. Surface those — toast + console.error, so they also land in edge://inspect / adb logcat —
-      // instead of eating them.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/cancel/i.test(msg)) return;
       console.error('[linkDevice] barcode scan failed:', err);
       this.toast('session.linkDeviceFailed');
       return;
     }
-    if (!content) return;
+    if (!content) return; // cancelled — silent
     // Step 1 — mark scanned so the desktop flips to "confirm on your phone".
     const scanRes = await firstValueFrom(this.auth.qrScan(content));
     if (scanRes.code !== 0) {

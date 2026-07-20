@@ -48,18 +48,27 @@
       @if (showPassword()) {
         <app-login (onSuccess)="onSuccess($event)"></app-login>
       }
-      @if (canQr()) {
-        <button mat-button class="method-switch" type="button" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
-      }
-      @if (canOtp()) {
-        <button mat-button class="method-switch" type="button" (click)="jumpToOtp()">{{ 'auth.switchToOtp' | transloco }}</button>
-      }
-      @if (isTauri() && !configFailed()) {
-        <button mat-button class="server-link" type="button" (click)="reopenServerConfig()">
-          <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
-          {{ 'serverConfig.entry' | transloco }}
-        </button>
-      }
+
+      <!-- Footer row below the form: login-method switchers on the LEFT (as .link-btn text links, matching
+        the OTP/QR pages), server-config link on the RIGHT (Tauri only). Shares the ready() gate with the
+        form; always mounted when shown so its reserved min-height holds the line even before /config
+        resolves the switchers — no init-time height jump. -->
+      <div class="auth-footer">
+        <div class="auth-footer__methods">
+          @if (canQr()) {
+            <button type="button" class="link-btn" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
+          }
+          @if (canOtp()) {
+            <button type="button" class="link-btn" (click)="jumpToOtp()">{{ 'auth.switchToOtp' | transloco }}</button>
+          }
+        </div>
+        @if (isTauri() && !configFailed()) {
+          <button mat-button class="server-link" type="button" (click)="reopenServerConfig()">
+            <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+            {{ 'serverConfig.entry' | transloco }}
+          </button>
+        }
+      </div>
     }
   </main>
 </div>

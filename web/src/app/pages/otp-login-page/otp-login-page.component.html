@@ -32,20 +32,26 @@
         {{ 'auth.loginBtn' | transloco }}
       </button>
 
-      @if (canPassword()) {
-      <div class="alt-action">
-        <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>
-      </div>}
-      @if (canQr()) {
-      <div class="alt-action">
-        <button type="button" class="link-btn" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
-      </div>}
     </form>
-    @if (isTauri()) {
-      <a mat-button class="server-link" routerLink="/config" replaceUrl>
-        <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
-        {{ 'serverConfig.entry' | transloco }}
-      </a>
-    }
+
+    <!-- Footer row below the card: login-method switchers on the LEFT, server-config link on the RIGHT
+      (Tauri only). Mirrors the QR page so the OTP and QR switch buttons share one position:
+      outside the card, bottom-left. -->
+    <div class="auth-footer">
+      <div class="auth-footer__methods">
+        @if (canPassword()) {
+          <button type="button" class="link-btn" (click)="jumpToPassword()">{{ 'auth.switchToPassword' | transloco }}</button>
+        }
+        @if (canQr()) {
+          <button type="button" class="link-btn" (click)="jumpToQr()">{{ 'auth.switchToQr' | transloco }}</button>
+        }
+      </div>
+      @if (isTauri()) {
+        <a mat-button class="server-link" routerLink="/config" replaceUrl>
+          <app-icon matButtonIcon [type]="AppIcon.SETTINGS" [style]="{ width: '18px', height: '18px' }" />
+          {{ 'serverConfig.entry' | transloco }}
+        </a>
+      }
+    </div>
   </main>
 </div>

@@ -12,7 +12,7 @@
     <div class="body">
       <section class="settings-group">
         <div class="settings-card">
-          <mat-list>
+          <mat-action-list>
             @for (c of visibleCategories(); track c.id) {
               <mat-list-item (click)="openCategory(c)" [attr.aria-label]="c.titleKey | transloco">
                 <app-icon
@@ -29,7 +29,7 @@
                   [style]="{ width: '20px', height: '20px' }"></app-icon>
               </mat-list-item>
             }
-          </mat-list>
+          </mat-action-list>
         </div>
       </section>
     </div>

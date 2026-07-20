@@ -68,6 +68,17 @@ declare global {
       getToken: () => string | null;
       requestToken: () => void;
       requestNotificationPermission: () => void;
+      /** System notification status as a JSON string `{"enabled":boolean,"canRequest":boolean}`.
+       *  `enabled` = the master app-level toggle (areNotificationsEnabled); `canRequest` = requesting now
+       *  would surface the prompt (Android 13+, not yet enabled, not permanently denied). Android-only. */
+      getNotificationStatus: () => string;
+      /** Open the system per-app notification settings — the manual path when `canRequest` is false
+       *  (permanently denied on 13+, or pre-13 where there's no runtime prompt at all). Android-only. */
+      openNotificationSettings: () => void;
+      /** Whether the POST_NOTIFICATIONS prompt has ever been shown (persisted by native's
+       *  onRequestPermissionsResult). Seeds PushService's one-shot auto-prompt guard so it fires once
+       *  EVER, not once per cold start. Android-only. */
+      getNotifPermRequested: () => boolean;
       /** Push the session token (POST /auth/login, app client) into Android encrypted storage so the
        *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
        *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to

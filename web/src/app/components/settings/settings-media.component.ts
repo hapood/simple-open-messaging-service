@@ -17,7 +17,6 @@ import {
   imports: [MatListModule, MatRadioModule, TranslocoPipe],
   template: `
     <section class="settings-group">
-      <h3 class="group-title">{{ 'settings.mediaThreshold' | transloco }}</h3>
       <div class="settings-card">
         <mat-list>
           @for (kb of options; track kb) {

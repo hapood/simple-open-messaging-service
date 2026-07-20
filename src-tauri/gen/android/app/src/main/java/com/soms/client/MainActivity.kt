@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
 import android.util.Log
@@ -13,6 +14,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
@@ -324,6 +326,21 @@ class MainActivity : TauriActivity() {
         super.onDestroy()
     }
 
+    /** Result of the POST_NOTIFICATIONS prompt (Android 13+). We don't branch on grant/deny — the Settings
+     *  panel re-reads [SomsFcmInterface.getNotificationStatus] for the live state — but we DO record that a
+     *  request has been shown, so `canRequest` can distinguish "never asked" from "permanently denied":
+     *  `shouldShowRequestPermissionRationale` returns false in BOTH cases, so this flag is the discriminator. */
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == REQ_POST_NOTIF) {
+            SomsSecureStore.setNotifPermRequested(this, true)
+        }
+    }
+
     /** Push the token to the web app's rotation hook. Safe to call whether or not the webview is
      *  attached — SomsBridge.eval no-ops when it isn't, and onWebViewCreate re-emits the current token. */
     private fun emitToken(token: String) {
@@ -531,6 +548,57 @@ class MainActivity : TauriActivity() {
             val hasToken = SomsBridge.FcmToken.current != null
             val lastCheck = activityRef.get()?.let { SomsSecureStore.getFcmLastCheck(it) } ?: 0L
             return JSONObject().put("hasToken", hasToken).put("lastCheck", lastCheck).toString()
+        }
+
+        /** System notification status for the Settings panel: `{ enabled, canRequest }`.
+         *  `enabled` = the master app-level toggle (areNotificationsEnabled — covers pre-13 default-on and
+         *  post-13 granted). `canRequest` = calling requestNotificationPermission right now would actually
+         *  surface the system prompt: only on Android 13+, while not yet enabled, AND either never asked
+         *  (notif_perm_requested == false) OR not permanently denied (rationale still showable).
+         *  Permanently-denied (asked, rationale false) → canRequest false → the panel routes the user to
+         *  system settings instead. Thread-safe reads (NotificationManagerCompat + SecureStore), so no hop. */
+        @JavascriptInterface
+        fun getNotificationStatus(): String {
+            val a = activityRef.get()
+            val enabled = a != null && NotificationManagerCompat.from(a).areNotificationsEnabled()
+            val canRequest = a != null &&
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                !enabled &&
+                (!SomsSecureStore.getNotifPermRequested(a) ||
+                    a.shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS))
+            return JSONObject().put("enabled", enabled).put("canRequest", canRequest).toString()
+        }
+
+        /** Whether the POST_NOTIFICATIONS prompt has EVER been shown (persisted across process deaths).
+         *  Lets JS seed its one-shot auto-prompt guard so the prompt fires once EVER (first login), not once
+         *  per cold start — set by [MainActivity.onRequestPermissionsResult], read by PushService at boot. */
+        @JavascriptInterface
+        fun getNotifPermRequested(): Boolean {
+            val a = activityRef.get() ?: return false
+            return SomsSecureStore.getNotifPermRequested(a)
+        }
+
+        /** Open the system per-app notification settings — the manual path when canRequest is false
+         *  (permanently denied on 13+, or pre-13 where there's no runtime prompt at all). Works on every
+         *  Android version: ACTION_APP_NOTIFICATION_SETTINGS on API 26+, ACTION_APPLICATION_DETAILS_SETTINGS
+         *  (the app's full settings page) as the pre-26 fallback. startActivity must run on the UI thread. */
+        @JavascriptInterface
+        fun openNotificationSettings() {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(Settings.EXTRA_APP_PACKAGE, a.packageName)
+                } else {
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                        .setData(android.net.Uri.fromParts("package", a.packageName, null))
+                }
+                try {
+                    a.startActivity(intent)
+                } catch (e: Exception) {
+                    Log.w("SomsActivity", "openNotificationSettings failed: ${e.message}")
+                }
+            }
         }
 
         /** Manual "check now" from Settings: force an FCM token fetch + refresh the last-check timestamp,

@@ -31,8 +31,12 @@ export class PushService {
   private registeredToken: string | null = null;
   /** The most recently seen FCM token (from Kotlin), regardless of registration state. */
   private currentToken: string | null = null;
-  /** One-shot guard so the POST_NOTIFICATIONS prompt is asked at most once. */
-  private permissionPrompted = false;
+  /** One-shot guard so the POST_NOTIFICATIONS prompt is asked at most once. Seeded from the persisted
+   *  native flag (set by MainActivity.onRequestPermissionsResult) so the auto-prompt fires only on the
+   *  first login EVER — not the first login of every cold start (which would re-prompt users who merely
+   *  dismissed/denied-without-"don't ask again" on each session). */
+  private permissionPrompted =
+    typeof window !== 'undefined' ? !!window.SomsFcm?.getNotifPermRequested?.() : false;
 
   /** Wire up at app boot (AppComponent). Self-guards to a no-op outside the Tauri shell. */
   init() {

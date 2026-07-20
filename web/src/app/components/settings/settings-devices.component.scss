@@ -32,7 +32,10 @@
   padding: 0 4px 4px;
 }
 
-.settings-card {
+// Rich per-device rows are multi-line mini-cards, so they sit in an inset padded column rather than
+// running edge-to-edge like the M3 list rows elsewhere. The .settings-card frame itself stays
+// single-sourced in the shared mixin; this local class only adds the inner layout.
+.dev-card {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -95,31 +98,4 @@
   display: flex;
   justify-content: flex-end;
   margin-top: 4px;
-}
-
-// Client badge + "This device" tag — a compact pill. `current` tints brand/success so the requesting
-// session is visually unmistakable; the plain badge is muted (it only names the client kind).
-.badge {
-  flex: 0 0 auto;
-  padding: 2px 8px;
-  border-radius: var(--app-radius-pill);
-  font-size: 12px;
-  line-height: 18px;
-  color: var(--app-text-muted);
-  background: var(--app-bg-muted);
-  border: 1px solid var(--app-border);
-
-  &.current {
-    color: var(--app-success);
-    background: var(--app-success-soft);
-    border-color: transparent;
-  }
-
-  // "Trusted" pill — a permanent (revocation-only) session whose token lives in OS secure storage.
-  // Brand-tinted so a trusted device reads as privileged at a glance, distinct from the muted client badge.
-  &.trusted {
-    color: var(--app-brand);
-    background: var(--app-brand-soft);
-    border-color: transparent;
-  }
 }

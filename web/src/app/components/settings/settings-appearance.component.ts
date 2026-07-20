@@ -14,7 +14,6 @@ import { ThemeService, ThemeMode } from '../../services/theme.service';
   imports: [MatListModule, MatRadioModule, TranslocoPipe],
   template: `
     <section class="settings-group">
-      <h3 class="group-title">{{ 'settings.theme' | transloco }}</h3>
       <div class="settings-card">
         <mat-list>
           @for (m of modes; track m) {

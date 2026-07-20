@@ -41,6 +41,7 @@ object SomsSecureStore {
     private const val KEY_FGS_ENABLED = "fgs_enabled"
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
     private const val KEY_FIREBASE_CONFIG = "firebase_config"
+    private const val KEY_NOTIF_PERM_REQUESTED = "notif_perm_requested"
 
     @Volatile
     private var cachedOrigin: String? = null
@@ -86,6 +87,17 @@ object SomsSecureStore {
 
     fun setForegroundServiceEnabled(ctx: Context, enabled: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_FGS_ENABLED, enabled).apply()
+    }
+
+    /** Whether we have ever surfaced the system POST_NOTIFICATIONS prompt (Android 13+).
+     *  `shouldShowRequestPermissionRationale` returns false BOTH when the permission was never asked AND
+     *  when it's permanently denied — this flag is the discriminator the Settings panel uses to tell those
+     *  apart (never-asked → "Allow" button still works; permanently-denied → "Open system settings").
+     *  Set from MainActivity.onRequestPermissionsResult. Default false. */
+    fun getNotifPermRequested(ctx: Context): Boolean = prefs(ctx).getBoolean(KEY_NOTIF_PERM_REQUESTED, false)
+
+    fun setNotifPermRequested(ctx: Context, requested: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_NOTIF_PERM_REQUESTED, requested).apply()
     }
 
     /** Epoch ms of the last FCM availability check (token fetch). 0 = never. The Settings "FCM status"

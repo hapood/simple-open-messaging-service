@@ -2,6 +2,7 @@ import { APP_INITIALIZER, ApplicationConfig, CSP_NONCE, ErrorHandler, isDevMode,
 import { provideRouter, withComponentInputBinding } from '@angular/router';
 import { provideHttpClient, withFetch, withInterceptorsFromDi, withInterceptors, HTTP_INTERCEPTORS, HttpBackend } from '@angular/common/http';
 import { provideAnimationsAsync } from '@angular/platform-browser/animations/async';
+import { MAT_SNACK_BAR_DEFAULT_OPTIONS } from '@angular/material/snack-bar';
 import { provideTransloco, provideTranslocoTranspiler } from '@jsverse/transloco';
 import { provideServiceWorker } from '@angular/service-worker';
 import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
@@ -81,6 +82,21 @@ export const appConfig: ApplicationConfig = {
     ),
     { provide: HttpBackend, useClass: TauriHttpBackend },
     provideAnimationsAsync(),
+    // Global Material snackbar defaults. The library default IS bottom-center, but the container sits flush
+    // at the viewport edge (8px margin) — so every snackbar overlapped the Android gesture/nav bar and read
+    // as "too low". The `soms-snack-bar` panelClass lifts it clear of the safe area (see the matching rule in
+    // styles.scss). `duration` is a defensive default: every existing call site sets its own (3–60s) and
+    // overrides this via the per-call config merge, but any future call that forgets a duration still
+    // auto-dismisses instead of lingering forever.
+    {
+      provide: MAT_SNACK_BAR_DEFAULT_OPTIONS,
+      useValue: {
+        horizontalPosition: 'center',
+        verticalPosition: 'bottom',
+        panelClass: 'soms-snack-bar',
+        duration: 4000,
+      },
+    },
     provideTransloco({
       config: {
         availableLangs: [

@@ -1,7 +1,6 @@
 import { Component, inject } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatRadioModule } from '@angular/material/radio';
-import { TranslocoPipe } from '@jsverse/transloco';
 import { LanguageService, AppLang } from '../../services/language.service';
 
 /**
@@ -11,10 +10,9 @@ import { LanguageService, AppLang } from '../../services/language.service';
  */
 @Component({
   selector: 'app-settings-language',
-  imports: [MatListModule, MatRadioModule, TranslocoPipe],
+  imports: [MatListModule, MatRadioModule],
   template: `
     <section class="settings-group">
-      <h3 class="group-title">{{ 'settings.languageRow' | transloco }}</h3>
       <div class="settings-card">
         <mat-list>
           @for (l of langs; track l) {

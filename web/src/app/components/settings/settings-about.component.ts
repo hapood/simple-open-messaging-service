@@ -33,20 +33,20 @@ interface DownloadProgress {
         <mat-list>
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.appVersion' | transloco }}</span>
-            <span class="meta">{{ shellVersion() || '—' }}</span>
+            <span matListItemMeta class="meta">{{ shellVersion() || '—' }}</span>
           </mat-list-item>
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.version' | transloco }}</span>
-            <span class="meta">{{ appVersion }}</span>
+            <span matListItemMeta class="meta">{{ appVersion }}</span>
           </mat-list-item>
           @if (showBackend) {
             <mat-list-item>
               <span matListItemTitle>{{ 'settings.serverVersion' | transloco }}</span>
-              <span class="meta">{{ serverVersion() || '—' }}</span>
+              <span matListItemMeta class="meta">{{ serverVersion() || '—' }}</span>
             </mat-list-item>
             <mat-list-item>
               <span matListItemTitle>{{ 'settings.backend' | transloco }}</span>
-              <span class="meta">{{ backendLabel() || ('settings.notConnected' | transloco) }}</span>
+              <span matListItemMeta class="meta">{{ backendLabel() || ('settings.notConnected' | transloco) }}</span>
             </mat-list-item>
           }
         </mat-list>
@@ -82,41 +82,7 @@ interface DownloadProgress {
       }
     </section>
   `,
-  styleUrl: './sub-page.scss',
-  styles: [
-    `.update-card {
-  display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  gap: 12px;
-}
-.update-bar {
-  margin-top: 4px;
-}
-.update-readout {
-  margin: 0;
-  font-size: 13px;
-  line-height: 18px;
-  font-variant-numeric: tabular-nums;
-  color: var(--app-text-secondary);
-}
-.update-warn,
-.update-ok,
-.update-error {
-  margin: 0;
-  font-size: 14px;
-  line-height: 20px;
-}
-.update-warn {
-  color: var(--app-warning, #ed6c02);
-}
-.update-ok {
-  color: var(--app-success, #2e7d32);
-}
-.update-error {
-  color: var(--app-danger, #e53935);
-}`,
-  ],
+  styleUrl: './settings-about.component.scss',
 })
 export class SettingsAboutComponent {
   private readonly shellUpdate = inject(ShellUpdateService);

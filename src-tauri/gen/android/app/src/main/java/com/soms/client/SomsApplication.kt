@@ -24,5 +24,15 @@ class SomsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         SomsFirebase.ensureInitialized(this)
+        // Eagerly create the notification channels at process start. Channel creation is idempotent and
+        // free, and Android only registers an app as notification-capable (so it shows up in the per-app
+        // Notifications / permission-management list) once at least one channel exists. The render paths in
+        // SomsMessagingService call ensureChannel lazily, but on a device without Google Play Services
+        // (common on mainland-China Android 9) the FCM path never fires and the foreground-service path
+        // only runs after login — so a freshly opened app otherwise has no channel and is absent from
+        // notification settings, which reads as "this app doesn't use notification permission." Creating
+        // them here (Google's recommended hook) also guarantees channels exist before any background path
+        // (e.g. a data-only FCM that wakes SomsMessagingService without ever starting MainActivity) posts.
+        SomsMessagingService.ensureChannel(this)
     }
 }

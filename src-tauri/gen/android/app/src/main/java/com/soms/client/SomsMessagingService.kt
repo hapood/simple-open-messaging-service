@@ -191,7 +191,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
-                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(ctx.getString(R.string.app_name))
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -224,7 +224,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
-                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(ctx.getString(R.string.app_name))
                 .setContentText(text)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(text))
@@ -264,7 +264,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             return NotificationCompat.Builder(ctx, CHANNEL_BACKGROUND)
-                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(ctx.getString(R.string.app_name))
                 .setContentText(ctx.getString(R.string.notif_fgs_running))
                 .setOngoing(true)
@@ -289,7 +289,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
             val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
-                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setSmallIcon(R.drawable.ic_notification)
                 .setContentTitle(title)
                 .setContentText(body)
                 .setStyle(NotificationCompat.BigTextStyle().bigText(body))
@@ -301,8 +301,10 @@ class SomsMessagingService : FirebaseMessagingService() {
             nm.notify(ADMIN_TEST_NOTIF_ID, notif)
         }
 
-        /** Lazily create the "messages" (HIGH) + "background" (LOW) channels (required on Android 8+).
-         *  Idempotent — getNotificationChannel returns null once a channel exists. */
+        /** Create the "messages" (HIGH) + "background" (LOW) channels (required on Android 8+) if absent.
+         *  Idempotent — getNotificationChannel returns null until a channel exists. Called eagerly at
+         *  process start (SomsApplication.onCreate) so the app is registered as notification-capable before
+         *  any post, and re-called lazily by every render path below as a cheap safety net. */
         internal fun ensureChannel(ctx: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return

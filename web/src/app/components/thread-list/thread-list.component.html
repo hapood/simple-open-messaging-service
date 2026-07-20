@@ -33,11 +33,11 @@
           <app-empty-state [title]="'threadList.emptyTitle' | transloco"
             [subtitle]="'threadList.emptySub' | transloco"
             [ctaLabel]="'threadList.addFriend' | transloco" (ctaClick)="openFriendRequests()">
-            <svg width="40" height="40" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-              <rect width="64" height="64" rx="14" fill="#2196f3" />
-              <path transform="translate(6 7) scale(2.2)" fill="#ffffff"
-                d="M12 3C6.5 3 2 6.6 2 11c0 2.3 1.2 4.4 3.2 5.8-.2 1-.7 2.2-1.6 3.2-.2.2 0 .6.3.5 1.7-.3 3.2-1 4.4-1.9 1.1.3 2.3.4 3.7.4 5.5 0 10-3.6 10-8s-4.5-8-10-8z" />
-            </svg>
+            <!-- Unified brand mark (web/public/logo.svg) — the same single source the favicon / PWA /
+                 Tauri icons and <app-brand-logo> are generated from. Rendered as a bare <img> (mirroring
+                 brand-logo's internal .bl-mark) rather than <app-brand-logo> because this empty-state
+                 icon slot sizes its own content and must not inherit brand-logo's 16px mark→wordmark gap. -->
+            <img src="/logo.svg" width="40" height="40" alt="" aria-hidden="true" />
           </app-empty-state>
         }
       } @else {

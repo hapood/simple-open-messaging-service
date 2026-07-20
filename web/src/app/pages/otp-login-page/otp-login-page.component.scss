@@ -4,18 +4,9 @@
   @include auth-shell;
 }
 
-// Form card — mirrors the password login card so the two methods read as one surface.
+// Form card — shared auth-card surface (mirrors the password / QR cards so all methods read as one).
 .login-card {
-  position: relative;
-  width: 100%;
-  max-width: 380px;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  padding: 40px 32px 32px;
-  background: var(--app-surface);
-  border-radius: var(--app-radius-lg);
-  box-shadow: 0 12px 40px rgba(15, 40, 80, 0.10);
+  @include auth-card;
 }
 
 .progress-slot {
@@ -68,32 +59,6 @@
   font-size: 15px;
 }
 
-.alt-action {
-  margin-top: 18px;
-  text-align: center;
-  font-size: 14px;
-  color: var(--app-text-muted);
-}
-
-.link-btn {
-  margin-left: 4px;
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  color: var(--app-brand);
-  cursor: pointer;
-}
-
-.link-btn:hover {
-  text-decoration: underline;
-}
-
-.server-link {
-  align-self: center;
-  margin-top: 12px;
-}
-
-.server-link app-icon {
-  margin-right: var(--mat-button-text-icon-spacing, 8px);
-}
+// Footer row below the card (login-method switchers left, server-config link right) — the shared
+// auth-footer block, so the OTP and QR switch buttons share one position: outside the card, bottom-left.
+@include auth-footer;

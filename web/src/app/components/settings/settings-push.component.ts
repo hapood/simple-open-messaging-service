@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
 import { MatButtonModule } from '@angular/material/button';
@@ -20,15 +20,35 @@ import { LanguageService } from '../../services/language.service';
     <section class="settings-group">
       <div class="settings-card">
         <mat-list>
+          <!-- System notification permission (the gate every delivery path below depends on) -->
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.notifPermTitle' | transloco }}</span>
+            <span matListItemLine class="hint">{{ notifPermHint() }}</span>
+            <div matListItemMeta class="row-actions">
+              <span class="status-pill" [class.active]="notifEnabled()">{{ notifPermStateLabel() }}</span>
+              @if (!notifEnabled() && notifCanRequest()) {
+                <button mat-button type="button" class="check-btn" (click)="requestNotifPermission()">
+                  {{ 'settings.notifPermAllow' | transloco }}
+                </button>
+              } @else if (!notifEnabled() && !notifCanRequest()) {
+                <button mat-button type="button" class="check-btn" (click)="openNotifSettings()">
+                  {{ 'settings.notifPermOpenSettings' | transloco }}
+                </button>
+              }
+            </div>
+          </mat-list-item>
+
           <!-- FCM status (read-only) + manual "check now" -->
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.fcm' | transloco }}</span>
             <span matListItemLine class="hint">{{ fcmLastCheckLabel() }}</span>
-            <span class="status-pill" [class.active]="fcmActive()">{{ fcmStatusLabel() }}</span>
-            <button mat-button type="button" class="check-btn" (click)="requestFcmCheck()"
-              [disabled]="checking()">
-              {{ (checking() ? 'settings.fcmChecking' : 'settings.fcmCheckButton') | transloco }}
-            </button>
+            <div matListItemMeta class="row-actions">
+              <span class="status-pill" [class.active]="fcmActive()">{{ fcmStatusLabel() }}</span>
+              <button mat-button type="button" class="check-btn" (click)="requestFcmCheck()"
+                [disabled]="checking()">
+                {{ (checking() ? 'settings.fcmChecking' : 'settings.fcmCheckButton') | transloco }}
+              </button>
+            </div>
           </mat-list-item>
 
           <!-- Foreground service (real-time keep-alive) -->
@@ -38,7 +58,11 @@ import { LanguageService } from '../../services/language.service';
             @if (fcmActive()) {
               <span matListItemLine class="hint hint-accent">{{ 'settings.fgsHintFcmActive' | transloco }}</span>
             }
+            @if (!notifEnabled()) {
+              <span matListItemLine class="hint hint-accent">{{ 'settings.notifPermFgsSuppressedHint' | transloco }}</span>
+            }
             <mat-slide-toggle
+              matListItemMeta
               [checked]="bgSync.fgsEnabled()"
               [attr.aria-label]="'settings.keepAliveFgs' | transloco"
               (change)="onFgsChange($event)">
@@ -56,6 +80,7 @@ import { LanguageService } from '../../services/language.service';
               </span>
             }
             <mat-slide-toggle
+              matListItemMeta
               [checked]="bgSync.enabled()"
               [attr.aria-label]="'settings.keepAlivePoll' | transloco"
               (change)="onPollChange($event)">
@@ -67,13 +92,34 @@ import { LanguageService } from '../../services/language.service';
   `,
   styleUrl: './sub-page.scss',
 })
-export class SettingsPushComponent {
+export class SettingsPushComponent implements OnInit, OnDestroy {
   readonly bgSync = inject(BackgroundSyncService);
   private readonly transloco = inject(TranslocoService);
   private readonly language = inject(LanguageService);
 
   /** True while a manual FCM check is in flight (the "Check" button shows a checking state). */
   readonly checking = signal(false);
+
+  /** System notification permission, derived from BackgroundSyncService.notifStatus (refreshed on panel
+   *  open + window focus, so a round-trip to system settings is reflected when the user returns). */
+  readonly notifEnabled = computed(() => this.bgSync.notifStatus().enabled);
+  readonly notifCanRequest = computed(() => this.bgSync.notifStatus().canRequest);
+
+  /** The status-pill label, varying with the permission state (translated; re-evaluated on language switch). */
+  readonly notifPermStateLabel = computed(() => {
+    void this.language.lang();
+    const key = this.notifEnabled() ? 'settings.notifPermOn'
+      : this.notifCanRequest() ? 'settings.notifPermOff' : 'settings.notifPermBlocked';
+    return this.transloco.translate(key);
+  });
+
+  /** The hint line under the title, varying with the permission state (what to do next). */
+  readonly notifPermHint = computed(() => {
+    void this.language.lang();
+    const key = this.notifEnabled() ? 'settings.notifPermGrantedHint'
+      : this.notifCanRequest() ? 'settings.notifPermOffHint' : 'settings.notifPermBlockedHint';
+    return this.transloco.translate(key);
+  });
 
   /** True when FCM is active on this device — drives the "FGS not needed" hint on the FGS row. */
   readonly fcmActive = computed(() => this.bgSync.fcmStatus().hasToken);
@@ -110,4 +156,32 @@ export class SettingsPushComponent {
     // Match BackgroundSyncService's re-read delay; the token fetch + emit lands around then.
     window.setTimeout(() => this.checking.set(false), 2700);
   }
+
+  /** Fire the system POST_NOTIFICATIONS prompt (only shown when canRequest — see the template guard). */
+  requestNotifPermission(): void {
+    this.bgSync.requestPermission();
+  }
+
+  /** Open the system per-app notification settings (the manual path when canRequest is false). */
+  openNotifSettings(): void {
+    this.bgSync.openSystemSettings();
+  }
+
+  /** Fresh read on panel open + on every window focus (the user returns from system settings with a
+   *  changed toggle). Zoneless CD is driven by the signal write inside refreshNotifStatus, so no NgZone. */
+  ngOnInit(): void {
+    this.bgSync.refreshNotifStatus();
+    window.addEventListener('focus', this.onFocusRefresh, { passive: true });
+    document.addEventListener('visibilitychange', this.onVisibilityRefresh, { passive: true });
+  }
+
+  ngOnDestroy(): void {
+    window.removeEventListener('focus', this.onFocusRefresh);
+    document.removeEventListener('visibilitychange', this.onVisibilityRefresh);
+  }
+
+  private readonly onFocusRefresh = (): void => this.bgSync.refreshNotifStatus();
+  private readonly onVisibilityRefresh = (): void => {
+    if (document.visibilityState === 'visible') this.bgSync.refreshNotifStatus();
+  };
 }

@@ -1,14 +1,8 @@
+@use "../../assets/utils.scss" as *;
+
+// Password form card — shared auth-card surface (mirrors the OTP / QR cards so all methods read as one).
 .login-card {
-  position: relative;
-  width: 100%;
-  max-width: 380px;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  padding: 40px 32px 32px;
-  background: var(--app-surface);
-  border-radius: var(--app-radius-lg);
-  box-shadow: 0 12px 40px rgba(15, 40, 80, 0.10);
+  @include auth-card;
 }
 
 .progress-slot {
@@ -72,13 +66,10 @@
 }
 
 .link-btn {
+  @include auth-link;
+  // Gap after the inline "No account?" question text in .alt-action — the in-card register CTA sits
+  // inline with preceding text, unlike the footer switchers which stand alone.
   margin-left: 4px;
-  padding: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  color: var(--app-brand);
-  cursor: pointer;
 }
 
 .link-btn:hover {

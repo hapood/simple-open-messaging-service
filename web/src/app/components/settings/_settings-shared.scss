@@ -1,5 +1,5 @@
 // Shared primitives for the Settings surface — the root category list AND each category sub-page render
-// the same M3 "category label + rounded surface card wrapping a mat-list" structure, so the rules live
+// the same M3 "rounded surface card wrapping a mat-list" structure, so the rules live
 // here once and each settings component `@use`s it (Angular keeps the `@include`d classes scoped per
 // component; the `--app-*` tokens are global). All vertical metrics are integer px (project rule).
 
@@ -9,17 +9,6 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-  }
-
-  // M3 category label — small, muted, slightly tracked. Plain text (not uppercase) to match the app's
-  // typographic register (section titles elsewhere use this weight/size, not caps).
-  .group-title {
-    margin: 0;
-    padding: 0 8px;
-    font-size: 13px;
-    font-weight: 600;
-    line-height: 20px;
-    color: var(--app-text-muted);
   }
 
   .settings-card {
@@ -84,6 +73,14 @@
     &.error {
       color: var(--app-danger);
       background: var(--app-danger-soft);
+      border-color: transparent;
+    }
+
+    // Trusted device — a permanent (revocation-only) session whose token lives in OS secure storage.
+    // Brand-tinted so a trusted device reads as privileged, distinct from a status readout.
+    &.trusted {
+      color: var(--app-brand);
+      background: var(--app-brand-soft);
       border-color: transparent;
     }
   }
