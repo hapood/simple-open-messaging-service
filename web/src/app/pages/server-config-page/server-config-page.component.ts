@@ -19,24 +19,28 @@ import { PushService } from '../../services/push.service';
 import {
   apiOrigin,
   canonicalOrigin,
+  listenEvent,
   originIsInsecure,
   setApiOrigin,
   tauriInvoke,
 } from '../../services/runtime';
 import { RouteService, RoutePage } from '../../services/route.service';
 
-/** The connect flow phase — surfaced as a determinate progress value + a step label. No `download`
- *  phase on connect: the SPA is bundled in the APK, so first-run/reconfigure only runs compat + cert +
- *  persist-origin. OTA bundle updates are a separate, post-connect probe (Settings → About). */
-type Phase = 'form' | 'compat' | 'cert' | 'done';
+/** The connect flow phase — surfaced as a progress value + a step label. After compat + cert the installed
+ *  web bundle's hash is compared to the server's manifest; if they differ (or none is installed yet) the
+ *  bundle is downloaded + swapped as a `download` phase, then the page reloads — the running SPA is the old
+ *  build, so only a reload surfaces the freshly-installed one. */
+type Phase = 'form' | 'compat' | 'cert' | 'download' | 'done';
 
 /**
  * The in-SPA backend-config page (`/config`) — the single surface for first-run setup AND reconfigure.
  * Replaces the former bundled `shell-config` bootstrap (eliminated along with the `somsapp://` scheme).
  * Reached: first-run (landed here by the `guestGuard` when `apiOriginIsEmpty()`), reconfigure (the login
- * page's "Server settings" entry). On save it runs the 3 Rust steps — `init_check_compat` →
- * `init_validate_cert` → `setApiOrigin` (persists origin to the Rust config + SomsSecureStore + the live
- * `apiOrigin` signal) — then redirects to login. No `handoff_to_spa` / window swap (one window, one origin).
+ * page's "Server settings" entry). On save it runs `init_check_compat` → `init_validate_cert` → a hash
+ * check (`init_update_status`); if the server advertises a web bundle whose sha256 differs from the
+ * installed one it downloads + swaps it (`init_download_web`) and reloads, otherwise it persists the origin
+ * (`setApiOrigin` → Rust config + SomsSecureStore + the live `apiOrigin` signal) and redirects to login.
+ * No `handoff_to_spa` / window swap (one window, one origin).
  *
  * Owns the Android hardware-back button while active (overrides the SPA nav-state-machine's handler, which
  * is restored on destroy): reconfigure → return to login; first-run (no origin yet) → double-back-to-exit.
@@ -90,13 +94,36 @@ export class ServerConfigPageComponent {
   readonly canGoBack = computed(() => this.isReconfigure());
   readonly busy = computed(() => this.phase() !== 'form');
   readonly insecure = computed(() => originIsInsecure(this.origin()));
-  private readonly progressByPhase: Record<Phase, number> = {
+  /** Byte-progress for the `download` phase, fed by the `web-download-progress` Tauri event. `total` is
+   *  null until the first chunk carries a Content-Length (or for a chunked transfer with none) — the bar
+   *  goes indeterminate in that window (see {@link progressMode}). */
+  private readonly downloadReceived = signal(0);
+  private readonly downloadTotal = signal<number | null>(null);
+  private readonly progressByPhase: Record<Exclude<Phase, 'download'>, number> = {
     form: 0,
     compat: 40,
     cert: 80,
     done: 100,
   };
-  readonly progress = computed(() => this.progressByPhase[this.phase()]);
+  /** Overall connect progress 0–100. During `download` the bundle's byte-progress is mapped onto the
+   *  80→100 tail so the bar never moves backward across compat→cert→download→done; an unknown total
+   *  (chunked) holds at the cert boundary while {@link progressMode} flips the bar to indeterminate. */
+  readonly progress = computed(() => {
+    const phase = this.phase();
+    if (phase === 'download') {
+      const total = this.downloadTotal();
+      if (!total || total <= 0) return 80;
+      const bytePct = Math.min(100, Math.round((this.downloadReceived() / total) * 100));
+      return 80 + Math.round(bytePct * 0.2);
+    }
+    return this.progressByPhase[phase];
+  });
+  /** Indeterminate while a download has no Content-Length; determinate otherwise (including every
+   *  non-download phase, which uses the discrete {@link progress} values). */
+  readonly progressMode = computed<'determinate' | 'indeterminate'>(() => {
+    const total = this.downloadTotal();
+    return this.phase() === 'download' && (!total || total <= 0) ? 'indeterminate' : 'determinate';
+  });
   /** transloco key for the current step label (empty when on the form). */
   readonly stepKey = computed(() => {
     switch (this.phase()) {
@@ -104,6 +131,8 @@ export class ServerConfigPageComponent {
         return 'serverConfig.stepCompat';
       case 'cert':
         return 'serverConfig.stepCert';
+      case 'download':
+        return 'serverConfig.stepDownload';
       case 'done':
         return 'serverConfig.stepDone';
       default:
@@ -119,6 +148,7 @@ export class ServerConfigPageComponent {
       .then((c) => this.isReconfigure.set(c))
       .catch(() => {});
     this.installBackHandler();
+    this.registerDownloadProgress();
     this.destroyRef.onDestroy(() => {
       if (this.backExitTimer) clearTimeout(this.backExitTimer);
       window.__SOMS_BACK__ = this.prevBack;
@@ -144,9 +174,33 @@ export class ServerConfigPageComponent {
       await tauriInvoke('init_check_compat', { origin: raw });
       this.phase.set('cert');
       await tauriInvoke('init_validate_cert', { origin: raw });
-      // Persist origin: Rust config file + ProxyState + SomsSecureStore + the live apiOrigin signal (so
-      // HttpClient/SSE pick up the new host with no reload). setApiOrigin throws outside Tauri, but this
-      // page is only reachable under the Tauri shell (canMatch in the route).
+
+      // Compare the installed web bundle's hash to the server's manifest. `init_update_status` returns
+      // `webUpdateAvailable` = (serverHash != installedHash); on a first run there is no installed hash yet,
+      // so the fresh bundle is pulled as part of connecting — the previous design deferred this to a manual
+      // Settings→About step. A failed probe (offline / manifest missing) resolves to false → skip the
+      // download and proceed in-page; the launch-time About probe catches it later.
+      const status = await tauriInvoke<{ webUpdateAvailable: boolean }>('init_update_status', {
+        origin: raw,
+      });
+      if (status?.webUpdateAvailable) {
+        this.phase.set('download');
+        this.downloadReceived.set(0);
+        this.downloadTotal.set(null);
+        // `init_download_web` streams + sha256-verifies + extracts + swaps the served assets AND persists
+        // the origin (Rust). `setApiOrigin` then syncs the live `apiOrigin` signal + secureStore so the
+        // mandatory reload below seeds the origin correctly. The reload is required: the running SPA is the
+        // OLD build, so only a reload surfaces the freshly-installed bundle (refreshFirebase + config.reload
+        // are skipped — the new bundle's own init re-runs them against the now-persisted origin).
+        await tauriInvoke('init_download_web', { origin: raw });
+        await setApiOrigin(raw);
+        this.phase.set('done');
+        location.reload();
+        return;
+      }
+
+      // Up to date (or probe skipped): persist the origin and proceed in-page to login. setApiOrigin throws
+      // outside Tauri, but this page is only reachable under the Tauri shell (canMatch in the route).
       await setApiOrigin(raw);
       // The new server may publish a different Firebase project (or none) — re-sync the native FCM client
       // config so the Android shell re-binds FirebaseApp before login. Fire-and-forget: best-effort, never
@@ -187,6 +241,17 @@ export class ServerConfigPageComponent {
     if (msg.includes('cert') || msg.includes('self-signed') || msg.includes('expired')) {
       return 'serverConfig.certErr';
     }
+    // Bundle download / integrity / extract failures from `init_download_web` (sha256 mismatch, network
+    // read, tar extract). The server WAS reached (compat + cert already passed), so this is distinct from
+    // `connectErr`.
+    if (
+      msg.includes('sha256') ||
+      msg.includes('download') ||
+      msg.includes('extract') ||
+      msg.includes('bundle')
+    ) {
+      return 'serverConfig.downloadErr';
+    }
     return 'serverConfig.connectErr';
   }
 
@@ -215,5 +280,22 @@ export class ServerConfigPageComponent {
       if (this.backExitTimer) clearTimeout(this.backExitTimer);
       this.backExitTimer = setTimeout(() => this.exitHint.set(false), 2000);
     };
+  }
+
+  /** Subscribe once to the Rust `web-download-progress` stream so the `download` phase drives a real
+   *  byte-progress bar. The handler ignores events outside the download phase, so a single registration
+   *  covers every retry without leaking a listener. */
+  private registerDownloadProgress(): void {
+    void (async () => {
+      const unlisten = await listenEvent<{ received: number; total: number | null }>(
+        'web-download-progress',
+        (e) => {
+          if (this.phase() !== 'download') return;
+          this.downloadReceived.set(e.payload.received);
+          this.downloadTotal.set(e.payload.total);
+        },
+      );
+      if (unlisten) this.destroyRef.onDestroy(unlisten);
+    })();
   }
 }

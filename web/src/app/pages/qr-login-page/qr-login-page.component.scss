@@ -18,13 +18,14 @@
   box-shadow: 0 12px 40px rgba(15, 40, 80, 0.10);
 }
 
+// Countdown bar lives directly above the QR (in the stage flow), bound to the token's remaining lifetime —
+// not pinned to the card's top edge. The old top-edge placement clipped the bar into the card's rounded
+// corners and left a full-width track stripe that read as a stuck-on strip rather than part of the QR; up
+// here it sits over the code it expires. The slot is a fixed 4px (the MDC track height) so the QR square
+// never shifts when the bar mounts (pending/scanned) or is absent (loading/error); the bar fills the line.
 .progress-slot {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  overflow: hidden;
-  border-radius: var(--app-radius-lg) var(--app-radius-lg) 0 0;
+  width: 240px;
+  height: 4px;
 
   // Final stretch: flip the fill to the danger color so the user sees the code is about to refresh. With the
   // m:ss readout gone, the bar's color is the only expiry cue. The active-indicator token is set on the host
@@ -92,9 +93,8 @@
   transition: filter 250ms ease;
 }
 
-// Loading/error filler that owns the 240×240 square when there's no QR to draw. Centers a Material spinner
-// (loading) or a report glyph (error) so the white card is always present and the surrounding layout never
-// reflows when the QR renders or departs. currentColor drives the icon; the spinner paints its own primary.
+// Loading filler that owns the 240×240 square while a code is being minted. Centers a Material spinner so
+// the white card is always present and the surrounding layout never reflows when the QR renders or departs.
 .qr-placeholder {
   width: 100%;
   height: 100%;
@@ -102,6 +102,57 @@
   align-items: center;
   justify-content: center;
   color: var(--app-text-muted);
+}
+
+// Error state owns the whole 240×240 square: report glyph + message + retry, stacked and centered. Keeping
+// the recovery button INSIDE the square (instead of below it, as before) is what makes the error state
+// height-neutral — the card no longer grows a button row when a create failure lands, so nothing below the
+// QR (trust notice, switchers) shifts. The 8px inner padding adds breathing room beyond the square's 16px
+// quiet zone; everything is integer-px so the fixed box never rounds a fractional value into reflow.
+.qr-error {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  text-align: center;
+}
+
+// M3 error-container treatment: the report glyph sits in a soft danger wash (the same --app-danger-soft
+// token forbidden-page uses), sized as a 56px chip so the icon reads as a calm state marker rather than a
+// bare alarming red glyph. The host <app-icon> is inline by default, so display:flex turns it into the
+// circle; its [style] width/height sizes only the inner SVG (currentColor picks up the danger tint below).
+.qr-error__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--app-danger-soft);
+  color: var(--app-danger);
+}
+
+// The message wraps within the square; line-height is an integer px per the project rule so every wrap count
+// yields a whole-pixel stack height inside the fixed box.
+.qr-error__text {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--app-text-muted);
+}
+
+// Compact primary action — mirrors the auth-wide retry treatment (flat + primary + refresh glyph). flex
+// shrink-lock keeps the button from squashing when the message wraps to three lines.
+.qr-retry-btn {
+  flex: 0 0 auto;
+  min-height: 36px;
+  font-size: 14px;
 }
 
 // Once scanned, the QR is consumed — blur it so it can't be re-scanned while the phone confirms.
@@ -138,6 +189,10 @@
   margin: 4px 0 0;
   font-size: 14px;
   line-height: 20px;
+  // Reserve the one-line box even when the switch yields no text (pending/error). An empty block element
+  // collapses to height 0 — line-height does NOT reserve a line box for truly empty content — so without
+  // this floor the loading→pending flip (text → empty) would shrink the card by one line (~20px).
+  min-height: 20px;
   color: var(--app-text-muted);
   text-align: center;
 }
@@ -157,35 +212,38 @@
   font-size: 14px;
 }
 
-.submit-btn {
+// Footer row below the card (login-method switchers left, server-config link right). ALWAYS mounted with a
+// reserved min-height: holds the link line even before /config lands (switchers read false) and on the
+// browser (no server link), so the async switcher appearance fills a pre-reserved line — no init-time jump.
+.auth-footer {
   width: 100%;
-  height: 44px;
-  font-size: 15px;
+  max-width: 380px;
+  margin-top: 12px;
+  min-height: 24px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
-.alt-action {
-  margin-top: 18px;
-  text-align: center;
-  font-size: 14px;
-  color: var(--app-text-muted);
+.auth-footer__methods {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .link-btn {
   padding: 0;
   border: none;
   background: none;
-  font: inherit;
+  font-size: 14px;
+  line-height: 24px;
   color: var(--app-brand);
   cursor: pointer;
 }
 
 .link-btn:hover {
   text-decoration: underline;
-}
-
-.server-link {
-  align-self: center;
-  margin-top: 12px;
 }
 
 .server-link app-icon {

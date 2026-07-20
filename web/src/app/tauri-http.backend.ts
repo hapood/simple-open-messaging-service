@@ -137,22 +137,31 @@ export class TauriHttpBackend implements HttpBackend {
     return out;
   }
 
-  /** Serialize the request body to bytes for the IPC call. Returns a `content-type` ONLY for bodies whose
-   *  type the caller left unset (FormData — Angular leaves it to fetch normally; we synthesize multipart). */
+  /** Serialize the request body to bytes for the IPC call. Synthesizes a `content-type` that MIRRORS
+   *  Angular's `HttpRequest.detectContentTypeHeader()` for each body type, so this backend behaves like the
+   *  stock `FetchBackend` it replaces (reqwest never auto-sets a Content-Type for a raw byte body):
+   *    Blob → `blob.type` (Angular returns `blob.type || null`, so an untyped Blob stays unset),
+   *    URLSearchParams → urlencoded, FormData → a synthesized multipart boundary (Angular leaves multipart
+   *    to the browser, which the IPC path can't reach), objects → `application/json`, strings → `text/plain`. */
   private async serializeBody(body: unknown): Promise<{ body: Uint8Array | undefined; contentType?: string }> {
     if (body == null) return { body: undefined };
     if (body instanceof Uint8Array) return { body };
     if (body instanceof ArrayBuffer) return { body: new Uint8Array(body) };
-    if (body instanceof Blob) return { body: new Uint8Array(await body.arrayBuffer()) };
+    if (body instanceof Blob) return { body: new Uint8Array(await body.arrayBuffer()), contentType: body.type || undefined };
     if (body instanceof URLSearchParams) {
       return { body: new TextEncoder().encode(body.toString()), contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };
     }
     if (body instanceof FormData) {
       return this.serializeMultipart(body);
     }
-    // Objects/arrays → JSON; strings pass through verbatim (Angular serializes neither before the backend).
-    const text = typeof body === 'string' ? body : JSON.stringify(body);
-    return { body: new TextEncoder().encode(text) };
+    // Objects/arrays/primitives → JSON; a raw string body passes through verbatim. The content-type is
+    // synthesized to MIRROR the stock `FetchBackend`, which applies `HttpRequest.detectContentTypeHeader()`
+    // — `application/json` for objects/arrays/numbers/booleans, `text/plain` for strings. reqwest does NOT
+    // auto-set a Content-Type for a raw byte body, so without this the IPC POST leaves Rust with no
+    // Content-Type and Fastify rejects the JSON body with 415 (every `/api/v1` POST/PUT/PATCH under Tauri).
+    const isString = typeof body === 'string';
+    const text = isString ? body : JSON.stringify(body);
+    return { body: new TextEncoder().encode(text), contentType: isString ? 'text/plain' : 'application/json' };
   }
 
   /** Build a `multipart/form-data` body from a `FormData` (Android uploads reach the backend as FormData —

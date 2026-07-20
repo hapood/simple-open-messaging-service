@@ -81,15 +81,14 @@
   ::ng-deep .mat-mdc-form-field-subscript-wrapper {
     min-height: 24px;
   }
-  ::ng-deep .mat-mdc-form-field-error-text,
-  ::ng-deep .mat-mdc-form-field-hint-text {
+  // The insecure warning is this field's only hint → tint it as a warning. Color an element the
+  // component owns (the span inside <mat-hint>) rather than Material's internal hint class, which was
+  // renamed in Material 20 (there is no .mat-mdc-form-field-hint-text anymore) — so this stays robust
+  // and needs no ::ng-deep.
+  .cfg-insecure {
+    color: var(--app-warning);
     font-size: 12px;
     line-height: 16px;
-  }
-  // The insecure warning is this field's only hint → tint it as a warning (overrides Material's muted
-  // hint color via the .cfg-field specificity prefix).
-  ::ng-deep .mat-mdc-form-field-hint-text {
-    color: var(--app-warning);
   }
 }
 

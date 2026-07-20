@@ -12,7 +12,7 @@
 <!-- Top overlays: determinate progress + the current step label. Both position:fixed so appearing /
   disappearing during the connect flow never reflows the centered form below. -->
 @if (busy()) {
-  <mat-progress-bar class="cfg-progress" mode="determinate" [value]="progress()" />
+  <mat-progress-bar class="cfg-progress" [mode]="progressMode()" [value]="progress()" />
   @if (stepKey()) {
     <p class="cfg-step" role="status" aria-live="polite">{{ stepKey() | transloco }}</p>
   }
@@ -43,7 +43,7 @@
       @if (url.invalid && url.touched) {
         <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
       } @else if (insecure() && url.value.trim()) {
-        <mat-hint>{{ 'serverConfig.insecure' | transloco }}</mat-hint>
+        <mat-hint><span class="cfg-insecure">{{ 'serverConfig.insecure' | transloco }}</span></mat-hint>
       }
     </mat-form-field>
 
