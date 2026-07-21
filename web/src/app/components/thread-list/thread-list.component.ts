@@ -133,18 +133,16 @@ export class ThreadListComponent implements OnInit, OnDestroy {
 
   @Output() onSelect = new EventEmitter<ConversationItem>()
 
-  /**
-   * Short label for a thread's last message. GROUP conversations prefix the sender ("Alice: hi" /
-   * "You: hi") when the sender name is known; P2P conversations show the bare preview (the peer is
-   * implied). Live NEW_MESSAGE frames can't resolve a group sender's name cheaply, so an incoming
-   * group message shows bare until the next full reload re-hydrates lastMessageSenderName.
-   */
-  /**
-   * The backend denormalizes `lastMessagePreview` as an English marker for non-text messages
-   * ("[Photo]", "[Group invite]", … — see backend derivePreview). Recognize that closed set here and
-   * translate it; real text previews pass through untouched. Reads the language signal so the row
-   * re-evaluates on a language switch (the template also re-renders via its transloco bindings).
-   */
+  /** Display name for a thread — alias overrides the real name. */
+  displayName(t: ConversationItem): string {
+    return displayThreadName(t)
+  }
+
+  /** Backend denormalizes `lastMessagePreview` as an English marker for non-text messages ("[Photo]",
+   *  "[Group invite]", … — see backend derivePreview). Recognize that closed set here and translate it;
+   *  real text previews pass through untouched. Reads the language signal so the row re-evaluates on a
+   *  language switch. The "You:" prefix is shown for the sender's own messages (the missed-summary carries
+   *  `creator`, not the sender's display name, so incoming messages show bare — no "Alice:" prefix). */
   private static readonly PREVIEW_MARKERS: Readonly<Record<string, string>> = {
     '[Photo]': 'chat.preview.photo',
     '[Group invite]': 'chat.preview.invite',
@@ -153,21 +151,16 @@ export class ThreadListComponent implements OnInit, OnDestroy {
     '[Voice message]': 'chat.preview.voice',
   };
 
-  /** Display name for a thread — alias overrides the real name. */
-  displayName(t: ConversationItem): string {
-    return displayThreadName(t)
-  }
-
   previewText(t: ConversationItem): string {
     this.language.lang();
     const raw = t.lastMessagePreview;
     const markerKey = raw ? ThreadListComponent.PREVIEW_MARKERS[raw] : undefined;
     const base = (markerKey ? this.transloco.translate(markerKey) : raw)
       ?? this.transloco.translate('common.noMessagesYet') ?? '';
-    if (t.type !== 'GROUP' || t.lastMessageSenderId == null) return base;
+    if (t.lastMessageSenderId == null) return base;
     if (t.lastMessageSenderId === this.userService.sessionProfile()?.id)
       return this.transloco.translate('chat.youPrefix', { text: base }) ?? '';
-    return t.lastMessageSenderName ? `${t.lastMessageSenderName}: ${base}` : base;
+    return base;
   }
 
   /** Conversation-list timestamp; reads the language signal so it re-evaluates on a language switch. */

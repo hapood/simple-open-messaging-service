@@ -92,23 +92,16 @@ export class MessageRepository {
    *  re-established by the init backend-probe each session. Drives the getNewer cache-hit ceiling test. */
   private readonly maxSeenSeq = new Map<number, number>();
 
-  /** The global message high-water-mark: epoch-ms `createdAt` of the newest message ever cached, across ALL
-   *  threads. The missed catch-up ({@link MissedSyncService}) reads it via {@link getHwm} to bound
-   *  `POST /notifications/missed { since }`; advanced on every cached message (SSE {@link onNewMessage} +
-   *  the {@link applyMissed} batch) via {@link bumpHwm}. `undefined` = not yet seeded from IDB; `null` =
-   *  seeded but no message yet (first boot → the catch-up runs INIT mode); a number = the live mark. */
-  private hwm: number | null | undefined = undefined;
-
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
 
   constructor() {
-    // Own the NEW_MESSAGE SSE: cache the body, update the ceiling, THEN emit the live signal. The body
-    // is the full Message (serializeBody of the committed row, id-stripped) — the same shape as the
-    // /query-messages response, so it caches verbatim.
+    // Own the NEW_MESSAGE SSE: identity-only {threadId, seq, ts} (no body — single data source = pull).
+    // Advance the per-thread ceiling + emit the live signal so the open chat-box pulls the body via
+    // getNewer; nothing is cached here (the body arrives via the missed-summary pull / query-messages).
     this.ws.eventSubject
       .pipe(filter((m) => m.event === 'NEW_MESSAGE' && m.status === 0 && m.data !== undefined))
-      .subscribe((m) => void this.onNewMessage(m.data as unknown as Message));
+      .subscribe((m) => this.onNewMessage(m.data as { threadId: number; seq: number; ts: number }));
 
     // Own the MEDIA_STATUS SSE: a federated media message finished localizing ('ready') or failed
     // ('failed'). Flow it through the reducer (anti-regression by sv) + IDB write + the mediaStatus signal
@@ -147,9 +140,6 @@ export class MessageRepository {
   /** Drop in-memory session state (logout / account switch). IDB is wiped per-user by WebdbService. */
   private reset(): void {
     this.maxSeenSeq.clear();
-    // HWM is per-user (the `meta` store lives in the per-user DB, wiped on close); drop the in-memory copy
-    // so the next session re-seeds from the fresh DB (or runs INIT when none is cached).
-    this.hwm = undefined;
   }
 
   /**
@@ -228,38 +218,37 @@ export class MessageRepository {
     }
   }
 
-  /** Cache a NEW_MESSAGE body, advance the ceiling + the global HWM, then emit the live signal
-   *  (cache BEFORE signal, so the kernel's subsequent getNewer pull is a cache hit). */
-  private async onNewMessage(m: Message): Promise<void> {
-    if (typeof m?.seq !== 'number' || typeof m?.threadId !== 'number') return;
-    await this.put(m);
-    this.advanceCeiling(m.threadId, m.seq);
-    if (this.bumpHwm(m.createdAt)) this.persistHwm();
-    this.signal$.next({ threadId: m.threadId, seq: m.seq });
+  /** Identity-only NEW_MESSAGE — the SSE frame carries only {threadId, seq, ts} (no body). Advance the
+   *  per-thread ceiling + emit the live signal so the open chat-box pulls the body via getNewer; the body
+   *  is never carried on the realtime stream (single data source = pull). */
+  private onNewMessage(d: { threadId: number; seq: number; ts: number }): void {
+    if (typeof d?.seq !== 'number' || typeof d?.threadId !== 'number') return;
+    this.advanceCeiling(d.threadId, d.seq);
+    this.signal$.next({ threadId: d.threadId, seq: d.seq });
   }
 
-  /** Cache a batch of missed messages (the paginated `POST /notifications/missed` catch-up), advancing the
-   *  per-thread ceiling + the global HWM, and emitting ONE live signal per affected thread (its highest seq
-   *  in the batch) so each open {@link HttpItemSource} pulls once instead of once-per-message. Idempotent —
-   *  the `[threadId, seq]` key makes re-applying a re-fetched page a no-op overwrite.
+  /** Cache a batch of missed messages (the latest-message-per-thread from the `POST /notifications/missed`
+   *  summary), advancing the per-thread ceiling and emitting ONE live signal per affected thread (its
+   *  highest seq in the batch) so each open {@link HttpItemSource} pulls once. Idempotent via the
+   *  `[threadId, seq]` keyPath — a re-put of the same message is a no-op overwrite. (The missed endpoint's
+   *  strict-total-order `id > cursor` cursor never re-fetches a row across pages, so this idempotency is
+   *  no longer load-bearing for pagination dedup — it remains a safety net for the SSE-echo-vs-missed
+   *  overlap: a message you sent is cached via the NEW_MESSAGE echo, and may ALSO appear in a missed pull.)
    *
-   *  This is the SAME apply path a live SSE NEW_MESSAGE takes, so SSE and catch-up populate the store
-   *  identically. It does NOT touch `eventSubject`, so {@link UnreadAttentionService} (subscribed to
-   *  NEW_MESSAGE there) is NOT triggered — the threadlist snapshot owns unread/preview; this only hydrates
-   *  message bodies (so opening a thread is instant + recent history survives offline). */
+   *  This is the SAME apply path a live SSE NEW_MESSAGE's pull takes, so realtime + catch-up populate the
+   *  store identically. It does NOT touch `eventSubject`, so {@link UnreadAttentionService} (subscribed to
+   *  NEW_MESSAGE there) is NOT triggered — the threadlist snapshot owns unread; this only hydrates message
+   *  bodies (so opening a thread is instant + recent history survives offline). */
   async applyMissed(messages: Message[]): Promise<void> {
     if (messages.length === 0) return;
     await this.putMany(messages);
-    let hwmBumped = false;
     const topSeqByThread = new Map<number, number>();
     for (const m of messages) {
       if (typeof m?.seq !== 'number' || typeof m?.threadId !== 'number') continue;
       this.advanceCeiling(m.threadId, m.seq);
-      if (this.bumpHwm(m.createdAt)) hwmBumped = true;
       const prev = topSeqByThread.get(m.threadId) ?? -1;
       if (m.seq > prev) topSeqByThread.set(m.threadId, m.seq);
     }
-    if (hwmBumped) this.persistHwm();
     for (const [threadId, seq] of topSeqByThread) this.signal$.next({ threadId, seq });
   }
 
@@ -269,38 +258,9 @@ export class MessageRepository {
     if (seq > cur) this.maxSeenSeq.set(threadId, seq);
   }
 
-  /** Advance the in-memory global HWM to `ms` if it is finite and newer. Returns whether it changed, so the
-   *  caller can skip the IDB persist when nothing moved (an out-of-order / duplicate frame). */
-  private bumpHwm(ms: unknown): boolean {
-    if (typeof ms !== 'number' || !Number.isFinite(ms)) return false;
-    // undefined (unseeded) and null (seeded-empty) both mean "no mark yet" → any finite ms establishes it.
-    if (this.hwm === undefined || this.hwm === null) {
-      this.hwm = ms;
-      return true;
-    }
-    if (ms > this.hwm) {
-      this.hwm = ms;
-      return true;
-    }
-    return false;
-  }
-
-  /** Persist the current HWM to the `meta` store (best-effort, fire-and-forget). */
-  private persistHwm(): void {
-    if (this.hwm != null) void this.webdb.putMeta('hwm', this.hwm);
-  }
-
-  /** The global message high-water-mark (epoch-ms `createdAt` of the newest cached message), or `null` when
-   *  none is cached yet (first boot → the missed catch-up runs INIT mode). Lazy-seeded from IDB on first
-   *  read, so the first call after open pays one `meta` get. */
-  async getHwm(): Promise<number | null> {
-    if (this.hwm === undefined) this.hwm = (await this.webdb.getMeta('hwm')) ?? null;
-    return this.hwm;
-  }
-
   /** The newest cached message for a thread (highest seq), or undefined when none is cached / IDB is
-   *  unavailable. Drives the local-first list-preview derivation — the threadlist snapshot no longer
-   *  embeds preview content, so the list derives it from this (fed by SSE + the missed catch-up). */
+   *  unavailable. (Kept for any caller that wants the local newest; the threadlist no longer derives a
+   *  preview from it.) */
   async getNewestMessage(threadId: number): Promise<Message | undefined> {
     try {
       const db = await this.webdb.db();

@@ -109,49 +109,44 @@ export class PushService {
   }
 
   /**
-   * Fan out a wake-up signal for a freshly written message. Fire-and-forget from
-   * MessageController.sendMessage (never awaited) — push latency must not delay the sender's HTTP
-   * response. Never throws: every step is guarded so a push failure can never break message delivery.
+   * Fan out an identity-only wake-up for a freshly written message. Fire-and-forget from
+   * MessageFanoutService (never awaited) — push latency must not delay the sender's HTTP response. Never
+   * throws: every step is guarded so a push failure can never break message delivery.
    *
-   * Recipient filtering: exclude the sender (their own SSE echo already syncs their other devices) and
-   * any recipient with a live SSE connection (SseService.isUserOnline — no double-delivery, no wasted
-   * battery). Remaining targets are looked up by userId and each token receives an identical data
-   * payload, branched by platform: ANDROID/IOS → FCM `sendEach`, WEB → Web Push `sendNotification`.
-   * Per-token errors that indicate a definitively-dead subscription (FCM UNREGISTERED / Web Push 404/410)
-   * are pruned; transient errors are left alone to self-heal on retry.
+   * Recipient filtering: the caller (fanout) already excluded the sender + muted + blocked recipients;
+   * here we additionally skip any recipient with a live SSE connection (SseService.isUserOnline — no
+   * double-delivery, no wasted battery). Remaining targets each receive the SAME data-only payload
+   * `{ type:'NEW_MESSAGE', ts, threadId, seq }`, branched by platform: ANDROID/IOS → FCM `sendEach`,
+   * WEB → Web Push `sendNotification`. Per-token errors that indicate a definitively-dead subscription
+   * (FCM UNREGISTERED / Web Push 404/410) are pruned; transient errors are left alone to self-heal.
    */
   async dispatchForMessage(
-    recipientUserIds: { userId: number }[],
-    senderId: number,
+    targets: { userId: number }[],
     threadId: number,
-    msgData: { id?: string | number; contentType?: string; content?: string },
+    seq: number,
   ): Promise<void> {
     try {
-      const targets = recipientUserIds
+      const userIds = targets
         .map((r) => r.userId)
-        .filter((uid) => uid !== senderId && !this.sse.isUserOnline(uid));
-      if (targets.length === 0) return;
+        .filter((uid) => !this.sse.isUserOnline(uid));
+      if (userIds.length === 0) return;
 
       const tokens = await this.prisma.pushToken.findMany({
-        where: { userId: { in: targets } },
+        where: { userId: { in: userIds } },
         select: { token: true, platform: true, webP256dh: true, webAuth: true },
       });
       if (tokens.length === 0) return;
 
-      // Data-only wake-up signal — identical fields across transports. FCM requires string values;
-      // Web Push carries the JSON-stringified form. `messageId` is the BigInt→string id from
-      // serializeBody. Preview is included only for PURE_TEXT (truncated) as a notification teaser;
-      // non-text types let the client derive a content-type label. No `notification` field for FCM —
-      // its presence would make the OS show it itself and bypass onMessageReceived on background.
+      // Identity-only wake-up — {type, ts, threadId, seq}. No body/preview/contentType/msgid: the client
+      // pulls the body. FCM requires string values; Web Push carries the JSON-stringified form. No
+      // `notification` field for FCM — its presence would make the OS show it itself and bypass
+      // onMessageReceived on background.
       const data: Record<string, string> = {
-        threadId: String(threadId),
-        messageId: String(msgData.id ?? ''),
-        contentType: String(msgData.contentType ?? ''),
+        type: 'NEW_MESSAGE',
         ts: String(Date.now()),
+        threadId: String(threadId),
+        seq: String(seq),
       };
-      if (msgData.contentType === 'PURE_TEXT' && typeof msgData.content === 'string') {
-        data.preview = msgData.content.slice(0, 120);
-      }
 
       const dead: string[] = [];
       // Branch by SUBSCRIPTION SHAPE, not the platform label: a Web Push subscription is identified by
@@ -288,14 +283,14 @@ export class PushService {
       if (isWeb) {
         await this.sendWebPush(
           { endpoint: row.token, keys: { p256dh: row.webP256dh!, auth: row.webAuth! } },
-          JSON.stringify({ type: 'admin-test', title, body }),
+          JSON.stringify({ type: 'ADMIN_TEST', ts: String(Date.now()), title, body }),
         );
         return { ok: true };
       }
       if (!this.messaging) return { ok: false, error: 'FCM not configured' };
       await this.messaging.send({
         token: row.token,
-        data: { type: 'admin-test', title, body },
+        data: { type: 'ADMIN_TEST', ts: String(Date.now()), title, body },
         android: { priority: 'high' },
       });
       return { ok: true };

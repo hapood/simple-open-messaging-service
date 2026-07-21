@@ -41,14 +41,13 @@ export type ConversationItem = Omit<
 > & {
   peerUser: S['UserResponseDto']
   group: S['GroupResponseDto']
-  // Local-first preview state — the snapshot DTO no longer embeds the latest message (preview /
-  // senderId / senderName were dropped, since the list now derives them from the local message store).
-  // Populated by hydratePreviews (on boot + after each catch-up) and onNewMessage (live); undefined
-  // until then, and the list view renders "no messages" while absent. lastMessageAt stays
-  // server-provided (the authoritative sort key), so these carry no sort responsibility.
+  // Latest-message preview state — sourced from the missed-summary pull (the snapshot carries unread +
+  // lastMessageAt only; the body/preview is pulled). Populated by ThreadRepository.pullMissed (on boot +
+  // reconnect); a live identity-only NEW_MESSAGE bumps unread + reorders but does NOT refresh the preview
+  // (the body isn't in the signal) — it catches up on the next pull. lastMessageSenderId drives the
+  // "You:" prefix for the sender's own messages; the bare preview otherwise.
   lastMessagePreview?: string | null
   lastMessageSenderId?: number | null
-  lastMessageSenderName?: string | null
 }
 
 /**

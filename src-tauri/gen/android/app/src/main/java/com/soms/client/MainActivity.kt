@@ -696,19 +696,20 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    /** JS-callable surface exposed as window.SomsNotify — exposes the Android NATIVE notification method's
-     *  parameters to JS. `show(text, replace)` posts/replaces the message notification on CHANNEL_MESSAGES
-     *  (stable AWAY_NOTIF_ID when replace; a fresh id otherwise); `clear` cancels it. The web's
-     *  AndroidNotificationAdapter wraps this, mapping the unified `merge` param onto `replace`. The native
-     *  background triggers (FCM/WorkManager/RealtimeService → notifyAwaySummary) are untouched.
-     *  @JavascriptInterface runs on a background JS thread; NotificationManager is thread-safe, so no hop. */
+    /** JS-callable surface exposed as window.SomsNotify. `showDescriptor(json)` parses the server-authored
+     *  descriptor (the web's AndroidNotificationAdapter forwards it verbatim) and renders it via
+     *  [SomsMessagingService.renderDescriptor]; `clear` cancels the away-notification. The native background
+     *  triggers (FCM/WorkManager/RealtimeService → renderAwayNotification) share the same renderer — one
+     *  source of truth. @JavascriptInterface runs on a background JS thread; NotificationManager is
+     *  thread-safe, so no hop. */
     private class SomsNotifyInterface(activity: MainActivity) {
         private val activityRef = java.lang.ref.WeakReference(activity)
 
         @JavascriptInterface
-        fun show(text: String, replace: Boolean) {
+        fun showDescriptor(json: String) {
             val a = activityRef.get() ?: return
-            SomsMessagingService.showText(a, text, replace)
+            val d = NotifDescriptor.parseOne(org.json.JSONObject(json)) ?: return
+            SomsMessagingService.renderDescriptor(a, d)
         }
 
         @JavascriptInterface

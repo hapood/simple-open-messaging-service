@@ -6,8 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
@@ -15,62 +17,48 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
-
-/** One thread's unread state — the shape of `/notifications/missed` `summary:true` `data[]`. The single
- *  shape all three background paths (FCM / WorkManager / RealtimeService-background) fetch and feed into
- *  [SomsMessagingService.notifyAwaySummary]. */
-data class MissedItem(
-    val threadId: String,
-    val displayName: String,
-    val unreadCount: Int,
-    val latestMessageId: String?,
-)
 
 /**
  * FCM message handler + the single source of notification rendering for ALL background paths.
  *
- * The backend (PushService.dispatchForMessage) sends data-only high-priority messages carrying the
- * wake-up signal — { threadId, messageId, contentType, ts[, preview] }. There is no `notification`
- * field, so the OS does NOT auto-display anything: this service is always invoked (even when the OS
- * has killed the app) and builds the visible notification itself, keeping the canonical Message row as
- * the single source of truth.
+ * The backend (`PushService.dispatchForMessage`) sends data-only high-priority messages carrying the
+ * identity-only wake-up — `{ type, ts, threadId, seq }`. There is no `notification` field, so the OS does
+ * NOT auto-display anything: this service is always invoked (even when the OS has killed the app) and pulls
+ * `POST /notifications/missed`, whose `data.notifications[]` carry the server-authored descriptor(s) — the
+ * localized title/body + composited stacked-avatar icon + tag/renotify/kind semantics. [renderDescriptor]
+ * maps each descriptor onto `NotificationCompat` with zero composition logic. The same descriptor is
+ * rendered by the Web Push SW and the foreground Angular adapter — one source of truth.
  *
- * Foreground suppression: when the activity is visible (appInForeground == true) the live SSE
- * connection already delivered the message to the in-app UI, so FCM is a no-op. The server ALSO skips
- * FCM for recipients with a live SSE connection (SseService.isUserOnline); this flag is the
- * client-side backstop for the brief heartbeat-gap overlap.
+ * Foreground suppression: when the activity is visible (`appInForeground == true`) the live SSE connection
+ * already delivered the message to the in-app UI, so FCM is a no-op. The server ALSO skips FCM for
+ * recipients with a live SSE connection (`SseService.isUserOnline`); this flag is the client-side backstop
+ * for the brief heartbeat-gap overlap.
  *
- * Notification UX: all three background paths (FCM real-time, the RealtimeService background path, the
- * WorkManager 6h poll) converge on ONE coalesced away-notification ([notifyAwaySummary]) at a stable id — the user
- * never sees one notification per message/thread, just one accumulating "{senders} sent you messages",
- * updated in place. The per-thread dedup cursor in SomsSecureStore keeps the
- * three paths from double-processing the same message.
+ * All three background paths (FCM real-time, the RealtimeService background path, the WorkManager 6h poll)
+ * converge on [renderAwayNotification] → one coalesced away-notification at the stable [AWAY_NOTIF_ID]
+ * (the descriptor's `tag` maps onto that id — replace-by-id, never stacks).
  */
 class SomsMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(msg: RemoteMessage) {
-        // Data-only: msg.notification is null; everything is in msg.data.
+        // Data-only: msg.notification is null; everything is in msg.data. Identity-only wake-up — the
+        // push carries { type, ts, threadId, seq } (no body); route on `type`.
         val data = msg.data
-        // Admin test push (from the admin console): post the literal title/body as a notification — a
-        // delivery check, distinct from a real message wake-up. Bypasses the cursor + away-snapshot path.
-        if (data["type"] == "admin-test") {
-            if (appInForeground) return
-            notifyAdminTest(this, data["title"] ?: "Test", data["body"] ?: "")
-            return
+        when (data["type"]) {
+            "ADMIN_TEST" -> {
+                // Admin test push: post the literal title/body as a notification — a delivery check.
+                if (appInForeground) return
+                notifyAdminTest(this, data["title"] ?: "Test", data["body"] ?: "")
+            }
+            "NEW_MESSAGE" -> {
+                if (appInForeground) return // SSE handled it; suppress the system notification.
+                // Wake → pull the missed-summary → render the server-authored descriptor(s). The push carries
+                // no body; the missed-summary is the single data source.
+                renderAwayNotification(this)
+            }
         }
-        val threadId = data["threadId"] ?: return
-        if (appInForeground) return // SSE handled it; suppress the system notification.
-
-        // Advance the shared dedup cursor so NotificationSyncWorker / RealtimeService (the domestic
-        // fallbacks) don't re-notify this same message — FCM, FGS, and WorkManager share one cursor.
-        data["messageId"]?.let { mid -> if (mid.isNotEmpty()) SomsSecureStore.advanceCursor(this, threadId, mid) }
-        // Coalesce: re-fetch the unread snapshot and render ONE away-notification listing every sender
-        // (never one notification per message). onMessageReceived runs on an FCM background thread, so
-        // the synchronous HTTP fetch is safe here.
-        renderAwayNotification(this)
     }
 
     override fun onNewToken(token: String) {
@@ -93,11 +81,6 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Stable id for an admin test-push notification (separate from the away-notification). */
         const val ADMIN_TEST_NOTIF_ID = 0x7
 
-        /** Monotonic id source for JS-driven standalone (non-replacing) notifications ([showText] replace=false),
-         *  starting clear of the stable ids above. Only the JS bridge allocates here; the native paths always
-         *  replace at [AWAY_NOTIF_ID]. */
-        private val jsNotifSeq = java.util.concurrent.atomic.AtomicInteger(0x100)
-
         /** True while MainActivity is visible. Set from MainActivity.onResume/onStop — the
          *  Android-native ground truth for "is the user looking at the app right now." */
         @Volatile
@@ -108,79 +91,69 @@ class SomsMessagingService : FirebaseMessagingService() {
             .readTimeout(20, TimeUnit.SECONDS)
             .build()
 
-        /** Parse the `/notifications/missed` JSON array (the `data` field) into [MissedItem]s. Shared
-         *  by the WorkManager poller (which already has the array) and [fetchMissedSnapshot]. */
-        fun parseSnapshotArray(arr: JSONArray): List<MissedItem> {
-            val out = ArrayList<MissedItem>(arr.length())
-            for (i in 0 until arr.length()) {
-                val obj = arr.optJSONObject(i) ?: continue
-                val mid = obj.optString("latestMessageId")
-                out.add(
-                    MissedItem(
-                        threadId = obj.optString("threadId"),
-                        displayName = obj.optString("displayName"),
-                        unreadCount = obj.optInt("unreadCount"),
-                        latestMessageId = mid.takeIf { obj.has("latestMessageId") && !obj.isNull("latestMessageId") && mid.isNotEmpty() },
-                    ),
-                )
-            }
-            return out
-        }
-
-        /** Parse the full `{ code, message, data: [...] }` envelope. Null on any shape problem. */
-        fun parseSnapshot(payload: String): List<MissedItem>? {
-            return try {
-                val obj = JSONObject(payload)
-                if (obj.optInt("code", -1) != 0) null else parseSnapshotArray(obj.optJSONArray("data") ?: JSONArray())
-            } catch (e: Exception) {
-                null
-            }
-        }
-
-        /** Fetch the current unread-threads snapshot from `/notifications/missed` (`summary:true` — the
-         *  server-resolved displayName/unreadCount shape, since raw message rows carry no display names)
-         *  using the session token. Shared by all three background paths: the FCM re-query on each push,
-         *  the WorkManager poll, and the RealtimeService debounced background coalesce. Null on any
+        /** Fetch the server-authored notification descriptors from `/notifications/missed` (no cursor → the
+         *  current unread snapshot — the server-localized title/body + composited stacked-avatar icon), using
+         *  the session token + the device locale. Shared by all three background paths (FCM re-query on each
+         *  push, the WorkManager poll, the RealtimeService debounced background coalesce). Null on any
          *  failure (auth/network/parse) — callers simply skip rendering. */
-        fun fetchMissedSnapshot(ctx: Context): List<MissedItem>? {
+        fun fetchDescriptors(ctx: Context): List<NotifDescriptor>? {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return null
             val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
-            val body = JSONObject().put("summary", true).toString()
+            val body = JSONObject().put("take", 50).toString()
+            val locale = java.util.Locale.getDefault().toLanguageTag()
             val request = Request.Builder()
                 .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
                 .post(body.toRequestBody("application/json".toMediaType()))
                 .addHeader("Authorization", "Bearer $token")
+                .addHeader("Accept-Language", locale)
                 .build()
             return try {
                 HTTP.newCall(request).execute().use { resp ->
                     if (!resp.isSuccessful) return null
-                    parseSnapshot(resp.body?.string() ?: return null)
+                    NotifDescriptor.parseList(resp.body?.string() ?: return null)
                 }
             } catch (e: Exception) {
                 null
             }
         }
 
-        /** FCM-path convenience: re-query the snapshot, then render the coalesced away-notification. */
+        /** FCM-path convenience: fetch the descriptors, then render them. The single entry point for all
+         *  three background paths (FCM / WorkManager / RealtimeService-background). */
         fun renderAwayNotification(ctx: Context) {
-            val snapshot = fetchMissedSnapshot(ctx) ?: return
-            notifyAwaySummary(ctx, snapshot)
+            val descriptors = fetchDescriptors(ctx) ?: return
+            renderDescriptors(ctx, descriptors)
+        }
+
+        /** Render the server-authored descriptor(s) as ONE coalesced away-notification at the stable
+         *  [AWAY_NOTIF_ID] (replacing any prior one). A `kind:"clear"` descriptor cancels it. */
+        fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>) {
+            ensureChannel(ctx)
+            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
+            // The server emits exactly one descriptor for the away-summary (message-summary, or clear when
+            // nothing is unread+unmuted). Render the first; a clear cancels.
+            val d = descriptors.firstOrNull() ?: run { nm.cancel(AWAY_NOTIF_ID); return }
+            renderDescriptor(ctx, d)
         }
 
         /**
-         * Render ONE coalesced away-notification listing every sender, replacing any prior one (stable
-         * [AWAY_NOTIF_ID]). Empty snapshot → cancel. The single rendering target for all three background
-         * paths so the user sees one accumulating notification, never per-message spam. `setOnlyAlertOnce`
-         * means updates after the first post are silent (no re-buzz / heads-up pop).
+         * Render one server-authored descriptor onto `NotificationCompat`:
+         *  - `kind:"clear"` → cancel the tagged notification;
+         *  - `body` → `BigTextStyle` (the coalesced "X sent you N messages" — a count summary, not a
+         *    per-person conversation, so BigTextStyle, not MessagingStyle);
+         *  - `icon` → `setLargeIcon` (the fetched stacked-avatar PNG; null on fetch failure → omitted);
+         *  - `renotify` → `setOnlyAlertOnce(!renotify)` (the server opts to re-alert); `silent` → `setSilent`.
+         *
+         * The count is in `body` (the server folds names + total) — fixes the prior Kotlin path that omitted
+         * the count. Public so MainActivity's JS bridge can render a descriptor the WebView forwarded.
          */
-        fun notifyAwaySummary(ctx: Context, snapshot: List<MissedItem>) {
+        fun renderDescriptor(ctx: Context, d: NotifDescriptor) {
             ensureChannel(ctx)
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
-            if (snapshot.isEmpty()) {
+            if (d.kind == "clear") {
                 nm.cancel(AWAY_NOTIF_ID)
                 return
             }
-            val text = composeAwayText(ctx, snapshot.map { it.displayName })
+            val largeIcon = d.icon?.let { fetchBitmap(ctx, it) }
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
@@ -190,68 +163,75 @@ class SomsMessagingService : FirebaseMessagingService() {
                 intent,
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
             )
-            val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+            val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
                 .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(ctx.getString(R.string.app_name))
-                .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+                .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
+                .setContentText(d.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
                 .setAutoCancel(true)
-                .setOnlyAlertOnce(true)
+                .setOnlyAlertOnce(!d.renotify)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setCategory(NotificationCompat.CATEGORY_MESSAGE)
                 .setContentIntent(pendingIntent)
-                .build()
-            nm.notify(AWAY_NOTIF_ID, notif)
+            if (d.silent == true) builder.setSilent(true)
+            if (largeIcon != null) builder.setLargeIcon(largeIcon)
+            // Action buttons (mark-all-read today; a future single-message kind adds reply). Each fires
+            // SomsActionReceiver with the action id + the descriptor's routing data; a type:"text" action
+            // also collects an inline reply via RemoteInput (the OS hands the typed text back to the receiver).
+            for ((idx, a) in d.actions.withIndex()) {
+                val pi = PendingIntent.getBroadcast(
+                    ctx,
+                    AWAY_NOTIF_ID + 1 + idx, // unique requestCode per action slot
+                    Intent(ctx, SomsActionReceiver::class.java).apply {
+                        putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
+                        putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
+                        val tid = d.data.optInt("threadId", -1)
+                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        val seq = d.data.optInt("seq", -1)
+                        if (seq > 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
+                        d.data.optJSONArray("threadIds")?.toString()
+                            ?.let { putExtra(SomsActionReceiver.EXTRA_THREAD_IDS, it) }
+                    },
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                val actionBuilder = NotificationCompat.Action.Builder(R.drawable.ic_notification, a.title, pi)
+                if (a.type == "text") {
+                    actionBuilder.addRemoteInput(
+                        RemoteInput.Builder(SomsActionReceiver.KEY_REPLY_TEXT).setLabel(a.title).build(),
+                    )
+                }
+                builder.addAction(actionBuilder.build())
+            }
+            nm.notify(AWAY_NOTIF_ID, builder.build())
         }
 
-        /** Post a message notification with CALLER-SUPPLIED text — the JS-driven entry, called by the SomsNotify
-         *  @JavascriptInterface that the web's AndroidNotificationAdapter wraps. Exposes the native replace-by-id
-         *  param: `replace=true` re-posts at the stable [AWAY_NOTIF_ID] (replacing the prior away-notification);
-         *  `replace=false` posts a fresh standalone entry at a distinct id. The native background paths
-         *  (FCM/WorkManager/RealtimeService) compose their own text via [composeAwayText] and call
-         *  [notifyAwaySummary] — this method is only the JS-driven surface. */
-        fun showText(ctx: Context, text: String, replace: Boolean) {
-            ensureChannel(ctx)
-            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
-            val id = if (replace) AWAY_NOTIF_ID else jsNotifSeq.getAndIncrement()
-            val intent = Intent(ctx, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
-            }
-            val pendingIntent = PendingIntent.getActivity(
-                ctx,
-                id,
-                intent,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-            )
-            val notif = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
-                .setSmallIcon(R.drawable.ic_notification)
-                .setContentTitle(ctx.getString(R.string.app_name))
-                .setContentText(text)
-                .setStyle(NotificationCompat.BigTextStyle().bigText(text))
-                .setAutoCancel(true)
-                .setOnlyAlertOnce(true)
-                .setPriority(NotificationCompat.PRIORITY_HIGH)
-                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-                .setContentIntent(pendingIntent)
+        /** Fetch the composited stacked-avatar PNG at `iconUrl` (relative — resolved against the API origin)
+         *  as a Bitmap for `setLargeIcon`. Auth-N only (any logged-in user can fetch any avatar / notif-icon),
+         *  so the session-token Bearer header authorizes. Null on any failure (the notification renders
+         *  without an icon — graceful, never blocks the away-summary). */
+        private fun fetchBitmap(ctx: Context, iconUrl: String): android.graphics.Bitmap? {
+            val token = SomsSecureStore.getSessionToken(ctx) ?: return null
+            val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
+            val fullUrl = if (iconUrl.startsWith("http")) iconUrl else "$origin$iconUrl"
+            val request = Request.Builder()
+                .url(fullUrl)
+                .get()
+                .addHeader("Authorization", "Bearer $token")
                 .build()
-            nm.notify(id, notif)
-        }
-
-        /** "Alice sent you messages" / "Alice, Bob +2 sent you messages". Caps the listed names at 2,
-         *  folding the rest into a "+N" count to keep the shade tidy; de-dupes empty names. */
-        private fun composeAwayText(ctx: Context, names: List<String>): String {
-            val distinct = LinkedHashSet(names.filter { it.isNotEmpty() }).toList()
-            val joined = when {
-                distinct.isEmpty() -> ""
-                distinct.size <= 2 -> distinct.joinToString(", ")
-                else -> distinct.take(2).joinToString(", ") + " +" + (distinct.size - 2)
+            return try {
+                HTTP.newCall(request).execute().use { resp ->
+                    if (!resp.isSuccessful) return null
+                    val bytes = resp.body?.bytes() ?: return null
+                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                }
+            } catch (e: Exception) {
+                null
             }
-            return ctx.getString(R.string.notif_missed_coalesced, joined)
         }
 
         /** Build the foreground-service persistent notification (minimal, IMPORTANCE_LOW, ongoing) — the
          *  FGS-required "a notification must exist" surface, deliberately NOT a message surface (messages
-         *  go to [notifyAwaySummary]). Tap → opens the app. */
+         *  go to [renderDescriptor]). Tap → opens the app. */
         fun buildForegroundNotification(ctx: Context): Notification {
             ensureChannel(ctx)
             val intent = Intent(ctx, MainActivity::class.java).apply {

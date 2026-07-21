@@ -3,16 +3,13 @@ package com.soms.client
 import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
-import org.json.JSONObject
 
 /**
- * Encrypted-at-rest store for the three pieces of state the background poller (NotificationSyncWorker)
- * needs to survive across app process deaths — none of which the WebView/JS side can hand it at the
- * moment the worker fires (the WebView is suspended when the worker runs):
+ * Encrypted-at-rest store for the state the background services (NotificationSyncWorker, RealtimeService,
+ * SomsMessagingService) need to survive across app process deaths — none of which the WebView/JS side can
+ * hand them at the moment the service fires (the WebView is suspended):
  *  - `sessionToken`: the no-expiry session credential from POST /auth/login (Bearer on /events + /missed).
  *  - `apiOrigin`: the backend base URL the user configured (mirrors the web `apiOrigin`).
- *  - `dedupCursor`: per-thread "last notified latestMessageId" — shared with SomsMessagingService so
- *    FCM (real-time, 海外) and WorkManager (periodic, 国内) never double-notify the same message.
  *  - `pollingEnabled`: the user's Settings → Background toggle (default true). The worker reads it on
  *    every fire to self-gate; JS flips it via SomsFcm.setPollingEnabled (which also cancels / re-enqueues
  *    the schedule). Stored here rather than JS localStorage precisely because the worker fires with no
@@ -20,8 +17,7 @@ import org.json.JSONObject
  *
  * EncryptedSharedPreferences (AES256-GCM) is the documented Android best practice for credentials at
  * rest; for a scoped/short-lived token this is belt-and-braces but cheap. The JS side pushes these
- * values via the SomsFcm @JavascriptInterface (setSessionToken / setApiOrigin); the worker only
- * reads. SomsMessagingService reads+writes the dedup cursor when it posts an FCM notification.
+ * values via the SomsFcm @JavascriptInterface (setSessionToken / setApiOrigin); the services only read.
  */
 object SomsSecureStore {
     private const val FILENAME = "soms_secure"
@@ -36,7 +32,6 @@ object SomsSecureStore {
 
     private const val KEY_SESSION_TOKEN = "session_token"
     private const val KEY_API_ORIGIN = "api_origin"
-    private const val KEY_DEDUP_CURSOR = "dedup_cursor"
     private const val KEY_POLLING_ENABLED = "polling_enabled"
     private const val KEY_FGS_ENABLED = "fgs_enabled"
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
@@ -145,38 +140,5 @@ object SomsSecureStore {
         val v = prefs(ctx).getString(KEY_FIREBASE_CONFIG, null)
         cachedFirebaseConfig = v
         return v
-    }
-
-    /** Read the per-thread dedup cursor (threadId → last-notified latestMessageId). Returns an empty
-     *  map on first run / parse failure. The worker compares each thread's current latestMessageId
-     *  against this and only notifies when it advances. */
-    fun getDedupCursor(ctx: Context): Map<String, String> {
-        val raw = prefs(ctx).getString(KEY_DEDUP_CURSOR, null) ?: return emptyMap()
-        return try {
-            val obj = JSONObject(raw)
-            val out = HashMap<String, String>()
-            for (key in obj.keys()) out[key] = obj.getString(key)
-            out
-        } catch (e: Exception) {
-            emptyMap()
-        }
-    }
-
-    fun setDedupCursor(ctx: Context, cursor: Map<String, String>) {
-        val obj = JSONObject()
-        for ((k, v) in cursor) obj.put(k, v)
-        prefs(ctx).edit().putString(KEY_DEDUP_CURSOR, obj.toString()).apply()
-    }
-
-    /** Advance a single thread's cursor to `latestMessageId` only if it's newer (lexicographic on
-     *  equal-length numeric strings — the BigInt ids are monotonic and same-length within a thread's
-     *  active life, so string compare is correct here; full numeric compare would be overkill). */
-    fun advanceCursor(ctx: Context, threadId: String, latestMessageId: String) {
-        val cursor = HashMap(getDedupCursor(ctx))
-        val prev = cursor[threadId]
-        if (prev == null || prev.length < latestMessageId.length || (prev.length == latestMessageId.length && prev < latestMessageId)) {
-            cursor[threadId] = latestMessageId
-            setDedupCursor(ctx, cursor)
-        }
     }
 }

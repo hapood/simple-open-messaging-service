@@ -1,19 +1,25 @@
 import { NotificationAdapter } from './notification-adapter';
+import type { NotificationDescriptor } from './notification-descriptor.model';
 
 /**
- * Android notification via the Kotlin `SomsNotify` `@JavascriptInterface` (registered in `MainActivity` alongside
- * `SomsFcm` / `SomsShell` / `SomsBack`). That bridge EXPOSES the Android native notification method's parameters
- * to JS — `show(text, replace)` posts on `CHANNEL_MESSAGES` at the stable `AWAY_NOTIF_ID` when `replace` is true
- * (the native replace-by-id), else a fresh id; `clear` cancels it. This adapter is the JS layer that smooths the
- * platform difference: it maps the unified `merge` param onto `replace` (merge=true → replace the prior
- * notification).
+ * Android notification via the Kotlin `SomsNotify` `@JavascriptInterface` (registered in `MainActivity`
+ * alongside `SomsFcm` / `SomsShell` / `SomsBack`). This adapter forwards the WHOLE server-authored
+ * descriptor as JSON to Kotlin (`SomsNotify.showDescriptor(json)`), which renders it natively
+ * (`BigTextStyle(body)` + `setLargeIcon(icon bitmap)` + `setOnlyAlertOnce(!renotify)` + per-action
+ * `addAction`). The native layer owns the replace-by-id (`tag` → `AWAY_NOTIF_ID` for the away-summary) and
+ * the `kind:'clear'` cancel.
  *
- * Per the native-bridge rule, this adapter runs only on Android, so `window.SomsNotify` is guaranteed present —
- * call with `!`, never `?`.
+ * Per the native-bridge rule, this adapter runs only on Android, so `window.SomsNotify` is guaranteed
+ * present — call with `!`, never `?`.
+ *
+ * Dormant in practice: the WebView is never unfocused while the activity is alive, so the foreground
+ * {@link UnreadAttentionService} never fires `showDescriptor` on Android — background delivery is owned
+ * natively by the FCM / WorkManager / RealtimeService paths (which render the SAME descriptor from the
+ * `/notifications/missed` pull).
  */
 export class AndroidNotificationAdapter extends NotificationAdapter {
-  show(text: string, merge: boolean): void {
-    window.SomsNotify!.show(text, merge);
+  showDescriptor(d: NotificationDescriptor): void {
+    window.SomsNotify!.showDescriptor(JSON.stringify(d));
   }
 
   clear(): void {

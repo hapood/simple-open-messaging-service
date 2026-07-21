@@ -71,6 +71,12 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
 
+        <!-- Handles a notification ACTION button tap (mark-all-read / reply) — the receiver each action's
+             PendingIntent targets. Not exported (only the system NotificationManager fires it, internally). -->
+        <receiver
+            android:name=".SomsActionReceiver"
+            android:exported="false" />
+
         <provider
           android:name="androidx.core.content.FileProvider"
           android:authorities="${applicationId}.fileprovider"

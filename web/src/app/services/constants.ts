@@ -6,7 +6,13 @@ import { computed } from '@angular/core';
 // origin itself, so the prefix is origin-independent there). Each is read fresh at call time (a computed
 // signal). The desktop SSE stream is owned by the Rust `sse_*` supervisor (NOT fetched through this URL);
 // `sseUrl` is consumed only by the browser SSE worker today.
-export const apiPrefix = computed(() => '/api/v1');
+//
+// API_PREFIX is the single source of truth for the version string. The push service worker can't import
+// this module (it's a static asset outside the Angular bundle), so scripts/gen-sw-config.mjs reads this
+// constant and emits public/push/sw-config.js (run automatically by `npm run prebuild`); sw-push.js loads
+// it via importScripts. Bump the version here → rebuild → the SW mirrors it. No second hardcoded copy.
+export const API_PREFIX = '/api/v1';
+export const apiPrefix = computed(() => API_PREFIX);
 
 // SSE downlink endpoint (GET /api/v1/events).
 export const sseUrl = computed(() => `${apiPrefix()}/events`);

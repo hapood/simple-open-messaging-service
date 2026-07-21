@@ -168,21 +168,43 @@ fn origin_host_is_ip(origin: &str) -> bool {
     }
 }
 
-/// Build a reqwest client scoped to one origin's TLS posture. HTTPS + DNS host → STRICT (rustls webpki
-/// root store validates the cert: self-signed / expired / hostname-mismatch → handshake error). IP host
-/// OR `http` scheme → permissive (self-signed / cleartext accepted; the bundle signature still guards
-/// integrity). Redirects are NEVER followed (an origin pointing at a login-redirect host must not chase
-/// into an attacker-controlled path). The media-proxy client (`ProxyState.http`) is untouched.
-fn http_client_for(origin: &str) -> reqwest::Client {
+/// TLS posture the proxy takes toward a backend origin. The security boundary `http_client_for` and
+/// `init_validate_cert` both implement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TlsPosture {
+    /// HTTPS + DNS host: rustls webpki root store validates the cert — self-signed / expired /
+    /// hostname-mismatch → handshake error.
+    Strict,
+    /// `http` scheme OR literal-IP host: accept self-signed / cleartext. LAN self-hosted servers commonly
+    /// have no valid cert for a bare IP; the web-bundle signature still guards integrity.
+    Permissive,
+}
+
+/// Decide the TLS posture for an origin. Extracted pure (no reqwest client, no network) from the two
+/// call sites that previously made this `is_http || origin_host_is_ip` decision inline, so the boundary
+/// is unit-testable. An unparseable origin → Permissive, matching the `unwrap_or(true)` default both
+/// sites already used (`validate_origin` gates persistence, so a bad origin never reaches here in
+/// practice — the default is defensive).
+fn tls_posture_for(origin: &str) -> TlsPosture {
     let is_http = reqwest::Url::parse(origin)
         .ok()
         .map(|u| u.scheme() == "http")
         .unwrap_or(true);
-    let permissive = is_http || origin_host_is_ip(origin);
+    if is_http || origin_host_is_ip(origin) {
+        TlsPosture::Permissive
+    } else {
+        TlsPosture::Strict
+    }
+}
+
+/// Build a reqwest client scoped to one origin's TLS posture (see `tls_posture_for`). Redirects
+/// are NEVER followed — an origin pointing at a login-redirect host must not chase into an attacker-
+/// controlled path. The media-proxy client (`ProxyState.http`) is untouched.
+fn http_client_for(origin: &str) -> reqwest::Client {
     let mut b = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
         .connect_timeout(BACKEND_CONNECT_TIMEOUT);
-    if permissive {
+    if tls_posture_for(origin) == TlsPosture::Permissive {
         b = b.danger_accept_invalid_certs(true);
     }
     b.build().unwrap_or_else(|_| reqwest::Client::new())
@@ -1645,6 +1667,69 @@ mod sse_parser_tests {
     }
 }
 
+// Origin parsing + TLS posture — the security boundary that decides whether a backend origin gets
+// strict TLS validation or permissive (self-signed/cleartext accepted). Pure (no reqwest client, no
+// network), so these run on EVERY target — unlike the desktop-only `sse_parser_tests` above.
+#[cfg(test)]
+mod origin_tests {
+    use super::*;
+
+    #[test]
+    fn tls_posture_https_dns_host_is_strict() {
+        assert_eq!(tls_posture_for("https://example.com"), TlsPosture::Strict);
+        assert_eq!(tls_posture_for("https://soms.example.com:8443/api"), TlsPosture::Strict);
+    }
+
+    #[test]
+    fn tls_posture_http_scheme_is_permissive_regardless_of_host() {
+        // Cleartext http → never strict, even for a DNS host that would be strict over https.
+        assert_eq!(tls_posture_for("http://example.com"), TlsPosture::Permissive);
+        assert_eq!(tls_posture_for("http://10.0.0.5:3000"), TlsPosture::Permissive);
+    }
+
+    #[test]
+    fn tls_posture_ip_host_is_permissive_even_over_https() {
+        // LAN self-hosted over HTTPS+IP → permissive (no valid cert expected for a bare-IP host).
+        assert_eq!(tls_posture_for("https://10.0.0.5"), TlsPosture::Permissive);
+        assert_eq!(tls_posture_for("https://192.168.88.8:8443"), TlsPosture::Permissive);
+        assert_eq!(tls_posture_for("https://[::1]:3000"), TlsPosture::Permissive);
+    }
+
+    #[test]
+    fn tls_posture_unparseable_origin_is_permissive() {
+        // Defensive default (matches the historical unwrap_or(true)); validate_origin gates persistence
+        // so a malformed origin never reaches here in practice.
+        assert_eq!(tls_posture_for("not a url"), TlsPosture::Permissive);
+        assert_eq!(tls_posture_for(""), TlsPosture::Permissive);
+    }
+
+    #[test]
+    fn validate_origin_accepts_http_https_and_strips_trailing_slash() {
+        assert_eq!(validate_origin("https://example.com/"), Some("https://example.com".to_string()));
+        assert_eq!(validate_origin("http://10.0.0.5:3000"), Some("http://10.0.0.5:3000".to_string()));
+        // Surrounding whitespace tolerated (real input from a settings field).
+        assert_eq!(validate_origin("  https://example.com  "), Some("https://example.com".to_string()));
+    }
+
+    #[test]
+    fn validate_origin_rejects_non_http_schemes_and_schemeless_garbage() {
+        assert_eq!(validate_origin("ftp://example.com"), None);
+        assert_eq!(validate_origin("file:///etc/passwd"), None);
+        assert_eq!(validate_origin("example.com"), None); // no scheme → relative URL, rejected
+        assert_eq!(validate_origin("garbage"), None);
+        assert_eq!(validate_origin(""), None);
+    }
+
+    #[test]
+    fn origin_host_is_ip_detects_v4_v6_and_rejects_dns() {
+        assert!(origin_host_is_ip("http://192.168.1.10"));
+        assert!(origin_host_is_ip("https://10.0.0.5:3000"));
+        assert!(origin_host_is_ip("https://[::1]:8443"));
+        assert!(!origin_host_is_ip("https://example.com"));
+        assert!(!origin_host_is_ip("garbage"));
+    }
+}
+
 // --- shell dynamic-update: init_* + window lifecycle ---------------------------------------
 
 #[tauri::command]
@@ -1717,11 +1802,7 @@ async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> 
 /// skipped (IP/http origins are not guaranteed secure by policy).
 #[tauri::command]
 async fn init_validate_cert(origin: String) -> Result<serde_json::Value, String> {
-    let is_http = reqwest::Url::parse(&origin)
-        .ok()
-        .map(|u| u.scheme() == "http")
-        .unwrap_or(true);
-    if is_http || origin_host_is_ip(&origin) {
+    if tls_posture_for(&origin) == TlsPosture::Permissive {
         return Ok(serde_json::json!({ "valid": true, "summary": "insecure", "note": "http/ip origin — certificate validation skipped; not guaranteed secure by policy" }));
     }
     let client = http_client_for(&origin);

@@ -44,14 +44,14 @@ export interface ProfileRecord {
   fetchedAt: number;
 }
 
-/** A scalar persisted in the `meta` store (keyPath `'key'`). Today the sole writer is the global message
- *  high-water-mark under key `'hwm'` (epoch-ms `createdAt` of the newest message ever cached), written by
- *  {@link MessageRepository} on every cached message and read by the missed catch-up to bound
- *  `POST /notifications/missed { since }`. The thread-list revision cursor stays in-memory in UserService
- *  (seeded from /user/my-profile each boot) — it does NOT live here. */
+/** A value persisted in the `meta` store (keyPath `'key'`). The sole key today is `'missedCursor'` — the
+ *  `{threadId, seq}` forward cursor for the missed-summary pull, written by {@link ThreadRepository} on
+ *  each pull. `value` is opaque to the store (structured-cloneable); the caller owns its shape + narrowing.
+ *  The thread-list revision cursor stays in-memory in UserService (seeded from /user/my-profile each boot) —
+ *  it does NOT live here. */
 export interface MetaRecord {
   key: string;
-  value: number;
+  value: unknown;
 }
 
 /** The 5-store schema. */
@@ -196,10 +196,10 @@ export class WebdbService implements OnDestroy {
 
   // ---- meta store: keyed scalars (the global message HWM today) ---------------------------
 
-  /** Read a scalar from the `meta` store, or `undefined` when absent / IDB unavailable. The sole key today
-   *  is `'hwm'` (the newest cached message's epoch-ms `createdAt`), the high-water-mark the missed catch-up
-   *  bounds its `since` against. */
-  async getMeta(key: string): Promise<number | undefined> {
+  /** Read a value from the `meta` store, or `undefined` when absent / IDB unavailable. The sole key today
+   *  is `'missedCursor'` (the `{threadId, seq}` forward cursor for the missed-summary pull). The value is
+   *  opaque to the store — the caller owns its shape + narrowing. */
+  async getMeta(key: string): Promise<unknown> {
     try {
       const rec = await (await this.db()).get('meta', key);
       return rec?.value;
@@ -208,10 +208,10 @@ export class WebdbService implements OnDestroy {
     }
   }
 
-  /** Write a scalar to the `meta` store (idempotent put by `key`). Best-effort: IDB unavailable / closed →
-   *  graceful no-op (the HWM is also held in memory by its writer; a missed persist just re-fetches one
+  /** Write a value to the `meta` store (idempotent put by `key`). Best-effort: IDB unavailable / closed →
+   *  graceful no-op (the value is also held in memory by its writer; a missed persist just re-fetches one
    *  idempotent page on the next catch-up). */
-  async putMeta(key: string, value: number): Promise<void> {
+  async putMeta(key: string, value: unknown): Promise<void> {
     try {
       await (await this.db()).put('meta', { key, value });
     } catch {

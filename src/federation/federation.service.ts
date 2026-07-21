@@ -2510,20 +2510,12 @@ export class FederationService implements OnModuleDestroy {
     // polling observer (the client's reconcile / an e2e) must not see the committed row before the SSE
     // frame, so delivery is atomic from the client's view (no async gap between commit and onNewMessage).
     // Excludes the sender (creatorId) — for a pulled message the creator is a foreign stub, absent from
-    // the local recipient set anyway. P2P → the single recipient; GROUP → every local member. Strips the
-    // internal BigInt id (a throughput side-channel).
-    // A freshly-pulled media message is mid-localize (the caller runs localizeMedia right after this
-    // returns, then pushes a MEDIA_STATUS terminal frame that flips this to ready/failed). Non-media is
-    // trivially ready. sv = seq is the monotonic status version the client uses to order frames.
-    const msgData = serializeBody({
-      ...stripMessageId(created),
-      mediaStatus: this.isMediaContentType(created.contentType)
-        ? MEDIA_STATUS.DOWNLOADING
-        : MEDIA_STATUS.READY,
-      sv: created.seq,
-    });
+    // the local recipient set anyway. P2P → the single recipient; GROUP → every local member.
+    // Identity-only {threadId, seq, ts} — the body is pulled by the client (single data source). A
+    // freshly-pulled media message is mid-localize; the client learns mediaStatus from the pulled body +
+    // the MEDIA_STATUS terminal event pushed when localization completes.
     for (const uid of recipients) {
-      if (uid !== creatorId) this.sse.onNewMessage(uid, msgData);
+      if (uid !== creatorId) this.sse.onNewMessage(uid, threadId, created.seq, created.createdAt.getTime());
     }
     const arrival = created.createdAt;
     // Conditionally advance the denormalized last-message cache — only if this pulled message is newer

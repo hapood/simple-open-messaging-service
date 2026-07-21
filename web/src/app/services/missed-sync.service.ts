@@ -1,113 +1,145 @@
-import { Injectable, inject, effect, untracked, OnDestroy } from '@angular/core';
+import { Injectable, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Subject, Subscription, firstValueFrom } from 'rxjs';
-import { WebdbService } from './webdb.service';
-import { WebsocketService } from './websocket.service';
+import { firstValueFrom } from 'rxjs';
 import { MessageRepository } from './message-repository.service';
-import { UserService } from './user.service';
 import { apiPrefix } from './constants';
 import type { Message, StandardResponse } from './model';
+import type { MissedCursor, NotificationDescriptor } from './notification-descriptor.model';
 
-/** Page size for the missed catch-up (the backend caps `take` at 200; 100 balances round-trips vs load). */
-const MISSED_PAGE_SIZE = 100;
+/** Page size for the missed-summary pull (the backend caps `take` at 200; 50 balances round-trips). */
+const MISSED_TAKE = 50;
 
-/** One page of `POST /notifications/missed` (the paginated, non-summary form). `messages` are time-ascending
- *  full Message rows (id-stripped); `nextCursor` is the opaque continuation token echoed on the next page. */
-interface MissedPage {
-  messages: Message[];
-  hasMore: boolean;
-  nextCursor?: string;
+/** One thread's row in the POST /notifications/missed summary. Mirrors the backend MissedThreadItem. */
+export interface MissedThreadItem {
+  threadId: number;
+  type: 'P2P' | 'GROUP';
+  displayName: string;
+  unreadCount: number;
+  /** Per-user mute flag — the away-notification filters unread+unmuted. */
+  muted: boolean;
+  /** The sender's avatar URL (P2P peer / GROUP group); '' when none. Unused by the threadlist preview. */
+  senderAvatarUrl: string;
+  /** The sender's stable id. Unused by the threadlist preview (the icon compositor reads it server-side). */
+  senderUserId: number;
+  latestMessage: {
+    threadId: number;
+    seq: number;
+    contentType: string;
+    content: string;
+    creator: number;
+    createdAt: number;
+    mediaStatus: 'ready' | 'failed';
+    sv: number;
+  } | null;
 }
 
+/** The missed-summary pull result — the data view (`items`) + the forward cursor + the notification
+ *  descriptors (consumed by the foreground away-renderer). */
+export interface MissedSummaryResult {
+  items: MissedThreadItem[];
+  hasMore: boolean;
+  nextCursor: MissedCursor | null;
+  notifications: NotificationDescriptor[];
+}
+
+/** An empty result (errors / concurrent no-op) — the cursor is not advanced, so the next pull re-covers. */
+const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null, notifications: [] };
+
 /**
- * App-open + reconnect catch-up for message bodies the SSE stream does not replay.
+ * The missed-summary puller. Fetches `POST /notifications/missed { cursor }` and exposes TWO projections
+ * over it, each with its OWN single-flight guard so the two consumers never starve each other:
+ *  - {@link fetchMissedSummary} — the threadlist catch-up (items + body cache). Used by ThreadRepository.
+ *  - {@link fetchAwayNotifications} — the foreground away-snapshot (descriptors only). Used by
+ *    UnreadAttentionService.
  *
- * The realtime stream is live-only: while the app was closed (or suspended), messages landed on the server
- * but were never pushed. The threadlist snapshot (ThreadRepository.boot) refreshes preview/unread/membership,
- * but it does NOT hydrate the per-thread message store — so opening a thread that grew offline would show a
- * stale tail until the chat-box's init probe refetched. This service closes that gap: it pages the cross-
- * thread `POST /notifications/missed` endpoint bound by a persisted high-water-mark (the newest cached
- * message's `createdAt`, owned by {@link MessageRepository}) and applies every page through the SAME apply
- * path a live `NEW_MESSAGE` takes ({@link MessageRepository.applyMissed}).
+ * Why two guards: a NEW_MESSAGE arriving while the window is unfocused fires BOTH a threadlist catch-up
+ * pull (cursor-based) and an away-snapshot pull (null cursor). They are DIFFERENT queries, so they cannot
+ * share a result — but sharing ONE single-flight guard meant the second caller got an empty result and the
+ * away-notification could intermittently fail to render. Separate guards let both fire (two HTTP calls when
+ * they genuinely race; each collapses its OWN bursts).
  *
- * Crucially the apply is direct on {@link MessageRepository} — it does NOT re-emit on `eventSubject`.
- * `UnreadAttentionService` subscribes to `NEW_MESSAGE` there and would post a desktop notification (and bump
- * the title badge) for every caught-up message on every app-open; the snapshot already owns unread/preview,
- * so the catch-up must only hydrate bodies, never re-fire the "new message" attention path.
+ * STATELESS beyond the guards: the caller owns the cursor + decides when to pull (boot / resume / push-wake).
  *
- * **First boot** (no HWM yet): the endpoint's INIT mode returns the newest message per thread (a bounded
- * seed, one shot — not a full history dump); older history stays lazy-loaded per thread on scroll. Every
- * later boot pages catch-up `since:HWM` → `{cursor}` until `!hasMore`. Re-applied pages are idempotent
- * (`[threadId, seq]` key), so a crashed catch-up or a racing live SSE frame are both safe to re-apply.
+ * The items-path apply is direct on MessageRepository — it does NOT re-emit on eventSubject, so
+ * UnreadAttentionService (subscribed to NEW_MESSAGE there) is NOT triggered; the snapshot owns unread.
  */
 @Injectable({ providedIn: 'root' })
-export class MissedSyncService implements OnDestroy {
+export class MissedSyncService {
   private readonly http = inject(HttpClient);
-  private readonly webdb = inject(WebdbService);
-  private readonly ws = inject(WebsocketService);
   private readonly messageRepo = inject(MessageRepository);
-  private readonly userService = inject(UserService);
 
-  /** Single-flight: a boot/reconnect burst collapses into one catch-up; a concurrent caller is a no-op. */
-  private inFlight = false;
-  private readonly sub: Subscription;
+  /** Single-flight for the items (threadlist catch-up) path. */
+  private itemsInFlight = false;
+  /** Single-flight for the away (descriptor snapshot) path — independent so it never starves on the items path. */
+  private awayInFlight = false;
 
-  /** Fires after a catch-up run that applied ≥1 page, so downstream (ThreadRepository) can re-derive the
-   *  list previews from the newly-hydrated local messages. */
-  private readonly _catchUpDone$ = new Subject<void>();
-  readonly catchUpDone$ = this._catchUpDone$.asObservable();
+  /** Raw HTTP POST + parse — no guard, no body cache (the shared fetch both projections build on). */
+  private async postMissed(cursor: MissedCursor | null): Promise<MissedSummaryResult> {
+    const res = await firstValueFrom(
+      this.http.post<StandardResponse<MissedSummaryResult>>(
+        `${apiPrefix()}/notifications/missed`,
+        { ...(cursor ? { cursor } : {}), take: MISSED_TAKE },
+        { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
+      ),
+    ).catch(() => null);
+    if (!res || res.code !== 0 || !res.data) return EMPTY;
+    return res.data;
+  }
 
-  constructor() {
-    // Reconnect → catch up (the SSE stream resumed, but the offline gap is not replayed).
-    this.sub = this.ws.reconnect$.subscribe(() => {
-      void this.catchUp();
-    });
-    // App-open: run once the per-user DB is open post-login. Tracks `ready()` only; the sessionProfile read
-    // is untracked so a mid-session signal change doesn't re-fire this (a logout toggles ready false→no-op;
-    // a re-login toggles it false→true→catch-up for the new user).
-    effect(() => {
-      if (this.webdb.ready() && untracked(() => this.userService.sessionProfile()?.id) != null) {
-        void this.catchUp();
-      }
-    });
+  /** Cache each thread's latest-message body (pre-warm so opening a thread is instant). The summary row is
+   *  the full message minus id; fill the storage-only defaults the IDB record carries. */
+  private async cacheBodies(items: MissedThreadItem[]): Promise<void> {
+    const bodies = items
+      .map((i) => i.latestMessage)
+      .filter((m): m is NonNullable<typeof m> => m != null)
+      .map(
+        (m): Message =>
+          ({
+            threadId: m.threadId,
+            seq: m.seq,
+            contentType: m.contentType as Message['contentType'],
+            content: m.content,
+            creator: m.creator,
+            createdAt: m.createdAt,
+            updatedAt: m.createdAt,
+            isDeleted: false,
+            mediaStatus: m.mediaStatus,
+            sv: m.sv,
+          }) as unknown as Message,
+      );
+    if (bodies.length > 0) await this.messageRepo.applyMissed(bodies);
   }
 
   /**
-   * Page the missed-since-HWM messages and cache them via the shared apply path. Idempotent + single-flight
-   * + session-end guarded (bails if the user logs out mid-page). Errors degrade silently: the next reconnect
-   * retries, and any partial progress is durable (cached messages + advanced HWM survive in IDB).
+   * Threadlist catch-up: fetch one page (cursor forward), cache the bodies, return the full result (items +
+   * nextCursor + notifications). `cursor` null → snapshot (newest `take`). Concurrent calls on THIS path
+   * collapse (single-flight); the away path has its own guard.
    */
-  async catchUp(): Promise<void> {
-    if (this.inFlight) return;
-    if (!this.webdb.ready()) return; // no DB → nothing to cache into (the effect gate usually covers this)
-    this.inFlight = true;
-    let applied = false;
+  async fetchMissedSummary(cursor: MissedCursor | null): Promise<MissedSummaryResult> {
+    if (this.itemsInFlight) return EMPTY;
+    this.itemsInFlight = true;
     try {
-      // First page bound: the HWM (null → INIT newest-per-thread seed). Every later page uses the opaque cursor.
-      const hwm = await this.messageRepo.getHwm();
-      let bound: { since?: number; cursor?: string } = hwm == null ? {} : { since: hwm };
-      for (;;) {
-        // Bail if the session ended mid-catch-up (logout / account switch).
-        if (untracked(() => this.userService.sessionProfile()?.id) == null) return;
-        const res = await firstValueFrom(
-          this.http.post<StandardResponse<MissedPage>>(`${apiPrefix()}/notifications/missed`, {
-            ...bound,
-            take: MISSED_PAGE_SIZE,
-          }),
-        ).catch(() => null);
-        if (!res || res.code !== 0 || !res.data) return;
-        await this.messageRepo.applyMissed(res.data.messages ?? []);
-        applied = true;
-        if (!res.data.hasMore || !res.data.nextCursor) return;
-        bound = { cursor: res.data.nextCursor }; // cursor takes precedence; `since` is dropped hereafter
-      }
+      const data = await this.postMissed(cursor);
+      if (data.items.length > 0) await this.cacheBodies(data.items);
+      return data;
     } finally {
-      this.inFlight = false;
-      if (applied) this._catchUpDone$.next();
+      this.itemsInFlight = false;
     }
   }
 
-  ngOnDestroy(): void {
-    this.sub.unsubscribe();
+  /**
+   * Foreground away-snapshot: fetch the descriptors (null cursor → current unread state) for the
+   * away-notification / popup. Does NOT cache bodies (the threadlist catch-up owns pre-warm) — only the
+   * away-renderer needs the descriptors. Single-flight on its OWN guard, independent of {@link fetchMissedSummary},
+   * so a threadlist catch-up pulling at the same instant cannot starve the away-notification.
+   */
+  async fetchAwayNotifications(): Promise<NotificationDescriptor[]> {
+    if (this.awayInFlight) return [];
+    this.awayInFlight = true;
+    try {
+      return (await this.postMissed(null)).notifications;
+    } finally {
+      this.awayInFlight = false;
+    }
   }
 }

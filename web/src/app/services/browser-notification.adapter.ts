@@ -1,43 +1,55 @@
 import { NotificationAdapter } from './notification-adapter';
 import { NotificationPrefsService } from './notification-prefs.service';
+import type { NotificationDescriptor } from './notification-descriptor.model';
 
 /**
- * Browser / PWA in-tab attention notification, via the Web Notifications API. A shared stable `tag` means a new
- * notification REPLACES the prior one (one shade entry, no pile-up); `renotify: true` re-banners on each replace
- * (Chromium-supported; Firefox ignores). `silent` follows the Sound pref; the master switch (`enabled`) is the
- * in-app mute (the browser permission itself is terminal). Click focuses the window (a multi-sender summary
- * cannot deep-link to one thread). `merge=false` omits the tag so the entry stacks instead of replacing.
+ * Browser / PWA in-tab attention notification, via the Web Notifications API. The server-authored
+ * {@link NotificationDescriptor} maps field-for-field onto `new Notification(title, options)`:
+ *  - `tag` (+ `renotify`) → the replace-by-tag primitive (one shade entry, re-banner on replace);
+ *  - `icon` → the composited stacked-avatar PNG (null → omit, the browser shows its default);
+ *  - `silent` → the quiet flag (falls back to the Sound pref when the descriptor leaves it unset);
+ *  - `actions` → the native action buttons (P2);
+ *  - `kind:'clear'` → `.close()` the active notification (server-driven cancel).
  *
- * Lifted verbatim from the old browser branch of `UnreadAttentionService.postSummary` — only its home changed.
+ * The app-level master (`enabled`) is the in-app mute (the browser permission itself is terminal). Click
+ * focuses the window (a multi-sender summary cannot deep-link to one thread).
  */
 export class BrowserNotificationAdapter extends NotificationAdapter {
-  /** Shared tag for the single summary notification — a new notification with this tag REPLACES the prior one
-   *  instead of stacking, so the shade holds exactly one entry from us. */
-  private static readonly TAG = 'soms-away-summary';
-
-  /** The page's original title (the notification title). */
-  private readonly baseTitle = typeof document !== 'undefined' ? document.title : 'SOMS';
-  /** The live browser Notification instance, held so `clear()` can `.close()` it on focus regain. */
+  /** The live browser Notification instance, held so `clear()` / a `kind:'clear'` descriptor can `.close()`
+   *  it on focus regain. */
   private activeNotif: Notification | null = null;
 
   constructor(private readonly prefs: NotificationPrefsService) {
     super();
   }
 
-  show(text: string, merge: boolean): void {
+  showDescriptor(d: NotificationDescriptor): void {
+    if (d.kind === 'clear') {
+      this.closeActive();
+      return;
+    }
     if (!this.prefs.enabled()) return; // app-level master (the permission is terminal; this is the mute)
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     try {
-      // The TS DOM lib's NotificationOptions omits `renotify` (a Chromium-supported, spec-defined option not yet
-      // typed). Extend it so the literal type-checks honestly instead of being cast away. `renotify` requires a
-      // `tag`, so it is set only when merging.
+      // The TS DOM lib's NotificationOptions omits `renotify` (a Chromium-supported, spec-defined option
+      // not yet typed). Extend it so the literal type-checks honestly instead of being cast away. `renotify`
+      // requires a `tag`, so it is set only when the descriptor carries one.
+      //
+      // `actions` is deliberately NOT passed: in-page `new Notification` action buttons are display-only
+      // (the `notificationclick` + `event.action` callback only fires in a ServiceWorkerGlobalScope, i.e.
+      // for SW-posted notifications). Showing buttons that do nothing when tapped is misleading — the
+      // foreground's real action surface is the in-app popup (real Angular click handlers). The SW
+      // notification path (sw-push.js) DOES pass actions; they work there.
       const options: NotificationOptions & { renotify?: boolean } = {
-        body: text,
-        tag: merge ? BrowserNotificationAdapter.TAG : undefined,
-        silent: !this.prefs.sound(),
-        renotify: merge,
+        body: d.body,
+        tag: d.tag,
+        icon: d.icon ?? undefined,
+        lang: d.lang,
+        silent: d.silent ?? !this.prefs.sound(),
+        data: d.data,
+        renotify: d.renotify,
       };
-      const n = new Notification(this.baseTitle, options);
+      const n = new Notification(d.title, options);
       n.onclick = () => {
         window.focus();
         n.close();
@@ -52,6 +64,10 @@ export class BrowserNotificationAdapter extends NotificationAdapter {
   }
 
   clear(): void {
+    this.closeActive();
+  }
+
+  private closeActive(): void {
     if (this.activeNotif) {
       try {
         this.activeNotif.close();

@@ -54,8 +54,8 @@ private const val COALESCE_DELAY_MS = 500L
  * restart is backstopped by the WebView's HWM catch-up on resume.
  *
  * **Background:** the WebView is suspended, so forwarding is pointless; a NEW_MESSAGE instead triggers a
- * debounced summary fetch (`/notifications/missed` `summary:true`) rendered as ONE coalesced
- * away-notification (reusing [SomsMessagingService.notifyAwaySummary]). Non-message events are UI-only
+ * debounced fetch (`/notifications/missed` — the server-authored descriptor) rendered as ONE coalesced
+ * away-notification via [SomsMessagingService.renderAwayNotification]. Non-message events are UI-only
  * and dropped — the WebView's HWM catch-up + threadlist refresh cover them on resume, so no frame is lost.
  * FORCE_LOGOUT is forwarded (so JS logs out) then stops the service.
  *
@@ -230,16 +230,10 @@ class RealtimeService : Service() {
         handler.postDelayed(awayCoalesceTask, COALESCE_DELAY_MS)
     }
 
-    private val awayCoalesceTask = object : Runnable {
-        override fun run() {
-            val snapshot = SomsMessagingService.fetchMissedSnapshot(this@RealtimeService) ?: return
-            snapshot.forEach { item ->
-                item.latestMessageId?.let { mid ->
-                    SomsSecureStore.advanceCursor(this@RealtimeService, item.threadId, mid)
-                }
-            }
-            SomsMessagingService.notifyAwaySummary(this@RealtimeService, snapshot)
-        }
+    private val awayCoalesceTask = Runnable {
+        // Fetch the server-authored descriptors + render the coalesced away-notification (one entry point
+        // shared with the FCM + WorkManager paths).
+        SomsMessagingService.renderAwayNotification(this@RealtimeService)
     }
 
     /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY

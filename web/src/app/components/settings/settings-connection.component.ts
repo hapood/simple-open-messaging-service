@@ -5,8 +5,8 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { WebsocketService, ConnectionState } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
-import { HttpClient } from '@angular/common/http';
-import { firstValueFrom } from 'rxjs';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { firstValueFrom, timeout, TimeoutError } from 'rxjs';
 
 /** Result of a manual server-health probe. */
 interface HealthResult {
@@ -14,6 +14,25 @@ interface HealthResult {
   version?: string;
   ms?: number;
   error?: string;
+}
+
+/**
+ * Map a health-probe failure to the short token shown in the UI (interpolated into the translated
+ * "unreachable" hint). Pure + standalone so every branch is unit-testable directly: the `TimeoutError`
+ * branch is unreachable through HttpClient's testing backend (which can't synthesize one), and driving
+ * it through the real pipe stalls Angular's zoneless stability check.
+ *
+ * HttpClient rejects with an `HttpErrorResponse`, which `implements Error` but does NOT extend `Error`
+ * — so a bare `instanceof Error` check silently misses every HTTP/connection failure. Handle it first:
+ * a non-2xx response → "HTTP <status>"; a connection-level failure (status 0 — host unreachable / DNS /
+ * CORS) → "network". A probe that blows past the deadline arrives as a rxjs `TimeoutError` → "timeout".
+ * A genuine thrown Error → its message; anything else → "network".
+ */
+export function classifyProbeError(e: unknown): string {
+  if (e instanceof HttpErrorResponse) return e.status === 0 ? 'network' : `HTTP ${e.status}`;
+  if (e instanceof TimeoutError) return 'timeout';
+  if (e instanceof Error) return e.message;
+  return 'network';
 }
 
 /**
@@ -85,6 +104,10 @@ export class SettingsConnectionComponent {
   readonly health = signal<HealthResult | null>(null);
   /** True while a health probe is in flight (disables the button + shows the "Checking…" label). */
   readonly checking = signal(false);
+  /** Probe deadline (ms). Bounds the `checking` lifecycle so a hung connection (host reachable but
+   *  never responding) can't wedge the button forever — complements the re-entrancy guard. Tuned as a
+   *  liveness budget (see `check()`), NOT against the server's request-handling window. */
+  private readonly probeTimeoutMs = 8000;
 
   // ── Realtime connection ────────────────────────────────────────────────────────────────────
 
@@ -167,13 +190,14 @@ export class SettingsConnectionComponent {
     this.checking.set(true);
     const t0 = performance.now();
     try {
-      const json = await firstValueFrom(this.http.get<{ data?: { version?: string } }>(`${apiPrefix()}/health`));
+      const json = await firstValueFrom(
+        this.http.get<{ data?: { version?: string } }>(`${apiPrefix()}/health`).pipe(timeout(this.probeTimeoutMs)),
+      );
       const ms = Math.round(performance.now() - t0);
       const version = json?.data?.version ?? '';
       this.health.set({ ok: true, version, ms });
     } catch (e) {
-      const error = e instanceof Error ? e.message : 'network';
-      this.health.set({ ok: false, error });
+      this.health.set({ ok: false, error: classifyProbeError(e) });
     } finally {
       this.checking.set(false);
     }

@@ -29,7 +29,6 @@ function p2p(threadId: number, peerId: number, opts: Partial<ConversationItem> =
     lastMessagePreview: null,
     lastMessageAt: null,
     lastMessageSenderId: null,
-    lastMessageSenderName: null,
     muted: false,
     pinned: false,
     pinnedAt: null,
@@ -77,7 +76,7 @@ describe('ThreadRepository', () => {
             getProfile: jasmine.createSpy('getProfile').and.resolveTo(undefined),
           },
         },
-        { provide: MissedSyncService, useValue: { catchUpDone$: new Subject<void>() } },
+        { provide: MissedSyncService, useValue: { fetchMissedSummary: jasmine.createSpy('fetchMissedSummary').and.resolveTo({ items: [], hasMore: false, nextCursor: null, notifications: [] }) } },
         {
           provide: WebsocketService,
           useValue: { eventSubject, reconnect$ },
@@ -191,24 +190,20 @@ describe('ThreadRepository', () => {
     expect(repo.items().map((t) => t.threadId)).toEqual([5]);
   });
 
-  it('onNewMessage bumps unread (closed thread, someone else) and reorders to the tier head', async () => {
+  it('onNewMessage bumps unread (closed thread) and reorders to the tier head', async () => {
     queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11, { lastMessageAt: 100 }), p2p(2, 22, { lastMessageAt: 200 })]));
     repo.load({ force: true });
     await flush(20);
 
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 100, contentType: 'PURE_TEXT', content: 'hello', creator: 11, createdAt: 300 },
-    });
+    // Identity-only signal { threadId, seq, ts } — no body (the body/preview is pulled separately).
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 100, ts: 300 } });
     await flush(); // let the IDB write-through settle
 
     const items = repo.items();
-    expect(items[0].threadId).toBe(1); // bumped to the head of the unpinned tier
+    expect(items[0].threadId).toBe(1); // bumped to the head of the unpinned tier (lastMessageAt 300)
     expect(items[0].unreadCount).toBe(1);
-    expect(items[0].lastMessagePreview).toBe('hello');
-    // Write-through: the IDB record carries the new preview + unread.
+    // Write-through: the IDB record carries the new unread.
     const rec = await (await webdb.db()).get('threads', 1);
-    expect(rec?.lastMessagePreview).toBe('hello');
     expect(rec?.unreadCount).toBe(1);
   });
 
@@ -218,25 +213,9 @@ describe('ThreadRepository', () => {
     await flush(20);
     repo.setOpenThread(1);
 
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 100, contentType: 'PURE_TEXT', content: 'hi', creator: 11, createdAt: 300 },
-    });
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 100, ts: 300 } });
     await flush();
     expect(repo.items()[0].unreadCount).toBe(0);
-  });
-
-  it('onNewMessage does not badge the sender\'s own message', async () => {
-    queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 11, { unreadCount: 2 })]));
-    repo.load({ force: true });
-    await flush(20);
-
-    eventSubject.next({
-      event: 'NEW_MESSAGE',
-      data: { threadId: 1, seq: 100, contentType: 'PURE_TEXT', content: 'me', creator: 1, createdAt: 300 },
-    });
-    await flush();
-    expect(repo.items()[0].unreadCount).toBe(2); // unchanged
   });
 
   it('onNewMessage dedupes a redelivered frame (same seq)', async () => {
@@ -244,7 +223,7 @@ describe('ThreadRepository', () => {
     repo.load({ force: true });
     await flush(20);
 
-    const frame = { threadId: 1, seq: 100, contentType: 'PURE_TEXT', content: 'x', creator: 11, createdAt: 300 };
+    const frame = { threadId: 1, seq: 100, ts: 300 };
     eventSubject.next({ event: 'NEW_MESSAGE', data: frame });
     await flush();
     eventSubject.next({ event: 'NEW_MESSAGE', data: frame }); // redelivery

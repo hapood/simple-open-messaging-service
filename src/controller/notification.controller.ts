@@ -11,10 +11,11 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyRequest } from 'fastify';
 import { NotificationQueryService } from '../notification/notification-query.service.js';
+import { NotificationActionService } from '../notification/notification-action.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
-import { MissedDto } from '../dto/notification.dto.js';
+import { MissedDto, ReportActionDto } from '../dto/notification.dto.js';
 
 /** Page-size bounds for the paginated missed catch-up (the DTO validates 1–200; this is the default). */
 const MISSED_DEFAULT_TAKE = 50;
@@ -35,6 +36,7 @@ const MISSED_MAX_TAKE = 200;
 export class NotificationController {
   constructor(
     private readonly notifQuery: NotificationQueryService,
+    private readonly notifAction: NotificationActionService,
     private readonly settings: SettingsService,
   ) {}
 
@@ -81,33 +83,53 @@ export class NotificationController {
     };
   }
 
-  /** Cross-thread incremental sync (app-open / reconnect catch-up) OR the unread-thread summary.
-   *  Authenticated by the global guard (session token / access JWT). `summary:true` feeds the
-   *  FCM/WorkManager unread-thread coalescing; the default returns paginated messages. */
+  /** The unified missed summary + server-authored notification descriptors (one row per thread: newest
+   *  message body + unread count + display name, PLUS the localized title/body + composited stacked-avatar
+   *  icon every notification renderer consumes). Authenticated by the global guard (session token / access
+   *  JWT). Absent `cursor` → the newest `take` threads (the background away-notification paths + the initial
+   *  threadlist hydrate); `cursor` → forward pagination (threads newer than the cursor, ASC). The response
+   *  carries `nextCursor` (the page's max-id item) + `notifications[]` (the descriptors). Locale is
+   *  negotiated from `Accept-Language` (stateless — the device language the client already knows). */
   @HttpCode(HttpStatus.OK)
   @Post('notifications/missed')
   @ApiOperation({
     summary:
-      'Catch up on missed messages since a high-water-mark (paginated), or the unread-thread summary',
+      'Missed summary (latest message per thread) + notification descriptors, forward-paginated by (threadId, seq) cursor',
   })
   async missed(
     @Request() req: FastifyRequest,
     @Body() dto: MissedDto,
   ): Promise<ApiResult> {
     const userId = req.user.userId as number;
-    if (dto.summary) {
-      const data = await this.notifQuery.buildUnreadSnapshot(userId);
-      return { code: BusinessCode.OK, message: 'successful', data };
-    }
     const take = Math.min(
       MISSED_MAX_TAKE,
       Math.max(1, dto.take ?? MISSED_DEFAULT_TAKE),
     );
-    const data = await this.notifQuery.buildMissedPage(userId, {
-      since: dto.since,
-      cursor: dto.cursor,
+    const cursor =
+      dto.cursor && typeof dto.cursor.threadId === 'number' && typeof dto.cursor.seq === 'number'
+        ? { threadId: dto.cursor.threadId, seq: dto.cursor.seq }
+        : null;
+    const data = await this.notifQuery.buildNotifyResponse(userId, {
+      cursor,
       take,
+      acceptLanguage: (req.headers['accept-language'] as string | undefined) ?? null,
     });
     return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /** Report a notification action (button tap / inline reply) back to the server — the round-trip closure
+   *  for the descriptor's `actions[]`. Authenticated by the global guard (session token / access JWT). The
+   *  service reuses the mark-read / send pipelines (identical semantics to the in-app actions) and is
+   *  best-effort (never throws — a shade-button failure just doesn't land). */
+  @HttpCode(HttpStatus.OK)
+  @Post('notifications/action')
+  @ApiOperation({ summary: 'Report a notification action (button tap / inline reply)' })
+  async reportAction(
+    @Request() req: FastifyRequest,
+    @Body() dto: ReportActionDto,
+  ): Promise<ApiResult> {
+    const userId = req.user.userId as number;
+    await this.notifAction.handleAction(userId, dto);
+    return { code: BusinessCode.OK, message: 'successful', data: null };
   }
 }

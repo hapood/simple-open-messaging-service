@@ -142,7 +142,7 @@ declare global {
      *  AndroidNotificationAdapter wraps this — it maps the unified `merge` param onto `replace` (smoothing the
      *  platform difference into one JS adapter function). Android-only; guaranteed present after the
      *  isAndroidNative() gate, so call sites use `!`. */
-    SomsNotify?: { show: (text: string, replace: boolean) => void; clear: () => void };
+    SomsNotify?: { show: (text: string, replace: boolean) => void; showDescriptor: (json: string) => void; clear: () => void };
     /** Kotlin `@JavascriptInterface` (MainActivity.SomsShellInterface): returns the per-device status-bar
      *  / gesture-bar insets as JSON `{"top":int,"bottom":int}` (CSS px). Android WebView is edge-to-edge
      *  but env(safe-area-inset-*) returns 0, so this is the only source of --soms-safe-top. Read once in

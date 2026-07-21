@@ -12,10 +12,11 @@ import { BackgroundSyncService } from './services/background-sync.service';
 import { NavStateMachineService } from './services/nav-state.service';
 import { ShellUpdateService } from './services/shell-update.service';
 import { RouteService, PopupType } from './services/route.service';
+import { NotifPopupComponent } from './components/notif-popup/notif-popup.component';
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 @Component({
     selector: 'app-root',
-    imports: [RouterOutlet],
+    imports: [RouterOutlet, NotifPopupComponent],
     templateUrl: './app.component.html',
     styleUrl: './app.component.scss'
 })

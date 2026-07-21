@@ -1,163 +1,95 @@
 import { TestBed } from '@angular/core/testing';
-import { ApplicationRef, provideZonelessChangeDetection, signal } from '@angular/core';
-import { Subject, of, throwError } from 'rxjs';
-import { HttpClient } from '@angular/common/http';
+import { provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideZonelessChangeDetection } from '@angular/core';
 import { MissedSyncService } from './missed-sync.service';
 import { MessageRepository } from './message-repository.service';
-import { WebdbService } from './webdb.service';
-import { WebsocketService } from './websocket.service';
-import { UserService } from './user.service';
-import type { Message, StandardResponse } from './model';
+import type { StandardResponse } from './model';
+import type { MissedSummaryResult } from './missed-sync.service';
 
 /**
- * MissedSyncService unit tests — the missed-since-HWM paging loop.
- *
- * The service's job is small and the contract precise: bound the first `POST /notifications/missed` by the
- * cached HWM (null → INIT newest-per-thread seed), echo the opaque `cursor` on every later page, and stop at
- * `hasMore:false` — applying each page through `MessageRepository.applyMissed` (spied here). The HttpClient
- * is a Jasmine spy returning scripted pages so the loop is driven deterministically; MessageRepository +
- * WebdbService + UserService are stubs. The eager DB-ready effect is neutralized at construction
- * (`webdb.ready` is a plain function → the effect has no tracked signal deps → runs one no-op pass; and
- * `sessionProfile` is undefined at construction so the effect's condition is false regardless of when it
- * flushes), so each test drives `catchUp()` directly (or via `reconnect$`).
+ * fetchMissedSummary — the cursor-based missed-summary puller. POSTs /notifications/missed {cursor, take}
+ * (one page; the caller advances its cursor to `nextCursor`), caches each latest-message body via
+ * MessageRepository.applyMissed (pre-warm), and returns { items, hasMore, nextCursor, notifications }.
+ * Stateless + single-flight (a concurrent call is a no-op → empty result).
  */
-
-/** A minimal Message row — `createdAt` is the field the HWM tracks. */
-function msg(threadId: number, seq: number, createdAt: number): Message {
-  return {
-    seq, threadId, contentType: 'PURE_TEXT', content: `m${seq}`, creator: 1,
-    createdAt, updatedAt: createdAt, isDeleted: false,
-  } as unknown as Message;
-}
-
-/** Flush the microtask/macrotask queue so the async paging loop + the constructor effect settle. */
-function flush(ms = 0): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** One paginated /notifications/missed response, code-wrapped. */
-function page(
-  messages: Message[],
-  hasMore: boolean,
-  nextCursor?: string,
-): StandardResponse<{ messages: Message[]; hasMore: boolean; nextCursor?: string }> {
-  return { code: 0, message: 'ok', data: { messages, hasMore, nextCursor } };
-}
-
-describe('MissedSyncService', () => {
+describe('MissedSyncService.fetchMissedSummary', () => {
   let svc: MissedSyncService;
-  let postSpy: jasmine.Spy;
-  let reconnect$: Subject<void>;
-  let sessionProfile: ReturnType<typeof signal<{ id: number } | undefined>>;
-  let getHwmSpy: jasmine.Spy;
-  let applyMissedSpy: jasmine.Spy;
-  /** `webdb.ready` as a plain function (NOT a signal) so the constructor effect reads it once, has no
-   *  tracked signal deps, and never re-fires when this boolean flips. */
-  let readyFlag: boolean;
+  let httpMock: HttpTestingController;
+  let applyMissedSpy: ReturnType<typeof jasmine.createSpy>;
 
-  beforeEach(async () => {
-    postSpy = jasmine.createSpy('post').and.returnValue(of(page([], false)));
-    reconnect$ = new Subject<void>();
-    // undefined at construction → the effect's `id != null` is false, so its one pass is a no-op no matter
-    // when it flushes. The user is logged in only AFTER the effect has drained (below).
-    sessionProfile = signal<{ id: number } | undefined>(undefined);
-    getHwmSpy = jasmine.createSpy('getHwm').and.resolveTo(null);
-    applyMissedSpy = jasmine.createSpy('applyMissed').and.resolveTo();
-    readyFlag = true;
+  beforeEach(() => {
+    applyMissedSpy = jasmine.createSpy('applyMissed').and.resolveTo(undefined);
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
         MissedSyncService,
-        { provide: HttpClient, useValue: { post: postSpy } },
-        { provide: WebdbService, useValue: { ready: () => readyFlag } },
-        { provide: WebsocketService, useValue: { reconnect$ } },
-        { provide: MessageRepository, useValue: { getHwm: getHwmSpy, applyMissed: applyMissedSpy } },
-        { provide: UserService, useValue: { sessionProfile } },
+        { provide: MessageRepository, useValue: { applyMissed: applyMissedSpy } },
       ],
     });
     svc = TestBed.inject(MissedSyncService);
-    // Force the constructor effect's single run now (sessionProfile still undefined → no catchUp), then drain
-    // any deferred microtask run, so the effect can never observe a logged-in user later.
-    TestBed.inject(ApplicationRef).tick();
-    await flush(0);
-    sessionProfile.set({ id: 1 });
+    httpMock = TestBed.inject(HttpTestingController);
   });
 
-  /** The POST body (2nd arg, after the URL) of every missed call the catch-up made. */
-  function postBodies(): unknown[] {
-    return postSpy.calls.all().map((c) => c.args[1]);
+  afterEach(() => httpMock.verify());
+
+  /** A minimal latest-message body the endpoint returns per thread. */
+  function body(threadId: number, seq: number, content: string) {
+    return { threadId, seq, contentType: 'PURE_TEXT', content, creator: 1, createdAt: seq * 1000, mediaStatus: 'ready' as const, sv: seq };
   }
 
-  it('first boot (no HWM) → INIT mode: one page with no since/cursor, hasMore:false stops the loop', async () => {
-    getHwmSpy.and.resolveTo(null);
-    postSpy.and.returnValue(of(page([msg(42, 0, 100)], false)));
-    await svc.catchUp();
+  it('POSTs {cursor, take} and caches each latest-message body via applyMissed', async () => {
+    const res: StandardResponse<MissedSummaryResult> = {
+      code: 0, message: 'ok',
+      data: {
+        items: [
+          { threadId: 1, type: 'P2P', displayName: 'Alice', unreadCount: 2, muted: false, senderAvatarUrl: '', senderUserId: 11, latestMessage: body(1, 5, 'hi') },
+          { threadId: 2, type: 'GROUP', displayName: 'Team', unreadCount: 1, muted: true, senderAvatarUrl: '', senderUserId: 22, latestMessage: body(2, 3, 'yo') },
+        ],
+        hasMore: false,
+        nextCursor: { threadId: 2, seq: 3 },
+        notifications: [],
+      },
+    };
+    const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
+    const req = httpMock.expectOne('/api/v1/notifications/missed');
+    expect(req.request.body).toEqual({ cursor: { threadId: 1, seq: 4 }, take: 50 });
+    req.flush(res);
+    const result = await p;
+
+    expect(result.items.length).toBe(2);
+    expect(result.nextCursor).toEqual({ threadId: 2, seq: 3 });
     expect(applyMissedSpy).toHaveBeenCalledTimes(1);
-    expect(applyMissedSpy.calls.mostRecent().args[0]).toEqual([msg(42, 0, 100)]);
-    expect(postBodies()).toEqual([{ take: 100 }]); // INIT: no `since`, no `cursor`
+    const cached = applyMissedSpy.calls.mostRecent().args[0] as Array<{ threadId: number; seq: number; content: string }>;
+    expect(cached.map((m) => [m.threadId, m.seq, m.content])).toEqual([[1, 5, 'hi'], [2, 3, 'yo']]);
   });
 
-  it('catch-up (HWM set) → first page {since:HWM}, then {cursor} until hasMore:false', async () => {
-    getHwmSpy.and.resolveTo(5000);
-    postSpy.and.returnValues(
-      of(page([msg(42, 6, 5100)], true, 'cur1')), // hasMore → continue
-      of(page([msg(42, 7, 5200)], false)), // terminal
-    );
-    await svc.catchUp();
-    expect(applyMissedSpy).toHaveBeenCalledTimes(2);
-    expect(postBodies()).toEqual([
-      { since: 5000, take: 100 }, // first page bound by the HWM
-      { cursor: 'cur1', take: 100 }, // subsequent pages echo the opaque cursor; `since` is dropped
-    ]);
+  it('omits `cursor` from the body when null (snapshot pull)', async () => {
+    const p = svc.fetchMissedSummary(null);
+    const req = httpMock.expectOne('/api/v1/notifications/missed');
+    expect(req.request.body).toEqual({ take: 50 }); // no `cursor` key
+    req.flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null, notifications: [] } });
+    const result = await p;
+    expect(result.items).toEqual([]);
+    expect(result.nextCursor).toBeNull();
+    expect(applyMissedSpy).not.toHaveBeenCalled(); // no bodies → no applyMissed
   });
 
-  it('stops as soon as a page reports hasMore:false (no over-fetching)', async () => {
-    getHwmSpy.and.resolveTo(5000);
-    postSpy.and.returnValue(of(page([msg(42, 6, 5100)], false)));
-    await svc.catchUp();
-    expect(postSpy).toHaveBeenCalledTimes(1);
+  it('a concurrent call is a no-op (single-flight → empty result, no second request)', async () => {
+    const p1 = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
+    const p2 = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
+    expect((await p2).items).toEqual([]);
+    httpMock.expectOne('/api/v1/notifications/missed').flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null, notifications: [] } });
+    await p1;
   });
 
-  it('single-flight: a second catchUp while one is in flight is a no-op', async () => {
-    getHwmSpy.and.resolveTo(null);
-    postSpy.and.returnValue(of(page([msg(42, 0, 100)], false)));
-    // `inFlight` is set synchronously before the first await, so the second call observes it set.
-    const p1 = svc.catchUp();
-    const p2 = svc.catchUp();
-    await Promise.all([p1, p2]);
-    expect(postSpy).toHaveBeenCalledTimes(1);
-    expect(applyMissedSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('bails when no user is logged in (no POST, no apply)', async () => {
-    sessionProfile.set(undefined);
-    getHwmSpy.and.resolveTo(null);
-    await svc.catchUp();
-    expect(postSpy).not.toHaveBeenCalled();
-    expect(applyMissedSpy).not.toHaveBeenCalled();
-  });
-
-  it('a transport failure degrades silently (swallowed — the next reconnect retries)', async () => {
-    getHwmSpy.and.resolveTo(null);
-    postSpy.and.returnValue(throwError(() => new Error('net')));
-    await expectAsync(svc.catchUp()).toBeResolved(); // does not throw
-    expect(applyMissedSpy).not.toHaveBeenCalled();
-  });
-
-  it('reconnect$ triggers a catch-up', async () => {
-    getHwmSpy.and.resolveTo(null);
-    postSpy.and.returnValue(of(page([msg(42, 0, 100)], false)));
-    reconnect$.next(); // the subscription calls catchUp()
-    await flush(10);
-    expect(applyMissedSpy).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips when the DB is not ready (webdb.ready() false)', async () => {
-    readyFlag = false;
-    getHwmSpy.and.resolveTo(null);
-    postSpy.and.returnValue(of(page([msg(42, 0, 100)], false)));
-    await svc.catchUp();
-    expect(postSpy).not.toHaveBeenCalled();
+  it('a non-zero / network-failed response degrades to an empty result (applyMissed not called)', async () => {
+    const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
+    httpMock.expectOne('/api/v1/notifications/missed').flush({ code: 1, message: 'err', data: null });
+    const result = await p;
+    expect(result.items).toEqual([]);
     expect(applyMissedSpy).not.toHaveBeenCalled();
   });
 });

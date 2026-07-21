@@ -451,6 +451,20 @@ export class MessageService implements OnModuleInit {
     });
   }
 
+  /** Batched lookup of messages by their per-thread (threadId, seq) identity — the missed summary fetches
+   *  each thread's newest message body in ONE query (seq = thread.lastMessageSeq). Returns FULL Message
+   *  rows (BigInt id intact) so the caller can funnel them through {@link attachMediaStatus}, which strips
+   *  id before it reaches a client. Empty input → empty output (no empty-OR SQL). The composite
+   *  `@@unique([threadId, seq])` index backs every branch. */
+  async findMessagesBySeqPairs(
+    pairs: Array<{ threadId: number; seq: number }>,
+  ): Promise<Message[]> {
+    if (pairs.length === 0) return [];
+    return this.prisma.message.findMany({
+      where: { OR: pairs.map((p) => ({ threadId: p.threadId, seq: p.seq })) },
+    });
+  }
+
   /** Single thread lookup (used by mark-read to resolve "mark all current messages read"). */
   findThread(id: number) {
     return this.prisma.messageThread.findUnique({ where: { id } });

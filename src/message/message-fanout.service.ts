@@ -5,7 +5,6 @@ import { PushService } from '../push/push.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { FederationService } from '../federation/federation.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
-import { serializeBody } from '../common/serialize.interceptor.js';
 
 /**
  * Unified NEW_MESSAGE fan-out for every locally-authored message, shared by the text send path
@@ -55,31 +54,25 @@ export class MessageFanoutService {
   private async fanout(message: Omit<Message, 'id'>): Promise<void> {
     const senderUserId = message.creator;
     const threadId = message.threadId;
-    // serializeBody converts BigInt→string / Date→ms — the same shape as the HTTP response, so the
-    // client renders the SSE frame directly without a second query-messages.
-    const msgData = serializeBody({ ...message });
+    // Identity-only signal — every signal (SSE + push) carries only {threadId, seq, ts}; the body is
+    // pulled by the client via /notifications/missed + /query-messages (single data source).
+    const ts = message.createdAt.getTime();
     // Unified fan-out: every active participant of the thread (P2P = both sides, GROUP = all members).
     const participants =
       await this.participantService.getActiveParticipantUserIds(threadId);
-    // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push,
-    // no notif snapshot — the blocked user is invisible to the blocker's message stream).
+    // BLOCK: a recipient who blocks the sender must not receive the message AT ALL (no SSE, no push —
+    // the blocked user is invisible to the blocker's message stream).
     const blockers = await this.userBlockService.blockersOf(senderUserId);
     const sseTargets = participants.filter((p) => !blockers.has(p.userId));
     sseTargets.forEach((p) => {
-      this.sseService.onNewMessage(p.userId, msgData);
+      this.sseService.onNewMessage(p.userId, threadId, message.seq, ts);
     });
-    // Notification channels (FCM/Web Push wake-up + Android FGS unread snapshot): additionally exclude
-    // MUTED recipients (mute = suppress the heads-up notification, NOT the in-app delivery — the bubble
-    // still renders via SSE above) and the sender (foregrounded). Fire-and-forget.
+    // Push wake-up (FCM / Web Push): additionally exclude MUTED recipients (mute = suppress the heads-up
+    // notification, NOT the in-app delivery) and the sender. Fire-and-forget.
     const notifTargets = sseTargets.filter(
       (p) => !p.muted && p.userId !== senderUserId,
     );
-    void this.pushService.dispatchForMessage(
-      notifTargets,
-      senderUserId,
-      threadId,
-      msgData,
-    );
+    void this.pushService.dispatchForMessage(notifTargets, threadId, message.seq);
     // Federation Step 2: if the thread has a foreign (federated) participant, mark the conversation
     // dirty — a debounced /new-msg-map push tells the peer to pull. No-op for local-only threads.
     // message.originSeq is always set on a fresh locally-authored insert.

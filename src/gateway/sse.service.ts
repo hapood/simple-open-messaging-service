@@ -133,10 +133,12 @@ export class SseService implements OnModuleDestroy {
     if (list.length === 0) delete this.clients[userId];
   }
 
-  /** New message: push the full message body. id = the message id (the client's Last-Event-ID resume cursor). */
-  onNewMessage(userId: number, data: unknown) {
-    const id = (data as { id?: string | number } | null)?.id;
-    this.pushToUser(userId, 'NEW_MESSAGE', data, id);
+  /** New message: identity-only signal `{ threadId, seq, ts }` — the body is PULLED by the client (single
+   *  data source; the realtime stream is a trigger, never a body carrier). No Last-Event-ID cursor: a
+   *  transient drop or an offline gap is reconciled by the missed-summary pull on reconnect, not by SSE
+   *  replay, so no message-cursor `id` is emitted. */
+  onNewMessage(userId: number, threadId: number, seq: number, ts: number) {
+    this.pushToUser(userId, 'NEW_MESSAGE', { threadId, seq, ts });
   }
 
   /** Notification: push to all of the user's live connections (e.g. a new friend request). No id (not a message-cursor semantic). */

@@ -141,37 +141,37 @@ describe('MessageRepository', () => {
     expect(queryMessageLogSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('NEW_MESSAGE caches the body, then emits liveSignal$ (body cached BEFORE the signal)', async () => {
+  it('NEW_MESSAGE emits the live signal WITHOUT caching the body (identity-only — body is pulled)', async () => {
     let emitted: { threadId: number; seq: number } | undefined;
     repo.liveSignal$.subscribe((s) => (emitted = s));
 
-    eventSubject.next({ event: 'NEW_MESSAGE', status: 0, data: msg(42, 7, 'live') });
+    // Identity-only frame {threadId, seq, ts} — no body (single data source = pull).
+    eventSubject.next({ event: 'NEW_MESSAGE', status: 0, data: { threadId: 42, seq: 7, ts: 7000 } });
     await flush(10);
 
-    expect(emitted).toEqual({ threadId: 42, seq: 7 }); // signal fired
-    // The body was cached (the kernel's subsequent getNewer is a cache hit):
-    const res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 6, orderBy: 'asc' });
-    expect(res.data.map((m) => m.seq)).toEqual([7]);
-    expect(res.hasMore).toBe(false); // seq 7 is the ceiling (maxSeenSeq) → no more newer
+    expect(emitted).toEqual({ threadId: 42, seq: 7 }); // signal fired (kernel will pull the body)
+    expect(await dbCount(42)).toBe(0); // body NOT cached — identity-only
   });
 
-  it('getNewer cache HIT on a NEW_MESSAGE-cached body (live arrival → no backend round-trip)', async () => {
+  it('getNewer after a NEW_MESSAGE gap-fills from the backend (identity-only → body not pre-cached)', async () => {
     // Establish seq 5 as the prior latest via a backend init (sets maxSeenSeq).
     queryMessageLogSpy.and.returnValue(
       of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 5)], hasMore: false }),
     );
     await repo.queryMessages(42, { skip: 0, take: 1, orderBy: 'desc' });
 
-    // A live arrival (seq 6) is cached by the NEW_MESSAGE handler.
-    eventSubject.next({ event: 'NEW_MESSAGE', status: 0, data: msg(42, 6, 'live') });
+    // A live arrival (seq 6) is identity-only — the body is NOT cached.
+    eventSubject.next({ event: 'NEW_MESSAGE', status: 0, data: { threadId: 42, seq: 6, ts: 6000 } });
     await flush(10);
     queryMessageLogSpy.calls.reset();
 
-    // The kernel pulls newer-than-5 → cache HIT (body cached by NEW_MESSAGE), no backend.
+    // The kernel pulls newer-than-5 → cache MISS (no body cached by NEW_MESSAGE) → backend gap-fill.
+    queryMessageLogSpy.and.returnValue(
+      of<StandardResponse<Message[]>>({ code: 0, message: 'ok', data: [msg(42, 6)], hasMore: false }),
+    );
     const res = await repo.queryMessages(42, { skip: 1, take: 30, lastSeq: 5, orderBy: 'asc' });
     expect(res.data.map((m) => m.seq)).toEqual([6]);
-    expect(res.hasMore).toBe(false);
-    expect(queryMessageLogSpy).not.toHaveBeenCalled();
+    expect(queryMessageLogSpy).toHaveBeenCalledTimes(1); // gap-fill — the body wasn't pre-cached
   });
 
   it('writes dedup by [threadId, seq] (idempotent put — no duplicate rows)', async () => {
@@ -272,19 +272,6 @@ describe('MessageRepository', () => {
       expect(await dbCount(99)).toBe(1);
     });
 
-    it('advances the global HWM to the newest createdAt in the batch', async () => {
-      expect(await repo.getHwm()).toBeNull(); // fresh DB — no message cached yet
-      await repo.applyMissed([msg(42, 1), msg(99, 5), msg(42, 3)]); // msg() → createdAt = seq*1000; newest is 5000
-      expect(await repo.getHwm()).toBe(5 * 1000);
-    });
-
-    it('never regresses the HWM for an older / out-of-order batch', async () => {
-      await repo.applyMissed([msg(42, 9)]); // createdAt 9000
-      expect(await repo.getHwm()).toBe(9000);
-      await repo.applyMissed([msg(42, 1)]); // createdAt 1000 — older
-      expect(await repo.getHwm()).toBe(9000); // monotonic — never moves backward
-    });
-
     it('emits ONE live signal per affected thread (its highest seq), not one per message', async () => {
       const signals: { threadId: number; seq: number }[] = [];
       repo.liveSignal$.subscribe((s) => signals.push(s));
@@ -293,12 +280,11 @@ describe('MessageRepository', () => {
       expect(signals).toEqual([{ threadId: 42, seq: 5 }, { threadId: 99, seq: 2 }]);
     });
 
-    it('an empty page is a no-op (no signal, no HWM change)', async () => {
+    it('an empty page is a no-op (no signal)', async () => {
       const signals: { threadId: number; seq: number }[] = [];
       repo.liveSignal$.subscribe((s) => signals.push(s));
       await repo.applyMissed([]);
       expect(signals).toEqual([]);
-      expect(await repo.getHwm()).toBeNull();
     });
   });
 });

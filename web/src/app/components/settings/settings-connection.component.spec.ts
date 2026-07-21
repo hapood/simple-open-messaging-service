@@ -1,8 +1,11 @@
 import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection, signal, WritableSignal } from '@angular/core';
+import { HttpErrorResponse, provideHttpClient } from '@angular/common/http';
+import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { TimeoutError } from 'rxjs';
 import { provideTransloco, TranslocoService } from '@jsverse/transloco';
 import { InlineTranslocoLoader, translations } from '../../i18n/transloco.loader';
-import { SettingsConnectionComponent } from './settings-connection.component';
+import { classifyProbeError, SettingsConnectionComponent } from './settings-connection.component';
 import { WebsocketService, ConnectionState } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
@@ -15,9 +18,12 @@ import { apiPrefix } from '../../services/constants';
  *    {@link ConnectionState}s (the connKey routing + the retry gate, which is the real logic —
  *    `retryNow` is a no-op when open/closed);
  *  - the health-result → (pill class, label, hint) mapping;
- *  - `check()`'s three branches — healthy 200, non-ok HTTP, and a thrown/rejected network error —
- *    plus the non-Error → generic "network" fallback, the omitted-version → "" fallback, the
- *    re-entrancy guard, and that `checking` always clears in the `finally`.
+ *  - `check()`'s outcomes — healthy 200, non-ok HTTP, a connection-level failure, and a probe that
+ *    blows past the deadline — plus the omitted-version → "" fallback, the re-entrancy guard, and that
+ *    `checking` always clears in the `finally`. The probe goes through HttpClient →
+ *    HttpTestingController, matching the component's runtime backend (TauriHttpBackend under Tauri /
+ *    the fetch backend in the browser); a raw fetch of an API path would miss the (removed) `api://`
+ *    proxy on Android.
  *
  * Translation comes from the real {@link InlineTranslocoLoader} (synchronous), so the label
  * assertions pin the connKey/health routing against the checked-in `en.json`. Template is blanked
@@ -28,7 +34,7 @@ describe('SettingsConnectionComponent', () => {
   // The realtime connection state — driven from the test to move the SSE-state signal.
   let state: WritableSignal<ConnectionState>;
   let retryNow: jasmine.Spy;
-  let fetchSpy: jasmine.Spy;
+  let httpMock: HttpTestingController;
 
   beforeEach(() => {
     TestBed.resetTestingModule();
@@ -38,6 +44,8 @@ describe('SettingsConnectionComponent', () => {
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
         provideTransloco({
           config: {
             availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: '简体中文' }],
@@ -53,7 +61,7 @@ describe('SettingsConnectionComponent', () => {
     })
       .overrideComponent(SettingsConnectionComponent, { set: { template: '' } });
     comp = TestBed.createComponent(SettingsConnectionComponent).componentInstance;
-    fetchSpy = spyOn(window, 'fetch');
+    httpMock = TestBed.inject(HttpTestingController);
     // Prime the `en` dictionary synchronously. The inline loader emits via an Observable; Transloco
     // may not have cached it by the time these synchronous label assertions read it (the computeds
     // read lazily), so setTranslation + setActiveLang force the cache now. Without this, translate()
@@ -62,7 +70,10 @@ describe('SettingsConnectionComponent', () => {
     transloco.setTranslation(translations['en'], 'en');
     transloco.setActiveLang('en');
   });
-  afterEach(() => TestBed.resetTestingModule());
+  afterEach(() => {
+    httpMock.verify();
+    TestBed.resetTestingModule();
+  });
 
   // ── Realtime connection mapping ────────────────────────────────────────────────────────────
 
@@ -118,58 +129,75 @@ describe('SettingsConnectionComponent', () => {
   // ── check() probe ─────────────────────────────────────────────────────────────────────────
 
   it('check() records ok + version + latency on a healthy 200 and hits the public health URL', async () => {
-    fetchSpy.and.returnValue(
-      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: { version: '1.2.3' } }) }),
-    );
-    await comp.check();
+    const p = comp.check();
+    const req = httpMock.expectOne(`${apiPrefix()}/health`);
+    expect(req.request.method).toBe('GET');
+    req.flush({ data: { version: '1.2.3' } });
+    await p;
     const h = comp.health()!;
     expect(h.ok).toBe(true);
     expect(h.version).toBe('1.2.3');
     expect(typeof h.ms).toBe('number');
     expect(h.ms as number).toBeGreaterThanOrEqual(0);
-    expect(fetchSpy).toHaveBeenCalledWith(`${apiPrefix()}/health`);
     expect(comp.checking()).toBe(false);
   });
 
   it('check() falls back to an empty version when the payload omits data.version', async () => {
-    fetchSpy.and.returnValue(
-      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ data: {} }) }),
-    );
-    await comp.check();
+    const p = comp.check();
+    httpMock.expectOne(`${apiPrefix()}/health`).flush({ data: {} });
+    await p;
     expect(comp.health()?.version).toBe('');
   });
 
   it('check() records an HTTP error status when the response is not ok', async () => {
-    fetchSpy.and.returnValue(Promise.resolve({ ok: false, status: 503 }));
-    await comp.check();
+    const p = comp.check();
+    httpMock
+      .expectOne(`${apiPrefix()}/health`)
+      .flush({}, { status: 503, statusText: 'Service Unavailable' });
+    await p;
+    // Non-2xx surfaces as an HttpErrorResponse; the catch maps it to "HTTP <status>" (HttpErrorResponse
+    // implements Error but does not extend it, so the catch handles it explicitly — see the component).
     expect(comp.health()).toEqual({ ok: false, error: 'HTTP 503' });
     expect(comp.checking()).toBe(false);
   });
 
-  it('check() records a thrown Error message on a network failure and clears checking', async () => {
-    fetchSpy.and.returnValue(Promise.reject(new Error('boom')));
-    await comp.check();
-    expect(comp.health()).toEqual({ ok: false, error: 'boom' });
+  it('check() records "network" for a connection-level failure (status 0) and clears checking', async () => {
+    const p = comp.check();
+    httpMock.expectOne(`${apiPrefix()}/health`).error(new ErrorEvent('error', { message: 'boom' }));
+    await p;
+    // An ErrorEvent flush yields an HttpErrorResponse with status 0 → mapped to "network".
+    expect(comp.health()).toEqual({ ok: false, error: 'network' });
     expect(comp.checking()).toBe(false);
   });
 
-  it('check() maps a non-Error rejection to the generic "network" message', async () => {
-    // `fetch` rejections are always Errors, but the guard exists — cover the fallback branch.
-    fetchSpy.and.returnValue(Promise.reject('a bare string'));
-    await comp.check();
-    expect(comp.health()).toEqual({ ok: false, error: 'network' });
-  });
+  // ── classifyProbeError (pure) ─────────────────────────────────────────────────────────────
+  // The classifier extracted from check()'s catch, tested directly — no HttpClient pipe, hence no
+  // zoneless stability stall. This is also the only way to reach the TimeoutError branch: HttpClient's
+  // testing backend can't synthesize one, and driving the real `timeout(ms)` timer is slow/flaky here.
+  // [err, label, expected].
+  const PROBE_ERROR_CASES: ReadonlyArray<[unknown, string, string]> = [
+    [new HttpErrorResponse({ status: 503 }), 'HttpErrorResponse 503', 'HTTP 503'],
+    [new HttpErrorResponse({ status: 0 }), 'HttpErrorResponse status 0', 'network'],
+    [new TimeoutError(), 'TimeoutError', 'timeout'],
+    [new Error('boom'), 'Error', 'boom'],
+    ['a bare string', 'non-Error', 'network'],
+  ];
+  for (const [err, label, expected] of PROBE_ERROR_CASES) {
+    it(`classifyProbeError maps ${label} → '${expected}'`, () => {
+      expect(classifyProbeError(err)).toBe(expected);
+    });
+  }
 
-  it('check() is re-entrancy-guarded: a second call while one is in flight is a no-op (one fetch)', async () => {
-    let resolveFetch!: (v: unknown) => void;
-    fetchSpy.and.returnValue(new Promise<unknown>((resolve) => (resolveFetch = resolve)));
+  it('check() is re-entrancy-guarded: a second call while one is in flight is a no-op (one request)', async () => {
     const first = comp.check();
     expect(comp.checking()).toBe(true);
-    await comp.check(); // guard short-circuits — no second fetch call
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
-    resolveFetch({ ok: true, status: 200, json: () => Promise.resolve({ data: { version: '9.9.9' } }) });
+    await comp.check(); // guard short-circuits — must not issue a second GET
+    const req = httpMock.expectOne(`${apiPrefix()}/health`); // exactly one outstanding request
+    expect(httpMock.match(`${apiPrefix()}/health`).length).toBe(0); // no second request queued
+    req.flush({ data: { version: '9.9.9' } });
     await first;
     expect(comp.health()?.ok).toBe(true);
+    expect(comp.health()?.version).toBe('9.9.9');
     expect(comp.checking()).toBe(false);
   });
 });
