@@ -156,9 +156,9 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
                             )
                             this.cameraProvider = cameraProvider
                         } catch (e: InterruptedException) {
-                            // ignored
-                        } catch (_: ExecutionException) {
-                            // ignored
+                            fail("Camera provider interrupted: ${e.message ?: e}")
+                        } catch (e: ExecutionException) {
+                            fail((e.cause ?: e).message ?: e.toString())
                         }
                     },
                     ContextCompat.getMainExecutor(activity)
@@ -191,7 +191,7 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
                         imageAnalysis
                     )
                 } catch (e: Exception) {
-                    // TODO
+                    fail("Camera bind failed: ${e.message ?: e}")
                 }
             }
     }
@@ -199,16 +199,25 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
     private fun dismantleCamera() {
         activity
             .runOnUiThread {
-                if (cameraProvider != null) {
-                    cameraProvider?.unbindAll()
-                    val parent = webView.parent as ViewGroup
+                cameraProvider?.unbindAll()
+                val parent = webView.parent as? ViewGroup
+                if (parent != null) {
                     parent.removeView(previewView)
                     parent.removeView(graphicOverlay)
-                    camera = null
-                    previewView = null
-                    graphicOverlay = null
                 }
+                camera = null
+                cameraProvider = null
+                previewView = null
+                graphicOverlay = null
             }
+    }
+
+    /** Log a scan failure and reject the in-flight scan() promise so the JS overlay can surface it
+     *  as a toast instead of hanging on a dead frame. Idempotent — a late second failure is a no-op. */
+    private fun fail(message: String) {
+        Logger.error("BarcodeScanner: $message")
+        savedInvoke?.reject(message)
+        savedInvoke = null
     }
 
     private fun getFormats(args: ScanOptions): List<Int> {
@@ -332,8 +341,11 @@ class BarcodeScannerPlugin(private val activity: Activity) : Plugin(activity),
 
     @Command
     fun cancel(invoke: Invoke) {
-        destroy()
+        // Reject the in-flight scan() BEFORE destroy() nulls savedInvoke — mirrors analyze()'s
+        // resolve-then-destroy order. destroy() first would null savedInvoke and make this reject a
+        // silent no-op, leaving scan()'s JS promise pending and the overlay stuck open.
         savedInvoke?.reject("cancelled")
+        destroy()
         invoke.resolve()
     }
 

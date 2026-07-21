@@ -8,12 +8,12 @@ import type { StandardResponse } from './model';
 import type { MissedSummaryResult } from './missed-sync.service';
 
 /**
- * fetchMissedSummary — the cursor-based missed-summary puller. POSTs /notifications/missed {cursor, take}
- * (one page; the caller advances its cursor to `nextCursor`), caches each latest-message body via
- * MessageRepository.applyMissed (pre-warm), and returns { items, hasMore, nextCursor, notifications }.
- * Stateless + single-flight (a concurrent call is a no-op → empty result).
+ * fetchMissedSummary (POST /notifications/missed-summary) + fetchAwayNotifications (POST /notifications/missed)
+ * — the two separated endpoints. POSTs {from?, to, take} (the threadlist body walk) and {since?} (the away
+ * summary); caches each latest-message body via MessageRepository.applyMissed (pre-warm). Stateless +
+ * per-path single-flight (a concurrent call is a no-op → empty result).
  */
-describe('MissedSyncService.fetchMissedSummary', () => {
+describe('MissedSyncService', () => {
   let svc: MissedSyncService;
   let httpMock: HttpTestingController;
   let applyMissedSpy: ReturnType<typeof jasmine.createSpy>;
@@ -40,7 +40,7 @@ describe('MissedSyncService.fetchMissedSummary', () => {
     return { threadId, seq, contentType: 'PURE_TEXT', content, creator: 1, createdAt: seq * 1000, mediaStatus: 'ready' as const, sv: seq };
   }
 
-  it('POSTs {cursor, take} and caches each latest-message body via applyMissed', async () => {
+  it('fetchMissedSummary: POSTs {to, take} (from omitted when null) + caches bodies via applyMissed', async () => {
     const res: StandardResponse<MissedSummaryResult> = {
       code: 0, message: 'ok',
       data: {
@@ -50,12 +50,11 @@ describe('MissedSyncService.fetchMissedSummary', () => {
         ],
         hasMore: false,
         nextCursor: { threadId: 2, seq: 3 },
-        notifications: [],
       },
     };
-    const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
-    const req = httpMock.expectOne('/api/v1/notifications/missed');
-    expect(req.request.body).toEqual({ cursor: { threadId: 1, seq: 4 }, take: 50 });
+    const p = svc.fetchMissedSummary(null, { threadId: 9, seq: 9 });
+    const req = httpMock.expectOne('/api/v1/notifications/missed-summary');
+    expect(req.request.body).toEqual({ to: { threadId: 9, seq: 9 }, take: 200 }); // no `from` key (null)
     req.flush(res);
     const result = await p;
 
@@ -66,30 +65,49 @@ describe('MissedSyncService.fetchMissedSummary', () => {
     expect(cached.map((m) => [m.threadId, m.seq, m.content])).toEqual([[1, 5, 'hi'], [2, 3, 'yo']]);
   });
 
-  it('omits `cursor` from the body when null (snapshot pull)', async () => {
-    const p = svc.fetchMissedSummary(null);
-    const req = httpMock.expectOne('/api/v1/notifications/missed');
-    expect(req.request.body).toEqual({ take: 50 }); // no `cursor` key
-    req.flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null, notifications: [] } });
+  it('fetchMissedSummary: POSTs {from, to, take} when from is set', async () => {
+    const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
+    const req = httpMock.expectOne('/api/v1/notifications/missed-summary');
+    expect(req.request.body).toEqual({ from: { threadId: 1, seq: 4 }, to: { threadId: 9, seq: 9 }, take: 200 });
+    req.flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null } });
     const result = await p;
     expect(result.items).toEqual([]);
     expect(result.nextCursor).toBeNull();
     expect(applyMissedSpy).not.toHaveBeenCalled(); // no bodies → no applyMissed
   });
 
-  it('a concurrent call is a no-op (single-flight → empty result, no second request)', async () => {
-    const p1 = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
-    const p2 = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
+  it('fetchMissedSummary: a concurrent call is a no-op (single-flight → empty, no second request)', async () => {
+    const p1 = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
+    const p2 = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
     expect((await p2).items).toEqual([]);
-    httpMock.expectOne('/api/v1/notifications/missed').flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null, notifications: [] } });
+    httpMock.expectOne('/api/v1/notifications/missed-summary').flush({ code: 0, message: 'ok', data: { items: [], hasMore: false, nextCursor: null } });
     await p1;
   });
 
-  it('a non-zero / network-failed response degrades to an empty result (applyMissed not called)', async () => {
-    const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 });
-    httpMock.expectOne('/api/v1/notifications/missed').flush({ code: 1, message: 'err', data: null });
+  it('fetchMissedSummary: a non-zero / network-failed response degrades to empty (applyMissed not called)', async () => {
+    const p = svc.fetchMissedSummary({ threadId: 1, seq: 4 }, { threadId: 9, seq: 9 });
+    httpMock.expectOne('/api/v1/notifications/missed-summary').flush({ code: 1, message: 'err', data: null });
     const result = await p;
     expect(result.items).toEqual([]);
     expect(applyMissedSpy).not.toHaveBeenCalled();
+  });
+
+  it('fetchAwayNotifications: POSTs {since} to /notifications/missed → returns the descriptors', async () => {
+    const p = svc.fetchAwayNotifications({ threadId: 1, seq: 4 });
+    const req = httpMock.expectOne('/api/v1/notifications/missed');
+    expect(req.request.body).toEqual({ since: { threadId: 1, seq: 4 } });
+    req.flush({ code: 0, message: 'ok', data: { notifications: [{ tag: 'soms-away', kind: 'message-summary', body: 'x' }] } });
+    const result = await p;
+    expect(result.length).toBe(1);
+    expect(result[0].kind).toBe('message-summary');
+    expect(applyMissedSpy).not.toHaveBeenCalled(); // the away path does NOT cache bodies
+  });
+
+  it('fetchAwayNotifications: since null → POSTs {} (no since key)', async () => {
+    const p = svc.fetchAwayNotifications(null);
+    const req = httpMock.expectOne('/api/v1/notifications/missed');
+    expect(req.request.body).toEqual({});
+    req.flush({ code: 0, message: 'ok', data: { notifications: [] } });
+    expect(await p).toEqual([]);
   });
 });

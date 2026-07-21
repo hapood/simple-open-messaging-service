@@ -16,6 +16,21 @@ const CUTOUT = 'min(72vw, 72vh, 320px)';
 type Plugin = typeof import('@tauri-apps/plugin-barcode-scanner');
 
 /**
+ * Extract a human-readable message from any rejection shape. Tauri `invoke` surfaces a Kotlin/Rust
+ * rejection as a serialized plain object (e.g. `{ message: 'cancelled' }`), not an `Error` instance, so
+ * `String(err)` alone yields "[object Object]". Read `.message` from either an Error or a plain object,
+ * falling back to a JSON dump / String() so the cancel-detection regex always sees real text.
+ */
+function rejectionMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err) {
+    const m = (err as { message: unknown }).message;
+    return typeof m === 'string' ? m : JSON.stringify(err);
+  }
+  return String(err);
+}
+
+/**
  * Hybrid QR scan overlay (the phone side of "Link a device"): the native barcode-scanner plugin owns the
  * camera (CameraX + ML Kit) but is invoked with `windowed: true`, which brings the WebView on top of the
  * live feed and makes it transparent — so this Angular component draws the scan UI (title, scan frame, hint,
@@ -144,10 +159,14 @@ export class QrScannerComponent implements OnInit, OnDestroy {
     } catch (err) {
       this.scanning = false;
       if (this.settled) return;
-      const msg = err instanceof Error ? err.message : String(err);
-      // The plugin rejects with "cancelled" on dismiss (back / Cancel / tapping outside) — the one benign
-      // outcome, surfaced as a plain close. Everything else is a real failure (permission, ML Kit model,
-      // capability, lazy-load) routed to the caller's toast via `failed`.
+      // The plugin rejects on a user dismiss with a plain object `{ message: 'cancelled' }` — NOT an Error
+      // instance (Tauri `invoke` surfaces the Kotlin rejection as a serialized object). So read `.message`
+      // from either shape before matching, otherwise `String({message:'cancelled'})` is "[object Object]"
+      // and the cancel is misrouted to `failed` (showing a spurious "scan failed" toast + error log).
+      const msg = rejectionMessage(err);
+      // "cancelled" is the one benign outcome (back / Cancel / tapping outside) — surfaced as a plain close.
+      // Everything else is a real failure (permission, ML Kit model, capability, lazy-load) routed to the
+      // caller's toast via `failed`.
       if (/cancel/i.test(msg)) this.close.emit();
       else this.failed.emit(err);
     }

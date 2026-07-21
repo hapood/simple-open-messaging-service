@@ -30,6 +30,8 @@ export class ConversationListService {
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;
   readonly topInserted = this.repo.topInserted;
+  /** The persisted high-water mark (the away-notification `since`). Delegated — see ThreadRepository. */
+  readonly missedCursor = this.repo.missedCursor;
 
   /** Load (or force-refresh) the conversation list. Delegates to the repo's boot-from-cache + snapshot. */
   load(opts?: { force?: boolean }) {

@@ -144,12 +144,11 @@ export class NotifPopupComponent {
 
   /** Report the action button tap, then dismiss the card (optimistic — the POST is best-effort). */
   onAction(d: NotificationDescriptor, a: NotifAction): void {
-    const report: { tag: string; actionId: string; threadIds?: number[]; threadId?: number; seq?: number } = {
+    const report: { tag: string; actionId: string; threadId?: number; seq?: number } = {
       tag: d.tag,
       actionId: a.id,
     };
     // Carry only the routing fields the descriptor actually has (omit undefined keys → a clean POST body).
-    if (Array.isArray(d.data?.threadIds)) report.threadIds = d.data.threadIds;
     if (d.data?.threadId != null) report.threadId = d.data.threadId;
     if (d.data?.seq != null) report.seq = d.data.seq;
     void this.actionHttp.report(report);

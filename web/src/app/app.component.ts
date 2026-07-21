@@ -13,10 +13,11 @@ import { NavStateMachineService } from './services/nav-state.service';
 import { ShellUpdateService } from './services/shell-update.service';
 import { RouteService, PopupType } from './services/route.service';
 import { NotifPopupComponent } from './components/notif-popup/notif-popup.component';
+import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.component';
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 @Component({
     selector: 'app-root',
-    imports: [RouterOutlet, NotifPopupComponent],
+    imports: [RouterOutlet, NotifPopupComponent, DebugLogFabComponent],
     templateUrl: './app.component.html',
     styleUrl: './app.component.scss'
 })

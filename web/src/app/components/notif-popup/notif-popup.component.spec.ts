@@ -37,7 +37,7 @@ describe('NotifPopupComponent', () => {
       icon: null,
       renotify: false,
       actions: [{ id: 'mark-all-read', title: 'Mark all read' }],
-      data: { threadIds: [1, 2] },
+      data: { threadId: 1, seq: 2 },
     };
   }
 
@@ -65,8 +65,8 @@ describe('NotifPopupComponent', () => {
     el.querySelector<HTMLButtonElement>('.notif-btn')!.click();
 
     const req = httpMock.expectOne('/api/v1/notifications/action');
-    // The undefined threadId/seq are dropped by JSON serialization; threadIds carries.
-    expect(req.request.body).toEqual({ tag: 'soms-away', actionId: 'mark-all-read', threadIds: [1, 2] });
+    // The descriptor's HWM cursor (threadId, seq) carries on the mark-all-read action.
+    expect(req.request.body).toEqual({ tag: 'soms-away', actionId: 'mark-all-read', threadId: 1, seq: 2 });
     req.flush({ code: 0, message: 'ok', data: null });
 
     // Optimistic dismiss: the card is gone.

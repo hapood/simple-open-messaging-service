@@ -6,8 +6,9 @@ import type { ServerResponse } from 'node:http';
  * log viewer (LogViewerService) so the two producers can never drift on headers, the heartbeat, or the
  * frame shape.
  *
- * Frame format: `event: <name>\n[id: <cursor>]\ndata: <JSON>\n\n`. The heartbeat is a NAMED `ping`
- * event (not a `:` comment) so a client's dispatcher observes it and can run a liveness watchdog — a
+ * Frame format: `event: <name>\ndata: <JSON>\n\n` (no `id:` line — Last-Event-ID resume is unused; the
+ * missed-summary pull + HELLO handshake reconcile gaps instead). The heartbeat is a NAMED `ping` event
+ * (not a `:` comment) so a client's dispatcher observes it and can run a liveness watchdog — a
  * comment frame is invisible to a fetch-event-source reader, so a silently half-open connection would
  * otherwise go undetected.
  */
@@ -60,15 +61,9 @@ export function initSseResponse(res: ServerResponse, origin?: string): NodeJS.Ti
   }, SSE_HEARTBEAT_MS);
 }
 
-/** Format one SSE frame. `id` is the optional Last-Event-ID resume cursor (message events only). */
-export function formatSseFrame(
-  event: string,
-  data: unknown,
-  id?: string | number,
-): string {
-  return (
-    `event: ${event}\n` +
-    (id !== undefined && id !== null ? `id: ${id}\n` : '') +
-    `data: ${JSON.stringify(data)}\n\n`
-  );
+/** Format one SSE frame: `event: <name>\ndata: <JSON>\n\n`. No `id:` line — Last-Event-ID resume is
+ *  deliberately unused (a transient drop / offline gap is reconciled by the missed-summary pull + the HELLO
+ *  connect handshake, not by SSE replay), so no frame carries a resume cursor. */
+export function formatSseFrame(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }

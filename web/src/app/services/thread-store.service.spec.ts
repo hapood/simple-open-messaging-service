@@ -72,11 +72,10 @@ describe('ThreadRepository', () => {
           provide: ProfileRepository,
           useValue: {
             putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined),
-            // hydratePreviews resolves group sender names best-effort; resolve to undefined (bare) in tests.
             getProfile: jasmine.createSpy('getProfile').and.resolveTo(undefined),
           },
         },
-        { provide: MissedSyncService, useValue: { fetchMissedSummary: jasmine.createSpy('fetchMissedSummary').and.resolveTo({ items: [], hasMore: false, nextCursor: null, notifications: [] }) } },
+        { provide: MissedSyncService, useValue: { fetchMissedSummary: jasmine.createSpy('fetchMissedSummary').and.resolveTo({ items: [], hasMore: false, nextCursor: null }) } },
         {
           provide: WebsocketService,
           useValue: { eventSubject, reconnect$ },
@@ -134,6 +133,66 @@ describe('ThreadRepository', () => {
     await flush(20);
     expect(repo.items().map((t) => t.threadId).sort()).toEqual([1, 2]);
     expect(repo.status()).toBe('READY');
+  });
+
+  // Regression guard for the "暂无消息 on first launch" bug: the snapshot embeds NO preview content, so each
+  // thread's preview must be derived from its newest CACHED local message (local-first). Before the fix the
+  // preview came only from the missed-summary network page (newest take threads), so a cold start — or any
+  // thread that page didn't cover — showed "暂无消息" despite real history. Seed a local newest message,
+  // load, and assert the preview + sender are derived from it.
+  it('boot derives the list preview from the newest cached local message (local-first)', async () => {
+    const db = await webdb.db();
+    const seed = db.transaction('messages', 'readwrite');
+    await seed.store.put({
+      threadId: 1, seq: 5, contentType: 'PURE_TEXT', content: 'hello world', creator: 77,
+      createdAt: 1000, updatedAt: 1000, isDeleted: false,
+    } as unknown as Message);
+    await seed.done;
+
+    queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 77)]));
+    repo.load({ force: true });
+    await flush(20);
+
+    const items = repo.items();
+    expect(items[0].lastMessagePreview).toBe('hello world');
+    expect(items[0].lastMessageSenderId).toBe(77);
+  });
+
+  // HELLO (the SSE connect handshake) drives the catch-up walk: it sets `to` (the server-pushed newest-
+  // message cursor) → after the debounce, pullMissed walks `(from, to]` (from = the HWM; null on first boot),
+  // caches bodies, advances the HWM to `to`, and re-derives previews. boot itself does NOT walk — it waits
+  // for HELLO (no `to` until the stream connects).
+  it('HELLO → debounced (from, to] walk → HWM persists to `to` + preview re-derived', async () => {
+    const missed = TestBed.inject(MissedSyncService) as unknown as { fetchMissedSummary: jasmine.Spy };
+    const db = await webdb.db();
+    // Seed the local newest message — hydratePreviews reads it (the stubbed fetchMissedSummary does not cache).
+    const seed = db.transaction('messages', 'readwrite');
+    await seed.store.put({
+      threadId: 1, seq: 5, contentType: 'PURE_TEXT', content: 'hello world', creator: 77,
+      createdAt: 1000, updatedAt: 1000, isDeleted: false,
+    } as unknown as Message);
+    await seed.done;
+
+    missed.fetchMissedSummary.and.resolveTo({
+      items: [{
+        threadId: 1, type: 'P2P', displayName: 'User 77', unreadCount: 0, muted: false,
+        senderAvatarUrl: '', senderUserId: 77,
+        latestMessage: { threadId: 1, seq: 5, contentType: 'PURE_TEXT', content: 'hello world',
+          creator: 77, createdAt: 1000, mediaStatus: 'ready', sv: 5 },
+      }],
+      hasMore: false, nextCursor: null,
+    });
+    queryAllUserThreadsSpy.and.returnValue(of([p2p(1, 77)]));
+    repo.load({ force: true });
+    await flush(20);
+    expect(await webdb.getMeta('missedCursor')).toBeFalsy(); // boot does NOT walk → no HWM yet
+
+    // HELLO pushes the newest-message cursor → the debounced walk fires (from=null first boot, to=the cursor).
+    eventSubject.next({ event: 'HELLO', data: { latestMessage: { threadId: 1, seq: 5, ts: 1000 }, threadRevision: 10 } });
+    await flush(700); // past the 500ms debounce → the walk + persist + hydratePreviews settle
+    expect(missed.fetchMissedSummary).toHaveBeenCalledWith(null, { threadId: 1, seq: 5 });
+    expect(await webdb.getMeta('missedCursor')).toEqual({ threadId: 1, seq: 5 }); // HWM persisted to `to`
+    expect(repo.items()[0].lastMessagePreview).toBe('hello world'); // hydratePreviews re-derived from local
   });
 
   // Regression guard for the swallowed-throw bug: a non-zero API code / network failure during boot must

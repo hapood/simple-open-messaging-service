@@ -1,17 +1,18 @@
 /**
- * A capped ring buffer of the webview's `console.*` output, captured so a diagnostic bundle (Settings →
- * Report → Rust `report_diagnostics`) can carry a JS-side slice alongside the Rust log files.
+ * A capped ring buffer of the webview's `console.*` output — the JS layer's durable sink.
  *
- * Installed FIRST in main.ts (before `attachRustConsole` + bootstrap) so it captures from the earliest
- * moment. Because `attachRustConsole` re-emits every Rust log into the console as `[rust] …`, this buffer
- * also holds an interleaved JS+Rust timeline (the Rust files in the bundle keep full-fidelity Rust-only
- * records; the mild duplication is worth the merged view for correlating a JS action with a Rust SSE/proxy
- * event).
+ * Two consumers:
+ *  - **Diagnostic bundle** (Settings → Report → Rust `report_diagnostics`): `dumpConsoleBuffer()` renders
+ *    this buffer as `webview-console.log`, a PURE JS slice. Rust logs are NOT mirrored here anymore (the
+ *    `attachRustConsole` console re-emission was removed); the bundle carries Rust full-fidelity in
+ *    `rust/SOMS.log` and Kotlin in `native/kotlin.log`, so the three bundle artifacts are non-overlapping.
+ *  - **Debug log panel**: `getConsoleEntries()` for the live JS leg of the merged 3-layer view.
  *
- * Module-level (not an Angular service) deliberately: it must be installable before DI exists, and the
- * bundle path reads it outside Angular's request scope. `installConsoleBuffer()` is idempotent.
+ * Installed FIRST in main.ts (before bootstrap) so it captures from the earliest moment. Module-level (not
+ * an Angular service) deliberately: it must be installable before DI exists, and the bundle path reads it
+ * outside Angular's request scope. `installConsoleBuffer()` is idempotent.
  */
-interface ConsoleEntry {
+export interface ConsoleEntry {
   /** ISO timestamp (the entry's order is also the array order; the ts is for the log line). */
   readonly ts: string;
   readonly level: 'log' | 'debug' | 'info' | 'warn' | 'error';
@@ -67,4 +68,22 @@ export function installConsoleBuffer(): void {
  */
 export function dumpConsoleBuffer(): string {
   return buffer.map((e) => `${e.ts} [${e.level}] ${e.text}`).join('\n');
+}
+
+/**
+ * Read-only view of the live buffer for the debug log panel's JS leg. Returns the underlying array by
+ * reference (typed readonly); callers that need a stable snapshot across an await should clone it
+ * (`[...]`) — the buffer is mutated on the main thread by future `console.*` calls (append + splice from
+ * the front when over capacity).
+ */
+export function getConsoleEntries(): readonly ConsoleEntry[] {
+  return buffer;
+}
+
+/**
+ * Drop every captured entry. Used by the debug panel's "clear" action so a fresh trace starts empty
+ * without reloading. No effect on the real `console.*` (still installed + forwarding).
+ */
+export function clearConsoleBuffer(): void {
+  buffer.length = 0;
 }

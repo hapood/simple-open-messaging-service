@@ -538,6 +538,90 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
+   * Away-notification sender aggregation for POST /notifications/missed — distinct senders + their message
+   * counts for messages newer than `sinceId` (membership-scoped, blocked-creator-hidden), sampling the first
+   * `limit` by id. LEAN: selects only `creator` (NO content/body, NO threadId) — the away-summary needs only
+   * WHO + how-many, not WHAT nor which threads (mark-all-read no longer takes a thread list: the server
+   * re-derives the active set itself, and the descriptor carries the HWM cursor instead). The caller
+   * aggregates the rows in JS (a `limit`-sized batch of one int column is trivial). `overflow=true` when
+   * ≥`limit` messages exist → the "999+" capped display (the count covers only the sampled `limit`). Backed
+   * by Message(id) for the id range.
+   */
+  async senderCountsSince(
+    userId: number,
+    sinceId: bigint,
+    limit: number,
+    hideCreatorIds: number[] = [],
+  ): Promise<{ counts: Map<number, number>; overflow: boolean }> {
+    const blockedClause = hideCreatorIds.length
+      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<Array<{ creator: number }>>`
+      SELECT m."creator" AS creator
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+      WHERE m."id" > ${sinceId} ${blockedClause}
+      ORDER BY m."id" ASC
+      LIMIT ${limit}
+    `;
+    const counts = new Map<number, number>();
+    for (const r of rows) {
+      counts.set(r.creator, (counts.get(r.creator) ?? 0) + 1);
+    }
+    return { counts, overflow: rows.length >= limit };
+  }
+
+  /**
+   * The user's globally-newest message across their active threads (the highest internal `id` — the strict-
+   * total-order key), as a `(threadId, seq, ts)` cursor. Backs the SSE `HELLO` connect handshake: the server
+   * pushes this so the client has its `to` (the missed-summary walk's pinned upper bound) the instant SSE
+   * connects — no separate "get newest" round-trip, and the walk seeds/catches-up correctly on first boot
+   * (no local data) AND on reopen. Membership-scoped (an active ThreadParticipant row). `null` when the user
+   * has no messages yet. Backed by Message(id) DESC + the ThreadParticipant join.
+   */
+  async findNewestForUser(
+    userId: number,
+  ): Promise<{ threadId: number; seq: number; ts: number } | null> {
+    const rows = await this.prisma.$queryRaw<Array<{ threadId: number; seq: number; createdAt: Date | string }>>`
+      SELECT m."threadId" AS "threadId", m."seq" AS seq, m."createdAt" AS "createdAt"
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+      ORDER BY m."id" DESC
+      LIMIT 1
+    `;
+    const r = rows[0];
+    if (!r) return null;
+    const ts = r.createdAt instanceof Date ? r.createdAt.getTime() : new Date(r.createdAt).getTime();
+    return { threadId: r.threadId, seq: r.seq, ts };
+  }
+
+  /**
+   * For `mark-all-read`: per active thread of `userId`, the newest message seq at or below the HWM
+   * `ceilingId` (the global id the descriptor's `(threadId, seq)` cursor resolved to). Threads with no
+   * message ≤ the ceiling are absent (nothing to mark). Membership-scoped + active-only — the
+   * `leftAt IS NULL` join IS the server-side membership gate (the client sends no thread list). One grouped
+   * raw query; seq is per-thread and monotonic with id within a thread, so `MAX(seq)` over `id ≤ ceilingId`
+   * is that thread's latest message up to the cursor. A message that arrived after the summary was built
+   * (id > ceiling) is correctly excluded — mark-all-read touches exactly the covered set.
+   */
+  async maxReadSeqByThreadUpTo(
+    userId: number,
+    ceilingId: bigint,
+  ): Promise<Map<number, number>> {
+    const rows = await this.prisma.$queryRaw<Array<{ threadId: number; seq: number }>>`
+      SELECT m."threadId" AS "threadId", MAX(m."seq") AS "seq"
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+      WHERE m."id" <= ${ceilingId}
+      GROUP BY m."threadId"
+    `;
+    return new Map(rows.map((r) => [r.threadId, r.seq]));
+  }
+
+  /**
    * Unread counts for a user across the given threads, in ONE query. Unread = messages with a per-thread
    * seq greater than the per-thread read watermark (lastReadSeq; NULL ⇒ never read ⇒ count everything via
    * COALESCE(...,0)). Uses the Message(threadId,seq) index for the range scan. Returns a Map keyed by

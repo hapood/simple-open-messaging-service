@@ -94,14 +94,17 @@ describe('First message after friend-add is delivered (single instance)', () => 
       expect(send.status).toBe(200);
       expect(send.body.code).toBe(0);
 
-      // 4. The fan-out wrote a NEW_MESSAGE frame carrying the rendered body to Bob's stream.
+      // 4. The fan-out wrote a NEW_MESSAGE signal to Bob's stream. The frame is identity-only
+      //    { threadId, seq, ts } — the rendered body is never carried on the wire (single data source:
+      //    the client pulls it). Assert the signal targets this thread at seq 0 (the first message).
       const delivered = await waitForSseEvent(
         reader,
         (event, data) =>
           event === 'NEW_MESSAGE' &&
           typeof data === 'object' &&
           data !== null &&
-          (data as { content?: string }).content === 'first!',
+          (data as { threadId?: number }).threadId === threadId &&
+          (data as { seq?: number }).seq === 0,
       );
       expect(delivered).toBeDefined();
 

@@ -110,6 +110,11 @@ description = "Enables report_diagnostics — build a gzip-tar diagnostic bundle
 commands.allow = ["report_diagnostics"]
 
 [[permission]]
+identifier = "allow-read-native-log"
+description = "Enables read_native_log — tail the active Rust log or the Kotlin native.log BY NAME (never a caller-supplied path) for the debug log panel. Source-attributed + filterable read-only view; not a generic file-read."
+commands.allow = ["read_native_log"]
+
+[[permission]]
 identifier = "allow-api-request"
 description = "Enables api_request — the webview→backend HTTP transport under Tauri. An IPC fetch that performs the reqwest call on the Rust side and injects the Bearer from ProxyState.token (JS never touches the token); replaces the api:// custom-scheme proxy that Android WebView could not fetch."
 commands.allow = ["api_request"]
@@ -141,6 +146,7 @@ permissions = [
   "allow-sse-net",
   "allow-upload-stream-file",
   "allow-report-diagnostics",
+  "allow-read-native-log",
   "allow-api-request",
   "allow-media-request",
 ]

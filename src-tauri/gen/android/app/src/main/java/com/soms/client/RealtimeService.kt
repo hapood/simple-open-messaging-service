@@ -14,6 +14,7 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 /** logcat tag for this otherwise-headless service. The FGS runs with no WebView and used to
@@ -74,9 +75,17 @@ class RealtimeService : Service() {
     @Volatile private var stopping = false
     private var eventSource: EventSource? = null
     private val handler = Handler(Looper.getMainLooper())
+
+    /** Single-thread executor for the background away-notification fetch+render — keeps the SYNCHRONOUS
+     *  /notifications/missed call (and the icon fetch) off the main thread. Android forbids network on the
+     *  UI thread (NetworkOnMainThreadException); [awayCoalesceTask] is posted to the main-looper [handler]
+     *  for debounce timing, so it hops the actual work onto here. Serial so a burst of coalesces can't race
+     *  the notification's replace-by-id. Shut down in [onDestroy]. */
+    private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsAwayIo") }
     private var attempt = 0
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        SomsLog.i("Rt") { "onStartCommand action=${intent?.action} (null=sticky-restart) streamOpen=${eventSource != null} startId=$startId" }
         when (intent?.action) {
             ACTION_FOREGROUND -> {
                 // App visible: the process has foreground priority, so the connection survives without FGS
@@ -138,9 +147,17 @@ class RealtimeService : Service() {
      *  (logged out / not configured) — nothing to stream. Idempotent: a re-delivered intent (fg/bg cycle)
      *  never tears down a healthy connection. */
     private fun openStream() {
-        if (eventSource != null) return // already connected
-        val token = SomsSecureStore.getSessionToken(this) ?: run { stopSelf(); return }
-        val origin = SomsSecureStore.getApiOrigin(this) ?: run { stopSelf(); return }
+        if (eventSource != null) {
+            SomsLog.d("Rt") { "openStream no-op (eventSource already open)" }
+            return // already connected
+        }
+        val token = SomsSecureStore.getSessionToken(this)
+        val origin = SomsSecureStore.getApiOrigin(this)
+        SomsLog.d("Rt") { "openStream tokenPresent=${token != null} originPresent=${origin != null} attempt=$attempt" }
+        if (token == null || origin == null) {
+            SomsLog.w("Rt") { "openStream abort (no creds) → stopSelf" }
+            stopSelf(); return
+        }
         pushConnState("connecting")
         val request = Request.Builder()
             .url("$origin${SomsSecureStore.API_PREFIX}/events")
@@ -159,14 +176,28 @@ class RealtimeService : Service() {
         }
 
         override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
-            // The 25s liveness heartbeat is a NAMED `ping` event (data "{}") — not a payload, skip it.
-            if (type == "ping") return
+            // The 25s liveness heartbeat is a NAMED `ping` event (data "{}") — not a payload, skip it. Logged
+            // at debug (NOT returned silently): in a background no-message window this is the single proof the
+            // stream is still alive — one line every ~25s. If these stop while the device is backgrounded, the
+            // connection is silently dead even though the service process is alive.
+            if (type == "ping") {
+                SomsLog.d("Rt") { "ping (liveness) appInFg=${SomsMessagingService.appInForeground}" }
+                return
+            }
             attempt = 0 // any real frame resets the reconnect backoff
+            // THE diagnostic line: `appInFg` here is the ground-truth branch selector. If a backgrounded
+            // device shows appInFg=true, the foreground branch runs on a suspended WebView (frame vanishes,
+            // no notification) — that's the bug. If appInFg=false + branch=background but no notification
+            // appears, the failure is downstream in fetchDescriptors/renderDescriptors (see Soms/Notif).
+            SomsLog.i("Rt") {
+                "onEvent type=$type id=$id dataLen=${data.length} appInFg=${SomsMessagingService.appInForeground}"
+            }
 
             // FORCE_LOGOUT: the session was invalidated (all-device logout / password change / admin
             // purge). Forward so the JS layer performs the logout, then stop — the token is dead and
             // reconnecting would just 401-loop.
             if (type == "FORCE_LOGOUT") {
+                SomsLog.i("Rt") { "FORCE_LOGOUT → forward + stopSelf" }
                 forwardToJs(type, data)
                 stopSelf()
                 return
@@ -176,14 +207,18 @@ class RealtimeService : Service() {
                 // Foreground: hand every event to the WebView. It dispatches via WebsocketService exactly
                 // as the sse.worker would, so all downstream consumers (chat-box, threadlist, …) are
                 // unchanged. `data` is the server-serialized JSON, valid as a JS expression.
+                SomsLog.d("Rt") { "branch=foreground → forwardToJs (WebView is suspended if appInFg lags reality)" }
                 forwardToJs(type, data)
             } else if (type == "NEW_MESSAGE") {
                 // Background: the WebView is suspended. Coalesce a burst of messages into ONE away-
                 // notification via a debounced summary fetch (the same surface FCM/WorkManager use).
+                SomsLog.d("Rt") { "branch=background NEW_MESSAGE → scheduleAwayCoalesce" }
                 scheduleAwayCoalesce()
+            } else {
+                // Background non-message events are UI-only; the HWM catch-up + threadlist refresh cover them
+                // on resume, so they're deliberately dropped here.
+                SomsLog.d("Rt") { "branch=background non-message → dropped (resume catch-up covers it)" }
             }
-            // Background non-message events are UI-only; the HWM catch-up + threadlist refresh cover them
-            // on resume, so they're deliberately dropped here.
         }
 
         override fun onClosed(eventSource: EventSource) {
@@ -211,6 +246,13 @@ class RealtimeService : Service() {
     private fun forwardToJs(type: String?, data: String) {
         val safeType = type ?: "message"
         val safeData = if (data.isBlank()) "{}" else data
+        // webViewAttached=false → SomsBridge.eval is a no-op (no activity attached). webViewAttached=true
+        // while the activity is STOPPED → evaluateJavascript is accepted but the JS engine is paused, so the
+        // call queues and may never flush. Both look like "frame vanished." This line distinguishes
+        // "forwarding ran" from "the background branch never ran" — pair it with the onEvent branch log.
+        SomsLog.d("Rt") {
+            "forwardToJs type=$safeType webViewAttached=${SomsBridge.webView != null} appInFg=${SomsMessagingService.appInForeground}"
+        }
         SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__(${SomsBridge.jsonStr(safeType)}, $safeData);")
     }
 
@@ -220,6 +262,7 @@ class RealtimeService : Service() {
      *  the worker's `state` messages; a no-op until the native transport installs the hook. */
     private fun pushConnState(state: String) {
         connState = state
+        SomsLog.i("Rt") { "connState=$state" }
         SomsBridge.eval("window.__SOMS_CONN_STATE__ && window.__SOMS_CONN_STATE__(${SomsBridge.jsonStr(state)});")
     }
 
@@ -228,12 +271,16 @@ class RealtimeService : Service() {
     private fun scheduleAwayCoalesce() {
         handler.removeCallbacks(awayCoalesceTask)
         handler.postDelayed(awayCoalesceTask, COALESCE_DELAY_MS)
+        SomsLog.d("Rt") { "scheduleAwayCoalesce posted (debounce ${COALESCE_DELAY_MS}ms)" }
     }
 
     private val awayCoalesceTask = Runnable {
-        // Fetch the server-authored descriptors + render the coalesced away-notification (one entry point
-        // shared with the FCM + WorkManager paths).
-        SomsMessagingService.renderAwayNotification(this@RealtimeService)
+        // renderAwayNotification does a SYNCHRONOUS network fetch — it MUST run off the main thread
+        // (NetworkOnMainThreadException otherwise). This Runnable is on the main-looper handler for the
+        // debounce timing; hop the fetch+render onto ioExecutor. NotificationManager.notify is thread-safe,
+        // so rendering stays on the bg thread (no hop back to main). Shared entry point with FCM/WorkManager.
+        SomsLog.d("Rt") { "awayCoalesceTask firing → renderAwayNotification (off-main)" }
+        ioExecutor.execute { SomsMessagingService.renderAwayNotification(this@RealtimeService) }
     }
 
     /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY
@@ -270,6 +317,7 @@ class RealtimeService : Service() {
     override fun onDestroy() {
         stopping = true
         handler.removeCallbacksAndMessages(null)
+        ioExecutor.shutdownNow()
         eventSource?.cancel()
         eventSource = null
         pushConnState("closed")

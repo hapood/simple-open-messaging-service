@@ -91,13 +91,11 @@ describe('initSseResponse — CORS on the hijacked raw stream', () => {
 });
 
 describe('formatSseFrame', () => {
-  it('emits the event/id/data fields and the blank-line terminator', () => {
-    expect(formatSseFrame('NEW_MESSAGE', { hello: 'world' }, 42)).toBe(
-      'event: NEW_MESSAGE\nid: 42\ndata: {"hello":"world"}\n\n',
+  // No `id:` (Last-Event-ID) line is ever emitted — replay is unused (the missed-summary pull + HELLO
+  // handshake reconcile gaps), so formatSseFrame carries no resume cursor.
+  it('emits the event/data fields and the blank-line terminator (no id line)', () => {
+    expect(formatSseFrame('NEW_MESSAGE', { hello: 'world' })).toBe(
+      'event: NEW_MESSAGE\ndata: {"hello":"world"}\n\n',
     );
-  });
-
-  it('omits the id line when no cursor is supplied', () => {
-    expect(formatSseFrame('NOTIFY', { a: 1 })).toBe('event: NOTIFY\ndata: {"a":1}\n\n');
   });
 });

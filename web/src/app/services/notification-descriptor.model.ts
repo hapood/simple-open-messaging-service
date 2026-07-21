@@ -37,8 +37,10 @@ export interface NotificationDescriptor {
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]`. */
   actions: NotifAction[];
-  /** Routing payload, opaque to the server. `message-summary` carries the covered `threadIds`. */
-  data: { threadIds?: number[]; threadId?: number; seq?: number; [k: string]: unknown };
+  /** Routing payload, opaque to the server. `message-summary` carries the HWM cursor `(threadId, seq)` — the
+   *  newest message the summary covers; mark-all-read advances the client's high-water mark to it (the server
+   *  clears every active thread up to that ceiling). */
+  data: { threadId?: number; seq?: number; [k: string]: unknown };
 }
 
 /** The forward-pagination cursor for `POST /notifications/missed` — the client's last-accounted message

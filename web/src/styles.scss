@@ -146,19 +146,22 @@ $dark-theme: mat.define-theme((
 /* === QR scanner overlay: make the app transparent so the native camera shows through. ===
  * The barcode-scanner plugin is invoked with `windowed: true`, which calls webView.bringToFront() and
  * sets the WebView background transparent — so the live CameraX preview is visible wherever the Angular
- * markup is transparent. But <body> paints an opaque --app-bg (below) and the in-flow app (the Settings
- * aside, dialogs, snackbars) is opaque too, which would otherwise block the camera. While the scanner is
- * open, QrScannerService adds `qr-scanning` to <html>:
- *   - body → transparent (the camera is the background);
- *   - app-root → visibility:hidden (its pixels no longer paint, keeping layout/stacking intact);
- *   - every CDK overlay pane EXCEPT the scanner's own (.qr-scan-pane) → visibility:hidden, so any open
- *     dialog / snackbar stops occluding the camera. The scanner pane keeps its .qr-scan-pane marker and
- *     its transparent :host, so its scrim + cutout + chrome draw over the feed. Removed the instant the
- *     overlay disposes. visibility:hidden (not display:none) is chosen because it keeps the CDK overlay
- *     container's layout stable and lets the scanner pane animate out cleanly. */
+ * markup is transparent. But <body> paints an opaque --app-bg (below) and the in-flow app (app-root and
+ * its descendants) is opaque too, which would otherwise block the camera. While the scanner is open,
+ * QrScannerService adds `qr-scanning` to <html>:
+ *   - body → transparent background (the camera is the background);
+ *   - app-root → opacity:0 (the whole in-flow app stops occluding the camera);
+ *   - every CDK overlay pane EXCEPT the scanner's own (.qr-scan-pane) → opacity:0, so any open dialog /
+ *     snackbar stops occluding the camera.
+ * opacity:0 — NOT visibility:hidden — is required here: the Android WebView composites a
+ * visibility:hidden element's layer as still-opaque, so the camera stays blocked; opacity:0 forces the
+ * layer alpha to 0 (verified empirically — setting the home app opacity:0 makes the feed appear). The
+ * scanner pane lives in the body-level CDK overlay container (a sibling of app-root, not a descendant),
+ * so it is unaffected and its scrim + cutout + chrome keep drawing over the live feed. Removed the
+ * instant the overlay disposes. */
 html.qr-scanning body { background-color: transparent; }
-html.qr-scanning app-root { visibility: hidden; }
-html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) { visibility: hidden; }
+html.qr-scanning app-root { opacity: 0; }
+html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) { opacity: 0; }
 
 html,
 body {

@@ -15,10 +15,10 @@ import { NotificationActionService } from '../notification/notification-action.s
 import { SettingsService } from '../settings/settings.service.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
-import { MissedDto, ReportActionDto } from '../dto/notification.dto.js';
+import { MissedDto, MissedSummaryDto, ReportActionDto } from '../dto/notification.dto.js';
 
 /** Page-size bounds for the paginated missed catch-up (the DTO validates 1–200; this is the default). */
-const MISSED_DEFAULT_TAKE = 50;
+/** Per-page cap for /notifications/missed-summary (the threadlist body walk). */
 const MISSED_MAX_TAKE = 200;
 
 /**
@@ -83,35 +83,57 @@ export class NotificationController {
     };
   }
 
-  /** The unified missed summary + server-authored notification descriptors (one row per thread: newest
-   *  message body + unread count + display name, PLUS the localized title/body + composited stacked-avatar
-   *  icon every notification renderer consumes). Authenticated by the global guard (session token / access
-   *  JWT). Absent `cursor` → the newest `take` threads (the background away-notification paths + the initial
-   *  threadlist hydrate); `cursor` → forward pagination (threads newer than the cursor, ASC). The response
-   *  carries `nextCursor` (the page's max-id item) + `notifications[]` (the descriptors). Locale is
-   *  negotiated from `Accept-Language` (stateless — the device language the client already knows). */
+  /** The threadlist body pre-warm — per-thread latest body for threads whose latest-message id ∈ `(from, to]`.
+   *  `to` = the newest SSE signal (pinned upper bound); `from` = the high-water mark (advancing lower bound).
+   *  Authenticated by the global guard (session token / access JWT). The client walks pages until `!hasMore`,
+   *  then sets HWM = `to`. `to ≤ from` (stale SSE) → empty no-op. */
+  @HttpCode(HttpStatus.OK)
+  @Post('notifications/missed-summary')
+  @ApiOperation({
+    summary: 'Threadlist body pre-warm: per-thread latest body in the (from, to] range (double-boundary walk)',
+  })
+  async missedSummary(
+    @Request() req: FastifyRequest,
+    @Body() dto: MissedSummaryDto,
+  ): Promise<ApiResult> {
+    const userId = req.user.userId as number;
+    const take = Math.min(MISSED_MAX_TAKE, Math.max(1, dto.take ?? MISSED_MAX_TAKE));
+    const from =
+      dto.from && typeof dto.from.threadId === 'number' && typeof dto.from.seq === 'number'
+        ? { threadId: dto.from.threadId, seq: dto.from.seq }
+        : null;
+    const to =
+      dto.to && typeof dto.to.threadId === 'number' && typeof dto.to.seq === 'number'
+        ? { threadId: dto.to.threadId, seq: dto.to.seq }
+        : null;
+    if (!to) {
+      // `to` is @IsRequired on the DTO (ValidationPipe rejects absent); defensive guard for shape.
+      return { code: BusinessCode.OK, message: 'successful', data: { items: [], hasMore: false, nextCursor: null } };
+    }
+    const data = await this.notifQuery.buildSummary(userId, { from, to, take });
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  /** The away-notification summary — per-sender aggregation of the messages newer than `since` (the HWM),
+   *  authored into ONE descriptor ("X, Y sent you N messages" / "999+" past the 1000-sample) + a composited
+   *  stacked-avatar icon. NOTIFICATION renderers only (Web SW / Android FCM-FGS / desktop). One-shot current
+   *  snapshot, replace-by-tag. Locale negotiated from `Accept-Language`. */
   @HttpCode(HttpStatus.OK)
   @Post('notifications/missed')
   @ApiOperation({
-    summary:
-      'Missed summary (latest message per thread) + notification descriptors, forward-paginated by (threadId, seq) cursor',
+    summary: 'Away-notification summary: per-sender aggregation of messages since the high-water mark',
   })
   async missed(
     @Request() req: FastifyRequest,
     @Body() dto: MissedDto,
   ): Promise<ApiResult> {
     const userId = req.user.userId as number;
-    const take = Math.min(
-      MISSED_MAX_TAKE,
-      Math.max(1, dto.take ?? MISSED_DEFAULT_TAKE),
-    );
-    const cursor =
-      dto.cursor && typeof dto.cursor.threadId === 'number' && typeof dto.cursor.seq === 'number'
-        ? { threadId: dto.cursor.threadId, seq: dto.cursor.seq }
+    const since =
+      dto.since && typeof dto.since.threadId === 'number' && typeof dto.since.seq === 'number'
+        ? { threadId: dto.since.threadId, seq: dto.since.seq }
         : null;
     const data = await this.notifQuery.buildNotifyResponse(userId, {
-      cursor,
-      take,
+      since,
       acceptLanguage: (req.headers['accept-language'] as string | undefined) ?? null,
     });
     return { code: BusinessCode.OK, message: 'successful', data };

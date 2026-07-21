@@ -9,10 +9,7 @@ use tauri::{
     Manager, Runtime,
 };
 
-pub use models::*;
-
 mod error;
-mod models;
 
 pub use error::{Error, Result};
 

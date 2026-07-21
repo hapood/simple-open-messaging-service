@@ -224,7 +224,11 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         });
       expect(res.status).toBe(200);
       expect(res.body.code).toBe(BusinessCode.OK);
-      // The ~500ms debounce pushes the hint; appB drains + pulls + stores + SSE. Poll for the stored row.
+      // The ~500ms debounce pushes the hint; appB drains + pulls + stores + SSE. Poll for the stored row,
+      // capturing bob's LOCAL thread id + the receiver-allocated seq — NEW_MESSAGE is identity-only
+      // { threadId, seq, ts }, so those two fields ARE the on-wire signal asserted next.
+      let bobLocalThreadId = 0;
+      let bobLocalSeq = -1;
       await vi.waitFor(
         async () => {
           const msg = await appB.prisma.message.findFirst({
@@ -232,14 +236,17 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
           });
           expect(msg).not.toBeNull();
           expect(msg!.originSeq).toBe(0); // alice's first message → originSeq 0 (0-indexed), copied verbatim
+          bobLocalThreadId = msg!.threadId;
+          bobLocalSeq = msg!.seq;
         },
         { timeout: 5000 },
       );
-      // The real SSE stream delivered the rendered message body to bob.
+      // The real SSE stream delivered the identity-only NEW_MESSAGE signal to bob (end-to-end wire delivery).
       await waitForSseEvent(reader, (event, data) =>
         event === 'NEW_MESSAGE' &&
         typeof data === 'object' && data !== null &&
-        (data as { content?: string }).content === 'hi from alice',
+        (data as { threadId?: number }).threadId === bobLocalThreadId &&
+        (data as { seq?: number }).seq === bobLocalSeq,
       );
     } finally {
       await reader.cancel();
@@ -738,21 +745,25 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .send({ threadId: groupThreadA, content: 'hello group', contentType: 'PURE_TEXT' });
       expect(send.status).toBe(200);
       expect(send.body.code).toBe(BusinessCode.OK);
-      // The message lands on bob's mirror (origin-hub: appA signals appB; appB pulls)...
+      // The message lands on bob's mirror (origin-hub: appA signals appB; appB pulls). Capture its
+      // receiver-local seq so the SSE assertion targets THIS signal (NEW_MESSAGE is identity-only).
+      let helloGroupSeq = -1;
       await vi.waitFor(
         async () => {
           const msg = await appB.prisma.message.findFirst({
             where: { threadId: mirrorB.id, content: 'hello group' },
           });
           expect(msg).not.toBeNull();
+          helloGroupSeq = msg!.seq;
         },
         { timeout: 8000 },
       );
-      // ...AND arrives on bob's real SSE stream (end-to-end cross-server delivery).
+      // ...AND arrives on bob's real SSE stream (identity-only NEW_MESSAGE signal, end-to-end cross-server).
       await waitForSseEvent(reader, (event, data) =>
         event === 'NEW_MESSAGE' &&
         typeof data === 'object' && data !== null &&
-        (data as { content?: string }).content === 'hello group',
+        (data as { threadId?: number }).threadId === mirrorB.id &&
+        (data as { seq?: number }).seq === helloGroupSeq,
       );
     } finally {
       await reader.cancel();
@@ -919,11 +930,36 @@ describe('Federation e2e (two nodes, real signed S2S traffic)', () => {
         .post('/api/v1/send-message')
         .set('Authorization', `Bearer ${tokenA}`)
         .send({ threadId: firstGroupThreadA, content: 'hi both', contentType: 'PURE_TEXT' });
-      await waitForSseEvent(readerBob, (event, data) =>
-        event === 'NEW_MESSAGE' && (data as { content?: string }).content === 'hi both',
+      // 'hi both' is pulled into the SHARED mirror; capture its receiver-local seq once, then assert the
+      // identity-only NEW_MESSAGE signal { threadId, seq, ts } reached BOTH local members — the fan must
+      // iterate every active local member of the one mirror thread, not just the first.
+      const hiBoth = await vi.waitFor(
+        async () => {
+          const msg = await appB.prisma.message.findFirst({
+            where: { threadId: firstMirrorBId, content: 'hi both' },
+          });
+          expect(msg).not.toBeNull();
+          return msg!;
+        },
+        { timeout: 8000 },
       );
-      await waitForSseEvent(readerDave, (event, data) =>
-        event === 'NEW_MESSAGE' && (data as { content?: string }).content === 'hi both',
+      await waitForSseEvent(
+        readerBob,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === firstMirrorBId &&
+          (data as { seq?: number }).seq === hiBoth.seq,
+      );
+      await waitForSseEvent(
+        readerDave,
+        (event, data) =>
+          event === 'NEW_MESSAGE' &&
+          typeof data === 'object' &&
+          data !== null &&
+          (data as { threadId?: number }).threadId === firstMirrorBId &&
+          (data as { seq?: number }).seq === hiBoth.seq,
       );
     } finally {
       await readerBob.cancel();

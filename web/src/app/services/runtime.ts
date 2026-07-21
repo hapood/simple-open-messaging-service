@@ -84,6 +84,13 @@ declare global {
        *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to
        *  clear (and stop the native stream). Android-only. */
       setSessionToken: (token: string | null) => void;
+      /** Push the threadlist's missed-summary high-water mark `{threadId, seq}` (the newest message it has
+       *  accounted for) into EncryptedSharedPreferences — the SAME store the native background fetchers
+       *  (FCM / WorkManager) read. They pass it as `since` to /notifications/missed while the WebView is
+       *  suspended/destroyed, so the HWM MUST live in native durable storage (not just the WebView's IDB,
+       *  which the native layer can't reach + which dies with the WebView). Webview→native, one-way: the
+       *  webview owns + advances the HWM; native only reads. Pass null on logout. Android-only. */
+      setMissedCursor: (cursor: { threadId: number; seq: number } | null) => void;
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when

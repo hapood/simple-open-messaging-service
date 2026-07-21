@@ -78,6 +78,9 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // Seed SomsLog's file sink (filesDir/soms-native.log, DEBUG-only) before any subsystem logs. No-op in
+        // release (every SomsLog method compiles out).
+        SomsLog.init(this)
         // Hardware-back → the web nav state machine (window.__SOMS_BACK__), which peels one layer (pane →
         // aside → chat → home) and calls SomsBack.exit() when nothing's left. TauriActivity sets
         // handleBackNavigation=false (WryActivity's webview-history default is off), so we own back here.
@@ -280,6 +283,7 @@ class MainActivity : TauriActivity() {
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
         SomsMessagingService.appInForeground = true
+        SomsLog.i("Ui") { "onResume → appInForeground=true" }
         // App visible: ensure the realtime service is running (the WebView's only event source on Android
         // is this /events stream) and drop the persistent FGS notification + away-notification so the
         // in-app UI owns message display again. The start is guarded for two reasons:
@@ -305,6 +309,9 @@ class MainActivity : TauriActivity() {
     override fun onStop() {
         super.onStop()
         SomsMessagingService.appInForeground = false
+        SomsLog.i("Ui") {
+            "onStop → appInForeground=false fgsEnabled=${SomsSecureStore.getForegroundServiceEnabled(this)} tokenPresent=${SomsSecureStore.getSessionToken(this) != null}"
+        }
         // Backgrounded: keep the realtime connection alive only if the toggle is on AND the user is logged
         // in (session token present) — promote the already-running service to a foreground service so the
         // system doesn't kill it. Toggle off → stop it (background delivery falls back to FCM/WorkManager).

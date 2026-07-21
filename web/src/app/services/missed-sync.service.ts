@@ -6,20 +6,19 @@ import { apiPrefix } from './constants';
 import type { Message, StandardResponse } from './model';
 import type { MissedCursor, NotificationDescriptor } from './notification-descriptor.model';
 
-/** Page size for the missed-summary pull (the backend caps `take` at 200; 50 balances round-trips). */
-const MISSED_TAKE = 50;
+/** Page size for the threadlist body walk (the backend caps `take` at 200). */
+const SUMMARY_TAKE = 200;
 
-/** One thread's row in the POST /notifications/missed summary. Mirrors the backend MissedThreadItem. */
+/** One thread's row in POST /notifications/missed-summary. Mirrors the backend MissedThreadItem. The
+ *  threadlist reads only `latestMessage` (the body for preview pre-warm); the other fields are carried for
+ *  parity but unused here (avatars come from the conversation snapshot). */
 export interface MissedThreadItem {
   threadId: number;
   type: 'P2P' | 'GROUP';
   displayName: string;
   unreadCount: number;
-  /** Per-user mute flag — the away-notification filters unread+unmuted. */
   muted: boolean;
-  /** The sender's avatar URL (P2P peer / GROUP group); '' when none. Unused by the threadlist preview. */
   senderAvatarUrl: string;
-  /** The sender's stable id. Unused by the threadlist preview (the icon compositor reads it server-side). */
   senderUserId: number;
   latestMessage: {
     threadId: number;
@@ -33,32 +32,31 @@ export interface MissedThreadItem {
   } | null;
 }
 
-/** The missed-summary pull result — the data view (`items`) + the forward cursor + the notification
- *  descriptors (consumed by the foreground away-renderer). */
+/** The missed-summary pull result — the per-thread items + the pagination cursor (the walk advances `from`
+ *  toward `to`). */
 export interface MissedSummaryResult {
   items: MissedThreadItem[];
   hasMore: boolean;
   nextCursor: MissedCursor | null;
-  notifications: NotificationDescriptor[];
 }
 
 /** An empty result (errors / concurrent no-op) — the cursor is not advanced, so the next pull re-covers. */
-const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null, notifications: [] };
+const EMPTY: MissedSummaryResult = { items: [], hasMore: false, nextCursor: null };
 
 /**
- * The missed-summary puller. Fetches `POST /notifications/missed { cursor }` and exposes TWO projections
- * over it, each with its OWN single-flight guard so the two consumers never starve each other:
- *  - {@link fetchMissedSummary} — the threadlist catch-up (items + body cache). Used by ThreadRepository.
- *  - {@link fetchAwayNotifications} — the foreground away-snapshot (descriptors only). Used by
- *    UnreadAttentionService.
+ * The two SEPARATED missed endpoints, each with its OWN single-flight guard so the two consumers never
+ * starve each other:
+ *  - {@link fetchMissedSummary} — POST /notifications/missed-summary (the threadlist body pre-warm). Used by
+ *    ThreadRepository: walks the `(from, to]` double-boundary range of per-thread latest bodies, caching each
+ *    into the local store.
+ *  - {@link fetchAwayNotifications} — POST /notifications/missed (the away-notification summary). Used by
+ *    UnreadAttentionService: per-sender aggregation since the HWM → the server-authored descriptors.
  *
- * Why two guards: a NEW_MESSAGE arriving while the window is unfocused fires BOTH a threadlist catch-up
- * pull (cursor-based) and an away-snapshot pull (null cursor). They are DIFFERENT queries, so they cannot
- * share a result — but sharing ONE single-flight guard meant the second caller got an empty result and the
- * away-notification could intermittently fail to render. Separate guards let both fire (two HTTP calls when
- * they genuinely race; each collapses its OWN bursts).
+ * Why two guards: a NEW_MESSAGE arriving while unfocused fires BOTH a threadlist body walk (from/to) and an
+ * away-summary pull (since). They are DIFFERENT queries, so they cannot share a result — separate guards let
+ * both fire (two HTTP calls when they genuinely race; each collapses its OWN bursts).
  *
- * STATELESS beyond the guards: the caller owns the cursor + decides when to pull (boot / resume / push-wake).
+ * STATELESS beyond the guards: the caller owns the cursors + decides when to pull.
  *
  * The items-path apply is direct on MessageRepository — it does NOT re-emit on eventSubject, so
  * UnreadAttentionService (subscribed to NEW_MESSAGE there) is NOT triggered; the snapshot owns unread.
@@ -68,23 +66,10 @@ export class MissedSyncService {
   private readonly http = inject(HttpClient);
   private readonly messageRepo = inject(MessageRepository);
 
-  /** Single-flight for the items (threadlist catch-up) path. */
-  private itemsInFlight = false;
-  /** Single-flight for the away (descriptor snapshot) path — independent so it never starves on the items path. */
+  /** Single-flight for the threadlist body-walk path. */
+  private summaryInFlight = false;
+  /** Single-flight for the away-summary path — independent so it never starves on the summary path. */
   private awayInFlight = false;
-
-  /** Raw HTTP POST + parse — no guard, no body cache (the shared fetch both projections build on). */
-  private async postMissed(cursor: MissedCursor | null): Promise<MissedSummaryResult> {
-    const res = await firstValueFrom(
-      this.http.post<StandardResponse<MissedSummaryResult>>(
-        `${apiPrefix()}/notifications/missed`,
-        { ...(cursor ? { cursor } : {}), take: MISSED_TAKE },
-        { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
-      ),
-    ).catch(() => null);
-    if (!res || res.code !== 0 || !res.data) return EMPTY;
-    return res.data;
-  }
 
   /** Cache each thread's latest-message body (pre-warm so opening a thread is instant). The summary row is
    *  the full message minus id; fill the storage-only defaults the IDB record carries. */
@@ -111,33 +96,49 @@ export class MissedSyncService {
   }
 
   /**
-   * Threadlist catch-up: fetch one page (cursor forward), cache the bodies, return the full result (items +
-   * nextCursor + notifications). `cursor` null → snapshot (newest `take`). Concurrent calls on THIS path
-   * collapse (single-flight); the away path has its own guard.
+   * Threadlist body walk: fetch ONE page of the `(from, to]` range, cache the bodies, return the result.
+   * `from` = the high-water mark (exclusive lower; null on first boot); `to` = the newest SSE signal (pinned
+   * inclusive upper). The caller loops pages (advancing `from = nextCursor`) until `!hasMore`, then sets
+   * HWM = `to`. Concurrent calls on THIS path collapse (single-flight); the away path has its own guard.
    */
-  async fetchMissedSummary(cursor: MissedCursor | null): Promise<MissedSummaryResult> {
-    if (this.itemsInFlight) return EMPTY;
-    this.itemsInFlight = true;
+  async fetchMissedSummary(from: MissedCursor | null, to: MissedCursor): Promise<MissedSummaryResult> {
+    if (this.summaryInFlight) return EMPTY;
+    this.summaryInFlight = true;
     try {
-      const data = await this.postMissed(cursor);
-      if (data.items.length > 0) await this.cacheBodies(data.items);
-      return data;
+      const res = await firstValueFrom(
+        this.http.post<StandardResponse<MissedSummaryResult>>(
+          `${apiPrefix()}/notifications/missed-summary`,
+          { ...(from ? { from } : {}), to, take: SUMMARY_TAKE },
+          { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
+        ),
+      ).catch(() => null);
+      if (!res || res.code !== 0 || !res.data) return EMPTY;
+      if (res.data.items.length > 0) await this.cacheBodies(res.data.items);
+      return res.data;
     } finally {
-      this.itemsInFlight = false;
+      this.summaryInFlight = false;
     }
   }
 
   /**
-   * Foreground away-snapshot: fetch the descriptors (null cursor → current unread state) for the
-   * away-notification / popup. Does NOT cache bodies (the threadlist catch-up owns pre-warm) — only the
-   * away-renderer needs the descriptors. Single-flight on its OWN guard, independent of {@link fetchMissedSummary},
-   * so a threadlist catch-up pulling at the same instant cannot starve the away-notification.
+   * Away-notification summary: the server-authored descriptors for the messages newer than `since` (the HWM).
+   * Does NOT cache bodies (the threadlist walk owns pre-warm) — only the away-renderer needs the descriptors.
+   * Single-flight on its OWN guard, independent of {@link fetchMissedSummary}, so a threadlist walk pulling at
+   * the same instant cannot starve the away-notification.
    */
-  async fetchAwayNotifications(): Promise<NotificationDescriptor[]> {
+  async fetchAwayNotifications(since: MissedCursor | null): Promise<NotificationDescriptor[]> {
     if (this.awayInFlight) return [];
     this.awayInFlight = true;
     try {
-      return (await this.postMissed(null)).notifications;
+      const res = await firstValueFrom(
+        this.http.post<StandardResponse<{ notifications: NotificationDescriptor[] }>>(
+          `${apiPrefix()}/notifications/missed`,
+          { ...(since ? { since } : {}) },
+          { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
+        ),
+      ).catch(() => null);
+      if (!res || res.code !== 0 || !res.data) return [];
+      return res.data.notifications;
     } finally {
       this.awayInFlight = false;
     }

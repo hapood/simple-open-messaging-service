@@ -161,11 +161,16 @@ fn validate_origin(raw: &str) -> Option<String> {
 /// (self-hosted LAN servers commonly have no valid cert) — IP/http origins are not guaranteed secure
 /// by policy.
 fn origin_host_is_ip(origin: &str) -> bool {
-    let host = reqwest::Url::parse(origin).ok().map(|u| u.host_str().unwrap_or("").to_string());
-    match host {
-        Some(h) => h.parse::<IpAddr>().is_ok(),
-        None => false,
-    }
+    let Some(host) = reqwest::Url::parse(origin)
+        .ok()
+        .and_then(|u| u.host_str().map(|s| s.to_string()))
+    else {
+        return false;
+    };
+    // `Url::host_str` serializes an IPv6 literal WITH brackets ("[::1]"), which won't parse as an
+    // IpAddr — strip them so a bare-IPv6 origin is detected (and gets permissive TLS, like IPv4).
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse::<IpAddr>().is_ok()
 }
 
 /// TLS posture the proxy takes toward a backend origin. The security boundary `http_client_for` and
@@ -332,11 +337,11 @@ pub fn run() {
     let builder = tauri::Builder::default();
 
     // Logging is registered FIRST so it captures every later plugin's setup, the URI-scheme proxies, and
-    // the desktop SSE supervisor. Sinks: Webview (forward every Rust log into the webview console via the
-    // `log://log` event — the frontend re-emits it, see web/.../main.ts `attachRustConsole`), Stdout
+    // the desktop SSE supervisor. Sinks: Webview (emit every Rust log on the `log://log` event — the debug
+    // log panel subscribes to it while open; it is no longer re-emitted into the JS console), Stdout
     // (terminal / docker logs; routed to logcat on Android), LogDir (a rotating file under the OS log dir
-    // for post-mortem). Info level — the instrumentation emits warn/error for failures; raise to Debug to
-    // trace connectivity in detail.
+    // for post-mortem + the bundle's `rust/*`). Info level — the instrumentation emits warn/error for
+    // failures; raise to Debug to trace connectivity in detail.
     let builder = builder.plugin(
         tauri_plugin_log::Builder::new()
             .targets([
@@ -359,6 +364,22 @@ pub fn run() {
             .level_for("hyper", log::LevelFilter::Warn)
             .level_for("reqwest", log::LevelFilter::Warn)
             .level_for("rustls", log::LevelFilter::Warn)
+            // Explicit UTC format for EVERY target: `${ISO_UTC} [LEVEL] [target] message`. The plugin's
+            // default formatter OMITS the timestamp on mobile (the Android default is `[target] message`,
+            // relying on logcat) and omits milliseconds on desktop — so without this, the debug panel's
+            // Rust leg has no parseable timestamp on Android (every line sorts to the end of the merged
+            // view). Emitting our own also decouples the panel's parser from the plugin's default format,
+            // which could change between versions. The ISO prefix matches the JS/Kotlin ring-buffer format
+            // exactly, so all three layers interleave by timestamp with no per-source timezone guesswork.
+            .format(|out, message, record| {
+                out.finish(format_args!(
+                    "{} [{}] [{}] {}",
+                    iso_utc_now(),
+                    record.level(),
+                    record.target(),
+                    message,
+                ))
+            })
             .build(),
     );
 
@@ -416,6 +437,7 @@ pub fn run() {
                     sse_net,
                     upload_stream_file,
                     report_diagnostics,
+                    read_native_log,
                     api_request,
                     media_request,
                 ]
@@ -434,6 +456,7 @@ pub fn run() {
                     init_download_web,
                     init_update_status,
                     report_diagnostics,
+                    read_native_log,
                     api_request,
                     media_request,
                 ]
@@ -569,6 +592,34 @@ fn empty(status: StatusCode) -> Response<Cow<'static, [u8]>> {
 
 // --- IPC api_request (the webview→backend HTTP transport under Tauri) ---------------------
 
+/// Why a bounded-headers send did not yield a `reqwest::Response`.
+#[derive(Debug)]
+enum HeadersError {
+    /// The request could not be sent at all (DNS / connect / TLS / mid-send reset). A connect-level
+    /// failure — the JS side maps this `Err` to `HttpErrorResponse(status: 0)` → "network".
+    SendFailed(reqwest::Error),
+    /// The server accepted the connection but sent no headers within the deadline — a gateway timeout.
+    /// Kept distinct from `SendFailed` so the caller surfaces a real HTTP 504 (the JS side then reports
+    /// "HTTP 504") instead of conflating a hung upstream with a connect-level failure.
+    Timeout,
+}
+
+/// Send `req`, bounding only the HEADERS phase (connect + send + server processing) to `deadline`. The
+/// response BODY read is the caller's concern and is deliberately UNbounded — a slow/large download or
+/// upload is legitimate and must not be aborted (a total-duration timeout would wrongly kill it; see
+/// `BACKEND_CONNECT_TIMEOUT`'s comment). Extracted from the `tokio::time::timeout` block `api_request`
+/// and `media_request` previously inlined, so the deadline + its 504 outcome are unit-testable.
+async fn send_with_headers_deadline(
+    req: reqwest::RequestBuilder,
+    deadline: Duration,
+) -> Result<reqwest::Response, HeadersError> {
+    match tokio::time::timeout(deadline, req.send()).await {
+        Ok(Ok(r)) => Ok(r),
+        Ok(Err(e)) => Err(HeadersError::SendFailed(e)),
+        Err(_) => Err(HeadersError::Timeout),
+    }
+}
+
 /// The webview→backend HTTP transport under the Tauri shell. The frontend `TauriHttpBackend`
 /// (web/.../tauri-http.backend.ts) invokes this instead of `fetch()`: Android's Chromium WebView rejects
 /// non-standard schemes in `fetch()`, so the old `api://` custom-scheme proxy could not be fetched there;
@@ -620,18 +671,23 @@ async fn api_request(
         req = req.body(b);
     }
     // Bound the HEADERS phase (connect + send + server processing). The body READ below is unbounded — a
-    // slow/large download is legitimate and must not be killed. Connect-only failures are already caught
-    // by `BACKEND_CONNECT_TIMEOUT` on the cached client; this catches "connected but the server never
-    // responds". The JS side maps the `Err` to an HttpErrorResponse with status 0 (`[http] network`).
-    let upstream = match tokio::time::timeout(API_HEADERS_TIMEOUT, req.send()).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
+    // slow/large download is legitimate and must not be killed. Connect-only failures (`SendFailed`) are
+    // already caught by `BACKEND_CONNECT_TIMEOUT` on the cached client and surface as an `Err` → JS
+    // status 0 → "network". A HUNG upstream (`Timeout`: connected but no headers) surfaces as a real
+    // HTTP 504 so the client can distinguish "server accepted then went silent" from "couldn't connect".
+    let upstream = match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
+        Ok(r) => r,
+        Err(HeadersError::SendFailed(e)) => {
             warn!("api_request {target} upstream send failed: {e}");
             return Err(format!("api_request send: {e}"));
         }
-        Err(_) => {
-            warn!("api_request {target} upstream headers timed out");
-            return Err(format!("api_request timeout: {target}"));
+        Err(HeadersError::Timeout) => {
+            warn!("api_request {target} upstream headers timed out → 504");
+            return Ok(ApiRequestResult {
+                status: 504,
+                headers: std::collections::HashMap::new(),
+                body: "Gateway Timeout".to_string(),
+            });
         }
     };
     let status = upstream.status().as_u16();
@@ -696,15 +752,18 @@ async fn media_request(
         req = req.header("authorization", format!("Bearer {}", t));
     }
     // Bound the HEADERS phase; the body READ (a large image) is unbounded — a slow download is legitimate.
-    let upstream = match tokio::time::timeout(API_HEADERS_TIMEOUT, req.send()).await {
-        Ok(Ok(r)) => r,
-        Ok(Err(e)) => {
+    // Same headers-deadline contract as `api_request`: SendFailed → Err (JS "network"), a hung upstream
+    // → 504 (distinct from a connect failure). Empty body — the JS avatar cache treats non-2xx as a
+    // graceful miss.
+    let upstream = match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
+        Ok(r) => r,
+        Err(HeadersError::SendFailed(e)) => {
             warn!("media_request {target} send failed: {e}");
             return Err(format!("media_request send: {e}"));
         }
-        Err(_) => {
-            warn!("media_request {target} timed out");
-            return Err(format!("media_request timeout: {target}"));
+        Err(HeadersError::Timeout) => {
+            warn!("media_request {target} headers timed out → 504");
+            return Ok(MediaRequestResult { status: 504, content_type: None, body: vec![] });
         }
     };
     let status = upstream.status().as_u16();
@@ -818,6 +877,37 @@ fn sha256_hex(bytes: &[u8]) -> String {
     out
 }
 
+/// Current time as ISO-8601 UTC `YYYY-MM-DDTHH:MM:SS.mmmZ`, dependency-free (chrono/time are only
+/// transitive deps). Used by the log formatter — see the `.format(...)` note on the log Builder.
+fn iso_utc_now() -> String {
+    let dur = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let secs = dur.as_secs();
+    let ms = dur.subsec_millis();
+    let sod = secs.rem_euclid(86_400); // seconds-of-day
+    let days = (secs / 86_400) as i64; // days since 1970-01-01
+    // Howard Hinnant's civil_from_days — days since Unix epoch → (year, month, day).
+    let z = days + 719_468;
+    let era = (if z >= 0 { z } else { z - 146_096 }) / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        year,
+        m,
+        d,
+        sod / 3600,
+        (sod / 60) % 60,
+        sod % 60,
+        ms,
+    )
+}
+
 /// Append one `name` → `bytes` entry to the in-memory tar (mode 0644; size set explicitly so the entry
 /// is well-formed regardless of the reader's reported length).
 fn tar_add_file(
@@ -833,11 +923,15 @@ fn tar_add_file(
 }
 
 /// Build the diagnostic bundle (gzip tar): `manifest.json` + `rust/<each app_log_dir file>` +
-/// `webview-console.log`. Returns the compressed bytes.
+/// `webview-console.log` + (when present) `native/kotlin.log`. Returns the compressed bytes. The three
+/// payloads are non-overlapping by layer (JS console / Rust files / Kotlin native log): Rust is no longer
+/// mirrored into the JS console, so there is no cross-layer duplication — correlation happens at view time
+/// in the debug panel, not capture time.
 fn build_diagnostics_bundle(
     log_dir: &Path,
     console_dump: &str,
     manifest: &serde_json::Value,
+    native_log: Option<&[u8]>,
 ) -> std::io::Result<Vec<u8>> {
     let manifest_json = serde_json::to_vec_pretty(manifest).unwrap_or_else(|_| b"{}".to_vec());
     let mut tar_buf: Vec<u8> = Vec::new();
@@ -845,6 +939,14 @@ fn build_diagnostics_bundle(
         let mut builder = tar::Builder::new(&mut tar_buf);
         tar_add_file(&mut builder, "manifest.json", &manifest_json)?;
         tar_add_file(&mut builder, "webview-console.log", console_dump.as_bytes())?;
+        // The Kotlin `native.log` (Android DEBUG builds only — `SomsLog` is BuildConfig.DEBUG-gated and
+        // writes to filesDir/soms-native.log). Absent on desktop + release; skipped silently so the bundle
+        // stays layered without forcing every platform to produce one.
+        if let Some(bytes) = native_log {
+            if !bytes.is_empty() {
+                tar_add_file(&mut builder, "native/kotlin.log", bytes)?;
+            }
+        }
         // Every regular file in the log dir (the tauri-plugin-log SOMS.log + its rotations). Robust to the
         // rotation naming; the dir is dedicated to this app's logs, so including all of it is safe.
         if let Ok(entries) = fs::read_dir(log_dir) {
@@ -990,7 +1092,15 @@ async fn report_diagnostics(
     } else {
         console_dump
     };
-    let bundle = build_diagnostics_bundle(&log_dir, &console, &manifest)
+    // The Kotlin native log lives under the app-internal data dir (Android `filesDir` resolves to Tauri's
+    // `app_data_dir`). Absent on desktop + release → None → the bundle omits the native/ entry. Best-effort:
+    // a missing/unreadable file is not a diagnostics failure.
+    let native_log: Option<Vec<u8>> = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .and_then(|d| fs::read(d.join("soms-native.log")).ok());
+    let bundle = build_diagnostics_bundle(&log_dir, &console, &manifest, native_log.as_deref())
         .map_err(|e| format!("build bundle: {e}"))?;
     let digest = sha256_hex(&bundle);
     let tar_path = cache_dir.join(format!("{DIAG_PENDING_PREFIX}{digest}.tar.gz"));
@@ -1010,6 +1120,82 @@ async fn report_diagnostics(
     let _ = fs::remove_file(&tar_path);
     let _ = fs::remove_file(&manifest_path);
     Ok(id)
+}
+
+// --- native log tail (debug panel) ---------------------------------------------------------
+
+/// Which native log the debug panel tails. `Rust` = the tauri-plugin-log file under `app_log_dir`;
+/// `Kotlin` = the Android `filesDir/soms-native.log` written by `SomsLog` (DEBUG builds only).
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum NativeLogSource {
+    Rust,
+    Kotlin,
+}
+
+/// The tailed native log returned to the debug panel.
+#[derive(serde::Serialize)]
+struct NativeLogTail {
+    /// Absolute path read (for the panel's "which file was this" debug). Empty when the source has no file.
+    path: String,
+    /// The last `tail_lines` lines (UTF-8 lossy). Empty when the source is absent on this platform.
+    content: String,
+}
+
+/// The last `n` newline-delimited lines of `text` (joined by `\n`); `n == 0` or empty text → "".
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].join("\n")
+}
+
+/// The most-recently-modified regular file in `dir` — the active log being appended (robust to the
+/// tauri-plugin-log rotation naming, which is not hardcoded here). None when the dir has no files.
+fn newest_file(dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<(PathBuf, SystemTime)> = None;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                continue;
+            }
+            if let Ok(m) = entry.metadata().and_then(|meta| meta.modified()) {
+                if best.as_ref().map(|(_, t)| &m > t).unwrap_or(true) {
+                    best = Some((entry.path(), m));
+                }
+            }
+        }
+    }
+    best.map(|(p, _)| p)
+}
+
+/// Tail a native log for the debug panel (Settings→About 7-tap gesture → FAB → overlay). Reads ONLY the
+/// active `tauri-plugin-log` file in `app_log_dir` (rust) or `app_data_dir/soms-native.log` (kotlin) — BY
+/// NAME, never a caller-supplied path — so this cannot be used as a generic file-read surface. A
+/// missing/unreadable file returns `{ path: "", content: "" }`; the panel renders the source as "n/a".
+#[tauri::command]
+fn read_native_log(
+    app: tauri::AppHandle,
+    source: NativeLogSource,
+    tail_lines: usize,
+) -> Result<NativeLogTail, String> {
+    let path: Option<PathBuf> = match source {
+        NativeLogSource::Rust => app.path().app_log_dir().ok().and_then(|d| newest_file(&d)),
+        NativeLogSource::Kotlin => app
+            .path()
+            .app_data_dir()
+            .ok()
+            .map(|d| d.join("soms-native.log"))
+            .filter(|p| p.exists()),
+    };
+    let Some(path) = path else {
+        return Ok(NativeLogTail { path: String::new(), content: String::new() });
+    };
+    let bytes = fs::read(&path).unwrap_or_default();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Ok(NativeLogTail {
+        path: path.to_string_lossy().into_owned(),
+        content: last_lines(&text, tail_lines),
+    })
 }
 
 // --- frontend-facing commands (origin + token) --------------------------------------------
@@ -1727,6 +1913,66 @@ mod origin_tests {
         assert!(origin_host_is_ip("https://[::1]:8443"));
         assert!(!origin_host_is_ip("https://example.com"));
         assert!(!origin_host_is_ip("garbage"));
+    }
+}
+
+// send_with_headers_deadline — the bounded-headers send shared by api_request + media_request. The
+// contract that matters: a connected-but-silent upstream yields `HeadersError::Timeout` (→ HTTP 504),
+// NOT a connect failure. Driven with a real socket so no mock-server crate is needed — just std::net
+// + a thread that accepts then holds the connection open without responding.
+#[cfg(test)]
+mod headers_deadline_tests {
+    use super::*;
+
+    /// A peer that completes the TCP handshake then never sends a byte — reqwest is "connected" but
+    /// waits for headers that never arrive, so the deadline fires.
+    struct SilentPeer {
+        _addr: std::net::SocketAddr,
+        _thread: std::thread::JoinHandle<()>,
+    }
+
+    impl SilentPeer {
+        fn spawn() -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let addr = listener.local_addr().unwrap();
+            // Accept and then hold the socket open without responding: `io::copy` from the stream blocks
+            // until the client closes (which happens when the deadline drops the reqwest future), so the
+            // thread ends cleanly with the test — no leak.
+            let thread = std::thread::spawn(move || {
+                if let Ok((mut stream, _)) = listener.accept() {
+                    let _ = std::io::copy(&mut stream, &mut std::io::sink());
+                }
+            });
+            Self { _addr: addr, _thread: thread }
+        }
+    }
+
+    #[tokio::test]
+    async fn deadline_yields_timeout_when_upstream_accepts_but_never_responds() {
+        let peer = SilentPeer::spawn();
+        let client = reqwest::Client::new();
+        let url = format!("http://{}/", peer._addr);
+        let outcome = send_with_headers_deadline(client.get(&url), Duration::from_millis(200)).await;
+        assert!(
+            matches!(outcome, Err(HeadersError::Timeout)),
+            "a silent upstream past the deadline must be Timeout (→504), got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn deadline_yields_send_failed_for_an_unreachable_host() {
+        // A port with no listener on the loopback → ECONNREFUSED at connect (a SendFailed, NOT a Timeout)
+        // — this is the case that must stay an `Err` (→ JS "network"), proving the 504 path is gated to
+        // connected-but-silent only. Bind+drop to claim a free port, then connect to the now-closed port.
+        let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        // (listener dropped here — port closed)
+        let client = reqwest::Client::new();
+        let url = format!("http://{addr}/");
+        let outcome = send_with_headers_deadline(client.get(&url), Duration::from_secs(2)).await;
+        assert!(
+            matches!(outcome, Err(HeadersError::SendFailed(_))),
+            "an unreachable host must be SendFailed (→network), not Timeout, got {outcome:?}"
+        );
     }
 }
 

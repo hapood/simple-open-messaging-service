@@ -8,7 +8,6 @@ import type { StandardResponse } from './model';
 export interface NotifActionReport {
   tag: string;
   actionId: string;
-  threadIds?: number[];
   threadId?: number;
   seq?: number;
   replyText?: string;

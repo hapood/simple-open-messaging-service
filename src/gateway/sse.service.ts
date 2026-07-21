@@ -2,6 +2,8 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
+import { PrismaService } from '../prisma.service.js';
+import { MessageService } from '../message/message.service.js';
 
 /**
  * Group-lifecycle SSE event names. Carried on every group frame so the frontend dispatches by
@@ -45,6 +47,11 @@ interface SseClient {
 export class SseService implements OnModuleDestroy {
   private readonly clients: Record<number, SseClient[]> = {};
 
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly messages: MessageService,
+  ) {}
+
   /**
    * Register one SSE connection (GET /events): the SSE headers, the `: connected` flush, and the 25s
    * named-ping heartbeat are in common/sse-stream.ts (one source of truth — the same wire format the
@@ -67,6 +74,30 @@ export class SseService implements OnModuleDestroy {
       if (idx !== -1) list.splice(idx, 1);
       if (list.length === 0) delete this.clients[userId];
     });
+
+    // The connect handshake: push HELLO (the user's newest message cursor + the friend-list revision) to THIS
+    // connection only. The cursor is the client's `to` (the missed-summary walk's pinned upper bound); the
+    // revision lets it pull a thread-list delta if stale. Fire-and-forget — a transient failure just means no
+    // HELLO this connect (the next live NEW_MESSAGE signal re-establishes `to`).
+    void this.sendHello(userId, entry);
+  }
+
+  /** Push the HELLO handshake to one connection (the just-registered one). Best-effort: a racing close or a
+   *  DB failure is swallowed (never throws on the connect path). */
+  private async sendHello(userId: number, entry: SseClient): Promise<void> {
+    try {
+      const [latestMessage, user] = await Promise.all([
+        this.messages.findNewestForUser(userId),
+        this.prisma.user.findUnique({ where: { id: userId }, select: { threadRevision: true } }),
+      ]);
+      const frame = formatSseFrame('HELLO', {
+        latestMessage, // { threadId, seq, ts } | null — the client's `to` (null when the user has no messages)
+        threadRevision: user?.threadRevision ?? 0, // the friend-list version (pull query-thread/delta if stale)
+      });
+      if (!entry.res.writableEnded) entry.res.write(frame);
+    } catch {
+      /* best-effort — the connect path must never throw */
+    }
   }
 
   /** True iff the user currently has ≥1 live SSE connection. Used by PushService to skip FCM
@@ -113,10 +144,10 @@ export class SseService implements OnModuleDestroy {
    * false) is not handled here — left for the next frame / heartbeat to detect the drop. When the
    * user's connection list empties, its slot is deleted.
    */
-  private pushToUser(userId: number, eventName: string, data: unknown, id?: string | number): void {
+  private pushToUser(userId: number, eventName: string, data: unknown): void {
     const list = this.clients[userId];
     if (!list || list.length === 0) return;
-    const frame = formatSseFrame(eventName, data, id);
+    const frame = formatSseFrame(eventName, data);
     for (let i = list.length - 1; i >= 0; i--) {
       const { res } = list[i];
       try {

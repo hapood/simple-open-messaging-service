@@ -13,8 +13,9 @@ import type { ReportActionDto } from '../dto/notification.dto.js';
  * the descriptor's `actions[]` buttons (mark-all-read, reply). The handler reuses the SAME pipelines the
  * interactive UI uses, so an action taken from the shade has identical semantics + fan-out to one taken
  * in-app:
- *  - `mark-all-read` → `ThreadParticipantService.advanceReadCursor` per covered thread + an
- *    `onReadCursor` SSE frame (multi-device badge sync), exactly like `POST /thread/mark-read`;
+ *  - `mark-all-read` → resolve the descriptor's HWM cursor `(threadId, seq)` to its global id, then advance
+ *    every active thread's read cursor up to that ceiling + an `onReadCursor` SSE frame per thread that
+ *    moved (multi-device badge sync), exactly like `POST /thread/mark-read`;
  *  - `reply`        → `MessageService.writeMsgToThread` (PURE_TEXT) + `MessageFanoutService.dispatch`
  *    (seq allocation + SSE/push/federation fan-out), exactly like `POST /send-message`;
  *  - `open` / unknown → no-op (body-tap telemetry; the client opens the thread itself).
@@ -40,8 +41,14 @@ export class NotificationActionService {
     try {
       switch (dto.actionId) {
         case 'mark-all-read': {
-          const threadIds = dto.threadIds ?? (dto.threadId != null ? [dto.threadId] : []);
-          await this.markAllRead(userId, threadIds);
+          // The descriptor's HWM cursor (threadId, seq) = the newest message the away-summary covered. The
+          // server resolves it to its global id (the ceiling) and marks every active thread read up to that
+          // ceiling — exactly the covered set, with NO client-supplied thread list (so no truncation at the
+          // 1000-sample cap that bounded the summary body). A missing cursor is a no-op (defensive; the
+          // descriptor always carries one for a `message-summary`).
+          if (dto.threadId != null && dto.seq != null) {
+            await this.markAllRead(userId, dto.threadId, dto.seq);
+          }
           return;
         }
         case 'reply': {
@@ -58,23 +65,21 @@ export class NotificationActionService {
     }
   }
 
-  /** Mark every covered thread read (advance the per-user read cursor to the thread's newest message) +
-   *  fan an `onReadCursor` SSE frame to the caller's OTHER online devices so their badge clears. Skips
-   *  threads the caller is not an active participant of. */
-  private async markAllRead(userId: number, threadIds: number[]): Promise<void> {
-    for (const threadId of threadIds) {
-      const thread = await this.messageService.findThread(threadId);
-      const last = thread?.lastMessageSeq ?? null;
-      if (last === null) continue; // empty thread — nothing to mark
-      const p = await this.participantService.findParticipant(userId, threadId);
-      if (!p || p.leftAt !== null) continue; // not an active member — skip
-      const moved = await this.participantService.advanceReadCursor(userId, threadId, last);
+  /** Mark every active thread read up to the HWM cursor `(threadId, seq)`: resolve the cursor to its global
+   *  id (the ceiling), then advance each active thread's per-user read cursor to that thread's newest message
+   *  at or below the ceiling, fanning an `onReadCursor` SSE frame per thread whose cursor moved (multi-device
+   *  badge sync). HWM-scoped: a message that arrived AFTER the summary was built stays unread (its id > the
+   *  ceiling). Membership is enforced by the query's `leftAt IS NULL` join — the server re-derives the active
+   *  set itself and never trusts a client-supplied thread list. */
+  private async markAllRead(userId: number, threadId: number, seq: number): Promise<void> {
+    const [cursor] = await this.messageService.findMessagesBySeqPairs([{ threadId, seq }]);
+    if (!cursor) return; // unresolvable cursor (stale/foreign) — no-op
+    const targets = await this.messageService.maxReadSeqByThreadUpTo(userId, cursor.id);
+    for (const [tid, lastSeq] of targets) {
+      const moved = await this.participantService.advanceReadCursor(userId, tid, lastSeq);
       if (moved) {
         // The advanceReadCursor "did it move?" return suppresses the frame for an idempotent/stale mark.
-        this.sse.onReadCursor(
-          userId,
-          serializeBody({ threadId, lastReadSeq: last }),
-        );
+        this.sse.onReadCursor(userId, serializeBody({ threadId: tid, lastReadSeq: lastSeq }));
       }
     }
   }

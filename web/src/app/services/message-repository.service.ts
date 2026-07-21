@@ -258,22 +258,28 @@ export class MessageRepository {
     if (seq > cur) this.maxSeenSeq.set(threadId, seq);
   }
 
-  /** The newest cached message for a thread (highest seq), or undefined when none is cached / IDB is
-   *  unavailable. (Kept for any caller that wants the local newest; the threadlist no longer derives a
-   *  preview from it.) */
-  async getNewestMessage(threadId: number): Promise<Message | undefined> {
+  /** The newest cached message (highest seq) for EACH threadId, fetched in ONE read transaction: one reverse
+   *  cursor per thread on a shared transaction (the first entry in `[threadId, *]` desc is that thread's
+   *  highest seq). The local-first source {@link ThreadRepository.hydratePreviews} derives every list preview
+   *  from in a single pass — O(threadIds) first-entry reads on one transaction, never N independent lookups
+   *  and never a full-table scan. Threads with no cached message are simply absent from the map. */
+  async getNewestMessages(threadIds: number[]): Promise<Map<number, Message>> {
+    const out = new Map<number, Message>();
+    if (threadIds.length === 0) return out;
     try {
-      const db = await this.webdb.db();
-      // Composite-key range [threadId, *], cursor backwards → the first entry is the highest seq.
-      const cursor = await db
-        .transaction('messages')
-        .store.openCursor(
-          IDBKeyRange.bound([threadId, -Infinity], [threadId, Infinity]),
-          'prev',
-        );
-      return cursor?.value;
+      const tx = (await this.webdb.db()).transaction('messages', 'readonly');
+      await Promise.all(
+        threadIds.map(async (tid) => {
+          const cursor = await tx.store.openCursor(
+            IDBKeyRange.bound([tid, -Infinity], [tid, Infinity]),
+            'prev',
+          );
+          if (cursor?.value) out.set(tid, cursor.value);
+        }),
+      );
+      return out;
     } catch {
-      return undefined;
+      return out;
     }
   }
 

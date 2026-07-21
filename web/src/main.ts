@@ -3,7 +3,7 @@ import { appConfig } from './app/app.config';
 import { AppComponent } from './app/app.component';
 import { installKeyboardInsetBridge } from './app/services/keyboard-inset.service';
 import { installConsoleBuffer } from './app/services/log-buffer';
-import { applySafeInsets, isTauri, listenEvent } from './app/services/runtime';
+import { applySafeInsets } from './app/services/runtime';
 
 /**
  * Install window-level listeners that surface errors no local handler caught into the webview console —
@@ -40,47 +40,14 @@ function installGlobalErrorReporting(): void {
   });
 }
 
-/**
- * Under the Tauri shell, attach a listener that re-emits every Rust-side log into the webview console,
- * dispatched by level — so Rust-side failures (SSE connect errors, upstream proxy failures, panics) land
- * in the SAME console the JS errors do (visible via edge://inspect / `adb logcat`). This replicates
- * `@tauri-apps/plugin-log`'s `attachConsole()` WITHOUT pulling that npm package in — it rides the raw
- * `window.__TAURI__.event.listen` surface via the existing `listenEvent` wrapper, keeping the browser
- * build free of @tauri-apps deps (the whole reason runtime.ts avoids them).
- *
- * The Rust `tauri-plugin-log` Webview target emits each record on the `log://log` event as
- * `{ level: 1..5, message }` (1=Trace … 5=Error); `message` may carry ANSI color codes the file/stdout
- * sinks use, so they're stripped here (mirroring the upstream plugin). No-op outside the shell. Fired
- * before bootstrap; the SSE supervisor starts during app construction (before this attaches), so its
- * very first logs may be missed — later reconnects and all proxy failures are captured.
- */
-async function attachRustConsole(): Promise<void> {
-  if (!isTauri()) return;
-  await listenEvent<{ level: number; message: string }>('log://log', (e) => {
-    // Rust log levels (tauri-plugin-log): Trace=1, Debug=2, Info=3, Warn=4, Error=5. Unknown → error
-    // (safest — never silently drop a record).
-    const fn: 'log' | 'debug' | 'info' | 'warn' | 'error' =
-      e.payload.level === 1 ? 'log'
-        : e.payload.level === 2 ? 'debug'
-        : e.payload.level === 3 ? 'info'
-        : e.payload.level === 4 ? 'warn'
-        : 'error';
-    // Strip ANSI escape codes the file/stdout sinks may have baked into the message.
-    const msg = e.payload.message.replace(
-      /[\u001b\u009b][[()#;?]*(?:[0-9]{1,4}(?:;[0-9]{0,4})*)?[0-9A-ORZcf-nqry=><]/g,
-      '',
-    );
-    console[fn](`[rust] ${msg}`);
-  });
-}
-
 // Capture the webview console into a ring buffer FIRST (before anything logs), so the diagnostic bundle
-// (Settings → Report → Rust report_diagnostics) carries a JS-side slice. Idempotent + no-op if unavailable.
+// (Settings → Report → Rust report_diagnostics) carries a PURE JS slice, and the debug log panel has the
+// JS leg of its 3-layer view. Idempotent + no-op if unavailable. Rust logs are no longer mirrored into the
+// console here — the bundle carries them full-fidelity in `rust/SOMS.log` and the panel tails them via
+// `read_native_log`, so re-emitting would only double-capture (and pollute the JS console at JS levels).
 installConsoleBuffer();
 // Wire the global error net so it captures anything the setup below throws or rejects.
 installGlobalErrorReporting();
-// Then mirror Rust-side logs into this same console (SSE/proxy/panic failures) under Tauri.
-attachRustConsole();
 
 // Apply native system-bar insets (Android WebView: status-bar height from the Kotlin SomsShell bridge)
 // to :root BEFORE bootstrap, so the first paint already has --soms-safe-top (FOUC-free). No-op in the

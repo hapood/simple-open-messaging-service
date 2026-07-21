@@ -1,13 +1,12 @@
 import type { SupportedLocale } from '../common/locale.js';
-import { buildSummaryBody, buildSummaryTitle, actionLabel } from './notif-i18n.js';
 
 /**
  * The notification descriptor — the server-authored presentation + content contract every client renders.
  * Mirrors the Web Notifications API `NotificationOptions` shape so each client maps it 1:1 onto its native
  * notification API (Web `showNotification`, Android `NotificationCompat.Builder`, Tauri bridge), and adds a
- * SOMS-specific `kind` discriminator + routing `data`. This is the single source of truth the three
- * divergent client composers (`sw-push.js` `composeText`, Kotlin `composeAwayText`, `notif-text.ts`
- * `buildAwayBody`) collapse into.
+ * SOMS-specific `kind` discriminator + routing `data`. This is the single source of truth — the server
+ * authors the copy once, where previously each client composed its own notification text (the Web service
+ * worker, the Kotlin foreground service) and the wording drifted across platforms.
  *
  * Design (see the approved plan): the wake-up push signal stays identity-only; the client pulls
  * `/notifications/missed` and renders the descriptor(s) verbatim. The backend decides both WHAT the
@@ -61,67 +60,9 @@ export interface NotificationDescriptor {
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]` (actions land in a later phase). */
   actions: NotifAction[];
-  /** Routing payload, opaque to the server. `message-summary` carries the covered `threadIds` (for a future
-   *  mark-all-read action); a future `single-message` would carry one `threadId` + `seq`. */
-  data: { threadIds?: number[]; threadId?: number; seq?: number; [k: string]: unknown };
-}
-
-/** The input row for the summary composer — a thread's folded display name + unread tally + mute flag.
- *  {@link NotificationQueryService} produces these (its `MissedThreadItem` satisfies this shape); the
- *  composer filters unread+unmuted itself. The sender avatar/userId are NOT here — the icon is composited
- *  separately by `AvatarStackService` (called by the query service) and passed in as `iconUrl`. */
-export interface DescriptorItem {
-  displayName: string;
-  unreadCount: number;
-  muted: boolean;
-  threadId: number;
-}
-
-/** Build the descriptor list for the away-summary from a page of thread items. Returns EXACTLY ONE
- *  descriptor:
- *  - `kind:'clear'` (cancel the tagged notification) when no thread is unread+unmuted;
- *  - `kind:'message-summary'` (the folded body + composited icon) otherwise.
- *
- * `iconUrl` is the pre-composited stacked-avatar URL (or null) — the composer does not composite itself;
- * `NotificationQueryService` calls `AvatarStackService` with the unread+unmuted senders and passes the
- * result here. `renotify` lets the caller quiet updates (e.g. a debounce re-pull mid-burst).
- */
-export function composeMessageSummaryDescriptors(
-  items: DescriptorItem[],
-  opts: { locale: SupportedLocale; iconUrl: string | null; renotify: boolean },
-): NotificationDescriptor[] {
-  const away = items.filter((i) => i.unreadCount > 0 && !i.muted);
-  if (away.length === 0) {
-    return [
-      {
-        tag: AWAY_SUMMARY_TAG,
-        kind: 'clear',
-        title: '',
-        body: '',
-        lang: opts.locale,
-        icon: null,
-        renotify: false,
-        actions: [],
-        data: {},
-      },
-    ];
-  }
-  const body = buildSummaryBody(away, opts.locale);
-  const threadIds = away.map((i) => i.threadId);
-  return [
-    {
-      tag: AWAY_SUMMARY_TAG,
-      kind: 'message-summary',
-      title: buildSummaryTitle(opts.locale),
-      body,
-      lang: opts.locale,
-      icon: opts.iconUrl,
-      renotify: opts.renotify,
-      // The coalesced summary spans multiple threads, so only a summary-level action applies: mark every
-      // covered thread read (the data.threadIds carry them). One action stays within Web Push's 2-action
-      // mobile-Chrome cap. Per-thread reply belongs to a future `single-message` kind.
-      actions: [{ id: 'mark-all-read', title: actionLabel('mark-all-read', opts.locale) }],
-      data: { threadIds },
-    },
-  ];
+  /** Routing payload, opaque to the server. `message-summary` carries the HWM cursor `(threadId, seq)` — the
+   *  newest message the summary covers; the client advances its high-water mark to it on `mark-all-read`, and
+   *  the server clears every active thread (it re-derives the set itself, so no sampled thread list is sent).
+   *  A future `single-message` kind would carry one `threadId` + `seq` to identify its message. */
+  data: { threadId?: number; seq?: number; [k: string]: unknown };
 }

@@ -78,28 +78,37 @@ function distinctNames(items: SummaryItem[]): string[] {
  *  - count = the total unread messages across all of them (NOT the thread count);
  *  - template chosen by sender count (1 / 2 / 3+) and, for a lone sender, the 1-vs-many plural.
  *
+ * `overflow=true` (the backend sampled ≥1000 messages since the HWM) replaces the count with the capped
+ * "999+" display — the exact total is unknown beyond the sample, and "999+" is the universal chat-app
+ * convention. Overflow implies ≥1000 messages so the lone-sender `one` template never applies.
+ *
  * Returns the empty string only when there is nothing to summarize (no unread items) — the caller turns
  * that into a `kind:'clear'` descriptor (cancel the prior notification) rather than posting an empty body.
  */
-export function buildSummaryBody(items: SummaryItem[], locale: SupportedLocale): string {
+export function buildSummaryBody(
+  items: SummaryItem[],
+  locale: SupportedLocale,
+  overflow = false,
+): string {
   const total = items.reduce((sum, it) => sum + (it.unreadCount > 0 ? it.unreadCount : 0), 0);
   if (total <= 0) return '';
+  const count: string | number = overflow ? '999+' : total;
   const t = TEMPLATES[locale] ?? TEMPLATES['en'];
   const names = distinctNames(items);
-  if (names.length === 0) return fill(t.many, { name: '', count: total });
+  if (names.length === 0) return fill(t.many, { name: '', count });
   if (names.length === 1) {
-    return total === 1
+    return total === 1 && !overflow
       ? fill(t.one, { name: names[0] })
-      : fill(t.many, { name: names[0], count: total });
+      : fill(t.many, { name: names[0], count });
   }
   if (names.length === 2) {
-    return fill(t.two, { a: names[0], b: names[1], count: total });
+    return fill(t.two, { a: names[0], b: names[1], count });
   }
   return fill(t.manyConv, {
     a: names[0],
     b: names[1],
     extra: names.length - NAME_CAP,
-    count: total,
+    count,
   });
 }
 

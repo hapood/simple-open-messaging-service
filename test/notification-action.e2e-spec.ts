@@ -56,7 +56,14 @@ describe('notifications/action (descriptor button round-trip)', () => {
         { userId: peerId, threadId },
       ],
     });
-    // One unread message from Alice (no lastReadSeq → unread).
+    // seq 0 = the recipient's own outgoing message (the high-water mark before backgrounding); seq 1 =
+    // Alice's reply that arrives while away. /notifications/missed is pulled with since = seq 0.
+    await prisma.message.create({
+      data: {
+        threadId, seq: 0, originSeq: 0, contentType: ContentType.PURE_TEXT,
+        content: 'yo', creator: recipientId, createdAt: new Date(Date.now() - 1000),
+      },
+    });
     await prisma.message.create({
       data: {
         threadId, seq: 1, originSeq: 1, contentType: ContentType.PURE_TEXT,
@@ -73,30 +80,32 @@ describe('notifications/action (descriptor button round-trip)', () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/notifications/missed')
       .set(auth())
-      .send({ take: 50 });
+      .send({ since: { threadId, seq: 0 } });
     const d = res.body.data.notifications[0];
     expect(d.kind).toBe('message-summary');
+    expect(d.body).toBe('Alice sent you a message');
     expect(d.actions).toEqual([{ id: 'mark-all-read', title: 'Mark all read' }]);
-    expect(d.data.threadIds).toEqual([threadId]);
+    // The descriptor carries the HWM cursor (the newest covered message = Alice's seq-1 reply), not a thread list.
+    expect(d.data).toEqual({ threadId, seq: 1 });
   });
 
-  it('mark-all-read advances the read cursor → the thread is no longer unread', async () => {
-    // Before: 1 unread (seq 1, no lastReadSeq).
+  it('mark-all-read advances the read cursor (the descriptor stays since-HWM — the shade is dismissed client-side, not by a descriptor flip)', async () => {
     const before = await request(app.getHttpServer())
-      .post('/api/v1/notifications/missed').set(auth()).send({ take: 50 });
+      .post('/api/v1/notifications/missed').set(auth()).send({ since: { threadId, seq: 0 } });
     expect(before.body.data.notifications[0].kind).toBe('message-summary');
 
     const act = await request(app.getHttpServer())
       .post('/api/v1/notifications/action')
       .set(auth())
-      .send({ tag: 'soms-away', actionId: 'mark-all-read', threadIds: [threadId] });
+      .send({ tag: 'soms-away', actionId: 'mark-all-read', threadId, seq: 1 });
     expect(act.body.code).toBe(0);
 
-    // After: the thread is read → the away descriptor flips to clear.
+    // mark-all-read advances the SERVER read cursor (the in-app badge drops). The shade descriptor itself
+    // is since-HWM (unaffected by the read cursor) — a re-pull still carries the summary; the shade is
+    // dismissed CLIENT-side on the action / on focus, not by a server descriptor flip to clear.
     const after = await request(app.getHttpServer())
-      .post('/api/v1/notifications/missed').set(auth()).send({ take: 50 });
-    expect(after.body.data.notifications[0].kind).toBe('clear');
-    // And the DB read cursor advanced to seq 1.
+      .post('/api/v1/notifications/missed').set(auth()).send({ since: { threadId, seq: 0 } });
+    expect(after.body.data.notifications[0].kind).toBe('message-summary');
     const p = await prisma.threadParticipant.findFirst({
       where: { userId: recipientId, threadId },
     });
@@ -110,11 +119,12 @@ describe('notifications/action (descriptor button round-trip)', () => {
       .send({ tag: 'soms-msg', actionId: 'reply', threadId, replyText: '  thanks  ' });
     expect(act.body.code).toBe(0);
 
-    // A new message row exists: seq 2, creator = recipient, content trimmed.
+    // A new message row exists: seq 2, creator = recipient, content trimmed. (seq 0 = the recipient's HWM
+    // baseline, seq 1 = Alice's reply, seq 2 = this inline reply.)
     const msgs = await prisma.message.findMany({
       where: { threadId }, orderBy: { seq: 'asc' },
     });
-    expect(msgs.map((m) => m.seq)).toEqual([1, 2]);
+    expect(msgs.map((m) => m.seq)).toEqual([0, 1, 2]);
     const reply = msgs.find((m) => m.seq === 2)!;
     expect(reply.creator).toBe(recipientId);
     expect(reply.contentType).toBe(ContentType.PURE_TEXT);

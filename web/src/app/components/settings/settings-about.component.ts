@@ -6,6 +6,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoPipe, TranslocoService } from '@jsverse/transloco';
 import { apiOrigin, apiOriginIsEmpty, isTauri, listenEvent } from '../../services/runtime';
 import { ShellUpdateService } from '../../services/shell-update.service';
+import { DebugToolsService } from '../../services/debug-tools.service';
 import { appVersion } from '../../version';
 
 /** Byte-progress payload Rust emits as `web-download-progress` while streaming the web bundle. */
@@ -37,7 +38,9 @@ interface DownloadProgress {
           </mat-list-item>
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.version' | transloco }}</span>
-            <span matListItemMeta class="meta">{{ appVersion }}</span>
+            <!-- Hidden debug-tools entry: 7 quick taps toggle the log panel's runtime gate (no-op in dev
+                 builds, where it is already on). No visual affordance by design. -->
+            <span matListItemMeta class="meta" (click)="debug.bumpGesture()">{{ appVersion }}</span>
           </mat-list-item>
           @if (showBackend) {
             <mat-list-item>
@@ -89,6 +92,8 @@ export class SettingsAboutComponent {
   private readonly snackBar = inject(MatSnackBar);
   private readonly transloco = inject(TranslocoService);
   private readonly destroyRef = inject(DestroyRef);
+  /** Hidden debug-tools gesture target (7-tap toggle of the log panel gate). Public for the template. */
+  readonly debug = inject(DebugToolsService);
 
   readonly appVersion = appVersion;
   /** The version + update rows are only meaningful under Tauri (where the origin/server is configured). */

@@ -9,6 +9,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.os.Build
 import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import com.google.firebase.messaging.FirebaseMessagingService
@@ -97,8 +98,13 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  push, the WorkManager poll, the RealtimeService debounced background coalesce). Null on any
          *  failure (auth/network/parse) — callers simply skip rendering. */
         fun fetchDescriptors(ctx: Context): List<NotifDescriptor>? {
-            val token = SomsSecureStore.getSessionToken(ctx) ?: return null
-            val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
+            val token = SomsSecureStore.getSessionToken(ctx)
+            val origin = SomsSecureStore.getApiOrigin(ctx)
+            SomsLog.d("Notif") { "fetchDescriptors tokenPresent=${token != null} originPresent=${origin != null}" }
+            if (token == null || origin == null) {
+                SomsLog.w("Notif") { "fetchDescriptors abort: missing creds (token=${token != null} origin=${origin != null})" }
+                return null
+            }
             val body = JSONObject().put("take", 50).toString()
             val locale = java.util.Locale.getDefault().toLanguageTag()
             val request = Request.Builder()
@@ -109,18 +115,36 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .build()
             return try {
                 HTTP.newCall(request).execute().use { resp ->
-                    if (!resp.isSuccessful) return null
-                    NotifDescriptor.parseList(resp.body?.string() ?: return null)
+                    val raw = resp.body?.string()
+                    SomsLog.d("Notif") { "fetchDescriptors code=${resp.code} bodyLen=${raw?.length ?: -1}" }
+                    if (!resp.isSuccessful) {
+                        SomsLog.w("Notif") { "fetchDescriptors non-2xx code=${resp.code} → null" }
+                        return null
+                    }
+                    val list = NotifDescriptor.parseList(raw ?: return null)
+                    SomsLog.d("Notif") { "fetchDescriptors parsed=${list.size} kinds=${list.map { it.kind }}" }
+                    list
                 }
             } catch (e: Exception) {
+                SomsLog.w("Notif", e) { "fetchDescriptors exception ${e.javaClass.simpleName}: ${e.message}" }
                 null
             }
         }
 
-        /** FCM-path convenience: fetch the descriptors, then render them. The single entry point for all
-         *  three background paths (FCM / WorkManager / RealtimeService-background). */
+        /** Fetch the descriptors then render them — the single entry point for all three background paths
+         *  (FCM / WorkManager / RealtimeService-background). Does a SYNCHRONOUS network fetch
+         *  ([fetchDescriptors] → OkHttp `execute`), so the caller MUST be off the main thread: FCM's
+         *  onMessageReceived and WorkManager's doWork already are; RealtimeService hops via its ioExecutor. */
         fun renderAwayNotification(ctx: Context) {
-            val descriptors = fetchDescriptors(ctx) ?: return
+            val descriptors = fetchDescriptors(ctx)
+            if (descriptors == null) {
+                SomsLog.w("Notif") { "renderAwayNotification: fetchDescriptors=null → skip" }
+                return
+            }
+            if (descriptors.isEmpty()) {
+                SomsLog.d("Notif") { "renderAwayNotification: descriptors empty → skip" }
+                return
+            }
             renderDescriptors(ctx, descriptors)
         }
 
@@ -128,10 +152,32 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  [AWAY_NOTIF_ID] (replacing any prior one). A `kind:"clear"` descriptor cancels it. */
         fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>) {
             ensureChannel(ctx)
-            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
+            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: run {
+                SomsLog.w("Notif") { "renderDescriptors: NotificationManager unavailable → skip" }
+                return
+            }
             // The server emits exactly one descriptor for the away-summary (message-summary, or clear when
             // nothing is unread+unmuted). Render the first; a clear cancels.
-            val d = descriptors.firstOrNull() ?: run { nm.cancel(AWAY_NOTIF_ID); return }
+            val d = descriptors.firstOrNull() ?: run {
+                SomsLog.d("Notif") { "renderDescriptors: firstOrNull null → cancel AWAY" }
+                nm.cancel(AWAY_NOTIF_ID); return
+            }
+            // Surface the OS-level switches that silently swallow a notification: the app master toggle
+            // (NotificationManagerCompat, pre/post-13) and the per-channel enabled flag (O+). If a
+            // notification is "posted" per renderDescriptor but never appears, masterNotifOn=false or
+            // channelOn=false is why — not a code bug.
+            val masterOn = NotificationManagerCompat.from(ctx).areNotificationsEnabled()
+            val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) nm.getNotificationChannel(CHANNEL_MESSAGES) else null
+            // A channel is "disabled" when the user dragged it to IMPORTANCE_NONE (blocked). channel==null →
+            // pre-O (no per-channel toggle) or not-yet-created → treat as on; masterNotifOn covers the app gate.
+            val channelOn = channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
+            // chImp is the smoking gun for silent notifications: IMPORTANCE_HIGH (4) = sound + heads-up banner;
+            // DEFAULT (3) = sound, no banner; LOW (2) / MIN (1) = silent. If a notification posts but makes no
+            // sound/banner, chImp<4 is why (a stale dev build pinned the channel, fixed by the CHANNEL_MESSAGES
+            // id bump). renotify drives setOnlyAlertOnce — false silences every post after the first.
+            SomsLog.i("Notif") {
+                "renderDescriptors kind=${d.kind} title='${d.title.take(40)}' bodyLen=${d.body.length} icon=${d.icon != null} actions=${d.actions.size} masterNotifOn=$masterOn channelOn=$channelOn chImp=${channel?.importance} renotify=${d.renotify} appInFg=$appInForeground"
+            }
             renderDescriptor(ctx, d)
         }
 
@@ -150,10 +196,12 @@ class SomsMessagingService : FirebaseMessagingService() {
             ensureChannel(ctx)
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
             if (d.kind == "clear") {
+                SomsLog.d("Notif") { "renderDescriptor kind=clear → cancel AWAY" }
                 nm.cancel(AWAY_NOTIF_ID)
                 return
             }
             val largeIcon = d.icon?.let { fetchBitmap(ctx, it) }
+            SomsLog.d("Notif") { "renderDescriptor iconUrl='${d.icon}' largeIcon=${largeIcon != null}" }
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
             }
@@ -203,6 +251,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 builder.addAction(actionBuilder.build())
             }
             nm.notify(AWAY_NOTIF_ID, builder.build())
+            SomsLog.i("Notif") { "notify AWAY posted id=$AWAY_NOTIF_ID" }
         }
 
         /** Fetch the composited stacked-avatar PNG at `iconUrl` (relative — resolved against the API origin)
@@ -284,7 +333,12 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Create the "messages" (HIGH) + "background" (LOW) channels (required on Android 8+) if absent.
          *  Idempotent — getNotificationChannel returns null until a channel exists. Called eagerly at
          *  process start (SomsApplication.onCreate) so the app is registered as notification-capable before
-         *  any post, and re-called lazily by every render path below as a cheap safety net. */
+         *  any post, and re-called lazily by every render path below as a cheap safety net.
+         *
+         *  Gotcha: Android pins a channel's importance + vibration at creation and REFUSES to raise either
+         *  afterwards (recreating the SAME id also restores the old setting). So this IMPORTANCE_HIGH +
+         *  vibration take effect on a fresh install — if a prior build ever created "messages" lower, a
+         *  delete-and-reinstall of the app (or a channel-id bump) is the only reset. */
         internal fun ensureChannel(ctx: Context) {
             if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
@@ -292,6 +346,12 @@ class SomsMessagingService : FirebaseMessagingService() {
                 nm.createNotificationChannel(
                     NotificationChannel(CHANNEL_MESSAGES, "Messages", NotificationManager.IMPORTANCE_HIGH).apply {
                         description = "Incoming chat messages"
+                        // IMPORTANCE_HIGH alerts by default (sound + heads-up banner). Vibration is enabled
+                        // EXPLICITLY with a distinct message pattern (double pulse) so a new message is felt
+                        // even on silent. Channel-level — the authoritative setting on Android 8+ (notification-
+                        //  level setVibrate() is ignored on O+); pinned at creation like importance.
+                        enableVibration(true)
+                        vibrationPattern = longArrayOf(0, 200, 100, 200)
                     },
                 )
             }

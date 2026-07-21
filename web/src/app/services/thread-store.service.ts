@@ -5,7 +5,8 @@ import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
-import { MissedSyncService, type MissedThreadItem } from './missed-sync.service';
+import { MissedSyncService } from './missed-sync.service';
+import { isAndroidNative } from './runtime';
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, User } from './model';
 import { planDelta } from './thread-delta';
@@ -99,13 +100,17 @@ export class ThreadRepository {
   /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
 
-  /** The forward cursor for the missed-summary pull — the `(threadId, seq)` of the newest message the
-   *  threadlist has accounted for (the backend resolves it to the internal message `id` it never exposes,
-   *  and returns `id > cursor` ASC). Seeded at boot from IDB, advanced per pull to the response
-   *  `nextCursor`. Owned HERE (the threadlist state owner). Null on first boot → the endpoint returns the
-   *  newest `take` threads (a snapshot); subsequent pulls walk forward from the cursor. The background
-   *  notification paths (Android/Web SW) pull the same endpoint with no cursor (current unread state). */
+  /** The high-water mark — the `(threadId, seq)` of the newest message the threadlist has accounted for (the
+   *  last walked `to`). The backend resolves it to the internal message `id` it never exposes. The lower
+   *  bound (`from`) of the missed-summary walk; persisted to IDB so it survives restarts. Null on first boot
+   *  (allowed — the first walk is `(null, to]` = everything up to `to`). Also the away-notification `since`
+   *  (the renderer reads it via {@link missedCursor}). */
   private readonly _missedCursor = signal<MissedCursor | null>(null);
+
+  /** The pinned UPPER bound of the current missed-summary walk — the newest message the client knows of: the
+   *  HELLO connect handshake's `latestMessage`, advanced by each live NEW_MESSAGE signal. Ephemeral (NOT
+   *  persisted — re-established on every connect via HELLO). Null until HELLO lands, so boot does NOT walk. */
+  private _to: MissedCursor | null = null;
 
   private readonly sseSub: Subscription;
 
@@ -113,6 +118,9 @@ export class ThreadRepository {
     // ── thread-list DATA SSE events (the DB layer is the sole consumer) ──
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
       switch (m.event) {
+        case 'HELLO':
+          this.onHello(m.data as HelloPayload | undefined);
+          break;
         case 'NEW_MESSAGE':
           if (m.data !== undefined) this.onNewMessage(m.data as { threadId: number; seq: number; ts: number });
           break;
@@ -166,6 +174,8 @@ export class ThreadRepository {
     this._pendingTailRev = undefined;
     this.lastSeenSeq.clear();
     this._missedCursor.set(null);
+    // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
+    if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(null);
     clearTimeout(this.pullTimer);
     this.pullArmedAt = 0;
     this.bootGen++;
@@ -216,12 +226,17 @@ export class ThreadRepository {
       void this.persistThreads(this._items());
       this._status.set('READY');
       this._error.set('');
-      // Load the persisted missed-summary cursor, then pull one page to refresh each thread's preview +
-      // pre-warm the latest message body (the snapshot carries unread + lastMessageAt + the denormalized
-      // lastMessagePreview; this pull supplements full bodies + advances the cursor). Fire-and-forget — a
-      // transient failure retries on reconnect.
+      // Local-first preview: the snapshot embeds NO preview content (the body is pulled, never denormalized —
+      // see query-thread/valid), so derive each thread's preview from its newest CACHED message. On a cold
+      // start the local store is already populated from the prior session → previews paint INSTANTLY here,
+      // with no "暂无消息" flash before the network pull lands. Covers every thread with a cached message
+      // (not just the missed-summary page).
+      void this.hydratePreviews();
+      // Load the persisted high-water mark (the last walked `to`) — the lower bound for the first missed-
+      // summary walk. The walk itself does NOT fire here: boot has no `to` until the SSE stream connects and
+      // the server pushes HELLO (the newest-message cursor). On HELLO → the walk; on each live NEW_MESSAGE
+      // → `to` advances + a debounced walk.
       await this.loadMissedCursor();
-      void this.pullMissed();
     } catch (err) {
       if (gen !== this.bootGen) return;
       // First-boot failure (no cached paint) → ERROR. Otherwise keep the cached paint (stale but usable);
@@ -477,9 +492,9 @@ export class ThreadRepository {
     const prev = this.lastSeenSeq.get(msg.threadId);
     if (prev !== undefined && msg.seq <= prev) return;
     this.lastSeenSeq.set(msg.threadId, msg.seq);
-    // The body isn't in the identity signal — schedule a debounced missed-summary pull to refresh this
-    // thread's preview (the unread bump + reorder above are instant from the signal itself).
-    this.schedulePull();
+    // The body isn't in the identity signal — advance `to` to this signal + schedule a debounced missed-
+    // summary walk to fetch the body (the unread bump + reorder below are instant from the signal itself).
+    this.setToAndPull({ threadId: msg.threadId, seq: msg.seq });
 
     const open = this._openThreadId();
     let existed = false;
@@ -512,9 +527,13 @@ export class ThreadRepository {
     );
   }
 
-  /** Persist the cursor to IDB (best-effort, fire-and-forget). */
+  /** Persist the cursor to IDB (best-effort, fire-and-forget) AND push it to native durable storage on
+   *  Android, so the background fetchers (FCM/WorkManager) can read it as the /notifications/missed `since`
+   *  while the WebView is suspended or destroyed (the IDB copy dies with the WebView). One-way webview→native;
+   *  native only reads. */
   private saveMissedCursor(c: MissedCursor): void {
     void this.webdb.putMeta('missedCursor', c);
+    if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(c);
   }
 
   /** Debounce window for the missed-summary pull: a burst of NEW_MESSAGE signals collapses into one pull.
@@ -551,41 +570,60 @@ export class ThreadRepository {
     void this.pullMissed();
   }
 
-  /** Pull one missed-summary page: refresh each thread's preview (lastMessagePreview/SenderId) from its
-   *  latest message body, pre-warm the body cache, and advance + persist the cursor to the response
-   *  `nextCursor` (the page's max-id item — strict-total-order forward pagination, no overlap). Fire-and-
-   *  forget from boot + reconnect + (debounced) each NEW_MESSAGE; a transient failure retries on the next
-   *  trigger. */
+  /** Hard cap on walk pages per pull — a runaway-loop backstop (a backend bug returning hasMore forever must
+   *  not spin the client). 100 pages × 200 = 20000 threads is far past any real account. */
+  private static readonly PULL_MAX_PAGES = 100;
+
+  /** HELLO (the SSE connect handshake): the server pushes the user's newest-message cursor + the friend-list
+   *  revision. The cursor becomes `to` (the walk's pinned upper bound) → kick off the catch-up walk; the
+   *  revision feeds the existing THREAD_REVISION delta-sync ({@link onThreadRevisionUpdated} pulls
+   *  query-thread/delta if the client is stale). */
+  private onHello(d: HelloPayload | undefined): void {
+    if (!d) return;
+    const lm = d.latestMessage;
+    if (lm && typeof lm.threadId === 'number' && typeof lm.seq === 'number') {
+      this.setToAndPull({ threadId: lm.threadId, seq: lm.seq });
+    }
+    if (typeof d.threadRevision === 'number') this.onThreadRevisionUpdated(d.threadRevision);
+  }
+
+  /** Set the walk's upper bound `to` + schedule the debounced catch-up walk (a burst of signals collapses). */
+  private setToAndPull(to: MissedCursor): void {
+    this._to = to;
+    this.schedulePull();
+  }
+
+  /** The persisted high-water mark — the newest message the threadlist has accounted for (the last walked
+   *  `to`). The away-notification renderer reads it as `since` (the boundary before backgrounding). */
+  missedCursor(): MissedCursor | null {
+    return this._missedCursor();
+  }
+
+  /** Catch up the local message store + previews: walk the `(from, to]` double-boundary range — `from` is the
+   *  persisted HWM (the last walked `to`), `to` is {@link _to} (the HELLO latestMessage, advanced by live
+   *  NEW_MESSAGE signals). Pages advance `from` toward `to`; on a NON-empty walk the HWM advances to `to` (it
+   *  never regresses on a stale `to ≤ from` — an empty walk leaves the HWM). Fire-and-forget from HELLO +
+   *  (debounced) each NEW_MESSAGE; a transient failure retries on the next trigger. */
   private async pullMissed(): Promise<void> {
+    const to = this._to;
+    if (!to) return; // no HELLO yet → nothing to walk toward
     try {
-      const { items, nextCursor } = await this.missedSync.fetchMissedSummary(this._missedCursor());
-      if (items.length > 0) {
-        // Index the summary by threadId once (O(items)) so each list row is an O(1) lookup, not an O(items)
-        // scan inside the map (O(threads × items)). A thread's latestMessage is its newest body.
-        const latestByThread = new Map<number, NonNullable<MissedThreadItem['latestMessage']>>();
-        for (const i of items) if (i.latestMessage) latestByThread.set(i.threadId, i.latestMessage);
-        this._items.update((list) =>
-          list.map((it) => {
-            const m = latestByThread.get(it.threadId);
-            if (!m) return it;
-            return {
-              ...it,
-              lastMessagePreview: rawPreview(m.contentType, m.content),
-              lastMessageSenderId: m.creator,
-              lastMessageAt: m.createdAt,
-            };
-          }),
-        );
-        void this.persistThreads(this._items());
+      let from = this._missedCursor();
+      let walkedAny = false;
+      for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
+        const res = await this.missedSync.fetchMissedSummary(from, to);
+        if (res.items.length > 0) walkedAny = true;
+        if (!res.hasMore) { from = to; break; } // walked the full (from, to] → caught up to `to`
+        if (!res.nextCursor) break;
+        from = res.nextCursor; // page max → advance `from`, continue
       }
-      // Advance the cursor to the page's max-id item (null only when the page was empty → nothing new; the
-      // cursor stays put so the next pull re-checks forward from the same position).
-      if (nextCursor) {
-        this._missedCursor.set(nextCursor);
-        this.saveMissedCursor(nextCursor);
+      if (walkedAny && from) { // don't advance on an empty/stale walk (no HWM regression); from is non-null here
+        this._missedCursor.set(from);
+        this.saveMissedCursor(from);
       }
+      await this.hydratePreviews();
     } catch {
-      /* best-effort — the next boot/reconnect/NEW_MESSAGE retries */
+      /* best-effort — the next HELLO/NEW_MESSAGE retries */
     }
   }
 
@@ -637,6 +675,42 @@ export class ThreadRepository {
         void this.pullDelta(tail);
       }
     }
+  }
+
+  /** Re-derive each thread's list preview (`lastMessagePreview` + `lastMessageSenderId`) from the LOCAL
+   *  message store — the durable, local-first source. The threadlist snapshot deliberately embeds NO preview
+   *  content (the body is pulled, never denormalized — see query-thread/valid), so the list derives its
+   *  preview from each thread's newest cached message. This covers EVERY thread with a cached newest message
+   *  (not just the missed-summary page of the newest `take`), and on a cold start the local store is already
+   *  populated from the prior session → previews paint instantly from the cached-paint items with no network
+   *  round-trip and no "暂无消息" flash. Runs on boot (right after the snapshot, before the network pull) +
+   *  after each missed pull (which pre-warms the local store). Leaves `lastMessageAt` untouched (the
+   *  snapshot's value is the authoritative sort key); a thread with no cached message yet keeps its prior
+   *  preview. */
+  private async hydratePreviews(): Promise<void> {
+    const items = this._items();
+    if (items.length === 0) return;
+    // One batched read (a single transaction, one reverse cursor per thread) — never N independent lookups.
+    const newest = await this.messageRepo.getNewestMessages(items.map((it) => it.threadId));
+    if (newest.size === 0) return; // nothing cached locally yet — leave the items' previews as-is
+    const byThread = new Map<number, { lastMessagePreview: string; lastMessageSenderId: number }>();
+    for (const it of items) {
+      const m = newest.get(it.threadId);
+      if (!m) continue;
+      byThread.set(it.threadId, {
+        lastMessagePreview: rawPreview(m.contentType, m.content),
+        lastMessageSenderId: m.creator,
+      });
+    }
+    if (byThread.size === 0) return;
+    this._items.update((list) =>
+      list.map((it) => {
+        const patch = byThread.get(it.threadId);
+        return patch ? { ...it, ...patch } : it;
+      }),
+    );
+    // Persist so the next boot's cached paint already carries the derived preview (no "暂无消息" flash).
+    void this.persistThreads(this._items());
   }
 
   // ── IDB persistence helpers (best-effort; IDB unavailable → graceful no-op) ────────────────
@@ -693,6 +767,13 @@ export class ThreadRepository {
 }
 
 // ── SSE payload shapes (the subset of fields each handler reads) ─────────────────────────────
+
+/** HELLO (SSE connect handshake) payload: the user's newest-message cursor (→ the walk's `to`) + the
+ *  friend-list revision (→ a query-thread/delta if the client is stale). Pushed once per connect. */
+interface HelloPayload {
+  latestMessage?: { threadId: number; seq: number; ts: number } | null;
+  threadRevision?: number;
+}
 
 interface ThreadMetaPayload {
   threadId?: number;

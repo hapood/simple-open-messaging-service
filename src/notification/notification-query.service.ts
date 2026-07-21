@@ -6,26 +6,25 @@ import { GroupService } from '../group/group.service.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { AvatarStackService } from '../upload/avatar-stack.service.js';
 import { pickLocale, type SupportedLocale } from '../common/locale.js';
-import {
-  composeMessageSummaryDescriptors,
-  type NotificationDescriptor,
-} from './notification-descriptor.js';
+import { buildSummaryBody, buildSummaryTitle, actionLabel } from './notif-i18n.js';
+import { AWAY_SUMMARY_TAG, type NotificationDescriptor } from './notification-descriptor.js';
 
 /**
- * One thread's missed-summary row — the data view consumed by the threadlist pre-warm (body hydration) AND
- * the input to the notification descriptor. The BigInt `id` is NEVER present — only per-thread `seq` + time.
- * `senderAvatarUrl` / `senderUserId` feed the stacked-avatar composite (P2P peer / GROUP group identity).
+ * One thread's missed-summary row — the data view consumed by the threadlist pre-warm (body hydration). The
+ * BigInt `id` is NEVER present — only per-thread `seq` + time. `senderAvatarUrl` / `senderUserId` are carried
+ * for completeness (the threadlist preview does not render them — its avatars come from the conversation
+ * snapshot).
  */
 export interface MissedThreadItem {
   threadId: number;
   type: 'P2P' | 'GROUP';
   displayName: string;
   unreadCount: number;
-  /** Per-user mute flag — the away-notification filters unread+unmuted. */
+  /** Per-user mute flag (the snapshot carries it for parity). */
   muted: boolean;
-  /** The sender's avatar URL for the stacked icon (P2P peer avatar / GROUP group avatar); '' when none. */
+  /** The sender's avatar URL (P2P peer avatar / GROUP group avatar); '' when none. */
   senderAvatarUrl: string;
-  /** The sender's stable id for the icon's cache key + initial-letter color (P2P peer id / GROUP group id). */
+  /** The sender's stable id (P2P peer id / GROUP group id). */
   senderUserId: number;
   latestMessage:
     | {
@@ -41,31 +40,31 @@ export interface MissedThreadItem {
     | null;
 }
 
-/** The forward-pagination cursor — the client's last-accounted message, identified by its per-thread
- *  `(threadId, seq)` (uniquely resolves to one internal BigInt `id`, never exposed). Absent → snapshot. */
+/** A message identified by its per-thread `(threadId, seq)` (the backend resolves it to the internal BigInt
+ *  `id` it never exposes). The threadlist's high-water mark. */
 export interface MissedCursor {
   threadId: number;
   seq: number;
 }
 
 /**
- * Builds the "what did I miss" response for `POST /notifications/missed` — TWO views over ONE query:
- *  - `items[]`        — one row per thread (newest message body + unread + display name), the threadlist
- *                       pre-warm data source (now cursor-ordered);
- *  - `notifications[]`— the server-authored {@link NotificationDescriptor} list (localized title/body +
- *                       composited stacked-avatar icon) every notification renderer consumes verbatim.
+ * The two POST /notifications/* endpoints, separated by purpose:
+ *  - {@link buildSummary} backs `POST /notifications/missed-summary` (the threadlist body pre-warm) — a
+ *    DOUBLE-BOUNDARY `(from, to]` walk of per-thread latest bodies. `to` (the newest SSE signal) is PINNED so
+ *    the walk converges; `from` is the high-water mark (advancing). Stable pagination + `to ≤ from` → no-op.
+ *  - {@link buildNotifyResponse} backs `POST /notifications/missed` (away-notification renderers only) — a
+ *    per-sender aggregation of the messages newer than `since` (the HWM), authored into ONE descriptor
+ *    ("X, Y sent you N messages" / "999+" past the 1000-sample) + a composited stacked-avatar icon. One-shot,
+ *    no pagination: the away surface is a current snapshot, replace-by-tag.
  *
- * Cursor (replaces the old time-bound `since`): `{threadId, seq}` resolves to the internal message `id`,
- * then per-thread rows are filtered to `latestMessageId > cursorId` and ordered by `latestMessageId` ASC
- * (a strict total order — adjacent pages never overlap, so the same-ms ambiguity + the idempotent-apply
- * dedup it forced are gone). Absent cursor → a snapshot of the newest `take` threads (the background
- * away-notification path). `nextCursor` = the page's max-id item's cursor in both modes (the single
- * advancement rule).
+ * The HWM is the SAME boundary for both (the newest message the threadlist has accounted for, ordered by the
+ * backend's strict-total-order `id` — NEVER SSE arrival order, which can deliver out of sequence). The
+ * threadlist owns + advances it; the renderer reads it (the IDB newest at background time).
  *
  * The BigInt `id` is NEVER exposed — `(threadId, seq)` is the only handle the client holds.
  *
- * `providedIn`-less on purpose: declared as a provider in MessageFanoutModule so NotificationController
- * (and historically MessageController) can inject it.
+ * `providedIn`-less on purpose: declared as a provider in MessageFanoutModule so NotificationController can
+ * inject it.
  */
 @Injectable()
 export class NotificationQueryService {
@@ -79,46 +78,161 @@ export class NotificationQueryService {
   ) {}
 
   /**
-   * @param cursor the client's last-accounted message `(threadId, seq)`; absent → snapshot (newest `take`).
-   * @param take   page size over threads.
-   * @param acceptLanguage the `Accept-Language` header → locale for the descriptor copy.
+   * Threadlist body pre-warm: per-thread latest body for threads whose latest-message id ∈ `(from, to]`.
+   * @param from the high-water mark (exclusive lower bound); absent on first boot.
+   * @param to   the newest SSE signal (inclusive upper bound) — pinned for the walk (stability).
+   * @param take page size (threads).
+   */
+  async buildSummary(
+    userId: number,
+    opts: { from?: MissedCursor | null; to: MissedCursor; take: number },
+  ): Promise<{ items: MissedThreadItem[]; hasMore: boolean; nextCursor: MissedCursor | null }> {
+    const toId = await this.resolveId(opts.to);
+    if (toId === null) return { items: [], hasMore: false, nextCursor: null }; // `to` unresolvable → no-op
+    const fromId = opts.from ? await this.resolveId(opts.from) : null;
+    // `to ≤ from`: SSE delivered a stale/out-of-order message → empty no-op (HWM unchanged).
+    if (fromId !== null && toId <= fromId) return { items: [], hasMore: false, nextCursor: null };
+
+    const ctx = await this.loadThreadContext(userId);
+    // Threads whose latest-message id sits in the half-open range (fromId, toId].
+    const inRange = ctx.active
+      .filter((p) => {
+        const id = ctx.latestIdByThread.get(p.threadId);
+        if (id === undefined) return false;
+        if (fromId !== null && id <= fromId) return false;
+        return id <= toId;
+      })
+      .sort(ctx.cmpByIdAsc);
+    const take = Math.max(1, opts.take);
+    const hasMore = inRange.length > take;
+    const page = inRange.slice(0, take);
+    const items = await this.hydrateItems(userId, page, ctx.unread, ctx.attachedByThread);
+    // nextCursor = the page's MAX-id item (advance `from` toward `to`); null once this page is the last.
+    let nextCursor: MissedCursor | null = null;
+    if (hasMore && page.length > 0) {
+      const maxRow = page.reduce((mx, p) =>
+        ctx.latestIdByThread.get(p.threadId)! > ctx.latestIdByThread.get(mx.threadId)! ? p : mx,
+      );
+      nextCursor = { threadId: maxRow.threadId, seq: maxRow.thread.lastMessageSeq ?? 0 };
+    }
+    return { items, hasMore, nextCursor };
+  }
+
+  /**
+   * Away-notification summary: aggregate, per sender, the messages newer than `since` (the HWM), authored
+   * into ONE descriptor. Samples the first 1000 by id (lean — creator + threadId only, no content); past
+   * that the body shows the capped "999+". Returns `notifications[]` only (the renderer reads nothing else).
+   * @param since the high-water mark (newest IDB message before backgrounding); absent → clear (first-ever).
+   * @param acceptLanguage the `Accept-Language` header → locale for the copy.
    */
   async buildNotifyResponse(
     userId: number,
-    opts: { cursor?: MissedCursor | null; take: number; acceptLanguage?: string | null },
-  ): Promise<{
-    items: MissedThreadItem[];
-    hasMore: boolean;
-    nextCursor: MissedCursor | null;
-    notifications: NotificationDescriptor[];
-  }> {
+    opts: { since?: MissedCursor | null; acceptLanguage?: string | null },
+  ): Promise<{ notifications: NotificationDescriptor[] }> {
     const locale = pickLocale(opts.acceptLanguage);
+    // First-ever (no HWM yet) or unresolvable since → no baseline → clear (don't disturb).
+    if (!opts.since) return { notifications: [this.clearDescriptor(locale)] };
+    const sinceId = await this.resolveId(opts.since);
+    if (sinceId === null) return { notifications: [this.clearDescriptor(locale)] };
 
+    const blocked = await this.userBlockService.blockedByMe(userId);
+    const { counts, overflow } = await this.messageService.senderCountsSince(
+      userId,
+      sinceId,
+      1000,
+      [...blocked],
+    );
+    if (counts.size === 0) return { notifications: [this.clearDescriptor(locale)] }; // nothing new → clear
+
+    // Resolve sender display names + avatars (the icon + the folded body). Chronological order: the
+    // aggregation rows are ordered by message id ASC, so the Map's insertion order = who messaged first.
+    const orderedSenders = [...counts.keys()];
+    const senderUsers = await this.userService.queryUsers({
+      where: { id: { in: orderedSenders }, isDeleted: false },
+    });
+    const userById = new Map(senderUsers.map((u) => [u.id, u]));
+    const name = (id: number) => userById.get(id)?.name || 'Unknown';
+    const items = orderedSenders.map((id) => ({ displayName: name(id), unreadCount: counts.get(id) ?? 0 }));
+    const body = buildSummaryBody(items, locale, overflow);
+    const iconInputs = orderedSenders
+      .slice(0, AvatarStackService.MAX_TILES)
+      .map((id) => ({ avatarUrl: userById.get(id)?.avatar ?? '', displayName: name(id), userId: id }));
+    const iconUrl =
+      iconInputs.length > 0 ? await this.avatarStack.composeStackedAvatar(iconInputs) : null;
+
+    // The HWM cursor: the newest message this summary covers. The away window is open-ended to "now" and we
+    // only get here when it is non-empty, so the user's globally-newest message is always within it — that is
+    // the cursor the client advances its high-water mark to on mark-all-read. The server clears every active
+    // thread (it re-derives the set itself), so this single (threadId, seq) is all the action needs — no
+    // sampled thread list crosses the wire (no truncation at the 1000-sample cap).
+    const newest = await this.messageService.findNewestForUser(userId);
+
+    return {
+      notifications: [
+        {
+          tag: AWAY_SUMMARY_TAG,
+          kind: 'message-summary',
+          title: buildSummaryTitle(locale),
+          body,
+          lang: locale,
+          icon: iconUrl,
+          renotify: true,
+          // One summary-level action: mark every active thread read. One action stays within Web Push's
+          // 2-action mobile-Chrome cap; per-thread reply belongs to a future kind.
+          actions: [{ id: 'mark-all-read', title: actionLabel('mark-all-read', locale) }],
+          data: newest ? { threadId: newest.threadId, seq: newest.seq } : {},
+        },
+      ],
+    };
+  }
+
+  /** Resolve a `(threadId, seq)` cursor to its internal BigInt id (one lookup); null when unresolved. */
+  private async resolveId(cursor: MissedCursor): Promise<bigint | null> {
+    const [m] = await this.messageService.findMessagesBySeqPairs([cursor]);
+    return m?.id ?? null;
+  }
+
+  /** A `clear` descriptor — cancel the tagged away notification (nothing new / first-ever / unresolvable). */
+  private clearDescriptor(locale: SupportedLocale): NotificationDescriptor {
+    return {
+      tag: AWAY_SUMMARY_TAG,
+      kind: 'clear',
+      title: '',
+      body: '',
+      lang: locale,
+      icon: null,
+      renotify: false,
+      actions: [],
+      data: {},
+    };
+  }
+
+  /**
+   * The shared per-thread context both the summary walk + (historically) the descriptor fold build on: the
+   * user's active threads (membership + a latest message, minus P2P-blocked latest senders) with their
+   * latest-message id (the strict-total-order key) + the id-stripped body + unread counts.
+   */
+  private async loadThreadContext(userId: number): Promise<{
+    active: Array<{
+      threadId: number;
+      muted: boolean;
+      thread: { type: 'P2P' | 'GROUP'; lastMessageSeq: number | null; lastMessageAt: Date | null };
+    }>;
+    latestIdByThread: Map<number, bigint>;
+    attachedByThread: Map<number, AttachedMessage>;
+    unread: Map<number, number>;
+    cmpByIdAsc: (a: { threadId: number }, b: { threadId: number }) => number;
+  }> {
     const list = await this.participantService.queryParticipants({
       where: { userId, leftAt: null },
       orderBy: { id: 'asc' },
       include: { thread: true },
     });
-    if (list.length === 0) {
-      return { items: [], hasMore: false, nextCursor: null, notifications: this.clearDescriptors(locale) };
-    }
-
     const unread = await this.messageService.countUnreadByThread(
       userId,
       list.map((p) => p.threadId),
     );
-
-    // Resolve the cursor (threadId, seq) → its internal BigInt id (one lookup). A cursor that can't resolve
-    // (message gone — impossible for immutable messages, but defensive) degrades to a snapshot.
-    let cursorId: bigint | null = null;
-    if (opts.cursor) {
-      const [resolved] = await this.messageService.findMessagesBySeqPairs([opts.cursor]);
-      cursorId = resolved?.id ?? null;
-    }
-
-    // Latest message per thread. findMessagesBySeqPairs returns FULL rows (BigInt id intact); the id is the
-    // strict-total-order key for cursor filtering + ordering. attachMediaStatus then strips id + attaches
-    // mediaStatus/sv for the body view — both maps are keyed by threadId so hydrate joins them.
+    // Latest message per thread (BigInt id intact — the strict-total-order key).
     const pairs = list
       .map((p) => ({ threadId: p.threadId, seq: p.thread.lastMessageSeq }))
       .filter((p): p is { threadId: number; seq: number } => p.seq != null && p.seq >= 0);
@@ -131,14 +245,8 @@ export class NotificationQueryService {
       creatorByThread.set(m.threadId, m.creator);
     }
     const attachedByThread = new Map(attached.map((m) => [m.threadId, m]));
-
-    // P2P block: the recipient never sees a blocked peer's messages, so a P2P thread whose latest message
-    // is from a blocked creator is dropped from the summary (mirrors query-messages' hideCreatorIds P2P
-    // filter — block is P2P-scoped; GROUP threads leave blocked members visible, WhatsApp neutral-ground).
     const blocked = await this.userBlockService.blockedByMe(userId);
-
-    // Active = threads with a latest message (an empty thread has no cursor position and is not "missed"),
-    // minus P2P-blocked latest senders.
+    // Active = threads with a latest message, minus P2P-blocked latest senders.
     const active = list.filter(
       (p) =>
         latestIdByThread.has(p.threadId) &&
@@ -149,50 +257,7 @@ export class NotificationQueryService {
       const bi = latestIdByThread.get(b.threadId)!;
       return ai < bi ? -1 : ai > bi ? 1 : 0;
     };
-
-    const take = Math.max(1, opts.take);
-    let page: typeof active;
-    let hasMore: boolean;
-    if (cursorId !== null) {
-      // Forward: threads whose latest message is strictly newer than the cursor, ASC by id.
-      const forward = active.filter((p) => latestIdByThread.get(p.threadId)! > cursorId!).sort(cmpByIdAsc);
-      hasMore = forward.length > take;
-      page = forward.slice(0, take);
-    } else {
-      // Snapshot: the newest `take` threads (DESC), returned ASC for a uniform response order.
-      const desc = active.slice().sort((a, b) => -cmpByIdAsc(a, b));
-      hasMore = desc.length > take;
-      page = desc.slice(0, take).sort(cmpByIdAsc);
-    }
-
-    // nextCursor = the page's max-id item's (threadId, seq) — the single advancement rule for both modes.
-    // Null when the page is empty (caught up / nothing to show).
-    let nextCursor: MissedCursor | null = null;
-    if (page.length > 0) {
-      const maxRow = page.reduce((mx, p) =>
-        latestIdByThread.get(p.threadId)! > latestIdByThread.get(mx.threadId)! ? p : mx,
-      );
-      nextCursor = { threadId: maxRow.threadId, seq: maxRow.thread.lastMessageSeq ?? 0 };
-    }
-
-    const items = await this.hydrateItems(userId, page, unread, attachedByThread);
-
-    // Descriptor: composite the stacked avatar from the unread+unmuted senders, then compose. The composer
-    // filters unread+unmuted itself + folds the body; the icon is pre-computed here (it needs the sender
-    // avatars the composer deliberately doesn't carry).
-    const awaySenders = items
-      .filter((i) => i.unreadCount > 0 && !i.muted)
-      .map((i) => ({ avatarUrl: i.senderAvatarUrl, displayName: i.displayName, userId: i.senderUserId }));
-    const iconUrl =
-      awaySenders.length > 0 ? await this.avatarStack.composeStackedAvatar(awaySenders) : null;
-    const notifications = composeMessageSummaryDescriptors(items, { locale, iconUrl, renotify: false });
-
-    return { items, hasMore, nextCursor, notifications };
-  }
-
-  /** A `clear` descriptor (cancel the tagged notification) — emitted when there is nothing to summarize. */
-  private clearDescriptors(locale: SupportedLocale): NotificationDescriptor[] {
-    return composeMessageSummaryDescriptors([], { locale, iconUrl: null, renotify: false });
+    return { active, latestIdByThread, attachedByThread, unread, cmpByIdAsc };
   }
 
   /** Resolve display names + sender avatar/id + the latest message body for one page of participant rows. */

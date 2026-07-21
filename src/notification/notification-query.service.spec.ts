@@ -2,23 +2,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NotificationQueryService } from './notification-query.service.js';
 
 /**
- * buildNotifyResponse — the unified missed response: `items[]` (one row per thread, cursor-ordered) +
- * `notifications[]` (the server-authored descriptor). This spec pins:
- *  - the cursor → id resolution + the strict-total-order `id > cursor` forward pagination (no overlap);
- *  - the snapshot (absent cursor) = newest `take`, returned ASC;
- *  - `nextCursor` = the page's max-id item's (threadId, seq);
- *  - the descriptor fold (unread+unmuted → body + icon) + a `clear` descriptor when none qualify;
- *  - the BigInt id NEVER appears in `items` (attachMediaStatus is the strip point — mocked passthrough);
- *  - AvatarStackService is fed the unread+unmuted senders.
+ * buildSummary (POST /notifications/missed-summary) + buildNotifyResponse (POST /notifications/missed), the
+ * two separated endpoints. This spec pins:
+ *  - buildSummary: the `(from, to]` double-boundary walk — threads with latest-id in range, ASC, nextCursor =
+ *    page max; `to ≤ from` (stale SSE) → empty no-op; `from` absent (first boot) → all active ≤ to.
+ *  - buildNotifyResponse: per-sender aggregation since the HWM → ONE descriptor; "999+" past the 1000-sample;
+ *    `since` absent / nothing new → a `clear` descriptor.
+ *  - the BigInt id NEVER appears in `items` (attachMediaStatus is the strip point — mocked passthrough).
  *
  * DB-touching methods are mocked; this spec owns the orchestration invariants.
  */
-describe('NotificationQueryService.buildNotifyResponse', () => {
+describe('NotificationQueryService', () => {
   let svc: NotificationQueryService;
   let participants: ReturnType<typeof vi.fn>;
   let countUnread: ReturnType<typeof vi.fn>;
   let findMsgs: ReturnType<typeof vi.fn>;
   let attachMedia: ReturnType<typeof vi.fn>;
+  let senderCountsSince: ReturnType<typeof vi.fn>;
+  let findNewest: ReturnType<typeof vi.fn>;
   let findPeers: ReturnType<typeof vi.fn>;
   let queryUsers: ReturnType<typeof vi.fn>;
   let resolveGroups: ReturnType<typeof vi.fn>;
@@ -34,11 +35,7 @@ describe('NotificationQueryService.buildNotifyResponse', () => {
     return {
       threadId,
       muted: opts.muted ?? false,
-      thread: {
-        type,
-        lastMessageSeq: opts.lastMessageSeq ?? null,
-        lastMessageAt: null,
-      },
+      thread: { type, lastMessageSeq: opts.lastMessageSeq ?? null, lastMessageAt: null },
     };
   }
 
@@ -47,14 +44,16 @@ describe('NotificationQueryService.buildNotifyResponse', () => {
     countUnread = vi.fn();
     findMsgs = vi.fn();
     attachMedia = vi.fn();
+    senderCountsSince = vi.fn();
+    findNewest = vi.fn();
     findPeers = vi.fn();
     queryUsers = vi.fn();
     resolveGroups = vi.fn();
-    composeStack = vi.fn();
+    composeStack = vi.fn().mockResolvedValue('/uploads/notif-icons/abc.png');
     blockedByMe = vi.fn().mockResolvedValue(new Set<number>());
     svc = new NotificationQueryService(
       { queryParticipants: participants, findP2PPeers: findPeers } as never,
-      { countUnreadByThread: countUnread, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia } as never,
+      { countUnreadByThread: countUnread, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, findNewestForUser: findNewest } as never,
       { queryUsers } as never,
       { resolveGroupUsersByThreadIds: resolveGroups } as never,
       { blockedByMe } as never,
@@ -62,8 +61,7 @@ describe('NotificationQueryService.buildNotifyResponse', () => {
     );
   });
 
-  /** Wire the mocks. `bodies` carries the LATEST message per thread WITH its internal id (the sort key) +
-   *  optional creator (default 1). */
+  /** Wire the per-thread mocks. `bodies` carries the LATEST message per thread WITH its internal id. */
   function wire(
     threads: ReturnType<typeof row>[],
     unread: Record<number, number>,
@@ -76,15 +74,13 @@ describe('NotificationQueryService.buildNotifyResponse', () => {
     findPeers.mockResolvedValue(peers);
     queryUsers.mockResolvedValue(users);
     resolveGroups.mockResolvedValue(new Map());
-    composeStack.mockResolvedValue('/uploads/notif-icons/abc.png');
-    // findMessagesBySeqPairs: return the matching messages (id intact) for ANY pair set — used both for the
-    // cursor resolution (one pair) and the latest-message fetch (one pair per thread).
     const byPair = new Map(
       Object.entries(bodies).map(([tid, b]) => [
         `${tid}:${b.seq}`,
         { threadId: Number(tid), seq: b.seq, content: b.content, contentType: b.contentType, creator: b.creator ?? 1, createdAt: new Date(100), id: BigInt(b.id) },
       ]),
     );
+    // findMessagesBySeqPairs serves BOTH the cursor (from/to) resolution AND the per-thread latest fetch.
     findMsgs.mockImplementation((pairs: Array<{ threadId: number; seq: number }>) =>
       pairs.map((p) => byPair.get(`${p.threadId}:${p.seq}`)).filter(Boolean),
     );
@@ -93,121 +89,134 @@ describe('NotificationQueryService.buildNotifyResponse', () => {
     );
   }
 
-  it('snapshot (no cursor) returns threads ASC by latest-message id; nextCursor = max-id item', async () => {
+  // ── buildSummary: the (from, to] double-boundary walk ─────────────────────────────────────────
+
+  it('buildSummary: threads whose latest-id ∈ (from, to], ASC; nextCursor = page max-id', async () => {
     wire(
       [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: 1 }), row(3, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 1, 2: 1, 3: 1 },
-      // ids deliberately out of threadId order to prove id-ordering.
-      { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 20 },
-        2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 10 },
+      { 1: 0, 2: 0, 3: 0 },
+      { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10 },
+        2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 20 },
         3: { seq: 1, content: 'c', contentType: 'PURE_TEXT', id: 30 } },
     );
-    const res = await svc.buildNotifyResponse(1, { take: 50 });
-    expect(res.items.map((i) => i.threadId)).toEqual([2, 1, 3]); // ASC by id 10,20,30
+    // from = thread 1 (id 10), to = thread 3 (id 30) → range (10,30] = threads 2 + 3.
+    const res = await svc.buildSummary(1, { from: { threadId: 1, seq: 1 }, to: { threadId: 3, seq: 1 }, take: 50 });
+    expect(res.items.map((i) => i.threadId)).toEqual([2, 3]); // ASC by id 20,30
     expect(res.hasMore).toBe(false);
-    expect(res.nextCursor).toEqual({ threadId: 3, seq: 1 }); // max-id item (id 30 → thread 3)
+    expect(res.nextCursor).toBeNull(); // all fit → no continuation
   });
 
-  it('snapshot take caps to the newest threads; hasMore reflects the remainder', async () => {
+  it('buildSummary: paginates — nextCursor = page max-id when hasMore', async () => {
     wire(
       [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: 1 }), row(3, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 1, 2: 1, 3: 1 },
+      { 1: 0, 2: 0, 3: 0 },
       { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10 },
         2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 20 },
         3: { seq: 1, content: 'c', contentType: 'PURE_TEXT', id: 30 } },
     );
-    const res = await svc.buildNotifyResponse(1, { take: 2 }); // newest 2 = ids 30,20
-    expect(res.items.map((i) => i.threadId)).toEqual([2, 3]); // ASC within page
+    // from absent (first boot), to = thread 3 (id 30), take 2 → ASC oldest-first in (-∞,30] = threads 1,2.
+    const res = await svc.buildSummary(1, { to: { threadId: 3, seq: 1 }, take: 2 });
+    expect(res.items.map((i) => i.threadId)).toEqual([1, 2]); // ids 10,20 (the walk advances `from` toward `to`)
     expect(res.hasMore).toBe(true);
-    expect(res.nextCursor).toEqual({ threadId: 3, seq: 1 }); // max-id of the page
+    expect(res.nextCursor).toEqual({ threadId: 2, seq: 1 }); // page max-id → the next `from`
   });
 
-  it('cursor forward: id > cursor only, ASC — no overlap with the snapshot page', async () => {
-    wire(
-      [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: 1 }), row(3, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 1, 2: 1, 3: 1 },
-      { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10 },
-        2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 20 },
-        3: { seq: 1, content: 'c', contentType: 'PURE_TEXT', id: 30 } },
-    );
-    // Cursor = thread 2's latest (id 20) → forward returns only id>20 = thread 3.
-    const res = await svc.buildNotifyResponse(1, { cursor: { threadId: 2, seq: 1 }, take: 50 });
-    expect(res.items.map((i) => i.threadId)).toEqual([3]);
-    expect(res.nextCursor).toEqual({ threadId: 3, seq: 1 });
-  });
-
-  it('empty result → items [], nextCursor null, a clear descriptor', async () => {
-    wire([row(1, 'P2P', { lastMessageSeq: 1 })], { 1: 0 }, { 1: { seq: 1, content: 'x', contentType: 'PURE_TEXT', id: 5 } });
-    const res = await svc.buildNotifyResponse(1, { take: 50 });
-    expect(res.items.map((i) => i.threadId)).toEqual([1]); // the thread is listed (read)…
-    expect(res.notifications[0].kind).toBe('clear'); // …but nothing unread+unmuted → clear
-    expect(res.notifications[0].tag).toBe('soms-away');
-  });
-
-  it('descriptor folds unread+unmuted senders; avatarStack is fed their avatars', async () => {
+  it('buildSummary: to ≤ from (stale SSE) → empty no-op', async () => {
     wire(
       [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 2, 2: 3 },
+      { 1: 0, 2: 0 },
       { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10 },
         2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 20 } },
-      [{ threadId: 1, userId: 11 }, { threadId: 2, userId: 22 }],
-      [{ id: 11, name: 'Alice', avatar: '/uploads/avatars/a-512.webp' },
-        { id: 22, name: 'Bob', avatar: '/uploads/avatars/b-512.webp' }],
     );
-    const res = await svc.buildNotifyResponse(1, { take: 50, acceptLanguage: 'en' });
-    expect(res.notifications[0].kind).toBe('message-summary');
-    expect(res.notifications[0].body).toBe('Alice, Bob sent you 5 messages');
-    expect(res.notifications[0].icon).toBe('/uploads/notif-icons/abc.png');
-    expect(composeStack).toHaveBeenCalledWith([
-      { avatarUrl: '/uploads/avatars/a-512.webp', displayName: 'Alice', userId: 11 },
-      { avatarUrl: '/uploads/avatars/b-512.webp', displayName: 'Bob', userId: 22 },
-    ]);
+    // from = thread 2 (id 20), to = thread 1 (id 10) → to ≤ from → no-op.
+    const res = await svc.buildSummary(1, { from: { threadId: 2, seq: 1 }, to: { threadId: 1, seq: 1 }, take: 50 });
+    expect(res.items).toEqual([]);
+    expect(res.hasMore).toBe(false);
   });
 
-  it('honors Accept-Language: zh-CN → Chinese body', async () => {
+  it('buildSummary: from absent (first boot) → every active thread with latest ≤ to', async () => {
     wire(
-      [row(1, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 7 },
-      { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10 } },
-      [{ threadId: 1, userId: 11 }],
-      [{ id: 11, name: 'Alice', avatar: '' }],
+      [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: 1 })],
+      { 1: 0, 2: 0 },
+      { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10 },
+        2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 20 } },
     );
-    const res = await svc.buildNotifyResponse(1, { take: 50, acceptLanguage: 'zh-CN' });
-    expect(res.notifications[0].body).toBe('Alice 给你发了 7 条消息');
-    expect(res.notifications[0].lang).toBe('zh-CN');
+    const res = await svc.buildSummary(1, { to: { threadId: 2, seq: 1 }, take: 50 });
+    expect(res.items.map((i) => i.threadId)).toEqual([1, 2]);
   });
 
-  it('never exposes the BigInt id (attachMediaStatus is the strip point)', async () => {
+  it('buildSummary never exposes the BigInt id', async () => {
     wire(
       [row(1, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 1 },
+      { 1: 0 },
       { 1: { seq: 1, content: 'x', contentType: 'PURE_TEXT', id: 999 } },
     );
-    const res = await svc.buildNotifyResponse(1, { take: 50 });
+    const res = await svc.buildSummary(1, { to: { threadId: 1, seq: 1 }, take: 50 });
     expect(JSON.stringify(res.items)).not.toContain('"id"');
     expect(res.items[0].latestMessage).not.toHaveProperty('id');
   });
 
-  it('an empty thread (lastMessageSeq null) is excluded — it has no cursor position', async () => {
-    wire(
-      [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: null })],
-      { 1: 1, 2: 1 },
-      { 1: { seq: 1, content: 'x', contentType: 'PURE_TEXT', id: 10 } },
-    );
-    const res = await svc.buildNotifyResponse(1, { take: 50 });
-    expect(res.items.map((i) => i.threadId)).toEqual([1]); // thread 2 (no messages) excluded
+  // ── buildNotifyResponse: per-sender aggregation since the HWM ────────────────────────────────
+
+  function wireAway(opts: {
+    counts?: Map<number, number>;
+    overflow?: boolean;
+    blocked?: number[];
+    senders?: Array<{ id: number; name: string; avatar: string }>;
+    newest?: { threadId: number; seq: number; ts: number } | null;
+  }) {
+    participants.mockResolvedValue([]);
+    // resolveId(since) → findMessagesBySeqPairs([since]) resolves the cursor to a valid id (100).
+    findMsgs.mockResolvedValue([{ threadId: 1, seq: 5, id: 100n }]);
+    blockedByMe.mockResolvedValue(new Set(opts.blocked ?? []));
+    senderCountsSince.mockResolvedValue({
+      counts: opts.counts ?? new Map<number, number>(),
+      overflow: opts.overflow ?? false,
+    });
+    queryUsers.mockResolvedValue(opts.senders ?? []);
+    // The descriptor's HWM cursor (findNewestForUser); default to a deterministic (threadId, seq).
+    findNewest.mockResolvedValue(opts.newest === undefined ? { threadId: 2, seq: 9, ts: 0 } : opts.newest);
+  }
+
+  it('buildNotifyResponse: since absent (first-ever) → clear descriptor', async () => {
+    wireAway({});
+    const res = await svc.buildNotifyResponse(1, { acceptLanguage: 'en' });
+    expect(res.notifications).toHaveLength(1);
+    expect(res.notifications[0].kind).toBe('clear');
   });
 
-  it('drops a P2P thread whose latest message is from a blocked creator (P2P block; groups keep them)', async () => {
-    // thread 1's latest is from creator 99 (blocked); thread 2's from creator 1 (not blocked).
-    blockedByMe.mockResolvedValue(new Set([99]));
-    wire(
-      [row(1, 'P2P', { lastMessageSeq: 1 }), row(2, 'P2P', { lastMessageSeq: 1 })],
-      { 1: 1, 2: 1 },
-      { 1: { seq: 1, content: 'a', contentType: 'PURE_TEXT', id: 10, creator: 99 },
-        2: { seq: 1, content: 'b', contentType: 'PURE_TEXT', id: 20, creator: 1 } },
-    );
-    const res = await svc.buildNotifyResponse(1, { take: 50 });
-    expect(res.items.map((i) => i.threadId)).toEqual([2]); // thread 1 (blocked creator) dropped
+  it('buildNotifyResponse: nothing new since HWM → clear', async () => {
+    wireAway({ counts: new Map() });
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'en' });
+    expect(res.notifications[0].kind).toBe('clear');
+  });
+
+  it('buildNotifyResponse: folds senders + total count into the body + feeds the icon', async () => {
+    wireAway({
+      counts: new Map([[11, 2], [22, 3]]),
+      threadIds: [1, 2],
+      senders: [{ id: 11, name: 'Alice', avatar: '/a.webp' }, { id: 22, name: 'Bob', avatar: '/b.webp' }],
+    });
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'en' });
+    const d = res.notifications[0];
+    expect(d.kind).toBe('message-summary');
+    expect(d.body).toBe('Alice, Bob sent you 5 messages');
+    expect(d.icon).toBe('/uploads/notif-icons/abc.png');
+    // The descriptor carries the HWM cursor (the newest covered message), not a sampled thread list.
+    expect(d.data).toEqual({ threadId: 2, seq: 9 });
+    expect(composeStack).toHaveBeenCalledWith([
+      { avatarUrl: '/a.webp', displayName: 'Alice', userId: 11 },
+      { avatarUrl: '/b.webp', displayName: 'Bob', userId: 22 },
+    ]);
+  });
+
+  it('buildNotifyResponse: overflow (≥1000 sampled) → "999+" capped body', async () => {
+    wireAway({
+      counts: new Map([[11, 1000]]),
+      overflow: true,
+      senders: [{ id: 11, name: 'Alice', avatar: '' }],
+    });
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'zh-CN' });
+    expect(res.notifications[0].body).toBe('Alice 给你发了 999+ 条消息');
   });
 });
