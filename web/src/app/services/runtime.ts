@@ -83,6 +83,13 @@ declare global {
        *  onRequestPermissionsResult). Seeds PushService's one-shot auto-prompt guard so it fires once
        *  EVER, not once per cold start. Android-only. */
       getNotifPermRequested: () => boolean;
+      /** Away-notification grouping pref — "thread" (one card per conversation, default) or "all" (one folded
+       *  card). Read by BackgroundSyncService to seed the Settings toggle; the native fetcher sends it as
+       *  `grouping` on /notifications/missed. Android-only. */
+      getNotifGrouping: () => string;
+      /** Set the away-notification grouping pref ("thread" | "all"). Persists to SomsSecureStore; takes effect
+       *  on the next background fetch. Android-only. */
+      setNotifGrouping: (grouping: string) => void;
       /** Push the session token (POST /auth/login, app client) into Android encrypted storage so the
        *  native RealtimeService can authenticate /events and the background fetchers (FCM/WorkManager) can
        *  authenticate /notifications/missed while the WebView is suspended. Pass null/empty on logout to
@@ -412,13 +419,29 @@ export function syncApiOriginSecondarySignal(origin: string | null): void {
   secureStore.setApiOriginSecondary(canonical);
 }
 
-/** Which origin is currently ACTIVE — `'primary'` (normal) or `'secondary'` (the primary was unreachable
- *  and `select_origin` switched to the LAN origin). For the "正在使用内网服务器" indicator. Tauri only;
- *  returns `'primary'` in the browser build (no fallback concept). */
+/** Which origin is currently ACTIVE — `'primary'` (normal) or `'secondary'` (a switch moved to the LAN
+ *  origin). For the "正在使用内网服务器" indicator. Tauri only; returns `'primary'` in the browser build. */
 export async function getOriginMode(): Promise<'primary' | 'secondary'> {
   if (!isTauri()) return 'primary';
   const mode = await tauriInvoke<string>('get_origin_mode');
   return mode === 'secondary' ? 'secondary' : 'primary';
+}
+
+/** The login-init concurrent race — probe both origins' `/health`, pick the reachable one, set Rust's active
+ *  origin. Call BEFORE the auth request so login targets a reachable origin (on the LAN the public origin is
+ *  hairpin-unreachable — a boot-time pick could be stale if the network changed before login). ONCE per
+ *  process (a QR-poll loop reuses the result instead of re-racing every tick); a failure clears the cache so
+ *  a retry re-races. No-op outside Tauri (returns the configured primary). */
+let loginPickPromise: Promise<string> | null = null;
+export function pickLoginOrigin(): Promise<string> {
+  if (!isTauri()) return Promise.resolve(apiOrigin());
+  if (!loginPickPromise) {
+    loginPickPromise = tauriInvoke<string>('init_pick_origin').catch((e) => {
+      loginPickPromise = null; // allow a retry to re-race
+      throw e;
+    });
+  }
+  return loginPickPromise;
 }
 
 /**

@@ -623,13 +623,10 @@ pub fn run() {
                 retry_pending_diagnostics(retry_app, retry_state).await;
             });
 
-            // Cold-start origin race: pick the reachable origin (primary vs LAN secondary) before the first
-            // request/SSE flies. Non-blocking (the race is cheap; a transport's fail-through covers the
-            // window if a request beats it). No-op when no secondary is configured (dev / no SOMS_LAN_DOMAIN).
-            let cold_state = proxy_state.clone();
-            tauri::async_runtime::spawn(async move {
-                pick_origin_race(&cold_state).await;
-            });
+            // NOTE: the init origin race does NOT run at boot — it runs at LOGIN (the shell calls
+            // `init_pick_origin` before the auth request, via runtime.pickLoginOrigin). Pre-login there's no
+            // origin-dependent traffic (server-config passes the entered origin explicitly; the auth guard
+            // reads the configured primary), so leaving the active = persisted primary until login is safe.
             Ok(())
         })
         .run({

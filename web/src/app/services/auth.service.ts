@@ -1,10 +1,10 @@
 import { Injectable, signal } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { EMPTY, firstValueFrom, finalize, mergeMap, tap } from 'rxjs';
+import { EMPTY, Observable, defer, firstValueFrom, finalize, mergeMap, tap } from 'rxjs';
 import { TranslocoService } from '@jsverse/transloco';
 import { RouteService, RoutePage } from './route.service';
 import { apiPrefix } from './constants';
-import { isTauri, isAndroidNative, tauriInvoke, sessionClient } from './runtime';
+import { isTauri, isAndroidNative, tauriInvoke, sessionClient, pickLoginOrigin } from './runtime';
 import { PushService } from './push.service';
 import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
@@ -113,6 +113,12 @@ export class AuthService {
     }
   }
 
+  /** Run the login-init origin race (once) before the auth request, so login targets a reachable origin
+   *  (the boot-time pick may be stale if the network changed before login). No-op outside Tauri. */
+  private pickThen<T>(req: Observable<T>): Observable<T> {
+    return defer(() => pickLoginOrigin()).pipe(mergeMap(() => req));
+  }
+
   login(params: { account: string, password: string, isKeep: boolean, trustDevice?: boolean }) {
     const { isKeep, trustDevice, ...credentials } = params
     // `client` is the device platform (badge in the device list); the token's lifetime is driven by
@@ -121,7 +127,7 @@ export class AuthService {
     // `persistent` maps "keep me logged in" to the cookie lifetime on the pure-httpOnly browser path.
     const client = this.resolveClient()
     const trusted = client === 'app' || (client === 'desktop' && trustDevice === true)
-    return this.http.post<LoginRes>(
+    return this.pickThen(this.http.post<LoginRes>(
       `${apiPrefix()}/auth/login`, {
         ...credentials,
         client,
@@ -136,7 +142,7 @@ export class AuthService {
           await this.activateSession(res.data.session_token, { isKeep, trusted })
         }
         return res
-      }))
+      })))
   }
 
   /** One-time-code (admin-issued) login → a session whose lifetime follows the platform's trust: a trusted
@@ -144,7 +150,7 @@ export class AuthService {
    *  14-day sliding one. `client` is sent so the backend issues the matching session kind. */
   otpLogin(params: { account: string, code: string, device?: string }) {
     const client = sessionClient()
-    return this.http.post<LoginRes>(
+    return this.pickThen(this.http.post<LoginRes>(
       `${apiPrefix()}/auth/otp/login`, {
         account: params.account,
         code: params.code,
@@ -155,29 +161,29 @@ export class AuthService {
           await this.activateSession(res.data.session_token, { isKeep: true, trusted: client !== 'web' })
         }
         return res
-      }))
+      })))
   }
 
   /** QR-login: a client mints a sign-in token to render as a QR. `client` is the real platform
    *  ('app'/'web'/'desktop' — see {@link sessionClient}); `trusted` opts a desktop into a permanent session
    *  (its token kept in OS keyring), is implicit-true for 'app', and ignored for 'web' (never trusted). */
   qrCreate(client: 'app' | 'web' | 'desktop', trusted = false) {
-    return this.http.post<{ code: number, data?: { qrToken: string, expiresAt: number } }>(
+    return this.pickThen(this.http.post<{ code: number, data?: { qrToken: string, expiresAt: number } }>(
       `${apiPrefix()}/auth/qr/create`, { client, trusted },
-    )
+    ))
   }
 
   /** QR-login: poll the sign-in token's status. On 'confirmed' the response carries the session token,
    *  which activates a permanent session (if `trusted` was chosen at create) or a 14-day sliding one. */
   qrPoll(qrToken: string, device?: string, trusted = false) {
-    return this.http.post<{ code: number, data?: { status: string, session_token?: string, mustChangePassword?: boolean } }>(
+    return this.pickThen(this.http.post<{ code: number, data?: { status: string, session_token?: string, mustChangePassword?: boolean } }>(
       `${apiPrefix()}/auth/qr/poll`, { qrToken, device: device ?? this.getDeviceLabel() },
     ).pipe(mergeMap(async (res) => {
       if (res.code === 0 && res.data?.session_token) {
         await this.activateSession(res.data.session_token, { isKeep: true, trusted })
       }
       return res
-    }))
+    })))
   }
 
   /** QR-login: the phone (already logged in) scans a desktop QR → marks it 'scanned'. Authenticated. */
