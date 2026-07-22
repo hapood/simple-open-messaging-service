@@ -43,6 +43,16 @@ description = "Enables get_origin_mode — which origin is ACTIVE (primary | sec
 commands.allow = ["get_origin_mode"]
 
 [[permission]]
+identifier = "allow-init-pick-origin"
+description = "Enables init_pick_origin — the login-init concurrent race (probe both /health, pick reachable, set active)."
+commands.allow = ["init_pick_origin"]
+
+[[permission]]
+identifier = "allow-set-active-origin"
+description = "Enables set_active_origin — Android passive-accept (Kotlin signals the active origin; Rust sets it without deciding)."
+commands.allow = ["set_active_origin"]
+
+[[permission]]
 identifier = "allow-set-session-token"
 description = "Enables the set_session_token command (bearer for the media:// proxy)."
 commands.allow = ["set_session_token"]
@@ -150,6 +160,8 @@ permissions = [
   "allow-get-api-origin-secondary",
   "allow-set-api-origin-secondary",
   "allow-get-origin-mode",
+  "allow-init-pick-origin",
+  "allow-set-active-origin",
   "allow-set-session-token",
   "allow-clear-session-token",
   "allow-secure-set-token",

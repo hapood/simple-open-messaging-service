@@ -508,6 +508,8 @@ pub fn run() {
                     get_api_origin_secondary,
                     set_api_origin_secondary,
                     get_origin_mode,
+                    init_pick_origin,
+                    set_active_origin,
                     set_session_token,
                     clear_session_token,
                     secure_get_token,
@@ -538,6 +540,8 @@ pub fn run() {
                     get_api_origin_secondary,
                     set_api_origin_secondary,
                     get_origin_mode,
+                    init_pick_origin,
+                    set_active_origin,
                     set_session_token,
                     clear_session_token,
                     get_shell_version,
@@ -624,7 +628,7 @@ pub fn run() {
             // window if a request beats it). No-op when no secondary is configured (dev / no SOMS_LAN_DOMAIN).
             let cold_state = proxy_state.clone();
             tauri::async_runtime::spawn(async move {
-                select_origin(&cold_state).await;
+                pick_origin_race(&cold_state).await;
             });
             Ok(())
         })
@@ -692,7 +696,7 @@ async fn proxy_media(
             // Network-level failure on a media load — re-race select_origin (the bare <img> just shows a
             // broken image; a subsequent load hits the new active origin). Non-network errors don't switch.
             if is_network_failure(&e) {
-                select_origin(&st).await;
+                runtime_switch(&st).await;
             }
             responder.respond(empty(StatusCode::BAD_GATEWAY));
         }
@@ -738,16 +742,26 @@ async fn send_with_headers_deadline(
 
 // --- native LAN-domain fallback: reachability probe + origin selection -------------------
 //
-// `select_origin` is the single decision point for which origin (primary vs LAN secondary) is ACTIVE. It
-// is both the cold-start picker and the fail-through handler: on any network-level failure the transports
-// + SSE call it to re-race. `GET /api/v1/health` (public) is the ONLY reachability oracle — SSE can't be
-// probed pre-login (no token), but health can. No request re-send: the failed request surfaces to the
-// caller and the SSE HELLO/reconcile restores state; select_origin only fixes which origin subsequent
-// traffic uses.
+// Origin selection has TWO modes, deliberately split:
+//  - `pick_origin_race` — the CONCURRENT probe-both race. Used ONLY for initialization (login, before the
+//    auth request — picks the origin to authenticate against) and for a full-disconnect RECONNECT (both
+//    origins were down → the backoff retry races both to find the reachable one). "Pick from scratch."
+//  - `maybe_switch` — the runtime smooth switch: probe the CURRENT active; if down, probe the OTHER
+//    (sequential, single — NOT concurrent); flip if the other is reachable. Used on single-point failures
+//    (a transport request / the SSE stream). Lighter than a full race; never races both at runtime.
+//
+// `GET /api/v1/health` (public) is the ONLY reachability oracle — it works PRE-LOGIN (no token), unlike
+// SSE. No request re-send: the failed request surfaces to the caller and the SSE HELLO/reconcile restores
+// state; these only fix which origin subsequent traffic uses.
+//
+// Authority: on DESKTOP Rust decides both (race + switch + `origin_notify` to its own SSE supervisor). On
+// ANDROID Kotlin is authoritative (it owns the FGS, including background); Rust is PASSIVE — it never
+// probes/switches, it just accepts the origin Kotlin signals via `set_active_origin` (JS-mediated). So the
+// `maybe_switch`/`pick_origin_race` CALL SITES in the transports/SSE are desktop-only.
 
 /// A `reqwest::Error` that means the origin is UNREACHABLE (connect / DNS / TLS / timeout) — a candidate
-/// for re-racing `select_origin`. An HTTP status response (incl. 401) never reaches this: it means the
-/// server IS reachable, so no switch. Extracted pure so the boundary is unit-testable.
+/// for `maybe_switch` / `pick_origin_race`. An HTTP status response (incl. 401) never reaches this: it
+/// means the server IS reachable, so no switch. Extracted pure so the boundary is unit-testable.
 fn is_network_failure(e: &reqwest::Error) -> bool {
     e.is_connect() || e.is_timeout()
 }
@@ -755,7 +769,7 @@ fn is_network_failure(e: &reqwest::Error) -> bool {
 /// Short-timeout UNAUTHENTICATED probe of `{origin}/api/v1/health` — true iff the origin answered a
 /// healthy (2xx) response within `HEALTH_PROBE_TIMEOUT`. No Bearer: health is public, so this works
 /// PRE-LOGIN (when no session token exists and SSE cannot connect). A fresh client per probe (probes are
-/// infrequent: cold-start + on failure); the outer timeout bounds DNS + connect + TLS + headers.
+/// infrequent: login + on failure + reconnect); the outer timeout bounds DNS + connect + TLS + headers.
 async fn probe_health(origin: &str) -> bool {
     let url = format!("{}/api/v1/health", origin.trim_end_matches('/'));
     let client = http_client_for(origin);
@@ -765,34 +779,43 @@ async fn probe_health(origin: &str) -> bool {
     }
 }
 
-/// Re-race the configured origins and make the reachable one active. The single decision point — called at
-/// cold start (`setup`), on any network-level failure (the transports + the SSE supervisor), and on
-/// foreground/network-change.
-///
-/// Policy: probe the CURRENT active first (cheap); if it's healthy, do nothing (a concurrent caller or the
-/// cold-start race may have just fixed it, and a transient timeout doesn't churn). Only if the active is
-/// unreachable do we race BOTH concurrently and adopt the primary if healthy, else the secondary. Complete
-/// no-op when no secondary is configured (dev / servers without SOMS_LAN_DOMAIN) → exact legacy behavior.
-/// Never adopts a known-dead origin: if both fail, the active is left as-is (the caller backs off).
-async fn select_origin(state: &ProxyState) {
+/// Apply a chosen origin + mode as the active one, notifying the desktop SSE supervisor to reopen on it
+/// (API⇄SSE lockstep). No-op if it's already the active. Shared by `pick_origin_race` + `maybe_switch`.
+fn activate_origin(state: &ProxyState, origin: &str, mode: OriginMode) {
+    let prev = {
+        let mut g = state.api_origin.lock().expect("origin lock");
+        std::mem::replace(&mut *g, origin.to_string())
+    };
+    *state.origin_mode.lock().expect("mode lock") = mode;
+    if prev.as_str() != origin {
+        warn!("origin: {prev} → {origin} ({mode:?})");
+        // Nudge the desktop SSE supervisor to cancel + reopen on the new active immediately. Race-free
+        // (Notify holds one permit). Mobile SSE (Kotlin) follows via its own state + signals Rust instead.
+        state.origin_notify.notify_one();
+    }
+}
+
+/// The CONCURRENT race: probe BOTH origins, adopt the reachable one (prefer the primary on a tie; current
+/// wins if it's healthy). Used for login init + full-disconnect reconnect — NOT for runtime single-failure
+/// (that's `maybe_switch`). No-op when no secondary is configured (dev / no SOMS_LAN_DOMAIN). Single-flight
+/// (one race at a time). Never adopts a dead origin: if both fail, the active is left as-is.
+async fn pick_origin_race(state: &ProxyState) {
     let Some(secondary) = state.api_origin_secondary.lock().expect("secondary lock").clone() else {
-        return; // no fallback configured → no-op (exact legacy behavior)
+        return; // no fallback configured → no-op
     };
     let active = state.api_origin.lock().expect("origin lock").clone();
-    // Cheap-check the current active first (UNLOCKED — concurrent cheap-checks are fine, they're tiny GETs):
-    // healthy → nothing to do. This also implements "current wins ties" (we only race when current is down).
+    // Cheap-check the current active first (UNLOCKED): healthy → nothing to do ("current wins").
     if probe_health(&active).await {
         return;
     }
-    // Single-flight the RACE: one at a time. The cheap-check above coalesces the common case (a concurrent
-    // caller that already fixed the active); this lock prevents a storm of concurrent FULL races. A late
-    // acquirer re-reads + re-checks the active — if the first flipped it while it waited, it skips.
+    // Single-flight the race: one at a time. A late acquirer re-checks the active (the first may have fixed
+    // it while it waited for the lock) and skips.
     let _guard = state.select_lock.lock().await;
     let active = state.api_origin.lock().expect("origin lock").clone();
     if probe_health(&active).await {
-        return; // a concurrent race fixed it while we waited for the lock
+        return;
     }
-    // Active is unreachable → race both, prefer the primary (same backend; primary is federation-canonical).
+    // Active is down → race both concurrently, prefer the primary (federation-canonical).
     let primary = state.api_origin_primary.lock().expect("primary lock").clone();
     let (primary_ok, secondary_ok) = tokio::join!(probe_health(&primary), probe_health(&secondary));
     let chosen = if primary_ok {
@@ -803,20 +826,67 @@ async fn select_origin(state: &ProxyState) {
         None
     };
     let Some((origin, mode)) = chosen else {
-        warn!("select_origin: both origins unreachable; staying on {active}");
+        warn!("pick_origin_race: both origins unreachable; staying on {active}");
         return;
     };
-    if origin == active {
-        return; // race confirmed the current (e.g. primary recovered) — no switch
+    if origin != active {
+        activate_origin(state, &origin, mode);
     }
-    *state.api_origin.lock().expect("origin lock") = origin.clone();
-    *state.origin_mode.lock().expect("mode lock") = mode;
-    warn!("select_origin: {active} unreachable → active is now {origin}");
-    // Nudge the desktop SSE supervisor to cancel + reopen on the new active immediately (API⇄SSE lockstep —
-    // a single active origin). Race-free: Notify holds one permit, so a notify racing ahead of the waiter
-    // is not lost. Mobile SSE (Kotlin) follows via the shared EncryptedSharedPreferences instead.
-    state.origin_notify.notify_one();
 }
+
+/// The outcome of a runtime `maybe_switch` — drives the caller's next step (the SSE supervisor: reopen vs
+/// enter the reconnecting backoff). Desktop-only (the SSE supervisor + runtime_switch are desktop; on
+/// Android Rust is passive — Kotlin decides).
+#[cfg(desktop)]
+enum SwitchOutcome {
+    /// The current origin is still healthy (the failure was transient) — reopen it.
+    Stayed,
+    /// The current is down; flipped to the other (which is reachable) — reopen the new active.
+    Flipped,
+    /// Both origins are down — enter the reconnecting backoff; the retry will `pick_origin_race`.
+    BothDown,
+    /// No secondary configured — nothing to switch (single-origin: the caller just retries the one).
+    NoFallback,
+}
+
+#[cfg(desktop)]
+/// Runtime smooth switch (NOT a race): probe the CURRENT active; if healthy → `Stayed` (transient). If down
+/// → probe the OTHER (single, sequential); if reachable → `Flipped` (adopt it); else `BothDown`. Used by
+/// the desktop transports + the SSE supervisor on a single-point failure. Android Rust is passive (Kotlin
+/// decides + signals via `set_active_origin`).
+async fn maybe_switch(state: &ProxyState) -> SwitchOutcome {
+    let Some(secondary) = state.api_origin_secondary.lock().expect("secondary lock").clone() else {
+        return SwitchOutcome::NoFallback; // no fallback → nothing to switch
+    };
+    let active = state.api_origin.lock().expect("origin lock").clone();
+    if probe_health(&active).await {
+        return SwitchOutcome::Stayed; // current is fine — transient failure, reopen it
+    }
+    // Current is down → the OTHER origin + its mode (primary↔secondary).
+    let on_secondary = *state.origin_mode.lock().expect("mode lock") == OriginMode::Secondary;
+    let (other, mode) = if on_secondary {
+        (state.api_origin_primary.lock().expect("primary lock").clone(), OriginMode::Primary)
+    } else {
+        (secondary, OriginMode::Secondary)
+    };
+    if probe_health(&other).await {
+        activate_origin(state, &other, mode);
+        SwitchOutcome::Flipped
+    } else {
+        warn!("maybe_switch: both origins down → BothDown (reconnect will race)");
+        SwitchOutcome::BothDown
+    }
+}
+
+/// Desktop-only runtime switch (the transports + diagnostics call this on a network failure). On Android
+/// Rust is PASSIVE — Kotlin owns the decision and signals via `set_active_origin` — so this is a no-op
+/// there, avoiding a second, divergent decision-maker.
+#[cfg(desktop)]
+async fn runtime_switch(state: &ProxyState) {
+    let _ = maybe_switch(state).await;
+}
+#[cfg(not(desktop))]
+async fn runtime_switch(_state: &ProxyState) {}
 
 /// The webview→backend HTTP transport under the Tauri shell. The frontend `TauriHttpBackend`
 /// (web/.../tauri-http.backend.ts) invokes this instead of `fetch()`: Android's Chromium WebView rejects
@@ -882,14 +952,14 @@ async fn api_request(
             // by clientMessageId; the SSE HELLO/reconcile restores state). A non-network send error (rare)
             // does not trigger a switch. 401/HTTP-status never reach here (those are Ok(Response)).
             if is_network_failure(&e) {
-                select_origin(&proxy).await;
+                runtime_switch(&proxy).await;
             }
             warn!("api_request {target} upstream send failed: {e}");
             return Err(format!("api_request send: {e}"));
         }
         Err(HeadersError::Timeout) => {
             // Hung upstream (connected, no headers) → re-race too, then surface a real 504.
-            select_origin(&proxy).await;
+            runtime_switch(&proxy).await;
             warn!("api_request {target} upstream headers timed out → 504");
             return Ok(ApiRequestResult {
                 status: 504,
@@ -967,13 +1037,13 @@ async fn media_request(
         Ok(r) => r,
         Err(HeadersError::SendFailed(e)) => {
             if is_network_failure(&e) {
-                select_origin(&proxy).await;
+                runtime_switch(&proxy).await;
             }
             warn!("media_request {target} send failed: {e}");
             return Err(format!("media_request send: {e}"));
         }
         Err(HeadersError::Timeout) => {
-            select_origin(&proxy).await;
+            runtime_switch(&proxy).await;
             warn!("media_request {target} headers timed out → 504");
             return Ok(MediaRequestResult { status: 504, content_type: None, body: vec![] });
         }
@@ -1051,7 +1121,7 @@ async fn upload_stream_file(
             // origin. We do NOT re-issue the streaming upload here (re-opening the file + re-streaming is
             // the caller's job); non-network errors don't switch.
             if is_network_failure(&e) {
-                select_origin(&proxy).await;
+                runtime_switch(&proxy).await;
             }
             return Err(format!("upload send: {e}"));
         }
@@ -1222,7 +1292,7 @@ async fn post_diagnostics_bundle(
             // launch's retry_pending_diagnostics) targets the reachable origin. Diagnostics are best-effort
             // + cached on failure, so we don't retry in-line — just fix connectivity for the next attempt.
             if is_network_failure(&e) {
-                select_origin(proxy).await;
+                runtime_switch(proxy).await;
             }
             return Err(format!("diagnostics send: {e}"));
         }
@@ -1481,13 +1551,39 @@ fn set_api_origin_secondary(
 }
 
 /// Which origin is currently ACTIVE — for the "正在使用内网服务器" indicator. `primary` = normal;
-/// `secondary` = the primary was unreachable and select_origin switched to the LAN origin.
+/// `secondary` = the primary was unreachable and a switch moved to the LAN origin.
 #[tauri::command]
 fn get_origin_mode(state: tauri::State<'_, ProxyState>) -> String {
     match *state.origin_mode.lock().expect("mode lock") {
         OriginMode::Primary => "primary".to_string(),
         OriginMode::Secondary => "secondary".to_string(),
     }
+}
+
+/// Login initialization — the CONCURRENT race. Probe both origins' `/health`, pick the reachable one, set
+/// it active. Called by the shell ONCE before the auth request, so login targets a reachable origin (on the
+/// LAN the public origin is hairpin-unreachable). Pre-token (no SSE yet) — health is the only probe that
+/// works. No-op when no secondary is configured (single-origin). Returns the active origin Rust picked.
+#[tauri::command]
+async fn init_pick_origin(state: tauri::State<'_, ProxyState>) -> Result<String, String> {
+    pick_origin_race(&state).await;
+    Ok(state.api_origin.lock().expect("origin lock").clone())
+}
+
+/// Android passive-accept: Kotlin (the SSE authority on Android) signals which origin is active; Rust sets
+/// it WITHOUT probing/switching (it's not the authority there). Desktop doesn't call this (Rust decides).
+/// Sets the ACTIVE origin only (the primary/secondary config is owned by set_api_origin[_secondary]).
+#[tauri::command]
+fn set_active_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<String, String> {
+    let normalized = validate_origin(&url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
+    let secondary = state.api_origin_secondary.lock().expect("secondary lock").clone();
+    let mode = if Some(&normalized) == secondary.as_ref() {
+        OriginMode::Secondary
+    } else {
+        OriginMode::Primary
+    };
+    activate_origin(&state, &normalized, mode);
+    Ok(normalized)
 }
 
 #[tauri::command]
@@ -1757,18 +1853,19 @@ async fn sse_supervisor_loop(
             }
             StreamOutcome::Cancelled => break,
             StreamOutcome::StreamClosed | StreamOutcome::Stale | StreamOutcome::Err => {
-                // On a connect/network error (Err), the active origin may be unreachable — re-race
-                // select_origin so the next open targets the LAN origin if the primary is down; if it
-                // switched, reopen at once (no backoff). StreamClosed / Stale may be server-side (not
-                // network) — they still reconnect, which re-reads the active, so a transport-driven flip is
-                // picked up regardless.
+                // On a connect/network error (Err), try a SMOOTH switch first: maybe_switch probes the
+                // current; if it's healthy (transient) or the OTHER is reachable (flip), reopen at once with
+                // no backoff. If both are down (BothDown) or there's no fallback, fall through to the
+                // reconnecting backoff — whose retry races both (pick_origin_race below). StreamClosed /
+                // Stale may be server-side (not network); they skip the smooth switch → straight to backoff.
                 if matches!(outcome, StreamOutcome::Err) {
-                    let before = proxy.api_origin.lock().expect("origin lock").clone();
-                    select_origin(&proxy).await;
-                    if before != *proxy.api_origin.lock().expect("origin lock") {
-                        warn!("sse: active origin switched after Err → reopen at once (no backoff)");
-                        attempt = 0;
-                        continue;
+                    match maybe_switch(&proxy).await {
+                        SwitchOutcome::Flipped | SwitchOutcome::Stayed => {
+                            warn!("sse: smooth switch after Err → reopen at once (no backoff)");
+                            attempt = 0;
+                            continue;
+                        }
+                        SwitchOutcome::BothDown | SwitchOutcome::NoFallback => {} // → backoff + race
                     }
                 }
                 emit_state(&app, &state, ConnectionState::Reconnecting);
@@ -1784,16 +1881,19 @@ async fn sse_supervisor_loop(
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     _ = wake.notified() => {
-                        // online / user-retry / network-change → re-race select_origin (topology may have
-                        // changed: the other origin may now be reachable) before retrying at once; offline
-                        // → retry fails fast and backs off again (the loop re-checks `offline`).
-                        select_origin(&proxy).await;
+                        // online / user-retry / network-change → retry at once (reset attempt); offline →
+                        // retry fails fast and backs off again. The pick_origin_race just below re-races on
+                        // the changed topology (the other origin may now be reachable).
                         if !offline.load(Ordering::Acquire) {
                             attempt = 0;
                         }
                     }
                     _ = tokio::time::sleep(delay) => {}
                 }
+                // Full-disconnect RECONNECT: race BOTH origins (the concurrent race) to find the reachable
+                // one before reopening. This + login init are the only two places the concurrent race runs.
+                // If both are still down, the active is unchanged → the next open fails → backoff again.
+                pick_origin_race(&proxy).await;
             }
         }
     }
