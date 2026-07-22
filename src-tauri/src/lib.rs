@@ -64,6 +64,11 @@ const BACKEND_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// but never responds → 504 Gateway Timeout.
 const API_HEADERS_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout for a `probe_health` reachability probe (`select_origin`'s cheap-check + race). Bounds the
+/// WHOLE probe (DNS + connect + TLS + headers) so an unreachable origin fails fast instead of hanging the
+/// cold-start race or a fail-through flip; overrides the client's longer connect_timeout.
+const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// Max wait for the SSE stream's opening response. The in-stream liveness watchdog (60s, no frame)
 /// only arms AFTER a real `ping` is observed, so without this a server that accepts the connection but
 /// never sends headers would hang the connect forever. On timeout → treat as a network error → backoff
@@ -94,6 +99,10 @@ const DEFAULT_API_ORIGIN: &str = "https://example.com:7667";
 /// override the env/default; written by `persist_origin`.
 const CONFIG_FILENAME: &str = "api_origin";
 
+/// Sibling of `api_origin`: the optional LAN (secondary) origin, validated the same way. Absent/empty →
+/// no fallback configured (the shell behaves exactly as before). Written by `persist_origin_secondary`.
+const CONFIG_SECONDARY_FILENAME: &str = "api_origin_secondary";
+
 /// Web-bundle layout under app_data_dir: `web/active` holds the active version string;
 /// `web/<version>/` the extracted SPA; `web/.staging-<version>/` an in-flight install.
 const WEB_DIRNAME: &str = "web";
@@ -103,12 +112,40 @@ const ACTIVE_FILENAME: &str = "active";
 /// detection (`installedHash != serverHash`). Absent on legacy installs predating hash persistence.
 const ACTIVE_HASH_FILENAME: &str = "active.hash";
 
+/// Which origin `api_origin` currently holds, for the native fallback state machine.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum OriginMode {
+    /// Active origin = the primary (normal operation).
+    Primary,
+    /// Active origin = the secondary; the primary was unreachable at the last `select_origin` race.
+    Secondary,
+}
+
 /// Shared state for the proxies + the token/origin commands. Cloned cheaply (the reqwest Client,
 /// the token Arc, the origin Arc, the config-path Arc are all refcounted), so every protocol handler +
 /// command handler sees the same live values.
 #[derive(Clone)]
 struct ProxyState {
+    /// The ACTIVE origin — every transport (api_request/media_request/proxy_media/upload_stream_file)
+    /// and the desktop SSE supervisor read THIS. Swapped in-place by `select_origin` on fallback, so the
+    /// read sites never change. Cold-start select_origin may flip it from the persisted primary to the
+    /// secondary before the first request flies.
     api_origin: Arc<Mutex<String>>,
+    /// The user-configured PRIMARY origin (field-1). Only `persist_origin` writes it (set_api_origin /
+    /// init_download_web). `is_origin_configured` reads THIS, so a fallback swap to the secondary doesn't
+    /// trip the /config first-run guard.
+    api_origin_primary: Arc<Mutex<String>>,
+    /// The optional LAN (secondary) origin (field-2). None = no fallback configured → select_origin is a
+    /// complete no-op and the shell behaves exactly as before.
+    api_origin_secondary: Arc<Mutex<Option<String>>>,
+    /// Which origin `api_origin` currently holds. No periodic proactive switch-back — movement either way
+    /// is handled by re-racing on the next network-level failure.
+    origin_mode: Arc<Mutex<OriginMode>>,
+    /// Woken on a committed origin switch (select_origin) so the desktop SSE supervisor cancels its current
+    /// stream and reopens on the new active origin immediately — API and SSE never split on a single active
+    /// origin. Race-free (Notify holds one permit). Mobile follows via the shared EncryptedSharedPreferences
+    /// instead (Kotlin owns /events); the Notify is harmless there (nothing awaits it).
+    origin_notify: Arc<Notify>,
     token: Arc<Mutex<Option<String>>>,
     config_path: Arc<Mutex<PathBuf>>,
     /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
@@ -223,7 +260,43 @@ fn persist_origin(state: &ProxyState, url: &str) -> Result<String, String> {
     let normalized = validate_origin(url).ok_or_else(|| format!("not a valid http(s) URL: {url}"))?;
     let path = state.config_path.lock().expect("config_path lock").clone();
     fs::write(&path, &normalized).map_err(|e| format!("failed to write config: {e}"))?;
+    // This is the "user explicitly chose the primary" path (set_api_origin / init_download_web): record it
+    // as the primary, make it active, and reset the mode. The secondary is managed separately by
+    // persist_origin_secondary. select_origin may later flip `api_origin` to the secondary on failure.
+    *state.api_origin_primary.lock().expect("primary lock") = normalized.clone();
     *state.api_origin.lock().expect("origin lock") = normalized.clone();
+    *state.origin_mode.lock().expect("mode lock") = OriginMode::Primary;
+    Ok(normalized)
+}
+
+/// Persist + set the LAN (secondary) origin (field-2). `None`/empty clears it (deletes the file + sets the
+/// Arc to None → no fallback). Validates via the same `validate_origin` so a malformed URL is never stored.
+/// Does NOT touch the active origin or mode — `select_origin` decides which is active.
+fn persist_origin_secondary(state: &ProxyState, url: Option<&str>) -> Result<Option<String>, String> {
+    let dir = state
+        .config_path
+        .lock()
+        .expect("config_path lock")
+        .parent()
+        .map(|p| p.to_path_buf());
+    let normalized = match url.map(str::trim).filter(|s| !s.is_empty()) {
+        None => {
+            if let Some(dir) = &dir {
+                let _ = fs::remove_file(dir.join(CONFIG_SECONDARY_FILENAME));
+            }
+            *state.api_origin_secondary.lock().expect("secondary lock") = None;
+            None
+        }
+        Some(raw) => {
+            let n = validate_origin(raw).ok_or_else(|| format!("not a valid http(s) URL: {raw}"))?;
+            if let Some(dir) = &dir {
+                fs::write(dir.join(CONFIG_SECONDARY_FILENAME), &n)
+                    .map_err(|e| format!("failed to write secondary config: {e}"))?;
+            }
+            *state.api_origin_secondary.lock().expect("secondary lock") = Some(n.clone());
+            Some(n)
+        }
+    };
     Ok(normalized)
 }
 
@@ -325,6 +398,12 @@ pub fn run() {
     let ota_active: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let proxy_state = ProxyState {
         api_origin: Arc::new(Mutex::new(initial_origin.clone())),
+        // Pre-setup best guess: primary == active == the boot origin (env/default). setup() overrides both
+        // from the persisted files; the secondary starts None until setup reads its file.
+        api_origin_primary: Arc::new(Mutex::new(initial_origin.clone())),
+        api_origin_secondary: Arc::new(Mutex::new(None)),
+        origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
+        origin_notify: Arc::new(Notify::new()),
         token: Arc::new(Mutex::new(None)),
         config_path: Arc::new(Mutex::new(PathBuf::new())),
         token_notify: Arc::new(Notify::new()),
@@ -421,6 +500,9 @@ pub fn run() {
                     get_api_origin,
                     is_origin_configured,
                     set_api_origin,
+                    get_api_origin_secondary,
+                    set_api_origin_secondary,
+                    get_origin_mode,
                     set_session_token,
                     clear_session_token,
                     secure_get_token,
@@ -448,6 +530,9 @@ pub fn run() {
                     get_api_origin,
                     is_origin_configured,
                     set_api_origin,
+                    get_api_origin_secondary,
+                    set_api_origin_secondary,
+                    get_origin_mode,
                     set_session_token,
                     clear_session_token,
                     get_shell_version,
@@ -478,7 +563,18 @@ pub fn run() {
                 .ok()
                 .and_then(|s| validate_origin(&s))
             {
+                // The persisted file is the user-configured PRIMARY. Seed primary + active from it; a
+                // cold-start select_origin (spawned later in setup) may flip `api_origin` to the secondary
+                // if the primary is unreachable on this network.
+                *proxy_state.api_origin_primary.lock().expect("primary lock") = persisted.clone();
                 *proxy_state.api_origin.lock().expect("origin lock") = persisted;
+            }
+            // Secondary (LAN) origin — optional. Absent file → None → no fallback (exact legacy behavior).
+            if let Some(sec) = fs::read_to_string(data_dir.join(CONFIG_SECONDARY_FILENAME))
+                .ok()
+                .and_then(|s| validate_origin(&s))
+            {
+                *proxy_state.api_origin_secondary.lock().expect("secondary lock") = Some(sec);
             }
             *proxy_state.config_path.lock().expect("config_path lock") = config_path;
 
@@ -516,6 +612,14 @@ pub fn run() {
             let retry_state = proxy_state.clone();
             tauri::async_runtime::spawn(async move {
                 retry_pending_diagnostics(retry_app, retry_state).await;
+            });
+
+            // Cold-start origin race: pick the reachable origin (primary vs LAN secondary) before the first
+            // request/SSE flies. Non-blocking (the race is cheap; a transport's fail-through covers the
+            // window if a request beats it). No-op when no secondary is configured (dev / no SOMS_LAN_DOMAIN).
+            let cold_state = proxy_state.clone();
+            tauri::async_runtime::spawn(async move {
+                select_origin(&cold_state).await;
             });
             Ok(())
         })
@@ -579,7 +683,14 @@ async fn proxy_media(
             let bytes = upstream.bytes().await.unwrap_or_default();
             responder.respond(builder.body(Cow::Owned(bytes.to_vec())).unwrap_or_else(|_| empty(status)));
         }
-        Err(_) => responder.respond(empty(StatusCode::BAD_GATEWAY)),
+        Err(e) => {
+            // Network-level failure on a media load — re-race select_origin (the bare <img> just shows a
+            // broken image; a subsequent load hits the new active origin). Non-network errors don't switch.
+            if is_network_failure(&e) {
+                select_origin(&st).await;
+            }
+            responder.respond(empty(StatusCode::BAD_GATEWAY));
+        }
     }
 }
 
@@ -618,6 +729,80 @@ async fn send_with_headers_deadline(
         Ok(Err(e)) => Err(HeadersError::SendFailed(e)),
         Err(_) => Err(HeadersError::Timeout),
     }
+}
+
+// --- native LAN-domain fallback: reachability probe + origin selection -------------------
+//
+// `select_origin` is the single decision point for which origin (primary vs LAN secondary) is ACTIVE. It
+// is both the cold-start picker and the fail-through handler: on any network-level failure the transports
+// + SSE call it to re-race. `GET /api/v1/health` (public) is the ONLY reachability oracle — SSE can't be
+// probed pre-login (no token), but health can. No request re-send: the failed request surfaces to the
+// caller and the SSE HELLO/reconcile restores state; select_origin only fixes which origin subsequent
+// traffic uses.
+
+/// A `reqwest::Error` that means the origin is UNREACHABLE (connect / DNS / TLS / timeout) — a candidate
+/// for re-racing `select_origin`. An HTTP status response (incl. 401) never reaches this: it means the
+/// server IS reachable, so no switch. Extracted pure so the boundary is unit-testable.
+fn is_network_failure(e: &reqwest::Error) -> bool {
+    e.is_connect() || e.is_timeout()
+}
+
+/// Short-timeout UNAUTHENTICATED probe of `{origin}/api/v1/health` — true iff the origin answered a
+/// healthy (2xx) response within `HEALTH_PROBE_TIMEOUT`. No Bearer: health is public, so this works
+/// PRE-LOGIN (when no session token exists and SSE cannot connect). A fresh client per probe (probes are
+/// infrequent: cold-start + on failure); the outer timeout bounds DNS + connect + TLS + headers.
+async fn probe_health(origin: &str) -> bool {
+    let url = format!("{}/api/v1/health", origin.trim_end_matches('/'));
+    let client = http_client_for(origin);
+    match tokio::time::timeout(HEALTH_PROBE_TIMEOUT, client.get(&url).send()).await {
+        Ok(Ok(r)) => r.status().is_success(),
+        _ => false, // timeout, connect/DNS/TLS failure, or non-2xx → not healthy
+    }
+}
+
+/// Re-race the configured origins and make the reachable one active. The single decision point — called at
+/// cold start (`setup`), on any network-level failure (the transports + the SSE supervisor), and on
+/// foreground/network-change.
+///
+/// Policy: probe the CURRENT active first (cheap); if it's healthy, do nothing (a concurrent caller or the
+/// cold-start race may have just fixed it, and a transient timeout doesn't churn). Only if the active is
+/// unreachable do we race BOTH concurrently and adopt the primary if healthy, else the secondary. Complete
+/// no-op when no secondary is configured (dev / servers without SOMS_LAN_DOMAIN) → exact legacy behavior.
+/// Never adopts a known-dead origin: if both fail, the active is left as-is (the caller backs off).
+async fn select_origin(state: &ProxyState) {
+    let Some(secondary) = state.api_origin_secondary.lock().expect("secondary lock").clone() else {
+        return; // no fallback configured → no-op (exact legacy behavior)
+    };
+    let active = state.api_origin.lock().expect("origin lock").clone();
+    // Cheap-check the current active first: healthy → nothing to do. This also implements "current wins
+    // ties" (we only race when current is down) and coalesces a concurrent race that already fixed it.
+    if probe_health(&active).await {
+        return;
+    }
+    // Active is unreachable → race both, prefer the primary (same backend; primary is federation-canonical).
+    let primary = state.api_origin_primary.lock().expect("primary lock").clone();
+    let (primary_ok, secondary_ok) = tokio::join!(probe_health(&primary), probe_health(&secondary));
+    let chosen = if primary_ok {
+        Some((primary, OriginMode::Primary))
+    } else if secondary_ok {
+        Some((secondary, OriginMode::Secondary))
+    } else {
+        None
+    };
+    let Some((origin, mode)) = chosen else {
+        warn!("select_origin: both origins unreachable; staying on {active}");
+        return;
+    };
+    if origin == active {
+        return; // race confirmed the current (e.g. primary recovered) — no switch
+    }
+    *state.api_origin.lock().expect("origin lock") = origin.clone();
+    *state.origin_mode.lock().expect("mode lock") = mode;
+    warn!("select_origin: {active} unreachable → active is now {origin}");
+    // Nudge the desktop SSE supervisor to cancel + reopen on the new active immediately (API⇄SSE lockstep —
+    // a single active origin). Race-free: Notify holds one permit, so a notify racing ahead of the waiter
+    // is not lost. Mobile SSE (Kotlin) follows via the shared EncryptedSharedPreferences instead.
+    state.origin_notify.notify_one();
 }
 
 /// The webview→backend HTTP transport under the Tauri shell. The frontend `TauriHttpBackend`
@@ -678,10 +863,20 @@ async fn api_request(
     let upstream = match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
         Ok(r) => r,
         Err(HeadersError::SendFailed(e)) => {
+            // Network-level failure (connect/DNS/TLS/timeout): the origin may be unreachable. Re-race
+            // select_origin so subsequent requests + SSE move to the LAN origin if the primary is down —
+            // but do NOT re-issue THIS request (the caller reconciles: reads are idempotent, writes dedup
+            // by clientMessageId; the SSE HELLO/reconcile restores state). A non-network send error (rare)
+            // does not trigger a switch. 401/HTTP-status never reach here (those are Ok(Response)).
+            if is_network_failure(&e) {
+                select_origin(&proxy).await;
+            }
             warn!("api_request {target} upstream send failed: {e}");
             return Err(format!("api_request send: {e}"));
         }
         Err(HeadersError::Timeout) => {
+            // Hung upstream (connected, no headers) → re-race too, then surface a real 504.
+            select_origin(&proxy).await;
             warn!("api_request {target} upstream headers timed out → 504");
             return Ok(ApiRequestResult {
                 status: 504,
@@ -758,10 +953,14 @@ async fn media_request(
     let upstream = match send_with_headers_deadline(req, API_HEADERS_TIMEOUT).await {
         Ok(r) => r,
         Err(HeadersError::SendFailed(e)) => {
+            if is_network_failure(&e) {
+                select_origin(&proxy).await;
+            }
             warn!("media_request {target} send failed: {e}");
             return Err(format!("media_request send: {e}"));
         }
         Err(HeadersError::Timeout) => {
+            select_origin(&proxy).await;
             warn!("media_request {target} headers timed out → 504");
             return Ok(MediaRequestResult { status: 504, content_type: None, body: vec![] });
         }
@@ -832,7 +1031,18 @@ async fn upload_stream_file(
     // No send timeout: a large upload legitimately takes minutes, and a total-duration timeout would
     // wrongly abort it. `BACKEND_CONNECT_TIMEOUT` (on the cached client) already catches an unreachable
     // backend; a mid-upload stall is an accepted rare failure (the user can retry).
-    let resp = req.send().await.map_err(|e| format!("upload send: {e}"))?;
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            // Unreachable backend mid-upload: re-race select_origin so the user's RETRY hits the new active
+            // origin. We do NOT re-issue the streaming upload here (re-opening the file + re-streaming is
+            // the caller's job); non-network errors don't switch.
+            if is_network_failure(&e) {
+                select_origin(&proxy).await;
+            }
+            return Err(format!("upload send: {e}"));
+        }
+    };
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("upload read: {e}"))?;
     if !status.is_success() {
@@ -1202,7 +1412,12 @@ fn read_native_log(
 
 #[tauri::command]
 fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
-    state.api_origin.lock().expect("origin lock").clone()
+    // Returns the user-configured PRIMARY (stable) — NOT the swapping active origin. On native, request
+    // URLs are built in Rust from the active `api_origin` (which select_origin may flip to the secondary);
+    // JS never needs the active for URL building, and seeding the JS signal from the stable primary keeps
+    // the origin-change SSE effect from firing on a fallback switch. The active MODE is exposed via
+    // get_origin_mode (for the "正在使用内网服务器" indicator).
+    state.api_origin_primary.lock().expect("primary lock").clone()
 }
 
 /// Whether a real backend origin has been configured — the authoritative "has a SOMS backend been
@@ -1211,7 +1426,9 @@ fn get_api_origin(state: tauri::State<'_, ProxyState>) -> String {
 /// non-empty origin is NOT enough: it must also differ from the placeholder.
 #[tauri::command]
 fn is_origin_configured(state: tauri::State<'_, ProxyState>) -> bool {
-    let origin = state.api_origin.lock().expect("origin lock");
+    // Reads the PRIMARY — a fallback swap to the secondary must NOT flip this to "configured" (nor must a
+    // swap back trip it). The guard asks "did the user configure a real backend" = primary configured.
+    let origin = state.api_origin_primary.lock().expect("primary lock");
     !origin.is_empty() && *origin != DEFAULT_API_ORIGIN
 }
 
@@ -1220,6 +1437,33 @@ fn is_origin_configured(state: tauri::State<'_, ProxyState>) -> bool {
 #[tauri::command]
 fn set_api_origin(url: String, state: tauri::State<'_, ProxyState>) -> Result<String, String> {
     persist_origin(&state, &url)
+}
+
+/// The configured LAN (secondary) origin, or null when no fallback is configured (dev, or servers without
+/// SOMS_LAN_DOMAIN). The shell uses this to populate the second server-config field + persist it.
+#[tauri::command]
+fn get_api_origin_secondary(state: tauri::State<'_, ProxyState>) -> Option<String> {
+    state.api_origin_secondary.lock().expect("secondary lock").clone()
+}
+
+/// Persist the LAN (secondary) origin (field-2). Empty/null clears it (disables fallback). Returns the
+/// canonical value Rust stored (Some url, or None when cleared).
+#[tauri::command]
+fn set_api_origin_secondary(
+    url: Option<String>,
+    state: tauri::State<'_, ProxyState>,
+) -> Result<Option<String>, String> {
+    persist_origin_secondary(&state, url.as_deref())
+}
+
+/// Which origin is currently ACTIVE — for the "正在使用内网服务器" indicator. `primary` = normal;
+/// `secondary` = the primary was unreachable and select_origin switched to the LAN origin.
+#[tauri::command]
+fn get_origin_mode(state: tauri::State<'_, ProxyState>) -> String {
+    match *state.origin_mode.lock().expect("mode lock") {
+        OriginMode::Primary => "primary".to_string(),
+        OriginMode::Secondary => "secondary".to_string(),
+    }
 }
 
 #[tauri::command]
@@ -1489,6 +1733,20 @@ async fn sse_supervisor_loop(
             }
             StreamOutcome::Cancelled => break,
             StreamOutcome::StreamClosed | StreamOutcome::Stale | StreamOutcome::Err => {
+                // On a connect/network error (Err), the active origin may be unreachable — re-race
+                // select_origin so the next open targets the LAN origin if the primary is down; if it
+                // switched, reopen at once (no backoff). StreamClosed / Stale may be server-side (not
+                // network) — they still reconnect, which re-reads the active, so a transport-driven flip is
+                // picked up regardless.
+                if matches!(outcome, StreamOutcome::Err) {
+                    let before = proxy.api_origin.lock().expect("origin lock").clone();
+                    select_origin(&proxy).await;
+                    if before != *proxy.api_origin.lock().expect("origin lock") {
+                        warn!("sse: active origin switched after Err → reopen at once (no backoff)");
+                        attempt = 0;
+                        continue;
+                    }
+                }
                 emit_state(&app, &state, ConnectionState::Reconnecting);
                 attempt = attempt.saturating_add(1);
                 // Full-jitter backoff (parity with the worker): random(0, min(1000·2^attempt, 30000)).
@@ -1502,8 +1760,10 @@ async fn sse_supervisor_loop(
                 tokio::select! {
                     _ = cancel.cancelled() => break,
                     _ = wake.notified() => {
-                        // online / user-retry → retry at once (reset attempt); offline → retry fails fast
-                        // and backs off again (the loop re-checks `offline`).
+                        // online / user-retry / network-change → re-race select_origin (topology may have
+                        // changed: the other origin may now be reachable) before retrying at once; offline
+                        // → retry fails fast and backs off again (the loop re-checks `offline`).
+                        select_origin(&proxy).await;
                         if !offline.load(Ordering::Acquire) {
                             attempt = 0;
                         }
@@ -1589,6 +1849,10 @@ async fn open_one_stream(
         tokio::select! {
             biased;
             _ = cancel.cancelled() => return StreamOutcome::Cancelled,
+            // An API-side select_origin switched the active origin → drop this stream and reopen on the new
+            // active (the loop re-enters open_one_stream, which re-reads proxy.api_origin). API⇄SSE lockstep:
+            // they never sit on different origins. Race-free (Notify holds one stored permit).
+            _ = proxy.origin_notify.notified() => return StreamOutcome::StreamClosed,
             _ = wake.notified() => {
                 // Network transitioned or the user hit retry. Offline → drop the stream and reconnect
                 // (the next attempt fails fast, backs off). Online while a healthy stream is open → no-op

@@ -25,6 +25,23 @@ identifier = "allow-is-origin-configured"
 description = "Enables is_origin_configured — authoritative 'has a backend been configured' (origin != the non-routable placeholder)."
 commands.allow = ["is_origin_configured"]
 
+# Native LAN-domain fallback (field-2 origin + the active-mode indicator). All three are no-ops when no
+# secondary is configured (dev / servers without SOMS_LAN_DOMAIN) — the shell behaves exactly as before.
+[[permission]]
+identifier = "allow-get-api-origin-secondary"
+description = "Enables get_api_origin_secondary — the configured LAN origin (null when no fallback is configured)."
+commands.allow = ["get_api_origin_secondary"]
+
+[[permission]]
+identifier = "allow-set-api-origin-secondary"
+description = "Enables set_api_origin_secondary — validate + persist the LAN origin (empty clears it, disabling fallback)."
+commands.allow = ["set_api_origin_secondary"]
+
+[[permission]]
+identifier = "allow-get-origin-mode"
+description = "Enables get_origin_mode — which origin is ACTIVE (primary | secondary), for the 'using LAN server' indicator."
+commands.allow = ["get_origin_mode"]
+
 [[permission]]
 identifier = "allow-set-session-token"
 description = "Enables the set_session_token command (bearer for the media:// proxy)."
@@ -130,6 +147,9 @@ permissions = [
   "allow-set-api-origin",
   "allow-get-api-origin",
   "allow-is-origin-configured",
+  "allow-get-api-origin-secondary",
+  "allow-set-api-origin-secondary",
+  "allow-get-origin-mode",
   "allow-set-session-token",
   "allow-clear-session-token",
   "allow-secure-set-token",
