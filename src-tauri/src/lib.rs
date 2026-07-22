@@ -146,6 +146,10 @@ struct ProxyState {
     /// origin. Race-free (Notify holds one permit). Mobile follows via the shared EncryptedSharedPreferences
     /// instead (Kotlin owns /events); the Notify is harmless there (nothing awaits it).
     origin_notify: Arc<Notify>,
+    /// Serializes `select_origin`'s RACE (single-flight): one race at a time. The cheap-check before the
+    /// lock coalesces the common case; this prevents a storm of concurrent full races. `tokio::sync::Mutex`
+    /// (held across `.await` probes) — distinct from the `std::sync::Mutex` used elsewhere for sync state.
+    select_lock: Arc<tokio::sync::Mutex<()>>,
     token: Arc<Mutex<Option<String>>>,
     config_path: Arc<Mutex<PathBuf>>,
     /// Woken by `set_session_token` after writing a non-empty token. The desktop SSE supervisor awaits
@@ -404,6 +408,7 @@ pub fn run() {
         api_origin_secondary: Arc::new(Mutex::new(None)),
         origin_mode: Arc::new(Mutex::new(OriginMode::Primary)),
         origin_notify: Arc::new(Notify::new()),
+        select_lock: Arc::new(tokio::sync::Mutex::new(())),
         token: Arc::new(Mutex::new(None)),
         config_path: Arc::new(Mutex::new(PathBuf::new())),
         token_notify: Arc::new(Notify::new()),
@@ -774,10 +779,18 @@ async fn select_origin(state: &ProxyState) {
         return; // no fallback configured → no-op (exact legacy behavior)
     };
     let active = state.api_origin.lock().expect("origin lock").clone();
-    // Cheap-check the current active first: healthy → nothing to do. This also implements "current wins
-    // ties" (we only race when current is down) and coalesces a concurrent race that already fixed it.
+    // Cheap-check the current active first (UNLOCKED — concurrent cheap-checks are fine, they're tiny GETs):
+    // healthy → nothing to do. This also implements "current wins ties" (we only race when current is down).
     if probe_health(&active).await {
         return;
+    }
+    // Single-flight the RACE: one at a time. The cheap-check above coalesces the common case (a concurrent
+    // caller that already fixed the active); this lock prevents a storm of concurrent FULL races. A late
+    // acquirer re-reads + re-checks the active — if the first flipped it while it waited, it skips.
+    let _guard = state.select_lock.lock().await;
+    let active = state.api_origin.lock().expect("origin lock").clone();
+    if probe_health(&active).await {
+        return; // a concurrent race fixed it while we waited for the lock
     }
     // Active is unreachable → race both, prefer the primary (same backend; primary is federation-canonical).
     let primary = state.api_origin_primary.lock().expect("primary lock").clone();
@@ -1202,7 +1215,18 @@ async fn post_diagnostics_bundle(
     if let Some(t) = proxy.token.lock().ok().and_then(|g| g.clone()) {
         req = req.header("authorization", format!("Bearer {}", t));
     }
-    let resp = req.send().await.map_err(|e| format!("diagnostics send: {e}"))?;
+    let resp = match req.send().await {
+        Ok(r) => r,
+        Err(e) => {
+            // Network failure: re-race select_origin so the NEXT retry (this launch's loop or the next
+            // launch's retry_pending_diagnostics) targets the reachable origin. Diagnostics are best-effort
+            // + cached on failure, so we don't retry in-line — just fix connectivity for the next attempt.
+            if is_network_failure(&e) {
+                select_origin(proxy).await;
+            }
+            return Err(format!("diagnostics send: {e}"));
+        }
+    };
     let status = resp.status();
     let text = resp.text().await.map_err(|e| format!("diagnostics read: {e}"))?;
     if !status.is_success() {
@@ -2237,6 +2261,33 @@ mod headers_deadline_tests {
             matches!(outcome, Err(HeadersError::SendFailed(_))),
             "an unreachable host must be SendFailed (→network), not Timeout, got {outcome:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod select_origin_tests {
+    use super::*;
+
+    /// The correctness boundary for origin fallback: a connect-level failure (ECONNREFUSED on a closed
+    /// loopback port) must classify as a network failure → a select_origin re-race candidate. An HTTP
+    /// status (incl. 401) never reaches `is_network_failure` (it's an `Ok(Response)`, not an `Err`), so
+    /// fallback never triggers on a reachable server. Bind+drop to claim a free port, then connect to it.
+    #[tokio::test]
+    async fn is_network_failure_classifies_a_connect_failure_as_switchable() {
+        let addr = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        // listener dropped here — port is closed → ECONNREFUSED at connect
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{addr}/api/v1/health"))
+            .send()
+            .await
+            .expect_err("connecting to a closed port must error");
+        assert!(is_network_failure(&err), "a connect failure must be a network failure: {err}");
+        // Sanity: the closed-port case is a CONNECT failure specifically (the boundary is is_connect || is_timeout).
+        assert!(err.is_connect(), "expected is_connect for ECONNREFUSED: {err}");
     }
 }
 
