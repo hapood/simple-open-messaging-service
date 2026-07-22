@@ -7,7 +7,12 @@
 # ============================================================================
 
 # Federation identity — the <domain> in @user@<domain> handles.
-SOMS_DOMAIN=example.com
+SOMS_DOMAIN=soms.example.com
+
+# Optional LAN domain — an alternate REAL domain (own DNS-01 cert) fronting the SAME backend, so native
+# clients can fall back to it from inside the LAN when the public domain is hairpin-NAT-unreachable.
+# Must share SOMS_DOMAIN's registrable domain (same DNS-01 zone). Leave commented if unused.
+# SOMS_LAN_DOMAIN=soms-lan.example.com
 
 # TLS / edge mode:
 #   custom    HTTPS on the compose port (x-host-port, default 7667), DNS-01 wildcard cert, no redirect.
@@ -37,11 +42,11 @@ ADMIN_BOOTSTRAP_PASSWORD=
 DATABASE_POOL_MAX=10
 
 # Optional — admin WebAuthn (passkeys) overrides. Defaults: rpId = SOMS_DOMAIN; allowed origins derived
-# from SOMS_DOMAIN + SOMS_TLS_MODE. Set only for unusual topologies (multi-subdomain / alternate port /
-# proxy that changes the browser origin). WebAuthn is unavailable under SOMS_TLS_MODE=disabled (no secure
-# context); TOTP 2FA remains the fallback.
+# from SOMS_DOMAIN + SOMS_TLS_MODE (+ SOMS_LAN_DOMAIN when set). Set only for unusual topologies
+# (multi-subdomain / alternate port / proxy that changes the browser origin). WebAuthn is unavailable
+# under SOMS_TLS_MODE=disabled (no secure context); TOTP 2FA remains the fallback.
 # SOMS_WEBAUTHN_RP_ID=example.com
-# SOMS_WEBAUTHN_ALLOWED_ORIGINS=https://example.com
+# SOMS_WEBAUTHN_ALLOWED_ORIGINS=https://soms.example.com
 
 # ============================================================================
 # DNS-01 provider — only edit this to use a non-default provider. {KEY} is transcribed from a

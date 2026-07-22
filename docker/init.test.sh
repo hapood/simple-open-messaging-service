@@ -85,19 +85,36 @@ assert_contains "$SANDBOX/run/Caddyfile" "respond @not_lan 403"
 # The guard must precede the generic /api* handle (first-match-wins), and the knob must stay Caddy-only.
 assert_not_contains "$SANDBOX/run/app.env" "SOMS_ADMIN_ACCESS"
 
-echo "== SOMS_ALLOW_IP_ACCESS=true: domain site (DNS-01) + self-signed IP catch-all =="
-run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nCLOUDFLARE_API_TOKEN=cf-tok\nSOMS_ALLOW_IP_ACCESS=true'
-assert_contains "$SANDBOX/run/Caddyfile" "(soms_handlers) {"
+echo "== SOMS_LAN_DOMAIN set: extra LAN site (own DNS-01 cert, same zone) + app.env pass-through =="
+run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nCLOUDFLARE_API_TOKEN=cf-tok\nSOMS_LAN_DOMAIN=soms-lan.test.local'
 assert_contains "$SANDBOX/run/Caddyfile" "https://test.local:7667, https://*.test.local:7667 {"
+assert_contains "$SANDBOX/run/Caddyfile" "https://soms-lan.test.local:7667, https://*.soms-lan.test.local:7667 {"
 assert_contains "$SANDBOX/run/Caddyfile" "dns cloudflare cf-tok"
-assert_contains "$SANDBOX/run/Caddyfile" "import soms_handlers"
-assert_contains "$SANDBOX/run/Caddyfile" "https://:7667 {"
-assert_contains "$SANDBOX/run/Caddyfile" "tls $SANDBOX/appdata/selfsigned.crt $SANDBOX/appdata/selfsigned.key"
-assert_not_contains "$SANDBOX/run/app.env" "SOMS_ALLOW_IP_ACCESS"
-# The self-signed cert is generated once and persisted in APPDATA_DIR.
-if [ -s "$SANDBOX/appdata/selfsigned.crt" ] && [ -s "$SANDBOX/appdata/selfsigned.key" ]; then
-  echo "  ok: selfsigned.crt + .key generated"; PASS=$((PASS+1))
-else echo "  FAIL: selfsigned cert files missing in $SANDBOX/appdata"; FAIL=$((FAIL+1)); fi
+# No self-signed IP catch-all anymore (SOMS_ALLOW_IP_ACCESS is gone).
+assert_not_contains "$SANDBOX/run/Caddyfile" "https://:7667 {"
+assert_not_contains "$SANDBOX/run/Caddyfile" "selfsigned"
+# SOMS_LAN_DOMAIN passes THROUGH to app.env (NOT excluded, unlike the old SOMS_ALLOW_IP_ACCESS).
+assert_contains "$SANDBOX/run/app.env" "SOMS_LAN_DOMAIN=soms-lan.test.local"
+
+echo "== SOMS_LAN_DOMAIN unset: no LAN site (backward compat) =="
+run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nCLOUDFLARE_API_TOKEN=cf-tok'
+assert_not_contains "$SANDBOX/run/Caddyfile" "soms-lan"
+assert_not_contains "$SANDBOX/run/app.env" "SOMS_LAN_DOMAIN"
+
+echo "== SOMS_LAN_DOMAIN in standard mode: LAN site via the soms_site snippet =="
+run_init "$REQ"$'\nSOMS_TLS_MODE=standard\nCLOUDFLARE_API_TOKEN=cf-tok\nSOMS_LAN_DOMAIN=soms-lan.test.local'
+assert_contains "$SANDBOX/run/Caddyfile" "https://soms-lan.test.local, https://*.soms-lan.test.local {"
+assert_contains "$SANDBOX/run/Caddyfile" "import soms_site"
+
+echo "== SOMS_LAN_DOMAIN apex match succeeds (both under test.local) =="
+run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nCLOUDFLARE_API_TOKEN=cf-tok\nSOMS_LAN_DOMAIN=lan.test.local'
+assert_contains "$SANDBOX/run/Caddyfile" "https://lan.test.local:7667"
+
+echo "== SOMS_LAN_DOMAIN apex mismatch fails fast =="
+expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nSOMS_LAN_DOMAIN=soms-lan.other.io' "must share SOMS_DOMAIN's registrable domain"
+
+echo "== SOMS_LAN_DOMAIN invalid format fails fast =="
+expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nSOMS_LAN_DOMAIN=https://x.test.local' "SOMS_LAN_DOMAIN must be a bare domain"
 
 echo "== AliDNS block directive (inline creds do NOT leak to node) =="
 run_init "$REQ"$'\nSOMS_TLS_MODE=custom\nALIYUN_ACCESS_KEY_ID=ak-1\nALIYUN_ACCESS_KEY_SECRET=sk-2\nCADDY_DNS_DIRECTIVE="dns alidns {\n  access_key_id {ALIYUN_ACCESS_KEY_ID}\n  access_key_secret {ALIYUN_ACCESS_KEY_SECRET}\n}"'
@@ -141,12 +158,6 @@ expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nCADDY_DNS_DIRECTIVE="dns cloudflare 
 
 echo "== invalid SOMS_ADMIN_ACCESS fails fast =="
 expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nSOMS_ADMIN_ACCESS=bogus' "SOMS_ADMIN_ACCESS must be one of: public | lan"
-
-echo "== SOMS_ALLOW_IP_ACCESS=true + disabled fails fast =="
-expect_fail "$REQ"$'\nSOMS_TLS_MODE=disabled\nSOMS_ALLOW_IP_ACCESS=true' "SOMS_ALLOW_IP_ACCESS=true requires SOMS_TLS_MODE=custom"
-
-echo "== invalid SOMS_ALLOW_IP_ACCESS fails fast =="
-expect_fail "$REQ"$'\nSOMS_TLS_MODE=custom\nSOMS_ALLOW_IP_ACCESS=maybe' "SOMS_ALLOW_IP_ACCESS must be one of: true | false"
 
 echo
 echo "RESULT: pass=$PASS fail=$FAIL"

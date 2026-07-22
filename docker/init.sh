@@ -52,17 +52,23 @@ case "${SOMS_ADMIN_ACCESS:-public}" in
   public|lan) ;;
   *) die "SOMS_ADMIN_ACCESS must be one of: public | lan (got '${SOMS_ADMIN_ACCESS:-<unset>}') in $CONFIG" ;;
 esac
-# Bare-IP HTTPS access. When true, emit an extra self-signed catch-all site (https://:7667) alongside the
-# domain site so the box is reachable by LAN IP — the browser shows a cert warning the user clicks through
-# (the domain itself still gets the trusted DNS-01 cert, no warning). Only meaningful with a TLS mode that
-# mints a domain cert; restricted to `custom` (the single-port intranet/NAS profile — the only shape that
-# needs it). `disabled` is plain HTTP and already Host-agnostic; `standard` is the public 443 profile.
-case "${SOMS_ALLOW_IP_ACCESS:-false}" in
-  true|false) ;;
-  *) die "SOMS_ALLOW_IP_ACCESS must be one of: true | false (got '${SOMS_ALLOW_IP_ACCESS:-<unset>}') in $CONFIG" ;;
-esac
-if [ "${SOMS_ALLOW_IP_ACCESS:-false}" = "true" ] && [ "${SOMS_TLS_MODE:-}" != "custom" ]; then
-  die "SOMS_ALLOW_IP_ACCESS=true requires SOMS_TLS_MODE=custom (the single-port intranet/NAS profile)"
+# Registrable-domain (apex) of a bare hostname — last 2 labels. Used to enforce that SOMS_LAN_DOMAIN shares
+# SOMS_DOMAIN's apex (both are certified via ONE DNS-01 provider/zone). Multi-label TLDs (co.uk) reduce
+# accuracy; the common subdomain case is covered and operators know their topology.
+apex_of() {
+  local d="$1"
+  if [ "$(awk -F. '{print NF}' <<<"$d")" -ge 2 ]; then awk -F. '{print $(NF-1)"."$NF}' <<<"$d"; else printf '%s' "$d"; fi
+}
+
+# LAN domain — an alternate real domain (own DNS-01 cert) fronting the SAME backend, so native clients can
+# reach the box from inside the LAN when the public domain is hairpin-NAT-unreachable. Replaces the old
+# SOMS_ALLOW_IP_ACCESS self-signed IP catch-all (which broke iOS PWA: SW/Push require a trusted cert).
+# Optional; when set it MUST share SOMS_DOMAIN's apex (both certified via the same single DNS-01 zone).
+if [ -n "${SOMS_LAN_DOMAIN:-}" ]; then
+  [[ "$SOMS_LAN_DOMAIN" =~ ^[A-Za-z0-9._-]+$ ]] || die "SOMS_LAN_DOMAIN must be a bare domain (letters/digits/dot/_/- only; no scheme/port/path): '$SOMS_LAN_DOMAIN'"
+  if [ "$(apex_of "$SOMS_DOMAIN")" != "$(apex_of "$SOMS_LAN_DOMAIN")" ]; then
+    die "SOMS_LAN_DOMAIN ('$SOMS_LAN_DOMAIN' → $(apex_of "$SOMS_LAN_DOMAIN")) must share SOMS_DOMAIN's registrable domain ('$SOMS_DOMAIN' → $(apex_of "$SOMS_DOMAIN")) — both are certified via one DNS-01 provider/zone (CADDY_DNS_DIRECTIVE). Use a subdomain of the same apex."
+  fi
 fi
 [ -n "${POSTGRES_PASSWORD:-}" ] || die "POSTGRES_PASSWORD is required in $CONFIG"
 case "$POSTGRES_PASSWORD" in
@@ -116,7 +122,7 @@ fi
 # the caddy directive itself, and every {KEY} it referenced (caddy gets those as Caddyfile literals).
 # Everything else passes through — including env-style DNS creds (AWS_* for route53) that caddy reads
 # from the process env rather than the directive. ---
-exclude='^(SOMS_DOMAIN|POSTGRES_PASSWORD|ADMIN_BOOTSTRAP_PASSWORD|DATABASE_POOL_MAX|CADDY_DNS_DIRECTIVE|SOMS_ADMIN_ACCESS|SOMS_ALLOW_IP_ACCESS'
+exclude='^(SOMS_DOMAIN|POSTGRES_PASSWORD|ADMIN_BOOTSTRAP_PASSWORD|DATABASE_POOL_MAX|CADDY_DNS_DIRECTIVE|SOMS_ADMIN_ACCESS'
 for ref in $caddy_refs; do exclude="$exclude|$ref"; done
 exclude="$exclude)="
 {
@@ -129,9 +135,10 @@ exclude="$exclude)="
 
 # --- Caddyfile (self-contained). SOMS_TLS_MODE picks the edge:
 #   custom    HTTPS on the compose port (7667), DNS-01 wildcard cert, no HTTP redirect.
-#             + SOMS_ALLOW_IP_ACCESS=true → ALSO a self-signed catch-all https://:7667 (LAN IP access).
+#             + SOMS_LAN_DOMAIN set → ALSO an https://<lan-domain>:7667 site (own DNS-01 cert, same zone).
 #   standard  HTTPS on 443 + auto 80→443 redirect, AND 7667 for federation (one shared cert via snippet).
-#   disabled  plain HTTP on 7667, no cert.
+#             + SOMS_LAN_DOMAIN set → additional https://<lan-domain> sites (own DNS-01 cert).
+#   disabled  plain HTTP on 7667, no cert (+ http://<lan-domain>:7667 if SOMS_LAN_DOMAIN set).
 # SOMS_ADMIN_ACCESS=lan layers a @not_lan guard onto the admin area (page + API) in every mode.
 # The container always serves federation on canonical 7667; the published HOST port is x-host-port in
 # docker-compose.yml (custom/disabled) — publish 80+443 too for standard. ---
@@ -160,20 +167,6 @@ emit_handlers() {
   fi
   printf '\thandle {\n\t\troot * /app/public/web\n\t\ttry_files {path} /index.html\n\t\tfile_server\n\t}\n'
 }
-# Self-signed cert for the IP catch-all site (SOMS_ALLOW_IP_ACCESS=true). Generated ONCE and persisted in the
-# bind-mounted ./data so it is stable across boots (and a user MAY optionally trust it to drop the warning).
-# CN/SAN = SOMS_DOMAIN, so bare-IP access shows a name-mismatch warning BY DESIGN (the user clicks through).
-# Owned 1000:1000 — caddy runs as uid 1000 (supervisor.sh) and must read the key.
-ensure_selfsigned_cert() {
-  local crt="$APPDATA_DIR/selfsigned.crt" key="$APPDATA_DIR/selfsigned.key"
-  if [ -s "$crt" ] && [ -s "$key" ]; then return 0; fi
-  openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
-    -subj "/CN=$SOMS_DOMAIN" -addext "subjectAltName=DNS:$SOMS_DOMAIN" \
-    -keyout "$key" -out "$crt" >/dev/null 2>&1 \
-    || die "openssl self-signed cert generation failed (is the openssl CLI present in the image?)"
-  chmod 600 "$key"; chmod 644 "$crt"
-  chown 1000:1000 "$crt" "$key" 2>/dev/null || true
-}
 {
   if [ "$SOMS_TLS_MODE" = "standard" ]; then
     printf '{\n\tstorage file_system {\n\t\troot /app/data/caddy\n\t}\n}\n'   # no disable_redirects → auto 80→443
@@ -182,25 +175,21 @@ ensure_selfsigned_cert() {
     printf '}\n'
     printf 'https://%s, https://*.%s {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
     printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
+    # LAN domain (own DNS-01 cert via the same provider/zone) — only when configured.
+    if [ -n "${SOMS_LAN_DOMAIN:-}" ]; then
+      printf 'https://%s, https://*.%s {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
+      printf 'https://%s:7667, https://*.%s:7667 {\n\timport soms_site\n}\n' "$SOMS_LAN_DOMAIN" "$SOMS_LAN_DOMAIN"
+    fi
   else
     printf '{\n\tauto_https disable_redirects\n\tstorage file_system {\n\t\troot /app/data/caddy\n\t}\n}\n'
-    if [ "${SOMS_ALLOW_IP_ACCESS:-false}" = "true" ]; then
-      # custom + IP: domain site (DNS-01, clean) + self-signed catch-all https://:7667 (LAN IP access, warns).
-      # Handlers are shared via a snippet because the two sites carry DIFFERENT tls (DNS-01 automation on the
-      # domain site vs the explicit self-signed files on the catch-all), so tls can't live in the snippet —
-      # only the route handlers do. Caddy routes by SNI: domain → domain site (trusted cert); IP/other →
-      # catch-all (self-signed, browser warns, click-through). The catch-all uses explicit tls FILES, which
-      # bypass SNI cert-matching — that's why it serves every host (incl. a bare IP) instead of 421'ing.
-      ensure_selfsigned_cert
-      printf '(soms_handlers) {\n'
-      emit_handlers
-      printf '}\n'
-      printf 'https://%s:7667, https://*.%s:7667 {\n' "$SOMS_DOMAIN" "$SOMS_DOMAIN"
-      [ -n "$tls_block" ] && printf '%s\n' "$tls_block"
-      printf '\timport soms_handlers\n}\n'
-      printf 'https://:7667 {\n\ttls %s/selfsigned.crt %s/selfsigned.key\n\timport soms_handlers\n}\n' "$APPDATA_DIR" "$APPDATA_DIR"
-    else
-      printf '%s://%s:7667, %s://*.%s:7667 {\n' "$scheme" "$SOMS_DOMAIN" "$scheme" "$SOMS_DOMAIN"
+    printf '%s://%s:7667, %s://*.%s:7667 {\n' "$scheme" "$SOMS_DOMAIN" "$scheme" "$SOMS_DOMAIN"
+    [ -n "$tls_block" ] && printf '%s\n' "$tls_block"
+    emit_handlers
+    printf '}\n'
+    # LAN domain (own DNS-01 cert via the same provider/zone) — only when configured. `disabled` mode serves
+    # it over plain HTTP (tls_block empty); custom mints a cert via the same tls_block.
+    if [ -n "${SOMS_LAN_DOMAIN:-}" ]; then
+      printf '%s://%s:7667, %s://*.%s:7667 {\n' "$scheme" "$SOMS_LAN_DOMAIN" "$scheme" "$SOMS_LAN_DOMAIN"
       [ -n "$tls_block" ] && printf '%s\n' "$tls_block"
       emit_handlers
       printf '}\n'
@@ -209,4 +198,4 @@ ensure_selfsigned_cert() {
 } > "$RUN/Caddyfile"
 
 chmod 644 "$RUN/pg-password" "$RUN/app.env" "$RUN/Caddyfile"
-log "OK — domain=$SOMS_DOMAIN mode=$SOMS_TLS_MODE admin=${SOMS_ADMIN_ACCESS:-public} ip-access=${SOMS_ALLOW_IP_ACCESS:-false} pool=$DATABASE_POOL_MAX; wrote pg-password, app.env, Caddyfile"
+log "OK — domain=$SOMS_DOMAIN lan-domain=${SOMS_LAN_DOMAIN:-none} mode=$SOMS_TLS_MODE admin=${SOMS_ADMIN_ACCESS:-public} pool=$DATABASE_POOL_MAX; wrote pg-password, app.env, Caddyfile"

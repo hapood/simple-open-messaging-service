@@ -1,4 +1,5 @@
 import { requireEnv } from '../common/env.js';
+import { deriveOrigin } from '../common/origin.js';
 
 /**
  * WebAuthn relying-party configuration. Loaded once at module-init (fail-fast via requireEnv, mirroring
@@ -13,24 +14,13 @@ import { requireEnv } from '../common/env.js';
  * so the full registered domain is the correct RP ID — no eTLD+1/PSL computation needed); in dev the
  * admin-web Vite server runs at http://localhost:5180, whose registrable domain is `localhost`, so rpId
  * defaults to `localhost` there. Both are overridable for unusual topologies (multi-subdomain, custom
- * port) via SOMS_WEBAUTHN_RP_ID / SOMS_WEBAUTHN_ALLOWED_ORIGINS.
+ * port) via SOMS_WEBAUTHN_RP_ID / SOMS_WEBAUTHN_ALLOWED_ORIGINS. When SOMS_LAN_DOMAIN is set, its origin
+ * is also added to allowed-origins (same backend) — ensure rpId is a shared registrable suffix (set
+ * SOMS_WEBAUTHN_RP_ID to the apex if SOMS_DOMAIN is itself a subdomain).
  */
 
 const isProd = process.env.NODE_ENV === 'production';
 const tlsMode = process.env.SOMS_TLS_MODE ?? 'standard';
-
-/** Build the single canonical browser origin for the deployment domain from the TLS mode. */
-function deriveOrigin(domain: string, mode: string): string {
-  switch (mode) {
-    case 'disabled':
-      return `http://${domain}:7667`; // plain HTTP (NOT a secure context unless localhost — see `available`)
-    case 'custom':
-      return `https://${domain}:7667`; // Caddy TLS on the single 7667 port (the NAS/intranet profile)
-    case 'standard':
-    default:
-      return `https://${domain}`; // Caddy TLS on 443 (port implicit)
-  }
-}
 
 function loadWebAuthnConfig() {
   const overrideOrigins = process.env.SOMS_WEBAUTHN_ALLOWED_ORIGINS?.trim();
@@ -48,7 +38,14 @@ function loadWebAuthnConfig() {
         .map((o) => o.trim())
         .filter(Boolean)
     : isProd
-      ? [deriveOrigin(requireEnv('SOMS_DOMAIN'), tlsMode)]
+      ? [
+          deriveOrigin(requireEnv('SOMS_DOMAIN'), tlsMode),
+          // When a LAN domain is configured, admins may reach the console over it (same backend, same
+          // secure context). Both domains share SOMS_DOMAIN's apex (enforced by docker/init.sh), so the
+          // default rpId (= SOMS_DOMAIN) authorizes it only if SOMS_DOMAIN IS that apex; otherwise set
+          // SOMS_WEBAUTHN_RP_ID to the shared apex.
+          ...(process.env.SOMS_LAN_DOMAIN ? [deriveOrigin(process.env.SOMS_LAN_DOMAIN, tlsMode)] : []),
+        ]
       : ['http://localhost:5180']; // the Vite dev browser origin (localhost is a secure context)
 
   // WebAuthn needs a secure context. `disabled` TLS over a non-localhost origin is not secure; the

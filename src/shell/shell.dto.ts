@@ -30,6 +30,22 @@ export class ShellCompatDto {
     description: 'Which login methods are enabled (see LoginMode). Mirrors GET /api/v1/config.',
   })
   loginMode!: LoginMode;
+
+  @ApiProperty({
+    example: 'https://soms.example.com:7667',
+    required: false,
+    description:
+      'Canonical client origin (scheme+host[:port]) for SOMS_DOMAIN. The native shell uses this + lanOrigin for symmetric auto-fill: the user enters one domain, the shell fills in the other from these and confirms via a modal. Same backend as lanOrigin.',
+  })
+  primaryOrigin?: string;
+
+  @ApiProperty({
+    example: 'https://soms-lan.example.com:7667',
+    required: false,
+    description:
+      'Canonical client origin for SOMS_LAN_DOMAIN (the LAN fallback). Same backend as primaryOrigin. Omitted when SOMS_LAN_DOMAIN is not configured. Auto-fill/display only — the user explicitly confirms before the shell trusts it as a connection target; HTTPS-only.',
+  })
+  lanOrigin?: string;
 }
 
 /**

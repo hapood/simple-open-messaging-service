@@ -4,30 +4,36 @@
 # service reads it on every `docker compose up -d` and generates the rest. All fields
 # below are REQUIRED — init fails fast on any missing/invalid value.
 # ============================================================================
-# What makes this the NAS profile (all three already set below):
-#   SOMS_TLS_MODE=custom       HTTPS on the single 7667 port, DNS-01 wildcard cert for the domain.
-#   SOMS_ALLOW_IP_ACCESS=true  ALSO emit a self-signed catch-all site so the box is reachable by bare LAN
-#                              IP. Domain access = clean (trusted cert); IP access = browser shows a cert
-#                              warning you click through (cert mismatch is expected and accepted).
-#   SOMS_ADMIN_ACCESS=lan      /admin + /api/v1/admin accept ONLY private-range source IPs.
+# What makes this the NAS profile (all set below):
+#   SOMS_TLS_MODE=custom    HTTPS on the single 7667 port, DNS-01 wildcard cert for the domain.
+#   SOMS_LAN_DOMAIN         An alternate REAL domain (own DNS-01 cert) fronting the SAME backend, so native
+#                           clients reach the box from inside the LAN when the public domain is
+#                           hairpin-NAT-unreachable. MUST share SOMS_DOMAIN's registrable domain (both are
+#                           certified via one DNS-01 provider/zone). Replaces the old self-signed bare-IP
+#                           catch-all (which broke iOS PWA: SW/Push need a trusted cert).
+#   SOMS_ADMIN_ACCESS=lan   /admin + /api/v1/admin accept ONLY private-range source IPs.
 # ============================================================================
 
-# Federation identity — the <domain> in @user@<domain> handles. This NAS profile still uses a REAL
-# domain + DNS-01 (set below): domain access gets a trusted cert with no warning. The domain need not
-# resolve publicly — it just has to exist in your DNS provider so the DNS-01 challenge can answer.
-SOMS_DOMAIN=nas.example.com
+# Federation identity — the <domain> in @user@<domain> handles. This NAS profile uses a REAL domain +
+# DNS-01 (set below): domain access gets a trusted cert with no warning. The domain need not resolve
+# publicly — it just has to exist in your DNS provider so the DNS-01 challenge can answer.
+SOMS_DOMAIN=soms.example.com
 
-# single-port HTTPS with a DNS-01 wildcard cert, no HTTP redirect. (The only mode SOMS_ALLOW_IP_ACCESS
-# supports — `standard` is the public 443 profile, `disabled` is plain HTTP.)
+# LAN domain — same backend, reachable from inside the LAN when the public domain isn't (no hairpin NAT).
+# Real DNS-01 cert → trusted on all platforms incl. iOS PWA. Must share soms.example.com's apex
+# (example.com). Native clients enter one domain; the server advertises the other via /shell/compat and
+# the client auto-fills + confirms it, then races /api/v1/health to pick the reachable one.
+SOMS_LAN_DOMAIN=soms-lan.example.com
+
+# single-port HTTPS with a DNS-01 wildcard cert, no HTTP redirect. (standard = public 443 profile,
+# disabled = plain HTTP.)
 SOMS_TLS_MODE=custom
-
-# Reachable by bare LAN IP via a self-signed catch-all site (browser warns on IP access; click through).
-SOMS_ALLOW_IP_ACCESS=true
 
 # Admin page + admin API accept only private-range IPs (10/8, 172.16/12, 192.168/16, loopback, ULA).
 SOMS_ADMIN_ACCESS=lan
 
-# Cloudflare API token (Zone:DNS:Edit) for the DNS-01 cert. Required (custom mode).
+# Cloudflare API token (Zone:DNS:Edit) for the DNS-01 cert. Required (custom mode). Used for BOTH
+# SOMS_DOMAIN and SOMS_LAN_DOMAIN (same DNS zone).
 CLOUDFLARE_API_TOKEN=
 
 # Database password. NOTE: first-run only — once postgres has initialized, the password is
@@ -41,11 +47,12 @@ ADMIN_BOOTSTRAP_PASSWORD=
 DATABASE_POOL_MAX=10
 
 # Optional — admin WebAuthn (passkeys) overrides. Defaults: rpId = SOMS_DOMAIN; allowed origins derived
-# from SOMS_DOMAIN + SOMS_TLS_MODE. Set only for unusual topologies. The NAS profile (custom TLS on
-# :7667) IS a secure context, so passkeys work; SOMS_ALLOW_IP_ACCESS bare-LAN-IP access is NOT (an IP
-# origin has no registrable domain) — use the domain. TOTP 2FA remains the fallback.
+# from SOMS_DOMAIN + SOMS_TLS_MODE, plus SOMS_LAN_DOMAIN when set. Set only for unusual topologies. The
+# NAS profile (custom TLS on :7667) IS a secure context, so passkeys work over both domains. If
+# SOMS_DOMAIN is itself a subdomain and you need passkeys on the LAN domain too, set SOMS_WEBAUTHN_RP_ID
+# to the shared apex (e.g. example.com). TOTP 2FA remains the fallback.
 # SOMS_WEBAUTHN_RP_ID=example.com
-# SOMS_WEBAUTHN_ALLOWED_ORIGINS=https://example.com:7667
+# SOMS_WEBAUTHN_ALLOWED_ORIGINS=https://soms.example.com:7667
 
 # ============================================================================
 # DNS-01 provider — only edit this to use a non-default provider. {KEY} is transcribed from a

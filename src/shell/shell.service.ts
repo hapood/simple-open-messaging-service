@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { SERVER_VERSION } from '../common/version.js';
+import { deriveOrigin } from '../common/origin.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { ShellCompatDto, ShellWebManifestDto } from './shell.dto.js';
 
@@ -57,7 +58,17 @@ export class ShellService {
    * floor, so there is nothing else to compute here.
    */
   compat(): ShellCompatDto {
-    return { serverVersion: SERVER_VERSION, ...PUBLIC_CONFIG };
+    const primaryDomain = process.env.SOMS_DOMAIN?.trim();
+    const lanDomain = process.env.SOMS_LAN_DOMAIN?.trim();
+    // Canonical client origins for the native shell's symmetric auto-fill: the user enters one domain, the
+    // shell fills in the other from these. primaryOrigin always present (SOMS_DOMAIN is required at boot);
+    // lanOrigin only when SOMS_LAN_DOMAIN is configured. Same backend on both. HTTPS-only (policy).
+    return {
+      serverVersion: SERVER_VERSION,
+      ...PUBLIC_CONFIG,
+      ...(primaryDomain ? { primaryOrigin: deriveOrigin(primaryDomain) } : {}),
+      ...(lanDomain ? { lanOrigin: deriveOrigin(lanDomain) } : {}),
+    };
   }
 
   /** `GET /api/v1/shell/web-manifest` — the bundle descriptor the shell integrity-verifies against. */
