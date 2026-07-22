@@ -32,6 +32,10 @@ import { signal } from '@angular/core';
 interface SomsSecureStore {
   getApiOrigin(): string | null
   setApiOrigin(origin: string | null): void
+  /** Secondary (LAN) origin for native fallback — null when no fallback is configured. Same surface so the
+   *  Android Kotlin SSE (RealtimeService) reads the same store the web writes. */
+  getApiOriginSecondary(): string | null
+  setApiOriginSecondary(origin: string | null): void
 }
 
 declare global {
@@ -302,6 +306,15 @@ const secureStore: SomsSecureStore =
             else localStorage.removeItem('api_origin')
           } catch { /* storage unavailable — best-effort */ }
         },
+        getApiOriginSecondary: () => {
+          try { return localStorage.getItem('api_origin_secondary') } catch { return null }
+        },
+        setApiOriginSecondary: (o) => {
+          try {
+            if (o) localStorage.setItem('api_origin_secondary', o)
+            else localStorage.removeItem('api_origin_secondary')
+          } catch { /* storage unavailable — best-effort */ }
+        },
       }
 
 /** Absolute backend origin for cross-origin clients (Tauri shell), or `''` for same-origin (browser) /
@@ -311,6 +324,17 @@ const secureStore: SomsSecureStore =
  *  a stale snapshot. `''` (not a localhost default) means "no server configured yet"; the server-config
  *  form pre-fills a placeholder. Read via `apiOrigin()`; only `setApiOrigin` writes it. */
 export const apiOrigin = signal<string>(canonicalOrigin(secureStore.getApiOrigin() ?? ''));
+
+/** The configured LAN (secondary) origin for native fallback, or null when no fallback is configured (dev /
+ *  a server without SOMS_LAN_DOMAIN). Seeded from the same persistence surface as {@link apiOrigin}. This is
+ *  the user's field-2 CONFIG — it does NOT track the swapping ACTIVE origin (Rust-internal; read
+ *  {@link getOriginMode} for which is active). Written only by {@link setApiOriginSecondary}. */
+export const apiOriginSecondary = signal<string | null>(
+  ((): string | null => {
+    const raw = secureStore.getApiOriginSecondary();
+    return raw ? canonicalOrigin(raw) : null;
+  })(),
+);
 
 /** Custom URI scheme the Tauri Rust side registers (see `src-tauri/src/lib.rs`) to proxy
  *  `/uploads/*` media with a Bearer header. */
@@ -365,6 +389,36 @@ export function syncApiOriginSignal(origin: string): void {
   const c = canonicalOrigin(origin);
   apiOrigin.set(c);
   secureStore.setApiOrigin(c);
+}
+
+/** Persist the LAN (secondary) origin (field-2) and mirror it into {@link apiOriginSecondary} (Tauri only).
+ *  `null`/empty clears it (disables fallback). Rust validates + persists it (a separate file from the
+ *  primary) and `select_origin` begins using it; the same value is written to the platform store (Android
+ *  EncryptedSharedPreferences — the store RealtimeService reads). Returns the canonical value Rust stored. */
+export async function setApiOriginSecondary(url: string | null): Promise<string | null> {
+  if (!isTauri()) throw new Error('setApiOriginSecondary is only available under the Tauri shell');
+  const normalized = await tauriInvoke<string | null>('set_api_origin_secondary', { url });
+  const canonical = normalized ? canonicalOrigin(normalized) : null;
+  apiOriginSecondary.set(canonical);
+  secureStore.setApiOriginSecondary(canonical);
+  return canonical;
+}
+
+/** Sync {@link apiOriginSecondary} from an authoritative value WITHOUT re-persisting to Rust (the value is
+ *  already in the Rust config — the self-heal path). */
+export function syncApiOriginSecondarySignal(origin: string | null): void {
+  const canonical = origin ? canonicalOrigin(origin) : null;
+  apiOriginSecondary.set(canonical);
+  secureStore.setApiOriginSecondary(canonical);
+}
+
+/** Which origin is currently ACTIVE — `'primary'` (normal) or `'secondary'` (the primary was unreachable
+ *  and `select_origin` switched to the LAN origin). For the "正在使用内网服务器" indicator. Tauri only;
+ *  returns `'primary'` in the browser build (no fallback concept). */
+export async function getOriginMode(): Promise<'primary' | 'secondary'> {
+  if (!isTauri()) return 'primary';
+  const mode = await tauriInvoke<string>('get_origin_mode');
+  return mode === 'secondary' ? 'secondary' : 'primary';
 }
 
 /**
