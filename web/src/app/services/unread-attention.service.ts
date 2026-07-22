@@ -128,7 +128,10 @@ export class UnreadAttentionService {
    *  descriptor (nothing unread+unmuted) dismisses the prior notification/popup. Fire-and-forget. */
   private async pullAndRender(): Promise<void> {
     try {
-      const notifications = await this.missedSync.fetchAwayNotifications(this.convList.missedCursor());
+      const notifications = await this.missedSync.fetchAwayNotifications(
+        this.convList.missedCursor(),
+        this.prefs.grouping(),
+      );
       for (const d of notifications) this.adapter.showDescriptor(d);
       // The in-app popup is the reliable action surface on platforms where in-page Notification buttons
       // don't fire; show() handles `clear` (dismiss) + replace-by-tag.

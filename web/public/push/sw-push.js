@@ -29,8 +29,13 @@ importScripts('./sw-config.js');
               'Content-Type': 'application/json',
               'Accept-Language': (self.navigator && self.navigator.language) || 'en',
             },
-            // No `cursor` → current unread state (the SW keeps no cursor; it renders what's unread now).
-            body: JSON.stringify({ take: 50 }),
+            // `grouping` is the away-summary fold ("thread" = one card per conversation). NOTE: this SW path
+            // sends no `since` cursor (the SW keeps none), so the server treats it as first-ever → a `clear`
+            // descriptor → no notification until the page-side cursor is wired through to the SW (a pre-
+            // existing gap, not introduced here). The foreground (UnreadAttentionService) path DOES send
+            // `since` + `grouping` and is the working web away-surface today. Never send undeclared fields
+            // (e.g. the old `take`) — MissedDto runs under forbidNonWhitelisted → a hard HTTP 400.
+            body: JSON.stringify({ grouping: 'thread' }),
             credentials: 'include', // same-origin httpOnly session cookie
           });
           if (!res.ok) return;

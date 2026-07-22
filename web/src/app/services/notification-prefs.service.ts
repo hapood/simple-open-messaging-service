@@ -2,6 +2,8 @@ import { Injectable, signal } from '@angular/core';
 
 const ENABLED_KEY = 'soms.notifEnabled';
 const SOUND_KEY = 'soms.notifSound';
+/** Away-notification grouping pref key (localStorage) — "thread" (default) or "all". */
+const GROUPING_KEY = 'soms.notifGrouping';
 
 /**
  * App-level notification preferences for the browser in-tab attention path ({@link UnreadAttentionService}).
@@ -23,11 +25,14 @@ const SOUND_KEY = 'soms.notifSound';
 export class NotificationPrefsService {
   private readonly _enabled = signal<boolean>(this.readBool(ENABLED_KEY, true));
   private readonly _sound = signal<boolean>(this.readBool(SOUND_KEY, true));
+  private readonly _grouping = signal<'all' | 'thread'>(this.readGrouping());
 
   /** Whether to post the system notification at all (app-level master; browser permission still required). */
   readonly enabled = this._enabled.asReadonly();
   /** Whether the notification plays the system sound (false → `silent: true`). */
   readonly sound = this._sound.asReadonly();
+  /** Away-notification grouping — "thread" (one card per conversation, default) or "all" (one folded card). */
+  readonly grouping = this._grouping.asReadonly();
 
   setEnabled(enabled: boolean): void {
     this._enabled.set(enabled);
@@ -37,6 +42,12 @@ export class NotificationPrefsService {
   setSound(sound: boolean): void {
     this._sound.set(sound);
     this.writeBool(SOUND_KEY, sound);
+  }
+
+  /** Set the away-notification grouping pref. The next foreground pull sends it as `grouping`. */
+  setGrouping(grouping: 'all' | 'thread'): void {
+    this._grouping.set(grouping);
+    this.writeStr(GROUPING_KEY, grouping);
   }
 
   private readBool(key: string, fallback: boolean): boolean {
@@ -53,6 +64,22 @@ export class NotificationPrefsService {
   private writeBool(key: string, value: boolean): void {
     try {
       localStorage.setItem(key, value ? '1' : '0');
+    } catch {
+      // localStorage disabled (private mode) — keep the in-memory signal only.
+    }
+  }
+
+  private readGrouping(): 'all' | 'thread' {
+    try {
+      return localStorage.getItem(GROUPING_KEY) === 'all' ? 'all' : 'thread';
+    } catch {
+      return 'thread';
+    }
+  }
+
+  private writeStr(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
     } catch {
       // localStorage disabled (private mode) — keep the in-memory signal only.
     }

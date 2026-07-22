@@ -1,6 +1,7 @@
 import { Component, computed, inject } from '@angular/core';
 import { MatListModule } from '@angular/material/list';
 import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
+import { MatButtonToggleModule, MatButtonToggleChange } from '@angular/material/button-toggle';
 import { TranslocoPipe } from '@jsverse/transloco';
 import { WebPushService } from '../../services/web-push.service';
 import { NotificationPrefsService } from '../../services/notification-prefs.service';
@@ -31,7 +32,7 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
  */
 @Component({
   selector: 'app-settings-notifications',
-  imports: [MatListModule, MatSlideToggleModule, TranslocoPipe],
+  imports: [MatListModule, MatSlideToggleModule, MatButtonToggleModule, TranslocoPipe],
   template: `
     <section class="settings-group">
       <div class="settings-card">
@@ -75,6 +76,21 @@ import { NotificationPrefsService } from '../../services/notification-prefs.serv
                 [attr.aria-label]="'settings.notifSound' | transloco"
                 (change)="onSoundChange($event)">
               </mat-slide-toggle>
+            </mat-list-item>
+
+            <!-- Away-notification grouping: per-conversation cards (default) vs one folded card -->
+            <mat-list-item>
+              <span matListItemTitle>{{ 'settings.notifGrouping' | transloco }}</span>
+              <span matListItemLine class="hint">{{ 'settings.notifGroupingDesc' | transloco }}</span>
+              <div matListItemMeta>
+                <mat-button-toggle-group
+                  [value]="prefs.grouping()"
+                  (change)="onGroupingChange($event)"
+                  [attr.aria-label]="'settings.notifGrouping' | transloco">
+                  <mat-button-toggle value="thread">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
+                  <mat-button-toggle value="all">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
+                </mat-button-toggle-group>
+              </div>
             </mat-list-item>
           }
         </mat-list>
@@ -128,5 +144,10 @@ export class SettingsNotificationsComponent {
   /** Sound on/off — persists to localStorage; maps to `silent: !sound` on the posted Notification. */
   onSoundChange(e: MatSlideToggleChange): void {
     this.prefs.setSound(e.checked);
+  }
+
+  /** Away-notification grouping — persists to localStorage; the next foreground pull sends it as `grouping`. */
+  onGroupingChange(e: MatButtonToggleChange): void {
+    this.prefs.setGrouping(e.value as 'all' | 'thread');
   }
 }

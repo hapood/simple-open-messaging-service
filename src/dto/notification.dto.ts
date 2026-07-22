@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -46,6 +47,25 @@ export class MissedDto {
   @ValidateNested()
   @Type(() => MissedCursorDto)
   since?: MissedCursorDto | null;
+
+  @ApiProperty({
+    required: false,
+    enum: ['all', 'thread'],
+    default: 'all',
+    description:
+      'How to fold the away-summary. "all" = one folded per-sender card ("X, Y sent you N messages", legacy). "thread" = ONE notification CARD per conversation ("X sent you N messages"), capped ~30, Android-bundled. Absent → "all" (backward compat; the app ships its own pref defaulting to "thread").',
+  })
+  @IsOptional()
+  @IsIn(['all', 'thread'])
+  grouping?: 'all' | 'thread';
+
+  @ApiProperty({
+    required: false,
+    description:
+      '`grouping:"thread"` only — the client\'s per-thread dismiss HWM map { threadId: seq } (in-memory; only threads the user dismissed). For a thread present here, its card count is taken FROM that seq (cumulative since last dismiss → dismiss resets it); threads absent here count since `since` (cumulative since foreground). No server round-trip on dismiss.',
+  })
+  @IsOptional()
+  threadHwms?: Record<number, number>;
 }
 
 /**

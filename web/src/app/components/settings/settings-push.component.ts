@@ -2,6 +2,7 @@ import { Component, computed, inject, OnDestroy, OnInit, signal } from '@angular
 import { MatListModule } from '@angular/material/list';
 import { MatSlideToggleModule, MatSlideToggleChange } from '@angular/material/slide-toggle';
 import { MatButtonModule } from '@angular/material/button';
+import { MatButtonToggleModule, MatButtonToggleChange } from '@angular/material/button-toggle';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import dayjs from 'dayjs';
 import { BackgroundSyncService } from '../../services/background-sync.service';
@@ -15,7 +16,7 @@ import { LanguageService } from '../../services/language.service';
  */
 @Component({
   selector: 'app-settings-push',
-  imports: [MatListModule, MatSlideToggleModule, MatButtonModule, TranslocoPipe],
+  imports: [MatListModule, MatSlideToggleModule, MatButtonModule, MatButtonToggleModule, TranslocoPipe],
   template: `
     <section class="settings-group">
       <div class="settings-card">
@@ -86,6 +87,33 @@ import { LanguageService } from '../../services/language.service';
               (change)="onPollChange($event)">
             </mat-slide-toggle>
           </mat-list-item>
+
+          <!-- Away-notification grouping: per-conversation cards (default) vs one folded card -->
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.notifGrouping' | transloco }}</span>
+            <span matListItemLine class="hint">{{ 'settings.notifGroupingDesc' | transloco }}</span>
+            <div matListItemMeta>
+              <mat-button-toggle-group
+                [value]="bgSync.grouping()"
+                (change)="onGroupingChange($event)"
+                [attr.aria-label]="'settings.notifGrouping' | transloco">
+                <mat-button-toggle value="thread">{{ 'settings.notifGroupingThread' | transloco }}</mat-button-toggle>
+                <mat-button-toggle value="all">{{ 'settings.notifGroupingAll' | transloco }}</mat-button-toggle>
+              </mat-button-toggle-group>
+            </div>
+          </mat-list-item>
+
+          <!-- Sound & vibration: Android owns these at the channel level (pinned at creation), so the only
+               in-app surface is a deep-link to the system per-channel settings. -->
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.notifSoundVibrate' | transloco }}</span>
+            <span matListItemLine class="hint">{{ 'settings.notifSoundVibrateDesc' | transloco }}</span>
+            <div matListItemMeta>
+              <button mat-button type="button" (click)="openNotifSettings()">
+                {{ 'settings.notifPermOpenSettings' | transloco }}
+              </button>
+            </div>
+          </mat-list-item>
         </mat-list>
       </div>
     </section>
@@ -147,6 +175,12 @@ export class SettingsPushComponent implements OnInit, OnDestroy {
 
   onFgsChange(e: MatSlideToggleChange): void {
     this.bgSync.setFgsEnabled(e.checked);
+  }
+
+  /** Away-notification grouping — per-conversation ("thread") vs one folded card ("all"). Persists to
+   *  SomsSecureStore; the next background fetch sends it as `grouping`. */
+  onGroupingChange(e: MatButtonToggleChange): void {
+    this.bgSync.setGrouping(e.value as 'all' | 'thread');
   }
 
   /** Manual FCM availability check — force a token fetch + show a checking state until it settles. */

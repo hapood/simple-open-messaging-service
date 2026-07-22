@@ -15,9 +15,11 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * focuses the window (a multi-sender summary cannot deep-link to one thread).
  */
 export class BrowserNotificationAdapter extends NotificationAdapter {
-  /** The live browser Notification instance, held so `clear()` / a `kind:'clear'` descriptor can `.close()`
-   *  it on focus regain. */
-  private activeNotif: Notification | null = null;
+  /** The live browser Notifications, keyed by `tag` so `clear()` (focus regain) can close them all AND so
+   *  per-thread mode (N descriptors, one per `soms-thread-*` tag) keeps each card instead of overwriting a
+   *  single slot. Same-`tag` replace-by-tag still works (the old one auto-closes; its `close` handler drops
+   *  the stale entry). */
+  private readonly active = new Map<string, Notification>();
 
   constructor(private readonly prefs: NotificationPrefsService) {
     super();
@@ -25,7 +27,7 @@ export class BrowserNotificationAdapter extends NotificationAdapter {
 
   showDescriptor(d: NotificationDescriptor): void {
     if (d.kind === 'clear') {
-      this.closeActive();
+      this.closeAll();
       return;
     }
     if (!this.prefs.enabled()) return; // app-level master (the permission is terminal; this is the mute)
@@ -55,26 +57,26 @@ export class BrowserNotificationAdapter extends NotificationAdapter {
         n.close();
       };
       n.addEventListener('close', () => {
-        if (this.activeNotif === n) this.activeNotif = null;
+        if (this.active.get(d.tag) === n) this.active.delete(d.tag);
       });
-      this.activeNotif = n;
+      this.active.set(d.tag, n);
     } catch {
       /* best-effort */
     }
   }
 
   clear(): void {
-    this.closeActive();
+    this.closeAll();
   }
 
-  private closeActive(): void {
-    if (this.activeNotif) {
+  private closeAll(): void {
+    for (const n of this.active.values()) {
       try {
-        this.activeNotif.close();
+        n.close();
       } catch {
         /* best-effort */
       }
-      this.activeNotif = null;
     }
+    this.active.clear();
   }
 }

@@ -357,11 +357,13 @@ export class ConnectionBannerComponent implements OnDestroy {
   /** Cached reduced-motion preference — snaps every morph to its end state instead of animating. */
   private readonly reduceMotion = prefersReducedMotion();
 
-  /** The visual state to render, or undefined (hidden). `closed` surfaces only in the playground. */
+  /** The visual state to render, or undefined (hidden). `closed` surfaces only in the playground.
+   *  `disconnected` (OS offline) reuses the `reconnecting` amber visual — it's still transient connection
+   *  trouble worth surfacing expanded — but its label is the static "no network" message (no countdown). */
   readonly show = computed<ConnVisual | undefined>(() => {
     if (this.recovering()) return 'recovered';
     const s = this.effState();
-    if (s === 'connecting' || s === 'reconnecting') return s;
+    if (s === 'connecting' || s === 'reconnecting' || s === 'disconnected') return s === 'disconnected' ? 'reconnecting' : s;
     if (s === 'closed' && this.demoState() !== null) return 'closed'; // playground-only
     return undefined;
   });
@@ -375,6 +377,7 @@ export class ConnectionBannerComponent implements OnDestroy {
     switch (this.effState()) {
       case 'connecting':   return this.transloco.translate('connection.connecting');
       case 'reconnecting': return this.transloco.translate('connection.reconnecting');
+      case 'disconnected': return this.transloco.translate('connection.disconnected');
       case 'closed':       return this.transloco.translate('connection.offline');
       default:             return this.transloco.translate('connection.recovered');
     }
@@ -416,14 +419,15 @@ export class ConnectionBannerComponent implements OnDestroy {
        independent signals. */
     effect(() => {
       const s: ConnectionState = this.effState();
-      if (s === 'reconnecting') {
-        // The failure mode this component exists for — STAY expanded so the live countdown stays readable
-        // for the whole backoff window (not just a 3.2s announce). There is no timed collapse: the pill is
-        // the countdown readout, and it collapses the instant we recover (playRecoverFlourish) or go quiet
-        // (connecting/closed). Clicking while reconnecting retries instead of toggling.
+      if (s === 'reconnecting' || s === 'disconnected') {
+        // The failure mode this component exists for — STAY expanded so the live countdown (reconnecting) /
+        // the "no network" label (disconnected) stays readable for the whole window (not just a 3.2s announce).
+        // There is no timed collapse: the pill is the readout, and it collapses the instant we recover
+        // (playRecoverFlourish) or go quiet (connecting/closed). Clicking while reconnecting retries instead of
+        // toggling; while disconnected (OS offline) a retry is pointless, so it just toggles.
         this.wasReconnecting = true;
         this.expanded.set(true);
-        this.announce('connection.reconnecting');
+        this.announce(s === 'disconnected' ? 'connection.disconnected' : 'connection.reconnecting');
       } else if (s === 'connecting') {
         // Boot connect: show the dot quietly (no auto-expand, no flourish on the open that follows). NOT
         // announced — boot is a routine state, voicing it on every launch would be noise.
@@ -527,7 +531,7 @@ export class ConnectionBannerComponent implements OnDestroy {
 
   /** Voice a connection-state transition to assistive tech via the CDK LiveAnnouncer. Translates the key
    *  at call time (announce fires once per transition, on the language current at that moment). */
-  private announce(key: 'connection.reconnecting' | 'connection.recovered'): void {
+  private announce(key: 'connection.reconnecting' | 'connection.recovered' | 'connection.disconnected'): void {
     this.liveAnnouncer.announce(this.transloco.translate(key));
   }
 

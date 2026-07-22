@@ -574,6 +574,66 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
+   * Away-notification per-thread aggregation (Query A) for `grouping:'thread'`: the threads with new LIVE
+   * messages since `sinceId`, each with its EXACT count + latest seq. Groups by thread, newest-thread-first,
+   * capped at `limit` threads (the notification-card cap). Muted threads + blocked creators + soft-deleted
+   * messages excluded. The count is a real COUNT (not seq arithmetic — soft-deletes occupy seq but must not
+   * count, federation may gap it). This is the count for threads the client has NOT dismissed (cumulative
+   * since `since`); dismissed threads override it via {@link threadCountSinceBound}. Backed by Message(id).
+   */
+  async threadAwayBuckets(
+    userId: number,
+    sinceId: bigint,
+    limit: number,
+    hideCreatorIds: number[] = [],
+  ): Promise<Map<number, { count: number; latestSeq: number }>> {
+    const blockedClause = hideCreatorIds.length
+      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<Array<{ threadId: number; cnt: bigint; latest: number }>>`
+      SELECT m."threadId" AS "threadId", COUNT(*) AS "cnt", MAX(m."seq") AS "latest"
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+      WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false AND m."isDeleted" = false
+      GROUP BY m."threadId"
+      ORDER BY MAX(m."id") DESC
+      LIMIT ${limit}
+    `;
+    const buckets = new Map<number, { count: number; latestSeq: number }>();
+    for (const r of rows) buckets.set(r.threadId, { count: Number(r.cnt), latestSeq: r.latest });
+    return buckets;
+  }
+
+  /**
+   * Away-notification per-thread count (Query B) for a DISMISSED thread: the EXACT count of LIVE messages
+   * newer than `sinceSeq` (the thread's dismiss HWM) AND newer than the global `globalSinceId` (so messages
+   * from before the foreground baseline are never re-counted). The client passes its in-memory dismiss HWM
+   * for the thread in `threadHwms[tid]`; this returns the cumulative-since-dismiss count (dismiss resets it
+   * to 0 until newer messages arrive). Same muted / blocked / soft-deleted filters. Backed by Message(id, seq).
+   */
+  async threadCountSinceBound(
+    userId: number,
+    globalSinceId: bigint,
+    threadId: number,
+    sinceSeq: number,
+    hideCreatorIds: number[] = [],
+  ): Promise<number> {
+    const blockedClause = hideCreatorIds.length
+      ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
+      : Prisma.empty;
+    const rows = await this.prisma.$queryRaw<Array<{ cnt: bigint }>>`
+      SELECT COUNT(*) AS "cnt"
+      FROM "Message" m
+      JOIN "ThreadParticipant" tp
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+      WHERE m."threadId" = ${threadId} AND m."seq" > ${sinceSeq} AND m."id" > ${globalSinceId}
+            AND m."isDeleted" = false AND tp."muted" = false ${blockedClause}
+    `;
+    return Number(rows[0]?.cnt ?? 0n);
+  }
+
+  /**
    * The user's globally-newest message across their active threads (the highest internal `id` — the strict-
    * total-order key), as a `(threadId, seq, ts)` cursor. Backs the SSE `HELLO` connect handshake: the server
    * pushes this so the client has its `to` (the missed-summary walk's pinned upper bound) the instant SSE

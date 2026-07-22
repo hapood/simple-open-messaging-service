@@ -198,6 +198,12 @@ declare global {
      *  this just delivers the one-shot deadline Kotlin computes before its `postDelayed` backoff). Installed
      *  by the NativeEventTransport; a no-op until then (Kotlin guards the call). */
     __SOMS_RECONNECT_IN__?: (ms: number) => void;
+    /** Kotlin→JS push (RealtimeService.signalRust): the origin Kotlin decided is ACTIVE for the /events stream,
+     *  so Rust's API transports follow it (Android = Kotlin-authoritative; Rust is passive there and accepts
+     *  this via the `set_active_origin` command — no API⇄SSE origin split). Installed eagerly by
+     *  {@link installActiveOriginBridge} before bootstrap, so Kotlin's very first decision (even ahead of the
+     *  NativeEventTransport connecting) lands. A no-op outside Tauri. */
+    __SOMS_SET_ACTIVE_ORIGIN__?: (origin: string) => void;
   }
 }
 
@@ -461,4 +467,25 @@ export function applySafeInsets(): void {
   } catch {
     // SomsShell present but the call failed — leave the CSS default (env(), 0 on Android).
   }
+}
+
+/**
+ * Install the `window.__SOMS_SET_ACTIVE_ORIGIN__` sink — Kotlin's RealtimeService signals the origin it chose
+ * for the /events stream (Android is Kotlin-authoritative; Rust is passive there), and this forwards it to the
+ * Rust `set_active_origin` command so the API transports follow the same origin (no API⇄SSE origin split).
+ *
+ * Installed EAGERLY (before bootstrap, like {@link installKeyboardInsetBridge}) rather than in the
+ * NativeEventTransport, because it is a thin pass-through to a Tauri command independent of the realtime
+ * transport — eager install means Kotlin's first decision (which can fire ahead of transport.connect, e.g. the
+ * login-time openStream) is not lost. A no-op outside Tauri (Kotlin never calls it there); a no-op on desktop
+ * (Rust decides the origin itself there and never receives this push).
+ */
+export function installActiveOriginBridge(): void {
+  if (typeof window === 'undefined') return;
+  window.__SOMS_SET_ACTIVE_ORIGIN__ = (origin: string) => {
+    if (!isTauri() || !origin) return;
+    // Rust accepts without probing/deciding (it is not the authority on Android). Rejections are logged by
+    // tauriInvoke; a swallowed rejection is harmless — the next signalRust (every openStreamOn) re-syncs.
+    void tauriInvoke('set_active_origin', { url: origin });
+  };
 }

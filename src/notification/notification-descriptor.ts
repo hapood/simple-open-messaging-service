@@ -37,7 +37,7 @@ export interface NotifAction {
  *                          dismiss when nothing is unread+unmuted; replaces the client-side empty-cancel).
  * Future kinds (`'single-message'` with a per-thread reply action, `'friend-request'`, …) extend this union.
  */
-export type NotificationKind = 'message-summary' | 'clear' | (string & {});
+export type NotificationKind = 'message-summary' | 'thread-message' | 'clear' | (string & {});
 
 /** One fully self-describing notification surface. The client renders it with zero composition logic. */
 export interface NotificationDescriptor {
@@ -48,7 +48,9 @@ export interface NotificationDescriptor {
   kind: NotificationKind;
   /** Server-localized title. */
   title: string;
-  /** Server-localized body (the folded names + count). Empty for a `clear` descriptor. */
+  /** Server-localized body. For an "all"-grouped summary: the folded "X, Y sent you N messages". For a
+   *  "thread"-grouped descriptor (one per conversation): "X sent you N messages" (same template, single
+   *  sender). Empty for a `clear` descriptor. */
   body: string;
   /** The locale the copy was rendered in (echoes the negotiated Accept-Language). */
   lang: SupportedLocale;

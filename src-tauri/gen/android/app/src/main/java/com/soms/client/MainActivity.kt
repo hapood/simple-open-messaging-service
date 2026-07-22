@@ -311,8 +311,9 @@ class MainActivity : TauriActivity() {
                 Log.w("SomsActivity", "realtime start skipped: ${e.javaClass.simpleName}: ${e.message}")
             }
         }
-        ContextCompat.getSystemService(this, NotificationManager::class.java)
-            ?.cancel(SomsMessagingService.AWAY_NOTIF_ID)
+        // Drop the away card + the whole per-thread group + the in-memory dismiss map — the in-app UI owns
+        // message display again while the activity is visible.
+        SomsMessagingService.clearAllMessageNotifs(this)
     }
 
     override fun onStop() {
@@ -587,6 +588,23 @@ class MainActivity : TauriActivity() {
             val a = activityRef.get() ?: return
             SomsSecureStore.setForegroundServiceEnabled(a, enabled)
             a.applyForegroundServiceEnabled(enabled)
+        }
+
+        /** The away-notification grouping pref — "thread" (one card per conversation, default) or "all" (one
+         *  folded card). Device-local; the next background fetch sends it as `grouping`. Read by the Settings
+         *  page to render the segmented control's initial state. */
+        @JavascriptInterface
+        fun getNotifGrouping(): String {
+            val a = activityRef.get() ?: return "thread"
+            return SomsSecureStore.getNotifGrouping(a)
+        }
+
+        /** Set the away-notification grouping pref ("thread" | "all"). Persists immediately; takes effect on
+         *  the next background fetch (no live notification to rebuild). */
+        @JavascriptInterface
+        fun setNotifGrouping(grouping: String) {
+            val a = activityRef.get() ?: return
+            SomsSecureStore.setNotifGrouping(a, grouping)
         }
 
         /** Next scheduled WorkManager poll time (epoch ms), or -1 if not scheduled. For the Settings row. */

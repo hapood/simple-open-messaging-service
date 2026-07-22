@@ -41,6 +41,10 @@ object SomsSecureStore {
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
     private const val KEY_FIREBASE_CONFIG = "firebase_config"
     private const val KEY_NOTIF_PERM_REQUESTED = "notif_perm_requested"
+    /** Away-notification grouping pref — "thread" (one card per conversation, default) or "all" (one folded
+     *  card). Device-local (like polling/FGS); the client sends it on each /missed pull as the `grouping`
+     *  field. Default "thread" (the app's shipping default). */
+    private const val KEY_NOTIF_GROUPING = "notif_grouping"
     private const val KEY_MISSED_CURSOR_THREAD = "missed_cursor_thread"
     private const val KEY_MISSED_CURSOR_SEQ = "missed_cursor_seq"
 
@@ -153,6 +157,15 @@ object SomsSecureStore {
         prefs(ctx).edit().putBoolean(KEY_NOTIF_PERM_REQUESTED, requested).apply()
     }
 
+    /** The away-notification grouping pref — "thread" (one card per conversation) or "all" (one folded card).
+     *  Default "thread". JS flips it via SomsFcm.setNotifGrouping; fetchDescriptors sends it as `grouping`. */
+    fun getNotifGrouping(ctx: Context): String =
+        prefs(ctx).getString(KEY_NOTIF_GROUPING, "thread") ?: "thread"
+
+    fun setNotifGrouping(ctx: Context, grouping: String) {
+        prefs(ctx).edit().putString(KEY_NOTIF_GROUPING, if (grouping == "all") "all" else "thread").apply()
+    }
+
     /** Epoch ms of the last FCM availability check (token fetch). 0 = never. The Settings "FCM status"
      *  auto-checks at most once/day so a 国内 device (no GMS) doesn't hammer Google on every launch; a
      *  manual "check now" also writes this. */
@@ -206,6 +219,18 @@ object SomsSecureStore {
         prefs(ctx).edit()
             .putString(KEY_ORIGIN_MODE, if (mode == "secondary") "secondary" else "primary")
             .apply()
+    }
+
+    /** The ACTIVE origin — the secondary when the mode is "secondary" (RealtimeService flipped to the LAN
+     *  origin), else the primary. Use this — NOT [getApiOrigin] — for every native network path that must
+     *  follow Kotlin's origin decision: the background `/notifications/missed` fetch + the avatar/notif-icon
+     *  fetch in SomsMessagingService (FCM / WorkManager / the RealtimeService away-coalesce all route through
+     *  those). Without it a device on the LAN secondary would route background traffic at the hairpin-
+     *  unreachable primary and silently drop every background notification. The /events stream follows via
+     *  RealtimeService.resolveOrigin; Rust's API transports follow via the set_active_origin signal. */
+    fun getActiveOrigin(ctx: Context): String? {
+        val secondary = getApiOriginSecondary(ctx)
+        return if (secondary != null && getOriginMode(ctx) == "secondary") secondary else getApiOrigin(ctx)
     }
 
     fun getApiOriginSecondary(ctx: Context): String? {

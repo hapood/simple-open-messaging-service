@@ -130,13 +130,25 @@ export class NotificationQueryService {
    */
   async buildNotifyResponse(
     userId: number,
-    opts: { since?: MissedCursor | null; acceptLanguage?: string | null },
+    opts: {
+      since?: MissedCursor | null;
+      grouping?: 'all' | 'thread';
+      threadHwms?: Record<number, number>;
+      acceptLanguage?: string | null;
+    },
   ): Promise<{ notifications: NotificationDescriptor[] }> {
     const locale = pickLocale(opts.acceptLanguage);
     // First-ever (no HWM yet) or unresolvable since → no baseline → clear (don't disturb).
     if (!opts.since) return { notifications: [this.clearDescriptor(locale)] };
     const sinceId = await this.resolveId(opts.since);
     if (sinceId === null) return { notifications: [this.clearDescriptor(locale)] };
+
+    // "thread" grouping: ONE notification CARD per conversation with new messages since the HWM (each its own
+    // descriptor → client posts a separate grouped card). `threadHwms` carries the client's per-thread dismiss
+    // cursors so a dismissed thread's count resets. Absent / "all" keeps the legacy folded per-sender body below.
+    if (opts.grouping === 'thread') {
+      return { notifications: await this.threadDescriptors(userId, sinceId, locale, opts.threadHwms) };
+    }
 
     const blocked = await this.userBlockService.blockedByMe(userId);
     const { counts, overflow } = await this.messageService.senderCountsSince(
@@ -187,6 +199,69 @@ export class NotificationQueryService {
         },
       ],
     };
+  }
+
+  /**
+   * "thread" grouping — ONE descriptor PER conversation with new LIVE messages since `sinceId` (each becomes
+   * its own notification card, grouped client-side via the per-thread `tag`). Newest conversation first,
+   * capped at {@link THREAD_NOTIF_CAP} (the cap is applied in Query A). Body reuses the all-mode template
+   * (single sender): "X sent you N messages".
+   *
+   * Count: Query A (`threadAwayBuckets`) gives the cumulative-since-`since` count per thread; for a thread in
+   * `threadHwms` (the client dismissed it), Query B (`threadCountSinceBound`) overrides with the cumulative-
+   * since-dismiss count (dismiss resets it). A thread whose final count is 0 (dismissed, no new) is dropped.
+   * `data.seq` = the thread's latest new seq — the client's per-thread dismiss target (records it in memory on
+   * dismiss; advances only on dismiss; cleared on foreground). `kind:'thread-message'` discriminates the
+   * render path (#5). `icon: null` (no per-thread avatar composition — resource-friendly). Returns `[]` when
+   * nothing is new (the client clears all `soms-thread-*` notifications).
+   */
+  private async threadDescriptors(
+    userId: number,
+    sinceId: bigint,
+    locale: SupportedLocale,
+    threadHwms?: Record<number, number>,
+  ): Promise<NotificationDescriptor[]> {
+    const blocked = await this.userBlockService.blockedByMe(userId);
+    // Query A: threads with new LIVE messages since the global HWM — {count, latestSeq}, newest-first, capped.
+    const buckets = await this.messageService.threadAwayBuckets(userId, sinceId, THREAD_NOTIF_CAP, [...blocked]);
+    if (buckets.size === 0) return []; // nothing new → client clears all soms-thread-* notifications
+
+    // Query B (only for threads the client dismissed — present in threadHwms): override the count with the
+    // cumulative-since-dismiss count. Threads not dismissed keep Query A's cumulative-since-foreground count.
+    const hwms = threadHwms ?? {};
+    const counts = new Map<number, number>();
+    for (const [tid, { count }] of buckets) {
+      const hwm = hwms[tid];
+      counts.set(
+        tid,
+        hwm != null
+          ? await this.messageService.threadCountSinceBound(userId, sinceId, tid, hwm, [...blocked])
+          : count,
+      );
+    }
+
+    // Drop threads whose final count is 0 (dismissed with no new messages) + hydrate display names.
+    const ctx = await this.loadThreadContext(userId);
+    const rows = ctx.active
+      .filter((p) => (counts.get(p.threadId) ?? 0) > 0)
+      .sort((a, b) => ctx.cmpByIdAsc(b, a)); // newest conversation first
+    const items = await this.hydrateItems(userId, rows, ctx.unread, ctx.attachedByThread);
+
+    return items.map((it) => {
+      const count = counts.get(it.threadId) ?? 0;
+      const latestSeq = buckets.get(it.threadId)?.latestSeq ?? it.latestMessage?.seq ?? 0;
+      return {
+        tag: `soms-thread-${it.threadId}`,
+        kind: 'thread-message',
+        title: buildSummaryTitle(locale),
+        body: buildSummaryBody([{ displayName: it.displayName, unreadCount: count }], locale, count >= 1000),
+        lang: locale,
+        icon: null,
+        renotify: true,
+        actions: [{ id: 'dismiss', title: actionLabel('dismiss', locale) }],
+        data: { threadId: it.threadId, seq: latestSeq },
+      };
+    });
   }
 
   /** Resolve a `(threadId, seq)` cursor to its internal BigInt id (one lookup); null when unresolved. */
@@ -329,6 +404,11 @@ export class NotificationQueryService {
     });
   }
 }
+
+/** Cap on per-thread notification cards in "thread" grouping. Beyond this, threads with new messages get no
+ *  card (rare — 30+ simultaneous unread conversations). Android bundles whatever is posted; the client owns
+ *  the group summary. */
+const THREAD_NOTIF_CAP = 30;
 
 /** The id-stripped, mediaStatus-attached message row (the output of `MessageService.attachMediaStatus`).
  *  Only the fields hydrate reads are named; the real object (Omit<Message,'id'> & {mediaStatus,sv}) carries

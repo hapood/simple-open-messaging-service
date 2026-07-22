@@ -50,9 +50,23 @@ export class BackgroundSyncService {
    *  open, window focus after returning from system settings, and after [requestPermission]). */
   readonly notifStatus = signal<NotifStatus>(this.readNotifStatus());
 
+  /** Away-notification grouping — "thread" (one card per conversation, Kotlin default) or "all" (one folded
+   *  card). Read from native at boot; written through [setGrouping] (the next background fetch sends it). */
+  readonly grouping = signal<'all' | 'thread'>(
+    typeof window !== 'undefined'
+      ? ((window.SomsFcm?.getNotifGrouping?.() as 'all' | 'thread') ?? 'thread')
+      : 'thread',
+  );
+
   setEnabled(enabled: boolean): void {
     this.enabled.set(enabled);
     window.SomsFcm?.setPollingEnabled?.(enabled);
+  }
+
+  /** Set the away-notification grouping pref — persists to SomsSecureStore; takes effect on the next fetch. */
+  setGrouping(grouping: 'all' | 'thread'): void {
+    this.grouping.set(grouping);
+    window.SomsFcm?.setNotifGrouping?.(grouping);
   }
 
   setFgsEnabled(enabled: boolean): void {

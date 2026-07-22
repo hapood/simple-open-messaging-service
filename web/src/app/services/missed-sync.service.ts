@@ -129,14 +129,21 @@ export class MissedSyncService {
    * Single-flight on its OWN guard, independent of {@link fetchMissedSummary}, so a threadlist walk pulling at
    * the same instant cannot starve the away-notification.
    */
-  async fetchAwayNotifications(since: MissedCursor | null): Promise<NotificationDescriptor[]> {
+  async fetchAwayNotifications(
+    since: MissedCursor | null,
+    grouping: 'all' | 'thread' = 'thread',
+    threadHwms?: Record<number, number>,
+  ): Promise<NotificationDescriptor[]> {
     if (this.awayInFlight) return [];
     this.awayInFlight = true;
     try {
       const res = await firstValueFrom(
         this.http.post<StandardResponse<{ notifications: NotificationDescriptor[] }>>(
           `${apiPrefix()}/notifications/missed`,
-          { ...(since ? { since } : {}) },
+          // threadHwms: the client's per-thread dismiss cursors (Android, in-memory). Web omits it (in-page
+          // Notifications have no per-card dismiss — only clear-all-on-focus), so the server counts every
+          // thread since `since` (cumulative since foreground). Declared on MissedDto.
+          { ...(since ? { since } : {}), grouping, ...(threadHwms ? { threadHwms } : {}) },
           { headers: { Accept: 'application/json', 'Accept-Language': navigator.language || 'en' } },
         ),
       ).catch(() => null);

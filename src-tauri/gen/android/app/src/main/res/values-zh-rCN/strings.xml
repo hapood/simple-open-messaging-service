@@ -7,4 +7,7 @@
     <string name="app_name">"SOMS"</string>
     <string name="main_activity_title">"SOMS"</string>
     <string name="notif_fgs_running">"正在后台运行"</string>
+    <plurals name="notif_group_summary">
+        <item quantity="other">"%d 个新会话"</item>
+    </plurals>
 </resources>

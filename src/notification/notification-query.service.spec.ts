@@ -19,6 +19,8 @@ describe('NotificationQueryService', () => {
   let findMsgs: ReturnType<typeof vi.fn>;
   let attachMedia: ReturnType<typeof vi.fn>;
   let senderCountsSince: ReturnType<typeof vi.fn>;
+  let threadAwayBuckets: ReturnType<typeof vi.fn>;
+  let threadCountSinceBound: ReturnType<typeof vi.fn>;
   let findNewest: ReturnType<typeof vi.fn>;
   let findPeers: ReturnType<typeof vi.fn>;
   let queryUsers: ReturnType<typeof vi.fn>;
@@ -45,6 +47,8 @@ describe('NotificationQueryService', () => {
     findMsgs = vi.fn();
     attachMedia = vi.fn();
     senderCountsSince = vi.fn();
+    threadAwayBuckets = vi.fn();
+    threadCountSinceBound = vi.fn();
     findNewest = vi.fn();
     findPeers = vi.fn();
     queryUsers = vi.fn();
@@ -53,7 +57,7 @@ describe('NotificationQueryService', () => {
     blockedByMe = vi.fn().mockResolvedValue(new Set<number>());
     svc = new NotificationQueryService(
       { queryParticipants: participants, findP2PPeers: findPeers } as never,
-      { countUnreadByThread: countUnread, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, findNewestForUser: findNewest } as never,
+      { countUnreadByThread: countUnread, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, threadAwayBuckets, threadCountSinceBound, findNewestForUser: findNewest } as never,
       { queryUsers } as never,
       { resolveGroupUsersByThreadIds: resolveGroups } as never,
       { blockedByMe } as never,
@@ -219,5 +223,103 @@ describe('NotificationQueryService', () => {
     });
     const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'zh-CN' });
     expect(res.notifications[0].body).toBe('Alice 给你发了 999+ 条消息');
+  });
+
+  // ── buildNotifyResponse: "thread" grouping (one notification CARD per conversation) ───────────
+
+  it('grouping:thread → one descriptor per new conversation, newest first; kind:thread-message', async () => {
+    blockedByMe.mockResolvedValue(new Set<number>());
+    threadAwayBuckets.mockResolvedValue(
+      new Map([[1, { count: 2, latestSeq: 7 }], [2, { count: 1, latestSeq: 8 }], [3, { count: 5, latestSeq: 9 }]]),
+    );
+    wire(
+      [row(1, 'P2P', { lastMessageSeq: 7 }), row(2, 'P2P', { lastMessageSeq: 8 }), row(3, 'P2P', { lastMessageSeq: 9 })],
+      { 1: 2, 2: 1, 3: 5 },
+      {
+        1: { seq: 7, content: 'a', contentType: 'PURE_TEXT', id: 10 },
+        2: { seq: 8, content: 'b', contentType: 'PURE_TEXT', id: 20 },
+        3: { seq: 9, content: 'c', contentType: 'PURE_TEXT', id: 30 },
+        99: { seq: 1, content: 'cursor', contentType: 'PURE_TEXT', id: 5 },
+      },
+      [{ threadId: 1, userId: 11 }, { threadId: 2, userId: 22 }, { threadId: 3, userId: 33 }],
+      [{ id: 11, name: 'Alice', avatar: '' }, { id: 22, name: 'Bob', avatar: '' }, { id: 33, name: 'Carol', avatar: '' }],
+    );
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, grouping: 'thread', acceptLanguage: 'en' });
+    expect(res.notifications).toHaveLength(3);
+    // newest conversation (highest latest-id) first: thread 3 (30) → 2 (20) → 1 (10).
+    expect(res.notifications.map((d) => d.tag)).toEqual(['soms-thread-3', 'soms-thread-2', 'soms-thread-1']);
+    const carol = res.notifications[0];
+    expect(carol.kind).toBe('thread-message');
+    expect(carol.body).toBe('Carol sent you 5 messages'); // single-sender all-mode template
+    expect(carol.icon).toBeNull(); // no per-thread avatar composition
+    expect(carol.data).toEqual({ threadId: 3, seq: 9 }); // dismiss target = latest seq (from Query A)
+    expect(res.notifications[1].body).toBe('Bob sent you a message'); // count 1 → the "one" template
+  });
+
+  it('grouping:thread → nothing new → empty list (client clears all soms-thread-*)', async () => {
+    blockedByMe.mockResolvedValue(new Set<number>());
+    threadAwayBuckets.mockResolvedValue(new Map());
+    wire(
+      [row(1, 'P2P', { lastMessageSeq: 1 })],
+      { 1: 0 },
+      {
+        1: { seq: 1, content: 'old', contentType: 'PURE_TEXT', id: 10 },
+        99: { seq: 1, content: 'cursor', contentType: 'PURE_TEXT', id: 100 },
+      },
+      [{ threadId: 1, userId: 11 }],
+      [{ id: 11, name: 'Alice', avatar: '' }],
+    );
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, grouping: 'thread', acceptLanguage: 'en' });
+    expect(res.notifications).toEqual([]); // NOT a clear descriptor — empty list; the client clears all soms-thread-*
+  });
+
+  it('grouping:thread → count ≥1000 → "999+" body', async () => {
+    blockedByMe.mockResolvedValue(new Set<number>());
+    threadAwayBuckets.mockResolvedValue(new Map([[1, { count: 1000, latestSeq: 1000 }]]));
+    wire(
+      [row(1, 'P2P', { lastMessageSeq: 1000 })],
+      { 1: 1000 },
+      {
+        1: { seq: 1000, content: 'x', contentType: 'PURE_TEXT', id: 10 },
+        99: { seq: 1, content: 'cursor', contentType: 'PURE_TEXT', id: 5 },
+      },
+      [{ threadId: 1, userId: 11 }],
+      [{ id: 11, name: 'Alice', avatar: '' }],
+    );
+    const res = await svc.buildNotifyResponse(1, { since: { threadId: 99, seq: 1 }, grouping: 'thread', acceptLanguage: 'en' });
+    expect(res.notifications[0].body).toBe('Alice sent you 999+ messages');
+  });
+
+  it('grouping:thread → threadHwms (dismissed) overrides the count via Query B; a 0-count dismissed thread is dropped', async () => {
+    blockedByMe.mockResolvedValue(new Set<number>());
+    // Query A: 3 threads new since globalHWM (1: 5, 2: 3, 3: 4).
+    threadAwayBuckets.mockResolvedValue(
+      new Map([[1, { count: 5, latestSeq: 9 }], [2, { count: 3, latestSeq: 8 }], [3, { count: 4, latestSeq: 11 }]]),
+    );
+    // Query B (only for dismissed threads 1 + 3): thread 1 → 2 new since dismiss; thread 3 → 0 (dropped).
+    threadCountSinceBound.mockImplementation((_u, _s, tid) => Promise.resolve(tid === 1 ? 2 : 0));
+    wire(
+      [row(1, 'P2P', { lastMessageSeq: 9 }), row(2, 'P2P', { lastMessageSeq: 8 }), row(3, 'P2P', { lastMessageSeq: 11 })],
+      { 1: 5, 2: 3, 3: 4 },
+      {
+        1: { seq: 9, content: 'a', contentType: 'PURE_TEXT', id: 10 },
+        2: { seq: 8, content: 'b', contentType: 'PURE_TEXT', id: 20 },
+        3: { seq: 11, content: 'c', contentType: 'PURE_TEXT', id: 30 },
+        99: { seq: 1, content: 'cursor', contentType: 'PURE_TEXT', id: 5 },
+      },
+      [{ threadId: 1, userId: 11 }, { threadId: 2, userId: 22 }, { threadId: 3, userId: 33 }],
+      [{ id: 11, name: 'Alice', avatar: '' }, { id: 22, name: 'Bob', avatar: '' }, { id: 33, name: 'Carol', avatar: '' }],
+    );
+    const res = await svc.buildNotifyResponse(1, {
+      since: { threadId: 99, seq: 1 },
+      grouping: 'thread',
+      threadHwms: { 1: 7, 3: 10 },
+      acceptLanguage: 'en',
+    });
+    const byThread = new Map(res.notifications.map((d) => [d.data.threadId, d]));
+    expect(res.notifications).toHaveLength(2); // thread 3 dropped (dismissed, 0 new)
+    expect(byThread.get(1)?.body).toBe('Alice sent you 2 messages'); // Query B (since dismiss seq 7)
+    expect(byThread.get(2)?.body).toBe('Bob sent you 3 messages'); // not dismissed → Query A count
+    expect(byThread.has(3)).toBe(false); // dismissed with 0 new → dropped
   });
 });

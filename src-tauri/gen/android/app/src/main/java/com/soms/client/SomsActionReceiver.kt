@@ -41,7 +41,17 @@ class SomsActionReceiver : BroadcastReceiver() {
         if (actionId == "dismiss") {
             val tid = intent.getIntExtra(EXTRA_THREAD_ID, -1)
             val seq = intent.getIntExtra(EXTRA_SEQ, -1)
-            if (tid >= 0 && seq >= 0) SomsSecureStore.setMissedCursor(context, tid, seq)
+            if (intent.getBooleanExtra(EXTRA_IS_THREAD, false)) {
+                // per-thread dismiss (#5: routed by the explicit EXTRA_IS_THREAD the action builder set, NOT
+                // the tag prefix): record the thread's seq IN MEMORY — the next fetch's `threadHwms` makes the
+                // server count this thread FROM it, so dismiss resets its cumulative count to 0 until newer
+                // messages. Cancels THIS card only; no global-HWM change (the other cards stay).
+                if (tid >= 0 && seq >= 0) SomsMessagingService.recordThreadDismiss(tid, seq)
+            } else {
+                // all-mode dismiss: advance the GLOBAL away-HWM (so the next fetch's `since` gates past
+                // everything) + cancel the away card.
+                if (tid >= 0 && seq >= 0) SomsSecureStore.setMissedCursor(context, tid, seq)
+            }
             NotificationManagerCompat.from(context).cancel(notifId)
             return
         }
@@ -51,7 +61,9 @@ class SomsActionReceiver : BroadcastReceiver() {
         val replyText = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_REPLY_TEXT)?.toString()
 
         val token = SomsSecureStore.getSessionToken(context) ?: return
-        val origin = SomsSecureStore.getApiOrigin(context) ?: return
+        // Follow Kotlin's ACTIVE origin (mode-aware), not the primary — a notification action tapped while the
+        // device is on the LAN secondary must hit the reachable secondary, not the hairpin-unreachable primary.
+        val origin = SomsSecureStore.getActiveOrigin(context) ?: return
 
         val body = JSONObject().apply {
             put("tag", tag)
@@ -85,6 +97,9 @@ class SomsActionReceiver : BroadcastReceiver() {
         const val EXTRA_ACTION_ID = "soms_action_id"
         const val EXTRA_TAG = "soms_tag"
         const val EXTRA_NOTIF_ID = "soms_notif_id"
+        /** #5: dismiss routes per-thread (in-memory HWM) vs all-mode (global HWM) — set explicitly by the
+         *  action builder in SomsMessagingService, NOT inferred from the tag prefix. */
+        const val EXTRA_IS_THREAD = "soms_is_thread"
         const val EXTRA_THREAD_ID = "soms_thread_id"
         const val EXTRA_SEQ = "soms_seq"
         /** The RemoteInput result key for an inline-reply action's typed text. */

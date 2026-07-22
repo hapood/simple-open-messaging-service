@@ -27,8 +27,13 @@ export interface StandardMessage<T = any> {
 }
 
 /** Connection state — the single source of truth the UI reads (via the ConnectionBanner) to surface
- *  connection problems. Mirrors the worker's `WorkerState`. */
-export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'closed';
+ *  connection problems. Mirrors the worker's `WorkerState`.
+ *
+ *  `disconnected` (Android-only, from Kotlin's ConnectivityManager observer) means the DEVICE is offline —
+ *  distinct from `reconnecting` (the server is unreachable but the network is up): there is no point retrying
+ *  until the OS network returns, so it shows a static "no network" label with no countdown. The worker/desktop
+ *  transports never emit it (they go straight to `reconnecting` on a drop). */
+export type ConnectionState = 'connecting' | 'open' | 'reconnecting' | 'disconnected' | 'closed';
 
 /** The outputs every transport produces, funneled into the facade's single set of subjects/signal. The
  *  transport is a pure producer; the facade owns the public `eventSubject`/`state`/`reconnect$` and the

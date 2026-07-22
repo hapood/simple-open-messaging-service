@@ -2,6 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Observe OS network state (ConnectivityManager.registerDefaultNetworkCallback) so RealtimeService can
+         distinguish "device offline" (the Disconnected banner — no point retrying) from "server unreachable"
+         (the Reconnecting banner — backoff + origin race). Normal (normal-protection) permission: no prompt. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- FCM notifications require POST_NOTIFICATIONS on Android 13+ (API 33). Granted at runtime via
          SomsFcm.requestNotificationPermission(), invoked from JS after first login. -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />

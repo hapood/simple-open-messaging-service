@@ -82,6 +82,52 @@ class SomsMessagingService : FirebaseMessagingService() {
         /** Stable id for an admin test-push notification (separate from the away-notification). */
         const val ADMIN_TEST_NOTIF_ID = 0x7
 
+        /** Group key for per-thread cards — all cards + the summary share it so Android bundles them into one
+         *  collapsible stack (WhatsApp-style). */
+        const val GROUP_KEY = "soms_messages"
+        /** Notification id for the per-thread group summary (the collapsed bundle header). */
+        const val THREAD_GROUP_SUMMARY_ID = 0x8
+        /** Per-thread notification ids are THREAD_NOTIF_BASE + threadId (offset clear of AWAY/FGS/ADMIN/SUMMARY
+         *  + the JS seq range 0x100+). threadId is a small DB id → no Int overflow. */
+        const val THREAD_NOTIF_BASE = 0x10000
+
+        /** In-memory per-thread DISMISS HWM (the count cursor): threadId → the seq the user dismissed up to.
+         *  Advances ONLY on dismiss (→ the thread's latestSeq); the server counts a dismissed thread FROM this
+         *  (sent as `threadHwms`), so dismiss resets its cumulative count. NOT the alert cursor — see
+         *  [threadLastAlertSeq]. Ephemeral (cleared on foreground); process-static so FCM/FGS/WorkManager share
+         *  it. ConcurrentHashMap (no @Volatile — the val is final; the map is itself thread-safe). */
+        private val dismissedThreadSeq = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+
+        /** In-memory per-thread LAST-ALERTED latestSeq (the #4 alert cursor): threadId → the latestSeq at the
+         *  last notify. #4 re-alerts a card only when first seen (no entry) OR its latestSeq advanced past this.
+         *  Distinct from [dismissedThreadSeq] (which moves only on dismiss) — this moves on every notify, so a
+         *  re-fetch with nothing new stays silent. Cleared together with [dismissedThreadSeq] on foreground. */
+        private val threadLastAlertSeq = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+
+        /** Derive the stable notification id for a per-thread card from its threadId. */
+        private fun threadNotifId(threadId: Int): Int = THREAD_NOTIF_BASE + threadId
+
+        /** Dismiss cursor: advances ONLY on dismiss → the thread's latestSeq (called by [SomsActionReceiver]). */
+        fun recordThreadDismiss(threadId: Int, seq: Int) { dismissedThreadSeq[threadId] = seq }
+
+        /** A snapshot of the dismiss-HWM map, serialized as `threadHwms` in the /missed body. */
+        fun threadHwmsSnapshot(): Map<Int, Int> = dismissedThreadSeq.toMap()
+
+        /** #4: whether `threadId` should re-alert — first sight, or `latestSeq` advanced past the last alert. */
+        fun shouldAlertThread(threadId: Int, latestSeq: Int): Boolean {
+            val last = threadLastAlertSeq[threadId]
+            return last == null || latestSeq > last
+        }
+
+        /** #4: record the latestSeq just alerted for `threadId` (advances the alert cursor on each notify). */
+        fun recordThreadAlert(threadId: Int, seq: Int) { threadLastAlertSeq[threadId] = seq }
+
+        /** Clear all per-thread in-memory state (foreground — the in-app UI takes over, cards reset). */
+        fun clearThreadDismiss() {
+            dismissedThreadSeq.clear()
+            threadLastAlertSeq.clear()
+        }
+
         /** True while MainActivity is visible. Set from MainActivity.onResume/onStop — the
          *  Android-native ground truth for "is the user looking at the app right now." */
         @Volatile
@@ -99,7 +145,7 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  failure (auth/network/parse) — callers simply skip rendering. */
         fun fetchDescriptors(ctx: Context): List<NotifDescriptor>? {
             val token = SomsSecureStore.getSessionToken(ctx)
-            val origin = SomsSecureStore.getApiOrigin(ctx)
+            val origin = SomsSecureStore.getActiveOrigin(ctx)
             SomsLog.d("Notif") { "fetchDescriptors tokenPresent=${token != null} originPresent=${origin != null}" }
             if (token == null || origin == null) {
                 SomsLog.w("Notif") { "fetchDescriptors abort: missing creds (token=${token != null} origin=${origin != null})" }
@@ -115,6 +161,19 @@ class SomsMessagingService : FirebaseMessagingService() {
                 val cursor = SomsSecureStore.getMissedCursor(ctx)
                 if (cursor != null) {
                     put("since", JSONObject().put("threadId", cursor.first).put("seq", cursor.second))
+                }
+                // The away-summary grouping pref (device-local) — "thread" (one card per conversation) or
+                // "all" (one folded card). Declared on MissedDto; setNotifGrouping clamps to those two, so a
+                // stray value can't trip forbidNonWhitelisted into a 400.
+                put("grouping", SomsSecureStore.getNotifGrouping(ctx))
+                // Per-thread dismiss HWMs (in-memory) — for each dismissed thread, the server counts FROM its
+                // HWM (cumulative since dismiss → dismiss resets the count to 0 until newer messages). Only
+                // meaningful in "thread" grouping; harmless (ignored) in "all". Declared on MissedDto.
+                val hwms = threadHwmsSnapshot()
+                if (hwms.isNotEmpty()) {
+                    val obj = JSONObject()
+                    for ((tid, seq) in hwms) obj.put(tid.toString(), seq)
+                    put("threadHwms", obj)
                 }
             }.toString()
             val locale = java.util.Locale.getDefault().toLanguageTag()
@@ -159,37 +218,173 @@ class SomsMessagingService : FirebaseMessagingService() {
             renderDescriptors(ctx, descriptors)
         }
 
-        /** Render the server-authored descriptor(s) as ONE coalesced away-notification at the stable
-         *  [AWAY_NOTIF_ID] (replacing any prior one). A `kind:"clear"` descriptor cancels it. */
+        /**
+         * Render the server-authored descriptor(s). Two modes, selected by the descriptors' `kind` (explicit —
+         * the tag is pure identity, never a mode signal):
+         *  - `kind:"thread-message"` (grouping "thread"): ONE notification CARD per conversation, bundled under
+         *    [GROUP_KEY] with a summary — see [renderThreadDescriptors].
+         *  - `kind:"message-summary"` / `"clear"` (grouping "all"): ONE coalesced notification at
+         *    [AWAY_NOTIF_ID] via [renderDescriptor].
+         * An empty list (per-thread "no new conversations") clears every message notification.
+         */
         fun renderDescriptors(ctx: Context, descriptors: List<NotifDescriptor>) {
             ensureChannel(ctx)
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: run {
                 SomsLog.w("Notif") { "renderDescriptors: NotificationManager unavailable → skip" }
                 return
             }
-            // The server emits exactly one descriptor for the away-summary (message-summary, or clear when
-            // nothing is unread+unmuted). Render the first; a clear cancels.
-            val d = descriptors.firstOrNull() ?: run {
-                SomsLog.d("Notif") { "renderDescriptors: firstOrNull null → cancel AWAY" }
-                nm.cancel(AWAY_NOTIF_ID); return
+            if (descriptors.isEmpty()) {
+                SomsLog.d("Notif") { "renderDescriptors: empty → clear all message notifs" }
+                clearAllMessageNotifs(ctx)
+                return
             }
-            // Surface the OS-level switches that silently swallow a notification: the app master toggle
-            // (NotificationManagerCompat, pre/post-13) and the per-channel enabled flag (O+). If a
-            // notification is "posted" per renderDescriptor but never appears, masterNotifOn=false or
-            // channelOn=false is why — not a code bug.
+            val d0 = descriptors.first()
+            if (d0.kind == "thread-message") {
+                renderThreadDescriptors(ctx, nm, descriptors)
+                return
+            }
+            // All-mode: one coalesced descriptor at AWAY_NOTIF_ID. Drop any leftover per-thread cards (the
+            // user switched grouping, or a prior thread-mode session's cards lingered).
+            cancelThreadGroup(nm)
             val masterOn = NotificationManagerCompat.from(ctx).areNotificationsEnabled()
             val channel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) nm.getNotificationChannel(CHANNEL_MESSAGES) else null
-            // A channel is "disabled" when the user dragged it to IMPORTANCE_NONE (blocked). channel==null →
-            // pre-O (no per-channel toggle) or not-yet-created → treat as on; masterNotifOn covers the app gate.
             val channelOn = channel == null || channel.importance != NotificationManager.IMPORTANCE_NONE
-            // chImp is the smoking gun for silent notifications: IMPORTANCE_HIGH (4) = sound + heads-up banner;
-            // DEFAULT (3) = sound, no banner; LOW (2) / MIN (1) = silent. If a notification posts but makes no
-            // sound/banner, chImp<4 is why (a stale dev build pinned the channel, fixed by the CHANNEL_MESSAGES
-            // id bump). renotify drives setOnlyAlertOnce — false silences every post after the first.
             SomsLog.i("Notif") {
-                "renderDescriptors kind=${d.kind} title='${d.title.take(40)}' bodyLen=${d.body.length} icon=${d.icon != null} actions=${d.actions.size} masterNotifOn=$masterOn channelOn=$channelOn chImp=${channel?.importance} renotify=${d.renotify} appInFg=$appInForeground"
+                "renderDescriptors(all) kind=${d0.kind} title='${d0.title.take(40)}' bodyLen=${d0.body.length} icon=${d0.icon != null} masterNotifOn=$masterOn channelOn=$channelOn chImp=${channel?.importance} renotify=${d0.renotify} appInFg=$appInForeground"
             }
-            renderDescriptor(ctx, d)
+            renderDescriptor(ctx, d0)
+        }
+
+        /**
+         * "thread" grouping render — one [NotificationCompat] card per descriptor (each at its own
+         *  [threadNotifId]), all under [GROUP_KEY] + a [THREAD_GROUP_SUMMARY_ID] summary so Android bundles
+         *  them. Children use [NotificationCompat.GROUP_ALERT_SUMMARY] (silent; only the summary alerts, so
+         *  N new conversations = ONE sound, not N). Threads the user dismissed (in-memory per-thread HWM) are
+         *  filtered out until a newer seq arrives; stale cards no longer in this round are cancelled.
+         */
+        private fun renderThreadDescriptors(ctx: Context, nm: NotificationManager, descriptors: List<NotifDescriptor>) {
+            // The server already dropped dismissed-0 threads (it counted each from the client's threadHwms), so
+            // `descriptors` IS the visible set — render them all. #4 alert: a card re-alerts only on first sight
+            // or a newer latestSeq (shouldAlertThread); the summary carries the aggregate alert (only it sounds).
+            val wantIds = HashSet<Int>()
+            var anyChanged = false
+            for (d in descriptors) {
+                val tid = d.data.optInt("threadId", -1)
+                val seq = d.data.optInt("seq", -1)
+                if (tid < 0) continue
+                val id = threadNotifId(tid)
+                wantIds.add(id)
+                if (seq >= 0 && shouldAlertThread(tid, seq)) anyChanged = true
+                postThreadNotification(ctx, nm, id, d)
+                if (seq >= 0) recordThreadAlert(tid, seq) // advance the #4 alert cursor
+            }
+            // Cancel stale cards (group members not in this round) — robust to process restarts via
+            // activeNotifications (a dismissed/switched/missing thread's leftover card).
+            cancelThreadGroupExcept(nm, wantIds)
+            if (descriptors.isEmpty()) nm.cancel(THREAD_GROUP_SUMMARY_ID) else postGroupSummary(ctx, nm, descriptors.size, anyChanged)
+            SomsLog.i("Notif") { "renderDescriptors(thread): ${descriptors.size} cards, anyChanged=$anyChanged appInFg=$appInForeground" }
+        }
+
+        /** Post ONE per-thread notification card at [id], grouped under [GROUP_KEY]. Tap deep-links into the
+         *  thread (EXTRA_THREAD_ID); the `dismiss` action records the thread's seq in memory + cancels this
+         *  card (handled by [SomsActionReceiver]). */
+        private fun postThreadNotification(ctx: Context, nm: NotificationManager, id: Int, d: NotifDescriptor) {
+            val tid = d.data.optInt("threadId", -1)
+            val seq = d.data.optInt("seq", -1)
+            val intent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                if (tid >= 0) putExtra(EXTRA_THREAD_ID, tid.toString())
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                ctx, id, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(d.title.ifEmpty { ctx.getString(R.string.app_name) })
+                .setContentText(d.body)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(d.body))
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(!d.renotify)
+                .setGroup(GROUP_KEY)
+                .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+                .setContentIntent(pendingIntent)
+            if (d.silent == true) builder.setSilent(true)
+            for ((idx, a) in d.actions.withIndex()) {
+                val pi = PendingIntent.getBroadcast(
+                    ctx,
+                    id + 1 + idx, // unique requestCode per (card, action slot)
+                    Intent(ctx, SomsActionReceiver::class.java).apply {
+                        putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
+                        putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
+                        putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, id)
+                        putExtra(SomsActionReceiver.EXTRA_IS_THREAD, true) // #5: dismiss routes per-thread (in-memory), not tag-prefix
+                        if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
+                    },
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+                )
+                builder.addAction(NotificationCompat.Action.Builder(R.drawable.ic_notification, a.title, pi).build())
+            }
+            nm.notify(id, builder.build())
+        }
+
+        /** Post the per-thread bundle summary (the collapsed header). [GROUP_ALERT_SUMMARY] makes this the
+         *  ONLY group member that can alert (sound + heads-up) — so a burst across N conversations is one alert,
+         *  not N. #4: `alert` is true only when some child is first-seen or has a newer latestSeq this round;
+         *  otherwise the summary is posted silent (a re-fetch that changed nothing stays quiet). Re-posts
+         *  replace in place. */
+        private fun postGroupSummary(ctx: Context, nm: NotificationManager, count: Int, alert: Boolean) {
+            val intent = Intent(ctx, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            }
+            val pendingIntent = PendingIntent.getActivity(
+                ctx, THREAD_GROUP_SUMMARY_ID, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+            val summary = ctx.resources.getQuantityString(R.plurals.notif_group_summary, count, count)
+            val builder = NotificationCompat.Builder(ctx, CHANNEL_MESSAGES)
+                .setSmallIcon(R.drawable.ic_notification)
+                .setContentTitle(ctx.getString(R.string.app_name))
+                .setContentText(summary)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(summary))
+                .setGroup(GROUP_KEY)
+                .setGroupSummary(true)
+                .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_SUMMARY)
+                .setAutoCancel(true)
+                .setOnlyAlertOnce(false) // the `alert` flag (via setSilent) gates the actual alert, not this
+                .setContentIntent(pendingIntent)
+            if (!alert) builder.setSilent(true) // #4: nothing changed this round → quiet update
+            nm.notify(THREAD_GROUP_SUMMARY_ID, builder.build())
+        }
+
+        /** Cancel every notification in [GROUP_KEY] (children + summary). Best-effort via activeNotifications
+         *  (robust to process restarts — the in-memory "what did I post" set is gone after a kill, but the OS
+         *  still holds the posted cards). */
+        private fun cancelThreadGroup(nm: NotificationManager) {
+            val active = try { nm.activeNotifications } catch (e: Exception) { return }
+            for (sbn in active) if (sbn.notification.group == GROUP_KEY) nm.cancel(sbn.id)
+        }
+
+        /** Cancel group children NOT in [keepIds] (stale cards — a dismissed / switched-out thread). The
+         *  summary ([THREAD_GROUP_SUMMARY_ID]) is always exempt (reposted or withdrawn by the caller). */
+        private fun cancelThreadGroupExcept(nm: NotificationManager, keepIds: Set<Int>) {
+            val active = try { nm.activeNotifications } catch (e: Exception) { return }
+            for (sbn in active) {
+                if (sbn.notification.group == GROUP_KEY && sbn.id != THREAD_GROUP_SUMMARY_ID && sbn.id !in keepIds) {
+                    nm.cancel(sbn.id)
+                }
+            }
+        }
+
+        /** Clear EVERY message notification (the away card + the whole per-thread group) + the in-memory
+         *  per-thread dismiss map. Called on foreground (onResume — the in-app UI owns display again) and on
+         *  an empty descriptor list (nothing new to show). */
+        fun clearAllMessageNotifs(ctx: Context) {
+            val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
+            nm.cancel(AWAY_NOTIF_ID)
+            cancelThreadGroup(nm)
+            clearThreadDismiss()
         }
 
         /**
@@ -249,6 +444,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                         putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
                         putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
                         putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, AWAY_NOTIF_ID)
+                        putExtra(SomsActionReceiver.EXTRA_IS_THREAD, false) // all-mode: dismiss advances the global HWM
                         val tid = d.data.optInt("threadId", -1)
                         if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
                         val seq = d.data.optInt("seq", -1)
@@ -276,7 +472,7 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  renders without an icon — graceful, never blocks the away-summary). */
         private fun fetchBitmap(ctx: Context, iconUrl: String): android.graphics.Bitmap? {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return null
-            val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
+            val origin = SomsSecureStore.getActiveOrigin(ctx) ?: return null
             val fullUrl = "$origin$iconUrl"
             val request = Request.Builder()
                 .url(fullUrl)

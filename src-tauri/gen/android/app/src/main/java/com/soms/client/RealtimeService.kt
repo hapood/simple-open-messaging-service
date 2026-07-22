@@ -3,6 +3,8 @@ package com.soms.client
 import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -16,6 +18,7 @@ import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /** logcat tag for this otherwise-headless service. The FGS runs with no WebView and used to
  *  be a total black box — these calls (onOpen / onEvent / onClosed / onFailure) are the only way to see
@@ -26,6 +29,11 @@ private const val TAG = "SomsFgs"
 /** Coalesce window for the background away-notification: a burst of NEW_MESSAGE frames collapses into one
  *  summary fetch + one notification (cancel + reschedule on each new frame). */
 private const val COALESCE_DELAY_MS = 500L
+
+/** Short-timeout reachability probe (s). [probeHealth] bounds connect + headers at this value, so a probe of a
+ *  hairpin-unreachable origin fails in ~3s instead of the SSE client's 15s connect timeout — the origin race
+ *  ([resolveOrigin]) stays snappy. Mirrors the Rust side's HEALTH_PROBE_TIMEOUT. */
+private const val HEALTH_PROBE_TIMEOUT_S = 3L
 
 /**
  * The single native-owned realtime channel. A (optionally foreground) service holding a long-lived SSE
@@ -87,6 +95,66 @@ class RealtimeService : Service() {
     private val ioExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsAwayIo") }
     private var attempt = 0
 
+    /** Dedicated client for the unauthenticated `/health` reachability probe — SEPARATE from [client] (the
+     *  long-lived SSE client) so its short [HEALTH_PROBE_TIMEOUT_S] connect+read caps don't bleed into the
+     *  stream (which needs readTimeout 0 + a 25s ping). Probes are infrequent (connect / failure / reconnect),
+     *  so a fresh client per probe is cheap and shares OkHttp's default connection pool / dispatcher. */
+    private val probeClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(HEALTH_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
+        .readTimeout(HEALTH_PROBE_TIMEOUT_S, TimeUnit.SECONDS)
+        .build()
+
+    /** Single-flight lock for [establishConnection]. Probes + the open decision are serialized through this so
+     *  two concurrent triggers (e.g. onFailure firing while ConnectivityManager.onAvailable races in) launch at
+     *  most ONE resolve+open cycle, not two divergent streams. Guards [establishing] + the eventSource!=null
+     *  re-check at the open step. */
+    private val establishLock = Any()
+    /** True while an [establishConnection] cycle is mid-flight (between accepting the trigger and finishing the
+     *  resolve+open / scheduleReopen). Read+written under [establishLock]. */
+    private var establishing = false
+    /** The OS network is up (a default network is present). Flipped by [networkCallback]: onLost→false (push
+     *  Disconnected, stop attempting — a probe would only fail), onAvailable→true (race + reconnect). Read in
+     *  [establishConnection]'s guard so no doomed probe/open runs while the device is offline. @Volatile: written
+     *  on the ConnectivityManager binder thread, read on ioExecutor / the main looper. */
+    @Volatile private var networkOnline = true
+    /** The system connectivity service, held so [onDestroy] can unregister [networkCallback]. Null only before
+     *  [onCreate] / when the service has no Context (never in practice). */
+    private var connectivityManager: ConnectivityManager? = null
+
+    /** OS network-state observer (the default network). `onLost` = device went offline → Disconnected (distinct
+     *  from server-unreachable Reconnecting — no backoff countdown, no point retrying); `onAvailable` = network
+     *  (re)gained → race both origins and reconnect. Registered in [onCreate]; registerDefaultNetworkCallback
+     *  fires `onAvailable` immediately on register when online (harmless — [establishConnection] single-flights
+     *  the dedup vs the onStartCommand open). */
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onLost(network: Network) {
+            SomsLog.i("Rt") { "network onLost → disconnected (stop attempting)" }
+            networkOnline = false
+            handler.removeCallbacks(reopenTask)
+            eventSource?.cancel()
+            eventSource = null
+            pushConnState("disconnected")
+        }
+
+        override fun onAvailable(network: Network) {
+            SomsLog.i("Rt") { "network onAvailable → race + reconnect" }
+            networkOnline = true
+            attempt = 0
+            establishConnection("reconnecting")
+        }
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        // Observe OS connectivity so the banner distinguishes "device offline" (Disconnected) from "server
+        // unreachable" (Reconnecting), and so [establishConnection] stops launching doomed probes while offline.
+        // registerDefaultNetworkCallback tracks the DEFAULT network — onLost fires only when the device loses
+        // its last default route (true offline), not on a Wi-Fi↔cellular handoff (that's onAvailable for the new
+        // default). Normal permission (ACCESS_NETWORK_STATE); registered for the service's lifetime.
+        connectivityManager = getSystemService(ConnectivityManager::class.java)
+        connectivityManager?.registerDefaultNetworkCallback(networkCallback)
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         SomsLog.i("Rt") { "onStartCommand action=${intent?.action} (null=sticky-restart) streamOpen=${eventSource != null} startId=$startId" }
         when (intent?.action) {
@@ -111,19 +179,19 @@ class RealtimeService : Service() {
                 // Unlike ACTION_RETRY (which openStream() no-ops when already open), this tears down the
                 // dead-open socket first. JS cannot close the native socket, so the WebView asks Kotlin. The
                 // listener's identity check ensures the canceled socket's late onClosed/onFailure can't
-                // clobber the fresh socket openStream() opens below.
+                // clobber the fresh socket establishConnection() opens below.
                 Log.i(TAG, "onStartCommand force-reconnect (cancel open stream + reopen)")
                 handler.removeCallbacks(reopenTask)
                 attempt = 0
                 if (eventSource != null) {
                     eventSource?.cancel()
                     eventSource = null
-                    // Surface the reconnect-in-progress. The canceled socket was OPEN (dead-open, no HELLO),
-                    // so it never pushed "reconnecting" on its own, and its late onClosed is a no-op (the
-                    // identity check) — without this push the banner would stay "open" until the fresh
-                    // socket's onOpen/onFailure fires, hiding the reconnect entirely.
-                    pushConnState("reconnecting")
                 }
+                // Re-resolve (probe + race) + reopen on the chosen origin; establishConnection surfaces
+                // "reconnecting" itself. Return early so the tail openStream() — which establishes as a calm
+                // "connecting" — can't override this path's urgent reconnect label.
+                establishConnection("reconnecting")
+                return START_STICKY
             }
             else -> {
                 // ACTION_BACKGROUND (app backgrounded + toggle on) OR a START_STICKY system restart:
@@ -166,35 +234,143 @@ class RealtimeService : Service() {
         }
     }
 
-    /** Open the /events stream if it isn't already. Stops the service if the credentials aren't present
-     *  (logged out / not configured) — nothing to stream. Idempotent: a re-delivered intent (fg/bg cycle)
-     *  never tears down a healthy connection. */
+    /** Open the /events stream if it isn't already. Idempotent: a re-delivered intent (fg/bg cycle) never
+     *  tears down a healthy connection. Delegates the origin decision + the actual open to
+     *  [establishConnection] (the probe→flip→race state machine) — the boot/resume path establishes as a calm
+     *  "connecting"; failure paths call [establishConnection] directly with "reconnecting". */
     private fun openStream() {
         if (eventSource != null) {
             SomsLog.d("Rt") { "openStream no-op (eventSource already open)" }
             return // already connected
         }
-        val token = SomsSecureStore.getSessionToken(this)
-        // Pick the ACTIVE origin: the LAN secondary when the mode is "secondary" (set by onFailure after the
-        // primary failed), else the primary. Same backend ⇒ the session token authorizes either.
-        val primary = SomsSecureStore.getApiOrigin(this)
-        val secondary = SomsSecureStore.getApiOriginSecondary(this)
-        val onSecondary = secondary != null && SomsSecureStore.getOriginMode(this) == "secondary"
-        val origin = if (onSecondary) secondary else primary
-        SomsLog.d("Rt") { "openStream tokenPresent=${token != null} originPresent=${origin != null} mode=${if (onSecondary) "secondary" else "primary"} attempt=$attempt" }
-        if (token == null || origin == null) {
-            SomsLog.w("Rt") { "openStream abort (no creds) → stopSelf" }
-            stopSelf(); return
+        establishConnection("connecting")
+    }
+
+    /** The single origin-selection + open entry point — Kotlin is the origin AUTHORITY on Android (it owns the
+     *  FGS, including background; Rust is passive and accepts whatever Kotlin signals via [signalRust]).
+     *
+     *  Single-flight ([establishLock]): at most one resolve+open cycle runs at a time, so two concurrent
+     *  triggers (onFailure racing ConnectivityManager.onAvailable) launch one stream, not two. The resolve is
+     *  off-main ([ioExecutor]) because it does blocking health probes; the open ([openStreamOn]) is non-blocking
+     *  and safe off-main.
+     *
+     *  - `asState` is the banner state to surface while resolving ("connecting" for boot, "reconnecting" for a
+     *    failure/retry). Overridden to "disconnected" when the OS network is down.
+     *  - [resolveOrigin] picks the reachable origin (current-wins-ties; flip to the other if the current is
+     *    down; both-down ⇒ null). null ⇒ [scheduleReopen] (backoff, whose retry re-runs this).
+     *  - On a chosen origin: [signalRust] so Rust's API transports follow (no API⇄SSE origin split), then open. */
+    private fun establishConnection(asState: String) {
+        synchronized(establishLock) {
+            if (establishing || eventSource != null) return
+            if (!networkOnline) { pushConnState("disconnected"); return }
+            establishing = true
         }
-        pushConnState("connecting")
+        pushConnState(asState)
+        ioExecutor.execute {
+            try {
+                val token = SomsSecureStore.getSessionToken(this)
+                if (token == null) {
+                    SomsLog.w("Rt") { "establish abort (no token) → stopSelf" }
+                    stopSelf(); return@execute
+                }
+                val origin = resolveOrigin()
+                if (origin == null) {
+                    // Both origins down (or the single configured origin is down) → backoff; the retry re-runs
+                    // establishConnection (which races again). The "reconnecting" + countdown are pushed by
+                    // scheduleReopen. Don't clear `establishing` before scheduleReopen — it's cleared in finally.
+                    scheduleReopen(); return@execute
+                }
+                // Re-check under the lock: the network may have dropped, or another path may have opened a
+                // stream, during the probe. If so, abandon this open (no duplicate stream, no doomed connect).
+                synchronized(establishLock) {
+                    if (!networkOnline || eventSource != null) return@execute
+                }
+                signalRust(origin)
+                openStreamOn(origin, token)
+            } finally {
+                synchronized(establishLock) { establishing = false }
+            }
+        }
+    }
+
+    /** Pick the origin to open, or null if neither is reachable. CONCURRENT probe of the current + the other
+     *  (two short-lived threads, each bounded by [HEALTH_PROBE_TIMEOUT_S]); **current wins ties** so a transient
+     *  blip on a reachable origin doesn't flap us to the other, and a LAN-foregrounded device stays on the LAN
+     *  origin it's already on. If the current is down + the other up → flip the persisted mode + return the
+     *  other. Both down → null (caller backs off). With no secondary configured this degenerates to a single
+     *  probe of the primary (the dev / no-SOMS_LAN_DOMAIN case — behaves exactly as before).
+     *
+     *  This ONE function is both the runtime smooth-switch (current up ⇒ stay) AND the reconnect race (concurrent
+     *  probe of both) — the distinction collapses because "current wins ties" makes a concurrent race safe at
+     *  runtime (it never churns a healthy current). Mirrors the Rust side's probe + current-wins-ties rule. */
+    private fun resolveOrigin(): String? {
+        val primary = SomsSecureStore.getApiOrigin(this) ?: return null
+        val secondary = SomsSecureStore.getApiOriginSecondary(this)
+        if (secondary == null) {
+            // Single-origin: healthy ⇒ open it; down ⇒ null (caller backs off). No mode to flip.
+            return if (probeHealth(primary)) primary else null
+        }
+        val mode = SomsSecureStore.getOriginMode(this)
+        val current = if (mode == "secondary") secondary else primary
+        val other = if (mode == "secondary") primary else secondary
+        val curOk = AtomicBoolean(false)
+        val otherOk = AtomicBoolean(false)
+        val t1 = Thread { curOk.set(probeHealth(current)) }
+        val t2 = Thread { otherOk.set(probeHealth(other)) }
+        t1.start(); t2.start(); t1.join(); t2.join()
+        return when {
+            curOk.get() -> current // current healthy → stay (no flap)
+            otherOk.get() -> {
+                val next = if (mode == "secondary") "primary" else "secondary"
+                SomsSecureStore.setOriginMode(this, next)
+                Log.i(TAG, "resolveOrigin → flip mode $mode → $next")
+                other
+            }
+            else -> null // both down
+        }
+    }
+
+    /** Short-timeout UNAUTHENTICATED probe of `{origin}/api/v1/health` — true iff it answered a healthy (2xx)
+     *  response within [HEALTH_PROBE_TIMEOUT_S]. No Bearer: health is public, so this works PRE-LOGIN and needs
+     *  no token. Synchronous (blocks the caller — run off-main, e.g. via [ioExecutor] or a resolve thread).
+     *  Any failure (timeout / connect / DNS / TLS / non-2xx) ⇒ false (not healthy). */
+    private fun probeHealth(origin: String): Boolean {
+        val req = Request.Builder()
+            .url("$origin${SomsSecureStore.API_PREFIX}/health")
+            .get()
+            .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
+            .build()
+        return try {
+            probeClient.newCall(req).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            SomsLog.d("Rt") { "probeHealth $origin → ${e.javaClass.simpleName}: ${e.message}" }
+            false
+        }
+    }
+
+    /** Build + open the /events EventSource on the resolved origin. Non-blocking (OkHttp connects on its
+     *  dispatcher thread; the listener fires there), so this is safe to call from [ioExecutor]. The [eventSource]
+     *  assignment is the single writer the listener's identity check reads (@Volatile). Does NOT push state — the
+     *  banner keeps the [establishConnection] `asState` ("connecting" boot / "reconnecting" failure) until onOpen
+     *  flips it to "open", so a recovery doesn't flicker reconnecting→connecting→open (expand→collapse→gone). */
+    private fun openStreamOn(origin: String, token: String) {
         val request = Request.Builder()
             .url("$origin${SomsSecureStore.API_PREFIX}/events")
             .addHeader("Authorization", "Bearer $token")
             .addHeader("Accept", "text/event-stream")
             .cacheControl(okhttp3.CacheControl.FORCE_NETWORK)
             .build()
-        Log.i(TAG, "openStream url=${request.url} attempt=$attempt")
+        Log.i(TAG, "openStreamOn url=${request.url} attempt=$attempt")
         eventSource = sseFactory.newEventSource(request, listener)
+    }
+
+    /** Signal Rust the origin Kotlin decided is active, so Rust's API transports ([api_request] / media / upload)
+     *  follow it — no API⇄SSE origin split. Rust is passive on Android ([runtime_switch] is a no-op there); it
+     *  accepts this via the `set_active_origin` command. Foreground-only in effect: [SomsBridge.eval] is a no-op
+     *  while no WebView is attached (background), which is fine — background has no API traffic to diverge from,
+     *  and the next foreground [openStreamOn] re-signals. */
+    private fun signalRust(origin: String) {
+        SomsBridge.eval("window.__SOMS_SET_ACTIVE_ORIGIN__ && window.__SOMS_SET_ACTIVE_ORIGIN__(${SomsBridge.jsonStr(origin)});")
     }
 
     private val listener = object : EventSourceListener() {
@@ -275,19 +451,13 @@ class RealtimeService : Service() {
                 stopSelf()
                 return
             }
-            // Network failure (not 401): if a LAN secondary is configured, switch the active origin for the
-            // next reopen — primary→secondary or secondary→primary. On the LAN the primary is unreachable (no
-            // hairpin NAT); one toggle lands on the reachable secondary and onOpen sticks (attempt resets).
-            // Both down ⇒ alternates with the scheduleReopen backoff. (401 is handled above — session-dead.)
-            val secondary = SomsSecureStore.getApiOriginSecondary(this@RealtimeService)
-            if (secondary != null) {
-                val cur = SomsSecureStore.getOriginMode(this@RealtimeService)
-                val next = if (cur == "secondary") "primary" else "secondary"
-                SomsSecureStore.setOriginMode(this@RealtimeService, next)
-                Log.i(TAG, "onFailure → SSE origin mode $cur → $next")
-            }
-            this@RealtimeService.pushConnState("reconnecting")
-            scheduleReopen()
+            // Network failure (not 401): re-resolve + reopen via establishConnection. resolveOrigin probes the
+            // current origin (a transient drop ⇒ still healthy ⇒ reopen it — no needless flip); if it's down it
+            // flips to the other (the LAN secondary, on a hairpin-NAT LAN where the primary is unreachable); if
+            // both are down it returns null and establishConnection falls through to scheduleReopen (backoff,
+            // whose retry races again). Kotlin owns this decision and signals Rust (signalRust) so the API
+            // transports follow — no origin split. (401 is handled above — session-dead.)
+            this@RealtimeService.establishConnection("reconnecting")
         }
     }
 
@@ -333,10 +503,12 @@ class RealtimeService : Service() {
         ioExecutor.execute { SomsMessagingService.renderAwayNotification(this@RealtimeService) }
     }
 
-    /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY
-     *  path so a manual retry never races the scheduled one. A named Runnable (not an anonymous lambda) so
-     *  removeCallbacks can target it selectively without clearing the unrelated away-coalesce task. */
-    private val reopenTask = Runnable { openStream() }
+    /** The pending backoff-driven reopen, posted by [scheduleReopen] and cancelled by the ACTION_RETRY /
+     *  onLost paths so neither a manual retry nor an offline transition races the scheduled one. Re-resolves via
+     *  [establishConnection] (probe + concurrent race) so a reconnect after both origins were down finds the one
+     *  that came back. A named Runnable (not an anonymous lambda) so removeCallbacks can target it selectively
+     *  without clearing the unrelated away-coalesce task. */
+    private val reopenTask = Runnable { establishConnection("reconnecting") }
 
     /** Re-open the stream after exponential backoff (capped ~32s). okhttp-sse already retries some
      *  transient failures; this covers server-initiated closes + the rest. No-op once stopping. */
@@ -366,6 +538,7 @@ class RealtimeService : Service() {
 
     override fun onDestroy() {
         stopping = true
+        connectivityManager?.unregisterNetworkCallback(networkCallback)
         handler.removeCallbacksAndMessages(null)
         ioExecutor.shutdownNow()
         eventSource?.cancel()

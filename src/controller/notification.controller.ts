@@ -134,6 +134,8 @@ export class NotificationController {
         : null;
     const data = await this.notifQuery.buildNotifyResponse(userId, {
       since,
+      grouping: dto.grouping,
+      threadHwms: dto.threadHwms,
       acceptLanguage: (req.headers['accept-language'] as string | undefined) ?? null,
     });
     return { code: BusinessCode.OK, message: 'successful', data };
