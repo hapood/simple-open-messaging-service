@@ -5,6 +5,7 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { WebsocketService, ConnectionState } from '../../services/websocket.service';
 import { LanguageService } from '../../services/language.service';
 import { apiPrefix } from '../../services/constants';
+import { apiOrigin, getOriginMode } from '../../services/runtime';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { firstValueFrom, timeout, TimeoutError } from 'rxjs';
 
@@ -59,6 +60,17 @@ export function classifyProbeError(e: unknown): string {
     <section class="settings-group">
       <div class="settings-card">
         <mat-list>
+          <!-- Active server (primary vs LAN fallback) -->
+          <mat-list-item>
+            <span matListItemTitle>{{ 'settings.activeServer' | transloco }}</span>
+            <span matListItemLine class="hint">{{ activeOriginHint() }}</span>
+            <div matListItemMeta class="row-actions">
+              <span class="status-pill" [class.warn]="originMode() === 'secondary'">{{
+                originPillLabel()
+              }}</span>
+            </div>
+          </mat-list-item>
+
           <!-- Realtime connection (SSE) -->
           <mat-list-item>
             <span matListItemTitle>{{ 'settings.realtimeConnection' | transloco }}</span>
@@ -104,6 +116,9 @@ export class SettingsConnectionComponent {
   readonly health = signal<HealthResult | null>(null);
   /** True while a health probe is in flight (disables the button + shows the "Checking…" label). */
   readonly checking = signal(false);
+  /** Which origin is ACTIVE — 'primary' (normal) or 'secondary' (the LAN fallback). Loaded from Rust's
+   *  get_origin_mode on init + after each health probe; stays 'primary' in the browser build. */
+  readonly originMode = signal<'primary' | 'secondary'>('primary');
   /** Probe deadline (ms). Bounds the `checking` lifecycle so a hung connection (host reachable but
    *  never responding) can't wedge the button forever — complements the re-entrancy guard. Tuned as a
    *  liveness budget (see `check()`), NOT against the server's request-handling window. */
@@ -149,6 +164,39 @@ export class SettingsConnectionComponent {
   /** Skip the worker's backoff and reconnect at once (no-op unless mid-(re)connect). */
   retry(): void {
     this.ws.retryNow();
+  }
+
+  constructor() {
+    this.loadOriginMode();
+  }
+
+  // ── Active server (origin mode) ────────────────────────────────────────────────────────────
+
+  /** Pill label: "Primary" normally, "LAN" (warn) when on the fallback. */
+  readonly originPillLabel = computed(() => {
+    void this.language.lang();
+    return this.transloco.translate(
+      this.originMode() === 'secondary' ? 'settings.serverLan' : 'settings.serverPrimary',
+    );
+  });
+
+  /** Detail line: the LAN-fallback notice when on secondary, else the configured primary origin. */
+  readonly activeOriginHint = computed(() => {
+    void this.language.lang();
+    if (this.originMode() === 'secondary') {
+      return this.transloco.translate('settings.usingLanHint');
+    }
+    return apiOrigin();
+  });
+
+  /** Read the active mode from Rust (get_origin_mode). Re-called after each health probe (a probe may
+   *  trigger a switch). Stays 'primary' in the browser build (no fallback) or if the IPC is unavailable. */
+  private async loadOriginMode(): Promise<void> {
+    try {
+      this.originMode.set(await getOriginMode());
+    } catch {
+      // not under Tauri — 'primary' default
+    }
   }
 
   // ── Server health ──────────────────────────────────────────────────────────────────────────
@@ -200,6 +248,7 @@ export class SettingsConnectionComponent {
       this.health.set({ ok: false, error: classifyProbeError(e) });
     } finally {
       this.checking.set(false);
+      void this.loadOriginMode();
     }
   }
 }
