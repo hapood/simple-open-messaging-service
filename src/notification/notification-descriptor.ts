@@ -60,9 +60,8 @@ export interface NotificationDescriptor {
   silent?: boolean;
   /** Buttons — kind-dependent. P1 ships `[]` (actions land in a later phase). */
   actions: NotifAction[];
-  /** Routing payload, opaque to the server. `message-summary` carries the HWM cursor `(threadId, seq)` — the
-   *  newest message the summary covers; the client advances its high-water mark to it on `mark-all-read`, and
-   *  the server clears every active thread (it re-derives the set itself, so no sampled thread list is sent).
-   *  A future `single-message` kind would carry one `threadId` + `seq` to identify its message. */
+  /** Routing payload, opaque to the server. The away-summary carries none today — its `dismiss` button is a
+   *  pure frontend op (closes the shade, no backend round-trip, no read-watermark change). A future
+   *  `single-message` kind would carry one `threadId` + `seq` to identify its message (e.g. for a reply). */
   data: { threadId?: number; seq?: number; [k: string]: unknown };
 }

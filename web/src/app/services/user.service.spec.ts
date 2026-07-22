@@ -125,3 +125,106 @@ describe('UserService profile refresh', () => {
     }
   });
 });
+
+describe('UserService session lifecycle (establishSession / restoreWebdb / clearSession)', () => {
+  let svc: UserService;
+  let httpMock: HttpTestingController;
+  let webdb: {
+    openForUser: jasmine.Spy;
+    closeAndDelete: jasmine.Spy;
+    getMeta: jasmine.Spy;
+    putMeta: jasmine.Spy;
+  };
+
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        UserService,
+        {
+          provide: WebdbService,
+          useValue: {
+            openForUser: jasmine.createSpy('openForUser').and.resolveTo(undefined),
+            closeAndDelete: jasmine.createSpy('closeAndDelete').and.resolveTo(undefined),
+            // Cache-hit self profile for {id:1, profileRev:0} → gateSelfProfile short-circuits with NO
+            // fetch in these tests (the profile gate is orthogonal — covered by the refresh suite above).
+            // A user/rev that cache-misses (account switch to id:2) falls through to a real fetch, matched
+            // explicitly in that test.
+            getMeta: jasmine.createSpy('getMeta').and.resolveTo({
+              id: 1, profileRev: 0, name: 'A', avatar: '', bio: '', domain: '',
+            }),
+            putMeta: jasmine.createSpy('putMeta').and.resolveTo(undefined),
+          },
+        },
+        { provide: ProfileRepository, useValue: { putProfile: jasmine.createSpy('putProfile').and.resolveTo(undefined) } },
+      ],
+    });
+    svc = TestBed.inject(UserService);
+    httpMock = TestBed.inject(HttpTestingController);
+    webdb = TestBed.inject(WebdbService) as unknown as typeof webdb;
+    localStorage.removeItem('soms.lastUserId'); // clean slate between tests
+  });
+
+  afterEach(() => {
+    httpMock.verify();
+    localStorage.removeItem('soms.lastUserId');
+  });
+
+  it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
+    await svc.establishSession(1, 0, false);
+    expect(webdb.openForUser).toHaveBeenCalledWith('1');
+    expect(svc.sessionUserId()).toBe(1);
+    expect(localStorage.getItem('soms.lastUserId')).toBe('1'); // eager-paint bootstrap remembers it
+  });
+
+  it('establishSession is idempotent for the same user (reconnect: no re-open, badge refreshed)', async () => {
+    await svc.establishSession(1, 0, false);
+    webdb.openForUser.calls.reset();
+    // Same user (a reconnect) → short-circuit: the webdb is already open, just refresh the badge.
+    await svc.establishSession(1, 0, true);
+    expect(webdb.openForUser).not.toHaveBeenCalled();
+    expect(svc.sessionUserId()).toBe(1);
+  });
+
+  it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
+    await svc.establishSession(1, 0, false);
+    webdb.closeAndDelete.calls.reset();
+    webdb.openForUser.calls.reset();
+
+    // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
+    const done = svc.establishSession(2, 0, false);
+    await flush();
+    httpMock.expectOne(isMyProfile).flush(profile({ id: 2 }));
+    await done;
+
+    expect(webdb.closeAndDelete).toHaveBeenCalledWith('1'); // previous user's DB torn down
+    expect(webdb.openForUser).toHaveBeenCalledWith('2'); // new user's DB opened
+    expect(svc.sessionUserId()).toBe(2);
+    expect(localStorage.getItem('soms.lastUserId')).toBe('2');
+  });
+
+  it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
+    await svc.establishSession(1, 0, false);
+    webdb.closeAndDelete.calls.reset();
+
+    svc.clearSession();
+    expect(webdb.closeAndDelete).toHaveBeenCalledWith('1');
+    expect(svc.sessionUserId()).toBeNull();
+    expect(localStorage.getItem('soms.lastUserId')).toBeNull(); // cleared with the user-scoped keys
+  });
+
+  it('restoreWebdb opens the DB on the persisted lastUserId (the pre-HELLO eager-paint path)', async () => {
+    localStorage.setItem('soms.lastUserId', '7');
+    await svc.restoreWebdb();
+    expect(webdb.openForUser).toHaveBeenCalledWith('7');
+    // sessionUserId is NOT set by restoreWebdb — it stays HELLO-driven (establishSession owns it on HELLO).
+    expect(svc.sessionUserId()).toBeNull();
+  });
+
+  it('restoreWebdb is a no-op when no userId was persisted (first-ever launch)', async () => {
+    await svc.restoreWebdb();
+    expect(webdb.openForUser).not.toHaveBeenCalled();
+  });
+});

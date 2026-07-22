@@ -1,6 +1,7 @@
 package com.soms.client
 
 import android.content.Context
+import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
@@ -37,6 +38,8 @@ object SomsSecureStore {
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
     private const val KEY_FIREBASE_CONFIG = "firebase_config"
     private const val KEY_NOTIF_PERM_REQUESTED = "notif_perm_requested"
+    private const val KEY_MISSED_CURSOR_THREAD = "missed_cursor_thread"
+    private const val KEY_MISSED_CURSOR_SEQ = "missed_cursor_seq"
 
     @Volatile
     private var cachedOrigin: String? = null
@@ -44,13 +47,28 @@ object SomsSecureStore {
     @Volatile
     private var cachedFirebaseConfig: String? = null
 
-    private fun prefs(ctx: Context) = EncryptedSharedPreferences.create(
-        ctx,
-        FILENAME,
-        MasterKey.Builder(ctx).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
+    /** The cached encrypted-prefs singleton. EncryptedSharedPreferences.create is expensive (a MasterKey
+     *  AES-GCM derivation + an encrypted-file open) — the AndroidX Security README says to cache it. Built
+     *  ONCE per process (first access) + reused by every get/set, so a single fetchDescriptors
+     *  (getSessionToken + getApiOrigin + getMissedCursor) pays ONE derivation instead of three on the
+     *  FCM-wake critical path. applicationContext so the cache never holds an Activity. @Synchronized so
+     *  two threads racing the cold first-access can't each build a (harmless-but-wasteful) duplicate. */
+    @Volatile
+    private var cachedPrefs: SharedPreferences? = null
+
+    @Synchronized
+    private fun prefs(ctx: Context): SharedPreferences {
+        cachedPrefs?.let { return it }
+        val p = EncryptedSharedPreferences.create(
+            ctx.applicationContext,
+            FILENAME,
+            MasterKey.Builder(ctx.applicationContext).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+        )
+        cachedPrefs = p
+        return p
+    }
 
     /** The no-expiry session token (POST /auth/login, app client) — the single native credential that
      *  authenticates the Kotlin-owned /events stream AND the background `/notifications/missed` fetches
@@ -59,11 +77,45 @@ object SomsSecureStore {
      *  on login and clears it on logout. */
     fun setSessionToken(ctx: Context, token: String?) {
         val ed = prefs(ctx).edit()
-        if (token.isNullOrEmpty()) ed.remove(KEY_SESSION_TOKEN) else ed.putString(KEY_SESSION_TOKEN, token)
+        if (token.isNullOrEmpty()) {
+            ed.remove(KEY_SESSION_TOKEN)
+            // Session-scoped: drop the away-notification HWM with the session so a different account starts
+            // clean (mirrors the web reset() clearing its native cursor copy). Without this, account B's
+            // away-summary would be gated by account A's last-seen message.
+            ed.remove(KEY_MISSED_CURSOR_THREAD)
+            ed.remove(KEY_MISSED_CURSOR_SEQ)
+        } else {
+            ed.putString(KEY_SESSION_TOKEN, token)
+        }
         ed.apply()
     }
 
     fun getSessionToken(ctx: Context): String? = prefs(ctx).getString(KEY_SESSION_TOKEN, null)
+
+    /** The away-notification high-water mark `{threadId, seq}` the web layer pushes via
+     *  `SomsFcm.setMissedCursor` — the `since` cursor the background fetchers (RealtimeService /
+     *  SomsMessagingService) send on POST /notifications/missed while the WebView is suspended (the IDB copy
+     *  the web keeps dies with the WebView). Absent → first-ever fetch → the server returns a `clear`
+     *  descriptor. Cleared with the session token on logout / account switch ([setSessionToken]). */
+    fun setMissedCursor(ctx: Context, threadId: Int?, seq: Int?) {
+        val ed = prefs(ctx).edit()
+        if (threadId != null && seq != null && threadId >= 0 && seq >= 0) {
+            ed.putInt(KEY_MISSED_CURSOR_THREAD, threadId)
+            ed.putInt(KEY_MISSED_CURSOR_SEQ, seq)
+        } else {
+            ed.remove(KEY_MISSED_CURSOR_THREAD)
+            ed.remove(KEY_MISSED_CURSOR_SEQ)
+        }
+        ed.apply()
+    }
+
+    /** The persisted HWM cursor, or null when unset (first-ever fetch). */
+    fun getMissedCursor(ctx: Context): Pair<Int, Int>? {
+        val p = prefs(ctx)
+        return if (p.contains(KEY_MISSED_CURSOR_THREAD) && p.contains(KEY_MISSED_CURSOR_SEQ))
+            Pair(p.getInt(KEY_MISSED_CURSOR_THREAD, -1), p.getInt(KEY_MISSED_CURSOR_SEQ, -1))
+        else null
+    }
 
     /** Whether the 6-hour background poller is enabled (default true). The WorkManager worker reads this
      *  on every fire to self-gate, so a toggle-off takes effect even for a process woken in the background

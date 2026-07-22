@@ -27,7 +27,7 @@ import {
 import { AuthService } from '../auth/auth.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { ThreadRevisionService } from '../thread-revision/thread-revision.service.js';
-import { serializeBody } from '../common/serialize.interceptor.js';
+import { planThreadDelta } from '../thread-revision/thread-delta.js';
 import { Public } from '../common/public.decorator.js';
 import { ApiResult, ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
@@ -47,13 +47,22 @@ import {
   UserSearchDto,
   PeerTrustStatusDto,
   QueryUsersDto,
-  QueryValidThreadDto,
   ThreadDeltaDto,
   UpdateProfileDto,
   BlockDto,
 } from '../dto/user.dto.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { FederationService, type S2SProfile } from '../federation/federation.service.js';
+
+/**
+ * One entry of the hydrated thread-list delta (`POST /user/query-thread/delta`). ADD entries carry the fully
+ * hydrated {@link ConversationItemDto} inline (peer/group/unread) so the client applies a single response —
+ * no second batch-hydrate round-trip. DELETE entries carry the threadId only: the thread is leaving the
+ * caller's roster, so there is nothing to render. The `direction` field discriminates the two.
+ */
+type HydratedThreadDeltaOp =
+  | { threadId: number; direction: 'ADD'; item: ConversationItemDto }
+  | { threadId: number; direction: 'DELETE' };
 
 @ApiTags('user')
 @Controller()
@@ -146,42 +155,17 @@ export class UserController {
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
-  @ApiBearerAuth()
-  @HttpCode(HttpStatus.OK)
-  @Post('user/query-thread/valid')
-  @ApiOperation({ summary: 'List active conversations (includes peer user/group info)' })
-  @ApiResultResponse(ConversationItemDto, true)
-  async queryValidThread(
-    @Request() req: FastifyRequest,
-    @Body() dto: QueryValidThreadDto,
-  ): Promise<ApiResult> {
-    const me = req.user.userId;
-    // Pinned snapshot: membership = threads active at revision R per the ThreadRevision operation log
-    // (added, not since-deleted). This pins the page membership so offset pagination stays consistent
-    // across pages and the snapshot composes cleanly with query-thread/delta from R forward. The leftAt
-    // filter is intentionally NOT applied here — a thread active at R may have been left since (leftAt set
-    // after R), yet its participant row still carries the current display state (role/pinned/unread) we
-    // want to surface; the revision set is the source of truth for "active at R".
-    const active = await this.threadRevisionService.activeThreadIdsAt(
-      me,
-      dto.revision,
-    );
-    const where: Prisma.ThreadParticipantWhereInput = {
-      userId: me,
-      // Empty-set guard: Prisma treats `in: []` as "no filter" (returns all rows), so an empty active set
-      // must materialize as an impossible-id list to yield an empty page.
-      threadId: { in: active.size > 0 ? [...active] : [-1] },
-    };
-    if (dto.type) {
-      where.thread = { is: { type: dto.type } };
-    }
-    const list = await this.participantService.queryParticipants({
-      where,
-      skip: dto.skip,
-      take: dto.take,
-      orderBy: { id: 'asc' },
-      include: { thread: true },
-    });
+  /**
+   * The single conversation-row hydration pipeline — turns ThreadParticipant rows (with `thread`
+   * included) into rendered ConversationItemDtos: batched unread counts, P2P peer users + blocked flags,
+   * GROUP info, and the pinned/recent sort. Shared by /user/query-thread/delta (hydrates the net-ADD ops)
+   * and /user/thread-info (single) so the two can never drift on what a list row looks like. Carries NO
+   * preview body — the client derives previews local-first from its message store.
+   */
+  private async hydrateConversationItems(
+    me: number,
+    list: Prisma.ThreadParticipantGetPayload<{ include: { thread: true } }>[],
+  ) {
     // Unread counts for every thread in one batched query (uses the Message(threadId,id) index).
     const unread = await this.messageService.countUnreadByThread(
       me,
@@ -229,7 +213,7 @@ export class UserController {
       .map((p) => p.threadId);
     const groupByThread =
       await this.groupService.resolveGroupUsersByThreadIds(groupThreadIds);
-    const data = list.map((p) => {
+    return list.map((p) => {
       const item = {
         id: p.id,
         threadId: p.threadId,
@@ -238,8 +222,10 @@ export class UserController {
         role: p.role ?? undefined,
         unreadCount: unread.get(p.threadId) ?? 0,
         // The list preview is NOT embedded — the client derives it from its local message store
-        // (local-first). lastMessageAt stays (cheap, needed for sort).
+        // (local-first). lastMessageAt stays (cheap, needed for sort). lastMessageSeq is the mark-read target
+        // the client passes when opening the thread (mark all current up to this seq).
         lastMessageAt: p.thread.lastMessageAt ?? null,
+        lastMessageSeq: p.thread.lastMessageSeq ?? null,
         // Per-user display state: mute (notification suppression), pin (top-tier ordering), and the
         // per-user clear-history watermark (query-messages hides rows older than this for this user).
         muted: p.muted,
@@ -288,17 +274,40 @@ export class UserController {
       }
       return item;
     });
-    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('user/query-thread/delta')
-  @ApiOperation({ summary: 'Fetch thread-list ADD/DELETE deltas (from excl, to incl)' })
+  @ApiOperation({
+    summary:
+      'Fetch the thread-list delta (from excl, to incl): ADD ops returned hydrated (peer/group/unread), DELETE ops id-only',
+  })
   async queryThreadDelta(@Request() req: FastifyRequest, @Body() dto: ThreadDeltaDto): Promise<ApiResult> {
     const me = req.user.userId;
-    const data = await this.threadRevisionService.queryDelta(me, dto.fromRevision, dto.toRevision);
-    return { code: BusinessCode.OK, message: 'successful', data: serializeBody(data) };
+    // Read the raw ADD/DELETE op log in (from, to], then plan it (last-op-wins per thread). The client
+    // applies a single response: it never re-plans or batch-hydrates — the server is authoritative on both.
+    const ops = await this.threadRevisionService.queryDelta(me, dto.fromRevision, dto.toRevision);
+    const { addIds, removeIds } = planThreadDelta(ops);
+    // Hydrate ONLY the net-ADD threads in one batched pass. leftAt:null is the strict "currently a member"
+    // guard; a net-ADD whose participant row is gone (a reaped edge) simply drops — the client won't insert
+    // it. DELETE entries carry no info (the thread is leaving the roster, nothing to render).
+    let adds: ConversationItemDto[] = [];
+    if (addIds.length > 0) {
+      const rows = await this.participantService.queryParticipants({
+        where: { userId: me, threadId: { in: addIds }, leftAt: null },
+        include: { thread: true },
+      });
+      // hydrateConversationItems is the ConversationItem pipeline (peer/group/unread) shared with
+      // /user/thread-info; its inferred return carries `unknown` peer/group, so assert the contract here.
+      adds = (await this.hydrateConversationItems(me, rows)) as ConversationItemDto[];
+    }
+    const data: HydratedThreadDeltaOp[] = [
+      ...adds.map((item) => ({ threadId: item.threadId, direction: 'ADD' as const, item })),
+      ...removeIds.map((threadId) => ({ threadId, direction: 'DELETE' as const })),
+    ];
+    // The global SerializeInterceptor converts Date→ms + BigInt→string; no explicit serializeBody needed.
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @ApiBearerAuth()
@@ -518,63 +527,8 @@ export class UserController {
         message: `no thread [${dto.threadId}]`,
       };
     }
-    const unread = await this.messageService.countUnreadByThread(me, [
-      p.threadId,
-    ]);
-    const item = {
-      id: p.id,
-      threadId: p.threadId,
-      type: p.thread.type,
-      lastReadSeq: p.lastReadSeq ?? undefined,
-      role: p.role ?? undefined,
-      unreadCount: unread.get(p.threadId) ?? 0,
-      lastMessageAt: p.thread.lastMessageAt ?? null,
-      muted: p.muted,
-      pinned: p.pinned,
-      pinnedAt: p.pinnedAt ?? null,
-      clearedAt: p.clearedAt ?? null,
-      alias: p.alias ?? null,
-    } as {
-      id: number;
-      threadId: number;
-      type: MessageThreadType;
-      lastReadSeq: number | undefined;
-      role: GroupRole | undefined;
-      unreadCount: number;
-      lastMessageAt: Date | null;
-      muted: boolean;
-      pinned: boolean;
-      pinnedAt: Date | null;
-      clearedAt: Date | null;
-      blocked?: boolean;
-      alias: string | null;
-      peerUser?: unknown;
-      group?: unknown;
-    };
-    if (p.thread.type === 'P2P') {
-      const peers = await this.participantService.findP2PPeers(
-        [p.threadId],
-        me,
-      );
-      const peerId = peers[0]?.userId;
-      if (peerId !== undefined) {
-        const [peerUser] = await this.userService.queryUsers({
-          where: { id: peerId },
-        });
-        if (peerUser) {
-          item.peerUser = peerUser;
-        }
-        item.blocked = await this.userBlockService.isBlocked(me, peerId);
-      }
-    } else {
-      const gu = (
-        await this.groupService.resolveGroupUsersByThreadIds([p.threadId])
-      ).get(p.threadId);
-      item.group = gu
-        ? { id: p.threadId, threadId: p.threadId, name: gu.name, avatar: gu.avatar, description: gu.bio, domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain }
-        : undefined;
-    }
-    return { code: BusinessCode.OK, message: 'successful', data: item };
+    const [data] = await this.hydrateConversationItems(me, [p]);
+    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @Public()

@@ -73,7 +73,10 @@ class RealtimeService : Service() {
     private val sseFactory = EventSources.createFactory(client)
 
     @Volatile private var stopping = false
-    private var eventSource: EventSource? = null
+    // @Volatile: written on the main looper (openStream / reopenTask), read on OkHttp's SSE dispatcher
+    // thread (the onClosed/onFailure identity check). Without it the SSE thread can see a stale reference
+    // and mis-fire the FORCE_RECONNECT race guard (null the fresh socket → a duplicate stream opens).
+    @Volatile private var eventSource: EventSource? = null
     private val handler = Handler(Looper.getMainLooper())
 
     /** Single-thread executor for the background away-notification fetch+render — keeps the SYNCHRONOUS
@@ -101,6 +104,26 @@ class RealtimeService : Service() {
                 Log.i(TAG, "onStartCommand retry-now (cancel backoff + reconnect)")
                 handler.removeCallbacks(reopenTask)
                 attempt = 0
+            }
+            ACTION_FORCE_RECONNECT -> {
+                // HELLO-timeout (SomsFcm.forceReconnect → this action): the open stream is unusable — no
+                // HELLO within the deadline — so CANCEL it + reopen, so the fresh connection re-pushes HELLO.
+                // Unlike ACTION_RETRY (which openStream() no-ops when already open), this tears down the
+                // dead-open socket first. JS cannot close the native socket, so the WebView asks Kotlin. The
+                // listener's identity check ensures the canceled socket's late onClosed/onFailure can't
+                // clobber the fresh socket openStream() opens below.
+                Log.i(TAG, "onStartCommand force-reconnect (cancel open stream + reopen)")
+                handler.removeCallbacks(reopenTask)
+                attempt = 0
+                if (eventSource != null) {
+                    eventSource?.cancel()
+                    eventSource = null
+                    // Surface the reconnect-in-progress. The canceled socket was OPEN (dead-open, no HELLO),
+                    // so it never pushed "reconnecting" on its own, and its late onClosed is a no-op (the
+                    // identity check) — without this push the banner would stay "open" until the fresh
+                    // socket's onOpen/onFailure fires, hiding the reconnect entirely.
+                    pushConnState("reconnecting")
+                }
             }
             else -> {
                 // ACTION_BACKGROUND (app backgrounded + toggle on) OR a START_STICKY system restart:
@@ -222,6 +245,9 @@ class RealtimeService : Service() {
         }
 
         override fun onClosed(eventSource: EventSource) {
+            // Stale callback (a FORCE_RECONNECT-canceled socket's late close): ignore ENTIRELY — the fresh
+            // socket is already open, so no nulling, no "reconnecting" push (no banner flicker), no reopen.
+            if (this@RealtimeService.eventSource !== eventSource) return
             Log.i(TAG, "onClosed → scheduleReopen")
             this@RealtimeService.eventSource = null
             this@RealtimeService.pushConnState("reconnecting")
@@ -230,9 +256,17 @@ class RealtimeService : Service() {
 
         override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
             Log.w(TAG, "onFailure code=${response?.code} ${t?.javaClass?.simpleName}: ${t?.message}")
+            // Stale callback (a FORCE_RECONNECT-canceled socket's late failure): ignore entirely (see onClosed).
+            if (this@RealtimeService.eventSource !== eventSource) return
             this@RealtimeService.eventSource = null
-            // 401 → token expired/revoked; the next foreground login re-issues. Stop rather than spin.
+            // 401 → the session token is dead (revoked / password change / admin purge / all-device logout).
+            // Clear it so onResume's token-presence check stops reconnecting into a 401 loop, AND forward a
+            // synthetic FORCE_LOGOUT so the WebView runs its logout flow (the same path the in-band
+            // FORCE_LOGOUT event uses). The eval is best-effort — a suspended/absent WebView is a no-op; the
+            // cleared token still terminates the reconnect cycle on the next foreground.
             if (response?.code == 401) {
+                SomsSecureStore.setSessionToken(this@RealtimeService, null)
+                SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('FORCE_LOGOUT', {});")
                 stopSelf()
                 return
             }
@@ -335,6 +369,10 @@ class RealtimeService : Service() {
          *  retry channel, parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered
          *  by SomsFcm.retryNow. */
         const val ACTION_RETRY = "com.soms.client.action.RETRY"
+        /** HELLO-timeout (the open stream sent no HELLO within the deadline) → cancel the open socket +
+         *  reopen so the fresh connection re-pushes HELLO. Unlike ACTION_RETRY (a no-op when open), this
+         *  tears down the dead-open socket. Delivered by SomsFcm.forceReconnect. */
+        const val ACTION_FORCE_RECONNECT = "com.soms.client.action.FORCE_RECONNECT"
         /** The most recently pushed connection state. Process-global so the SomsFcm @JavascriptInterface
          *  can read it synchronously (a freshly-booted WebView needs the current state, but [pushConnState]
          *  only fires on transitions). Volatile: written on the SSE thread, read on the JS bridge thread. */

@@ -73,16 +73,8 @@ export class UserResponseDto {
   })
   hasUrFriendReq?: boolean;
 
-  // SELF-ONLY: the caller's thread-list revision cursor (bumped on thread add/delete). Populated solely
-  // by the self-profile read; every other response builder omits it.
-  @ApiProperty({
-    required: false,
-    example: 5,
-    description: 'Thread-list revision (self only — the thread-sync cursor)',
-  })
-  threadRevision?: number;
-
-  // Note: hashPwd never appears in responses.
+  // Note: hashPwd never appears in responses. threadRevision is NOT here either — it is pushed via the
+  // SSE HELLO connect handshake (the threadlist's sole delta-replay cursor), never the profile response.
 }
 
 export class MessageResponseDto {
@@ -238,6 +230,16 @@ export class ConversationItemDto {
       'When the last message was sent (ms timestamp). Null on empty threads.',
   })
   lastMessageAt?: number | null;
+
+  @ApiProperty({
+    type: Number,
+    nullable: true,
+    description:
+      'Per-thread seq of the newest message (the denormalized MessageThread.lastMessageSeq). Null on empty ' +
+      'threads. The client passes this as the mark-read `lastReadSeq` when opening a conversation (mark all ' +
+      'current up to this seq) — so mark-read ALWAYS carries a seq, never the no-seq "mark all" mode.',
+  })
+  lastMessageSeq?: number | null;
 
   @ApiProperty({
     example: false,

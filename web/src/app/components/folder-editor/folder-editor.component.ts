@@ -5,7 +5,7 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService } from '../../services/route.service';
 import { FolderService, ChatFolder, FolderTypeFilter, FolderStatusFilter } from '../../services/folder.service';
 import { IconComponent, AppIconType } from '../icon/icon.component';
-import { UserService } from '../../services/user.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import { ConversationItem } from '../../services/model';
 import { LanguageService } from '../../services/language.service';
 import { FitDialogDirective } from '../../directives/fit-dialog.directive';
@@ -25,7 +25,7 @@ import { FitDialogDirective } from '../../directives/fit-dialog.directive';
 export class FolderEditorComponent implements OnInit {
   private readonly routeService = inject(RouteService)
   private readonly folderService = inject(FolderService)
-  private readonly userService = inject(UserService)
+  private readonly convList = inject(ConversationListService)
   private readonly transloco = inject(TranslocoService)
   private readonly language = inject(LanguageService)
 
@@ -43,7 +43,9 @@ export class FolderEditorComponent implements OnInit {
   readonly typeFilter = signal<FolderTypeFilter>('ALL')
   readonly statusFilter = signal<FolderStatusFilter>('NONE')
   readonly includedIds = signal<number[]>([])
-  readonly threadOptions = signal<ConversationItem[]>([])
+  /** The full conversation set (the delta-replay list) — the picker's source. Reactive: populated when the
+   *  HELLO-driven list lands, no fetch here. */
+  readonly threadOptions = this.convList.items
 
   /** id of the folder being edited; undefined when creating */
   private editingExistingId: string | undefined
@@ -65,10 +67,8 @@ export class FolderEditorComponent implements OnInit {
   ]
 
   ngOnInit() {
-    // load thread candidates for the "included threads" picker — page through the full set
-    // (query-thread/valid is @Max(50) per request) so any conversation can be included in a folder.
-    this.userService.queryAllUserThreads().subscribe(list => this.threadOptions.set(list))
-    // open straight onto a specific folder when invoked with its id
+    // threadOptions is the live conversation-list signal (no fetch) — open straight onto a folder when
+    // invoked with its id.
     if (this.folderId()) {
       const f = this.folderService.getById(this.folderId()!)
       if (f) this.beginEdit(f)

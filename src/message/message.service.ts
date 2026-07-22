@@ -539,13 +539,14 @@ export class MessageService implements OnModuleInit {
 
   /**
    * Away-notification sender aggregation for POST /notifications/missed — distinct senders + their message
-   * counts for messages newer than `sinceId` (membership-scoped, blocked-creator-hidden), sampling the first
-   * `limit` by id. LEAN: selects only `creator` (NO content/body, NO threadId) — the away-summary needs only
-   * WHO + how-many, not WHAT nor which threads (mark-all-read no longer takes a thread list: the server
-   * re-derives the active set itself, and the descriptor carries the HWM cursor instead). The caller
-   * aggregates the rows in JS (a `limit`-sized batch of one int column is trivial). `overflow=true` when
-   * ≥`limit` messages exist → the "999+" capped display (the count covers only the sampled `limit`). Backed
-   * by Message(id) for the id range.
+   * counts for messages newer than `sinceId` (membership-scoped), sampling the first `limit` by id. LEAN:
+   * selects only `creator` (NO content/body, NO threadId) — the away-summary needs only WHO + how-many, not
+   * WHAT nor which threads. Hides blocked creators AND messages in threads the caller has MUTED: mute = don't
+   * disturb, so a muted thread never contributes to the away count. The mute check is per-row on the already-
+   * joined participant, so a sender who also messages in an UNMUTED thread still contributes those unmuted
+   * messages. The caller aggregates the rows in JS (a `limit`-sized batch of one int column is trivial).
+   * `overflow=true` when ≥`limit` messages exist → the "999+" capped display (the count covers only the
+   * sampled `limit`). Backed by Message(id) for the id range.
    */
   async senderCountsSince(
     userId: number,
@@ -561,7 +562,7 @@ export class MessageService implements OnModuleInit {
       FROM "Message" m
       JOIN "ThreadParticipant" tp
         ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
-      WHERE m."id" > ${sinceId} ${blockedClause}
+      WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false
       ORDER BY m."id" ASC
       LIMIT ${limit}
     `;
@@ -595,30 +596,6 @@ export class MessageService implements OnModuleInit {
     if (!r) return null;
     const ts = r.createdAt instanceof Date ? r.createdAt.getTime() : new Date(r.createdAt).getTime();
     return { threadId: r.threadId, seq: r.seq, ts };
-  }
-
-  /**
-   * For `mark-all-read`: per active thread of `userId`, the newest message seq at or below the HWM
-   * `ceilingId` (the global id the descriptor's `(threadId, seq)` cursor resolved to). Threads with no
-   * message ≤ the ceiling are absent (nothing to mark). Membership-scoped + active-only — the
-   * `leftAt IS NULL` join IS the server-side membership gate (the client sends no thread list). One grouped
-   * raw query; seq is per-thread and monotonic with id within a thread, so `MAX(seq)` over `id ≤ ceilingId`
-   * is that thread's latest message up to the cursor. A message that arrived after the summary was built
-   * (id > ceiling) is correctly excluded — mark-all-read touches exactly the covered set.
-   */
-  async maxReadSeqByThreadUpTo(
-    userId: number,
-    ceilingId: bigint,
-  ): Promise<Map<number, number>> {
-    const rows = await this.prisma.$queryRaw<Array<{ threadId: number; seq: number }>>`
-      SELECT m."threadId" AS "threadId", MAX(m."seq") AS "seq"
-      FROM "Message" m
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
-      WHERE m."id" <= ${ceilingId}
-      GROUP BY m."threadId"
-    `;
-    return new Map(rows.map((r) => [r.threadId, r.seq]));
   }
 
   /**

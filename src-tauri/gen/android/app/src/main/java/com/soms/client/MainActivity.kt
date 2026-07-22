@@ -19,7 +19,9 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsAnimationCompat
 import androidx.core.view.WindowInsetsCompat
+import androidx.work.Constraints
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
@@ -99,11 +101,18 @@ class MainActivity : TauriActivity() {
         maybeFetchFcmToken()
         // Schedule the mainland-China fallback poller (~6h periodic). Idempotent across process launches via KEEP:
         // re-enqueuing the same unique work name leaves the existing schedule intact. The worker self-skips
-        // when no notification token (logged out) or when the app is foregrounded.
+        // when no notification token (logged out) or when the app is foregrounded. Network constraint so the
+        // poller is deferred until the device is online (no offline wake → failed fetch → wasted wake lock);
+        // KEEP leaves an already-scheduled instance's constraints unchanged, so this applies on a fresh
+        // schedule (reinstall / first launch).
         WorkManager.getInstance(this).enqueueUniquePeriodicWork(
             NOTIF_SYNC_WORK,
             ExistingPeriodicWorkPolicy.KEEP,
-            PeriodicWorkRequestBuilder<NotificationSyncWorker>(6, TimeUnit.HOURS).build(),
+            PeriodicWorkRequestBuilder<NotificationSyncWorker>(6, TimeUnit.HOURS)
+                .setConstraints(
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build(),
+                )
+                .build(),
         )
         // Measure system-bar insets (status bar / gesture bar) so the web layer can pad content below
         // them. Fires on the first layout pass (~1 frame after attach) and on every inset change.
@@ -407,7 +416,14 @@ class MainActivity : TauriActivity() {
      *  toggled on while already backgrounded, start it now. */
     private fun applyForegroundServiceEnabled(enabled: Boolean) {
         if (!enabled) {
-            stopService(Intent(this, RealtimeService::class.java))
+            // Do NOT tear down the SSE while the app is visible — RealtimeService is the WebView's ONLY
+            // event source, so stopping it here would kill in-app realtime delivery (chat-box / threadlist)
+            // until the next onResume. The disable takes effect on the next onStop, which consults this
+            // toggle and stops the service (rather than promoting it to a background FGS) when the user
+            // actually leaves the app. Mirrors the enable branch's `!appInForeground` guard.
+            if (!SomsMessagingService.appInForeground) {
+                stopService(Intent(this, RealtimeService::class.java))
+            }
             return
         }
         if (!SomsMessagingService.appInForeground) {
@@ -494,6 +510,27 @@ class MainActivity : TauriActivity() {
             return SomsSecureStore.getSessionToken(a)
         }
 
+        /** The web threadlist pushes its away-notification high-water mark `{threadId, seq}` here as a JSON
+         *  string (the same shape [setFirebaseConfig] uses — JS objects don't bridge reliably), so the
+         *  background fetchers can send it as the `since` cursor on POST /notifications/missed while the
+         *  WebView is suspended (the IDB copy the web keeps dies with the WebView). Pass null/empty to clear
+         *  (logout / first boot). Persisted in [SomsSecureStore] (survives process death) + cleared with the
+         *  session token. */
+        @JavascriptInterface
+        fun setMissedCursor(cursorJson: String?) {
+            val a = activityRef.get() ?: return
+            if (cursorJson.isNullOrBlank()) {
+                SomsSecureStore.setMissedCursor(a, null, null)
+                return
+            }
+            try {
+                val o = JSONObject(cursorJson)
+                SomsSecureStore.setMissedCursor(a, o.optInt("threadId", -1), o.optInt("seq", -1))
+            } catch (e: org.json.JSONException) {
+                SomsSecureStore.setMissedCursor(a, null, null) // malformed → clear; never gate a fetch on garbage
+            }
+        }
+
         /** Synchronous read of the RealtimeService's last-pushed connection state
          *  ('connecting'|'open'|'reconnecting'|'closed'), so a freshly-booted WebView can seed its
          *  connection-state signal before the next transition (Kotlin only pushes on transitions). */
@@ -508,6 +545,17 @@ class MainActivity : TauriActivity() {
         fun retryNow() {
             val a = activityRef.get() ?: return
             a.startService(Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_RETRY))
+        }
+
+        /** HELLO-timeout path (the client's 10s HELLO watchdog fired): the open stream is unusable — no
+         *  HELLO within the deadline — so the WebView asks Kotlin to CANCEL the open EventSource + reopen it
+         *  (JS cannot close the native socket). The fresh connection re-pushes HELLO. Distinct from
+         *  [retryNow] (ACTION_RETRY), which only cancels pending backoff and is a no-op against an already-
+         *  open stream — useless for the dead-open case the HELLO-timeout detects. */
+        @JavascriptInterface
+        fun forceReconnect() {
+            val a = activityRef.get() ?: return
+            a.startService(Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FORCE_RECONNECT))
         }
 
         /** Whether the 6-hour background-sync poller is enabled (default true). Read by the Settings page

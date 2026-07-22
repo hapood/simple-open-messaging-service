@@ -11,10 +11,11 @@ import { seedUser, seedSession } from './seed';
 
 /**
  * /notifications/action e2e — the descriptor button round-trip. Seeds a P2P thread with an unread message,
- * pulls the descriptor (asserts it carries `mark-all-read`), then exercises both actions:
- *  - mark-all-read → the covered thread's unread drops to 0 (advanceReadCursor);
- *  - reply         → a new PURE_TEXT Message row lands (creator = the replying user, content = replyText),
- *                    fanned out like a normal send.
+ * pulls the descriptor (asserts it carries a single `dismiss` action with NO routing data), then exercises
+ * `reply`:
+ *  - reply → a new PURE_TEXT Message row lands (creator = the replying user, content = replyText),
+ *            fanned out like a normal send.
+ * (`dismiss` is a pure frontend shade-close — never POSTed — so it has no backend case here.)
  */
 describe('notifications/action (descriptor button round-trip)', () => {
   let app: INestApplication;
@@ -76,7 +77,7 @@ describe('notifications/action (descriptor button round-trip)', () => {
     return { Authorization: `Bearer ${sessionToken}` };
   }
 
-  it('the descriptor carries a mark-all-read action covering the unread thread', async () => {
+  it('the descriptor carries a single dismiss action + no routing data (the tap is pure frontend)', async () => {
     const res = await request(app.getHttpServer())
       .post('/api/v1/notifications/missed')
       .set(auth())
@@ -84,32 +85,11 @@ describe('notifications/action (descriptor button round-trip)', () => {
     const d = res.body.data.notifications[0];
     expect(d.kind).toBe('message-summary');
     expect(d.body).toBe('Alice sent you a message');
-    expect(d.actions).toEqual([{ id: 'mark-all-read', title: 'Mark all read' }]);
-    // The descriptor carries the HWM cursor (the newest covered message = Alice's seq-1 reply), not a thread list.
+    // The button is still authored by the server (each client renders it), but the tap is PURE frontend:
+    // the client advances its away-HWM to this cursor + closes the shade — it never POSTs, never touches the
+    // read watermark. `data` is the new HWM target (the global newest covered message = Alice's seq 1).
+    expect(d.actions).toEqual([{ id: 'dismiss', title: 'Dismiss' }]);
     expect(d.data).toEqual({ threadId, seq: 1 });
-  });
-
-  it('mark-all-read advances the read cursor (the descriptor stays since-HWM — the shade is dismissed client-side, not by a descriptor flip)', async () => {
-    const before = await request(app.getHttpServer())
-      .post('/api/v1/notifications/missed').set(auth()).send({ since: { threadId, seq: 0 } });
-    expect(before.body.data.notifications[0].kind).toBe('message-summary');
-
-    const act = await request(app.getHttpServer())
-      .post('/api/v1/notifications/action')
-      .set(auth())
-      .send({ tag: 'soms-away', actionId: 'mark-all-read', threadId, seq: 1 });
-    expect(act.body.code).toBe(0);
-
-    // mark-all-read advances the SERVER read cursor (the in-app badge drops). The shade descriptor itself
-    // is since-HWM (unaffected by the read cursor) — a re-pull still carries the summary; the shade is
-    // dismissed CLIENT-side on the action / on focus, not by a server descriptor flip to clear.
-    const after = await request(app.getHttpServer())
-      .post('/api/v1/notifications/missed').set(auth()).send({ since: { threadId, seq: 0 } });
-    expect(after.body.data.notifications[0].kind).toBe('message-summary');
-    const p = await prisma.threadParticipant.findFirst({
-      where: { userId: recipientId, threadId },
-    });
-    expect(p?.lastReadSeq).toBe(1);
   });
 
   it('reply creates a PURE_TEXT message from the recipient, fanned out like a normal send', async () => {

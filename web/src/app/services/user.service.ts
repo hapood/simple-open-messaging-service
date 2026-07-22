@@ -1,57 +1,155 @@
-import { Injectable, signal, inject, effect } from '@angular/core';
+import { Injectable, signal, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, Subscription, of, map, shareReplay } from 'rxjs';
+import { Observable, of, map, shareReplay, firstValueFrom } from 'rxjs';
 import { apiPrefix } from './constants';
-import { User, QueryUserThreadParams, ConversationItem, MessageThreadType, Invite, InviteDetail, StandardResponse } from './model'
-import { ThreadDeltaOp } from './thread-delta'
+import { User, ConversationItem, Invite, InviteDetail, StandardResponse } from './model'
 import { WebdbService } from './webdb.service'
 import { ProfileRepository } from './profile-store.service'
 
 export type { User } from './model'
+
+/** One entry of the hydrated thread-list delta (POST /user/query-thread/delta). The server plans
+ *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId only
+ *  (the thread is leaving the roster — nothing to render). The client applies a single response — no
+ *  client-side planning, no second batch-hydrate round-trip. */
+export type HydratedThreadDeltaOp =
+  | { threadId: number; direction: 'ADD'; item: ConversationItem }
+  | { threadId: number; direction: 'DELETE' }
+
+/** The persisted last-logged-in userId (localStorage) — the client's sole pre-HELLO source of its own
+ *  userId (the session token is opaque, server-side-lookup only). Set on establishSession, cleared on
+ *  clearSession. Read at boot by {@link UserService.restoreWebdb} so the per-user IDB opens + the
+ *  threadlist eager-paints the cached list BEFORE the SSE/HELLO round-trip (instant list for returning
+ *  users). Cleared with the other user-scoped keys on logout (see USER_SCOPED_LS_KEYS). */
+const LAST_USER_ID_KEY = 'soms.lastUserId'
 
 @Injectable({
   providedIn: 'root',
 })
 export class UserService {
   sessionProfile = signal<User | undefined>(undefined)
+  /** The authenticated user's id — sourced from the HELLO connect handshake (the session token is OPAQUE,
+   *  server-side-lookup only, so HELLO is the client's sole pre-profile-fetch source of its own userId).
+   *  The per-user IDB store opens on this id via {@link establishSession}; it replaces the old coupling
+   *  where the webdb opened on the profile fetch's sessionProfile().id (which made the fetch un-skippable).
+   *  Other services' session-end effects key off this signal to reset their in-memory caches on logout. */
+  readonly sessionUserId = signal<number | null>(null)
 
-  /** The client's applied thread-list revision cursor — the `threadRevision` from /user/my-profile,
-   *  advanced after each THREAD_REVISION_UPDATED delta is applied. Lives here (not in
-   *  ConversationListService) so `queryUserThreadValid` can pin snapshot queries to the LIVE cursor
-   *  (the boot-time sessionProfile.threadRevision goes stale as deltas land), and ConversationListService
-   *  (which injects this service) can read/advance it without a circular DI. In-memory only — seeded
-   *  fresh each boot/reconnect; not persisted (the list itself is loaded fresh each session). */
+  /** The client's applied thread-list revision cursor — seeded from the HELLO connect handshake's
+   *  threadRevision (the SOLE revision source now that the snapshot endpoint is gone), advanced after each
+   *  THREAD_REVISION_UPDATED delta is applied. Lives here so ConversationListService (which injects this
+   *  service) can read/advance it without a circular DI. In-memory only — seeded fresh each connect. */
   private readonly _threadRevCursor = signal<number | undefined>(undefined)
   readonly threadRevCursor = this._threadRevCursor.asReadonly()
 
   private readonly webdb = inject(WebdbService)
   private readonly profileRepo = inject(ProfileRepository)
-  /** The user key whose DB is currently open (or null) — tracks the lifecycle effect below. */
+  /** The user key whose DB is currently open (or null) — tracks {@link establishSession} / {@link clearSession}. */
   private webdbUserKey: string | null = null
 
-  constructor(private http: HttpClient) {
-    // Per-user DB lifecycle: open on login, close+delete on logout/switch. UserService owns the session,
-    // so it owns the DB partitioned by sessionProfile().id (WebdbService itself is pure storage).
-    effect(() => {
-      const id = this.sessionProfile()?.id
-      const idKey = id != null ? String(id) : null
-      if (idKey === this.webdbUserKey) return
-      const previous = this.webdbUserKey
-      this.webdbUserKey = idKey
-      if (previous != null) void this.webdb.closeAndDelete(previous)
-      if (idKey != null) void this.webdb.openForUser(idKey)
-    })
-  }
+  constructor(private http: HttpClient) {}
 
-  /** Tear down the in-memory session (logout). Clears sessionProfile → the lifecycle effect closes +
-   *  deletes this user's DB AND every DB-layer repository's own session-end effect (watching the same
-   *  signal) resets its in-memory cache; a fresh ensureProfile() re-fetches on the next login. Also
-   *  wipes the user-scoped localStorage keys (client-only folders / emoji recents). */
+  /** Tear down the in-memory session (logout / account switch). Clears sessionUserId + sessionProfile →
+   *  every DB-layer repository's session-end effect (watching sessionUserId) resets its cache; the per-user
+   *  IDB is closed + deleted. Also wipes the user-scoped localStorage keys (client-only folders / emoji). */
   clearSession(): void {
+    const prev = this.webdbUserKey
+    this.webdbUserKey = null
+    this.sessionUserId.set(null)
     this.sessionProfile.set(undefined)
     this._threadRevCursor.set(undefined)
     this.profileFetch = undefined
     clearUserScopedLocalStorage()
+    if (prev != null) void this.webdb.closeAndDelete(prev)
+  }
+
+  /** Establish the session from the HELLO connect handshake — the cold-start / login entry point. Opens
+   *  the per-user IDB on `userId` (the webdb-open trigger that previously rode the profile fetch) and
+   *  returns once it is open, so the caller (the threadlist) can read IDB without waiting on the profile.
+   *  The profile gate ({@link gateSelfProfile}) runs async: if the IDB-cached self profile's `profileRev`
+   *  matches HELLO's, the cached profile is fresh (apply HELLO's `hasUrFriendReq` — independent of
+   *  profileRev, so carrying it closes the offline-friend-request gap) and the fetch is skipped; otherwise
+   *  (first boot / stale) the full profile is fetched + cached. Idempotent for the same user across
+   *  reconnects (re-applies the badge, no re-open). */
+  async establishSession(userId: number, profileRev: number, hasUrFriendReq: boolean): Promise<void> {
+    if (this.sessionUserId() === userId) {
+      // Re-establish on reconnect (same user): the webdb is already open — just refresh the badge.
+      this.sessionProfile.update((u) => (u ? { ...u, hasUrFriendReq } : u));
+      return;
+    }
+    // Account switch without a logout (defensive): tear down the previous user's DB first.
+    if (this.webdbUserKey !== null && this.webdbUserKey !== String(userId)) {
+      await this.webdb.closeAndDelete(this.webdbUserKey);
+    }
+    this.webdbUserKey = String(userId);
+    this.sessionUserId.set(userId);
+    this.persistLastUserId(userId); // remember for the next boot's eager IDB paint (pre-HELLO)
+    await this.webdb.openForUser(String(userId)); // webdb open — callers can now read IDB
+    // Profile gate runs async — the threadlist needs only the open webdb, not the profile.
+    void this.gateSelfProfile(userId, profileRev, hasUrFriendReq);
+  }
+
+  /** Gate the /user/my-profile fetch on the IDB-cached profileRev. Cache hit + fresh → skip the fetch
+   *  (apply the badge); cache miss (first boot) or stale → fetch + cache the full profile. */
+  private async gateSelfProfile(
+    userId: number,
+    profileRev: number,
+    hasUrFriendReq: boolean,
+  ): Promise<void> {
+    const cached = (await this.webdb.getMeta('selfProfile')) as User | null | undefined;
+    if (cached && cached.id === userId && cached.profileRev === profileRev) {
+      this.sessionProfile.set({ ...cached, hasUrFriendReq });
+      return;
+    }
+    try {
+      const res = await firstValueFrom(this.getMyProfile());
+      if (res.code === 0 && res.data) {
+        const u = res.data;
+        this.sessionProfile.set(u);
+        void this.webdb.putMeta('selfProfile', u);
+        // Write-through the partial profile too → avatar-refresh signal on a path change.
+        void this.profileRepo.putProfile(`u${u.id}`, 'user', {
+          id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
+        });
+      }
+    } catch {
+      /* best-effort — sessionProfile stays undefined; the UI holds a placeholder until a retry */
+    }
+  }
+
+  /** Boot-time webdb open on the persisted {@link LAST_USER_ID_KEY} — opens the per-user IDB so the
+   *  threadlist can eager-paint the cached list BEFORE the SSE/HELLO round-trip (instant list for returning
+   *  users). Called from AuthService.restoreSession (an APP_INITIALIZER, pre-router) + awaited there so the
+   *  DB is open before the router resolves and the list mounts. Does NOT set sessionUserId — the session
+   *  tracker stays HELLO-driven; {@link establishSession} reconciles on HELLO (idempotent `openForUser`
+   *  reuse for the same user, close+reopen on a switch). No-op when no userId was ever persisted (first-ever
+   *  launch) — the list then awaits HELLO's delta as before. */
+  async restoreWebdb(): Promise<void> {
+    const userId = this.readLastUserId();
+    if (userId === null) return;
+    // Track the open user so clearSession can close it (a pre-HELLO logout) + establishSession can detect
+    // a token-swap (close+reopen when HELLO's userId differs from the optimistic lastUserId).
+    this.webdbUserKey = String(userId);
+    await this.webdb.openForUser(String(userId));
+  }
+
+  /** Read the persisted last-logged-in userId, or null when absent / unparseable / storage unavailable. */
+  private readLastUserId(): number | null {
+    if (typeof localStorage === 'undefined') return null;
+    const raw = localStorage.getItem(LAST_USER_ID_KEY);
+    if (!raw) return null;
+    const userId = Number(raw);
+    return Number.isFinite(userId) && userId > 0 ? userId : null;
+  }
+
+  /** Persist the userId so the next boot's restoreWebdb can open the per-user IDB pre-HELLO. SSR-safe. */
+  private persistLastUserId(userId: number): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      localStorage.setItem(LAST_USER_ID_KEY, String(userId));
+    } catch {
+      /* private mode / quota — best-effort; the next boot just awaits HELLO to open the DB */
+    }
   }
 
   /** In-flight profile fetch (dedup): boot calls updateSessionProfile() AND ConversationListService
@@ -61,11 +159,10 @@ export class UserService {
    *  cache (reconnect always re-fetches). */
   private profileFetch?: Observable<User>
 
-  /** Idempotent self-profile load: returns the cached sessionProfile if already loaded, else fetches
-   *  /user/my-profile (seeding sessionProfile + the thread-revision cursor). `force:true` re-fetches
-   *  (reconnect — re-seed the cursor to the server's current threadRevision after a gap that may have
-   *  missed add/delete signals). ConversationListService.load() awaits this so the snapshot is pinned
-   *  to a real cursor, not the pre-seed default. */
+  /** Idempotent self-profile get-or-load: returns the cached sessionProfile if already loaded (set by
+   *  {@link establishSession} from HELLO, or a prior fetch), else fetches /user/my-profile. `force:true`
+   *  re-fetches for live refresh (the NOTIFY FRIEND_REQUEST badge, post-edit re-read, markInvitesRead).
+   *  The thread-revision cursor is NOT seeded here — HELLO owns the sole revision source now. */
   ensureProfile(opts?: { force?: boolean }): Observable<User> {
     if (!opts?.force && this.sessionProfile() !== undefined) {
       return of(this.sessionProfile() as User)
@@ -77,8 +174,9 @@ export class UserService {
       map((res) => {
         const u = res.data as User
         this.sessionProfile.set(u)
-        this.seedThreadRevCursor(u.threadRevision ?? 0)
-        // Write-through the self profile → IDB + trigger avatar refresh when the path changed.
+        // Cache the full self profile so the next cold start's HELLO gating can skip this fetch.
+        void this.webdb.putMeta('selfProfile', u)
+        // Write-through the partial profile → IDB + trigger avatar refresh when the path changed.
         void this.profileRepo.putProfile(`u${u.id}`, 'user', {
           id: u.id, name: u.name, avatar: u.avatar, bio: u.bio, domain: u.domain,
         })
@@ -139,78 +237,15 @@ export class UserService {
     return this.http.post<StandardResponse<User>>(`${apiPrefix()}/user/update-profile`, params)
   }
 
-  /** Query a page of active conversations. `revision` (REQUIRED by the backend — pins membership to
-   *  "active at R") is auto-injected from the live thread-revision cursor so callers (list load, folder
-   *  editor, friend-picker) don't each have to source it. The `Omit` keeps the param type stable even
-   *  if api-types is later regenerated with `revision` required. */
-  queryUserThreadValid(params: Omit<QueryUserThreadParams, 'revision'> & { revision?: number }) {
-    const revision = params.revision ?? this.threadRevCursor() ?? 0
-    return this.http.post<StandardResponse<ConversationItem[]>>(
-      `${apiPrefix()}/user/query-thread/valid`,
-      { ...params, revision },
-    )
-  }
-
-  /** Pull the thread-list ADD/DELETE ops in the half-open range `(fromRevision, toRevision]` — the
-   *  delta the client applies on a `THREAD_REVISION_UPDATED { revision }` signal. `fromRevision` = the
-   *  client's current cursor (exclusive); `toRevision` = the signal's revision (inclusive). Returned
-   *  ordered by revision asc. See thread-delta.ts (`planDelta`) for the apply semantics. */
+  /** One entry of the hydrated thread-list delta from POST /user/query-thread/delta. The server plans
+   *  (last-op-wins) + hydrates the ADDs inline (peer/group/unread); DELETE entries carry the threadId
+   *  only (the thread is leaving the roster — nothing to render). The client applies a single response —
+   *  no client-side planning, no second batch-hydrate round-trip. */
   queryThreadDelta(params: { fromRevision: number; toRevision: number }) {
-    return this.http.post<StandardResponse<ThreadDeltaOp[]>>(
+    return this.http.post<StandardResponse<HydratedThreadDeltaOp[]>>(
       `${apiPrefix()}/user/query-thread/delta`,
       params,
     )
-  }
-
-  /**
-   * Collect the FULL thread set by paging query-thread/valid — the endpoint is offset-paginated with a
-   * hard @Max(50) per request (QueryValidThreadDto), so a single call can never return more than 50.
-   * Used by features that filter the complete set client-side (conversation list, folder editor).
-   *
-   * Emits once with the accumulated list (recent-first), then completes. The backend returns each page
-   * recent-first but pages are ordered by id, so the combined list is re-sorted here by lastMessageAt
-   * desc (threadId asc tiebreak, null sinks) to match the single-request ordering the list view expects.
-   * Stops at the first short page (exhaustion) or HARD_CEILING. On a mid-stream server/network error,
-   * emits whatever was collected so far, then errors — callers that only read `next` still get a partial
-   * list, error-aware callers can surface the failure.
-   */
-  queryAllUserThreads(opts?: { type?: MessageThreadType }): Observable<ConversationItem[]> {
-    // Backend QueryValidThreadDto @Max(50); the endpoint has no hasMore, so a short page signals exhaustion.
-    const PAGE = 50
-    const HARD_CEILING = 500
-    return new Observable<ConversationItem[]>((sub) => {
-      const acc: ConversationItem[] = []
-      let skip = 0
-      let done = false
-      let inner: Subscription | undefined
-
-      const finish = (err?: unknown) => {
-        if (done) return
-        done = true
-        acc.sort(recentFirst)
-        sub.next(acc)
-        if (err) sub.error(err); else sub.complete()
-      }
-
-      const loadPage = () => {
-        if (done) return
-        inner = this.queryUserThreadValid({ take: PAGE, skip, type: opts?.type }).subscribe({
-          next: (res) => {
-            if (res.code !== 0) { finish(new Error(res.message || 'Failed to load chats')); return }
-            const page = res.data ?? []
-            acc.push(...page)
-            if (page.length < PAGE || acc.length >= HARD_CEILING) { finish(); return }
-            skip += page.length
-            loadPage()
-          },
-          error: (err) => finish(err),
-        })
-      }
-      loadPage()
-
-      // Teardown: stop paging and release the in-flight subscription.
-      return () => { done = true; inner?.unsubscribe() }
-    })
   }
 
   queryUserInfo(params: { userIds: number[] }) {
@@ -303,10 +338,12 @@ export class UserService {
   }
 
   /**
-   * Mark a conversation read. Omit lastReadMessageId to mark all current messages read; pass it to
-   * mark read up to (and including) a specific message. Fires the per-user read-cursor advance.
+   * Mark a conversation read up to (and including) `lastReadSeq` — the per-thread seq of the newest message
+   * the client knows (the item's `lastMessageSeq` on open, or a live NEW_MESSAGE's seq while the chatbox is
+   * open). `lastReadSeq` is REQUIRED: every caller passes it (mark-read never uses the backend's no-seq
+   * "mark all current" fallback). Fires the per-user read-cursor advance (mirrors the backend MarkReadDto).
    */
-  markRead(params: { threadId: number, lastReadMessageId?: string }) {
+  markRead(params: { threadId: number, lastReadSeq: number }) {
     return this.http.post<StandardResponse>(`${apiPrefix()}/thread/mark-read`, params)
   }
 
@@ -336,17 +373,6 @@ export function avatarUrl(base: string | undefined | null, size: AvatarSize): st
 }
 
 /**
- * Sort conversations recent-first: lastMessageAt desc (null/empty threads sink to the bottom),
- * threadId asc as a deterministic tiebreak. Mirrors the backend queryValidThread in-memory sort, used
- * after client-side pagination recombines pages that were each recent-first but globally id-ordered.
- */
-function recentFirst(a: ConversationItem, b: ConversationItem): number {
-  const ta = a.lastMessageAt ?? -Infinity
-  const tb = b.lastMessageAt ?? -Infinity
-  return tb - ta || a.threadId - b.threadId
-}
-
-/**
  * localStorage keys holding USER-SCOPED client-only data (no server copy) — cleared on logout so a
  * second account on the same browser never sees the previous one's folders / emoji recents. This mirrors
  * the IDB purge-on-logout (the per-user DB is closed + deleted): local cache is wiped, rebuilt from
@@ -356,7 +382,7 @@ function recentFirst(a: ConversationItem, b: ConversationItem): number {
  * Deliberately NOT cleared (device-level preferences, shared across accounts on this browser): theme,
  * language, the desktop list-pane width, the media-size threshold, `device_id`, and `is_keep_login`.
  */
-const USER_SCOPED_LS_KEYS = ['soms.chatFolders', 'soms.chat.emojiRecents']
+const USER_SCOPED_LS_KEYS = ['soms.chatFolders', 'soms.chat.emojiRecents', LAST_USER_ID_KEY]
 
 /** Remove every user-scoped localStorage key (logout / account switch). SSR/prerender-safe. */
 export function clearUserScopedLocalStorage(): void {

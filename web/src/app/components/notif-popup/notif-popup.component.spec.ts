@@ -5,13 +5,16 @@ import { provideZonelessChangeDetection } from '@angular/core';
 import { NotifPopupComponent } from './notif-popup.component';
 import { NotifPopupService } from '../../services/notif-popup.service';
 import { NotificationActionHttp } from '../../services/notif-action.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import type { NotificationDescriptor } from '../../services/notification-descriptor.model';
 
 describe('NotifPopupComponent', () => {
   let popupSvc: NotifPopupService;
   let httpMock: HttpTestingController;
+  let advanceMissedCursor: jasmine.Spy;
 
   beforeEach(() => {
+    advanceMissedCursor = jasmine.createSpy('advanceMissedCursor');
     TestBed.configureTestingModule({
       providers: [
         provideZonelessChangeDetection(),
@@ -19,6 +22,7 @@ describe('NotifPopupComponent', () => {
         provideHttpClientTesting(),
         NotifPopupService,
         NotificationActionHttp,
+        { provide: ConversationListService, useValue: { advanceMissedCursor } },
       ],
     });
     popupSvc = TestBed.inject(NotifPopupService);
@@ -36,8 +40,9 @@ describe('NotifPopupComponent', () => {
       lang: 'en',
       icon: null,
       renotify: false,
-      actions: [{ id: 'mark-all-read', title: 'Mark all read' }],
-      data: { threadId: 1, seq: 2 },
+      actions: [{ id: 'dismiss', title: 'Dismiss' }],
+      // The new away-HWM target the dismiss action advances to.
+      data: { threadId: 7, seq: 3 },
     };
   }
 
@@ -53,11 +58,35 @@ describe('NotifPopupComponent', () => {
     fixture.detectChanges();
     const el: HTMLElement = fixture.nativeElement;
     expect(el.textContent).toContain('Alice, Bob sent you 5 messages');
-    expect(el.querySelector('.notif-btn')?.textContent?.trim()).toBe('Mark all read');
+    expect(el.querySelector('.notif-btn')?.textContent?.trim()).toBe('Dismiss');
   });
 
-  it('clicking the action button POSTs /notifications/action + dismisses the card', async () => {
+  it('clicking dismiss advances the away-HWM + clears the card WITHOUT a POST (pure frontend)', async () => {
     popupSvc.show([awayDescriptor()]);
+    const fixture = TestBed.createComponent(NotifPopupComponent);
+    fixture.detectChanges();
+    const el: HTMLElement = fixture.nativeElement;
+
+    el.querySelector<HTMLButtonElement>('.notif-btn')!.click();
+    await Promise.resolve();
+    fixture.detectChanges();
+
+    // `dismiss` is pure frontend: it advances the away-HWM to the descriptor's cursor + closes the card,
+    // never POSTing + never touching the read watermark.
+    expect(advanceMissedCursor).toHaveBeenCalledWith({ threadId: 7, seq: 3 });
+    httpMock.expectNone('/api/v1/notifications/action');
+    expect(el.querySelector('.notif-card')).toBeNull();
+  });
+
+  it('a reply action POSTs /notifications/action with the descriptor routing data + dismisses', async () => {
+    popupSvc.show([
+      {
+        tag: 'soms-msg-7', kind: 'message-summary', title: 'SOMS', body: 'Alice sent you a message',
+        lang: 'en', icon: null, renotify: false,
+        actions: [{ id: 'reply', title: 'Reply' }],
+        data: { threadId: 7, seq: 3 },
+      },
+    ]);
     const fixture = TestBed.createComponent(NotifPopupComponent);
     fixture.detectChanges();
     const el: HTMLElement = fixture.nativeElement;
@@ -65,17 +94,15 @@ describe('NotifPopupComponent', () => {
     el.querySelector<HTMLButtonElement>('.notif-btn')!.click();
 
     const req = httpMock.expectOne('/api/v1/notifications/action');
-    // The descriptor's HWM cursor (threadId, seq) carries on the mark-all-read action.
-    expect(req.request.body).toEqual({ tag: 'soms-away', actionId: 'mark-all-read', threadId: 1, seq: 2 });
+    expect(req.request.body).toEqual({ tag: 'soms-msg-7', actionId: 'reply', threadId: 7, seq: 3 });
     req.flush({ code: 0, message: 'ok', data: null });
 
-    // Optimistic dismiss: the card is gone.
     await Promise.resolve();
     fixture.detectChanges();
     expect(el.querySelector('.notif-card')).toBeNull();
   });
 
-  it('the dismiss button clears the card without a POST', () => {
+  it('the dismiss (×) button clears the card without a POST', () => {
     popupSvc.show([awayDescriptor()]);
     const fixture = TestBed.createComponent(NotifPopupComponent);
     fixture.detectChanges();

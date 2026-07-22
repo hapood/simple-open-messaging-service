@@ -89,8 +89,10 @@ declare global {
        *  (FCM / WorkManager) read. They pass it as `since` to /notifications/missed while the WebView is
        *  suspended/destroyed, so the HWM MUST live in native durable storage (not just the WebView's IDB,
        *  which the native layer can't reach + which dies with the WebView). Webview→native, one-way: the
-       *  webview owns + advances the HWM; native only reads. Pass null on logout. Android-only. */
-      setMissedCursor: (cursor: { threadId: number; seq: number } | null) => void;
+       *  webview owns + advances the HWM; native only reads. Passed as a JSON STRING (`{"threadId":..,"seq":..}`)
+       *  because Android's @JavascriptInterface bridge doesn't reliably map JS objects to structured params
+       *  (mirrors setFirebaseConfig). Pass null on logout. Android-only. */
+      setMissedCursor: (cursor: string | null) => void;
       /** Synchronous read of the persisted session token from EncryptedSharedPreferences (the same store
        *  setSessionToken writes + the native RealtimeService reads). AuthService.restoreSession uses it to
        *  re-establish the session on a cold start with NO plaintext copy in JS storage. Returns null when
@@ -104,6 +106,12 @@ declare global {
        *  retry channel — parity with the worker's retry-now and Rust's sse_net(online:true)). Delivered as
        *  an ACTION_RETRY Intent; a no-op if the stream is already open. Android-only. */
       retryNow: () => void;
+      /** Force-reconnect the native /events stream even while it is OPEN — used by the client HELLO-timeout
+       *  (an open stream that never delivered its HELLO handshake is unusable: the threadlist cannot build).
+       *  Cancels the open EventSource and reopens it so the new connection re-pushes HELLO. This is the
+       *  force-reconnect channel `retryNow` cannot serve — retryNow only cancels pending backoff and is a
+       *  no-op against an already-open stream. Android-only. */
+      forceReconnect: () => void;
       /** Read whether the 6-hour background-sync poller is enabled (stored in EncryptedSharedPreferences
        *  so the WorkManager worker can read it with no WebView alive). Defaults to true. Android-only;
        *  absent in the browser/desktop builds (guarded by isTauri() && isAndroid()). */

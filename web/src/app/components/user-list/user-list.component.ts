@@ -1,5 +1,5 @@
-import { Component, input, signal, EventEmitter, Output, computed } from '@angular/core';
-import { UserService } from '../../services/user.service'
+import { Component, input, inject, EventEmitter, Output, computed } from '@angular/core';
+import { ConversationListService } from '../../services/conversation-list.service'
 import { ConversationItem } from '../../services/model'
 import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 import { IconComponent, AppIconType } from '../icon/icon.component';
@@ -18,7 +18,11 @@ export class UserListComponent {
     readonly selectedDict = input<Record<number, boolean | undefined>>()
     /** Optional client-side filter text (case-insensitive over display name + handle). */
     readonly filterText = input<string>('')
-    readonly threadList = signal<ConversationItem[]>([])
+    private readonly convList = inject(ConversationListService)
+
+    /** The P2P conversations (the friend picker's source) — derived from the live conversation list (the
+     *  delta-replay list), no fetch. */
+    readonly threadList = computed(() => this.convList.items().filter((t) => t.type === 'P2P'))
 
     readonly dispThreadList = computed(() => {
         const q = (this.filterText() ?? '').trim().toLowerCase()
@@ -39,23 +43,7 @@ export class UserListComponent {
 
     @Output() onSelect = new EventEmitter<ConversationItem & { selected: undefined }>()
 
-    constructor(private userService: UserService) { }
-
-    genThreadList() {
-        return this.userService.queryUserThreadValid({ take: 10, skip: 0, type: "P2P" }).subscribe(res => {
-            if (res.code == 0) {
-                this.threadList.set(res.data!)
-            } else {
-                throw new Error(res.message)
-            }
-        })
-    }
-
     onUsrTrdClick(userMsgTrd: ConversationItem & { selected: undefined }) {
         this.onSelect.emit(userMsgTrd)
-    }
-
-    ngOnInit() {
-        this.genThreadList();
     }
 }

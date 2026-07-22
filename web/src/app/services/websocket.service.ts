@@ -58,6 +58,18 @@ export class WebsocketService implements OnDestroy {
   /** The 250ms countdown ticker; undefined when not ticking. */
   private reconnectTicker?: ReturnType<typeof setInterval>;
 
+  /** The deadline within which the server MUST push its HELLO connect handshake after the stream opens.
+   *  HELLO carries the threadRevision the threadlist delta-replays from and the newest-message cursor the
+   *  missed-summary walks toward — without it the list cannot build, so a missing HELLO is a hard failure,
+   *  not a graceful wait. The server sends HELLO right after flushing headers (sub-second normally); 10s is
+   *  a generous threshold that avoids false triggers on slow networks. If it fires the open stream is
+   *  treated as unusable: the disconnect surfaces at the connection indicator and the stream is force-
+   *  reconnected so the new connection re-pushes HELLO. The existing staleness watchdogs do NOT cover this
+   *  — they arm only after the first ping, so an open stream still receiving pings but never HELLO would
+   *  hang the threadlist forever. */
+  private static readonly HELLO_TIMEOUT_MS = 10_000;
+  private helloTimeout?: ReturnType<typeof setTimeout>;
+
   constructor(private authService: AuthService) {
     // The sink funnels every transport's outputs onto this facade's single subjects/signal (+ the dev
     // trace + the FORCE_LOGOUT re-login side-effect).
@@ -66,6 +78,10 @@ export class WebsocketService implements OnDestroy {
         // Dev-only: trace every realtime business event, so signal reception is visible under `ng serve`.
         // Gated by ngDevMode → stripped in prod AOT.
         if (ngDevMode) console.log('[sse] recv', m.event, m.data);
+        // HELLO landed — the connect handshake succeeded; cancel the deadline that would otherwise force a
+        // reconnect. (Intercepted here, before fan-out, so the timeout clears even though the threadlist is
+        // the downstream consumer — mirrors how FORCE_LOGOUT is intercepted in each transport.)
+        if (m.event === 'HELLO') this.clearHelloTimeout();
         this.eventSubject.next(m);
       },
       onState: (s) => {
@@ -73,6 +89,10 @@ export class WebsocketService implements OnDestroy {
         // Leaving the backoff state — drop any live countdown. (Entering `reconnecting` does NOT set a
         // countdown; the transport emits the deadline separately via onReconnectIn.)
         if (s !== 'reconnecting') this.clearReconnectIn();
+        // Arm the HELLO deadline when the stream opens; clear it on any other state (the handshake only
+        // applies to an open stream, and a teardown/reconnect re-arms on the next 'open').
+        if (s === 'open') this.armHelloTimeout();
+        else this.clearHelloTimeout();
       },
       onReconnect: () => this.reconnect$.next(),
       onForceLogout: (reason?: string) => this.onForceLogout(reason),
@@ -175,8 +195,38 @@ export class WebsocketService implements OnDestroy {
     this.reconnectIn.set(null)
   }
 
+  /** Arm the HELLO-handshake deadline — the server must push HELLO within {@link HELLO_TIMEOUT_MS} of the
+   *  stream opening. Cleared by HELLO receipt (in the sink's onEvent) or by any state leaving 'open'. */
+  private armHelloTimeout(): void {
+    this.clearHelloTimeout();
+    this.helloTimeout = setTimeout(
+      () => this.onHelloTimeout(),
+      WebsocketService.HELLO_TIMEOUT_MS,
+    );
+  }
+
+  private clearHelloTimeout(): void {
+    if (this.helloTimeout) {
+      clearTimeout(this.helloTimeout);
+      this.helloTimeout = undefined;
+    }
+  }
+
+  /** HELLO never arrived within the deadline — the open stream is unusable (the threadlist cannot build
+   *  without the handshake's threadRevision + newest-message cursor). Surface it as a disconnect at the
+   *  connection indicator, then force a reconnect so the new connection re-pushes HELLO. */
+  private onHelloTimeout(): void {
+    this.helloTimeout = undefined;
+    console.error(
+      `[sse] HELLO not received within ${WebsocketService.HELLO_TIMEOUT_MS}ms — forcing reconnect`,
+    );
+    this.state.set('reconnecting'); // show disconnected at the indicator
+    this.transport.forceReconnect();
+  }
+
   ngOnDestroy(): void {
     this.clearReconnectIn()
+    this.clearHelloTimeout()
   }
 
   /** Server-initiated kick (all-device logout / password change / app-session replaced): drop the transport

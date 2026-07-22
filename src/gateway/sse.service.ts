@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
 import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
@@ -45,6 +45,7 @@ interface SseClient {
  */
 @Injectable()
 export class SseService implements OnModuleDestroy {
+  private readonly logger = new Logger(SseService.name);
   private readonly clients: Record<number, SseClient[]> = {};
 
   constructor(
@@ -88,15 +89,40 @@ export class SseService implements OnModuleDestroy {
     try {
       const [latestMessage, user] = await Promise.all([
         this.messages.findNewestForUser(userId),
-        this.prisma.user.findUnique({ where: { id: userId }, select: { threadRevision: true } }),
+        this.prisma.user.findUnique({
+          where: { id: userId },
+          select: { threadRevision: true, profileRev: true, hasUrFriendReq: true },
+        }),
       ]);
       const frame = formatSseFrame('HELLO', {
-        latestMessage, // { threadId, seq, ts } | null — the client's `to` (null when the user has no messages)
-        threadRevision: user?.threadRevision ?? 0, // the friend-list version (pull query-thread/delta if stale)
+        // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
+        // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
+        // IDB store on this userId (previously the /user/my-profile fetch was load-bearing for that, which
+        // made the fetch un-skippable). Carrying it here lets the webdb open at connect time, independent
+        // of the profile fetch.
+        userId,
+        // { threadId, seq, ts } | null — the missed-summary walk's pinned upper bound `to` (null when the
+        // user has no messages yet → the client does not walk until the first live NEW_MESSAGE).
+        latestMessage,
+        // The thread-list delta cursor. The client delta-replays (0, this] on first HELLO, then
+        // (cursor, this] on each subsequent THREAD_REVISION_UPDATED — the SOLE revision source now that
+        // the snapshot endpoint is gone.
+        threadRevision: user?.threadRevision ?? 0,
+        // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
+        // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
+        // cache) or a changed rev still fetches.
+        profileRev: user?.profileRev ?? 0,
+        // The friend-request badge. Carried because hasUrFriendReq is INDEPENDENT of profileRev (a request
+        // arming does not bump it), so gating the profile fetch on profileRev alone would miss a request
+        // that armed while the app was offline. HELLO closing that gap is what makes the skip safe.
+        hasUrFriendReq: user?.hasUrFriendReq ?? false,
       });
       if (!entry.res.writableEnded) entry.res.write(frame);
-    } catch {
-      /* best-effort — the connect path must never throw */
+    } catch (e) {
+      // HELLO is load-bearing: the threadlist cannot build without its threadRevision (delta-replay from
+      // 0..rev). A send failure must therefore be OBSERVABLE, not silently swallowed — the connection still
+      // establishes, and the client's HELLO-timeout will force a reconnect that re-pushes HELLO.
+      this.logger.error(`HELLO handshake failed for user ${userId}`, e);
     }
   }
 

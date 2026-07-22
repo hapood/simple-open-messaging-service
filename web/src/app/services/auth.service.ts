@@ -267,6 +267,10 @@ export class AuthService {
    *  it is not retained. Also purges any legacy plaintext `session_token` left in localStorage by an older
    *  desktop build (now stored in the keyring instead). */
   async restoreSession(): Promise<void> {
+    // Open the per-user IDB on the persisted lastUserId FIRST (awaited) so the threadlist can eager-paint
+    // the cached list before the SSE/HELLO round-trip — the DB is open before the router resolves, so the
+    // list reads it on mount. No-op on a first-ever launch (no userId persisted yet).
+    await this.userService.restoreWebdb();
     try { localStorage.removeItem(SESSION_TOKEN) } catch { /* storage unavailable */ }
     if (isAndroidNative()) {
       try {

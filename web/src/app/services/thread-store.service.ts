@@ -1,16 +1,14 @@
 import { Injectable, inject, signal, effect } from '@angular/core';
-import { filter, firstValueFrom, forkJoin, map, catchError, of, Subscription } from 'rxjs';
+import { filter, firstValueFrom, map, Subject, Subscription } from 'rxjs';
 import { WebdbService } from './webdb.service';
 import { UserService } from './user.service';
 import { WebsocketService } from './websocket.service';
 import { ProfileRepository } from './profile-store.service';
 import { MessageRepository } from './message-repository.service';
-import { MissedSyncService } from './missed-sync.service';
+import { MissedSyncService, type MissedThreadItem } from './missed-sync.service';
 import { isAndroidNative } from './runtime';
 import type { MissedCursor } from './notification-descriptor.model';
 import { ConversationItem, User } from './model';
-import { planDelta } from './thread-delta';
-import { toFriendlyHttpError } from './http-error';
 
 /** Load status as a const object so it can be used as a VALUE in templates and as a TYPE. */
 export const ConversationLoadStatus = {
@@ -24,22 +22,26 @@ export type ConversationLoadStatus =
 /**
  * The DB-layer repository for the conversation list — the read + SSE half of the strict 3-tier
  * (UI ↔ repositories ↔ backend) for the thread-list domain. It is the ONLY service that issues the
- * list READs (`/user/query-thread/valid`, `/user/thread-info`, `/user/query-thread/delta`) and the ONLY
- * consumer of the thread-list DATA SSE events (`NEW_MESSAGE`, `THREAD_META`, `THREAD_REVISION_UPDATED`,
- * `PEER_PROFILE_UPDATED`). UI-facing services read its signals; they never fetch or mutate from SSE.
+ * list READ (`/user/query-thread/delta`) and the ONLY consumer of the thread-list DATA SSE events
+ * (`NEW_MESSAGE`, `THREAD_META`, `THREAD_REVISION_UPDATED`, `PEER_PROFILE_UPDATED`). UI-facing services
+ * read its signals; they never fetch or mutate from SSE.
  *
  * NO write operations live here — `markRead` (a write) stays in the UI layer ({@link ConversationListService}
- * facade) and bypasses the DB layer, per the 3-tier contract. This repository only GETs (snapshot + delta
- * + single-thread backfill) and listens (SSE).
+ * facade) and bypasses the DB layer, per the 3-tier contract. This repository only GETs (the delta) and
+ * listens (SSE).
  *
- * Persistence (Phase 3): every conversation is mirrored to IDB (`threads` store, one record per
- * `threadId`). On boot the cached records paint INSTANTLY (no skeleton flash for returning users), then a
- * background snapshot refreshes previews / unread / membership — the SSE stream does NOT replay events
- * missed while the app was closed, so the snapshot is the freshness backstop (the online delta only
- * covers add/delete membership changes while connected).
+ * Boot is split across an eager cache-paint + a HELLO-driven network refresh:
+ *  - {@link load} eager-paints the IDB `threads` store INSTANTLY on mount — the per-user IDB is opened on
+ *    the persisted lastUserId by AuthService.restoreSession (an APP_INITIALIZER, pre-router), so a returning
+ *    user sees their list BEFORE the SSE/HELLO round-trip. A cold start (no cache) paints nothing until HELLO.
+ *  - {@link onHello} (the SSE connect handshake) then delta-replays the list (full `(0, rev]` on first
+ *    connect, incremental `(cursor, rev]` on reconnect) + walks the missed-summary range. The SSE stream
+ *    does NOT replay events missed while offline, so this HELLO-driven delta + missed walk is the freshness
+ *    backstop.
  *
- * Incremental: each data-SSE event mutates exactly the affected record(s) in IDB + emits a fine-grained
- * signal update — never a whole-list re-fetch, never a component reload.
+ * Every conversation is mirrored to IDB (`threads` store, one record per `threadId`). Each data-SSE event
+ * mutates exactly the affected record(s) in IDB + emits a fine-grained signal update — never a whole-list
+ * re-fetch, never a component reload.
  */
 @Injectable({ providedIn: 'root' })
 export class ThreadRepository {
@@ -65,6 +67,18 @@ export class ThreadRepository {
   private readonly _openThreadId = signal<number | undefined>(undefined);
   readonly openThreadId = this._openThreadId.asReadonly();
 
+  /** Per-thread OPTIMISTIC read watermark — the seq the UI marked read locally (a markRead POST is in flight)
+   *  ahead of the server's confirmation. {@link reconcileItem} treats this as a lower bound on lastReadSeq and
+   *  masks the unread badge while the server catches up; it is pruned once the server's lastReadSeq reaches it
+   *  (a missed-summary walk or snapshot refresh carries the authoritative value). In-memory only. */
+  private readonly optimisticLastRead = new Map<number, number>();
+
+  /** Emits `{threadId, seq}` when a NEW_MESSAGE lands for the currently-open thread — the signal the UI facade
+   *  subscribes to so IT can fire the debounced `markRead` (B1). The repo owns the SSE timing; the facade owns
+   *  the write ({@link ConversationListService}), per the 3-tier contract (this layer never POSTs). */
+  private readonly _openThreadMessage = new Subject<{ threadId: number; seq: number }>();
+  readonly openThreadMessage$ = this._openThreadMessage.asObservable();
+
   /** A thread promoted to index 0 on the most recent update (to be FLIP-animated by the list), or null.
    *  Set in {@link applyItems} / {@link upsertThread} when a top-insert was requested; the list clears it
    *  after animating ({@link clearTopInserted}). */
@@ -79,15 +93,6 @@ export class ThreadRepository {
   private _deltaInFlight = false;
   private _pendingTailRev: number | undefined;
 
-  /** True while a boot (cache-read + snapshot refresh) is in progress — the SOLE single-flight guard:
-   *  a non-force {@link load} is a no-op while this is set. Set at the start of {@link boot} and cleared
-   *  in its `finally` (only by the newest boot, so a force supersedure doesn't prematurely clear it). Do
-   *  NOT gate on `_status() === 'LOADING'` instead — the initial status IS 'LOADING' before the first
-   *  boot, so that would block the first boot and the list would never load until a reconnect. */
-  private bootInFlight = false;
-  /** Generation counter: a `force` boot supersedes an in-flight one; a stale boot's writes are dropped. */
-  private bootGen = 0;
-
   /** Per-thread high-water-mark of the newest message seq applied via onNewMessage. Guards against SSE
    *  redelivery (e.g. a frame duplicated across a reconnect) double-bumping the unread badge: if an inbound
    *  event's seq isn't strictly newer than the last one applied for that thread, it's discarded before
@@ -97,9 +102,8 @@ export class ThreadRepository {
    *  duplicates are blocked. */
   private readonly lastSeenSeq = new Map<number, number>();
 
-  /** Previous sessionProfile id seen by the session-end effect (null = no logged-in user). */
+  /** Previous sessionUserId seen by the session-end effect (null = no logged-in user). */
   private prevSessionId: number | null = null;
-
   /** The high-water mark — the `(threadId, seq)` of the newest message the threadlist has accounted for (the
    *  last walked `to`). The backend resolves it to the internal message `id` it never exposes. The lower
    *  bound (`from`) of the missed-summary walk; persisted to IDB so it survives restarts. Null on first boot
@@ -119,7 +123,7 @@ export class ThreadRepository {
     this.sseSub = this.ws.eventSubject.subscribe((m) => {
       switch (m.event) {
         case 'HELLO':
-          this.onHello(m.data as HelloPayload | undefined);
+          void this.onHello(m.data as HelloPayload | undefined);
           break;
         case 'NEW_MESSAGE':
           if (m.data !== undefined) this.onNewMessage(m.data as { threadId: number; seq: number; ts: number });
@@ -133,23 +137,22 @@ export class ThreadRepository {
         case 'PEER_PROFILE_UPDATED':
           if (m.data !== undefined) this.onPeerProfileUpdated(m.data as unknown as User);
           break;
+        case 'READ_CURSOR':
+          if (m.data !== undefined) this.onReadCursor(m.data as { threadId: number; lastReadSeq: number });
+          break;
       }
     });
 
-    // Reconnect → force boot: re-snapshot (unread / membership / add-delete missed during the disconnect
-    // — SSE does not replay) + re-pull the time-bounded missed-summary (T advances per message).
-    this.sseSub.add(this.ws.reconnect$.subscribe(() => this.load({ force: true })));
+    // Reconnect refresh is HELLO-driven now: the SSE reconnect re-pushes HELLO → onHello re-runs
+    // (cache-paint + delta-replay + missed-summary walk). No separate reconnect→boot wiring needed.
 
-    // Session-end reset: when the session ends (sessionProfile → undefined, i.e. clearSession/logout),
-    // drop the in-memory list so a second account logging into the same live SPA cannot inherit this
-    // user's cached list. The IDB partition is handled by WebdbService; this covers the in-memory layer.
-    // Reset flips status back to LOADING, so the next login's ThreadListComponent.ngOnInit (guarded on
-    // `status===LOADING && items empty`) re-triggers load() — otherwise the stale READY+items would
-    // suppress the reload, and the SSE worker's fresh connect emits no `reconnect$` pulse to do it.
-    // Driven by the same sessionProfile signal UserService already uses for the DB open/close effect
-    // (consistent lifecycle; no extra registration API for consumers to wire).
+    // Session-end reset: when the session ends (sessionUserId → null, i.e. clearSession/logout), drop
+    // the in-memory list so a second account logging into the same live SPA cannot inherit this user's
+    // cached list. The IDB partition is handled by WebdbService (closed on the same signal); this covers
+    // the in-memory layer. Reset flips status back to LOADING so the next login's ThreadListComponent
+    // re-enters the loading state until the fresh HELLO lands.
     effect(() => {
-      const id = this.userService.sessionProfile()?.id ?? null;
+      const id = this.userService.sessionUserId();
       if (id === this.prevSessionId) return;
       this.prevSessionId = id;
       if (id === null) this.reset();
@@ -158,10 +161,8 @@ export class ThreadRepository {
 
   /**
    * Drop ALL in-memory session state (logout / account switch). The IDB store is closed + deleted by
-   * WebdbService; this resets the in-memory caches so they cannot leak across users. Bumps {@link bootGen}
-   * to invalidate any in-flight boot of the previous user (its snapshot is now stale and must not be
-   * written back), and clears {@link bootInFlight} so the next login's boot runs. Resets {@link _status}
-   * to LOADING so the freshly-mounted list re-loads.
+   * WebdbService (on the same sessionUserId signal); this resets the in-memory caches so they cannot leak
+   * across users. Resets {@link _status} to LOADING so the freshly-mounted list re-loads on the next HELLO.
    */
   private reset(): void {
     this._items.set([]);
@@ -173,85 +174,42 @@ export class ThreadRepository {
     this._deltaInFlight = false;
     this._pendingTailRev = undefined;
     this.lastSeenSeq.clear();
+    this.optimisticLastRead.clear();
     this._missedCursor.set(null);
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
     if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(null);
     clearTimeout(this.pullTimer);
     this.pullArmedAt = 0;
-    this.bootGen++;
-    this.bootInFlight = false;
   }
 
-  // ── boot: cached paint → snapshot refresh ──────────────────────────────────────────────────
+  // ── boot: HELLO-driven (cache-paint + delta-replay live in onHello) ────────────────────────
 
   /**
-   * Load (or refresh) the conversation list. Boot-from-cache: paint cached records instantly (READY, no
-   * skeleton), then a background snapshot freshens. A non-force call while a boot is already in-flight is
-   * a no-op ({@link bootInFlight}); a force call (reconnect) bypasses the guard and supersedes the
-   * in-flight boot via {@link bootGen}.
+   * Eager cache-paint — the ThreadListComponent init trigger. Reads the IDB `threads` store + paints it
+   *  INSTANTLY, BEFORE the SSE/HELLO round-trip: the per-user IDB was opened on the persisted lastUserId by
+   *  AuthService.restoreSession (an APP_INITIALIZER, pre-router), so the cache is readable the moment the
+   *  list mounts. This is the "instant list on startup for returning users" path — no network wait. A true
+   *  cold start (no IDB data) paints nothing → LOADING until HELLO's delta populates.
    *
-   * The guard is `bootInFlight` ONLY. The initial `_status` is `'LOADING'` before any boot has run, so
-   * gating on `_status() === 'LOADING'` would reject the very first boot — the list would never load
-   * until a reconnect (ThreadListComponent.ngOnInit's non-force `load()` is the initial trigger).
+   *  Guarded against clobbering a fresher state: bails if the list is already populated (a HELLO delta that
+   *  landed during the IDB read, or a prior paint). The network refresh is HELLO-driven ({@link onHello});
+   *  load() owns only the instant cache paint. The `force` flag is a no-op — a reconnect re-pushes HELLO.
    */
-  load(opts?: { force?: boolean }) {
-    if (!opts?.force && this.bootInFlight) return;
-    this._error.set('');
-    // First boot with no cache → LOADING (skeleton gate). With cache (or a reconnect refresh) → keep the
-    // current paint; the snapshot freshens silently in the background.
-    if (this._items().length === 0) this._status.set('LOADING');
-    void this.boot(opts?.force === true);
+  load(_opts?: { force?: boolean }) {
+    void this.paintFromCache();
   }
 
-  private async boot(force: boolean): Promise<void> {
-    const gen = ++this.bootGen;
-    this.bootInFlight = true;
-    try {
-      if (!force) {
-        const cached = await this.readCachedThreads();
-        if (gen !== this.bootGen) return; // a newer boot superseded this one
-        if (cached.length > 0) {
-          this.applyItems(cached);
-          this._status.set('READY');
-        }
-      }
-      // Freshness snapshot: SSE does not replay offline events, so previews / unread / membership changes
-      // that landed while the app was closed are caught up here (the online delta only covers add/delete
-      // while connected).
-      await firstValueFrom(this.userService.ensureProfile({ force }));
-      if (gen !== this.bootGen) return;
-      const fresh = await firstValueFrom(this.userService.queryAllUserThreads());
-      if (gen !== this.bootGen) return;
-      this.applyItems(fresh);
-      void this.persistThreads(this._items());
-      this._status.set('READY');
-      this._error.set('');
-      // Local-first preview: the snapshot embeds NO preview content (the body is pulled, never denormalized —
-      // see query-thread/valid), so derive each thread's preview from its newest CACHED message. On a cold
-      // start the local store is already populated from the prior session → previews paint INSTANTLY here,
-      // with no "暂无消息" flash before the network pull lands. Covers every thread with a cached message
-      // (not just the missed-summary page).
-      void this.hydratePreviews();
-      // Load the persisted high-water mark (the last walked `to`) — the lower bound for the first missed-
-      // summary walk. The walk itself does NOT fire here: boot has no `to` until the SSE stream connects and
-      // the server pushes HELLO (the newest-message cursor). On HELLO → the walk; on each live NEW_MESSAGE
-      // → `to` advances + a debounced walk.
-      await this.loadMissedCursor();
-    } catch (err) {
-      if (gen !== this.bootGen) return;
-      // First-boot failure (no cached paint) → ERROR. Otherwise keep the cached paint (stale but usable);
-      // a later reconnect retries.
-      if (this._items().length === 0) this.failLoad(err);
-    } finally {
-      // Only the newest boot owns the in-flight flag — a force supersedure (gen mismatch) leaves it set
-      // for the newer boot to clear when it finishes.
-      if (gen === this.bootGen) this.bootInFlight = false;
+  /** Read the IDB `threads` store + apply it instantly (the eager pre-HELLO paint). Bails if the list is
+   *  already populated so a late cache read cannot clobber a fresher HELLO delta that landed during it. */
+  private async paintFromCache(): Promise<void> {
+    if (this._items().length > 0) return; // already populated — don't clobber a fresher state
+    const cached = await this.readCachedThreads();
+    if (cached.length > 0 && this._items().length === 0) {
+      this.applyItems(cached); // flips READY
+      void this.hydratePreviews(); // re-derive previews from the local message store
+    } else if (this._items().length === 0 && this._status() !== 'READY') {
+      this._status.set('LOADING'); // cold start, no cache → await HELLO's delta
     }
-  }
-
-  private failLoad(err: unknown): void {
-    this._error.set(toFriendlyHttpError(err));
-    this._status.set('ERROR');
   }
 
   /** Force `threadId` to index 0 on the next update and emit `topInserted` so the row animates in.
@@ -391,6 +349,7 @@ export class ThreadRepository {
     this._items.update((list) => list.filter((t) => t.threadId !== threadId));
     if (this._openThreadId() === threadId) this._openThreadId.set(undefined);
     this.lastSeenSeq.delete(threadId);
+    this.optimisticLastRead.delete(threadId);
     void this.deleteThreadFromDb(threadId);
     void this.messageRepo.deleteByThread(threadId);
   }
@@ -407,31 +366,106 @@ export class ThreadRepository {
     if (changed) void this.persistThread(changed);
   }
 
+  /** Record an optimistic read watermark for `threadId` (the facade calls this as it fires markRead) — a cheap
+   *  map set that drives {@link reconcileItem} to mask the unread badge + keep lastReadSeq ahead of the server
+   *  while the POST is in flight. Pruned once the server catches up. No item mutation here (the open thread's
+   *  badge is already 0 via clearUnread / the no-bump-while-open rule). */
+  noteOptimisticRead(threadId: number, seq: number): void {
+    const prev = this.optimisticLastRead.get(threadId);
+    if (prev === undefined || seq > prev) this.optimisticLastRead.set(threadId, seq);
+  }
+
+  /** Reconcile a server-merged item with the optimistic read watermark — PURE (no map mutation). While the
+   *  optimistic seq leads the server's, the server value is transiently stale (a markRead POST is in flight) →
+   *  return the optimistic lastReadSeq + a masked (0) unread badge. When the server has caught up this returns
+   *  the item unchanged; the caller drops the override via {@link pruneOptimistic}. */
+  private reconcileItem(it: ConversationItem): ConversationItem {
+    const opt = this.optimisticLastRead.get(it.threadId);
+    if (opt === undefined) return it;
+    const server = it.lastReadSeq ?? -1;
+    if (server >= opt) return it; // server caught up — caller prunes the override
+    return { ...it, lastReadSeq: opt, unreadCount: 0 };
+  }
+
+  /** Drop optimistic overrides the server has caught up to (server lastReadSeq ≥ optimistic). Called AFTER a
+   *  server merge so an override stops masking future regressions once it has served its purpose (the POST has
+   *  landed). Kept separate from the pure {@link reconcileItem} so the read has no hidden side effects. */
+  private pruneOptimistic(serverByThread: Map<number, number | null>): void {
+    for (const [tid, lrs] of serverByThread) {
+      const opt = this.optimisticLastRead.get(tid);
+      if (opt !== undefined && (lrs ?? -1) >= opt) this.optimisticLastRead.delete(tid);
+    }
+  }
+
+  /** Merge the missed-summary's authoritative per-thread `lastReadSeq` into the list items (reconciled with the
+   *  optimistic override). The summary is the freshest per-thread read state (it runs on every SSE signal), so
+   *  this keeps each item's lastReadSeq current without a full snapshot refresh. Does not own unreadCount — the
+   *  snapshot + live bumps do; {@link reconcileItem} masks the transient regression while optimistic leads. */
+  private mergeSummaryReadState(items: MissedThreadItem[]): void {
+    if (items.length === 0) return;
+    const serverByThread = new Map<number, number | null>();
+    for (const i of items) serverByThread.set(i.threadId, i.lastReadSeq);
+    let changed = false;
+    const updated = this._items().map((it) => {
+      const serverLrs = serverByThread.get(it.threadId);
+      if (serverLrs === undefined) return it;
+      const next = this.reconcileItem({ ...it, lastReadSeq: serverLrs });
+      if (next.lastReadSeq !== it.lastReadSeq || next.unreadCount !== it.unreadCount) changed = true;
+      return next;
+    });
+    this.pruneOptimistic(serverByThread); // drop overrides the server just confirmed
+    if (changed) {
+      this._items.set(updated);
+      void this.persistThreads(updated);
+    }
+  }
+
+  /** READ_CURSOR (cross-tab / cross-device): another of the caller's connections marked `threadId` read up to
+   *  `lastReadSeq`. Apply it authoritatively — advance the item's lastReadSeq (monotonic) + clear that thread's
+   *  badge, and drop any optimistic override (the server has confirmed the read). The backend echoes this only
+   *  to the caller's OTHER connections, so this is the cross-instance sync channel. */
+  private onReadCursor(d: { threadId: number; lastReadSeq: number }): void {
+    if (typeof d?.threadId !== 'number' || typeof d?.lastReadSeq !== 'number') return;
+    this.optimisticLastRead.delete(d.threadId);
+    let changed: ConversationItem | undefined;
+    this._items.update((list) => {
+      const found = list.find((t) => t.threadId === d.threadId);
+      if (!found) return list;
+      const cur = found.lastReadSeq ?? -1;
+      if (d.lastReadSeq <= cur) return list; // never regress
+      changed = { ...found, lastReadSeq: d.lastReadSeq, unreadCount: 0 };
+      return list.map((t) => (t.threadId === d.threadId ? changed! : t));
+    });
+    if (changed) void this.persistThread(changed);
+  }
+
   /** Insert or refresh a single ConversationItem (from a delta ADD's getThreadInfo fetch). Mirrors
    *  applyItems' FLIP: if `_pendingTopId` matches, force-top it + emit `topInserted`. Idempotent. */
   private upsertThread(item: ConversationItem): void {
+    const reconciled = this.reconcileItem(item);
     this._items.update((list) => {
-      const idx = list.findIndex((t) => t.threadId === item.threadId);
+      const idx = list.findIndex((t) => t.threadId === reconciled.threadId);
       const base = list.slice();
-      if (idx === -1) base.unshift(item);
-      else base[idx] = item;
+      if (idx === -1) base.unshift(reconciled);
+      else base[idx] = reconciled;
       const sorted = base.sort(byPinRank);
-      return this._pendingTopId === item.threadId ? moveToTop(sorted, item.threadId) : sorted;
+      return this._pendingTopId === reconciled.threadId ? moveToTop(sorted, reconciled.threadId) : sorted;
     });
-    if (this._pendingTopId === item.threadId) {
-      this._topInserted.set(item.threadId);
+    if (this._pendingTopId === reconciled.threadId) {
+      this._topInserted.set(reconciled.threadId);
       this._pendingTopId = null;
     }
     this._status.set('READY');
-    void this.persistThread(item);
+    void this.persistThread(reconciled);
     // A fresh item carries an embedded peer/group profile — write it through too (avatar freshness).
-    if (item.type === 'P2P') this.writePeerProfile(item.peerUser);
-    else if (item.type === 'GROUP') this.writeGroupProfile(item.group);
+    if (reconciled.type === 'P2P') this.writePeerProfile(reconciled.peerUser);
+    else if (reconciled.type === 'GROUP') this.writeGroupProfile(reconciled.group);
   }
 
   private applyItems(items: ConversationItem[]): void {
-    const sorted = [...items].sort(byPinRank);
-    const topId = this.resolveTopId(items);
+    const reconciled = items.map((it) => this.reconcileItem(it));
+    const sorted = [...reconciled].sort(byPinRank);
+    const topId = this.resolveTopId(reconciled);
     const ordered = topId != null ? moveToTop(sorted, topId) : sorted;
     this._items.set(ordered);
     this._status.set('READY');
@@ -513,6 +547,9 @@ export class ThreadRepository {
     });
     if (changed) void this.persistThread(changed);
     if (!existed) this.load();
+    // B1: the open thread received a new message — emit so the facade can advance the server read watermark
+    // (debounced + coalesced to the max seq). The repo emits; the facade owns the markRead write.
+    if (open === msg.threadId) this._openThreadMessage.next({ threadId: msg.threadId, seq: msg.seq });
   }
 
   /** Load the persisted missed-summary cursor from IDB — the `(threadId, seq)` of the newest message the
@@ -533,7 +570,8 @@ export class ThreadRepository {
    *  native only reads. */
   private saveMissedCursor(c: MissedCursor): void {
     void this.webdb.putMeta('missedCursor', c);
-    if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(c);
+    // JSON string — the @JavascriptInterface bridge takes a string (mirrors setFirebaseConfig).
+    if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(JSON.stringify(c));
   }
 
   /** Debounce window for the missed-summary pull: a burst of NEW_MESSAGE signals collapses into one pull.
@@ -574,17 +612,35 @@ export class ThreadRepository {
    *  not spin the client). 100 pages × 200 = 20000 threads is far past any real account. */
   private static readonly PULL_MAX_PAGES = 100;
 
-  /** HELLO (the SSE connect handshake): the server pushes the user's newest-message cursor + the friend-list
-   *  revision. The cursor becomes `to` (the walk's pinned upper bound) → kick off the catch-up walk; the
-   *  revision feeds the existing THREAD_REVISION delta-sync ({@link onThreadRevisionUpdated} pulls
-   *  query-thread/delta if the client is stale). */
-  private onHello(d: HelloPayload | undefined): void {
-    if (!d) return;
+  /** HELLO (the SSE connect handshake) — the network-refresh half of boot (the cache-paint is owned by
+   *  {@link load}, which eager-paints from the IDB cache before HELLO lands). Carries the caller's userId
+   *  (establishes the session — opens the IDB on cold start, idempotent on warm start), the newest-message
+   *  cursor (→ the missed-summary walk's `to`), and the thread-list revision (→ a delta-replay). On each
+   *  connect this: establishes the session, loads the missed cursor, delta-replays the thread list (full
+   *  `(0, rev]` on first connect, incremental `(cursor, rev]` on reconnect), and kicks off the missed-
+   *  summary walk. Fire-and-forget from the SSE switch. */
+  private async onHello(d: HelloPayload | undefined): Promise<void> {
+    if (!d || typeof d.userId !== 'number') return;
+    // 1. Establish the session — opens the per-user IDB on HELLO's userId (cold start: first open; warm
+    //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
+    //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
+    //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
+    await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.hasUrFriendReq ?? false);
+    // 2. Load the persisted missed-summary cursor (the walk's `from`).
+    await this.loadMissedCursor();
+    // 3. Delta-replay the thread list: full `(0, rev]` on first connect (cursor unseeded → seed 0),
+    //    incremental `(cursor, rev]` on reconnect. The server plans (last-op-wins) + hydrates.
+    if (typeof d.threadRevision === 'number') {
+      if (this.userService.threadRevCursor() === undefined) this.userService.seedThreadRevCursor(0);
+      this.onThreadRevisionUpdated(d.threadRevision);
+    }
+    // 4. Missed-summary walk toward HELLO's newest message (debounced).
     const lm = d.latestMessage;
     if (lm && typeof lm.threadId === 'number' && typeof lm.seq === 'number') {
       this.setToAndPull({ threadId: lm.threadId, seq: lm.seq });
     }
-    if (typeof d.threadRevision === 'number') this.onThreadRevisionUpdated(d.threadRevision);
+    // 6. Re-derive previews from the local message store.
+    void this.hydratePreviews();
   }
 
   /** Set the walk's upper bound `to` + schedule the debounced catch-up walk (a burst of signals collapses). */
@@ -597,6 +653,16 @@ export class ThreadRepository {
    *  `to`). The away-notification renderer reads it as `since` (the boundary before backgrounding). */
   missedCursor(): MissedCursor | null {
     return this._missedCursor();
+  }
+
+  /** Advance the away-HWM to `cursor` (the away-notification dismiss path). The descriptor carries the new
+   *  target = the newest message its summary covered (≥ the current HWM by construction, since the summary
+   *  aggregates messages newer than the HWM), so this is a forward advance — dismissing acknowledges the batch
+   *  so the next background fetch's `since` gates past it (no re-fire for the same messages). No read-watermark
+   *  change (lastReadSeq is untouched). */
+  advanceMissedCursor(cursor: MissedCursor): void {
+    this._missedCursor.set(cursor);
+    this.saveMissedCursor(cursor);
   }
 
   /** Catch up the local message store + previews: walk the `(from, to]` double-boundary range — `from` is the
@@ -612,7 +678,10 @@ export class ThreadRepository {
       let walkedAny = false;
       for (let i = 0; i < ThreadRepository.PULL_MAX_PAGES; i++) {
         const res = await this.missedSync.fetchMissedSummary(from, to);
-        if (res.items.length > 0) walkedAny = true;
+        if (res.items.length > 0) {
+          walkedAny = true;
+          this.mergeSummaryReadState(res.items); // merge the authoritative lastReadSeq (reconciled w/ optimistic)
+        }
         if (!res.hasMore) { from = to; break; } // walked the full (from, to] → caught up to `to`
         if (!res.nextCursor) break;
         from = res.nextCursor; // page max → advance `from`, continue
@@ -629,8 +698,9 @@ export class ThreadRepository {
 
   /**
    * Apply a THREAD_REVISION_UPDATED { revision } signal: pull the ranged delta (cursor, revision] and
-   * merge — DELETE drops the thread locally, ADD fetches the single new thread + inserts with a FLIP.
-   * Single-flight + tail-coalesce: a burst of signals collapses into one ranged pull per in-flight window.
+   * apply the server's hydrated response — DELETE drops the thread locally, ADD carries the hydrated thread
+   * inline + inserts with a FLIP. Single-flight + tail-coalesce: a burst of signals collapses into one
+   * ranged pull per in-flight window. The server plans (last-op-wins) + hydrates; the client only applies.
    */
   onThreadRevisionUpdated(toRev: number): void {
     if (this._deltaInFlight) {
@@ -642,8 +712,8 @@ export class ThreadRepository {
 
   private async pullDelta(toRev: number): Promise<void> {
     const cursor = this.userService.threadRevCursor();
-    // Cursor undefined = boot hasn't seeded yet. Drop the signal — the boot snapshot reflects current
-    // state, and the cursor advances past this signal once seeded.
+    // Cursor undefined = boot hasn't seeded yet. Drop the signal — the HELLO replay reflects current state,
+    // and the cursor advances past this signal once seeded.
     if (cursor === undefined) return;
     if (toRev <= cursor) return; // already applied (our own action echoed back, or a coalesced tail)
     this._deltaInFlight = true;
@@ -652,20 +722,16 @@ export class ThreadRepository {
         this.userService.queryThreadDelta({ fromRevision: cursor, toRevision: toRev }),
       );
       if (res.code === 0) {
-        const plan = planDelta(cursor, toRev, res.data ?? []);
-        for (const id of plan.removeIds) this.removeThread(id);
-        if (plan.addIds.length > 0) {
-          const fetches = plan.addIds.map((id) => {
-            this.markTopOnNextUpdate(id); // precise FLIP — the delta carries the threadId
-            return this.userService.getThreadInfo({ threadId: id }).pipe(
-              map((r) => (r.code === 0 && r.data ? r.data : null)),
-              catchError(() => of(null)), // a failed fetch is skipped, not fatal to the batch
-            );
-          });
-          const items = await firstValueFrom(forkJoin(fetches));
-          for (const item of items) if (item) this.upsertThread(item);
+        // One hydrated response — ADD entries carry the item inline, DELETE entries carry the threadId only.
+        // The server planned (last-op-wins) + hydrated; the client just applies (no second round-trip).
+        for (const op of res.data ?? []) {
+          if (op.direction === 'DELETE') this.removeThread(op.threadId);
+          else {
+            this.markTopOnNextUpdate(op.threadId); // precise FLIP per delta ADD
+            this.upsertThread(op.item);
+          }
         }
-        this.userService.advanceThreadRevCursor(plan.nextCursor);
+        this.userService.advanceThreadRevCursor(toRev);
       }
     } finally {
       this._deltaInFlight = false;
@@ -768,11 +834,16 @@ export class ThreadRepository {
 
 // ── SSE payload shapes (the subset of fields each handler reads) ─────────────────────────────
 
-/** HELLO (SSE connect handshake) payload: the user's newest-message cursor (→ the walk's `to`) + the
- *  friend-list revision (→ a query-thread/delta if the client is stale). Pushed once per connect. */
+/** HELLO (SSE connect handshake) payload — pushed once per connect, the sole boot-critical state the
+ *  client cannot derive locally: the caller's userId (opens the per-user IDB), the newest-message cursor
+ *  (→ the missed-summary walk's `to`), the thread-list revision (→ delta-replay `(0, rev]` on first
+ *  connect), and the self-profile version + friend-request badge (→ gate the /user/my-profile fetch). */
 interface HelloPayload {
+  userId?: number;
   latestMessage?: { threadId: number; seq: number; ts: number } | null;
   threadRevision?: number;
+  profileRev?: number;
+  hasUrFriendReq?: boolean;
 }
 
 interface ThreadMetaPayload {

@@ -8,6 +8,9 @@
  * httpOnly session cookie authenticates) and renders each server-authored descriptor verbatim — the
  * localized title/body, the composited stacked-avatar `icon`, and the `tag`-based replace (one shade entry,
  * never stacks). `Accept-Language` is sent so the body honors the device language. Tap focuses/opens the app.
+ *
+ * The descriptor + action contract is hand-mirrored here; src/notification/notification-descriptor.ts is the
+ * single source of truth — keep in sync when it changes.
  */
 importScripts('./sw-config.js');
 (function () {
@@ -66,10 +69,12 @@ importScripts('./sw-config.js');
     event.notification.close();
     event.waitUntil(
       (async function () {
-        // An action button tap (event.action). Report it back to the server; an inline-reply action
-        // (type:'text') carries the typed text as event.reply. threadIds/threadId/seq come from the
-        // descriptor's data. Best-effort — a failed POST just means the action didn't land.
+        // An action button tap (event.action). `dismiss` is a pure frontend shade-close — the notification is
+        // already closed above, so just return (never POST). Any other action (`reply`, …) reports to the
+        // server; an inline-reply action (type:'text') carries the typed text as event.reply. threadId/seq come
+        // from the descriptor's data. Best-effort — a failed POST just means the action didn't land.
         if (event.action) {
+          if (event.action === 'dismiss') return; // pure frontend — shade already closed
           try {
             await fetch(API_PREFIX + '/notifications/action', {
               method: 'POST',
@@ -78,7 +83,6 @@ importScripts('./sw-config.js');
               body: JSON.stringify({
                 tag: tag,
                 actionId: event.action,
-                threadIds: d.threadIds,
                 threadId: d.threadId,
                 seq: d.seq,
                 replyText: event.reply || undefined,

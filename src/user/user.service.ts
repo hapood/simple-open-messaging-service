@@ -31,7 +31,14 @@ export class UserService implements OnModuleInit {
 
   /** Self-profile only: keeps the hasUrFriendReq badge, omits hashPwd. */
   findSelfProfile(userId: number) {
-    return this.prisma.user.findUnique({ where: { id: userId }, omit: { hashPwd: true } });
+    // threadRevision is omitted — it rides the SSE HELLO handshake (the threadlist's sole delta-replay
+    // cursor), no longer the profile response. profileRev + hasUrFriendReq stay (they ARE the profile's
+    // freshness version + the friend-request badge); HELLO also carries them so the client can skip this
+    // fetch on a warm boot.
+    return this.prisma.user.findUnique({
+      where: { id: userId },
+      omit: { hashPwd: true, threadRevision: true },
+    });
   }
 
   updateUser(params: {

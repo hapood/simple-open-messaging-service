@@ -46,7 +46,8 @@ export class HomeComponent implements OnInit, OnDestroy {
   private readonly subs: Subscription[] = [];
 
   ngOnInit() {
-    this.userService.updateSessionProfile();
+    // The self profile is loaded by the HELLO connect handshake now (UserService.establishSession gates
+    // it on the cached profileRev) — no cold-start profile fetch here.
     // The singleton constructor does not re-run on re-login after logout, so reconnect WS here. (No
     // startup token renew — the session token is long-lived; the interceptor attaches it directly.)
     this.wsService.connect();

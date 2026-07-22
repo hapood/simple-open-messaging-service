@@ -22,6 +22,9 @@ export interface MissedThreadItem {
   unreadCount: number;
   /** Per-user mute flag (the snapshot carries it for parity). */
   muted: boolean;
+  /** The caller's per-thread read watermark (ThreadParticipant.lastReadSeq; null = never read). The
+   *  threadlist merges this with its optimistic value (max) to derive the displayed unread count. */
+  lastReadSeq: number | null;
   /** The sender's avatar URL (P2P peer avatar / GROUP group avatar); '' when none. */
   senderAvatarUrl: string;
   /** The sender's stable id (P2P peer id / GROUP group id). */
@@ -159,12 +162,11 @@ export class NotificationQueryService {
       .map((id) => ({ avatarUrl: userById.get(id)?.avatar ?? '', displayName: name(id), userId: id }));
     const iconUrl =
       iconInputs.length > 0 ? await this.avatarStack.composeStackedAvatar(iconInputs) : null;
-
-    // The HWM cursor: the newest message this summary covers. The away window is open-ended to "now" and we
-    // only get here when it is non-empty, so the user's globally-newest message is always within it — that is
-    // the cursor the client advances its high-water mark to on mark-all-read. The server clears every active
-    // thread (it re-derives the set itself), so this single (threadId, seq) is all the action needs — no
-    // sampled thread list crosses the wire (no truncation at the 1000-sample cap).
+    // The new HWM target: the globally-newest message this summary covered (the upper bound of everything
+    // aggregated above). `dismiss` is PURE frontend — it advances the client's away-HWM to this cursor + closes
+    // the shade, so the next background fetch (`since` = new HWM) doesn't re-fire for these same messages. No
+    // POST, no read-watermark change: lastReadSeq is untouched (the messages stay unread until the user opens
+    // the thread). findNewestForUser is non-null here (counts.size > 0 ⇒ the user has messages).
     const newest = await this.messageService.findNewestForUser(userId);
 
     return {
@@ -177,9 +179,10 @@ export class NotificationQueryService {
           lang: locale,
           icon: iconUrl,
           renotify: true,
-          // One summary-level action: mark every active thread read. One action stays within Web Push's
-          // 2-action mobile-Chrome cap; per-thread reply belongs to a future kind.
-          actions: [{ id: 'mark-all-read', title: actionLabel('mark-all-read', locale) }],
+          // One summary-level action: dismiss (PURE frontend — advances the away-HWM to `data` + closes the
+          // shade; never POSTed, never touches the read watermark). One action stays within Web Push's 2-action
+          // mobile-Chrome cap; per-thread reply belongs to a future kind.
+          actions: [{ id: 'dismiss', title: actionLabel('dismiss', locale) }],
           data: newest ? { threadId: newest.threadId, seq: newest.seq } : {},
         },
       ],
@@ -216,6 +219,7 @@ export class NotificationQueryService {
     active: Array<{
       threadId: number;
       muted: boolean;
+      lastReadSeq: number | null;
       thread: { type: 'P2P' | 'GROUP'; lastMessageSeq: number | null; lastMessageAt: Date | null };
     }>;
     latestIdByThread: Map<number, bigint>;
@@ -266,6 +270,7 @@ export class NotificationQueryService {
     rows: Array<{
       threadId: number;
       muted: boolean;
+      lastReadSeq: number | null;
       thread: {
         type: 'P2P' | 'GROUP';
         lastMessageSeq: number | null;
@@ -302,6 +307,7 @@ export class NotificationQueryService {
         threadId: p.threadId,
         type: p.thread.type,
         muted: p.muted,
+        lastReadSeq: p.lastReadSeq ?? null,
         displayName:
           p.thread.type === 'P2P' ? (peer?.name ?? 'Unknown') : (group?.name ?? 'Unknown'),
         senderAvatarUrl: p.thread.type === 'P2P' ? (peer?.avatar ?? '') : (group?.avatar ?? ''),

@@ -2,6 +2,7 @@ import { Component, ChangeDetectionStrategy, inject, computed } from '@angular/c
 import { DomSanitizer, type SafeUrl } from '@angular/platform-browser';
 import { NotifPopupService } from '../../services/notif-popup.service';
 import { NotificationActionHttp } from '../../services/notif-action.service';
+import { ConversationListService } from '../../services/conversation-list.service';
 import type { NotificationDescriptor, NotifAction } from '../../services/notification-descriptor.model';
 
 /**
@@ -133,6 +134,7 @@ export class NotifPopupComponent {
   readonly popup = inject(NotifPopupService);
   private readonly actionHttp = inject(NotificationActionHttp);
   private readonly sanitizer = inject(DomSanitizer);
+  private readonly convList = inject(ConversationListService);
 
   /** The active popup cards (only non-clear descriptors have a body to show). */
   readonly cards = computed(() => this.popup.popups());
@@ -142,9 +144,21 @@ export class NotifPopupComponent {
     return d.icon ? this.sanitizer.bypassSecurityTrustUrl(d.icon) : null;
   }
 
-  /** Report the action button tap, then dismiss the card (optimistic — the POST is best-effort). */
+  /** Handle an action button tap. `dismiss` is a PURE frontend shade-close (no POST, no read-watermark change);
+   *  any other action (`reply`, …) reports to the backend then dismisses. Routing fields come from the
+   *  descriptor's `data` (empty for the summary's `dismiss`; a future single-message kind carries threadId+seq). */
   onAction(d: NotificationDescriptor, a: NotifAction): void {
-    const report: { tag: string; actionId: string; threadId?: number; seq?: number } = {
+    if (a.id === 'dismiss') {
+      // Pure frontend: advance the away-HWM to the descriptor's cursor (the newest message it covered) so the
+      // next background fetch's `since` gates past these messages (no re-fire), then close the card. No POST,
+      // no read-watermark change.
+      if (d.data?.threadId != null && d.data?.seq != null) {
+        this.convList.advanceMissedCursor({ threadId: d.data.threadId, seq: d.data.seq });
+      }
+      this.popup.dismiss(d.tag);
+      return;
+    }
+    const report: { tag: string; actionId: string; threadId?: number; seq?: number; replyText?: string } = {
       tag: d.tag,
       actionId: a.id,
     };

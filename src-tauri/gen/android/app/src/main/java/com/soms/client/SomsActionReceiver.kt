@@ -3,20 +3,24 @@ package com.soms.client
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * Handles a notification ACTION button tap (mark-all-read / reply) — the Android half of the descriptor
+ * Handles a notification ACTION button tap (dismiss / reply) — the Android half of the descriptor
  * `actions[]` round-trip. Each action's `PendingIntent` (built in [SomsMessagingService.renderDescriptor])
- * targets this receiver, carrying the action id + the descriptor's routing data; an inline-reply action
- * (`type:"text"`) carries the typed text via a [RemoteInput] result.
+ * targets this receiver, carrying the action id + the descriptor's routing data + the notification id the
+ * action lives on; an inline-reply action (`type:"text"`) carries the typed text via a [RemoteInput] result.
+ * `dismiss` is a PURE frontend op — it advances the away-HWM to the descriptor's `{threadId, seq}` cursor
+ * (persisted to [SomsSecureStore], so the next background fetch's `since` gates past these messages) AND
+ * cancels the notification (by the id the action carried), never POSTing and never touching the read
+ * watermark; only `reply` (and future non-dismiss actions) POST to `/notifications/action`.
  *
  * `onReceive` runs on the main thread and must return quickly, so the POST to `/notifications/action` runs
  * on a worker thread under a [goAsync] `PendingResult` (keeps the receiver alive across the network call,
@@ -29,9 +33,20 @@ class SomsActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val actionId = intent.getStringExtra(EXTRA_ACTION_ID) ?: return
         val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
+        val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, SomsMessagingService.AWAY_NOTIF_ID)
+        // `dismiss` is a PURE frontend op: advance the away-HWM to the descriptor's `{threadId, seq}` cursor
+        // (so the next background fetch's `since` gates past these messages — they won't re-fire) AND cancel
+        // THIS notification, by the id the action carried (not a hardcoded one). No POST, no read-watermark
+        // change (lastReadSeq is untouched — the messages stay unread until the user opens the thread).
+        if (actionId == "dismiss") {
+            val tid = intent.getIntExtra(EXTRA_THREAD_ID, -1)
+            val seq = intent.getIntExtra(EXTRA_SEQ, -1)
+            if (tid >= 0 && seq >= 0) SomsSecureStore.setMissedCursor(context, tid, seq)
+            NotificationManagerCompat.from(context).cancel(notifId)
+            return
+        }
         val threadId = intent.getIntExtra(EXTRA_THREAD_ID, -1)
         val seq = intent.getIntExtra(EXTRA_SEQ, -1)
-        val threadIdsJson = intent.getStringExtra(EXTRA_THREAD_IDS)
         // The inline-reply text (present only for a type:"text" action the OS collected input for).
         val replyText = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(KEY_REPLY_TEXT)?.toString()
 
@@ -41,9 +56,9 @@ class SomsActionReceiver : BroadcastReceiver() {
         val body = JSONObject().apply {
             put("tag", tag)
             put("actionId", actionId)
-            if (threadId > 0) put("threadId", threadId)
-            if (seq > 0) put("seq", seq)
-            if (!threadIdsJson.isNullOrEmpty()) put("threadIds", JSONArray(threadIdsJson))
+            // seq may legitimately be 0 (a thread's first message) → guard on the -1 sentinel (>= 0), never > 0.
+            if (threadId >= 0) put("threadId", threadId)
+            if (seq >= 0) put("seq", seq)
             if (!replyText.isNullOrEmpty()) put("replyText", replyText)
         }.toString()
         val request = Request.Builder()
@@ -69,9 +84,9 @@ class SomsActionReceiver : BroadcastReceiver() {
     companion object {
         const val EXTRA_ACTION_ID = "soms_action_id"
         const val EXTRA_TAG = "soms_tag"
+        const val EXTRA_NOTIF_ID = "soms_notif_id"
         const val EXTRA_THREAD_ID = "soms_thread_id"
         const val EXTRA_SEQ = "soms_seq"
-        const val EXTRA_THREAD_IDS = "soms_thread_ids_json"
         /** The RemoteInput result key for an inline-reply action's typed text. */
         const val KEY_REPLY_TEXT = "soms_reply_text"
 

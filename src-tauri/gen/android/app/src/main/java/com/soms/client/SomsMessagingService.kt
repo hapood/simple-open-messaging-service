@@ -105,7 +105,18 @@ class SomsMessagingService : FirebaseMessagingService() {
                 SomsLog.w("Notif") { "fetchDescriptors abort: missing creds (token=${token != null} origin=${origin != null})" }
                 return null
             }
-            val body = JSONObject().put("take", 50).toString()
+            val body = JSONObject().apply {
+                // The away-summary high-water mark (`since`) — the newest message the client accounted for
+                // before the WebView was suspended, persisted by SomsFcm.setMissedCursor. Absent on first-ever
+                // boot → the server returns a `clear` descriptor (nothing new to show). NOTE: no `take` —
+                // /notifications/missed is one-shot (pagination + `take` live on /missed-summary), and MissedDto
+                // runs under forbidNonWhitelisted, so an extra field here is a hard HTTP 400 (it previously
+                // silently broke EVERY Android away-notification path).
+                val cursor = SomsSecureStore.getMissedCursor(ctx)
+                if (cursor != null) {
+                    put("since", JSONObject().put("threadId", cursor.first).put("seq", cursor.second))
+                }
+            }.toString()
             val locale = java.util.Locale.getDefault().toLanguageTag()
             val request = Request.Builder()
                 .url("$origin${SomsSecureStore.API_PREFIX}/notifications/missed")
@@ -223,9 +234,13 @@ class SomsMessagingService : FirebaseMessagingService() {
                 .setContentIntent(pendingIntent)
             if (d.silent == true) builder.setSilent(true)
             if (largeIcon != null) builder.setLargeIcon(largeIcon)
-            // Action buttons (mark-all-read today; a future single-message kind adds reply). Each fires
-            // SomsActionReceiver with the action id + the descriptor's routing data; a type:"text" action
-            // also collects an inline reply via RemoteInput (the OS hands the typed text back to the receiver).
+            // Action buttons (the summary carries a pure-frontend `dismiss`; a future single-message kind adds
+            // `reply`). Each fires SomsActionReceiver with the action id + the descriptor's routing data + the
+            // notification id this action lives on (so dismiss cancels ITS OWN notification, not a hardcoded
+            // one). For `dismiss` the routing data is the new HWM cursor `{threadId, seq}` — the receiver
+            // advances the away-HWM to it + cancels the shade, pure frontend (no POST, no read-watermark
+            // change). A type:"text" action also collects an inline reply via RemoteInput. seq may legitimately
+            // be 0 (a thread's first message) → guard on the -1 sentinel (>= 0), never > 0.
             for ((idx, a) in d.actions.withIndex()) {
                 val pi = PendingIntent.getBroadcast(
                     ctx,
@@ -233,12 +248,11 @@ class SomsMessagingService : FirebaseMessagingService() {
                     Intent(ctx, SomsActionReceiver::class.java).apply {
                         putExtra(SomsActionReceiver.EXTRA_ACTION_ID, a.id)
                         putExtra(SomsActionReceiver.EXTRA_TAG, d.tag)
+                        putExtra(SomsActionReceiver.EXTRA_NOTIF_ID, AWAY_NOTIF_ID)
                         val tid = d.data.optInt("threadId", -1)
-                        if (tid > 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
+                        if (tid >= 0) putExtra(SomsActionReceiver.EXTRA_THREAD_ID, tid)
                         val seq = d.data.optInt("seq", -1)
-                        if (seq > 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
-                        d.data.optJSONArray("threadIds")?.toString()
-                            ?.let { putExtra(SomsActionReceiver.EXTRA_THREAD_IDS, it) }
+                        if (seq >= 0) putExtra(SomsActionReceiver.EXTRA_SEQ, seq)
                     },
                     PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
                 )
@@ -254,14 +268,16 @@ class SomsMessagingService : FirebaseMessagingService() {
             SomsLog.i("Notif") { "notify AWAY posted id=$AWAY_NOTIF_ID" }
         }
 
-        /** Fetch the composited stacked-avatar PNG at `iconUrl` (relative — resolved against the API origin)
-         *  as a Bitmap for `setLargeIcon`. Auth-N only (any logged-in user can fetch any avatar / notif-icon),
-         *  so the session-token Bearer header authorizes. Null on any failure (the notification renders
-         *  without an icon — graceful, never blocks the away-summary). */
+        /** Fetch the composited stacked-avatar PNG at `iconUrl` as a Bitmap for `setLargeIcon`. The icon is
+         *  server-composited (AvatarStackService) and ALWAYS relative to the API origin — resolved here and
+         *  NEVER honored as an absolute URL, so the session Bearer below cannot leak to an arbitrary
+         *  (federated / attacker-controlled) host the server might emit. Auth-N only (any logged-in user can
+         *  fetch any avatar / notif-icon), so the Bearer authorizes. Null on any failure (the notification
+         *  renders without an icon — graceful, never blocks the away-summary). */
         private fun fetchBitmap(ctx: Context, iconUrl: String): android.graphics.Bitmap? {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return null
             val origin = SomsSecureStore.getApiOrigin(ctx) ?: return null
-            val fullUrl = if (iconUrl.startsWith("http")) iconUrl else "$origin$iconUrl"
+            val fullUrl = "$origin$iconUrl"
             val request = Request.Builder()
                 .url(fullUrl)
                 .get()

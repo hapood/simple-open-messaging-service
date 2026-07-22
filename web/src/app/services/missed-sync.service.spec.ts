@@ -45,8 +45,8 @@ describe('MissedSyncService', () => {
       code: 0, message: 'ok',
       data: {
         items: [
-          { threadId: 1, type: 'P2P', displayName: 'Alice', unreadCount: 2, muted: false, senderAvatarUrl: '', senderUserId: 11, latestMessage: body(1, 5, 'hi') },
-          { threadId: 2, type: 'GROUP', displayName: 'Team', unreadCount: 1, muted: true, senderAvatarUrl: '', senderUserId: 22, latestMessage: body(2, 3, 'yo') },
+          { threadId: 1, type: 'P2P', displayName: 'Alice', unreadCount: 2, muted: false, lastReadSeq: 3, senderAvatarUrl: '', senderUserId: 11, latestMessage: body(1, 5, 'hi') },
+          { threadId: 2, type: 'GROUP', displayName: 'Team', unreadCount: 1, muted: true, lastReadSeq: 2, senderAvatarUrl: '', senderUserId: 22, latestMessage: body(2, 3, 'yo') },
         ],
         hasMore: false,
         nextCursor: { threadId: 2, seq: 3 },

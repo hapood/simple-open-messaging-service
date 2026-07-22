@@ -296,7 +296,6 @@
     "menuUnmute": "取消静音",
     "menuPin": "置顶",
     "menuUnpin": "取消置顶",
-    "menuMarkRead": "标为已读",
     "menuClearHistory": "清空消息",
     "clearConfirmTitle": "清空全部消息？",
     "clearConfirmBody": "将清空此聊天中的所有消息。此操作无法撤销。",

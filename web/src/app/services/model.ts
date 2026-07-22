@@ -48,6 +48,10 @@ export type ConversationItem = Omit<
   // "You:" prefix for the sender's own messages; the bare preview otherwise.
   lastMessagePreview?: string | null
   lastMessageSenderId?: number | null
+  // The newest message's per-thread seq (the denormalized thread.lastMessageSeq). Carried so opening a
+  // conversation can pass it as the mark-read `lastReadSeq` (mark all current). Mirrors the backend
+  // ConversationItemDto.lastMessageSeq — also present in the generated type after the next `gen:api` run.
+  lastMessageSeq?: number | null
 }
 
 /**
@@ -79,7 +83,6 @@ export type Invite = S['InviteDto']
 export type InviteDetail = S['InviteDetailDto']
 
 export type QueryMessageLogParams = S['QueryMessagesDto']
-export type QueryUserThreadParams = S['QueryValidThreadDto']
 export type MessageThreadType = S['ConversationItemDto']['type']
 
 // Envelope generic (the generated ApiResult.data is unknown and cannot replace this)

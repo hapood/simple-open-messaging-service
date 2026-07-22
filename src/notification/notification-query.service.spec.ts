@@ -163,6 +163,7 @@ describe('NotificationQueryService', () => {
     overflow?: boolean;
     blocked?: number[];
     senders?: Array<{ id: number; name: string; avatar: string }>;
+    /** The new HWM target the descriptor's `data` carries (the global newest covered message). */
     newest?: { threadId: number; seq: number; ts: number } | null;
   }) {
     participants.mockResolvedValue([]);
@@ -174,7 +175,7 @@ describe('NotificationQueryService', () => {
       overflow: opts.overflow ?? false,
     });
     queryUsers.mockResolvedValue(opts.senders ?? []);
-    // The descriptor's HWM cursor (findNewestForUser); default to a deterministic (threadId, seq).
+    // findNewestForUser → the new HWM cursor the dismiss action advances to (default deterministic).
     findNewest.mockResolvedValue(opts.newest === undefined ? { threadId: 2, seq: 9, ts: 0 } : opts.newest);
   }
 
@@ -194,7 +195,6 @@ describe('NotificationQueryService', () => {
   it('buildNotifyResponse: folds senders + total count into the body + feeds the icon', async () => {
     wireAway({
       counts: new Map([[11, 2], [22, 3]]),
-      threadIds: [1, 2],
       senders: [{ id: 11, name: 'Alice', avatar: '/a.webp' }, { id: 22, name: 'Bob', avatar: '/b.webp' }],
     });
     const res = await svc.buildNotifyResponse(1, { since: { threadId: 1, seq: 5 }, acceptLanguage: 'en' });
@@ -202,7 +202,8 @@ describe('NotificationQueryService', () => {
     expect(d.kind).toBe('message-summary');
     expect(d.body).toBe('Alice, Bob sent you 5 messages');
     expect(d.icon).toBe('/uploads/notif-icons/abc.png');
-    // The descriptor carries the HWM cursor (the newest covered message), not a sampled thread list.
+    // The `dismiss` action is pure frontend — `data` carries the new HWM target (the global newest covered
+    // message), which the client advances its away-HWM to on dismiss (no POST, no read-watermark change).
     expect(d.data).toEqual({ threadId: 2, seq: 9 });
     expect(composeStack).toHaveBeenCalledWith([
       { avatarUrl: '/a.webp', displayName: 'Alice', userId: 11 },

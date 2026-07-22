@@ -124,14 +124,12 @@ export function buildSummaryTitle(locale: SupportedLocale): string {
  *  action is introduced. */
 const ACTION_LABELS: Record<SupportedLocale, Record<string, string>> = {
   'en': {
-    'mark-all-read': 'Mark all read',
+    dismiss: 'Dismiss',
     reply: 'Reply',
-    mute: 'Mute',
   },
   'zh-CN': {
-    'mark-all-read': '全部标为已读',
+    dismiss: '忽略',
     reply: '回复',
-    mute: '静音',
   },
 };
 

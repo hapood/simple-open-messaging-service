@@ -117,7 +117,6 @@ export class MessageHeaderComponent {
       { kind: 'action', key: 'viewInfo', labelKey: isP2P ? 'chat.menuViewInfo' : 'group.title', icon: AppIconType.EYE },
       { kind: 'action', key: 'search', labelKey: 'chat.menuSearch', icon: AppIconType.SEARCH },
       { kind: 'divider' },
-      { kind: 'action', key: 'markRead', labelKey: 'chat.menuMarkRead', icon: AppIconType.CHECK },
       {
         kind: 'action',
         key: 'mute',
@@ -227,15 +226,6 @@ export class MessageHeaderComponent {
         return;
       case 'search':
         this.nav.openSearch();
-        return;
-      case 'markRead':
-        // Force mark-read + clear the local unread badge even on the currently-open thread (convList.open
-        // no-ops when already open, so call the service directly). The READ_CURSOR echo syncs other tabs.
-        // Fire-and-forget: swallow a 429/network failure so it never surfaces as an uncaught
-        // HttpErrorResponse — the cursor converges via the READ_CURSOR echo on the next successful call.
-        this.userService
-          .markRead({ threadId })
-          .subscribe({ error: () => {} });
         return;
       case 'mute':
         this.toggleMute(threadId, trd.muted);

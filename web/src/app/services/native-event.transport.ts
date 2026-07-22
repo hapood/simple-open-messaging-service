@@ -100,4 +100,13 @@ export class NativeEventTransport extends RealtimeTransport {
     this.sink.onReconnectIn(null);
     window.SomsFcm!.retryNow();
   }
+
+  /** Force-reconnect the native stream (the HELLO-timeout path). Unlike {@link retryNow} (which only
+   *  cancels pending backoff — a no-op against an already-open stream), this asks Kotlin to CANCEL the open
+   *  EventSource and reopen it, because JS cannot close the native socket. The reopen re-pushes HELLO on the
+   *  fresh connection. (Default `stop()+start()` is wrong here — it only detaches + re-attaches the JS hooks
+   *  and leaves the Kotlin stream untouched.) */
+  override forceReconnect(): void {
+    window.SomsFcm!.forceReconnect();
+  }
 }

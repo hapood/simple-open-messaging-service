@@ -17,14 +17,14 @@ import { seedUser, seedSession } from './seed';
  *    descriptor; `since` absent / nothing new → a `clear` descriptor.
  *
  * The BigInt message `id` is NEVER exposed — only per-thread `seq` + time. Three P2P threads seeded in
- * insertion order (Alice → Bob → Carol; Alice muted) so message ids strictly increase → deterministic.
+ * insertion order (Alice → Bob → Carol) so message ids strictly increase → deterministic.
  */
 describe('notifications/missed-summary + notifications/missed', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let sessionToken: string;
   let recipientId: number;
-  let tAlice: number; // muted
+  let tAlice: number;
   let tBob: number;
   let tCarol: number;
   const base = Date.UTC(2026, 0, 1);
@@ -47,13 +47,13 @@ describe('notifications/missed-summary + notifications/missed', () => {
     const recipient = await seedUser(app, 'recip', { name: 'Recip' });
     recipientId = recipient.id;
     sessionToken = await seedSession(app, recipientId, 'app');
-    tAlice = await seedThread({ name: 'Alice', muted: true });
+    tAlice = await seedThread({ name: 'Alice' });
     tBob = await seedThread({ name: 'Bob' });
     tCarol = await seedThread({ name: 'Carol' });
   });
 
-  /** Seed one P2P thread: 3 messages (seq 0..2) from a fresh peer; the recipient is muted when asked. */
-  async function seedThread(opts: { name: string; muted?: boolean }): Promise<number> {
+  /** Seed one P2P thread: 3 messages (seq 0..2) from a fresh peer. */
+  async function seedThread(opts: { name: string }): Promise<number> {
     const peer = await prisma.user.create({
       data: { account: opts.name.toLowerCase(), hashPwd: 'x', name: opts.name, isForeigner: false },
     });
@@ -62,7 +62,7 @@ describe('notifications/missed-summary + notifications/missed', () => {
     });
     await prisma.threadParticipant.createMany({
       data: [
-        { userId: recipientId, threadId: thread.id, muted: opts.muted === true },
+        { userId: recipientId, threadId: thread.id },
         { userId: peer.id, threadId: thread.id },
       ],
     });
@@ -137,7 +137,8 @@ describe('notifications/missed-summary + notifications/missed', () => {
     expect(d.kind).toBe('message-summary');
     expect(d.body).toBe('Alice, Bob +1 sent you 8 messages');
     expect(d.lang).toBe('en');
-    // The descriptor carries the HWM cursor (the newest covered message = Carol's seq-2), not a thread list.
+    // `dismiss` is pure frontend — `data` is the new HWM target (the global newest covered message = Carol's
+    // seq 2, the last seeded). The client advances its away-HWM to it on dismiss (no POST, no read change).
     expect(d.data).toEqual({ threadId: tCarol, seq: 2 });
     expect(d.icon === null || /^\/uploads\/notif-icons\/[0-9a-f]+\.png$/.test(d.icon)).toBe(true);
   });
@@ -156,6 +157,16 @@ describe('notifications/missed-summary + notifications/missed', () => {
     await prisma.userBlock.create({ data: { blockerId: recipientId, blockedId: carolPeer!.userId } });
     const res = await postMissed({ since: { threadId: tAlice, seq: 0 } }, { 'Accept-Language': 'en' });
     expect(res.body.data.notifications[0].body).toBe('Alice, Bob sent you 5 messages');
+  });
+
+  it('missed: a muted thread is excluded from the aggregation', async () => {
+    // Mute Bob's thread → Bob's 3 messages drop out: Alice 1,2 + Carol 0,1,2 = 5, 2 senders.
+    await prisma.threadParticipant.updateMany({
+      where: { userId: recipientId, threadId: tBob },
+      data: { muted: true },
+    });
+    const res = await postMissed({ since: { threadId: tAlice, seq: 0 } }, { 'Accept-Language': 'en' });
+    expect(res.body.data.notifications[0].body).toBe('Alice, Carol sent you 5 messages');
   });
 
   it('missed: HWM at the global newest → nothing new → clear', async () => {

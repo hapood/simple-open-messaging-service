@@ -296,7 +296,6 @@
     "menuUnmute": "Unmute notifications",
     "menuPin": "Pin",
     "menuUnpin": "Unpin",
-    "menuMarkRead": "Mark as read",
     "menuClearHistory": "Clear messages",
     "clearConfirmTitle": "Clear all messages?",
     "clearConfirmBody": "All messages in this chat will be cleared from this device. This can't be undone.",

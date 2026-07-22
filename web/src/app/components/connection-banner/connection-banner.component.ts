@@ -345,14 +345,11 @@ export class ConnectionBannerComponent implements OnDestroy {
   /** The chip button, populated by the `@if` once show() turns truthy. Motion drives its children. */
   private readonly chipRef = viewChild<ElementRef<HTMLButtonElement>>('chip');
 
-  /** The detail-text span. Its scrollWidth is measured to drive the expanded pill width (see measureText). */
+  /** The detail-text span. Its scrollWidth is measured to drive the expanded pill width (see afterRenderEffect). */
   private readonly textRef = viewChild<ElementRef<HTMLSpanElement>>('text');
 
   /** Active Motion controls — stopped before each morph so transitions never overlap/fight. */
   private controls: AnimationPlaybackControls[] = [];
-
-  /** Lazily-created Canvas 2D context used to measure label widths via TextMetrics (see afterRenderEffect). */
-  private measureCtx: CanvasRenderingContext2D | null | undefined;
 
   /** Per-state idle spin period (ms). Reconnecting spins faster (urgency); connecting is a calm scan. */
   readonly spinDur = computed(() => this.effState() === 'reconnecting' ? 900 : 1600);
@@ -463,20 +460,22 @@ export class ConnectionBannerComponent implements OnDestroy {
        --text-w on the chip. The .text column transitions its `width` to var(--text-w), so the pill sizes to
        the real label AND a label swap animates width old → new instead of snapping (content width itself
        can't be transitioned — that snap was the glitch).
-       Measurement uses Canvas TextMetrics, NOT el.scrollWidth: scrollWidth reflects browser layout, which
-       lagged the {{label()}} DOM update by a frame even inside afterRenderEffect (forcing reflow didn't help)
-       — so a label change read the PREVIOUS label's width. Canvas measureText computes the width from the
-       font metrics directly, with no layout dependency, so it's correct the instant the textContent updates.
-       +2px keeps sub-pixel rounding from clipping the last glyph. */
+       Measurement reads el.scrollWidth — REAL layout, not Canvas TextMetrics. The label is CJK in zh-CN
+       ("连接中断——{{s}}秒后重连…"), and the page font stack is Latin-only (-apple-system, …, sans-serif), so
+       CJK glyphs render via the OS's implicit fallback font. Canvas measureText is handed that Latin
+       font-family (via getComputedStyle().font) and — on the WebViews this app targets — does NOT reconcile
+       the DOM's CJK fallback, so it under-measures each CJK advance; across ~10 glyphs the cumulative
+       shortfall beat the old +2px buffer and the trailing "重连…" was clipped by .chip/.text overflow:hidden.
+       scrollWidth is produced by the same layout pass that paints the glyphs (fallback font included), so it
+       matches what is rendered; reading it forces a synchronous reflow, so there's no frame lag. Because
+       .text is white-space:nowrap + overflow:hidden, scrollWidth is its full natural content width regardless
+       of the column's own (transitioning, 0↔--text-w) width. +2px guards the integer-rounding seam. */
     afterRenderEffect(() => {
       this.label(); // track: re-measure on any state/language change (and every countdown tick)
       const textEl = this.textRef()?.nativeElement;
       const chipEl = this.chipRef()?.nativeElement;
       if (!textEl || !chipEl) return;
-      const ctx = this.measureCtx ??= document.createElement('canvas').getContext('2d');
-      if (!ctx) return;
-      ctx.font = getComputedStyle(textEl).font;
-      const w = Math.ceil(ctx.measureText(textEl.textContent ?? '').width) + 2;
+      const w = textEl.scrollWidth + 2;
       if (w > 2) chipEl.style.setProperty('--text-w', `${w}px`);
     });
   }

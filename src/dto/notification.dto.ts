@@ -90,10 +90,11 @@ const MAX_REPLY_TEXT = 2000;
 /**
  * Input for POST /notifications/action — the client reports a notification button tap (or an inline reply)
  * back to the server. The `tag` identifies which notification's action fired (the away-summary's is
- * `'soms-away'`); `actionId` selects the handler. `mark-all-read` carries the descriptor's HWM cursor
- * `(threadId, seq)` — the newest message the summary covered; the server resolves it to a global id and marks
- * every active thread read up to that ceiling. `reply` carries a single `threadId` + `replyText`. Body-tap is
- * reported as `actionId:'open'` (telemetry only — the client opens the thread itself).
+ * `'soms-away'`); `actionId` selects the handler. Only `reply` reaches the backend (a single `threadId` +
+ * `replyText`). The away-summary's `dismiss` button is a PURE frontend op — the client just closes the shade
+ * and never POSTs; the backend does not advance the read watermark on the shade's behalf (that happens on
+ * `POST /thread/mark-read` when the user opens a thread). Body-tap is reported as `actionId:'open'`
+ * (telemetry only — the client opens the thread itself).
  */
 export class ReportActionDto {
   @ApiProperty({ description: "The notification's tag (which notification's action fired)." })
@@ -101,23 +102,17 @@ export class ReportActionDto {
   @IsNotEmpty()
   tag!: string;
 
-  @ApiProperty({ description: "The action id ('mark-all-read' | 'reply' | 'open' | …)." })
+  @ApiProperty({ description: "The action id ('reply' | 'open' | …; 'dismiss' is handled client-side)." })
   @IsString()
   @IsNotEmpty()
   actionId!: string;
 
-  @ApiProperty({
-    required: false,
-    description: 'mark-all-read: the HWM cursor threadId (the summary’s newest message); reply: the target thread.',
-  })
+  @ApiProperty({ required: false, description: 'reply: the target thread.' })
   @IsInt()
   @IsOptional()
   threadId?: number;
 
-  @ApiProperty({
-    required: false,
-    description: 'mark-all-read: the HWM cursor seq; reply: the target message seq (routing).',
-  })
+  @ApiProperty({ required: false, description: 'reply: the target message seq (routing).' })
   @IsInt()
   @IsOptional()
   seq?: number;
