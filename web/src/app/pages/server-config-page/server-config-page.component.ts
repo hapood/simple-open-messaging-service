@@ -18,10 +18,12 @@ import { ConfigService } from '../../services/config.service';
 import { PushService } from '../../services/push.service';
 import {
   apiOrigin,
+  apiOriginSecondary,
   canonicalOrigin,
   listenEvent,
   originIsInsecure,
   setApiOrigin,
+  setApiOriginSecondary,
   tauriInvoke,
 } from '../../services/runtime';
 import { RouteService, RoutePage } from '../../services/route.service';
@@ -79,6 +81,17 @@ export class ServerConfigPageComponent {
     // user is guided inline instead of sending a bare host to Rust and getting an opaque failure.
     validators: [Validators.required, Validators.pattern(/^https?:\/\//i)],
   });
+  /** Optional LAN (secondary) origin — field-2. Symmetric with `url`: the user may enter EITHER; the other
+   *  is auto-filled from `/shell/compat` (primaryOrigin/lanOrigin) and confirmed via a modal. Empty ⇒ no
+   *  fallback configured. Seeded from the persisted secondary the same way `url` is seeded from the primary. */
+  readonly lanUrl = new FormControl(apiOriginSecondary() ?? '', {
+    nonNullable: true,
+    // Optional: empty OR a full http(s) URL. No `required` — the field-2 fallback is opt-in.
+    validators: [Validators.pattern(/^https?:\/\/|^$/i)],
+  });
+  /** Pending auto-fill confirmation: `{primary, lan, reachable}`. Non-null ⇒ the modal is shown. The field
+   *  values are already populated (the user sees what was filled); confirm → finalize, cancel → stay. */
+  readonly autoFill = signal<{ primary: string; lan: string | null; reachable: string } | null>(null);
   readonly phase = signal<Phase>('form');
   /** The live origin value the insecure-warning reacts to (separate from the control so the warning can
    *  show before the control is considered touched). */
@@ -162,71 +175,141 @@ export class ServerConfigPageComponent {
    *  the form stays mounted for an edit-and-retry (no reflow). */
   async save(event?: Event): Promise<void> {
     event?.preventDefault();
-    // A connect flow is in flight — ignore re-submits (Enter) that would race it on setApiOrigin + redirect.
-    if (this.busy()) return;
-    const raw = canonicalOrigin(this.url.value);
-    if (!raw) {
+    // A connect flow is in flight OR the modal is up — ignore re-submits (Enter) that would race it.
+    if (this.busy() || this.autoFill()) return;
+    const primaryRaw = this.url.value.trim() ? canonicalOrigin(this.url.value) : null;
+    const lanRaw = this.lanUrl.value.trim() ? canonicalOrigin(this.lanUrl.value) : null;
+    if (!primaryRaw && !lanRaw) {
       this.url.markAsTouched();
       return;
     }
     try {
       this.phase.set('compat');
-      await tauriInvoke('init_check_compat', { origin: raw });
-      this.phase.set('cert');
-      await tauriInvoke('init_validate_cert', { origin: raw });
+      // Validate each entered origin (compat + cert); only ONE need pass — on the LAN the public origin is
+      // unreachable (no hairpin NAT), and vice-versa on the WAN. Capture the last error so a total failure
+      // still surfaces a specific message (addr / compat / cert) instead of a generic one.
+      let validated: { origin: string; primary?: string | null; lan?: string | null } | null = null;
+      let lastErr: unknown = null;
+      if (primaryRaw) {
+        const r = await this.probe(primaryRaw);
+        if (r.ok) validated = { origin: primaryRaw, primary: r.primary, lan: r.lan };
+        else lastErr = r.error;
+      }
+      if (!validated && lanRaw) {
+        const r = await this.probe(lanRaw);
+        if (r.ok) validated = { origin: lanRaw, primary: r.primary, lan: r.lan };
+        else lastErr = r.error;
+      }
+      if (!validated) {
+        this.fail(lastErr);
+        return;
+      }
+      // Resolve the canonical pair: what the user entered wins; the other is auto-filled from the server's
+      // advertised origins (same backend). `primary` is always required (federation identity + the config
+      // guard) — Part B guarantees primaryOrigin is always present in /shell/compat.
+      const primary = primaryRaw ?? validated.primary ?? null;
+      const lan = lanRaw ?? validated.lan ?? null;
+      if (!primary) {
+        this.fail(new Error('address: server did not advertise a primary origin'));
+        return;
+      }
+      const filledPrimary = !primaryRaw && primaryRaw !== primary;
+      const filledLan = !lanRaw && !!lan;
+      if (filledPrimary) this.url.setValue(primary);
+      if (filledLan && lan) this.lanUrl.setValue(lan);
+      // If anything was auto-filled from the server's advertisement, confirm via the modal before trusting
+      // it as a connection target (HTTPS-only; the user explicitly confirms). Otherwise proceed directly.
+      if (filledPrimary || filledLan) {
+        this.phase.set('form');
+        this.autoFill.set({ primary, lan, reachable: validated.origin });
+        return;
+      }
+      await this.finalize(primary, lan, validated.origin);
+    } catch (e) {
+      this.fail(e);
+    }
+  }
 
-      // Compare the installed web bundle's hash to the server's manifest. `init_update_status` returns
-      // `webUpdateAvailable` = (serverHash != installedHash); on a first run there is no installed hash yet,
-      // so the fresh bundle is pulled as part of connecting — the previous design deferred this to a manual
-      // Settings→About step. A failed probe (offline / manifest missing) resolves to false → skip the
-      // download and proceed in-page; the launch-time About probe catches it later.
+  /** Run compat + cert at `origin`. Returns the compat body (primaryOrigin/lanOrigin for auto-fill) on
+   *  success, or the captured error on failure (the caller tries the other origin / surfaces it). */
+  private async probe(
+    origin: string,
+  ): Promise<{ ok: true; primary?: string | null; lan?: string | null } | { ok: false; error: unknown }> {
+    try {
+      const compat = await tauriInvoke<{ primaryOrigin?: string | null; lanOrigin?: string | null }>(
+        'init_check_compat',
+        { origin },
+      );
+      this.phase.set('cert');
+      await tauriInvoke('init_validate_cert', { origin });
+      return { ok: true, primary: compat.primaryOrigin, lan: compat.lanOrigin };
+    } catch (e) {
+      return { ok: false, error: e };
+    }
+  }
+
+  /** Persist both origins + run the OTA hash check + reload/redirect. `reachable` is an origin that just
+   *  validated (used for the bundle probe — same backend ⇒ same hash regardless of which). */
+  private async finalize(primary: string, lan: string | null, reachable: string): Promise<void> {
+    try {
+      // Compare the installed web bundle's hash to the server's manifest. On a first run there is no
+      // installed hash yet, so the fresh bundle is pulled as part of connecting. A failed probe resolves to
+      // false → skip + proceed in-page; the launch-time About probe catches it later.
       const status = await tauriInvoke<{ webUpdateAvailable: boolean }>('init_update_status', {
-        origin: raw,
+        origin: reachable,
       });
       if (status?.webUpdateAvailable) {
         this.phase.set('download');
         this.downloadReceived.set(0);
         this.downloadTotal.set(null);
-        // `init_download_web` streams + sha256-verifies + extracts + swaps the served assets AND persists
-        // the origin (Rust). `setApiOrigin` then syncs the live `apiOrigin` signal + secureStore so the
-        // mandatory reload below seeds the origin correctly. The reload is required: the running SPA is the
-        // OLD build, so only a reload surfaces the freshly-installed bundle (refreshFirebase + config.reload
-        // are skipped — the new bundle's own init re-runs them against the now-persisted origin).
-        await tauriInvoke('init_download_web', { origin: raw });
-        await setApiOrigin(raw);
+        // init_download_web streams + sha256-verifies + extracts + swaps the served assets. setApiOrigin +
+        // setApiOriginSecondary sync the live signals + secureStore so the mandatory reload seeds both. The
+        // reload is required: the running SPA is the OLD build, so only a reload surfaces the new bundle.
+        await tauriInvoke('init_download_web', { origin: reachable });
+        await setApiOrigin(primary);
+        await setApiOriginSecondary(lan);
         this.phase.set('done');
         location.reload();
         return;
       }
-
-      // Up to date (or probe skipped): persist the origin and proceed in-page to login. setApiOrigin throws
-      // outside Tauri, but this page is only reachable under the Tauri shell (canMatch in the route).
-      await setApiOrigin(raw);
-      // The new server may publish a different Firebase project (or none) — re-sync the native FCM client
-      // config so the Android shell re-binds FirebaseApp before login. Fire-and-forget: best-effort, never
-      // blocks the redirect, self-gates to Android. (A reconfigure mints a new token that the existing
-      // __SOMS_FCM_TOKEN__ → register() pipe will POST to the new origin, pre-login 401 retried on onLogin.)
+      // Up to date (or probe skipped): persist both origins and proceed in-page to login.
+      await setApiOrigin(primary);
+      await setApiOriginSecondary(lan);
+      // The new server may publish a different Firebase project — re-sync the native FCM client (Android).
+      // The backend changed → invalidate the cached /config so login re-fetches loginMode/registrationOpen.
       void this.push.refreshFirebaseConfig();
-      // The backend changed → invalidate the cached /config so the login page re-fetches loginMode /
-      // registrationOpen against the NEW backend. ensureLoaded would otherwise return the stale settled
-      // promise for the whole session. Fired before the redirect so the login page's own ensureLoaded()
-      // shares this fresh in-flight promise the instant it mounts.
       void this.config.reload();
       this.phase.set('done');
-      // replaceUrl keeps auth-flow history flat — first-run has nowhere legitimate to go back to.
       this.route.redirect(RoutePage.AUTH_LOGIN);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error('server-config connect failed', msg);
-      // Friendly category message as a bottom toast (Material MatSnackBar); the raw detail is logged
-      // above for debugging. The form stays on 'form' so the user can edit + retry with no layout swap.
-      this.snackBar.open(
-        this.transloco.translate(this.errorKeyFor(e)),
-        this.transloco.translate('common.ok'),
-        { duration: 6000, horizontalPosition: 'center', verticalPosition: 'bottom' },
-      );
-      this.phase.set('form');
+      this.fail(e);
     }
+  }
+
+  /** Modal confirm → finalize with the auto-filled pair. */
+  async confirmAutoFill(): Promise<void> {
+    const af = this.autoFill();
+    if (!af) return;
+    this.autoFill.set(null);
+    await this.finalize(af.primary, af.lan, af.reachable);
+  }
+
+  /** Modal cancel → stay on the form (the fields keep the auto-filled values for the user to edit). */
+  cancelAutoFill(): void {
+    this.autoFill.set(null);
+    this.phase.set('form');
+  }
+
+  /** Surface a connect/OTA failure as a categorized toast + reset to the form for an edit-and-retry. */
+  private fail(e: unknown): void {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error('server-config connect failed', msg);
+    this.snackBar.open(
+      this.transloco.translate(this.errorKeyFor(e)),
+      this.transloco.translate('common.ok'),
+      { duration: 6000, horizontalPosition: 'center', verticalPosition: 'bottom' },
+    );
+    this.phase.set('form');
   }
 
   /** Map the failing step → the matching i18n error key (the step that threw is the current phase). */

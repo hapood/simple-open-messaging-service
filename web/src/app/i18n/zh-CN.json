@@ -543,6 +543,12 @@
   "downloadErr": "已连接到服务器，但 Web 更新下载失败或未通过完整性校验，请检查连接后重试。",
     "connectErr": "连接失败，请检查地址后重试。",
     "exitHint": "再按一次返回键退出。",
-    "backToApp": "返回应用"
+    "backToApp": "返回应用",
+    "lanLabel": "内网服务器（可选）",
+    "lanPlaceholder": "https://soms-lan.example.com:7667",
+    "cantValidateBoth": "无法同时验证内外网服务器，请自行保证另一服务器地址正确。",
+    "autoFillDetected": "已自动填写对应的服务器地址，是否使用？",
+    "autoFillUse": "使用",
+    "autoFillEdit": "编辑"
   }
 }

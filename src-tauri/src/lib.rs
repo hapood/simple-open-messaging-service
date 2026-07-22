@@ -2257,6 +2257,13 @@ struct ApiEnvelope<T> {
 struct CompatData {
     #[serde(rename = "serverVersion")]
     server_version: String,
+    /// The server's canonical PRIMARY origin (advertised for the shell's symmetric auto-fill). Optional —
+    /// older servers don't advertise it. See src/shell/shell.service.ts compat() + src/common/origin.ts.
+    #[serde(rename = "primaryOrigin", default)]
+    primary_origin: Option<String>,
+    /// The server's LAN (secondary) origin, when SOMS_LAN_DOMAIN is configured. Optional.
+    #[serde(rename = "lanOrigin", default)]
+    lan_origin: Option<String>,
 }
 
 /// Fetch the server's reported version from `/shell/compat`. The server carries no shell floor — it only
@@ -2287,6 +2294,32 @@ async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<
     Ok(env.data.map(|d| d.server_version.trim().to_string()).unwrap_or_default())
 }
 
+/// Fetch the FULL `/shell/compat` body (version + the advertised client origins), for `init_check_compat`
+/// to surface `primaryOrigin`/`lanOrigin` to the shell's symmetric auto-fill. Errors tagged `address:`
+/// (parity with `fetch_server_version`, which stays the minimal version-only path the download +
+/// update-status probes use).
+async fn fetch_compat(client: &reqwest::Client, origin: &str) -> Result<CompatData, String> {
+    let base = origin.trim_end_matches('/');
+    let resp = client
+        .get(format!("{base}/api/v1/shell/compat"))
+        .send()
+        .await
+        .map_err(|e| format!("address: could not reach server: {e}"))?;
+    let env: ApiEnvelope<CompatData> = serde_json::from_str(
+        &resp.text()
+            .await
+            .map_err(|e| format!("address: could not read server response: {e}"))?,
+    )
+    .map_err(|e| format!("address: invalid server response (not a SOMS backend?): {e}"))?;
+    if env.code != 0 {
+        return Err(format!(
+            "address: server returned code {} (not a SOMS backend?)",
+            env.code
+        ));
+    }
+    env.data.ok_or_else(|| "address: server did not report a version".to_string())
+}
+
 /// Step 1: `GET /api/v1/shell/compat` — the server reports its version; THIS shell decides compatibility
 /// (it carries the upper bound `COMPAT_BACKEND_MAX`). Hard-blocks (returns Err) when the server is too
 /// new for this shell. The wizard's `errorKeyFor` maps the error text to `sc.compatErr` via the
@@ -2294,7 +2327,8 @@ async fn fetch_server_version(client: &reqwest::Client, origin: &str) -> Result<
 #[tauri::command]
 async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> {
     let client = http_client_for(&origin);
-    let server_version = fetch_server_version(&client, &origin).await?;
+    let compat = fetch_compat(&client, &origin).await?;
+    let server_version = compat.server_version.trim().to_string();
     if server_version.is_empty() {
         return Err("address: server did not report a version".to_string());
     }
@@ -2304,7 +2338,14 @@ async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> 
             "this app (shell {SHELL_VERSION}) is not compatible with server version {server_version} (this app supports servers below {COMPAT_BACKEND_MAX})"
         ));
     }
-    Ok(serde_json::json!({ "compatible": true, "serverVersion": server_version }))
+    // Surface the server's advertised origins so the shell can symmetrically auto-fill the field the user
+    // didn't enter (the user types one; /shell/compat supplies the other; a modal confirms before trust).
+    Ok(serde_json::json!({
+        "compatible": true,
+        "serverVersion": server_version,
+        "primaryOrigin": compat.primary_origin,
+        "lanOrigin": compat.lan_origin,
+    }))
 }
 
 /// Step 2: verify the TLS certificate is valid. HTTPS + DNS host → strict probe of `/api/v1/health`

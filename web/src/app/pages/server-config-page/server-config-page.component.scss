@@ -149,3 +149,55 @@
   line-height: 18px;
   z-index: 50;
 }
+
+// The "can't validate both servers at once" guidance under the LAN field — small + faded, reads as a hint
+// not an error. Integer-px vertical metrics per the project CSS rule.
+.cfg-note {
+  margin: -4px 0 12px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--app-text-secondary);
+  opacity: 0.85;
+  text-align: left;
+}
+
+// --- Auto-fill confirmation modal. Srim covers the page; the dialog is centered. z-index 1000 (the modal
+// tier) sits above the progress overlays (45) and the toast (50).
+.cfg-modal-scrim {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+}
+
+.cfg-modal {
+  width: 100%;
+  max-width: 360px;
+  padding: 24px;
+  border-radius: 16px;
+  background: var(--app-surface);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+
+  &__body {
+    margin: 0 0 20px;
+    font-size: 15px;
+    line-height: 22px;
+    color: var(--app-text);
+    text-align: center;
+  }
+
+  &__actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+  }
+}

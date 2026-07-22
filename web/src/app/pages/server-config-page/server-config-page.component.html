@@ -38,8 +38,6 @@
         [formControl]="url"
         [placeholder]="'serverConfig.placeholder' | transloco"
       />
-      <!-- Mutually exclusive (invalid ⟺ empty; insecure needs a value) and both kept to one short
-        line, so the reserved subscript slot never grows → the Connect button never shifts. -->
       @if (url.invalid && url.touched) {
         <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
       } @else if (insecure() && url.value.trim()) {
@@ -47,12 +45,34 @@
       }
     </mat-form-field>
 
+    <!-- Optional LAN (secondary) origin — field-2. The user may enter EITHER field; the other is
+      auto-filled from /shell/compat and confirmed via the modal below. -->
+    <mat-form-field appearance="fill" class="cfg-field">
+      <mat-label>{{ 'serverConfig.lanLabel' | transloco }}</mat-label>
+      <input
+        matInput
+        type="url"
+        inputmode="url"
+        autocomplete="off"
+        spellcheck="false"
+        [formControl]="lanUrl"
+        [placeholder]="'serverConfig.lanPlaceholder' | transloco"
+      />
+      @if (lanUrl.invalid && lanUrl.touched) {
+        <mat-error>{{ 'serverConfig.urlInvalid' | transloco }}</mat-error>
+      }
+    </mat-form-field>
+
+    @if (lanUrl.value.trim()) {
+      <p class="cfg-note">{{ 'serverConfig.cantValidateBoth' | transloco }}</p>
+    }
+
     <button
       mat-flat-button
       color="primary"
       type="submit"
       class="cfg-action"
-      [disabled]="url.invalid || busy()"
+      [disabled]="(url.invalid && lanUrl.invalid) || busy() || autoFill()"
     >
       {{ (busy() ? 'serverConfig.connecting' : 'serverConfig.connect') | transloco }}
     </button>
@@ -64,4 +84,22 @@
 
 @if (exitHint()) {
   <div class="cfg-toast" role="status">{{ 'serverConfig.exitHint' | transloco }}</div>
+}
+
+<!-- Auto-fill confirmation modal: shown when /shell/compat supplied the field the user didn't enter. The
+  field already displays the filled value; the user confirms before it's trusted as a connection target. -->
+@if (autoFill()) {
+  <div class="cfg-modal-scrim" role="dialog" aria-modal="true">
+    <div class="cfg-modal">
+      <p class="cfg-modal__body">{{ 'serverConfig.autoFillDetected' | transloco }}</p>
+      <div class="cfg-modal__actions">
+        <button mat-button type="button" (click)="cancelAutoFill()">
+          {{ 'serverConfig.autoFillEdit' | transloco }}
+        </button>
+        <button mat-flat-button color="primary" type="button" (click)="confirmAutoFill()">
+          {{ 'serverConfig.autoFillUse' | transloco }}
+        </button>
+      </div>
+    </div>
+  </div>
 }

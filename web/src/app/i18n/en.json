@@ -543,6 +543,12 @@
   "downloadErr": "The server was reached, but the web update didn't download or failed its integrity check. Check the connection and try again.",
     "connectErr": "Connection failed. Check the address and try again.",
     "exitHint": "Press back again to exit.",
-    "backToApp": "Back to app"
+    "backToApp": "Back to app",
+    "lanLabel": "Intranet server (optional)",
+    "lanPlaceholder": "https://soms-lan.example.com:7667",
+    "cantValidateBoth": "The intranet and internet servers can't be validated at the same time — make sure the other address is correct.",
+    "autoFillDetected": "The matching server address was filled in automatically. Use it?",
+    "autoFillUse": "Use it",
+    "autoFillEdit": "Edit"
   }
 }
