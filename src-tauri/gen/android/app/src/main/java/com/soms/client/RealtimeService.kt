@@ -175,8 +175,13 @@ class RealtimeService : Service() {
             return // already connected
         }
         val token = SomsSecureStore.getSessionToken(this)
-        val origin = SomsSecureStore.getApiOrigin(this)
-        SomsLog.d("Rt") { "openStream tokenPresent=${token != null} originPresent=${origin != null} attempt=$attempt" }
+        // Pick the ACTIVE origin: the LAN secondary when the mode is "secondary" (set by onFailure after the
+        // primary failed), else the primary. Same backend ⇒ the session token authorizes either.
+        val primary = SomsSecureStore.getApiOrigin(this)
+        val secondary = SomsSecureStore.getApiOriginSecondary(this)
+        val onSecondary = secondary != null && SomsSecureStore.getOriginMode(this) == "secondary"
+        val origin = if (onSecondary) secondary else primary
+        SomsLog.d("Rt") { "openStream tokenPresent=${token != null} originPresent=${origin != null} mode=${if (onSecondary) "secondary" else "primary"} attempt=$attempt" }
         if (token == null || origin == null) {
             SomsLog.w("Rt") { "openStream abort (no creds) → stopSelf" }
             stopSelf(); return
@@ -269,6 +274,17 @@ class RealtimeService : Service() {
                 SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('FORCE_LOGOUT', {});")
                 stopSelf()
                 return
+            }
+            // Network failure (not 401): if a LAN secondary is configured, switch the active origin for the
+            // next reopen — primary→secondary or secondary→primary. On the LAN the primary is unreachable (no
+            // hairpin NAT); one toggle lands on the reachable secondary and onOpen sticks (attempt resets).
+            // Both down ⇒ alternates with the scheduleReopen backoff. (401 is handled above — session-dead.)
+            val secondary = SomsSecureStore.getApiOriginSecondary(this@RealtimeService)
+            if (secondary != null) {
+                val cur = SomsSecureStore.getOriginMode(this@RealtimeService)
+                val next = if (cur == "secondary") "primary" else "secondary"
+                SomsSecureStore.setOriginMode(this@RealtimeService, next)
+                Log.i(TAG, "onFailure → SSE origin mode $cur → $next")
             }
             this@RealtimeService.pushConnState("reconnecting")
             scheduleReopen()

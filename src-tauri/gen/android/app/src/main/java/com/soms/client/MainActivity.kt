@@ -749,6 +749,20 @@ class MainActivity : TauriActivity() {
             val a = activityRef.get() ?: return
             SomsSecureStore.setApiOrigin(a, origin)
         }
+
+        /** The optional LAN (secondary) origin (null = no fallback). Pushed by JS `setApiOriginSecondary`
+         *  on a server-config save; RealtimeService reads it to pick the reachable /events origin. */
+        @JavascriptInterface
+        fun getApiOriginSecondary(): String? {
+            val a = activityRef.get() ?: return null
+            return SomsSecureStore.getApiOriginSecondary(a)
+        }
+
+        @JavascriptInterface
+        fun setApiOriginSecondary(origin: String?) {
+            val a = activityRef.get() ?: return
+            SomsSecureStore.setApiOriginSecondary(a, origin)
+        }
     }
 
     /** JS-callable surface exposed as window.SomsNotify. `showDescriptor(json)` parses the server-authored

@@ -33,6 +33,9 @@ object SomsSecureStore {
 
     private const val KEY_SESSION_TOKEN = "session_token"
     private const val KEY_API_ORIGIN = "api_origin"
+    private const val KEY_API_ORIGIN_SECONDARY = "api_origin_secondary"
+    /** Kotlin SSE's active-origin choice: "primary" (default) or "secondary". */
+    private const val KEY_ORIGIN_MODE = "origin_mode"
     private const val KEY_POLLING_ENABLED = "polling_enabled"
     private const val KEY_FGS_ENABLED = "fgs_enabled"
     private const val KEY_FCM_LAST_CHECK = "fcm_last_check"
@@ -43,6 +46,9 @@ object SomsSecureStore {
 
     @Volatile
     private var cachedOrigin: String? = null
+
+    @Volatile
+    private var cachedSecondary: String? = null
 
     @Volatile
     private var cachedFirebaseConfig: String? = null
@@ -162,6 +168,8 @@ object SomsSecureStore {
         cachedOrigin = origin?.trim()?.takeIf { it.isNotEmpty() }
         val ed = prefs(ctx).edit()
         if (cachedOrigin == null) ed.remove(KEY_API_ORIGIN) else ed.putString(KEY_API_ORIGIN, cachedOrigin)
+        // A primary reconfigure starts the SSE failover fresh on the primary.
+        ed.putString(KEY_ORIGIN_MODE, "primary")
         ed.apply()
     }
 
@@ -169,6 +177,41 @@ object SomsSecureStore {
         cachedOrigin?.let { return it }
         val v = prefs(ctx).getString(KEY_API_ORIGIN, null)?.trim()?.takeIf { it.isNotEmpty() }
         cachedOrigin = v
+        return v
+    }
+
+    /** The optional LAN (secondary) origin — null when no fallback is configured. Mirrors the web
+     *  `apiOriginSecondary`; pushed by JS `setApiOriginSecondary` on a server-config save. RealtimeService
+     *  uses it alongside the primary to pick the reachable origin for the /events stream when the primary
+     *  is hairpin-NAT-unreachable on the LAN. In-memory cached like [cachedOrigin]. */
+    fun setApiOriginSecondary(ctx: Context, origin: String?) {
+        cachedSecondary = origin?.trim()?.takeIf { it.isNotEmpty() }
+        val ed = prefs(ctx).edit()
+        if (cachedSecondary == null) ed.remove(KEY_API_ORIGIN_SECONDARY)
+        else ed.putString(KEY_API_ORIGIN_SECONDARY, cachedSecondary)
+        // Reconfiguring the secondary restarts the SSE failover on the primary.
+        ed.putString(KEY_ORIGIN_MODE, "primary")
+        ed.apply()
+    }
+
+    /** Kotlin SSE's active-origin choice — "primary" (default) or "secondary" (the primary failed and the
+     *  stream switched to the LAN origin). Persisted so it survives START_STICKY restarts. INDEPENDENT of
+     *  Rust's select_origin (which owns API traffic on Android) — both default to primary and fail over on
+     *  failure, so they converge on the reachable origin. Reset to "primary" by the setters above on any
+     *  reconfigure. */
+    fun getOriginMode(ctx: Context): String =
+        prefs(ctx).getString(KEY_ORIGIN_MODE, "primary") ?: "primary"
+
+    fun setOriginMode(ctx: Context, mode: String) {
+        prefs(ctx).edit()
+            .putString(KEY_ORIGIN_MODE, if (mode == "secondary") "secondary" else "primary")
+            .apply()
+    }
+
+    fun getApiOriginSecondary(ctx: Context): String? {
+        cachedSecondary?.let { return it }
+        val v = prefs(ctx).getString(KEY_API_ORIGIN_SECONDARY, null)?.trim()?.takeIf { it.isNotEmpty() }
+        cachedSecondary = v
         return v
     }
 
