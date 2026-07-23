@@ -1,0 +1,131 @@
+// Link-card message row: rides the normal chat-bubble shape (sender-grouping, shared avatar) but the
+// bubble IS a tappable card — an optional og:image strip on top, then the page title, description, and
+// site name. The bubble keeps the side bg (self green / other white); a translucent meta bar below
+// carries the page host (the credibility cue) + time. Integer-px throughout per _row-base's height
+// contract. The <button> is the card, so native chrome is reset.
+@use '../row-base' as *;
+
+.msg-bubble.link {
+  padding: 0;
+  display: block;
+  overflow: hidden; // clip the image strip to the bubble's rounded corners
+}
+
+// The <button> is the card; reset native button chrome so the card styling wins.
+.link-tappable {
+  border: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  width: 280px; // FIXED card width — a stable card, not a content-sized bubble (see invite-row rationale)
+  max-width: 100%;
+  padding: 0;
+  display: block;
+  text-align: left; // reset UA button center-align so every line is left-aligned
+  border-radius: inherit;
+  outline: none;
+}
+.link-tappable:focus-visible {
+  outline: 2px solid var(--app-brand, #2196f3);
+  outline-offset: 2px;
+}
+
+// og:image thumbnail strip — fixed integer height (object-fit cover crops any aspect). The image is a
+// same-origin CAS shard, so it renders under both web (no CSP) and Tauri (media://) img-src.
+.link-image {
+  width: 100%;
+  height: 150px; // integer px — the thumbnail strip contributes a whole-pixel height
+  background: rgba(127, 127, 127, 0.16);
+  overflow: hidden;
+}
+.link-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.link-body {
+  padding: 8px 10px; // integer vertical padding
+}
+
+// Page title — bold, clamped to 2 lines.
+.link-title {
+  font-size: 14px;
+  line-height: 18px; // integer px
+  font-weight: 600;
+  color: var(--im-bubble-text);
+  margin: 0 0 2px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+// Page description — muted, clamped to 2 lines.
+.link-desc {
+  font-size: 12px;
+  line-height: 15px; // integer px
+  color: var(--im-bubble-text);
+  opacity: 0.7;
+  margin: 0 0 6px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+// Site row — favicon (web only) + site name/host. The favicon is an external https URL, hidden under
+// Tauri (img-src CSP has no https:); the siteName/host text carries the identity there.
+.link-site {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 14px; // integer px
+  color: var(--im-bubble-text);
+  opacity: 0.7;
+}
+.link-favicon {
+  width: 14px;
+  height: 14px; // integer px
+  flex: 0 0 auto;
+  border-radius: 3px;
+}
+.link-site-name {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+// Bottom meta bar: page host (the credibility cue, left) + send time (right). Same translucent-grey
+// chip as the invite/media meta bar so every card type shares one info-strip style.
+.link-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 2px 8px; // integer vertical padding
+  min-height: 18px; // integer px
+  width: 280px; // match the card width → aligned with the card above
+  max-width: 100%;
+  box-sizing: border-box;
+  background: rgba(127, 127, 127, 0.16);
+  color: var(--im-bubble-text);
+  font-size: 11px;
+  line-height: 14px; // integer px
+  border-radius: 0 0 var(--app-radius-sm, 6px) var(--app-radius-sm, 6px); // square top, rounded bottom
+}
+.link-host {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.7;
+}
+.link-meta-time {
+  flex: 0 0 auto;
+  opacity: 0.6;
+}

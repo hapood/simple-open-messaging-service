@@ -1,0 +1,60 @@
+// Flat voice player — fills its AUDIO cell (100% × the cell's locked integer-px height). Only the WIDTH of
+// the fill animates during playback, never the height, so the kernel's height model is unaffected. Integer
+// px on every height-contributing value (button, track, line-height) per the project's CSS rule.
+
+.ap {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+}
+.ap-btn {
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--app-brand);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: transform 0.1s;
+  &:active { transform: scale(0.92); }
+  &:disabled { background: var(--app-text-muted); cursor: not-allowed; }
+}
+.ap-track {
+  flex: 1 1 auto;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--app-hover);
+  overflow: hidden;
+}
+.ap-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--app-brand);
+  transition: width 0.1s linear;
+}
+.ap-dur {
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 20px;
+  color: var(--app-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ap--failed .ap-fill { background: var(--app-text-muted); }
+
+// The <audio> element has no controls — it is the playback engine only. Hidden (still plays + fires events).
+.ap-el {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}

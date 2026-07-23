@@ -27,9 +27,9 @@ export interface VapidHealthReport {
   subjectValid: boolean;
   /** FCM send transport configured (GOOGLE_APPLICATION_CREDENTIALS set + firebase-admin initialized). */
   fcmConfigured: boolean;
-  /** FCM CLIENT config published (the operator uploaded a google-services.json → SystemSetting row). This
-   *  is independent of `fcmConfigured`: the server can send (service-account set) without having published
-   *  the client config, and vice versa — a half-configured server is observable here. */
+  /** FCM CLIENT config present (a valid google-services.json is on disk at FIREBASE_CLIENT_CONFIG). This
+   *  is independent of `fcmConfigured`: the server can send (service-account set) without a client config
+   *  present, and vice versa — a half-configured server is observable here. */
   firebaseClientConfigured: boolean;
   /** Web Push transport ready (configured AND keypair valid). */
   webPushConfigured: boolean;

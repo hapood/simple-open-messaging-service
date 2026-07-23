@@ -216,3 +216,79 @@ app-chat-input {
   &:active { transform: scale(0.94); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
 }
+
+// Mic-button states (the empty-draft send key). Recording ⇒ brand red; slide-up cancel ⇒ muted grey.
+.ci-send.ci-send-recording { background: #e53935; }
+.ci-send.ci-send-cancelled { background: var(--app-text-muted); }
+
+// Attachment popover trigger — active while the menu is open (mirrors the hover affordance).
+.ci-input-ico.active { background: var(--app-hover); color: var(--app-text); }
+
+// ── Recording indicator (floats above the bar) ────────────────────────────────────────────────
+// position:absolute bottom:100% off the form (the positioned/transformed containing block) — same anchor
+// as the emoji panel. Integer-px height + length line-height per the project's CSS integer-pixel rule.
+.ci-record {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  height: 36px;
+  box-sizing: border-box;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-pill);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  z-index: 4;
+  &--open { display: flex; }
+}
+.ci-record-dot {
+  flex: 0 0 8px;
+  width: 8px;
+  height: 8px;
+  border: none;
+  border-radius: 50%;
+  background: #e53935;
+  animation: ci-rec-pulse 1s ease-in-out infinite;
+}
+.ci-record-time {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--app-text);
+}
+.ci-record-hint {
+  flex: 1 1 auto;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--app-text-muted);
+  text-align: right;
+  &--cancel { color: #e53935; font-weight: 600; }
+}
+.ci-record-error {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  height: 32px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: var(--app-danger, #d33);
+  color: #fff;
+  border-radius: var(--app-radius-sm);
+  font-size: 13px;
+  line-height: 20px;
+  z-index: 4;
+}
+@keyframes ci-rec-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}

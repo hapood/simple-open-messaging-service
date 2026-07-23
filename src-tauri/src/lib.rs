@@ -481,6 +481,7 @@ pub fn run() {
 
     let builder = builder
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_opener::init())
         // media://localhost — proxy /uploads/* to ${api_origin} with the Bearer token (bare <img src>
         // can't set headers; the SameSite=Strict media_token cookie can't cross origins).
         .register_asynchronous_uri_scheme_protocol(MEDIA_SCHEME, move |_app, request, responder| {
@@ -524,13 +525,14 @@ pub fn run() {
                     sse_stop,
                     sse_get_state,
                     sse_net,
-                    sse_force_reconnect,
+                    sse_replay_hello,
                     upload_stream_file,
                     report_diagnostics,
                     log_js,
                     read_native_log,
                     api_request,
                     media_request,
+                    open_external_url,
                 ]
             }
             #[cfg(not(desktop))]
@@ -556,6 +558,7 @@ pub fn run() {
                     read_native_log,
                     api_request,
                     media_request,
+                    open_external_url,
                 ]
             }
         })
@@ -1830,22 +1833,23 @@ enum StreamOutcome {
     Cancelled,               // sse_stop / logout → exit the loop
     ForceLogout(Option<String>), // 401 or a `FORCE_LOGOUT` frame → exit (no retry, no 401-loop)
     Err,                     // network / non-2xx → reconnect
-    ForceReconnect,          // sse_force_reconnect: JS asked to drop+reopen so a fresh HELLO reaches a re-attached webview
 }
 
 /// Supervisor state: the spawned connect-loop task + its cancellation token, a synchronous state mirror
 /// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android), the
 /// backoff/online `wake` Notify, the offline flag the webview's navigator online/offline drives, and the
-/// `force` Notify `sse_force_reconnect` prods to drop+reopen the open stream (so a re-attached webview gets a
-/// fresh HELLO without tearing the whole supervisor down).
+/// cached HELLO — the last HELLO frame merged with every incremental revision frame
+/// (THREAD_REVISION_UPDATED / PROFILE_REV_UPDATED / FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) so a re-attached
+/// webview can be handed a FRESH handshake via `sse_replay_hello` without a reconnect (a retained open
+/// stream does not re-push HELLO on its own).
 #[cfg(desktop)]
 struct SseSupervisor {
     cancel: Mutex<Option<CancellationToken>>,
     handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     state: Arc<Mutex<ConnectionState>>,
     wake: Arc<Notify>,
-    force: Arc<Notify>,
     offline: Arc<AtomicBool>,
+    cached_hello: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 #[cfg(desktop)]
@@ -1856,8 +1860,8 @@ impl SseSupervisor {
             handle: Mutex::new(None),
             state: Arc::new(Mutex::new(ConnectionState::Closed)),
             wake: Arc::new(Notify::new()),
-            force: Arc::new(Notify::new()),
             offline: Arc::new(AtomicBool::new(false)),
+            cached_hello: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -1904,8 +1908,8 @@ fn sse_start(
         cancel,
         sse.state.clone(),
         sse.wake.clone(),
-        sse.force.clone(),
         sse.offline.clone(),
+        sse.cached_hello.clone(),
     ));
     *sse.handle.lock().expect("sse handle lock") = Some(handle);
     Ok(())
@@ -1950,18 +1954,29 @@ fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), Str
     Ok(())
 }
 
-/// JS-triggered reconnect of an already-OPEN stream. A freshly-attached webview (renderer reclaim, or an
-/// Android cold start where the FGS opened `/events` before the webview mounted) needs a HELLO that this
-/// retained connection will NOT re-push (HELLO is sent once per `register`, and there is no new connection).
-/// This prods the stream's select to drop it (`StreamOutcome::ForceReconnect`); the loop reopens at once
-/// (no backoff), the fresh connection re-registers, and the server re-pushes HELLO to the now-installed JS
-/// listeners. Unlike `sse_stop`, the supervisor stays up and the listeners stay attached — no stop+start
-/// churn, no event gap. Mirrors Android's `SomsFcm.forceReconnect` (ACTION_FORCE_RECONNECT). The HELLO-timeout
-/// backstop in the facade routes here too (an open stream that genuinely never delivered HELLO).
+/// Hand a freshly-attached webview the cached HELLO. A retained open stream does NOT re-push HELLO (it is
+/// sent once per `register`), yet a re-attached webview (renderer reclaim, or an Android cold start where the
+/// FGS opened `/events` before the webview mounted) needs one to bootstrap (userId / threadRevision /
+/// profileRev / friendReqRev / latestMessage). The supervisor caches the last HELLO and merges every
+/// incremental revision frame into it (see `open_one_stream`), so this replays the CURRENT merged HELLO down
+/// the same `soms-sse-event` channel the original used — no reconnect, no connection churn, no event gap.
+/// `app.emit` broadcasts to all webviews (a live webview receiving a second HELLO just re-runs its idempotent
+/// onHello). No-op when the cache is empty (the facade's HELLO-timeout backstop then force-reconnects for a
+/// fresh one). Mirrors Android's `SomsFcm.replayHello`.
 #[cfg(desktop)]
 #[tauri::command]
-fn sse_force_reconnect(sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
-    sse.force.notify_one();
+fn sse_replay_hello(app: tauri::AppHandle, sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
+    if let Some(data) = sse.cached_hello.lock().expect("cached_hello lock").clone() {
+        let _ = app.emit(
+            "soms-sse-event",
+            SseEventPayload {
+                event: "HELLO".to_string(),
+                status: 0,
+                message: "new message".to_string(),
+                data,
+            },
+        );
+    }
     Ok(())
 }
 
@@ -1972,8 +1987,8 @@ async fn sse_supervisor_loop(
     cancel: CancellationToken,
     state: Arc<Mutex<ConnectionState>>,
     wake: Arc<Notify>,
-    force: Arc<Notify>,
     offline: Arc<AtomicBool>,
+    cached_hello: Arc<Mutex<Option<serde_json::Value>>>,
 ) {
     // ---- pre-login token wait ----
     // `sse_start` is called eagerly at boot, before login. Block (no busy-loop, no 401-storm) until a
@@ -2004,7 +2019,7 @@ async fn sse_supervisor_loop(
             break;
         }
         let outcome =
-            open_one_stream(&app, &proxy, &cancel, &state, &wake, &force, &offline, &mut opened_once).await;
+            open_one_stream(&app, &proxy, &cancel, &state, &wake, &offline, &cached_hello, &mut opened_once).await;
         if cancel.is_cancelled() {
             break;
         }
@@ -2014,16 +2029,6 @@ async fn sse_supervisor_loop(
                 break; // no retry — a stale/revoked token would 401-loop
             }
             StreamOutcome::Cancelled => break,
-            StreamOutcome::ForceReconnect => {
-                // JS asked (sse_force_reconnect) to drop+reopen the open stream so a freshly-attached webview
-                // gets a HELLO this retained connection will not re-push. The origin is healthy (the stream
-                // was open), so reopen IMMEDIATELY: emit Reconnecting (the facade's HELLO-timeout re-arms on
-                // the earned open that follows, and HELLO clears it), keep attempt at 0 (not a failure), and
-                // skip both the backoff sleep and the full-disconnect origin race. The fresh connection
-                // re-registers → the server re-pushes HELLO to the now-installed listeners.
-                emit_state(&app, &state, ConnectionState::Reconnecting);
-                continue;
-            }
             StreamOutcome::StreamClosed | StreamOutcome::Stale | StreamOutcome::Err => {
                 // On a connect/network error (Err), try a SMOOTH switch first: maybe_switch probes the
                 // current; if it's healthy (transient) or the OTHER is reachable (flip), reopen at once with
@@ -2072,6 +2077,66 @@ async fn sse_supervisor_loop(
     emit_state(&app, &state, ConnectionState::Closed);
 }
 
+/// Merge one inbound SSE frame into the cached HELLO so a later `sse_replay_hello` hands a re-attached
+/// webview a FRESH handshake (a retained open stream does not re-push HELLO on its own). `HELLO` replaces
+/// the cache wholesale; each incremental revision frame patches its matching field. Additive — the caller
+/// still emits the frame to the live webview. Best-effort: a missing/malformed field is skipped (never
+/// panics); incremental frames before the first HELLO are dropped (no partial cached handshake).
+#[cfg(desktop)]
+fn merge_cached_hello(
+    cached: &Arc<Mutex<Option<serde_json::Value>>>,
+    event: &str,
+    data: &serde_json::Value,
+) {
+    let mut guard = match cached.lock() {
+        Ok(g) => g,
+        Err(_) => return, // poisoned — leave the cache; the next HELLO reseeds it
+    };
+    if event == "HELLO" {
+        *guard = Some(data.clone());
+        return;
+    }
+    // Incremental merges apply only once HELLO has seeded the cache.
+    let Some(obj) = guard.as_mut().and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    match event {
+        // The THREAD_REVISION_UPDATED push carries {revision}; HELLO's field is `threadRevision`.
+        "THREAD_REVISION_UPDATED" => {
+            if let Some(rev) = data.get("revision") {
+                obj.insert("threadRevision".to_string(), rev.clone());
+            }
+        }
+        "PROFILE_REV_UPDATED" => {
+            if let Some(rev) = data.get("profileRev") {
+                obj.insert("profileRev".to_string(), rev.clone());
+            }
+        }
+        // friendReqRev is a monotonic epoch-ms timestamp — advance forward only (out-of-order guard).
+        "FRIEND_REQ_REV_UPDATED" => {
+            if let Some(inc) = data.get("friendReqRev").and_then(|v| v.as_i64()) {
+                let cur = obj.get("friendReqRev").and_then(|v| v.as_i64());
+                if cur.is_none_or(|c| inc >= c) {
+                    obj.insert("friendReqRev".to_string(), serde_json::Value::from(inc));
+                }
+            }
+        }
+        // latestMessage = {threadId, seq, ts} — last-signal-wins (a valid upper bound for the missed walk,
+        // mirroring the client's onNewMessage `_to` advancement).
+        "NEW_MESSAGE" => {
+            if let (Some(tid), Some(seq), Some(ts)) =
+                (data.get("threadId").cloned(), data.get("seq").cloned(), data.get("ts").cloned())
+            {
+                obj.insert(
+                    "latestMessage".to_string(),
+                    serde_json::json!({ "threadId": tid, "seq": seq, "ts": ts }),
+                );
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Open + consume one SSE stream until it ends (clean close / error / stale / cancel / force-logout).
 #[cfg(desktop)]
 #[allow(clippy::too_many_arguments)]
@@ -2081,8 +2146,8 @@ async fn open_one_stream(
     cancel: &CancellationToken,
     state: &Arc<Mutex<ConnectionState>>,
     wake: &Notify,
-    force: &Notify,
     offline: &AtomicBool,
+    cached_hello: &Arc<Mutex<Option<serde_json::Value>>>,
     opened_once: &mut bool,
 ) -> StreamOutcome {
     let origin = proxy.api_origin.lock().expect("origin lock").clone();
@@ -2150,10 +2215,6 @@ async fn open_one_stream(
             // active (the loop re-enters open_one_stream, which re-reads proxy.api_origin). API⇄SSE lockstep:
             // they never sit on different origins. Race-free (Notify holds one stored permit).
             _ = proxy.origin_notify.notified() => return StreamOutcome::StreamClosed,
-            // JS-triggered force-reconnect (sse_force_reconnect): a freshly-attached webview needs a HELLO
-            // this retained connection will not re-push. Drop the stream so the loop reopens (the
-            // ForceReconnect arm reopens at once, no backoff) and the fresh connection re-pushes HELLO.
-            _ = force.notified() => return StreamOutcome::ForceReconnect,
             _ = wake.notified() => {
                 // Network transitioned or the user hit retry. Offline → drop the stream and reconnect
                 // (the next attempt fails fast, backs off). Online while a healthy stream is open → no-op
@@ -2183,6 +2244,10 @@ async fn open_one_stream(
                                     .map(|s| s.to_string());
                                 return StreamOutcome::ForceLogout(reason);
                             } else {
+                                // Cache/merge the frame into the cached HELLO (additive) BEFORE emitting it
+                                // — the borrows (as_str / &data) end at the call's `)`, so the move into the
+                                // payload below is unaffected (same scoping rule the FORCE_LOGOUT branch uses).
+                                merge_cached_hello(cached_hello, parsed.event.as_str(), &parsed.data);
                                 let _ = app.emit(
                                     "soms-sse-event",
                                     SseEventPayload {
@@ -2592,6 +2657,11 @@ struct CompatData {
     /// The server's LAN (secondary) origin, when SOMS_LAN_DOMAIN is configured. Optional.
     #[serde(rename = "lanOrigin", default)]
     lan_origin: Option<String>,
+    /// The Firebase client config folded into /shell/compat (the Android shell inits FirebaseApp from this
+    /// at runtime — replaces a separate /push/firebase-config round-trip). Raw passthrough: the shell hands
+    /// it straight back to JS unchanged, so a typed struct would only add a match risk. Null on older servers.
+    #[serde(rename = "firebaseConfig", default)]
+    firebase_config: Option<serde_json::Value>,
 }
 
 /// Fetch the server's reported version from `/shell/compat`. The server carries no shell floor — it only
@@ -2673,6 +2743,7 @@ async fn init_check_compat(origin: String) -> Result<serde_json::Value, String> 
         "serverVersion": server_version,
         "primaryOrigin": compat.primary_origin,
         "lanOrigin": compat.lan_origin,
+        "firebaseConfig": compat.firebase_config,
     }))
 }
 
@@ -2959,4 +3030,23 @@ fn nav_allowed(url: &reqwest::Url) -> bool {
     let scheme = url.scheme();
     let host = url.host_str().unwrap_or("");
     scheme == "tauri" || scheme == "about" || host == "tauri.localhost"
+}
+
+/// Open an external URL in the system's default browser. The webview's navigation guard (`nav_allowed`)
+/// confines document navigation to the app origin, so an external link — notably a LINK message card's
+/// target page — is handed to the OS browser via tauri-plugin-opener instead of navigated in-app (an
+/// arbitrary page loaded in the webview would run with IPC / secure-storage / media-proxy access).
+#[tauri::command]
+async fn open_external_url(url: String, app: tauri::AppHandle) -> Result<(), String> {
+    // Defense-in-depth: only http/https is ever handed to the OS opener. The URL arrives from a LINK
+    // card whose content parseLinkContent already constrained to http(s) at storage time, but re-check
+    // here so no future caller (or forged payload) can lure the opener into handling file:/javascript:/
+    // etc. — which the OS might dispatch to a handler with more privilege than a browser tab.
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!("refused non-http(s) url: {url}"));
+    }
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }

@@ -4,6 +4,7 @@ import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 import { PrismaService } from '../prisma.service.js';
 import { MessageService } from '../message/message.service.js';
+import { InviteKind } from '../prisma/generated/client.js';
 
 /**
  * Group-lifecycle SSE event names. Carried on every group frame so the frontend dispatches by
@@ -87,13 +88,22 @@ export class SseService implements OnModuleDestroy {
    *  DB failure is swallowed (never throws on the connect path). */
   private async sendHello(userId: number, entry: SseClient): Promise<void> {
     try {
-      const [latestMessage, user] = await Promise.all([
+      const [latestMessage, user, friendReqAgg] = await Promise.all([
         this.messages.findNewestForUser(userId),
         this.prisma.user.findUnique({
           where: { id: userId },
-          select: { threadRevision: true, profileRev: true, hasUrFriendReq: true },
+          select: { threadRevision: true, profileRev: true },
+        }),
+        // friendReqRev = MAX(updatedAt) over the user's incoming FRIEND invites (the data-derived friend-
+        // request revision; no denormalized badge column). Null when the user has never received one.
+        this.prisma.invite.aggregate({
+          where: { kind: InviteKind.FRIEND, toUserId: userId },
+          _max: { updatedAt: true },
         }),
       ]);
+      const friendReqRev = friendReqAgg._max.updatedAt
+        ? friendReqAgg._max.updatedAt.getTime()
+        : null;
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
@@ -110,12 +120,12 @@ export class SseService implements OnModuleDestroy {
         threadRevision: user?.threadRevision ?? 0,
         // The self-profile version. The client skips the cold-start /user/my-profile fetch when its IDB-
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
-        // cache) or a changed rev still fetches.
+        // cache) or a changed rev still fetches. PROFILE_REV_UPDATED advances it live (multi-device).
         profileRev: user?.profileRev ?? 0,
-        // The friend-request badge. Carried because hasUrFriendReq is INDEPENDENT of profileRev (a request
-        // arming does not bump it), so gating the profile fetch on profileRev alone would miss a request
-        // that armed while the app was offline. HELLO closing that gap is what makes the skip safe.
-        hasUrFriendReq: user?.hasUrFriendReq ?? false,
+        // The friend-request revision (epoch ms | null) = MAX(updatedAt) over incoming FRIEND invites. The
+        // client compares it to its IDB cursor to derive the unread badge (mirroring the threadRevision
+        // delta model); FRIEND_REQ_REV_UPDATED advances it live. Replaces the former denormalized boolean.
+        friendReqRev,
       });
       if (!entry.res.writableEnded) entry.res.write(frame);
     } catch (e) {
@@ -264,6 +274,23 @@ export class SseService implements OnModuleDestroy {
    *  revision and pulls ADD/DELETE deltas via query-thread(from, to]. */
   onThreadRevisionUpdated(userId: number, data: unknown) {
     this.pushToUser(userId, 'THREAD_REVISION_UPDATED', data);
+  }
+
+  /** Self-profile revision bumped (avatar / name / bio edit on this account). The client invalidates its
+   *  IDB-cached selfProfile (whose profileRev it compared at HELLO) and re-fetches /user/my-profile — this
+   *  is the multi-device self-profile refresh (the editor's OTHER tabs/devices learn of their own edit's
+   *  effect). Carried on the wire as `{ profileRev }`, advanced in HELLO too. */
+  onProfileRevUpdated(userId: number, data: { profileRev: number }) {
+    this.pushToUser(userId, 'PROFILE_REV_UPDATED', data);
+  }
+
+  /** Friend-request revision advanced (a FRIEND invite to this user was created / accepted / declined — any
+   *  mutation of an incoming FRIEND row bumps its `updatedAt`). Carried as the new MAX(updatedAt) epoch ms
+   *  (`friendReqRev`); the client compares it to its IDB cursor to (re)derive the unread badge, and the
+   *  native layer merges it into its cached HELLO so a re-attached webview's replay is fresh. Replaces the
+   *  former denormalized `hasUrFriendReq` boolean push. */
+  onFriendReqRevUpdated(userId: number, data: { friendReqRev: number | null }) {
+    this.pushToUser(userId, 'FRIEND_REQ_REV_UPDATED', data);
   }
 
   /** Send a FORCE_LOGOUT frame and end each connection, clearing its heartbeat. The caller removes the

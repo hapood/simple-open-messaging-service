@@ -44,6 +44,7 @@ export class NavDrawerComponent {
   private readonly layout = inject(LayoutService)
 
   readonly sessionProfile = this.userService.sessionProfile
+  readonly friendReqBadge = this.userService.friendReqBadge
   /** The drawer's open state — sourced from {@link NavStateMachineService} so hardware-back can close
    *  the drawer. Bound two-way to the mat-sidenav (`[opened]` reads, `(openedChange)` writes). */
   readonly drawerOpen = this.nav.drawerOpen

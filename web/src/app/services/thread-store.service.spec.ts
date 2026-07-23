@@ -146,7 +146,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     latestMessage?: { threadId: number; seq: number; ts: number } | null;
     threadRevision?: number;
     profileRev?: number;
-    hasUrFriendReq?: boolean;
+    friendReqRev?: number | null;
   }): void {
     eventSubject.next({ event: 'HELLO', data });
   }
@@ -284,7 +284,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     emitHello({ userId: 1, threadRevision: 6 });
     await flush(20);
 
-    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0, false);
+    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0, null);
     expect(queryThreadDeltaSpy).toHaveBeenCalledWith({ fromRevision: 5, toRevision: 6 });
     expect(repo.items().map((t) => t.threadId).sort()).toEqual([1, 2, 3]);
     expect(cursorSignal()).toBe(6);

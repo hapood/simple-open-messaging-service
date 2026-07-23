@@ -40,6 +40,20 @@
       }
     </div>
   </div>
+  <!-- Recording indicator — floats above the bar while the mic is held. position:absolute bottom:100% (like
+       the emoji panel; the form is the positioned/transformed containing block). A sibling of the capsule, so
+       it never enters the message kernel's height model. Integer-px heights per the project rule. -->
+  <div class="ci-record" [class.ci-record--open]="recording()" role="status"
+       [attr.aria-label]="recordCancelled() ? 'Release to cancel' : ('Recording ' + recordTimeLabel())">
+    <span class="ci-record-dot"></span>
+    <span class="ci-record-time">{{ recordTimeLabel() }}</span>
+    <span class="ci-record-hint" [class.ci-record-hint--cancel]="recordCancelled()">
+      {{ recordCancelled() ? 'Release to cancel' : 'Slide up to cancel' }}
+    </span>
+  </div>
+  @if (recordError()) {
+    <div class="ci-record-error" role="alert">{{ recordError() }}</div>
+  }
   <div class="ci-input-wrap">
     <button type="button" class="ci-input-ico" appPreventFocusSteal (click)="toggleEmoji()" aria-label="Emoji">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -50,17 +64,28 @@
     </button>
     <app-chat-editor class="ci-input" [members]="members()" [placeholder]="placeholder()"
                      (html)="onHtml($event)" (send)="onEditorSend()"></app-chat-editor>
-    <button type="button" class="ci-input-ico" appPreventFocusSteal (click)="onFileClick()" aria-label="Send file">
+    <button type="button" class="ci-input-ico" appPreventFocusSteal
+            cdkOverlayOrigin #plusTrigger="cdkOverlayOrigin"
+            (click)="toggleAttach()" [class.active]="attachOpen()" aria-label="Attach">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
       </svg>
     </button>
   </div>
-  <!-- Send key: draft present ⇒ paper plane (send text); empty ⇒ camera (open the image picker). Always brand
-       colored; disabled (with [disabled]) while a send/upload is in flight. -->
-  <button type="button" class="ci-send" appPreventFocusSteal [class.ci-send-media]="!draftHtml()" (click)="onSendClick()"
-          [disabled]="sending()" [attr.aria-label]="draftHtml() ? 'Send' : 'Send image'">
+  <!-- Send key: draft present ⇒ paper plane (send text); empty ⇒ mic (press-hold to record voice).
+       Pointer events drive recording on the empty state (they no-op when draft is present, so the click
+       carries the text send). Always brand-colored; disabled while a send/upload is in flight. -->
+  <button type="button" class="ci-send" appPreventFocusSteal
+          [class.ci-send-recording]="recording()"
+          [class.ci-send-cancelled]="recording() && recordCancelled()"
+          (click)="onSendClick()"
+          (pointerdown)="onMicPointerDown($event)"
+          (pointermove)="onMicPointerMove($event)"
+          (pointerup)="onMicPointerUp($event)"
+          (pointercancel)="onMicPointerCancel()"
+          [disabled]="sending()"
+          [attr.aria-label]="draftHtml() ? 'Send' : (recording() ? 'Recording' : 'Record voice message')">
     @if (draftHtml()) {
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -69,11 +94,21 @@
     } @else {
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z" />
-        <circle cx="12" cy="13" r="4" />
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5 11a7 7 0 0 0 14 0" />
+        <line x1="12" y1="18" x2="12" y2="21" />
       </svg>
     }
   </button>
+  <!-- Attachment popover — anchored to the paperclip "+" via cdkOverlayOrigin. The overlay panel attaches at
+       the document root (CDK), so it escapes the bar's transform + the chat pane's stacking context. -->
+  <app-chat-action-menu
+    [entries]="attachEntries"
+    [origin]="plusTrigger"
+    [open]="attachOpen()"
+    (select)="onAttachSelect($event)"
+    (closed)="closeAttach()"
+  />
   <input #attachInput type="file" accept="image/*" multiple hidden (change)="onAttachChange($event)" />
   <input #fileInput type="file" hidden (change)="onFileChange($event)" />
 </form>

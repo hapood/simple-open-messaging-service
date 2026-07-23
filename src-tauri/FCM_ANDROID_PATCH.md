@@ -25,10 +25,12 @@ runtime:
    `app/build.gradle.kts` `applicationId` and `src-tauri/tauri.conf.json` `identifier`). **Do NOT register
    SHA-1** — data-only FCM doesn't need it, and skipping it avoids the cross-project "same package+signing"
    conflict (only Google Sign-In / App Check need SHA-1, which this app doesn't use).
-2. Operator: in the admin console (Push → Transport config), **upload `google-services.json`**. The backend
-   parses + validates it (the Android client must target `com.soms.client`) and publishes the 4 client
-   fields at the public `GET /push/firebase-config`. The APK fetches these after resolving its server
-   origin and initializes FirebaseApp at process start (see SomsApplication / SomsFirebase).
+2. Operator: place `google-services.json` on the server at `data/google-services.json` (or override the
+   path with the `FIREBASE_CLIENT_CONFIG` env var) and restart the backend. It parses + validates the file
+   (the Android client must target `com.soms.client`) and publishes the 4 client fields at the public
+   `GET /push/firebase-config`. The admin console (Push → Transport config) is read-only status only — the
+   file is not edited there. The APK fetches these after resolving its server origin and initializes
+   FirebaseApp at process start (see SomsApplication / SomsFirebase).
 3. Operator (server-side sending): Project Settings → Service Accounts → "Generate new private key" → set
    `GOOGLE_APPLICATION_CREDENTIALS=/abs/path/to/sa.json` in the backend `.env`. This is the SEND credential,
    independent of the client config above. Spark (free) tier is ample for chat push volume.

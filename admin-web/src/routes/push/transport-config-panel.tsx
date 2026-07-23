@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
-import { AlertTriangle, Bell, Check, Copy, KeyRound, Loader2, Play, RefreshCw, ShieldCheck, Trash2, Upload, WandSparkles, X } from 'lucide-react'
-import { useClearFirebaseConfig, useClearVapid, useGenerateVapid, useNotificationSettings, useSaveFirebaseConfig, useSaveVapid, useVapidHealthCheck } from '@/hooks/use-settings'
+import { AlertTriangle, Bell, Check, Copy, KeyRound, Loader2, Play, RefreshCw, ShieldCheck, Trash2, WandSparkles, X } from 'lucide-react'
+import { useClearVapid, useGenerateVapid, useNotificationSettings, useSaveVapid, useVapidHealthCheck } from '@/hooks/use-settings'
 import { useMe } from '@/hooks/use-me'
 import type { VapidHealthReport } from '@/types/api'
 import { Badge } from '@/components/ui/badge'
@@ -30,14 +30,11 @@ export function TransportConfigPanel() {
   const save = useSaveVapid()
   const clear = useClearVapid()
   const healthCheck = useVapidHealthCheck()
-  const saveFirebase = useSaveFirebaseConfig()
-  const clearFirebase = useClearFirebaseConfig()
 
   const [subject, setSubject] = useState('') // used by the initial Generate
   const [showPaste, setShowPaste] = useState(false)
   const [paste, setPaste] = useState({ subject: '', publicKey: '', privateKey: '' })
   const [report, setReport] = useState<VapidHealthReport | null>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const vapid = data?.vapid
   const configured = !!vapid?.configured
@@ -107,37 +104,6 @@ export function TransportConfigPanel() {
       toast.success(t('settings.vapid.copied'))
     } catch {
       toast.error(t('settings.vapid.copyFailed'))
-    }
-  }
-
-  // ---- Firebase client config (google-services.json upload) -------------------------------
-  // Replacing an existing config is the same flow as the initial upload — re-open the picker. The server
-  // re-parses + re-publishes; clients pick up the new fields on their next /push/firebase-config fetch and
-  // re-initialize FirebaseApp (a server/project switch on the client side).
-  function onPickFile() {
-    fileInputRef.current?.click()
-  }
-
-  async function onFilePicked(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    // Reset the input so picking the same file twice fires onChange again.
-    e.target.value = ''
-    if (!file) return
-    try {
-      const text = await file.text()
-      await saveFirebase.mutateAsync(text)
-      toast.success(t('settings.fcm.saved'))
-    } catch (err) {
-      toast.error(formatApiError(err))
-    }
-  }
-
-  async function onClearFirebase() {
-    try {
-      await clearFirebase.mutateAsync()
-      toast.success(t('settings.fcm.cleared'))
-    } catch (err) {
-      toast.error(formatApiError(err))
     }
   }
 
@@ -276,10 +242,11 @@ export function TransportConfigPanel() {
         </CardContent>
       </Card>
 
-      {/* FCM client config (google-services.json) — DB-backed, admin-managed. The APK ships WITHOUT
-          google-services.json (each operator runs their own Firebase project); the operator uploads theirs
-          here, the server parses + publishes the 4 client fields at GET /push/firebase-config so Android
-          clients initialize FirebaseApp at runtime. Independent of the send-side service-account below. */}
+      {/* FCM client config (google-services.json) — file-based, read-only status. The APK ships WITHOUT
+          google-services.json (each operator runs their own Firebase project); the operator places theirs on
+          the server at FIREBASE_CLIENT_CONFIG (default data/google-services.json), the server publishes the 4
+          client fields at GET /push/firebase-config, and Android clients initialize FirebaseApp at runtime.
+          Not editable here — symmetric with the send-side service-account below. */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -304,49 +271,12 @@ export function TransportConfigPanel() {
               <Field label={t('settings.fcm.projectId')} value={firebase!.projectId ?? ''} />
               <Field label={t('settings.fcm.appId')} value={firebase!.appId ?? ''} />
               <Field label={t('settings.fcm.senderId')} value={firebase!.gcmSenderId ?? ''} />
-              {firebase!.updatedAt && (
-                <span className="text-xs text-muted-foreground">
-                  {t('settings.fcm.updatedAt')} <Timestamp value={firebase!.updatedAt} />
-                </span>
-              )}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button variant="outline" size="sm" onClick={onPickFile} disabled={!canEdit || saveFirebase.isPending}>
-                  {saveFirebase.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Upload className="size-3.5" />}
-                  {t('settings.fcm.replace')}
-                </Button>
-                <Button variant="outline" size="sm" onClick={onClearFirebase} disabled={!isSuper || clearFirebase.isPending}>
-                  {clearFirebase.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-                  {t('settings.fcm.clear')}
-                </Button>
-                {!isSuper && (
-                  <span className="self-center text-xs text-muted-foreground">{t('settings.fcm.clearSuperOnly')}</span>
-                )}
-              </div>
             </>
-          ) : (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="application/json,.json"
-                className="hidden"
-                onChange={onFilePicked}
-              />
-              <div className="flex flex-wrap items-center gap-2">
-                <Button onClick={onPickFile} disabled={!canEdit || saveFirebase.isPending}>
-                  {saveFirebase.isPending ? <Loader2 className="size-4 animate-spin" /> : <Upload className="size-4" />}
-                  {t('settings.fcm.upload')}
-                </Button>
-                {!canEdit && (
-                  <span className="self-center text-xs text-muted-foreground">{t('settings.fcm.adminOnly')}</span>
-                )}
-              </div>
-              <p className="text-xs text-muted-foreground">{t('settings.fcm.hint')}</p>
-            </>
-          )}
+          ) : null}
+          <p className="text-xs text-muted-foreground">{t('settings.fcm.fileHint')}</p>
           {/* The SEND-side credential is a separate concern: the GOOGLE_APPLICATION_CREDENTIALS
               service-account JSON (env, not editable here). Surfaced so a half-configured server — client
-              config uploaded but service-account missing, or vice versa — is visible at a glance. */}
+              config present but service-account missing, or vice versa — is visible at a glance. */}
           <div className="flex flex-wrap items-center gap-2 border-t pt-3 text-xs text-muted-foreground">
             <span className="font-medium">{t('settings.fcm.sendLabel')}</span>
             <Badge variant={data?.fcmConfigured ? 'default' : 'outline'}>

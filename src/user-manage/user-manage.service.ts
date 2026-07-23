@@ -22,7 +22,7 @@ export class UserManageService implements OnModuleInit {
     cursor?: Prisma.UserWhereUniqueInput;
     where?: Prisma.UserWhereInput;
     orderBy?: Prisma.UserOrderByWithRelationInput;
-  }): Promise<Prisma.UserGetPayload<{ omit: { hashPwd: true; hasUrFriendReq: true } }>[]> {
+  }): Promise<Prisma.UserGetPayload<{ omit: { hashPwd: true } }>[]> {
     const { skip, take, cursor, where, orderBy } = params;
     return this.prisma.user.findMany({
       skip,
@@ -30,7 +30,7 @@ export class UserManageService implements OnModuleInit {
       cursor,
       where,
       orderBy,
-      omit: { hashPwd: true, hasUrFriendReq: true },
+      omit: { hashPwd: true },
     });
   }
 
@@ -39,7 +39,7 @@ export class UserManageService implements OnModuleInit {
   async getUserDetail(id: number) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      omit: { hashPwd: true, hasUrFriendReq: true },
+      omit: { hashPwd: true },
     });
     if (!user) return null;
     const [groups, sessions, pushTokens] = await Promise.all([
@@ -70,7 +70,7 @@ export class UserManageService implements OnModuleInit {
   // revokes all sessions, etc. Services take primitives/local option types (never admin DTOs) to keep
   // the user-manage layer free of an admin dependency; the controller translates the DTO.
 
-  /** Paginated, searchable user list (non-group users only). Omits hashPwd + hasUrFriendReq. */
+  /** Paginated, searchable user list (non-group users only). Omits hashPwd. */
   async listUsers(opts: { skip?: number; take?: number; search?: string }) {
     const where = opts.search
       ? { isGroup: false, account: { contains: opts.search, mode: 'insensitive' as const } }

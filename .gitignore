@@ -28,6 +28,19 @@ npm-debug.log*
 !.vscode/launch.json
 !.vscode/extensions.json
 
+# Firebase client config (google-services.json). Federated app: each operator runs their own Firebase
+# project, so this is NEVER bundled in the APK or committed — it lives on the server under data/
+# (data/google-services.json, path overridable via FIREBASE_CLIENT_CONFIG) and is read + published at runtime
+# so the APK initializes FirebaseApp dynamically. Defense in depth alongside src-tauri/.gitignore +
+# gen/android/.gitignore so a stray copy anywhere in the tree (e.g. downloaded to the repo root) can never be
+# committed.
+google-services.json
+
+# Firebase service-account key (the SEND-side credential backing GOOGLE_APPLICATION_CREDENTIALS). Like
+# google-services.json it's a per-deploy Firebase-console download — operator places it under data/
+# (gitignored via /data), never committed.
+*-firebase-adminsdk-*.json
+
 # dotenv environment variable files
 .env
 .env.development.local

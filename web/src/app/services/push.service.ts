@@ -3,7 +3,6 @@ import { HttpClient } from '@angular/common/http';
 import { apiPrefix } from './constants';
 import { isAndroidNative, isTauri } from './runtime';
 import { NavStateMachineService } from './nav-state.service';
-import { firstValueFrom } from 'rxjs';
 
 /**
  * FCM push registration + notification-tap deep linking for the Tauri Android shell. No-op in the
@@ -22,6 +21,16 @@ import { firstValueFrom } from 'rxjs';
  * the same belt-and-braces pattern: a live __SOMS_DEEP_LINK__ handler for warm start, plus a
  * __SOMS_PENDING_THREAD_ID__ boot-fallthrough for cold start.
  */
+/** The Firebase client config payload (folded into /shell/compat). `{configured:false}` when the server has
+ *  no google-services.json; otherwise the 4 client fields an Android app needs to init FirebaseApp. */
+export type FirebaseClientConfigPayload = {
+  configured: boolean;
+  apiKey?: string;
+  projectId?: string;
+  appId?: string;
+  gcmSenderId?: string;
+};
+
 @Injectable({ providedIn: 'root' })
 export class PushService {
   private readonly http = inject(HttpClient);
@@ -56,37 +65,20 @@ export class PushService {
       window.__SOMS_PENDING_THREAD_ID__ = undefined;
       this.openThread(pending);
     }
-    // Sync the native Firebase client config with the current server (the APK ships without
-    // google-services.json; each server publishes its own at GET /push/firebase-config). Fire-and-forget —
-    // it self-gates on isAndroidNative() and never throws; if it reconfigures Firebase, the new token
-    // flows back through __SOMS_FCM_TOKEN__ → onToken → register() (installed above).
-    void this.refreshFirebaseConfig();
+    // The native Firebase client config is NOT synced here at boot — it is applied in the server-config
+    // flow (server-config-page.finalize) from the config folded into /shell/compat, and the native
+    // SomsApplication.onCreate cold-start reader covers boot from the persisted value. No separate fetch.
   }
 
-  /** Fetch the server's Firebase client config and hand it to native so the Android shell (re)initializes
-   *  FirebaseApp. Called at boot (init) and on server switch (server-config-page, after setApiOrigin).
-   *  Android-only (desktop has no Firebase). Robust to transients: a network failure leaves the cached
-   *  native config intact — only an explicit {configured:false} from the server clears it, so a blip never
-   *  silently kills FCM. The 4 fields are only re-pushed when they actually change (avoids needless
-   *  token churn on identical config). */
-  async refreshFirebaseConfig(): Promise<void> {
+  /** Apply a server-provided Firebase client config to native so the Android shell (re)initializes
+   *  FirebaseApp. Called from the server-config flow with the config folded into /shell/compat (the APK
+   *  ships without google-services.json; each server publishes its own — no separate /push/firebase-config
+   *  fetch). Android-only (desktop has no Firebase). The 4 fields are only re-pushed when they actually
+   *  change (avoids needless token churn on identical config); an explicit {configured:false} clears native
+   *  Firebase. Sync + never throws. */
+  applyFirebaseConfig(data: FirebaseClientConfigPayload | null | undefined): void {
     if (!isAndroidNative()) return;
-    let data: {
-      configured: boolean;
-      apiKey?: string;
-      projectId?: string;
-      appId?: string;
-      gcmSenderId?: string;
-    } | null = null;
-    try {
-      const json = await firstValueFrom(this.http.get<{ data?: { configured: boolean; apiKey?: string; projectId?: string; appId?: string; gcmSenderId?: string } | null }>(`${apiPrefix()}/push/firebase-config`));
-      data = json?.data ?? null;
-    } catch {
-      // Network error / server unreachable — keep the current native config (best-effort, don't kill FCM).
-      return;
-    }
-    if (!data) return;
-    if (!data.configured) {
+    if (!data || !data.configured) {
       // Server explicitly has no FCM client config → clear native Firebase.
       if (window.SomsFcm!.getFirebaseConfig() !== null) window.SomsFcm!.setFirebaseConfig(null);
       return;

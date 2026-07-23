@@ -31,7 +31,6 @@ model User {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   isDeleted          Boolean             @default(false)
-  hasUrFriendReq     Boolean             @default(false) // unread friend-request badge (folded from userNotiBox). SELF-ONLY in responses — builders must omit it for non-self.
   // Profile revision (name/avatar/bio). On the ORIGIN, bumped on every profile edit (authoritative).
   // On a federated STUB, remoteProfileRev holds the origin's profileRev at last localization — the
   // chat-open probe compares the two and re-pulls when the origin is newer. Null remoteProfileRev =
@@ -349,6 +348,7 @@ enum ContentType {
   VIDEO
   FILE
   AUDIO
+  LINK
 }
 
 model Message {

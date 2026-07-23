@@ -17,6 +17,11 @@
     <!-- Camera for the QR scanner (the phone side of QR sign-in — scan a desktop's QR to authorize it).
          Runtime permission is requested by tauri-plugin-barcode-scanner before opening the scanner view. -->
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- Microphone for in-app voice messages (the web layer's MediaRecorder via WebView getUserMedia). The
+         generated RustWebChromeClient.onPermissionRequest maps the AUDIO_CAPTURE resource request to these
+         two permissions and runs the system prompt; both MUST be declared here or the grant is denied. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
 
     <!-- AndroidTV support -->
     <uses-feature android:name="android.software.leanback" android:required="false" />

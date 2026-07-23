@@ -1,7 +1,10 @@
 # FCM client config — runtime fetch (open-source / self-host)
 
-**Status:** planned, not yet implemented. This doc is the implementation TODO + the key technical
-knowledge that justifies it, so the decision is not re-litigated later.
+**Status:** **implemented (2026-07-19).** This doc was the design rationale + implementation TODO; the
+"Key technical findings" (#1–4, #6–7) remain the load-bearing justification and are unchanged. The
+**Design** section below describes the *originally planned* shape and is **superseded** in three
+specifics — see [Implementation (as built)](#implementation-as-built) at the bottom for what actually
+shipped (file source via `FIREBASE_CLIENT_CONFIG`, `GET /push/firebase-config`, **skip SHA-1**).
 
 **Supersedes part of** [`src-tauri/FCM_ANDROID_PATCH.md`](../../src-tauri/FCM_ANDROID_PATCH.md) §Prerequisites
 step 2 (the "drop `google-services.json` at build time" model) **for Android only**. Web Push and the
@@ -51,6 +54,13 @@ later, re-verify before reverting to build-time.
    "missing SHA-1" failure `FCM_ANDROID_PATCH.md` warns about). This check happens on Google's servers,
    not on the device, and passes identically whether config was baked or fetched — as long as package +
    SHA-1 are registered in the deployer's Firebase project.
+
+   > **As-built correction (2026-07-19):** this overstated the requirement for **data-only** messaging.
+   > Token issuance + data-message delivery work **without** registering SHA-1 in practice. The as-built
+   > decision is therefore to **skip SHA-1** (it is only needed for Google Sign-In / App Check, which this
+   > app doesn't use), which additionally sidesteps the cross-project `(package + SHA-1)` uniqueness
+   > conflict that would otherwise force every self-hoster onto a single shared signing key. SHA-1 remains
+   > the documented **fallback** if a given project still refuses to issue a token.
 
 6. **App Check is the single "if enabled, re-verify" caveat.** If FCM App Check enforcement (Play
    Integrity attestation) is ever turned on, attestation binds to the initialized project and the target
@@ -147,7 +157,7 @@ In `com.soms.client` (the package owning `SomsBridge.kt`, `SomsMessagingService.
 `WebPushService` (web/PWA) and desktop notifications need no change — web already inits at runtime,
 desktop uses system/browser notifications with no Firebase client config.
 
-## Implementation TODO
+## Implementation TODO (historical — the original plan; superseded — see "Implementation (as built)" for what shipped)
 
 - [ ] **Spike first (de-risk).** Before changing the architecture: on the current Android build, remove
       the plugin + json + provider, hardcode a `FirebaseOptions` with a real project's values in
@@ -174,10 +184,38 @@ self-hosting guide:
 1. Create a Firebase project.
 2. Add an Android app with package name `com.soms.client` (matches `applicationId` / `tauri.conf.json`
    `identifier`).
-3. Register the signing-key SHA-1 (debug **and** release) under "SHA certificate fingerprint" — without
-   it, token retrieval silently fails (finding #5).
-4. Copy the four client values into server env (`FIREBASE_CLIENT_*`), and the service-account JSON into
-   `GOOGLE_APPLICATION_CREDENTIALS`, from the same project.
+3. **Skip SHA-1** (the as-built default — see the finding #5 correction). Do **not** register a signing-
+   key SHA-1 unless token retrieval proves to silently fail on a given project, in which case add the
+   debug **and** release SHA-1 under "SHA certificate fingerprint" as the fallback.
+4. Place `google-services.json` on the server at `FIREBASE_CLIENT_CONFIG` (default
+   `data/google-services.json`), and the service-account JSON into `GOOGLE_APPLICATION_CREDENTIALS`, from
+   the same project.
+
+## Implementation (as built)
+
+The Design section above proposed four separate **env-var** values (`FIREBASE_CLIENT_*`) and `GET
+/notifications/fcm-config`. What shipped is simpler and better — a single **file path**, because
+google-services.json is a Firebase-console download, structurally the same artifact as the
+`GOOGLE_APPLICATION_CREDENTIALS` service-account key (also a file + env path), NOT a server-generated value
+like the VAPID keypair. (An earlier iteration modeled it after VAPID — DB + admin-web upload — but that was
+reversed on 2026-07-23; VAPID stays DB-backed because it is server-generated, FCM client config is not.)
+
+- **Source = file, not env-values or DB.** The operator places the **whole** `google-services.json` on the
+  server at `FIREBASE_CLIENT_CONFIG` (default `data/google-services.json`). `SettingsService.getFirebaseConfig`
+  lazily reads it + `parseGoogleServicesJson` (`src/settings/firebase.ts`) validates the Android client
+  targets `com.soms.client` and caches the 4 fields for the process lifetime (restart to change). admin-web's
+  Transport-config FCM card is read-only status — there is no upload/clear surface.
+- **Endpoint = `GET /push/firebase-config`** (`src/controller/notification.controller.ts`), public like
+  `notifications/vapid-key`. The field is **`gcmSenderId`** (sourced from `project_info.project_number`),
+  uniform end-to-end; there is no `messagingSenderId` anywhere in the codebase.
+- **Client init = manual** (`SomsFirebase` / `SomsApplication`): `FirebaseApp.initializeApp(ctx,
+  FirebaseOptions{apiKey,applicationId,projectId,gcmSenderId})` at process start from the persisted
+  config, handed over by the web layer via `SomsFcm.setFirebaseConfig`. The `google-services` Gradle
+  plugin is permanently off and `FirebaseInitProvider` is `tools:node="remove"`d.
+- **SHA-1 skipped** with a documented fallback (see the finding #5 correction + self-hoster step 3).
+
+`src-tauri/FCM_ANDROID_PATCH.md` is the current operational source of truth; this roadmap doc is kept
+only for the rationale.
 
 ## References
 

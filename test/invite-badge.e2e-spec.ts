@@ -6,26 +6,27 @@ import request from 'supertest';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap';
 import { PrismaService } from '../src/prisma.service';
+import { InviteService } from '../src/invite/invite.service';
 import { seedUserWithSession } from './seed';
 
 /**
- * Friend-request unread badge — the BACKEND half of the badge data contract.
+ * Friend-request badge — the BACKEND half of the data contract.
  *
- * The frontend renders the red dot off `sessionProfile().hasUrFriendReq`, refreshed live via
- * updateSessionProfile() when a NOTIFY FRIEND_REQUEST arrives. This spec pins the server side of
- * that contract: a FRIEND invite arms `hasUrFriendReq` on the recipient, and markInvitesRead
- * clears it. It is a direct, persisted transcription of the manual register→invite→assert flow
- * that diagnosed the 2026-07-12 badge regression.
+ * The badge is now DERIVED: the client compares the SSE HELLO/push-carried `friendReqRev` (= MAX(updatedAt)
+ * over the user's incoming FRIEND invites — a monotonic, data-derived revision) to its IDB cursor, mirroring
+ * the threadRevision delta model. There is no denormalized boolean column; a FRIEND invite advances
+ * friendReqRev simply by being created (its own `updatedAt`). This spec pins the server side of that
+ * contract: a FRIEND invite advances the recipient's derived friendReqRev, and markRead is a client-side
+ * concern (a no-op server-side — the badge clears by advancing the client cursor, not by mutating state).
  *
- * Scope note: this test guards the data the client reads, NOT the client re-fetch. The actual
- * regression (updateSessionProfile short-circuiting via a non-force ensureProfile, so the live
- * badge never armed) is a FRONTEND bug — the backend here returned hasUrFriendReq correctly the
- * whole time. That client-side guard lives in web/src/app/services/user.service.spec.ts. Keep both:
- * this one anchors the API contract, that one anchors the force-refresh.
+ * Scope note: this guards the derived revision the client reads, NOT the client's cursor/badge derivation
+ * (that lives in web/src/app/services/user.service.spec.ts) nor the live FRIEND_REQ_REV_UPDATED push (an SSE
+ * integration, asserted separately). Keep all three: this anchors the derivation + markRead no-op.
  */
-describe('Friend-request badge e2e (invite arms hasUrFriendReq; mark-read clears it)', () => {
+describe('Friend-request badge e2e (invite advances derived friendReqRev; mark-read is a no-op)', () => {
   let app: INestApplication;
   let prisma: PrismaService;
+  let invites: InviteService;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -38,20 +39,19 @@ describe('Friend-request badge e2e (invite arms hasUrFriendReq; mark-read clears
     await configureApp(app, adapter);
     await app.listen(0);
     prisma = app.get(PrismaService);
+    invites = app.get(InviteService);
   });
 
   beforeEach(async () => {
     // Isolate every run: truncating User CASCADE-clears Invite, RefreshToken, threads, etc.
-    await prisma.$executeRawUnsafe(
-      'TRUNCATE TABLE "User" RESTART IDENTITY CASCADE',
-    );
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "User" RESTART IDENTITY CASCADE');
   });
 
   afterAll(async () => {
     await app.close();
   });
 
-  it('a FRIEND invite arms the recipient badge, and markInvitesRead clears it', async () => {
+  it('a FRIEND invite advances the recipient derived friendReqRev, and markRead is a server no-op', async () => {
     const http = app.getHttpServer();
 
     // 1+2. Seed inviter A + invitee B with sessions directly (registration is closed; the spec needs two
@@ -63,27 +63,30 @@ describe('Friend-request badge e2e (invite arms hasUrFriendReq; mark-read clears
     const authA = { Authorization: `Bearer ${tokA}` };
     const authB = { Authorization: `Bearer ${tokB}` };
 
-    // 3. baseline: B has no pending badge
-    const before = await request(http).post('/api/v1/user/my-profile').set(authB);
-    expect(before.body.code).toBe(0);
-    expect(before.body.data.hasUrFriendReq).toBe(false);
-    const inviteeId = before.body.data.id;
+    const inviteeId = (
+      await request(http).post('/api/v1/user/my-profile').set(authB)
+    ).body.data.id;
 
-    // 4. A invites B → arms the badge server-side (and would push NOTIFY FRIEND_REQUEST live)
+    // 3. baseline: B has no incoming FRIEND invites → friendReqRev is null
+    expect(await invites.findLatestFriendReqUpdate(inviteeId)).toBeNull();
+
+    // 4. A invites B → the PENDING row's creation advances MAX(updatedAt) over B's incoming FRIEND invites
     const invite = await request(http)
       .post('/api/v1/invite/friend')
       .set(authA)
       .send({ toUserId: inviteeId });
     expect(invite.body.code).toBe(0);
 
-    // 5. B's profile now reports the armed badge — the data updateSessionProfile() re-fetches
-    const armed = await request(http).post('/api/v1/user/my-profile').set(authB);
-    expect(armed.body.data.hasUrFriendReq).toBe(true);
+    // 5. B's derived friendReqRev is now a positive epoch-ms timestamp
+    const armed = await invites.findLatestFriendReqUpdate(inviteeId);
+    expect(typeof armed).toBe('number');
+    expect(armed!).toBeGreaterThan(0);
 
-    // 6. B opens the friend-requests panel → markInvitesRead clears the badge
+    // 6. markRead is a CLIENT-side cursor advance — a server no-op (no state to clear). friendReqRev is
+    //    unchanged after it; the badge clears because the client advances its own cursor, not because the
+    //    server mutated anything.
     const mark = await request(http).post('/api/v1/invite/mark-read').set(authB);
     expect(mark.body.code).toBe(0);
-    const cleared = await request(http).post('/api/v1/user/my-profile').set(authB);
-    expect(cleared.body.data.hasUrFriendReq).toBe(false);
+    expect(await invites.findLatestFriendReqUpdate(inviteeId)).toBe(armed);
   });
 });

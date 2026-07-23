@@ -27,6 +27,9 @@
 export interface AlbumImageLike {
   w: number;
   h: number;
+  /** Media kind — present on real AlbumMedia cells. layoutAlbum special-cases audio (a fixed slim bar that
+   *  bypasses image aspect math); image/video fall through to the aspect-ratio regimes. */
+  kind?: 'image' | 'video' | 'audio';
 }
 
 export interface AlbumRect {
@@ -131,6 +134,21 @@ function rowPlan(shown: number): number[] {
 export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLayout {
   const n = images.length;
   if (n === 0) return { rects: [], totalH: 0, containerW: baseW, moreCount: 0 };
+
+  // Audio — a fixed slim horizontal voice bar (play btn + progress + duration), NOT an image aspect.
+  // Audio is never album-aggregated (merge-items excludes it), so this is always a single cell. Fixed
+  // integer-px height, and playback only animates a WIDTH fill (never a height change), so the kernel's
+  // height-model invariant (totalH === Σ offsetHeight) holds during play.
+  if (n === 1 && images[0].kind === 'audio') {
+    const totalH = 52;
+    const widthPx = Math.min(baseW, 220);
+    return {
+      rects: [{ xPct: 0, wPct: 100, yPx: 0, hPx: totalH }],
+      totalH,
+      containerW: widthPx,
+      moreCount: 0,
+    };
+  }
 
   const gap = ALBUM_GAP;
 

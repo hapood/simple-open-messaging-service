@@ -1105,6 +1105,11 @@ export class FederationService implements OnModuleDestroy {
       localId,
       serializeBody({ event: 'NOTIFY', type: 'FRIEND_REQUEST', fromUserId: foreignId, inviteId }),
     );
+    // friendReqRev push (the mergeable badge signal) — MAX(updatedAt) over the local recipient's incoming
+    // FRIEND invites, just advanced by receiveInboundFriendInvite's PENDING create.
+    void this.invite.findLatestFriendReqUpdate(localId).then((friendReqRev) =>
+      this.sse.onFriendReqRevUpdated(localId, { friendReqRev }),
+    );
   }
 
   /** GROUP: friend-gate → find-or-create mirror (stores the OWNER participant) → REVISION-GATED avatar/
@@ -2547,7 +2552,8 @@ export class FederationService implements OnModuleDestroy {
       t === ContentType.IMAGE ||
       t === ContentType.FILE ||
       t === ContentType.VIDEO ||
-      t === ContentType.AUDIO
+      t === ContentType.AUDIO ||
+      t === ContentType.LINK
     );
   }
 
@@ -2578,7 +2584,10 @@ export class FederationService implements OnModuleDestroy {
     // fetchMediaChunks after the byte size is known; the dedup path below (file already local) skips
     // fetchMediaChunks entirely — counted once on first pull.
     const category: 'images' | 'largeFiles' =
-      msg.contentType === ContentType.IMAGE ? 'images' : 'largeFiles';
+      msg.contentType === ContentType.IMAGE ||
+      msg.contentType === ContentType.LINK
+        ? 'images'
+        : 'largeFiles';
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure

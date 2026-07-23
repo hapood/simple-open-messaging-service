@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   parseFileContent,
   parseFileExt,
+  parseLinkContent,
   resolveFileType,
   MAX_FILE_BYTES,
 } from './file-content.js';
@@ -109,5 +110,65 @@ describe('parseFileContent', () => {
     expect(parseFileContent(ok({ name: '' }))).toBeNull();
     expect(parseFileContent(ok({ name: 'x'.repeat(101) }))).toBeNull();
     expect(parseFileContent(ok({ name: 'x'.repeat(100) }))).not.toBeNull(); // boundary inclusive
+  });
+});
+
+describe('parseLinkContent', () => {
+  // A well-formed CAS shard URL (the shape LinkPreviewService localizes og:image into).
+  const shard = `/uploads/shards/ab/cd/${'0'.repeat(64)}.webp`;
+
+  it('accepts a bare-link card { url }', () => {
+    expect(parseLinkContent(JSON.stringify({ url: 'https://example.com' }))).toEqual({
+      url: 'https://example.com',
+    });
+  });
+
+  it('accepts a full card with a localized og:image shard URL', () => {
+    const card = {
+      url: 'https://example.com/p',
+      title: 'T',
+      description: 'D',
+      siteName: 'Ex',
+      image: shard,
+    };
+    expect(parseLinkContent(JSON.stringify(card))).toEqual(card);
+  });
+
+  it('rejects non-JSON / non-object content', () => {
+    expect(parseLinkContent('not json')).toBeNull();
+    expect(parseLinkContent('"s"')).toBeNull();
+    expect(parseLinkContent('12')).toBeNull();
+    expect(parseLinkContent('null')).toBeNull();
+  });
+
+  it('rejects a non-http(s) url (the SSRF/integrity form check)', () => {
+    expect(parseLinkContent(JSON.stringify({ url: 'javascript:alert(1)' }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'ftp://example.com' }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'data:text/html,x' }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: '//example.com' }))).toBeNull(); // scheme-relative
+  });
+
+  it('rejects a non-shard image (a forged external/inline image URL)', () => {
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'https://evil/x.jpg' }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'javascript:alert(1)' }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: '/uploads/../secret' }))).toBeNull();
+  });
+
+  it('rejects over-long display fields', () => {
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(301) }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(501) }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(101) }))).toBeNull();
+  });
+
+  it('accepts boundary-length display fields', () => {
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 'x'.repeat(300) }))).not.toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', description: 'x'.repeat(500) }))).not.toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', siteName: 'x'.repeat(100) }))).not.toBeNull();
+  });
+
+  it('rejects wrong-typed fields', () => {
+    expect(parseLinkContent(JSON.stringify({ url: 5 }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', title: 5 }))).toBeNull();
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 5 }))).toBeNull();
   });
 });

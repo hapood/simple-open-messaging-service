@@ -1,5 +1,4 @@
-import { Component, inject, OnInit, OnDestroy } from '@angular/core';
-import { Subscription, filter } from 'rxjs';
+import { Component, inject, OnInit } from '@angular/core';
 import { UserService } from '../../services/user.service';
 import { AuthService } from '../../services/auth.service';
 import { WebsocketService } from '../../services/websocket.service';
@@ -31,19 +30,18 @@ import { RootPopupComponent } from '../../components/root-popup/root-popup.compo
     <app-root-popup />
   `,
 })
-export class HomeComponent implements OnInit, OnDestroy {
+export class HomeComponent implements OnInit {
   private readonly userService = inject(UserService);
   private readonly authService = inject(AuthService);
   private readonly wsService = inject(WebsocketService);
   // Injected to instantiate the DB-layer root singletons that self-subscribe to the SSE stream in their
   // constructors: ThreadRepository routes the thread-list data events (NEW_MESSAGE / THREAD_META /
-  // THREAD_REVISION_UPDATED / PEER_PROFILE_UPDATED + reconnect refresh); GroupEventService routes the
-  // GROUP_* control events (toasts / roster reload). Injecting them here guarantees their subscriptions
-  // are alive for the whole home-route session regardless of which child panes are mounted.
+  // THREAD_REVISION_UPDATED / PEER_PROFILE_UPDATED / PROFILE_REV_UPDATED / FRIEND_REQ_REV_UPDATED +
+  // reconnect refresh); GroupEventService routes the GROUP_* control events (toasts / roster reload).
+  // Injecting them here guarantees their subscriptions are alive for the whole home-route session
+  // regardless of which child panes are mounted.
   private readonly threadRepo = inject(ThreadRepository);
   private readonly groupEvents = inject(GroupEventService);
-
-  private readonly subs: Subscription[] = [];
 
   ngOnInit() {
     // The self profile is loaded by the HELLO connect handshake now (UserService.establishSession gates
@@ -52,23 +50,9 @@ export class HomeComponent implements OnInit, OnDestroy {
     // startup token renew — the session token is long-lived; the interceptor attaches it directly.)
     this.wsService.connect();
 
-    // Friend-lifecycle notifications ride the generic NOTIFY event, discriminated by `data.type`:
-    //  - FRIEND_REQUEST: an incoming request armed the unread badge → refetch the profile.
-    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by the
-    //    THREAD_REVISION_UPDATED delta handler (ThreadRepository — fetches the new thread with a
-    //    precise FLIP, or removes locally), so the NOTIFY is a no-op for these.
-    this.subs.push(
-      this.wsService.eventSubject
-        .pipe(filter((m) => m.event === 'NOTIFY'))
-        .subscribe((m) => {
-          const t = m.data?.type;
-          if (t === 'FRIEND_APPROVED' || t === 'FRIEND_DELETED') return;
-          this.userService.updateSessionProfile();
-        }),
-    );
-  }
-
-  ngOnDestroy() {
-    this.subs.forEach((s) => s.unsubscribe());
+    // Friend-lifecycle signals no longer need a NOTIFY subscription here:
+    //  - FRIEND_REQUEST badge: armed by the FRIEND_REQ_REV_UPDATED handler (ThreadRepository) driving the
+    //    friendReqRev > IDB-ack-cursor derivation on UserService.
+    //  - FRIEND_APPROVED / FRIEND_DELETED: thread-list add/delete is driven by THREAD_REVISION_UPDATED.
   }
 }

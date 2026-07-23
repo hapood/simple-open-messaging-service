@@ -33,6 +33,7 @@ import { QuotaModule } from './quota/quota.module.js';
 import { ShellModule } from './shell/shell.module.js';
 import { ShellController } from './shell/shell.controller.js';
 import { DiagnosticsModule } from './diagnostics/diagnostics.module.js';
+import { LinkPreviewModule } from './link-preview/link-preview.module.js';
 
 // Static serving (uploaded images + the web/admin SPAs) is wired in main.ts via @fastify/static,
 // not a Nest module — @nestjs/serve-static silently dropped maxAge on the Fastify path
@@ -62,6 +63,7 @@ import { DiagnosticsModule } from './diagnostics/diagnostics.module.js';
     QuotaModule,
     ShellModule,
     DiagnosticsModule,
+    LinkPreviewModule,
   ],
   controllers: [
     MessageController,

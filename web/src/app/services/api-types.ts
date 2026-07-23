@@ -2440,11 +2440,6 @@ export interface components {
             /** @example false */
             isDeleted: boolean;
             /**
-             * @description Unread friend-request badge (self only)
-             * @example false
-             */
-            hasUrFriendReq?: boolean;
-            /**
              * @description Thread-list revision (self only — the thread-sync cursor)
              * @example 5
              */

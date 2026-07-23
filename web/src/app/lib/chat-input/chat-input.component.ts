@@ -6,11 +6,15 @@ import {
   computed,
   inject,
   input,
+  OnDestroy,
   output,
   signal,
   viewChild,
 } from '@angular/core';
+import { OverlayModule } from '@angular/cdk/overlay';
 import { ChatEditorComponent, type ChatMember } from '../../components/chat-editor/chat-editor.component';
+import { ChatActionMenuComponent, type ChatMenuEntry } from '../../components/chat-action-menu/chat-action-menu.component';
+import { AppIconType } from '../../components/icon/icon.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
 
@@ -23,7 +27,9 @@ import { EMOJI_CATEGORIES } from './emoji-data';
 export type ChatSendIntent =
   | { kind: 'text'; text: string }
   | { kind: 'image'; files: FileList }
-  | { kind: 'file'; files: FileList };
+  | { kind: 'file'; files: FileList }
+  | { kind: 'link'; url: string }
+  | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
 
 /** A category/tab shown in the emoji panel (Recents is a synthetic tab when non-empty). */
 interface EmojiTab {
@@ -35,6 +41,40 @@ interface EmojiTab {
 
 const RECENTS_KEY = 'soms.chat.emojiRecents';
 const RECENTS_MAX = 32;
+
+/** A single bare http(s) URL with no surrounding whitespace — the trigger for sending a link card rather
+ *  than plain text. The server's LinkPreviewService builds the OG preview; the composer only classifies
+ *  the intent (it never fetches). Anything else — prose, a URL mixed with text, multiple URLs — stays
+ *  plain text so partial input is never surprising-converted into a card. */
+const BARE_URL_RE = /^https?:\/\/\S+$/i;
+function isBareUrl(text: string): boolean {
+  return BARE_URL_RE.test(text);
+}
+
+/** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
+ *  Chrome / Android WebView / Tauri webview2 / webkit2gtk → audio/webm (opus); Safari / iOS / macOS
+ *  wkwebview → audio/mp4; Firefox → audio/ogg (opus). The backend's /upload/audio accepts all of these
+ *  (EBML/ftyp are shared audio/video containers — see consumeMedia's sharedAsAudio branch). '' ⇒ the
+ *  engine cannot record audio at all; the caller surfaces that and bails. */
+function pickRecorderMime(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  for (const c of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(c)) return c;
+    } catch {
+      /* isTypeSupported can throw on an unknown MIME in some engines — skip it */
+    }
+  }
+  return '';
+}
+
+/** Hard cap on a single voice clip (seconds). On reach, recording auto-stops and sends. */
+const MAX_RECORD_SECS = 60;
+/** Press-holds shorter than this (ms) are treated as an accidental tap and discarded. */
+const MIN_RECORD_MS = 500;
+/** Slide-up distance (px) beyond the press point that flips the gesture to "cancel". */
+const CANCEL_SLIDE_PX = 48;
 
 /** Load the persisted recents list (SSR/private-mode safe). */
 function loadRecents(): string[] {
@@ -85,13 +125,13 @@ function saveRecents(list: string[]): void {
  */
 @Component({
   selector: 'app-chat-input',
-  imports: [ChatEditorComponent, PreventFocusStealDirective],
+  imports: [ChatEditorComponent, PreventFocusStealDirective, ChatActionMenuComponent, OverlayModule],
   templateUrl: './chat-input.component.html',
   styleUrl: './chat-input.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
   encapsulation: ViewEncapsulation.None,
 })
-export class ChatInputComponent {
+export class ChatInputComponent implements OnDestroy {
   /** @mention candidates (playground: mock; production group: member roster; production 1-on-1: []). Read into
    *  the editor; updates do NOT recreate the editor. */
   readonly members = input<ChatMember[]>([]);
@@ -169,11 +209,11 @@ export class ChatInputComponent {
     this.editor()?.focus();
   }
 
-  /** Send key: draft present → emit a text intent (plain text) + clear; empty → open the image picker. */
+  /** Send key: draft present → send text. Empty → the mic (press-hold record) owns the empty state, so a
+   *  plain click here is a no-op (the pointerdown/up handlers drive recording; click only carries the text send). */
   onSendClick(): void {
     if (this.sending()) return;
     if (this.draftHtml()) this.sendText();
-    else this.onAttachClick();
   }
 
   /** Desktop Enter (the editor's `send` output): same as the text branch of the send key. */
@@ -190,7 +230,7 @@ export class ChatInputComponent {
     editor.clear();
     this.draftHtml.set('');
     this.measureBar();
-    this.send.emit({ kind: 'text', text });
+    this.send.emit(isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text });
   }
 
   onAttachClick(): void {
@@ -209,6 +249,179 @@ export class ChatInputComponent {
     const input = e.target as HTMLInputElement;
     if (input.files && input.files.length > 0) this.send.emit({ kind: 'file', files: input.files });
     input.value = '';
+  }
+
+  // ── Attachment "+" popover (Photo / File) ──────────────────────────────────────────────────────
+
+  /** Whether the attachment action menu overlay is open. */
+  readonly attachOpen = signal(false);
+  /** The popover entries — Photo (image picker) + File (generic picker). Mirrors the header MORE menu's
+   *  ChatActionMenuComponent usage; ChatActionMenuComponent renders labels via labelKey (transloco). */
+  readonly attachEntries: ChatMenuEntry[] = [
+    { kind: 'action', key: 'photo', labelKey: 'chat.sendPhoto', icon: AppIconType.IMAGE },
+    { kind: 'action', key: 'file', labelKey: 'chat.sendFile', icon: AppIconType.FILE },
+  ];
+
+  toggleAttach(): void {
+    this.attachOpen.set(!this.attachOpen());
+  }
+  closeAttach(): void {
+    this.attachOpen.set(false);
+  }
+  /** A popover item was chosen → open the matching picker + close. */
+  onAttachSelect(key: string): void {
+    this.attachOpen.set(false);
+    if (key === 'photo') this.onAttachClick();
+    else if (key === 'file') this.onFileClick();
+  }
+
+  // ── Voice recording (press-hold mic) ───────────────────────────────────────────────────────────
+  // The empty-draft send key becomes a mic; press-hold records (≤ MAX_RECORD_SECS), release sends, slide
+  // up cancels. Pointer capture keeps move/up events on the mic element so the slide tracks reliably. The
+  // audio Blob + duration are emitted as a ChatSendIntent; the host owns upload + optimistic insert.
+
+  /** True while a recording is in flight (drives the overlay + the mic button state). */
+  readonly recording = signal(false);
+  /** Elapsed whole seconds (drives the timer label); resets each press. */
+  readonly recordSecs = signal(0);
+  /** True when the finger has slid up past the cancel threshold (release will discard). */
+  readonly recordCancelled = signal(false);
+  /** A transient error string (permission denied / unsupported) shown above the bar. */
+  readonly recordError = signal('');
+  /** `m:ss` timer label. */
+  readonly recordTimeLabel = computed(() => {
+    const s = Math.min(MAX_RECORD_SECS, this.recordSecs());
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  });
+
+  private recorder: MediaRecorder | null = null;
+  private chunks: Blob[] = [];
+  private stream: MediaStream | null = null;
+  private mimeForRecording = '';
+  private pointerStartY = 0;
+  private recordStartedAt = 0;
+  private pendingCancel = false;
+  /** Generation counter for the in-flight press — bumped on every pointerdown/up/cancel/destroy. beginRecording
+   *  is async (blocked on the getUserMedia permission prompt, which can take seconds); it captures the session
+   *  at start and re-checks it after every await, so a press that ended (or a component that died) while the
+   *  prompt was up is detected and the mic is released without starting a stray recorder. A boolean "aborted"
+   *  flag could not cover the sub-millisecond window between the post-await check and MediaRecorder.start(). */
+  private recordSession = 0;
+  /** True once ngOnDestroy ran — beginRecording checks it so a permission prompt resolved after teardown
+   *  (thread switch mid-grant) never starts a recorder on a dead view. */
+  private destroyed = false;
+  private tickTimer?: ReturnType<typeof setInterval>;
+  private capTimer?: ReturnType<typeof setTimeout>;
+  private errorTimer?: ReturnType<typeof setTimeout>;
+
+  /** Press-hold start. Only the empty-draft state renders the mic, so this runs only then. Pointer capture
+   *  is taken synchronously so move/up keep arriving even as the finger roams (slide-to-cancel); the async
+   *  getUserMedia/MediaRecorder.start() follow, and recordAborted short-circuits a gesture that already ended. */
+  onMicPointerDown(event: PointerEvent): void {
+    if (this.sending() || this.draftHtml() || this.recording()) return;
+    event.preventDefault();
+    const el = event.currentTarget as HTMLElement;
+    try { el.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
+    this.pointerStartY = event.clientY;
+    this.recordAborted = false;
+    this.recordCancelled.set(false);
+    this.recordError.set('');
+    void this.beginRecording();
+  }
+
+  private async beginRecording(): Promise<void> {
+    const mime = pickRecorderMime();
+    if (!mime || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      this.flashRecordError('Microphone recording is not supported in this browser.');
+      return;
+    }
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      this.flashRecordError('Microphone permission was denied.');
+      return;
+    }
+    // The gesture ended while the permission prompt was up — release the mic and stop without emitting.
+    if (this.recordAborted) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    this.stream = stream;
+    this.mimeForRecording = mime;
+    const rec = new MediaRecorder(stream, { mimeType: mime });
+    this.chunks = [];
+    rec.ondataavailable = (ev) => { if (ev.data.size > 0) this.chunks.push(ev.data); };
+    rec.onstop = () => this.finalizeRecording();
+    this.recorder = rec;
+    this.recordStartedAt = Date.now();
+    this.recordSecs.set(0);
+    this.recording.set(true);
+    rec.start();
+    this.tickTimer = setInterval(() => {
+      this.recordSecs.set(Math.min(MAX_RECORD_SECS, Math.floor((Date.now() - this.recordStartedAt) / 1000)));
+    }, 250);
+    this.capTimer = setTimeout(() => this.stopRecording(false), MAX_RECORD_SECS * 1000);
+  }
+
+  /** Track the slide-up gesture (pointer capture keeps these arriving on the mic element). */
+  onMicPointerMove(event: PointerEvent): void {
+    if (!this.recording()) return;
+    this.recordCancelled.set(event.clientY - this.pointerStartY < -CANCEL_SLIDE_PX);
+  }
+
+  /** Release → send unless the gesture slid into cancel territory. */
+  onMicPointerUp(event: PointerEvent): void {
+    event.preventDefault();
+    if (!this.recording()) { this.recordAborted = true; return; }
+    void this.stopRecording(this.recordCancelled());
+  }
+
+  /** System interrupt (scroll / IME / etc.) → always cancel. */
+  onMicPointerCancel(): void {
+    if (!this.recording()) { this.recordAborted = true; return; }
+    void this.stopRecording(true);
+  }
+
+  private stopRecording(cancel: boolean): void {
+    const rec = this.recorder;
+    if (!rec) return;
+    clearTimeout(this.capTimer);
+    clearInterval(this.tickTimer);
+    this.pendingCancel = cancel;
+    this.recorder = null;
+    this.stream?.getTracks().forEach((t) => t.stop());
+    this.stream = null;
+    if (rec.state !== 'inactive') rec.stop(); // fires onstop → finalizeRecording
+    this.recording.set(false);
+  }
+
+  /** MediaRecorder.stop() resolved → build the Blob and emit (or discard on cancel / too-short). */
+  private finalizeRecording(): void {
+    const cancel = this.pendingCancel;
+    this.pendingCancel = false;
+    const durationMs = Date.now() - this.recordStartedAt;
+    const chunks = this.chunks;
+    this.chunks = [];
+    const mime = this.mimeForRecording;
+    if (cancel || durationMs < MIN_RECORD_MS || chunks.length === 0) return;
+    const blob = new Blob(chunks, { type: mime || chunks[0].type || 'audio/webm' });
+    const duration = Math.max(1, Math.round(durationMs / 1000));
+    this.send.emit({ kind: 'audio', blob, duration, mimeType: blob.type });
+  }
+
+  private flashRecordError(message: string): void {
+    this.recordError.set(message);
+    clearTimeout(this.errorTimer);
+    this.errorTimer = setTimeout(() => this.recordError.set(''), 3000);
+  }
+
+  ngOnDestroy(): void {
+    // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
+    if (this.recorder) this.stopRecording(true);
+    clearTimeout(this.capTimer);
+    clearInterval(this.tickTimer);
+    clearTimeout(this.errorTimer);
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */

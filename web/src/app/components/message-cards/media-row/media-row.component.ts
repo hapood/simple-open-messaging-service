@@ -6,6 +6,7 @@ import { MEDIA_STATUS, type AlbumImage, type ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
 import { UserAvatarComponent, UserAvatarType } from '../../user-avatar/user-avatar.component';
 import { layoutAlbum } from './layout';
+import { AudioPlayerComponent } from '../audio-player/audio-player.component';
 import { assetUrl } from '../../../services/runtime';
 import { formatBytes, formatDuration } from '../file-meta.util';
 import { MediaSizeThresholdService } from '../../../services/media-size-threshold.service';
@@ -26,7 +27,7 @@ import { MediaSizeThresholdService } from '../../../services/media-size-threshol
 @Component({
   selector: 'app-msg-media-row',
   standalone: true,
-  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe, MatProgressSpinnerModule, MatIconModule],
+  imports: [DateRowComponent, UserAvatarComponent, TranslocoPipe, MatProgressSpinnerModule, MatIconModule, AudioPlayerComponent],
   templateUrl: './media-row.component.html',
   styleUrl: './media-row.component.scss',
 })

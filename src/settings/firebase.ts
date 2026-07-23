@@ -1,16 +1,12 @@
 /**
  * Firebase client config — the 4 fields the Android client needs to initialize `FirebaseApp` at runtime,
- * derived from an operator-uploaded `google-services.json`. Sibling of {@link './vapid'}: the same
- * DB-backed, admin-managed runtime-config model, but for the FCM (Android push) transport instead of Web
- * Push.
- *
- * Why this exists: this is a federated / self-hosted chat app — each operator runs their own backend AND
- * their own Firebase project. A single Firebase project baked into the APK (the usual google-services.json
- * model) would bind every client to the maintainer's project, contradicting the federated premise. So the
- * APK ships WITHOUT google-services.json; the operator uploads theirs to the admin console, the server
- * publishes these 4 fields at GET /push/firebase-config, and the client fetches them after resolving its
- * server origin and manually calls `FirebaseApp.initializeApp` at process start. Sending still uses the
- * operator's service-account JSON via GOOGLE_APPLICATION_CREDENTIALS — a separate concern, untouched here.
+ * parsed from the operator's `google-services.json` file. This is a federated / self-hosted chat app — each
+ * operator runs their own backend AND their own Firebase project — so the APK ships WITHOUT
+ * google-services.json; the operator places theirs on the server (FIREBASE_CLIENT_CONFIG env, default
+ * data/google-services.json — the same file-on-disk model as the send-side GOOGLE_APPLICATION_CREDENTIALS
+ * service-account key, NOT the DB-backed model the VAPID keypair uses), the server folds these 4 fields
+ * into GET /shell/compat (the connect-time payload), and the native shell applies them at server setup so
+ * the client initializes `FirebaseApp.initializeApp` at process start.
  *
  * The 4 fields are the only values the client needs from google-services.json, and all of them are "public"
  * (they ship inside the APK in the usual baked model), so serving them unauthenticated is safe: they
@@ -27,10 +23,10 @@ export interface FirebaseClientConfig {
   gcmSenderId: string;
 }
 
-/** The Android applicationId the uploaded google-services.json must target. The APK ships one fixed package
- *  (tauri.conf.json `identifier` + gen/android/app/build.gradle.kts `applicationId`), so every operator's
- *  Firebase project must register an Android app with THIS package — a mismatch is rejected at upload,
- *  catching the common error of registering the wrong package (which would silently break FCM token
+/** The Android applicationId the operator's google-services.json must target. The APK ships one fixed
+ *  package (tauri.conf.json `identifier` + gen/android/app/build.gradle.kts `applicationId`), so every
+ *  operator's Firebase project must register an Android app with THIS package — a mismatch is rejected at
+ *  parse, catching the common error of registering the wrong package (which would silently break FCM token
  *  retrieval on the device). */
 export const EXPECTED_ANDROID_PACKAGE = 'com.soms.client';
 
@@ -50,10 +46,10 @@ interface GoogleServicesJson {
 }
 
 /**
- * Parse an operator-uploaded google-services.json and extract the 4 client fields. Throws a descriptive
- * Error when: the input is not valid JSON, project_info is missing, no `client` targets the expected
- * Android package, or any of the 4 fields is absent. The package-name match is the key guardrail. Callers
- * catch and surface this as business code FCM_CONFIG_INVALID.
+ * Parse a google-services.json file and extract the 4 client fields. Throws a descriptive Error when: the
+ * input is not valid JSON, project_info is missing, no `client` targets the expected Android package, or any
+ * of the 4 fields is absent. The package-name match is the key guardrail. Callers (SettingsService at boot
+ * read) catch this and log + treat the config as unconfigured.
  */
 export function parseGoogleServicesJson(raw: string): FirebaseClientConfig {
   let json: GoogleServicesJson;
@@ -119,12 +115,11 @@ export function isValidSenderId(v: string): boolean {
 
 /** Admin read view. projectId / appId / gcmSenderId are shown as proof of configuration; apiKey is omitted
  *  from the descriptor (it is the most key-like of the four and is not needed for the admin display) —
- *  parallel to how the VAPID descriptor omits privateKey. All 4 fields are still served to clients at the
- *  public GET /push/firebase-config endpoint (the client needs them). */
+ *  parallel to how the VAPID descriptor omits privateKey. All 4 fields are also folded into GET /shell/compat
+ *  for the Android client's runtime init (the client needs them). */
 export interface FirebaseConfigDescriptor {
   configured: boolean;
   projectId?: string;
   appId?: string;
   gcmSenderId?: string;
-  updatedAt?: Date;
 }

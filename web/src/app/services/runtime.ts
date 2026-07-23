@@ -123,6 +123,12 @@ declare global {
        *  force-reconnect channel `retryNow` cannot serve — retryNow only cancels pending backoff and is a
        *  no-op against an already-open stream. Android-only. */
       forceReconnect: () => void;
+      /** Replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected
+       *  cold start). A retained open stream does NOT re-push HELLO on its own (it is sent once per
+       *  register); the native layer caches HELLO + merges every revision frame, and this hands the current
+       *  merged value to the just-installed __SOMS_EVENT__ hook — no reconnect. No-op when the cache is
+       *  empty. Android-only. */
+      replayHello: () => void;
       /** Read whether the 6-hour background-sync poller is enabled (stored in EncryptedSharedPreferences
        *  so the WorkManager worker can read it with no WebView alive). Defaults to true. Android-only;
        *  absent in the browser/desktop builds (guarded by isTauri() && isAndroid()). */
@@ -141,7 +147,7 @@ declare global {
       getFcmStatus: () => string;
       /** Manual FCM availability check — force a token fetch + refresh lastCheck, bypassing the daily gate. Android-only. */
       requestFcmCheck: () => void;
-      /** Hand the server's Firebase client config (the 4 fields fetched from GET /push/firebase-config) to
+      /** Hand the server's Firebase client config (the 4 fields, folded into GET /shell/compat) to
        *  native so it persists it in EncryptedSharedPreferences and (re)initializes FirebaseApp. Pass a
        *  JSON string `{apiKey,projectId,appId,gcmSenderId}` to configure/reconfigure (a different project →
        *  deleteToken + deleteApp + re-init + new token, routed through __SOMS_FCM_TOKEN__), or null to clear
@@ -367,6 +373,20 @@ export function assetUrl(path: string | null | undefined): string {
   if (!path.startsWith('/')) return path; // absolute (data:/blob:/http(s):) — leave as-is
   if (!isTauri()) return path;
   return `${MEDIA_SCHEME}://${MEDIA_HOST}${path}`;
+}
+
+/**
+ * Open an external URL outside the app. On the web it is a normal `window.open` (new tab, noopener).
+ * Under the Tauri shell the webview's navigation guard blocks external document navigation, so it is
+ * routed to a Rust command that hands the URL to the OS's system-browser opener (tauri-plugin-opener).
+ * Used by the link-card row to open the shared page on tap.
+ */
+export async function openExternalUrl(url: string): Promise<void> {
+  if (!isTauri()) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  await tauriInvoke('open_external_url', { url });
 }
 
 /** True when no backend origin is configured yet (the signal is empty). Under Tauri the app gates

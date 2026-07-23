@@ -30,6 +30,16 @@ export function derivePreview(type: ContentType, content: string): string {
   switch (type) {
     case ContentType.PURE_TEXT:
       return content.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
+    case ContentType.LINK: {
+      // The card title (or URL) — never the raw JSON. Degrades to a slice on a malformed payload.
+      try {
+        const c = JSON.parse(content) as { title?: string; url?: string };
+        const t = c.title && c.title.trim() ? c.title : c.url ?? content;
+        return t.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
+      } catch {
+        return content.slice(0, PREVIEW_TEXT_MAX);
+      }
+    }
     case ContentType.IMAGE:
       return '[Photo]';
     case ContentType.INVITE:
@@ -143,7 +153,8 @@ export class MessageService implements OnModuleInit {
           type === ContentType.IMAGE ||
           type === ContentType.FILE ||
           type === ContentType.VIDEO ||
-          type === ContentType.AUDIO
+          type === ContentType.AUDIO ||
+          type === ContentType.LINK
         ) {
           const digest = extractDigests(content)[0];
           if (digest) {

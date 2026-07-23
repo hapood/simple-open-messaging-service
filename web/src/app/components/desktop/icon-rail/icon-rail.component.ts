@@ -35,7 +35,7 @@ import { LanguageService } from '../../../services/language.service';
             <line x1="19" y1="8" x2="19" y2="14"/>
             <line x1="22" y1="11" x2="16" y2="11"/>
           </svg>
-          @if (sessionProfile()?.hasUrFriendReq) {
+          @if (friendReqBadge()) {
             <span class="friend-badge" [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"></span>
           }
         </button>
@@ -123,6 +123,7 @@ export class IconRailComponent {
   private readonly transloco = inject(TranslocoService);
   /** Current logged-in profile (used for the SELF avatar's initial). */
   readonly sessionProfile = this.userService.sessionProfile
+  readonly friendReqBadge = this.userService.friendReqBadge
 
   /** Icon reflecting the current theme mode (predictable cycling affordance). */
   readonly themeIcon = computed<AppIconType>(() => {

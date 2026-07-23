@@ -20,11 +20,11 @@ function flush(ms = 0): Promise<void> {
 const isMyProfile = (req: HttpRequest<unknown>): boolean =>
   req.method === 'POST' && req.url.endsWith('/user/my-profile');
 
-/** A minimal my-profile response body; `over` overrides the badge + cursor fields under test. */
+/** A minimal my-profile response body; `over` overrides fields under test. */
 const profile = (over: Partial<User>): { code: number; data: User } => ({
   code: 0,
   data: {
-    id: 1, name: 'A', avatar: '', bio: '', domain: '', threadRevision: 5, hasUrFriendReq: false, ...over,
+    id: 1, name: 'A', avatar: '', bio: '', domain: '', threadRevision: 5, ...over,
   } as User,
 });
 
@@ -65,27 +65,27 @@ describe('UserService profile refresh', () => {
     httpMock.verify();
   });
 
-  // THE regression guard for the 2026-07-12 friend-request badge bug. updateSessionProfile() must
-  // ALWAYS hit the network — it calls ensureProfile({ force: true }). Before the fix it passed no
-  // `force`, so once sessionProfile was populated ensureProfile short-circuited to of(cached): a live
-  // FRIEND_REQUEST never re-fetched, so the armed hasUrFriendReq never reached the rail/drawer badge
-  // (and post-edit avatar/name-bio refresh + markInvitesRead-clear suffered the same staleness). The
-  // second call here MUST issue a second request and adopt its CHANGED response — only force does that.
+  // The force-refresh contract guard. updateSessionProfile() must ALWAYS hit the network — it calls
+  // ensureProfile({ force: true }). Before the fix it passed no `force`, so once sessionProfile was
+  // populated ensureProfile short-circuited to of(cached): a live change never re-fetched, so the new
+  // value never reached sessionProfile (post-edit avatar/name-bio refresh + the PROFILE_REV_UPDATED
+  // multi-device refresh suffered the same staleness). The second call here MUST issue a second request
+  // and adopt its CHANGED response — only force does that.
   it('updateSessionProfile() forces a re-fetch even when sessionProfile is already set', async () => {
-    // First refresh seeds sessionProfile with hasUrFriendReq = false.
+    // First refresh seeds sessionProfile with name = 'A'.
     svc.updateSessionProfile();
     await flush();
-    httpMock.expectOne(isMyProfile).flush(profile({ hasUrFriendReq: false }));
+    httpMock.expectOne(isMyProfile).flush(profile({ name: 'A' }));
     await flush();
-    expect(svc.sessionProfile()?.hasUrFriendReq).toBe(false);
+    expect(svc.sessionProfile()?.name).toBe('A');
 
     // Second refresh — sessionProfile is already set. The bug would short-circuit here (no request,
-    // stale false stays). The fix issues the request regardless and adopts the new value.
+    // stale 'A' stays). The fix issues the request regardless and adopts the new value.
     svc.updateSessionProfile();
     await flush();
-    httpMock.expectOne(isMyProfile).flush(profile({ hasUrFriendReq: true }));
+    httpMock.expectOne(isMyProfile).flush(profile({ name: 'B' }));
     await flush();
-    expect(svc.sessionProfile()?.hasUrFriendReq).toBe(true);
+    expect(svc.sessionProfile()?.name).toBe('B');
   });
 
   // Contrast: ensureProfile() (no force) is the idempotent get-or-load — it DOES short-circuit to the
@@ -175,28 +175,28 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
-    await svc.establishSession(1, 0, false);
+    await svc.establishSession(1, 0, null);
     expect(webdb.openForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
     expect(localStorage.getItem('soms.lastUserId')).toBe('1'); // eager-paint bootstrap remembers it
   });
 
   it('establishSession is idempotent for the same user (reconnect: no re-open, badge refreshed)', async () => {
-    await svc.establishSession(1, 0, false);
+    await svc.establishSession(1, 0, null);
     webdb.openForUser.calls.reset();
     // Same user (a reconnect) → short-circuit: the webdb is already open, just refresh the badge.
-    await svc.establishSession(1, 0, true);
+    await svc.establishSession(1, 0, 1000);
     expect(webdb.openForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBe(1);
   });
 
   it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
-    await svc.establishSession(1, 0, false);
+    await svc.establishSession(1, 0, null);
     webdb.closeAndDelete.calls.reset();
     webdb.openForUser.calls.reset();
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
-    const done = svc.establishSession(2, 0, false);
+    const done = svc.establishSession(2, 0, null);
     await flush();
     httpMock.expectOne(isMyProfile).flush(profile({ id: 2 }));
     await done;
@@ -208,7 +208,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
-    await svc.establishSession(1, 0, false);
+    await svc.establishSession(1, 0, null);
     webdb.closeAndDelete.calls.reset();
 
     svc.clearSession();

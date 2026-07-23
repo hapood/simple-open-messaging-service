@@ -43,6 +43,10 @@ export class SendMessageDto {
   // by parseFileContent / parseVideoContent / parseAudioContent in MessageController.sendMessage — a
   // client cannot forge a non-upload URL or disallowed shape. Add a type here only when such a path
   // exists.
+  // LINK is client-authorable too: the client sends only the URL as `content`, and
+  // MessageController.sendMessage rebuilds the card server-side via LinkPreviewService (SSRF-safe OG
+  // fetch + og:image localization) then re-validates the assembled JSON with parseLinkContent — so a
+  // client cannot forge the card metadata or a non-upload image URL.
   @ApiProperty({
     enum: ContentType,
     required: false,
@@ -50,7 +54,7 @@ export class SendMessageDto {
       'Client-authorable content type (defaults to PURE_TEXT). INVITE is server-only.',
   })
   @IsOptional()
-  @IsIn(['PURE_TEXT', 'IMAGE', 'FILE', 'VIDEO', 'AUDIO'])
+  @IsIn(['PURE_TEXT', 'IMAGE', 'FILE', 'VIDEO', 'AUDIO', 'LINK'])
   contentType?: ContentType;
 
   @ApiProperty({

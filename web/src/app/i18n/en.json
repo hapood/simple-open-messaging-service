@@ -290,6 +290,8 @@
       "video": "{count, plural, =1 {# Video} other {# Videos}}",
       "audio": "{count, plural, =1 {# Audio} other {# Audio}}"
     },
+    "sendPhoto": "Photo",
+    "sendFile": "File",
     "menuViewInfo": "Contact info",
     "menuSearch": "Search",
     "menuMute": "Mute notifications",

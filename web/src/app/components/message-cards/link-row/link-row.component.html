@@ -1,0 +1,46 @@
+@if (showDate()) {
+  <app-msg-date-row [ms]="data().createdAtMs" />
+}
+
+<div
+  class="msg-row msg-{{ side() }}{{ showAvatar() ? ' msg-has-avatar' : '' }}{{ isGroupStart() ? ' msg-group-start' : '' }} msg-grp-{{ isShowHead() ? 'head' : 'body' }}"
+>
+  @if (showAvatar() && side() === 'other') {
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.OTHER" [name]="data().name" /></div>
+  }
+
+  <div class="msg-col msg-{{ side() }}">
+    @if (showName()) {
+      <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
+    }
+    <button
+      type="button"
+      class="msg-bubble msg-{{ side() }} msg-{{ pos() }} link link-tappable"
+      (click)="openUrl()"
+    >
+      @if (imageSrc()) {
+        <div class="link-image"><img [src]="imageSrc()" alt="" loading="lazy" /></div>
+      }
+      <div class="link-body">
+        <div class="link-title">{{ link().title || host() }}</div>
+        @if (link().description) {
+          <div class="link-desc">{{ link().description }}</div>
+        }
+        <div class="link-site">
+          @if (faviconSrc()) {
+            <img class="link-favicon" [src]="faviconSrc()" alt="" />
+          }
+          <span class="link-site-name">{{ link().siteName || host() }}</span>
+        </div>
+      </div>
+    </button>
+    <div class="link-meta">
+      <span class="link-host">{{ host() }}</span>
+      <span class="link-meta-time">{{ data().time }}</span>
+    </div>
+  </div>
+
+  @if (showAvatar() && side() === 'self') {
+    <div class="msg-avatar"><app-user-avatar [type]="UserAvatarType.SELF" [name]="data().name" /></div>
+  }
+</div>

@@ -55,13 +55,19 @@
                 (error)="onVideoError($index)"
               ></video>
             }
-            @if (c.kind === 'video' || c.kind === 'audio') {
+            @if (c.kind === 'video') {
               <span class="msg-media-play" aria-hidden="true"></span>
               @if (c.duration) {
                 <span class="msg-media-dur">{{ formatDuration(c.duration) }}</span>
               }
             }
-            <span class="msg-media-size">{{ c.sizeText || 'unknown size' }}</span>
+            @if (c.kind === 'audio') {
+              <!-- Flat voice player — fills the cell; playback only animates a width fill (height-stable). -->
+              <app-audio-player [src]="c.src" [duration]="c.duration ?? 0" />
+            }
+            @if (c.kind !== 'audio') {
+              <span class="msg-media-size">{{ c.sizeText || 'unknown size' }}</span>
+            }
             @if (c.isMore) {
               <span class="msg-media-more">+{{ moreCount() }}</span>
             }

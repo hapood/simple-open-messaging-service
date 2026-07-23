@@ -12,29 +12,26 @@ export class UserService implements OnModuleInit {
   async onModuleInit() {}
 
   // Sensitive columns are omitted at the Prisma layer (never loaded → can't leak into responses),
-  // so there are no per-site `delete` lines. hashPwd + hasUrFriendReq are omitted by default; the
-  // two opt-in reads below re-include exactly one of them where a legitimate internal consumer needs it.
+  // so there are no per-site `delete` lines. hashPwd is omitted by default; the opt-in read below
+  // re-includes it where a legitimate internal consumer (the login path) needs it.
   findUniqueUser(userWhereUniqueInput: Prisma.UserWhereUniqueInput) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
-      omit: { hashPwd: true, hasUrFriendReq: true, threadRevision: true },
+      omit: { hashPwd: true, threadRevision: true },
     });
   }
 
-  /** Login path only: keeps hashPwd (argon2.verify needs it), omits the self-only badge. Auth-only. */
+  /** Login path only: keeps hashPwd (argon2.verify needs it). Auth-only. */
   findUniqueUserForAuth(userWhereUniqueInput: Prisma.UserWhereUniqueInput) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
-      omit: { hasUrFriendReq: true },
     });
   }
 
-  /** Self-profile only: keeps the hasUrFriendReq badge, omits hashPwd. */
+  /** Self-profile only: omits hashPwd. (threadRevision rides the SSE HELLO handshake; the friend-request
+   *  badge is derived client-side from the HELLO/push-carried friendReqRev = MAX(updatedAt) over incoming
+   *  FRIEND invites — no denormalized badge column.) */
   findSelfProfile(userId: number) {
-    // threadRevision is omitted — it rides the SSE HELLO handshake (the threadlist's sole delta-replay
-    // cursor), no longer the profile response. profileRev + hasUrFriendReq stay (they ARE the profile's
-    // freshness version + the friend-request badge); HELLO also carries them so the client can skip this
-    // fetch on a warm boot.
     return this.prisma.user.findUnique({
       where: { id: userId },
       omit: { hashPwd: true, threadRevision: true },
@@ -68,7 +65,7 @@ export class UserService implements OnModuleInit {
     // (select + omit are mutually exclusive in Prisma); all current callers pass only `where`.
     return this.prisma.user.findMany({
       ...params,
-      omit: { hashPwd: true, hasUrFriendReq: true, threadRevision: true, ...(params.omit ?? {}) },
+      omit: { hashPwd: true, threadRevision: true, ...(params.omit ?? {}) },
     });
   }
 
@@ -79,7 +76,7 @@ export class UserService implements OnModuleInit {
     q: string,
     opts: { skip?: number; take: number },
   ): Promise<{
-    list: Prisma.UserGetPayload<{ omit: { hashPwd: true; hasUrFriendReq: true } }>[];
+    list: Prisma.UserGetPayload<{ omit: { hashPwd: true } }>[];
     total: number;
   }> {
     const where: Prisma.UserWhereInput = {
@@ -97,7 +94,7 @@ export class UserService implements OnModuleInit {
         skip: opts.skip,
         take: opts.take,
         orderBy: { createdAt: 'desc' },
-        omit: { hashPwd: true, hasUrFriendReq: true },
+        omit: { hashPwd: true },
       }),
       this.prisma.user.count({ where }),
     ]);

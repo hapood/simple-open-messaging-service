@@ -290,6 +290,8 @@
       "video": "{count, plural, other {# 视频}}",
       "audio": "{count, plural, other {# 音频}}"
     },
+    "sendPhoto": "照片",
+    "sendFile": "文件",
     "menuViewInfo": "查看资料",
     "menuSearch": "搜索",
     "menuMute": "静音通知",

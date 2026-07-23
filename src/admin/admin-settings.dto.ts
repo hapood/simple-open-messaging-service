@@ -47,17 +47,3 @@ export class OtpTtlDto {
   @Max(1440)
   ttlMinutes!: number;
 }
-
-/** Upload the operator's google-services.json so the server can publish the 4 Firebase client fields to
- *  Android clients (the APK ships without google-services.json; clients fetch + initialize FirebaseApp at
- *  runtime). The body is the RAW file contents (not multipart) — the operator downloads the file from the
- *  Firebase console and pastes/uploads its text. The server parses + validates it (the client must target
- *  package com.soms.client); a failure is surfaced as business code FCM_CONFIG_INVALID. */
-export class SaveFirebaseConfigDto {
-  @ApiProperty({
-    description: 'The raw contents of google-services.json downloaded from the Firebase console.',
-  })
-  @IsString()
-  @IsNotEmpty()
-  googleServicesJson!: string;
-}

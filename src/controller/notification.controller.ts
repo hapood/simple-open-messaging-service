@@ -24,7 +24,6 @@ const MISSED_MAX_TAKE = 200;
 /**
  * The notification + incremental-sync surface.
  *  - GET  /notifications/vapid-key — public Web Push VAPID key (no auth).
- *  - GET  /push/firebase-config    — public Firebase client config (4 fields) for Android FCM runtime init.
  *  - POST /notifications/missed     — the cross-thread incremental-sync endpoint (global guard: session
  *    token OR access JWT). `summary:true` returns the unread-thread snapshot the FCM/WorkManager
  *    notification coalescing consumes; the default returns paginated messages (init seed =
@@ -53,33 +52,6 @@ export class NotificationController {
       code: BusinessCode.OK,
       message: 'successful',
       data: { publicKey: this.settings.getVapid()?.publicKey ?? '' },
-    };
-  }
-
-  /** Public: the 4 Firebase client fields an Android client needs to initialize FirebaseApp at runtime.
-   *  The APK ships WITHOUT google-services.json (each operator runs their own Firebase project), so the
-   *  client fetches this after resolving its server origin and manually calls FirebaseApp.initializeApp at
-   *  process start. Public + unauthenticated — these values identify a Firebase project, they do not
-   *  authenticate anything (they ship inside the APK in the usual baked model). `{configured:false}` when
-   *  the operator hasn't uploaded a google-services.json → the client clears its native FCM config. */
-  @Public()
-  @HttpCode(HttpStatus.OK)
-  @Get('push/firebase-config')
-  @ApiOperation({ summary: 'Firebase client config for Android FCM runtime initialization (public)' })
-  firebaseConfig(): ApiResult {
-    const cfg = this.settings.getFirebaseConfig();
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: cfg
-        ? {
-            configured: true,
-            apiKey: cfg.apiKey,
-            projectId: cfg.projectId,
-            appId: cfg.appId,
-            gcmSenderId: cfg.gcmSenderId,
-          }
-        : { configured: false },
     };
   }
 

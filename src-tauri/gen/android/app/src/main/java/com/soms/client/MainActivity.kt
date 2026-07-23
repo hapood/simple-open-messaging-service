@@ -568,6 +568,18 @@ class MainActivity : TauriActivity() {
             a.startService(Intent(a, RealtimeService::class.java).setAction(RealtimeService.ACTION_FORCE_RECONNECT))
         }
 
+        /** Re-attached-WebView (renderer reclaim / FGS-pre-connected cold start) handshake replay: hand the
+         *  freshly-booted WebView the cached+merged HELLO. A retained open `/events` stream does NOT re-push
+         *  HELLO on its own (it is sent once per register), so this cache (kept fresh by
+         *  [RealtimeService.cacheHelloFrame]) is how the WebView bootstraps (userId / threadRevision /
+         *  profileRev / friendReqRev / latestMessage) without a reconnect. No-op when the cache is empty
+         *  (the facade's HELLO-timeout backstop then force-reconnects for a fresh one). */
+        @JavascriptInterface
+        fun replayHello() {
+            val hello = RealtimeService.cachedHello ?: return
+            SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('HELLO', $hello);")
+        }
+
         /** Whether the 6-hour background-sync poller is enabled (default true). Read by the Settings page
          *  to render the toggle's initial state. */
         @JavascriptInterface

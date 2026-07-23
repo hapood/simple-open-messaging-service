@@ -12,6 +12,30 @@ import { LoginMode } from '../config/public-config.js';
  * learns the enabled login methods in the SAME round-trip and never needs a separate `/config` call. The
  * browser build (served by Caddy, never calls `/shell/*`) keeps using `/config`.
  */
+/**
+ * The Firebase client config folded into {@link ShellCompatDto} for the Android shell's runtime FirebaseApp
+ * init (the APK ships WITHOUT google-services.json; each server publishes its own here so the shell inits
+ * FirebaseApp at runtime — replacing a separate /push/firebase-config round-trip). The 4 fields are present
+ * only when configured; otherwise just `{configured:false}`. All 4 are public identifiers, safe to serve
+ * unauthenticated (see src/settings/firebase.ts).
+ */
+export class ShellFirebaseConfigDto {
+  @ApiProperty({ description: 'Whether a valid google-services.json is configured on this server.' })
+  configured!: boolean;
+
+  @ApiProperty({ required: false, description: 'client[].api_key[0].current_key. Present only when configured.' })
+  apiKey?: string;
+
+  @ApiProperty({ required: false, description: 'project_info.project_id. Present only when configured.' })
+  projectId?: string;
+
+  @ApiProperty({ required: false, description: 'client[].client_info.mobilesdk_app_id. Present only when configured.' })
+  appId?: string;
+
+  @ApiProperty({ required: false, description: 'project_info.project_number (FCM/GCM sender ID). Present only when configured.' })
+  gcmSenderId?: string;
+}
+
 export class ShellCompatDto {
   @ApiProperty({ example: '0.1.0', description: 'The server version (root package.json, same as /health).' })
   serverVersion!: string;
@@ -46,6 +70,12 @@ export class ShellCompatDto {
       'Canonical client origin for SOMS_LAN_DOMAIN (the LAN fallback). Same backend as primaryOrigin. Omitted when SOMS_LAN_DOMAIN is not configured. Auto-fill/display only — the user explicitly confirms before the shell trusts it as a connection target; HTTPS-only.',
   })
   lanOrigin?: string;
+
+  @ApiProperty({
+    description:
+      'Firebase client config for Android FCM runtime init. The native shell (APK ships without google-services.json) inits FirebaseApp from this at runtime — folded in so the shell gets it in the same compat round-trip (replaces a separate /push/firebase-config). {configured:false} when the server has no valid google-services.json.',
+  })
+  firebaseConfig!: ShellFirebaseConfigDto;
 }
 
 /**

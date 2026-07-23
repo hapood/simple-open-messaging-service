@@ -348,8 +348,9 @@ export class FriendRequestsComponent implements OnDestroy {
       },
     })
 
-    // Opening the panel counts as "seen" → clear the friend-invite unread badge (hasUrFriendReq=false,
-    // then refresh the local profile).
-    this.userService.markInvitesRead().subscribe(() => this.userService.updateSessionProfile())
+    // Opening the panel counts as "seen" → acknowledge the current friend-request revision. The badge is
+    // client-derived (friendReqRev > IDB ack cursor), so advancing the cursor here clears it (a later
+    // FRIEND_REQ_REV_UPDATED re-arms). No server round-trip — the badge state is local now.
+    this.userService.markFriendReqRead()
   }
 }

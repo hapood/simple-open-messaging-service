@@ -1,4 +1,6 @@
 import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import webpush from 'web-push';
 import { PrismaService } from '../prisma.service.js';
 import { loadFederationConfig } from '../federation/federation.config.js';
@@ -17,7 +19,6 @@ import {
 } from './firebase.js';
 
 const VAPID_KEY = 'vapid';
-const FIREBASE_KEY = 'firebase-config';
 const TTL_MS = 30_000;
 const DEFAULT_SUBJECT = 'mailto:noreply@soms.local';
 
@@ -29,7 +30,6 @@ const OTP_TTL_MIN = 1;
 const OTP_TTL_MAX = 1440;
 
 type VapidEntry = { value: VapidConfig | null; fetchedAt: number };
-type FirebaseEntry = { value: FirebaseClientConfig | null; fetchedAt: number };
 
 /**
  * DB-backed, admin-managed runtime settings — the typed facade over the {@link SystemSetting} KV table.
@@ -61,7 +61,10 @@ type FirebaseEntry = { value: FirebaseClientConfig | null; fetchedAt: number };
 export class SettingsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SettingsService.name);
   private entry: VapidEntry = { value: null, fetchedAt: 0 };
-  private fbEntry: FirebaseEntry = { value: null, fetchedAt: 0 };
+  /** Lazily-loaded Firebase client config from disk (see loadFirebaseClientConfig). `undefined` = not yet
+   *  read; `null` = read but unconfigured (no/invalid google-services.json); a config = configured. Cached
+   *  for the process lifetime — restart to pick up a changed file (same model as GOOGLE_APPLICATION_CREDENTIALS). */
+  private fbFile: FirebaseClientConfig | null | undefined;
   private inflight: Promise<void> | null = null;
   private timer: NodeJS.Timeout | null = null;
 
@@ -75,6 +78,10 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
       // empty (webPushConfigured=false) and let the interval retry. Mirrors PushService's own degradation.
       this.logger.warn(`initial settings load failed: ${(e as Error).message}`);
     }
+    // Eager-load the Firebase client config from disk at boot (not lazily on first request) so the one
+    // (tiny) sync read happens here, at startup — the admin status + public serve paths then never touch
+    // the filesystem. A missing/malformed file logs + leaves FCM unconfigured (see loadFirebaseClientConfig).
+    this.fbFile = this.loadFirebaseClientConfig();
     this.timer = setInterval(() => {
       this.refresh().catch((e) =>
         this.logger.debug(`settings refresh failed: ${(e as Error).message}`),
@@ -146,19 +153,15 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  /** Reload the cache from DB (single-flight: concurrent callers share one pass). Loads both cached
-   *  settings (VAPID + Firebase client config) in one round-trip. No env fallback — both are DB-only. */
+  /** Reload the VAPID cache from DB (single-flight: concurrent callers share one pass). The Firebase client
+   *  config is NOT DB-backed — it lives in a google-services.json file read on demand (see getFirebaseConfig)
+   *  — so only VAPID is reloaded here. */
   async refresh(): Promise<void> {
     if (this.inflight) return this.inflight;
     this.inflight = (async () => {
       try {
-        const [vapidRow, fbRow] = await Promise.all([
-          this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } }),
-          this.prisma.systemSetting.findUnique({ where: { key: FIREBASE_KEY } }),
-        ]);
-        const now = Date.now();
-        this.entry = { value: vapidRow ? this.parseVapid(vapidRow.value) : null, fetchedAt: now };
-        this.fbEntry = { value: fbRow ? this.parseFirebase(fbRow.value) : null, fetchedAt: now };
+        const vapidRow = await this.prisma.systemSetting.findUnique({ where: { key: VAPID_KEY } });
+        this.entry = { value: vapidRow ? this.parseVapid(vapidRow.value) : null, fetchedAt: Date.now() };
       } finally {
         this.inflight = null;
       }
@@ -189,62 +192,63 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
   }
 
   // ---- Firebase client config (FCM for Android) ---------------------------------------------
-  // Mirrors the VAPID surface above. The 4 fields come from an operator-uploaded google-services.json
-  // (see src/settings/firebase.ts) and are served unauthenticated to clients at GET /push/firebase-config
-  // so the Android APK can initialize FirebaseApp at runtime without baking google-services.json into the
-  // build. Independent of the send-side GOOGLE_APPLICATION_CREDENTIALS path (PushService.fcmConfigured).
+  // File-based, NOT DB-backed. google-services.json is a Firebase-console download the operator places on
+  // the server — structurally the same kind of artifact as the GOOGLE_APPLICATION_CREDENTIALS service-
+  // account key (also a file + env path), NOT a server-generated value like the VAPID keypair. So it lives
+  // on disk (FIREBASE_CLIENT_CONFIG env, default data/google-services.json) and is read once at boot. The 4
+  // fields are published to clients folded into GET /shell/compat (the connect-time payload) so the Android
+  // APK initializes FirebaseApp at runtime without baking google-services.json into the build. Independent of
+  // the send-side GOOGLE_APPLICATION_CREDENTIALS path (PushService.fcmConfigured).
 
-  /** The current Firebase client config, or null when no google-services.json was uploaded. SYNC — never
-   *  blocks on IO; may be up to TTL_MS stale while a refresh runs in the background. Served to clients at
-   *  the public GET /push/firebase-config, so the stale-while-revalidate cache matters under boot-time load. */
+  /** The current Firebase client config, or null when no valid google-services.json is present. Returns the
+   *  value loaded once at boot (onModuleInit) — restart to pick up a changed file. Published to clients
+   *  folded into GET /shell/compat (ShellService.compat). */
   getFirebaseConfig(): FirebaseClientConfig | null {
-    if (Date.now() - this.fbEntry.fetchedAt >= TTL_MS) {
-      this.refresh().catch(() => {});
-    }
-    return this.fbEntry.value;
+    return this.fbFile ?? null;
   }
 
-  /** Whether the operator has published an FCM client config (the 4-field DB row). Independent of
-   *  PushService.fcmConfigured (the send-side service-account). */
+  /** Read + parse the google-services.json file at FIREBASE_CLIENT_CONFIG (default data/google-services.json).
+   *  A missing DEFAULT path is the normal "not yet configured" case (null, no warning); but when the operator
+   *  explicitly set FIREBASE_CLIENT_CONFIG, an unreadable file is a misconfiguration and is warned so it
+   *  surfaces in logs rather than reading as a mysterious "not configured" in the admin UI. A present-but-
+   *  malformed file is always warned. Never throws — a bad file leaves FCM unconfigured, never crashes boot. */
+  private loadFirebaseClientConfig(): FirebaseClientConfig | null {
+    const explicit = !!process.env.FIREBASE_CLIENT_CONFIG;
+    const p = process.env.FIREBASE_CLIENT_CONFIG || join(process.cwd(), 'data', 'google-services.json');
+    let raw: string;
+    try {
+      raw = readFileSync(p, 'utf8');
+    } catch (e) {
+      if (explicit) {
+        this.logger.warn(
+          `FIREBASE_CLIENT_CONFIG points to an unreadable file (${p}): ${(e as Error).message} — FCM client config treated as unconfigured`,
+        );
+      }
+      return null;
+    }
+    try {
+      return parseGoogleServicesJson(raw);
+    } catch (e) {
+      this.logger.warn(
+        `failed to parse ${p} as google-services.json: ${(e as Error).message} — FCM client config treated as unconfigured`,
+      );
+      return null;
+    }
+  }
+
+  /** Whether a valid FCM client config is present on disk. Independent of PushService.fcmConfigured (the
+   *  send-side service-account). */
   get firebaseClientConfigured(): boolean {
     return this.getFirebaseConfig() !== null;
   }
 
-  /** Authoritative Firebase descriptor for the admin read view — queries the row directly for the real
-   *  updatedAt. apiKey is intentionally absent (parallel to the VAPID descriptor omitting privateKey); the
-   *  other three fields are shown as proof of which project/app is configured. */
-  async getFirebaseDescriptor(): Promise<FirebaseConfigDescriptor> {
-    const row = await this.prisma.systemSetting.findUnique({ where: { key: FIREBASE_KEY } });
-    if (!row) return { configured: false };
-    const cfg = this.parseFirebase(row.value);
+  /** Firebase descriptor for the admin read view. apiKey is intentionally absent (parallel to the VAPID
+   *  descriptor omitting privateKey); the other three fields are shown as proof of which project/app the
+   *  on-disk google-services.json configures. */
+  getFirebaseDescriptor(): FirebaseConfigDescriptor {
+    const cfg = this.getFirebaseConfig();
     if (!cfg) return { configured: false };
-    return {
-      configured: true,
-      projectId: cfg.projectId,
-      appId: cfg.appId,
-      gcmSenderId: cfg.gcmSenderId,
-      updatedAt: row.updatedAt,
-    };
-  }
-
-  /** Parse + validate an operator-uploaded google-services.json and persist the 4 client fields. Throws on
-   *  malformed input or a package-name mismatch (caller surfaces FCM_CONFIG_INVALID). Returns the descriptor
-   *  (apiKey omitted) for the admin response. */
-  async setFirebaseConfig(rawGoogleServicesJson: string): Promise<FirebaseConfigDescriptor> {
-    const cfg = parseGoogleServicesJson(rawGoogleServicesJson);
-    await this.prisma.systemSetting.upsert({
-      where: { key: FIREBASE_KEY },
-      create: { key: FIREBASE_KEY, value: JSON.stringify(cfg) },
-      update: { value: JSON.stringify(cfg) },
-    });
-    this.fbEntry = { value: cfg, fetchedAt: Date.now() };
     return { configured: true, projectId: cfg.projectId, appId: cfg.appId, gcmSenderId: cfg.gcmSenderId };
-  }
-
-  /** Remove the Firebase client config (clients will see {configured:false} and clear their native config). */
-  async clearFirebaseConfig(): Promise<void> {
-    await this.prisma.systemSetting.deleteMany({ where: { key: FIREBASE_KEY } });
-    this.fbEntry = { value: null, fetchedAt: Date.now() };
   }
 
   /** Validate a VAPID config without any network access (deterministic health check). `fcmConfigured` is
@@ -305,29 +309,6 @@ export class SettingsService implements OnModuleInit, OnModuleDestroy {
       // fall through to the warn
     }
     this.logger.warn('stored VAPID row is malformed — treating Web Push as unconfigured');
-    return null;
-  }
-
-  private parseFirebase(raw: string): FirebaseClientConfig | null {
-    try {
-      const obj = JSON.parse(raw) as Partial<FirebaseClientConfig>;
-      if (
-        typeof obj.apiKey === 'string' &&
-        typeof obj.projectId === 'string' &&
-        typeof obj.appId === 'string' &&
-        typeof obj.gcmSenderId === 'string'
-      ) {
-        return {
-          apiKey: obj.apiKey,
-          projectId: obj.projectId,
-          appId: obj.appId,
-          gcmSenderId: obj.gcmSenderId,
-        };
-      }
-    } catch {
-      // fall through to the warn
-    }
-    this.logger.warn('stored firebase-config row is malformed — treating FCM client config as unconfigured');
     return null;
   }
 }

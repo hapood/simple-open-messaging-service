@@ -222,7 +222,20 @@ export class UploadService {
       return { kind: 'rejected', reason: 'no-file' };
     }
     const detected = detectMedia(r.buffer);
-    if (!detected || detected.family !== family) {
+    if (!detected) {
+      return { kind: 'rejected', reason: 'wrong-type' };
+    }
+    // detectMedia cannot split a shared container by family alone: EBML is BOTH webm-audio
+    // (what MediaRecorder emits on Chrome / Android WebView / Tauri webview2 / webkit2gtk) and
+    // webm-video, and ISO-BMFF `ftyp` is BOTH m4a (audio) and mp4 (video). The route name carries
+    // the client's media intent, so the AUDIO route additionally accepts those recorder-emitted
+    // containers (webm, mp4) as audio. detectMedia still proved a real container signature
+    // (anti-forgery — not a forged MIME or arbitrary file), serving is per-object authz-gated
+    // (MediaMessage) + nosniff, and <audio> plays webm/opus + mp4 natively. The VIDEO route stays
+    // strict (no shared-container acceptance) — a video uploaded to /upload/video is unambiguous.
+    const sharedAsAudio =
+      family === 'audio' && detected.family === 'video' && (detected.ext === 'webm' || detected.ext === 'mp4');
+    if (detected.family !== family && !sharedAsAudio) {
       return { kind: 'rejected', reason: 'wrong-type' };
     }
     return {

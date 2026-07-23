@@ -65,6 +65,32 @@ export interface AudioContent {
   duration: number; // seconds
 }
 
+/** Max stored length of a LINK card's display fields. LinkPreviewService caps these at the source
+ *  (page probe); re-checked here so a hand-crafted payload can never store a megabyte of title.
+ *  Comfortably within the 5000-char content budget. */
+const MAX_LINK_TITLE_LEN = 300;
+const MAX_LINK_DESC_LEN = 500;
+const MAX_LINK_SITE_NAME_LEN = 100;
+
+/** A LINK message's stored content (JSON-stringified in Message.content) — a web link card. Built
+ *  authoritatively by LinkPreviewService from an OpenGraph fetch (title/description/siteName pulled
+ *  from the page, og:image localized into CAS), so the metadata is server-sourced and a client
+ *  cannot forge it. `url` is the canonical page URL; `image`, when present, is a server-served CAS
+ *  shard URL of a localized og:image thumbnail — never the original cross-origin URL, which Tauri's
+ *  CSP would block. */
+export interface LinkContent {
+  /** Canonical page URL after redirect resolution; http(s) only. */
+  url: string;
+  /** Page title (og:title → twitter:title → <title>), length-capped. */
+  title?: string;
+  /** Page description, length-capped. */
+  description?: string;
+  /** Site name (og:site_name), length-capped. */
+  siteName?: string;
+  /** Server-served CAS shard URL of the localized og:image thumbnail; omitted when the page had none. */
+  image?: string;
+}
+
 /**
  * Lowercased, sanitized on-disk extension (no dot) parsed from a filename: only [a-z0-9], 1–16
  * chars. Returns '' for no extension OR an extension that is not a safe on-disk token (weird /
@@ -257,4 +283,38 @@ export function parseAudioContent(content: string): AudioContent | null {
   if (!Number.isFinite(size) || size <= 0 || size > MAX_AUDIO_BYTES) return null;
   if (name.length === 0 || name.length > MAX_FILE_NAME_LEN) return null;
   return { url, name, size, mimeType, duration: dv };
+}
+
+/**
+ * Validate + parse a LINK message's content string. A FORM check only — no network. `url` must be an
+ * http(s) URL, and `image` (if present) MUST be a server-served CAS shard (`isUploadUrl`):
+ * LinkPreviewService localizes og:image into CAS, so any non-upload image URL here is a forged
+ * payload that would render a cross-origin / `javascript:` image. The real SSRF screening of the
+ * target page happens at fetch time in SafeFetchService; this guard only ensures a persisted LINK
+ * row can never carry an unsafe URL. Returns the typed content, or null on any shape violation.
+ */
+export function parseLinkContent(content: string): LinkContent | null {
+  let obj: unknown;
+  try {
+    obj = JSON.parse(content);
+  } catch {
+    return null;
+  }
+  if (typeof obj !== 'object' || obj === null) return null;
+  const { url, title, description, siteName, image } = obj as Record<string, unknown>;
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return null;
+  if (title !== undefined && typeof title !== 'string') return null;
+  if (description !== undefined && typeof description !== 'string') return null;
+  if (siteName !== undefined && typeof siteName !== 'string') return null;
+  if (title && title.length > MAX_LINK_TITLE_LEN) return null;
+  if (description && description.length > MAX_LINK_DESC_LEN) return null;
+  if (siteName && siteName.length > MAX_LINK_SITE_NAME_LEN) return null;
+  if (image !== undefined && (typeof image !== 'string' || !isUploadUrl(image))) return null;
+  return {
+    url,
+    title: title || undefined,
+    description: description || undefined,
+    siteName: siteName || undefined,
+    image: image || undefined,
+  };
 }

@@ -414,8 +414,10 @@ function parseVideoContent(content: string): AlbumImage | null {
   }
 }
 
-/** Parse an AUDIO message's content ({url,name,size,mimeType,duration}). Audio has no intrinsic w/h, so a
- *  placeholder landscape aspect is used to give layoutAlbum a compact card (it renders a gray cell + ▶). */
+/** Parse an AUDIO message's content ({url,name,size,mimeType,duration}). Audio has no intrinsic w/h; the
+ *  220×52 dims match layoutAlbum's audio branch (a fixed slim voice bar) and the optimistic sendVoice cell,
+ *  so optimistic ↔ real swap without a height jump. layoutAlbum special-cases audio and ignores these w/h
+ *  for the rect, but they stay semantically consistent for any non-audio-aware reader. */
 function parseAudioContent(content: string): AlbumImage | null {
   try {
     const o = JSON.parse(content);
@@ -425,8 +427,8 @@ function parseAudioContent(content: string): AlbumImage | null {
     return {
       kind: 'audio',
       src,
-      w: 280,
-      h: 120, // placeholder aspect (audio is a gray cell + ▶; no real dimensions)
+      w: 220,
+      h: 52, // slim voice bar (matches layoutAlbum's audio branch + sendVoice)
       size: Number(o.size) || 0,
       duration: Number(o.duration) || 0,
       name: typeof o.name === 'string' ? o.name : '',

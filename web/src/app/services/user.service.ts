@@ -1,4 +1,4 @@
-import { Injectable, signal, inject } from '@angular/core';
+import { Injectable, signal, computed, inject } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
 import { Observable, of, map, shareReplay, firstValueFrom } from 'rxjs';
 import { apiPrefix } from './constants';
@@ -42,6 +42,17 @@ export class UserService {
   private readonly _threadRevCursor = signal<number | undefined>(undefined)
   readonly threadRevCursor = this._threadRevCursor.asReadonly()
 
+  /** The latest friend-request revision (epoch ms | null) = MAX(updatedAt) over incoming FRIEND invites,
+   *  sourced from the HELLO handshake + FRIEND_REQ_REV_UPDATED pushes. The unread badge is derived from it
+   *  vs {@link friendReqAckRev} (the client's IDB ack cursor) — mirroring the threadRevision delta model. */
+  readonly friendReqRev = signal<number | null>(null)
+  /** The client's acknowledged friend-request revision — advanced when the user opens the friend-requests
+   *  panel ({@link markFriendReqRead}). Persisted to IDB so the badge survives restarts. */
+  readonly friendReqAckRev = signal<number | null>(null)
+  /** The unread-friend-request badge: true while the friend-request list changed (friendReqRev advanced)
+   *  past the client's last ack. Read by the icon-rail + nav-drawer templates. */
+  readonly friendReqBadge = computed(() => (this.friendReqRev() ?? 0) > (this.friendReqAckRev() ?? 0))
+
   private readonly webdb = inject(WebdbService)
   private readonly profileRepo = inject(ProfileRepository)
   /** The user key whose DB is currently open (or null) — tracks {@link establishSession} / {@link clearSession}. */
@@ -58,6 +69,8 @@ export class UserService {
     this.sessionUserId.set(null)
     this.sessionProfile.set(undefined)
     this._threadRevCursor.set(undefined)
+    this.friendReqRev.set(null)
+    this.friendReqAckRev.set(null)
     this.profileFetch = undefined
     clearUserScopedLocalStorage()
     if (prev != null) void this.webdb.closeAndDelete(prev)
@@ -67,14 +80,14 @@ export class UserService {
    *  the per-user IDB on `userId` (the webdb-open trigger that previously rode the profile fetch) and
    *  returns once it is open, so the caller (the threadlist) can read IDB without waiting on the profile.
    *  The profile gate ({@link gateSelfProfile}) runs async: if the IDB-cached self profile's `profileRev`
-   *  matches HELLO's, the cached profile is fresh (apply HELLO's `hasUrFriendReq` — independent of
-   *  profileRev, so carrying it closes the offline-friend-request gap) and the fetch is skipped; otherwise
-   *  (first boot / stale) the full profile is fetched + cached. Idempotent for the same user across
-   *  reconnects (re-applies the badge, no re-open). */
-  async establishSession(userId: number, profileRev: number, hasUrFriendReq: boolean): Promise<void> {
+   *  matches HELLO's, the cached profile is fresh and the fetch is skipped; otherwise (first boot / stale)
+   *  the full profile is fetched + cached. The friend-request badge is derived from HELLO's `friendReqRev`
+   *  vs the IDB ack cursor. Idempotent for the same user across reconnects (re-applies friendReqRev). */
+  async establishSession(userId: number, profileRev: number, friendReqRev: number | null): Promise<void> {
     if (this.sessionUserId() === userId) {
-      // Re-establish on reconnect (same user): the webdb is already open — just refresh the badge.
-      this.sessionProfile.update((u) => (u ? { ...u, hasUrFriendReq } : u));
+      // Re-establish on reconnect (same user): the webdb is already open — advance friendReqRev (the badge
+      // re-derives vs the persisted ack cursor).
+      this.applyFriendReqRev(friendReqRev);
       return;
     }
     // Account switch without a logout (defensive): tear down the previous user's DB first.
@@ -85,20 +98,19 @@ export class UserService {
     this.sessionUserId.set(userId);
     this.persistLastUserId(userId); // remember for the next boot's eager IDB paint (pre-HELLO)
     await this.webdb.openForUser(String(userId)); // webdb open — callers can now read IDB
+    // Load the persisted friend-request ack cursor (badge = friendReqRev > ack), then apply HELLO's rev.
     // Profile gate runs async — the threadlist needs only the open webdb, not the profile.
-    void this.gateSelfProfile(userId, profileRev, hasUrFriendReq);
+    await this.loadFriendReqAckRev();
+    this.applyFriendReqRev(friendReqRev);
+    void this.gateSelfProfile(userId, profileRev);
   }
 
-  /** Gate the /user/my-profile fetch on the IDB-cached profileRev. Cache hit + fresh → skip the fetch
-   *  (apply the badge); cache miss (first boot) or stale → fetch + cache the full profile. */
-  private async gateSelfProfile(
-    userId: number,
-    profileRev: number,
-    hasUrFriendReq: boolean,
-  ): Promise<void> {
+  /** Gate the /user/my-profile fetch on the IDB-cached profileRev. Cache hit + fresh → skip the fetch;
+   *  cache miss (first boot) or stale → fetch + cache the full profile. */
+  private async gateSelfProfile(userId: number, profileRev: number): Promise<void> {
     const cached = (await this.webdb.getMeta('selfProfile')) as User | null | undefined;
     if (cached && cached.id === userId && cached.profileRev === profileRev) {
-      this.sessionProfile.set({ ...cached, hasUrFriendReq });
+      this.sessionProfile.set(cached);
       return;
     }
     try {
@@ -115,6 +127,37 @@ export class UserService {
     } catch {
       /* best-effort — sessionProfile stays undefined; the UI holds a placeholder until a retry */
     }
+  }
+
+  /** Apply a friend-request revision (from HELLO or a live FRIEND_REQ_REV_UPDATED push). Sets the signal;
+   *  the badge re-derives via the `friendReqBadge` computed (friendReqRev > ack cursor). */
+  applyFriendReqRev(rev: number | null): void {
+    this.friendReqRev.set(rev);
+  }
+
+  /** Load the persisted friend-request ack cursor from IDB (the rev the user last acknowledged by opening
+   *  the panel). Null when never acknowledged (first boot) → the badge shows until the first panel open. */
+  private async loadFriendReqAckRev(): Promise<void> {
+    const cached = (await this.webdb.getMeta('friendReqAckRev')) as number | null | undefined;
+    this.friendReqAckRev.set(cached ?? null);
+  }
+
+  /** Acknowledge the current friend-request state — the user opened the friend-requests panel. Advances the
+   *  ack cursor to the current friendReqRev + persists, so `friendReqBadge` clears (friendReqRev > ack is
+   *  now false). A later FRIEND_REQ_REV_UPDATED re-arms it. Replaces the former server-side badge disarm. */
+  markFriendReqRead(): void {
+    const rev = this.friendReqRev();
+    this.friendReqAckRev.set(rev);
+    void this.webdb.putMeta('friendReqAckRev', rev);
+  }
+
+  /** A live PROFILE_REV_UPDATED arrived (self profile changed on another device/tab) — the cached
+   *  selfProfile is stale. Force a re-fetch (the native layer also merged this into its cached HELLO, so a
+   *  webview reclaim replays a fresh profileRev). */
+  invalidateSelfProfile(_profileRev: number): void {
+    void this.ensureProfile({ force: true }).subscribe({
+      error: () => { /* best-effort — the next HELLO/gate re-fetches */ },
+    });
   }
 
   /** Boot-time webdb open on the persisted {@link LAST_USER_ID_KEY} — opens the per-user IDB so the

@@ -560,16 +560,15 @@ export interface VapidDescriptor {
   updatedAt?: number
 }
 
-/** Stored Firebase client config (FCM for Android) as seen by the admin read view. Derived from the
- *  operator-uploaded google-services.json; apiKey is intentionally absent (not needed for the admin
- *  display — parallel to the VAPID descriptor omitting privateKey). projectId/appId/gcmSenderId are shown
- *  as proof of which Firebase project is configured. */
+/** Firebase client config (FCM for Android) as seen by the admin read-only status view. Derived from the
+ *  operator's google-services.json on disk (FIREBASE_CLIENT_CONFIG); apiKey is intentionally absent (not
+ *  needed for the admin display — parallel to the VAPID descriptor omitting privateKey).
+ *  projectId/appId/gcmSenderId are shown as proof of which Firebase project is configured. */
 export interface FirebaseConfigDescriptor {
   configured: boolean
   projectId?: string
   appId?: string
   gcmSenderId?: string
-  updatedAt?: number
 }
 
 /** Response of /admin/settings/notifications — the Settings page's read model. */
@@ -592,7 +591,7 @@ export interface VapidHealthReport {
   subjectValid: boolean
   /** FCM send transport configured (env service-account). */
   fcmConfigured: boolean
-  /** FCM CLIENT config published (operator uploaded a google-services.json). Independent of fcmConfigured. */
+  /** FCM CLIENT config present (a google-services.json is on disk at FIREBASE_CLIENT_CONFIG). Independent of fcmConfigured. */
   firebaseClientConfigured: boolean
   webPushConfigured: boolean
   somsDomain: string

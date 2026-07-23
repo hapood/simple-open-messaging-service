@@ -1,0 +1,25 @@
+<div class="ap" [class.ap--failed]="failed()">
+  <button type="button" class="ap-btn" (click)="toggle()"
+          [attr.aria-label]="playing() ? 'Pause' : 'Play'" [disabled]="failed()">
+    @if (playing()) {
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="6" y="5" width="4" height="14" rx="1" />
+        <rect x="14" y="5" width="4" height="14" rx="1" />
+      </svg>
+    } @else {
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M8 5v14l11-7z" />
+      </svg>
+    }
+  </button>
+  <div class="ap-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+       [attr.aria-valuenow]="progressPct()">
+    <div class="ap-fill" [style.width.%]="progressPct()"></div>
+  </div>
+  <span class="ap-dur">{{ durLabel() }}</span>
+</div>
+<!-- No controls attr — the button + progress bar are the UI. preload=metadata for a fast first play.
+     display:none audio still plays + fires events in modern engines; hidden for layout cleanliness. -->
+<audio #audio class="ap-el" [src]="src()" preload="metadata"
+       (timeupdate)="onTimeUpdate()" (play)="onPlay()" (pause)="onPause()"
+       (ended)="onEnded()" (error)="onError()"></audio>

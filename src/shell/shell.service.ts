@@ -7,6 +7,7 @@ import { SERVER_VERSION } from '../common/version.js';
 import { deriveOrigin } from '../common/origin.js';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { ShellCompatDto, ShellWebManifestDto } from './shell.dto.js';
+import { SettingsService } from '../settings/settings.service.js';
 
 /**
  * Injection token for the on-disk shell-artifacts dir. Production value is `cwd/shell-bundle` (provided
@@ -44,9 +45,13 @@ export class ShellService {
   /** mtime-revalidated cache of the parsed manifest — re-read only when the file changes on disk. */
   private cache: { mtimeMs: number; raw: RawManifest } | null = null;
 
-  constructor(@Optional() @Inject(SHELL_DIR) shellDir?: string) {
-    // Falls back to the cwd/shell-bundle convention when instantiated without DI (the unit spec calls
-    // `new ShellService()`; `ShellModule` injects the real provider in the running app).
+  constructor(
+    private readonly settings: SettingsService,
+    @Optional() @Inject(SHELL_DIR) shellDir?: string,
+  ) {
+    // Falls back to the cwd/shell-bundle convention when instantiated without DI (the unit spec passes a
+    // SettingsService stub; `ShellModule` injects the real providers in the running app). SettingsService is
+    // @Global, so it resolves without ShellModule importing SettingsModule.
     this.shellDir = shellDir ?? join(process.cwd(), 'shell-bundle');
     this.manifestPath = join(this.shellDir, 'manifest.json');
   }
@@ -63,11 +68,17 @@ export class ShellService {
     // Canonical client origins for the native shell's symmetric auto-fill: the user enters one domain, the
     // shell fills in the other from these. primaryOrigin always present (SOMS_DOMAIN is required at boot);
     // lanOrigin only when SOMS_LAN_DOMAIN is configured. Same backend on both. HTTPS-only (policy).
+    // Firebase client config is folded in so the Android shell inits FirebaseApp from THIS response (no
+    // separate /push/firebase-config round-trip) — the 4 fields when configured, else {configured:false}.
+    const fb = this.settings.getFirebaseConfig();
     return {
       serverVersion: SERVER_VERSION,
       ...PUBLIC_CONFIG,
       ...(primaryDomain ? { primaryOrigin: deriveOrigin(primaryDomain) } : {}),
       ...(lanDomain ? { lanOrigin: deriveOrigin(lanDomain) } : {}),
+      firebaseConfig: fb
+        ? { configured: true, apiKey: fb.apiKey, projectId: fb.projectId, appId: fb.appId, gcmSenderId: fb.gcmSenderId }
+        : { configured: false },
     };
   }
 

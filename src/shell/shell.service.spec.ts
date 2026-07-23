@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PUBLIC_CONFIG } from '../config/public-config.js';
 import { ShellService } from './shell.service.js';
+import type { SettingsService } from '../settings/settings.service.js';
 
 /**
  * ShellService.compat reports this server's version + the public login policy + the canonical client
@@ -15,7 +16,9 @@ import { ShellService } from './shell.service.js';
  * env per-case because compat() reads process.env at call time (not module load).
  */
 describe('ShellService.compat', () => {
-  const svc = new ShellService();
+  // SettingsService is @Global in the app; pass a stub whose getFirebaseConfig() returns null so the folded
+  // firebaseConfig is {configured:false} without dragging in the real service + its Prisma dep.
+  const svc = new ShellService({ getFirebaseConfig: () => null } as unknown as SettingsService);
   // SERVER_VERSION is read from <cwd>/package.json at module load; compare against the same source so
   // the test tracks the real version rather than hard-coding a literal that drifts on the next bump.
   const pkgVersion = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')).version;

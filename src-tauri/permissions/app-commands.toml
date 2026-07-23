@@ -127,9 +127,9 @@ description = "Enables sse_net — forward navigator online/offline (+ user retr
 commands.allow = ["sse_net"]
 
 [[permission]]
-identifier = "allow-sse-force-reconnect"
-description = "Enables sse_force_reconnect — JS-triggered drop+reopen of the open stream so a freshly-attached webview receives a fresh HELLO (renderer reclaim / FGS-pre-connected cold start)."
-commands.allow = ["sse_force_reconnect"]
+identifier = "allow-sse-replay-hello"
+description = "Enables sse_replay_hello — replay the cached+merged HELLO to a freshly-attached webview (renderer reclaim / FGS-pre-connected cold start) so it bootstraps (userId/threadRevision/profileRev/friendReqRev/latestMessage) without a reconnect."
+commands.allow = ["sse_replay_hello"]
 
 [[permission]]
 identifier = "allow-upload-stream-file"
@@ -156,6 +156,11 @@ identifier = "allow-media-request"
 description = "Enables media_request — the webview→backend MEDIA transport under Tauri. The avatar blob cache does http.get(media://...) which Android WebView cannot fetch (custom-scheme fetch rejected); this command performs the reqwest GET to /uploads/* on the Rust side with the Bearer from ProxyState.token and returns the raw bytes."
 commands.allow = ["media_request"]
 
+[[permission]]
+identifier = "allow-open-external-url"
+description = "Enables open_external_url — open a LINK message card's target URL in the system browser (the webview's nav guard blocks in-app external navigation)."
+commands.allow = ["open_external_url"]
+
 [default]
 description = "All app-defined IPC commands: origin get/set/is-configured + session token + secure (keyring) token + shell dynamic-update (init_*) + desktop SSE supervisor (sse_*)."
 permissions = [
@@ -181,10 +186,11 @@ permissions = [
   "allow-sse-stop",
   "allow-sse-get-state",
   "allow-sse-net",
-  "allow-sse-force-reconnect",
+  "allow-sse-replay-hello",
   "allow-upload-stream-file",
   "allow-report-diagnostics",
   "allow-read-native-log",
   "allow-api-request",
   "allow-media-request",
+  "allow-open-external-url",
 ]

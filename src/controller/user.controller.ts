@@ -86,9 +86,8 @@ export class UserController {
   @ApiOperation({ summary: 'Get the current user profile' })
   @ApiResultResponse(UserResponseDto)
   async getMyProfile(@Request() req: FastifyRequest): Promise<ApiResult> {
-    // findSelfProfile keeps the self-only hasUrFriendReq badge (the source of truth for the
-    // friend-request badge) and omits hashPwd. Every other user read uses findUniqueUser/queryUsers,
-    // which omit BOTH — so the badge only ever appears here, never on another user's data.
+    // findSelfProfile omits hashPwd. The friend-request badge is no longer a self-profile field — it is
+    // derived client-side from the HELLO/push-carried `friendReqRev` vs the client's IDB cursor.
     const data = await this.userService.findSelfProfile(req.user.userId);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
@@ -128,10 +127,13 @@ export class UserController {
       // sharp decode failure (corrupt / pixel-bomb / non-image) → always rejected as invalid image; nothing written to disk or DB.
       return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
     }
-    await this.userService.updateAvatar(req.user.userId, url);
+    const updated = await this.userService.updateAvatar(req.user.userId, url);
     // Fan the fresh avatar to every P2P friend so their conversation list (and open chat header)
     // refreshes in real time. Fire-and-forget — never blocks the upload response.
     void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
+    // Self-profile-rev push so the editor's OTHER tabs/devices learn their own profile changed and re-
+    // fetch (multi-device self refresh); the native HELLO cache also merges it for a fresh webview replay.
+    void this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: updated.profileRev });
     return {
       code: BusinessCode.OK,
       message: 'successful',
@@ -152,6 +154,8 @@ export class UserController {
     // Fan the fresh profile to every P2P friend so their conversation list (and open chat header)
     // refreshes in real time. Fire-and-forget — never blocks the edit response.
     void this.federationService.notifyPeersOfProfileUpdate(req.user.userId);
+    // Self-profile-rev push (multi-device self refresh + native HELLO-cache merge). See updateAvatar.
+    void this.sseService.onProfileRevUpdated(req.user.userId, { profileRev: data.profileRev });
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 

@@ -5,6 +5,7 @@ import { shouldShowDateSeparator } from './date-format';
 import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { InviteRowComponent } from './invite-row/invite-row.component';
+import { LinkRowComponent } from './link-row/link-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
 
@@ -89,9 +90,11 @@ export function createMsgCbElement(
       ? MediaRowComponent
       : data.contentType === 'INVITE'
         ? InviteRowComponent
-        : data.contentType === 'FILE'
-          ? FileRowComponent
-          : TextRowComponent;
+        : data.contentType === 'LINK'
+          ? LinkRowComponent
+          : data.contentType === 'FILE'
+            ? FileRowComponent
+            : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   ref.setInput('data', data);

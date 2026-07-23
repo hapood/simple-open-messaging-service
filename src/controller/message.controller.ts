@@ -24,11 +24,13 @@ import { ResourceId } from '../common/resource-id.decorator.js';
 import {
   parseAudioContent,
   parseFileContent,
+  parseLinkContent,
   parseVideoContent,
 } from '../upload/file-content.js';
 import { UserBlockService } from '../user-block/user-block.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { FederationService } from '../federation/federation.service.js';
+import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { QuotaService } from '../quota/quota.service.js';
 import {
   SendMessageDto,
@@ -55,6 +57,7 @@ export class MessageController {
     private readonly fanout: MessageFanoutService,
     private readonly quota: QuotaService,
     private readonly federation: FederationService,
+    private readonly linkPreview: LinkPreviewService,
   ) {}
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -100,10 +103,21 @@ export class MessageController {
         message: 'invalid audio content',
       };
     }
+    // LINK: the client sends only the URL. The card is rebuilt server-side (SSRF-safe OG fetch +
+    // og:image localization into CAS) so the metadata is server-authoritative and unforgable, then
+    // the assembled JSON is form-validated by parseLinkContent (http(s) url; image must be a CAS shard).
+    if (contentType === ContentType.LINK) {
+      dto.content = JSON.stringify(
+        await this.linkPreview.buildCardContent(dto.content),
+      );
+      if (!parseLinkContent(dto.content)) {
+        return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid link content' };
+      }
+    }
     // Daily quota (local aggregate budget — one bucket shared by all local users). A TEXT send consumes
     // one 'messages' unit; media contentTypes (IMAGE/FILE/VIDEO/AUDIO) are counted at their /upload*
     // step (images / largeFiles), not here, so a media message is never double-counted.
-    if (contentType === ContentType.PURE_TEXT) {
+    if (contentType === ContentType.PURE_TEXT || contentType === ContentType.LINK) {
       const q = await this.quota.tryTickLocal('messages');
       if (q.exceeded) {
         return {

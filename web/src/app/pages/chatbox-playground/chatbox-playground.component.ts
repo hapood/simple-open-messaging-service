@@ -582,6 +582,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       case 'text': void this.sendText(intent.text); return;
       case 'image': void this.sendMediaFromFile(intent.files); return;
       case 'file': void this.sendFileFromFile(intent.files); return;
+      case 'audio': this.sendVoiceMock(intent.blob, intent.duration); return;
     }
   }
 
@@ -646,6 +647,16 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
       };
       this.dispatchPending(this.makeOptimisticItem('', 'FILE', null, file));
     }
+  }
+
+  /** Mock voice send (the playground is sandbox-only — no backend round-trip): expose the recorded Blob via an
+   *  object URL so the AudioPlayerComponent genuinely plays it back, and mount a slim-bar AUDIO bubble. */
+  private sendVoiceMock(blob: Blob, duration: number): void {
+    const scroller = this.scroller;
+    if (!scroller) return;
+    const url = URL.createObjectURL(blob);
+    const imgs: AlbumImage[] = [{ kind: 'audio', src: url, w: 220, h: 52, size: blob.size, duration, name: 'voice' }];
+    this.dispatchPending(this.makeOptimisticItem('', 'AUDIO', imgs));
   }
 
   /** The id to anchor a newest-end insert after: the current tail (a prior fake/pending, or the real newest). -1 if empty

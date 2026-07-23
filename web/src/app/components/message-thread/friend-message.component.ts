@@ -271,6 +271,8 @@ export class MessageThreadComponent implements OnDestroy {
       case 'text': this.sendText(intent.text); return;
       case 'image': void this.sendImages(intent.files); return;
       case 'file': void this.sendFiles(intent.files); return;
+      case 'link': this.sendLink(intent.url); return;
+      case 'audio': this.sendVoice(intent.blob, intent.duration, intent.mimeType); return;
     }
   }
 
@@ -281,6 +283,18 @@ export class MessageThreadComponent implements OnDestroy {
     const item = this.makeOptimisticItem(cid, trimmed, 'PURE_TEXT', null, null);
     this.dispatchPending(item);
     this.dispatchHttpSendText(item);
+  }
+
+  /** Send a bare URL as a LINK card. The optimistic item carries a bare `{ url }` card (rendered at
+   *  once); the server rebuilds it with OG metadata + a localized og:image, and the NEW_MESSAGE echo
+   *  (matched by clientMessageId) reconciles the bare card → rich card. The wire `content` is the bare
+   *  URL — the server is authoritative for the card body. */
+  private sendLink(url: string): void {
+    if (!this.threadId()) return;
+    const cid = this.newClientMessageId();
+    const item = this.makeOptimisticItem(cid, JSON.stringify({ url }), 'LINK', null, null);
+    this.dispatchPending(item);
+    this.dispatchHttpSendLink(item, url);
   }
 
   private async sendImages(files: FileList): Promise<void> {
@@ -300,11 +314,11 @@ export class MessageThreadComponent implements OnDestroy {
   private async sendFiles(files: FileList): Promise<void> {
     if (!this.threadId()) return;
     for (const f of Array.from(files)) {
-      // Route by MIME: video/audio become VIDEO/AUDIO media cards; everything else stays a FILE message.
+      // Route by MIME: video → a VIDEO card. Picked audio FILES (wav/mp3/…) are sent as ordinary FILE
+      // attachments for now; in-app recorded voice clips do NOT enter here — they arrive as a dedicated
+      // 'audio' intent and go through sendVoice. Everything else is a FILE message.
       if (f.type.startsWith('video/')) {
         void this.sendVideo(f);
-      } else if (f.type.startsWith('audio/')) {
-        void this.sendAudio(f);
       } else {
         void this.sendFile(f);
       }
@@ -341,20 +355,23 @@ export class MessageThreadComponent implements OnDestroy {
     void this.uploadAndSendVideo(cid, f, item, meta);
   }
 
-  /** Send an audio clip as an AUDIO message: probe duration client-side, optimistic gray cell, upload + send. */
-  private async sendAudio(f: File): Promise<void> {
+  /** Send an in-app recorded voice clip as an AUDIO message. The MediaRecorder Blob is wrapped in a File and
+   *  rides the same staged send-media flow as any other media; the duration is already known (no <audio>
+   *  probe needed). The slim bar dims (220×52) match layoutAlbum's audio branch + the AudioPlayerComponent,
+   *  and are integer px so the kernel's height model stays exact. */
+  private sendVoice(blob: Blob, duration: number, mimeType: string): void {
+    if (!this.threadId()) return;
     const cid = this.newClientMessageId();
-    const meta = await readAudioMeta(f);
+    const f = new File([blob], `voice.${mimeTypeToExt(mimeType)}`, { type: mimeType || 'audio/webm' });
     const url = URL.createObjectURL(f);
     this.blobUrls.add(url);
     const images: AlbumImage[] = [{
-      kind: 'audio', src: url, w: 280, h: 120, // placeholder aspect (audio is a gray cell + ▶)
-      size: f.size, duration: meta.duration, name: f.name,
+      kind: 'audio', src: url, w: 220, h: 52, size: f.size, duration, name: f.name,
     }];
     const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
     this.pendingFiles.set(cid, { file: f, kind: 'audio' });
     this.dispatchPending(item);
-    void this.uploadAndSendAudio(cid, f, item, meta);
+    void this.uploadAndSendAudio(cid, f, item, { duration });
   }
 
   private dispatchHttpSendText(item: CbItem<ChatItemData>): void {
@@ -366,6 +383,20 @@ export class MessageThreadComponent implements OnDestroy {
     })).then((res) => {
       if (res.code !== 0) void this.failPending(item);
       else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
+    }).catch(() => void this.failPending(item));
+  }
+
+  /** LINK send: the wire content is the bare URL (the server builds the card). Same reconcile contract
+   *  as text — 200 → spinner→check; the SSE echo swaps the bare optimistic card for the server-built one. */
+  private dispatchHttpSendLink(item: CbItem<ChatItemData>, url: string): void {
+    const cid = item.clientMessageId!;
+    const tid = this.threadId() ?? 0;
+    if (!tid) return;
+    firstValueFrom(this.msgService.sendMessage({
+      threadId: tid, content: url, contentType: 'LINK', clientMessageId: cid,
+    })).then((res) => {
+      if (res.code !== 0) void this.failPending(item);
+      else void this.markSent(item);
     }).catch(() => void this.failPending(item));
   }
 
@@ -463,8 +494,24 @@ export class MessageThreadComponent implements OnDestroy {
     await scroller.reconcilePending(); // morph failed→sending in place
     const pending = this.pendingFiles.get(clientMessageId);
     if (pending) {
-      if (pending.kind === 'image') void this.uploadAndSendImage(clientMessageId, pending.file, item, await readImageDims(pending.file));
-      else void this.uploadAndSendFile(clientMessageId, pending.file, item);
+      // Replay the ORIGINAL send path for the pending kind. (audio/video previously fell through to
+      // uploadAndSendFile — a latent bug that re-sent them as a FILE attachment on retry.)
+      switch (pending.kind) {
+        case 'image':
+          void this.uploadAndSendImage(clientMessageId, pending.file, item, await readImageDims(pending.file));
+          break;
+        case 'video':
+          void this.uploadAndSendVideo(clientMessageId, pending.file, item, await readVideoMeta(pending.file));
+          break;
+        case 'audio': {
+          const meta = await readAudioMeta(pending.file);
+          void this.uploadAndSendAudio(clientMessageId, pending.file, item, meta);
+          break;
+        }
+        default:
+          void this.uploadAndSendFile(clientMessageId, pending.file, item);
+          break;
+      }
     } else {
       this.dispatchHttpSendText(item);
     }
@@ -721,6 +768,16 @@ function readVideoMeta(f: File): Promise<{ w: number; h: number; duration: numbe
     v.onerror = () => { URL.revokeObjectURL(url); resolve({ w: 0, h: 0, duration: 0 }); };
     v.src = url;
   });
+}
+
+/** Map a MediaRecorder audio MIME to a display extension for the synthesized voice File name. Cosmetic only —
+ *  the backend re-derives the on-disk extension from the real bytes (magic-byte-trusted), so this never
+ *  affects storage or serving; it just gives the clip a sensible filename. */
+function mimeTypeToExt(mime: string): string {
+  const m = (mime || '').toLowerCase();
+  if (m.includes('mp4') || m.includes('m4a')) return 'mp4';
+  if (m.includes('ogg')) return 'ogg';
+  return 'webm'; // default: the Chrome/Android/Tauri MediaRecorder output
 }
 
 /** Probe an audio clip's duration via <audio> loadedmetadata (for the AUDIO message content + overlay). */

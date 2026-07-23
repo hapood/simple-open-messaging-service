@@ -142,6 +142,17 @@ export class ThreadRepository {
         case 'THREAD_REVISION_UPDATED':
           if (m.data !== undefined) this.onThreadRevisionUpdated((m.data as { revision: number }).revision);
           break;
+        case 'PROFILE_REV_UPDATED':
+          // Self-profile changed (this user's own edit on another device/tab) → invalidate the IDB-cached
+          // selfProfile + re-fetch. The native layer ALSO merges this into its cached HELLO (so a webview
+          // reclaim replays a fresh profileRev); this arm is the live (foreground) refresh.
+          if (m.data !== undefined) this.userService.invalidateSelfProfile((m.data as { profileRev: number }).profileRev);
+          break;
+        case 'FRIEND_REQ_REV_UPDATED':
+          // The friend-request list changed (new/accepted/declined invite) → advance the friendReqRev the
+          // badge derives from (friendReqRev > IDB ack cursor). The native layer merges this too.
+          if (m.data !== undefined) this.userService.applyFriendReqRev((m.data as { friendReqRev: number | null }).friendReqRev);
+          break;
         case 'PEER_PROFILE_UPDATED':
           if (m.data !== undefined) this.onPeerProfileUpdated(m.data as unknown as User);
           break;
@@ -650,7 +661,7 @@ export class ThreadRepository {
     //    start: already opened by restoreSession's restoreWebdb, idempotent here). The profile fetch is
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
-    await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.hasUrFriendReq ?? false);
+    await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.friendReqRev ?? null);
     // 2. Load the persisted missed-summary cursor (the walk's `from`) + the per-thread dismiss-HWM map.
     await this.loadMissedCursor();
     await this.loadThreadHwms();
@@ -887,13 +898,14 @@ export class ThreadRepository {
 /** HELLO (SSE connect handshake) payload — pushed once per connect, the sole boot-critical state the
  *  client cannot derive locally: the caller's userId (opens the per-user IDB), the newest-message cursor
  *  (→ the missed-summary walk's `to`), the thread-list revision (→ delta-replay `(0, rev]` on first
- *  connect), and the self-profile version + friend-request badge (→ gate the /user/my-profile fetch). */
+ *  connect), the self-profile version (→ gate the /user/my-profile fetch), and the friend-request revision
+ *  (→ the unread badge, derived vs the client's IDB ack cursor). */
 interface HelloPayload {
   userId?: number;
   latestMessage?: { threadId: number; seq: number; ts: number } | null;
   threadRevision?: number;
   profileRev?: number;
-  hasUrFriendReq?: boolean;
+  friendReqRev?: number | null;
 }
 
 interface ThreadMetaPayload {

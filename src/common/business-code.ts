@@ -109,6 +109,4 @@ export enum BusinessCode {
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)
-  FCM_CONFIG_INVALID = 60002, // uploaded google-services.json failed validation (malformed JSON / missing
-                              // fields / no Android client for the expected package com.soms.client)
 }

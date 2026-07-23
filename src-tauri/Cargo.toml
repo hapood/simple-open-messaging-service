@@ -22,6 +22,11 @@ tauri = { version = "2", features = [] }
 # popup on Tauri desktop — the webview's Notification API is unreliable in desktop shells, so the
 # plugin is the documented path). Not used on Android (FCM/WorkManager cover it there).
 tauri-plugin-notification = "2"
+# Open external links (a LINK message card's target page) in the system browser. The webview's nav
+# guard (nav_allowed) confines document navigation to the app origin, so an external URL is routed to
+# the OS opener instead of being navigated inside the privileged webview (which would run an arbitrary
+# page with IPC / secure-storage / media-proxy access). Cross-platform (desktop + Android).
+tauri-plugin-opener = "2"
 # Structured logging: provides the `log` facade impl so src/lib.rs can emit `warn!`/`error!`/`info!`.
 # Registered FIRST in run() so it captures every later plugin's setup + the URI-scheme proxies + the
 # desktop SSE supervisor. Sinks (see run()): Webview → forward every Rust log into the webview console

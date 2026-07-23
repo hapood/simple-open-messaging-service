@@ -15,7 +15,7 @@ import { MatSnackBar } from '@angular/material/snack-bar';
 import { TranslocoModule, TranslocoService } from '@jsverse/transloco';
 import { BrandLogoComponent } from '../../components/brand-logo/brand-logo.component';
 import { ConfigService } from '../../services/config.service';
-import { PushService } from '../../services/push.service';
+import { PushService, type FirebaseClientConfigPayload } from '../../services/push.service';
 import {
   apiOrigin,
   apiOriginSecondary,
@@ -70,6 +70,9 @@ export class ServerConfigPageComponent {
   private readonly transloco = inject(TranslocoService);
   private readonly config = inject(ConfigService);
   private readonly push = inject(PushService);
+  /** The most recent /shell/compat firebaseConfig probed for the origin being connected — applied to native
+   *  in finalize() (Android: re-inits FirebaseApp). Stashed so the auto-fill confirm-modal path applies it too. */
+  private firebaseConfig: FirebaseClientConfigPayload | null = null;
   /** Saved SPA nav-state `__SOMS_BACK__` to restore when this page is left. */
   private prevBack: typeof window.__SOMS_BACK__ = window.__SOMS_BACK__;
   /** Arming timer for the double-back-to-exit pattern (first-run only); cleared on destroy. */
@@ -188,22 +191,30 @@ export class ServerConfigPageComponent {
       // Validate each entered origin (compat + cert); only ONE need pass — on the LAN the public origin is
       // unreachable (no hairpin NAT), and vice-versa on the WAN. Capture the last error so a total failure
       // still surfaces a specific message (addr / compat / cert) instead of a generic one.
-      let validated: { origin: string; primary?: string | null; lan?: string | null } | null = null;
+      let validated: {
+        origin: string;
+        primary?: string | null;
+        lan?: string | null;
+        firebaseConfig?: FirebaseClientConfigPayload | null;
+      } | null = null;
       let lastErr: unknown = null;
       if (primaryRaw) {
         const r = await this.probe(primaryRaw);
-        if (r.ok) validated = { origin: primaryRaw, primary: r.primary, lan: r.lan };
+        if (r.ok) validated = { origin: primaryRaw, primary: r.primary, lan: r.lan, firebaseConfig: r.firebaseConfig };
         else lastErr = r.error;
       }
       if (!validated && lanRaw) {
         const r = await this.probe(lanRaw);
-        if (r.ok) validated = { origin: lanRaw, primary: r.primary, lan: r.lan };
+        if (r.ok) validated = { origin: lanRaw, primary: r.primary, lan: r.lan, firebaseConfig: r.firebaseConfig };
         else lastErr = r.error;
       }
       if (!validated) {
         this.fail(lastErr);
         return;
       }
+      // Stash the probed Firebase client config (same for primary + lan — one backend) so finalize() applies
+      // it to native regardless of which path reaches finalize (direct save or the auto-fill confirm modal).
+      this.firebaseConfig = validated.firebaseConfig ?? null;
       // Resolve the canonical pair: what the user entered wins; the other is auto-filled from the server's
       // advertised origins (same backend). `primary` is always required (federation identity + the config
       // guard) — Part B guarantees primaryOrigin is always present in /shell/compat.
@@ -234,15 +245,19 @@ export class ServerConfigPageComponent {
    *  success, or the captured error on failure (the caller tries the other origin / surfaces it). */
   private async probe(
     origin: string,
-  ): Promise<{ ok: true; primary?: string | null; lan?: string | null } | { ok: false; error: unknown }> {
+  ): Promise<
+    | { ok: true; primary?: string | null; lan?: string | null; firebaseConfig?: FirebaseClientConfigPayload | null }
+    | { ok: false; error: unknown }
+  > {
     try {
-      const compat = await tauriInvoke<{ primaryOrigin?: string | null; lanOrigin?: string | null }>(
-        'init_check_compat',
-        { origin },
-      );
+      const compat = await tauriInvoke<{
+        primaryOrigin?: string | null;
+        lanOrigin?: string | null;
+        firebaseConfig?: FirebaseClientConfigPayload | null;
+      }>('init_check_compat', { origin });
       this.phase.set('cert');
       await tauriInvoke('init_validate_cert', { origin });
-      return { ok: true, primary: compat.primaryOrigin, lan: compat.lanOrigin };
+      return { ok: true, primary: compat.primaryOrigin, lan: compat.lanOrigin, firebaseConfig: compat.firebaseConfig ?? null };
     } catch (e) {
       return { ok: false, error: e };
     }
@@ -275,9 +290,10 @@ export class ServerConfigPageComponent {
       // Up to date (or probe skipped): persist both origins and proceed in-page to login.
       await setApiOrigin(primary);
       await setApiOriginSecondary(lan);
-      // The new server may publish a different Firebase project — re-sync the native FCM client (Android).
-      // The backend changed → invalidate the cached /config so login re-fetches loginMode/registrationOpen.
-      void this.push.refreshFirebaseConfig();
+      // The new server may publish a different Firebase project — apply its /shell/compat firebaseConfig to
+      // native so the Android shell re-inits FirebaseApp. The backend changed → invalidate the cached /config
+      // so login re-fetches loginMode/registrationOpen.
+      this.push.applyFirebaseConfig(this.firebaseConfig);
       void this.config.reload();
       this.phase.set('done');
       this.route.redirect(RoutePage.AUTH_LOGIN);

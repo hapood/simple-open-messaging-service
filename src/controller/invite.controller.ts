@@ -29,8 +29,9 @@ import {
 
 /**
  * Invite endpoints — the single API for friend-add (and, when wired, group-invite). The service owns
- * invite DB state + the `hasUrFriendReq` badge; this controller orchestrates S2S delivery (federated
- * targets) and the live NOTIFY frames, mirroring how UserController orchestrated the old friend flow.
+ * invite DB state + the derived `friendReqRev` (MAX(updatedAt) over incoming FRIEND invites); this
+ * controller orchestrates S2S delivery (federated targets) and the live NOTIFY + FRIEND_REQ_REV_UPDATED
+ * frames, mirroring how UserController orchestrated the old friend flow.
  *
  * The friend-pending lists are parameterless (backend hardcodes FRIEND / PENDING / last-7-days / ≤200)
  * and additionally filter out any invite whose peer is already a friend, so a stale row never offers
@@ -132,7 +133,10 @@ export class InviteController {
         };
       }
     } else {
-      // Local target → live NOTIFY so the badge arms instantly (the service armed hasUrFriendReq in tx).
+      // Local target → live NOTIFY (the notification popup + fromUserId/inviteId) AND the friendReqRev
+      // push (the mergeable badge signal). friendReqRev = MAX(updatedAt) over the target's incoming FRIEND
+      // invites, just advanced by the PENDING invite createFriendInvite wrote; the client compares it to
+      // its IDB cursor to arm the badge, and the native layer merges it into its cached HELLO.
       this.sseService.onNotify(
         target.id,
         serializeBody({
@@ -141,6 +145,9 @@ export class InviteController {
           fromUserId: me,
           inviteId: res.inviteId,
         }),
+      );
+      void this.inviteService.findLatestFriendReqUpdate(target.id).then((friendReqRev) =>
+        this.sseService.onFriendReqRevUpdated(target.id, { friendReqRev }),
       );
     }
     return {
@@ -192,6 +199,12 @@ export class InviteController {
       // Local inviter: recordThreadAdd fired for both users in acceptInvite's tx → both sides get
       // THREAD_REVISION_UPDATED; no NOTIFY (the former FRIEND_APPROVED push is dropped — the delta
       // subsumes it, aligning local with the federated path which already dropped it).
+      // The accepted FRIEND invite was incoming to the accepter → its status flip advanced friendReqRev
+      // (MAX updatedAt over their incoming FRIEND invites). Push so the badge re-derives + the native
+      // HELLO cache stays fresh for a webview reclaim.
+      void this.inviteService.findLatestFriendReqUpdate(req.user.userId).then((friendReqRev) =>
+        this.sseService.onFriendReqRevUpdated(req.user.userId, { friendReqRev }),
+      );
       return {
         code: BusinessCode.OK,
         message: 'friend request approved',
@@ -240,6 +253,11 @@ export class InviteController {
       if (e instanceof BusinessException) return { code: e.bizCode, message: e.message };
       throw e;
     }
+    // The rejected invite was incoming to the rejecter → friendReqRev advanced. Push so the badge
+    // re-derives + the native HELLO cache stays fresh.
+    void this.inviteService.findLatestFriendReqUpdate(req.user.userId).then((friendReqRev) =>
+      this.sseService.onFriendReqRevUpdated(req.user.userId, { friendReqRev }),
+    );
     return { code: BusinessCode.OK, message: 'invite rejected' };
   }
 
