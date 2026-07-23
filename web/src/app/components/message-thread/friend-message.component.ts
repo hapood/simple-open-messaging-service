@@ -155,7 +155,7 @@ export class MessageThreadComponent implements OnDestroy {
 
   private initScroller(viewport: HTMLDivElement, content: HTMLDivElement, trd: ConversationItem): void {
     this.source = new HttpItemSource(
-      trd, this.userService.sessionProfile()?.id ?? 0, this.msgRepo, this.userService, this.wsService,
+      trd, this.msgRepo, this.userService, this.wsService,
       // SSE live path is SIGNAL-ONLY: onSseEvent filters by threadId and fires onSignal — the body is not
       // shaped/cached here (the conversation-list preview reads it in its own subscriber; the chatbox treats
       // the frame as "newer data exists, go pull it"). onMessageSignal pulls from the DB via getNewer /

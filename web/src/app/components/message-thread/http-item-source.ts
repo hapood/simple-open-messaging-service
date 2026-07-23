@@ -76,7 +76,6 @@ export class HttpItemSource implements CbSource<ChatItemData> {
 
   constructor(
     private readonly conv: ConversationItem,
-    private readonly myUserId: number,
     private readonly repo: MessageRepository,
     private readonly userService: UserService,
     wsService: WebsocketService,
@@ -340,11 +339,21 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     return out;
   }
 
+  /** The authenticated user's id, resolved LIVE at message-shape time — NOT snapshotted at construction.
+   *  `establishSession` sets `sessionUserId` synchronously on the HELLO handshake (BEFORE the async self-
+   *  profile fetch), so reading it here yields the correct id the instant HELLO lands. Snapshotting the id
+   *  at construction instead froze a pre-HELLO `0`, which made `creator === 0` false for EVERY message and
+   *  rendered both sides' messages on the peer's side (the "reconnect attribution" bug). Falls back to the
+   *  profile id, then `0` only when the session is genuinely unknown (shaped before any HELLO). */
+  private get selfUserId(): number {
+    return this.userService.sessionUserId() ?? this.userService.sessionProfile()?.id ?? 0;
+  }
+
   private toMsgData(m: Message, images: AlbumImage[] | null, file: FileInfo | null): ChatMsgData {
     const p = this.profiles.get(m.creator);
     return {
       type: 'msg', msgId: m.seq, creator: m.creator,
-      isSelf: p?.isSelf ?? m.creator === this.myUserId,
+      isSelf: p?.isSelf ?? m.creator === this.selfUserId,
       name: p?.name ?? '', text: m.content, time: dayjs(m.createdAt).format('HH:mm'),
       contentType: m.contentType, images, file, createdAtMs: m.createdAt,
       mediaStatus: m.mediaStatus,
@@ -357,7 +366,7 @@ export class HttpItemSource implements CbSource<ChatItemData> {
     if (missing.size === 0) return;
     const res = await firstValueFrom(this.userService.queryUserInfo({ userIds: [...missing] }));
     if (res.code === 0 && res.data) {
-      for (const u of res.data) this.profiles.set(u.id, { name: u.name, isSelf: u.id === this.myUserId });
+      for (const u of res.data) this.profiles.set(u.id, { name: u.name, isSelf: u.id === this.selfUserId });
     }
   }
 }

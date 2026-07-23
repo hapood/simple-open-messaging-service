@@ -77,7 +77,19 @@ export class RustChannelSseTransport extends RealtimeTransport {
     // renderer wouldn't know the live state until the next transition (mirrors Android's
     // `SomsFcm.getConnState()` seed in NativeEventTransport).
     const live = await tauriInvoke<string>('sse_get_state');
-    if (live && this.installed) this.sink.onState(live as ConnectionState);
+    if (!this.installed) return; // stop() won the race while we were subscribing — the seed is stale
+    if (live === 'open') {
+      // The connection was RETAINED across this webview attach (renderer reclaim) or the supervisor opened
+      // it before the webview mounted (cold start) — so no fresh HELLO is forthcoming, yet this webview
+      // needs one to bootstrap (userId / threadRevision / profile). Force the supervisor to drop + reopen
+      // the stream: the fresh connection re-registers and the server re-pushes HELLO to the just-installed
+      // listeners. Skip seeding 'open' — the forced reopen emits its own reconnecting→open transitions, and
+      // HELLO clears the facade's handshake timeout promptly. (The browser worker never hits this: it owns
+      // its own connection, which dies with the webview, so every start() is a genuine fresh connect.)
+      await tauriInvoke('sse_force_reconnect');
+    } else if (live) {
+      this.sink.onState(live as ConnectionState);
+    }
   }
 
   stop(): void {
@@ -102,5 +114,14 @@ export class RustChannelSseTransport extends RealtimeTransport {
   override retryNow(): void {
     this.sink.onReconnectIn(null);
     void tauriInvoke('sse_net', { online: true });
+  }
+
+  /** Force-reconnect the Rust stream — both the start() retained-open case above AND the facade's HELLO-
+   *  timeout backstop route here. `sse_force_reconnect` makes the supervisor drop ONLY the current stream
+   *  and reopen, so the JS listeners stay attached and there is no event gap (the base `stop()+start()`
+   *  would detach the listeners, reboot the whole supervisor, and miss events in the gap). Mirrors Android's
+   *  `SomsFcm.forceReconnect` (ACTION_FORCE_RECONNECT). */
+  override forceReconnect(): void {
+    void tauriInvoke('sse_force_reconnect');
   }
 }

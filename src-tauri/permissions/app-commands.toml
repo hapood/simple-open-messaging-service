@@ -127,6 +127,11 @@ description = "Enables sse_net — forward navigator online/offline (+ user retr
 commands.allow = ["sse_net"]
 
 [[permission]]
+identifier = "allow-sse-force-reconnect"
+description = "Enables sse_force_reconnect — JS-triggered drop+reopen of the open stream so a freshly-attached webview receives a fresh HELLO (renderer reclaim / FGS-pre-connected cold start)."
+commands.allow = ["sse_force_reconnect"]
+
+[[permission]]
 identifier = "allow-upload-stream-file"
 description = "Enables upload_stream_file — desktop streaming multipart upload from an on-disk file path (avoids buffering the whole file through the webview/IPC)."
 commands.allow = ["upload_stream_file"]
@@ -176,6 +181,7 @@ permissions = [
   "allow-sse-stop",
   "allow-sse-get-state",
   "allow-sse-net",
+  "allow-sse-force-reconnect",
   "allow-upload-stream-file",
   "allow-report-diagnostics",
   "allow-read-native-log",

@@ -230,6 +230,15 @@ class MainActivity : TauriActivity() {
         // release APK would be a security hole. Wry/Tauri v2 does NOT auto-enable this even for debuggable
         // builds; it must be turned on explicitly. Static on WebView → applies process-wide to every WebView.
         if (BuildConfig.DEBUG) WebView.setWebContentsDebuggingEnabled(true)
+        // Lock page zoom at the engine level: this is a native shell, not a zoomable web page, and
+        // pinch-zooming it breaks the virtual-scroll kernel's integer-pixel height model. The viewport
+        // meta in index.html (`user-scalable=no`) is the same lock for the PWA/browser build; here we
+        // enforce it authoritatively on the WebView, which is robust against OEM WebView cores that
+        // ignore the meta — notably the aged Huawei RVL-AL09 (Android 9) / DBY-W09 (Android 12) fleet.
+        // setSupportZoom(false) disables every zoom path (pinch, double-tap, buttons); turning the
+        // built-in zoom controls off guarantees no +/- overlay surfaces regardless of OEM defaults.
+        webView.settings.setSupportZoom(false)
+        webView.settings.setBuiltInZoomControls(false)
         SomsBridge.webView = webView
         // Expose the Kotlin→JS-callable surface (token read + permission request). Added once here,
         // when the webview is created, rather than repeatedly in onResume.

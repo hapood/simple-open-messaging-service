@@ -117,12 +117,14 @@
 }
 
 // Bubble (WhatsApp: light-green/white + rounded corners + bottom-right timestamp per row).
+// Uniform 3px corner radius for every bubble — the leading msg-head and the in-group msg-body share it, so a sender's
+// consecutive run reads as one continuous rounded block (only the avatar, name label, and tail nub distinguish the head).
 .msg-bubble {
   position: relative;
   min-height: 40px;
   box-sizing: border-box;
   padding: 6px 10px;
-  border-radius: 10px;
+  border-radius: 3px;
   max-width: 100%;
   display: flex;
   align-items: center;
@@ -135,14 +137,9 @@
     background: var(--im-bubble-other);
     color: var(--im-bubble-text);
   }
-  &.msg-body {
-    border-radius: 3px;
-  }
+  // msg-head = the FIRST bubble of each sender's consecutive run (shows avatar + name + tail). It reuses the base 3px
+  // radius with no corner override; the tail nub below is the only visual distinction from the follow-up bodies.
   &.msg-head {
-    border-top-left-radius: 10px;
-    border-top-right-radius: 10px;
-    border-bottom-left-radius: 3px;
-    border-bottom-right-radius: 3px;
     // Tail tip: a 45°-rotated small square straddling the bubble edge (half-in/half-out, same color) — the inner
     // half is covered by the bubble, the outer half becomes the triangular tail, blending seamlessly (the
     // border-triangle technique tends to leave gaps at the corners).

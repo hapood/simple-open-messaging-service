@@ -1,3 +1,5 @@
+@use "../../assets/utils.scss" as *;
+
 // ViewEncapsulation.None: styles are global, isolated entirely by the pg- prefix.
 //
 // [Style boundary] This file only governs the playground shell: stage / header /
@@ -36,10 +38,9 @@
   // input bar's z-index can't leak above the mobile drawer / sibling chrome. isolation does NOT create a
   // containing block for position:fixed, so the re-parented .ci-backdrop still anchors to the real viewport.
   isolation: isolate;
-  // Effective keyboard lift = raw --kbd-lift minus the --soms-safe-bottom the bar's own bottom padding
-  // already covers (the keyboard covers the gesture bar, so that clearance is redundant while it's open).
-  // Clamped at 0; 0 on browser (no --soms-safe-bottom). See .msg-container for the full rationale.
-  --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
+  // Effective keyboard lift (safe-area-corrected) — shared with production .msg-container via
+  // assets/utils.scss#kbd-lift-effective.
+  @include kbd-lift-effective;
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;

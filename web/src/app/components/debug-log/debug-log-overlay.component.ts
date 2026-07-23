@@ -12,7 +12,7 @@ import {
   viewChild,
 } from '@angular/core';
 import { isAndroidNative, isTauri, tauriInvoke } from '../../services/runtime';
-import { clearConsoleBuffer, getConsoleEntries } from '../../services/log-buffer';
+import { getConsoleEntries } from '../../services/log-buffer';
 import {
   fromJsEntry,
   type LogLevel,
@@ -80,10 +80,7 @@ type Line = MergedLine & { id: number };
             [value]="query()"
             (input)="query.set($any($event.target).value)"
           />
-          <button type="button" class="dbg-btn" [class.on]="auto()" (click)="toggleAuto()" title="Auto-refresh">⟳</button>
-          <button type="button" class="dbg-btn" (click)="copyAll()" title="Copy filtered">⧉</button>
-          <button type="button" class="dbg-btn" (click)="exportTxt()" title="Export .txt">⤓</button>
-          <button type="button" class="dbg-btn" (click)="clearJs()" title="Clear">⌫</button>
+          <button type="button" class="dbg-btn" [class.on]="auto()" (click)="toggleAuto()" title="Follow tail">⤓</button>
           <button type="button" class="dbg-btn close" (click)="close.emit()" title="Close">✕</button>
         </div>
         <div class="dbg-status">
@@ -342,6 +339,7 @@ export class DebugLogOverlayComponent implements OnDestroy {
     if (this.dragging) {
       window.removeEventListener('pointermove', this.onGripMove);
       window.removeEventListener('pointerup', this.onGripUp);
+      window.removeEventListener('pointercancel', this.onGripCancel);
     }
     window.removeEventListener('pointerdown', this.clearSuppress);
   }
@@ -433,6 +431,10 @@ export class DebugLogOverlayComponent implements OnDestroy {
   private pendingTx = 0;
   private pendingTy = 0;
   private rafId = 0;
+  /** The grip element currently capturing the active pointer (null between gestures). */
+  private gripEl: HTMLElement | null = null;
+  /** The pointerId captured on {@link gripEl}; -1 between gestures. */
+  private pointerId = -1;
   /** Swallow the one backdrop click a drag synthesizes on release over the dim layer. */
   private suppressClose = false;
 
@@ -440,6 +442,15 @@ export class DebugLogOverlayComponent implements OnDestroy {
     if (e.pointerType === 'mouse' && e.button !== 0) return; // left-button only for mouse
     const panel = this.panelEl()?.nativeElement;
     if (!panel) return;
+    const grip = e.currentTarget as HTMLElement;
+    // Capture the pointer on the grip for the whole gesture. A window-only listener loses the touch stream
+    // in a WebView the moment implicit capture is dropped or a stray pan issues pointercancel — so on touch
+    // the drag never starts (mouse-on-desktop happened to work because mouse pointers need no capture). This
+    // is the pattern the app's other pointer drags (avatar-editor, gallery-viewer) already use; a captured
+    // event is still dispatched to its target and bubbles, so the window listeners below keep firing.
+    grip.setPointerCapture(e.pointerId);
+    this.gripEl = grip;
+    this.pointerId = e.pointerId;
     e.preventDefault();
     // The single layout read of the drag: visual rect = centered layout + the current (tx, ty) translate.
     const rect = panel.getBoundingClientRect();
@@ -456,6 +467,7 @@ export class DebugLogOverlayComponent implements OnDestroy {
     panel.classList.add('dragging'); // will-change: transform promotes the panel to its own compositor layer
     window.addEventListener('pointermove', this.onGripMove);
     window.addEventListener('pointerup', this.onGripUp);
+    window.addEventListener('pointercancel', this.onGripCancel);
   }
 
   private onGripMove = (e: PointerEvent): void => {
@@ -488,23 +500,46 @@ export class DebugLogOverlayComponent implements OnDestroy {
   };
 
   private onGripUp = (): void => {
+    const moved = this.moved;
+    this.endDrag();
+    if (moved) {
+      // A drag ending over the dim backdrop can still synthesize a click on .dbg-overlay — swallow it once,
+      // and clear on the next pointerdown anywhere so a later genuine click still closes.
+      this.suppressClose = true;
+      window.addEventListener('pointerdown', this.clearSuppress, { once: true });
+    }
+    this.moved = false;
+  };
+
+  /** pointercancel (a system interrupt — OS notification, gesture theft) ends the gesture the same way a
+   *  release does, minus the released-over-backdrop swallow, so the panel is never left mid-drag. */
+  private onGripCancel = (): void => {
+    this.endDrag();
+    this.moved = false;
+  };
+
+  /** Tear down the gesture: unhook the listeners, commit any trailing rAF offset, release capture, drop the
+   *  compositor-promoting class. Shared by real pointerup and pointercancel. */
+  private endDrag(): void {
     window.removeEventListener('pointermove', this.onGripMove);
     window.removeEventListener('pointerup', this.onGripUp);
+    window.removeEventListener('pointercancel', this.onGripCancel);
     // Commit the final offset synchronously: a trailing move may have a frame scheduled that won't fire now.
     if (this.rafId) {
       cancelAnimationFrame(this.rafId);
       this.applyTransform();
     }
     this.panelEl()?.nativeElement.classList.remove('dragging');
-    this.dragging = false;
-    if (this.moved) {
-      // A drag ending over the dim backdrop can still synthesize a click on .dbg-overlay — swallow it once,
-      // and clear on the next pointerdown anywhere so a later genuine backdrop click still closes.
-      this.suppressClose = true;
-      window.addEventListener('pointerdown', this.clearSuppress, { once: true });
+    if (this.gripEl) {
+      try {
+        this.gripEl.releasePointerCapture?.(this.pointerId);
+      } catch {
+        // Already released (e.g. the pointer vanished) — nothing to do.
+      }
+      this.gripEl = null;
     }
-    this.moved = false;
-  };
+    this.dragging = false;
+  }
 
   private clearSuppress = (): void => {
     this.suppressClose = false;
@@ -526,38 +561,5 @@ export class DebugLogOverlayComponent implements OnDestroy {
 
   setMinLevel(l: LogLevel): void {
     this.minLevel.set(l);
-  }
-
-  async copyAll(): Promise<void> {
-    const text = this.filtered()
-      .map((l) => l.raw)
-      .join('\n');
-    try {
-      await navigator.clipboard?.writeText(text);
-    } catch {
-      // Clipboard blocked (permissions / non-secure context) — silent; the export action still works.
-    }
-  }
-
-  exportTxt(): void {
-    const text = this.filtered()
-      .map((l) => l.raw)
-      .join('\n');
-    const blob = new Blob([text], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `soms-debug-${new Date().toISOString().replace(/[:.]/g, '-')}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  /** Wipe the JS ring buffer AND reset the panel view (the cleared JS lines no longer exist, so the
-   *  append-only cursor is reset too). Native files are left untouched. */
-  clearJs(): void {
-    clearConsoleBuffer();
-    this.lines.set([]);
-    this.nextId = 1;
-    void this.refresh();
   }
 }

@@ -524,8 +524,10 @@ pub fn run() {
                     sse_stop,
                     sse_get_state,
                     sse_net,
+                    sse_force_reconnect,
                     upload_stream_file,
                     report_diagnostics,
+                    log_js,
                     read_native_log,
                     api_request,
                     media_request,
@@ -550,6 +552,7 @@ pub fn run() {
                     init_download_web,
                     init_update_status,
                     report_diagnostics,
+                    log_js,
                     read_native_log,
                     api_request,
                     media_request,
@@ -1150,11 +1153,13 @@ const DIAG_PENDING_PREFIX: &str = "pending-";
 /// Drop cached pending bundles older than this (the client-side cache cap — repeated offline failures
 /// must not fill app_cache_dir). Generous: a transient outage clears within minutes.
 const DIAG_PENDING_TTL: Duration = Duration::from_secs(7 * 24 * 60 * 60);
-/// Cap on the webview console capture included in a bundle. The log files are already bounded by the
-/// ~6 MiB rotation; this bounds the console slice too so the total stays under the backend's 16 MiB
-/// per-bundle cap (logs 6 + console 4 + manifest ≈ 10 MiB). When truncated, the MOST RECENT entries
-/// (the tail) are kept — the relevant context for "what just broke".
-const CONSOLE_DUMP_MAX: usize = 4 * 1024 * 1024;
+/// Size cap on the durable `webview-console.log` mirror (under `app_log_dir`). The JS ring buffer appends
+/// its captured entries here across restarts via `log_js`; once the file exceeds this cap it is
+/// front-trimmed to half (a ring-on-disk: the newest tail survives, mirroring the JS in-memory ring's
+/// semantics). 1 MiB matches SOMS.log's per-file rotation size, so the bundle's JS slice is bounded the
+/// same way the Rust slice is. (The backend's per-bundle cap is 16 MiB; logs ≈6 + console 1 + manifest
+/// stays well under.)
+const WEBVIEW_CONSOLE_MAX: usize = 1024 * 1024;
 
 /// sha256(bytes) → lowercase hex (the bundle filename + the POST's X-Request-Id). The input is hashed
 /// inside; nothing here is secret (a bundle digest is not sensitive).
@@ -1219,7 +1224,7 @@ fn tar_add_file(
 /// in the debug panel, not capture time.
 fn build_diagnostics_bundle(
     log_dir: &Path,
-    console_dump: &str,
+    console: &[u8],
     manifest: &serde_json::Value,
     native_log: Option<&[u8]>,
 ) -> std::io::Result<Vec<u8>> {
@@ -1228,7 +1233,7 @@ fn build_diagnostics_bundle(
     {
         let mut builder = tar::Builder::new(&mut tar_buf);
         tar_add_file(&mut builder, "manifest.json", &manifest_json)?;
-        tar_add_file(&mut builder, "webview-console.log", console_dump.as_bytes())?;
+        tar_add_file(&mut builder, "webview-console.log", console)?;
         // The Kotlin `native.log` (Android DEBUG builds only — `SomsLog` is BuildConfig.DEBUG-gated and
         // writes to filesDir/soms-native.log). Absent on desktop + release; skipped silently so the bundle
         // stays layered without forcing every platform to produce one.
@@ -1360,6 +1365,143 @@ async fn retry_pending_diagnostics(app: tauri::AppHandle, proxy: ProxyState) {
     }
 }
 
+/// Serialize appends to the durable `webview-console.log` so overlapping (batched, fire-and-forget)
+/// `log_js` calls can't interleave half-lines. Held only across synchronous fs ops (no `.await` while
+/// held), which keeps it safe for `std::sync::Mutex`.
+static WEBVIEW_CONSOLE_LOCK: Mutex<()> = Mutex::new(());
+
+/// The durable webview JS-console slice — the mirror the JS ring buffer (`web/.../log-buffer.ts`) appends
+/// to across restarts via `log_js`. Lives next to `SOMS.log` under `app_log_dir` so the diagnostic bundle
+/// builds it from the same durable store as the Rust logs (and survives a crash/relaunch with the
+/// pre-crash JS trail intact — the in-memory ring buffer alone is lost on restart).
+fn webview_console_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_log_dir().ok().map(|d| d.join("webview-console.log"))
+}
+
+/// Front-trim `path` to its newest `keep` bytes on a line boundary (a ring-on-disk). Called only when the
+/// file exceeds `WEBVIEW_CONSOLE_MAX`; whole-line granularity so no entry is split. The rewrite is atomic
+/// (write a sibling `.tmp` then rename over) so a crash mid-trim — or a concurrent reader — can never see
+/// a truncated/torn file. Best-effort: any I/O error leaves the file as-is (diagnostics must never break
+/// the app).
+fn trim_webview_console_front(path: &Path, keep: usize) {
+    let Ok(bytes) = fs::read(path) else { return };
+    if bytes.len() <= keep {
+        return;
+    }
+    // Advance from `keep` to the next newline so the trimmed head begins on a line boundary.
+    let start = bytes[keep..]
+        .iter()
+        .position(|b| *b == b'\n')
+        .map(|i| keep + i + 1)
+        .unwrap_or(bytes.len());
+    // Same-directory temp + rename = atomic on POSIX/Windows; a crash between write and rename leaves
+    // the original untouched (the orphan `.tmp` is harmless, overwritten next trim).
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    if fs::write(&tmp, &bytes[start..]).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return;
+    }
+    let _ = fs::rename(&tmp, path);
+}
+
+#[cfg(test)]
+mod webview_console_trim_tests {
+    use super::*;
+
+    /// A unique temp path per pid + counter so parallel test processes don't collide.
+    fn tmp_path(label: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let n = N.fetch_add(1, Ordering::SeqCst);
+        std::env::temp_dir().join(format!(
+            "soms-trim-{}-{}-{}.log",
+            std::process::id(),
+            n,
+            label
+        ))
+    }
+
+    #[test]
+    fn trim_drops_oldest_lines_on_a_boundary_keeps_an_exact_tail() {
+        // Five 11-byte lines ("0123456789\n"); keep ~2 lines worth so the front two+ are dropped.
+        let content: Vec<u8> = b"0123456789\n".repeat(5); // 55 bytes
+        let path = tmp_path("basic");
+        fs::write(&path, &content).unwrap();
+        trim_webview_console_front(&path, 22);
+        let result = fs::read(&path).unwrap();
+        assert!(result.len() < content.len(), "trim must drop bytes");
+        assert!(
+            result.starts_with(b"0123456789\n"),
+            "the kept head must begin on a line boundary (a whole line), never mid-line"
+        );
+        assert!(
+            content.ends_with(&result),
+            "the kept bytes must be an exact tail of the original — no line mutated, none invented"
+        );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trim_is_a_noop_when_already_at_or_under_cap() {
+        let path = tmp_path("noop");
+        fs::write(&path, b"short\n").unwrap();
+        trim_webview_console_front(&path, 100);
+        assert_eq!(fs::read(&path).unwrap(), b"short\n");
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn trim_a_missing_file_is_silent() {
+        // A nonexistent path must never panic (best-effort contract — diagnostics must not break the app).
+        trim_webview_console_front(&tmp_path("missing"), 10);
+    }
+}
+
+/// Append the JS console's batched flush to the durable `webview-console.log` (or truncate it when `clear`
+/// is set — the debug panel's "clear" wipes both the live ring and the durable record together).
+/// Throttled/batched from `log-buffer.ts`; a missing/unwritable log dir is a silent no-op. Registered on
+/// every platform (desktop + Android) so the JS slice is durable wherever diagnostics can be reported.
+///
+/// SYNC deliberately: the work is blocking fs I/O (open/append/metadata/trim), and a sync Tauri command
+/// runs on the command thread pool, OFF the async reactor — so a chatty console burst can't stall the
+/// SSE supervisor / IPC that share that reactor. `report_diagnostics` reads the same file under the same
+/// lock, so the two never see a torn file.
+#[tauri::command]
+fn log_js(app: tauri::AppHandle, lines: Vec<String>, clear: Option<bool>) -> Result<(), String> {
+    let path = match webview_console_path(&app) {
+        Some(p) => p,
+        None => return Ok(()),
+    };
+    let _guard = WEBVIEW_CONSOLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if clear.unwrap_or(false) {
+        // Truncate to empty — the durable counterpart of clearConsoleBuffer.
+        let _ = fs::write(&path, b"");
+        return Ok(());
+    }
+    if lines.is_empty() {
+        return Ok(());
+    }
+    {
+        let mut f = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("open webview-console: {e}"))?;
+        for line in &lines {
+            writeln!(f, "{line}").map_err(|e| format!("write webview-console: {e}"))?;
+        }
+        f.flush().ok();
+    }
+    if let Ok(meta) = fs::metadata(&path) {
+        if (meta.len() as usize) > WEBVIEW_CONSOLE_MAX {
+            trim_webview_console_front(&path, WEBVIEW_CONSOLE_MAX / 2);
+        }
+    }
+    Ok(())
+}
+
 /// Build + upload one diagnostic bundle (the Settings "Report" action). On success the cached tar +
 /// manifest sidecar are deleted and the new report id is returned; on any failure they are KEPT for the
 /// next-launch retry and an Err is returned (the frontend shows "saved locally, will retry"). NOT
@@ -1368,7 +1510,6 @@ async fn retry_pending_diagnostics(app: tauri::AppHandle, proxy: ProxyState) {
 async fn report_diagnostics(
     app: tauri::AppHandle,
     proxy: tauri::State<'_, ProxyState>,
-    console_dump: String,
     manifest: serde_json::Value,
 ) -> Result<i64, String> {
     let log_dir = app.path().app_log_dir().map_err(|e| format!("log dir: {e}"))?;
@@ -1377,22 +1518,24 @@ async fn report_diagnostics(
         .app_cache_dir()
         .map_err(|e| format!("cache dir: {e}"))?;
     fs::create_dir_all(&cache_dir).map_err(|e| format!("cache mkdir: {e}"))?;
-    // Bound the console slice so the total stays under the backend cap; keep the tail (newest). Advance
-    // to a UTF-8 char boundary so the byte slice never splits a multi-byte char (which would panic).
-    let console: String = if console_dump.len() > CONSOLE_DUMP_MAX {
-        log::warn!(
-            "diagnostics: console dump {} bytes exceeds cap; truncating to the last {} bytes",
-            console_dump.len(),
-            CONSOLE_DUMP_MAX
-        );
-        let mut start = console_dump.len() - CONSOLE_DUMP_MAX;
-        while !console_dump.is_char_boundary(start) {
-            start += 1;
-        }
-        console_dump[start..].to_string()
-    } else {
-        console_dump
-    };
+    // The webview JS-console slice is the durable mirror the JS ring buffer appends to across restarts
+    // (log_js → app_log_dir/webview-console.log). Read it here so a report — even right after a crash/
+    // relaunch, when the in-memory ring is empty — still carries the pre-crash JS trail. The file is
+    // already size-capped (front-trimmed by log_js); missing on a first run before any capture → empty.
+    //
+    // Read on a BLOCKING thread (spawn_blocking) under the same lock `log_js` holds while writing, so the
+    // read never parks an async-reactor worker on the mutex: like `log_js` (a sync command), this file
+    // accessor runs off-reactor, and the lock serializes the two. A JoinError (the blocking task panicked)
+    // → empty slice (treat as no JS trail rather than fail the whole report).
+    let app_for_read = app.clone();
+    let console: Vec<u8> = tokio::task::spawn_blocking(move || {
+        let _guard = WEBVIEW_CONSOLE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        webview_console_path(&app_for_read)
+            .and_then(|p| fs::read(p).ok())
+            .unwrap_or_default()
+    })
+    .await
+    .unwrap_or_default();
     // The Kotlin native log lives under the app-internal data dir (Android `filesDir` resolves to Tauri's
     // `app_data_dir`). Absent on desktop + release → None → the bundle omits the native/ entry. Best-effort:
     // a missing/unreadable file is not a diagnostics failure.
@@ -1687,17 +1830,21 @@ enum StreamOutcome {
     Cancelled,               // sse_stop / logout → exit the loop
     ForceLogout(Option<String>), // 401 or a `FORCE_LOGOUT` frame → exit (no retry, no 401-loop)
     Err,                     // network / non-2xx → reconnect
+    ForceReconnect,          // sse_force_reconnect: JS asked to drop+reopen so a fresh HELLO reaches a re-attached webview
 }
 
 /// Supervisor state: the spawned connect-loop task + its cancellation token, a synchronous state mirror
-/// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android),
-/// the backoff/online `wake` Notify, and the offline flag the webview's navigator online/offline drives.
+/// (`sse_get_state` seeds a freshly-booted renderer the way `SomsFcm.getConnState()` does on Android), the
+/// backoff/online `wake` Notify, the offline flag the webview's navigator online/offline drives, and the
+/// `force` Notify `sse_force_reconnect` prods to drop+reopen the open stream (so a re-attached webview gets a
+/// fresh HELLO without tearing the whole supervisor down).
 #[cfg(desktop)]
 struct SseSupervisor {
     cancel: Mutex<Option<CancellationToken>>,
     handle: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     state: Arc<Mutex<ConnectionState>>,
     wake: Arc<Notify>,
+    force: Arc<Notify>,
     offline: Arc<AtomicBool>,
 }
 
@@ -1709,6 +1856,7 @@ impl SseSupervisor {
             handle: Mutex::new(None),
             state: Arc::new(Mutex::new(ConnectionState::Closed)),
             wake: Arc::new(Notify::new()),
+            force: Arc::new(Notify::new()),
             offline: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -1756,6 +1904,7 @@ fn sse_start(
         cancel,
         sse.state.clone(),
         sse.wake.clone(),
+        sse.force.clone(),
         sse.offline.clone(),
     ));
     *sse.handle.lock().expect("sse handle lock") = Some(handle);
@@ -1801,6 +1950,21 @@ fn sse_net(online: bool, sse: tauri::State<'_, SseSupervisor>) -> Result<(), Str
     Ok(())
 }
 
+/// JS-triggered reconnect of an already-OPEN stream. A freshly-attached webview (renderer reclaim, or an
+/// Android cold start where the FGS opened `/events` before the webview mounted) needs a HELLO that this
+/// retained connection will NOT re-push (HELLO is sent once per `register`, and there is no new connection).
+/// This prods the stream's select to drop it (`StreamOutcome::ForceReconnect`); the loop reopens at once
+/// (no backoff), the fresh connection re-registers, and the server re-pushes HELLO to the now-installed JS
+/// listeners. Unlike `sse_stop`, the supervisor stays up and the listeners stay attached — no stop+start
+/// churn, no event gap. Mirrors Android's `SomsFcm.forceReconnect` (ACTION_FORCE_RECONNECT). The HELLO-timeout
+/// backstop in the facade routes here too (an open stream that genuinely never delivered HELLO).
+#[cfg(desktop)]
+#[tauri::command]
+fn sse_force_reconnect(sse: tauri::State<'_, SseSupervisor>) -> Result<(), String> {
+    sse.force.notify_one();
+    Ok(())
+}
+
 #[cfg(desktop)]
 async fn sse_supervisor_loop(
     app: tauri::AppHandle,
@@ -1808,6 +1972,7 @@ async fn sse_supervisor_loop(
     cancel: CancellationToken,
     state: Arc<Mutex<ConnectionState>>,
     wake: Arc<Notify>,
+    force: Arc<Notify>,
     offline: Arc<AtomicBool>,
 ) {
     // ---- pre-login token wait ----
@@ -1839,7 +2004,7 @@ async fn sse_supervisor_loop(
             break;
         }
         let outcome =
-            open_one_stream(&app, &proxy, &cancel, &state, &wake, &offline, &mut opened_once).await;
+            open_one_stream(&app, &proxy, &cancel, &state, &wake, &force, &offline, &mut opened_once).await;
         if cancel.is_cancelled() {
             break;
         }
@@ -1849,6 +2014,16 @@ async fn sse_supervisor_loop(
                 break; // no retry — a stale/revoked token would 401-loop
             }
             StreamOutcome::Cancelled => break,
+            StreamOutcome::ForceReconnect => {
+                // JS asked (sse_force_reconnect) to drop+reopen the open stream so a freshly-attached webview
+                // gets a HELLO this retained connection will not re-push. The origin is healthy (the stream
+                // was open), so reopen IMMEDIATELY: emit Reconnecting (the facade's HELLO-timeout re-arms on
+                // the earned open that follows, and HELLO clears it), keep attempt at 0 (not a failure), and
+                // skip both the backoff sleep and the full-disconnect origin race. The fresh connection
+                // re-registers → the server re-pushes HELLO to the now-installed listeners.
+                emit_state(&app, &state, ConnectionState::Reconnecting);
+                continue;
+            }
             StreamOutcome::StreamClosed | StreamOutcome::Stale | StreamOutcome::Err => {
                 // On a connect/network error (Err), try a SMOOTH switch first: maybe_switch probes the
                 // current; if it's healthy (transient) or the OTHER is reachable (flip), reopen at once with
@@ -1906,6 +2081,7 @@ async fn open_one_stream(
     cancel: &CancellationToken,
     state: &Arc<Mutex<ConnectionState>>,
     wake: &Notify,
+    force: &Notify,
     offline: &AtomicBool,
     opened_once: &mut bool,
 ) -> StreamOutcome {
@@ -1974,6 +2150,10 @@ async fn open_one_stream(
             // active (the loop re-enters open_one_stream, which re-reads proxy.api_origin). API⇄SSE lockstep:
             // they never sit on different origins. Race-free (Notify holds one stored permit).
             _ = proxy.origin_notify.notified() => return StreamOutcome::StreamClosed,
+            // JS-triggered force-reconnect (sse_force_reconnect): a freshly-attached webview needs a HELLO
+            // this retained connection will not re-push. Drop the stream so the loop reopens (the
+            // ForceReconnect arm reopens at once, no backoff) and the fresh connection re-pushes HELLO.
+            _ = force.notified() => return StreamOutcome::ForceReconnect,
             _ = wake.notified() => {
                 // Network transitioned or the user hit retry. Offline → drop the stream and reconnect
                 // (the next attempt fails fast, backs off). Online while a healthy stream is open → no-op

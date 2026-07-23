@@ -13,7 +13,14 @@
   <script src="/boot.js"></script>
   <title>SOMS</title>
   <base href="/">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <!-- Scale locked (`minimum-scale=maximum-scale=1`, `user-scalable=no`): disables the browser's
+       pinch-to-zoom and double-tap-to-zoom so the SPA behaves as a native shell, not a zoomable page.
+       On Android this is reinforced authoritatively at the engine layer in MainActivity.onWebViewCreate
+       (WebSettings.setSupportZoom(false)), because some OEM WebView cores ignore this meta; the meta
+       remains the lock for the PWA/browser build and the first line of defense natively. It blocks only
+       the UA's page-zoom — JS-level gesture handling (e.g. an image lightbox zooming one image via pointer
+       events) is unaffected, which is exactly the desired split. -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <!-- iOS home-screen icon (180×180, solid brand bg — iOS flattens transparency to black otherwise). -->

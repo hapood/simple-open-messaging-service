@@ -327,6 +327,36 @@ describe('ChatBoxScroller (Plan B · array index)', () => {
     expect(info.noOlder).toBe(false); // not yet at the oldest
   });
 
+  it('init does not mount rows when destroyed during the fetch (no orphan injection into reused content)', async () => {
+    // Regression: init()'s normal path (startMsgId === null) awaits source.init() and once OMITTED the post-await
+    // `destroyed` check that openAround already had. A coordinator teardown/re-init overtaking the fetch would
+    // destroy() this scroller mid-flight; the dead scroller's init() then resumed and mountBatch()ed its batch into
+    // the shared content element a NEWER scroller now owned — rows no live scroller tracked (orphans), inflating
+    // scrollHeight past totalH and corrupting scroll anchoring. The fix mirrors openAround's guard; this pins it.
+    const src = controllableInitSource(20);
+    const { hooks } = controllableHooks(100);
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: src });
+    const p = scroller.init();                  // startMsgId null → awaits the controllable init (pending)
+    expect(src.initPending()).toBe(1);
+    scroller.destroy();                         // overtaken mid-fetch, exactly like teardownKernel/reset→reinit
+    src.resolveInit(src.batchAround(10));       // fetch resolves → init() resumes past its await
+    await p;                                     // let the post-await continuation run
+    expect(content.querySelectorAll('[data-cb-id]').length).toBe(0); // the dead scroller mounted NOTHING
+  });
+
+  it('unmountAll throws (dev) when content holds an untracked [data-cb-id] orphan', () => {
+    // Pins the invariant guard: if any path ever leaves an orphan, the kernel must FAIL LOUD (throw) rather than
+    // silently sweep — sweeping would leak the orphan host's Angular ref/ResizeObserver AND mask the root cause.
+    const { hooks } = controllableHooks();
+    scroller = new ChatBoxScroller<number>({ viewport, content, hooks, source: fakeSource(50) });
+    const orphan = document.createElement('div');
+    orphan.setAttribute('data-cb-id', '999');   // a kernel-tagged row the scroller never mounted/tracked
+    content.appendChild(orphan);
+    expect(() => scroller!.destroy()).toThrowError(/orphaned row/);
+    orphan.remove();                             // tidy the shared DOM; the instance is already dead (state set pre-throw)
+    scroller = undefined;                        // skip afterEach's re-destroy
+  });
+
   it('a signal in the init-fetch window is saved + replayed once after init (not dropped)', async () => {
     // Models the race: a message arrives DURING init's initial source.init(-1) HTTP fetch — it MISSES the
     // snapshot, so it's known only via its SSE signal. The source's init is deferred (the window) + it can

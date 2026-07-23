@@ -5,6 +5,22 @@
   padding: unset
 }
 
+// Effective keyboard lift, shared by the production message container (.msg-container in
+// friend-message.component.scss) and the playground stage (.pg-stage in chatbox-playground.component.scss).
+// Both derive the SAME value, so the formula + rationale live once here and the two include sites can't drift.
+//
+// Effective lift = raw --kbd-lift (set on the host by KbdOffsetDirective from the IME inset) MINUS the
+// --soms-safe-bottom the input bar's own bottom padding already covers. That padding clears the gesture /
+// nav bar while the keyboard is CLOSED; when the keyboard opens it COVERS that system bar, so the
+// safe-bottom clearance becomes redundant — the bar only needs to lift by (kbd-lift − safe-bottom) for its
+// content to clear the keyboard (its own padding supplies the rest). Without the subtraction the
+// closed-keyboard safe-bottom padding would read as an extra gap between editor and keyboard. Clamped at 0
+// (closed → no lift). Resolves to 0 on desktop/browser (no --soms-safe-bottom injected there), so this is
+// an Android-only adjustment. Consumed by the input-bar / scroller transform (translateY(-1 * var)).
+@mixin kbd-lift-effective {
+  --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
+}
+
 // Shared auth split-screen shell. Include inside the `.auth-shell` selector.
 // Left column = <app-auth-brand> (decorative, hides itself below the breakpoint),
 // right column = `.form-pane` that centers the form card. Below 900px the grid

@@ -482,6 +482,13 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     const startId = opts?.startMsgId ?? null;
     if (startId !== null) { await this.openAround(startId, opts?.anchor ?? 'center', opts?.highlight ?? false); this.primeAndReplay(); return; }
     const batch = await this.source.init(-1, this.cfg.initBatch, 0, this.initOpts);
+    // A teardown / re-init can overtake this scroller during the await (the coordinator's teardownKernel/reset→reinit
+    // fires while the fetch is in flight, destroy()ing this one and handing the shared content element to a newer
+    // scroller). openAround guards this with a gen check after its await; the normal-init path must too — WITHOUT
+    // it, a dead scroller proceeds to mountBatch and injects its rows into content a newer scroller now owns, where
+    // they sit outside every live mounted[] as immortal orphans (inflating scrollHeight past totalH). Bail before
+    // touching the DOM; the owning scroller mounts its own batch.
+    if (this.destroyed) return;
     const merged = this.mergeBatch(batch);
     if (merged.length === 0) {
       // Empty thread: the empty sequence is trivially at BOTH edges. Marking noOlder/noNewer here is what makes an
@@ -1338,6 +1345,20 @@ export class ChatBoxScroller<T = unknown> implements ScrollerApi<T> {
     this.dirtyPrefix = true;
     this.pendingMeasure = [];
     this.ghostEntry = null;
+    // Invariant (dev-only — ngDevMode is stripped in AOT, so prod pays nothing): after unmounting every tracked
+    // row, .msg-content must hold NO kernel-tagged ([data-cb-id]) children. A remaining one is an orphan — a row
+    // mounted by a scroller whose async fetch was overtaken by destroy() but that mounted anyway. Every await-then-
+    // mount path (init / openAround / loadOlder / loadNewer / runMessageSignal) re-checks `this.destroyed` after its
+    // await precisely to prevent this; a missing check is how orphans are born. THROW rather than silently sweep:
+    // sweeping would (a) leak the orphan host's Angular component ref + ResizeObserver (there is no handle to
+    // destroy() them) and (b) mask the root cause behind a quiet warn. The sentinel (#topSentinel) and the tail cap
+    // carry no data-cb-id, so they never trip this.
+    if (ngDevMode) {
+      const orphanCount = this.content.querySelectorAll('[data-cb-id]').length;
+      if (orphanCount > 0) {
+        throw new Error(`[chat-box] unmountAll invariant violated: ${orphanCount} orphaned row(s) remain in content — a scroller mounted rows after being destroyed (re-audit the post-await \`destroyed\` guard in init()/openAround/load*)`);
+      }
+    }
   }
 
   /** Sync skeleton state (pure class): skeleton = mounted[0] (oldest mounted) when "not yet at the global oldest". Compared by entry reference. */

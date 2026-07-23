@@ -63,7 +63,18 @@ export class NativeEventTransport extends RealtimeTransport {
     // on Android (the facade selects it via isAndroidNative), so SomsFcm is always injected — call it
     // directly; a missing bridge is a wiring bug that should surface, not be swallowed by `?`.
     const live = window.SomsFcm!.getConnState();
-    if (live) this.onConnState(live as ConnectionState);
+    if (live === 'open') {
+      // The native stream was RETAINED across this webview attach (renderer reclaim) or the FGS opened it
+      // before the webview mounted (cold start) — so no fresh HELLO is forthcoming, yet this webview needs
+      // one to bootstrap (userId / threadRevision / profile). Ask Kotlin to cancel + reopen
+      // (ACTION_FORCE_RECONNECT): the fresh connection re-registers and the server re-pushes HELLO to the
+      // just-installed __SOMS_EVENT__ hook. Skip seeding 'open' — the forced reopen emits its own
+      // reconnecting→open transitions. (Only the retained/pre-connected case forces; a 'connecting' seed
+      // lets the in-progress connect complete and deliver HELLO to the already-installed hook.)
+      window.SomsFcm!.forceReconnect();
+    } else if (live) {
+      this.onConnState(live as ConnectionState);
+    }
   }
 
   /** A connection-state transition from Kotlin. Forwards it to the banner, AND emits the reconnect backfill

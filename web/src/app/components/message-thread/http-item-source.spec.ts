@@ -69,10 +69,13 @@ describe('HttpItemSource (signal-only live contract over MessageRepository)', ()
     ];
     const userService = {
       queryUserInfo: jasmine.createSpy('queryUserInfo').and.returnValue(of<StandardResponse<User[]>>({ code: 0, message: 'ok', data: users })),
+      // The source resolves the self id LIVE from sessionUserId() at shape time (not a constructor arg), so
+      // the stub must expose it — user 1 is "Me" in the fixtures above.
+      sessionUserId: () => 1,
     } as unknown as UserService;
     const ws = { reconnect$: new Subject<void>() } as unknown as WebsocketService;
     const signals = jasmine.createSpy('onSignal');
-    const src = new HttpItemSource(conv(tid), 1, repo, userService, ws, { onSignal: signals });
+    const src = new HttpItemSource(conv(tid), repo, userService, ws, { onSignal: signals });
     return { src, repo, liveSignal$, mediaStatusLive$, signals };
   }
 

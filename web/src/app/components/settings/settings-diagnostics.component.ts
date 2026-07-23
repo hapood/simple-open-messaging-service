@@ -5,7 +5,7 @@ import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { ShellUpdateService } from '../../services/shell-update.service';
 import { LanguageService } from '../../services/language.service';
 import { apiOrigin, isAndroid, isTauri, tauriInvoke } from '../../services/runtime';
-import { dumpConsoleBuffer } from '../../services/log-buffer';
+import { flushConsoleBuffer } from '../../services/log-buffer';
 import { appVersion } from '../../version';
 
 type ReportState = 'idle' | 'confirming' | 'sending' | 'done' | 'failed';
@@ -119,10 +119,10 @@ export class SettingsDiagnosticsComponent {
       at: new Date().toISOString(),
     };
     try {
-      const id = await tauriInvoke<number>('report_diagnostics', {
-        consoleDump: dumpConsoleBuffer(),
-        manifest,
-      });
+      // Force every captured JS console line to the durable file BEFORE the build, so the bundle (which
+      // Rust assembles from that file, not from a string here) carries everything up to the click.
+      await flushConsoleBuffer();
+      const id = await tauriInvoke<number>('report_diagnostics', { manifest });
       this.reportId.set(id);
       this.state.set('done');
     } catch {

@@ -1,3 +1,5 @@
+@use "../../assets/utils.scss" as *;
+
 // fill-parent chain: host → wrapper → msg-container. Mobile full-screen popup
 // and desktop pane both rely on it to fill their container.
 :host {
@@ -35,14 +37,9 @@
   // Sticky-date overlay top offset for <app-sticky-date-overlay> (inherits down to it): the header is a
   // normal-flow flex child occupying the top --msg-header-h pixels, so the pill must clear exactly that.
   --sd-top: var(--msg-header-h, 56px);
-  // Effective keyboard lift = how far the viewport + input bar translate up. The bar's bottom padding
-  // already carries --soms-safe-bottom to clear the gesture/nav bar while the keyboard is CLOSED; when the
-  // keyboard opens it COVERS the gesture bar, so that safe-bottom of clearance becomes redundant — the bar
-  // only needs to lift by (kbd-lift − safe-bottom) for its content to clear the keyboard (its own padding
-  // supplies the rest). Without this subtraction the closed-keyboard safe-bottom padding would show as an
-  // extra gap between the editor and the keyboard. Clamped at 0 (closed → no lift). 0 on browser (no
-  // --soms-safe-bottom injection there), so this is an Android-only adjustment.
-  --kbd-lift-effective: max(0px, var(--kbd-lift, 0px) - var(--soms-safe-bottom, 0px));
+  // Effective keyboard lift (safe-area-corrected) — shared with the playground stage via
+  // assets/utils.scss#kbd-lift-effective so the two can't drift. Consumed by the input bar + scroller lift.
+  @include kbd-lift-effective;
   // Wallpaper: bg color + tiled doodle layered on the same element (an element's
   // own background always paints behind its content, so no pseudo-element / z-index
   // is needed). The parent container does not scroll with the viewport → the pattern
