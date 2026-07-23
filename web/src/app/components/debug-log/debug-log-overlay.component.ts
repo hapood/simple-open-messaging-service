@@ -52,8 +52,15 @@ type Line = MergedLine & { id: number };
   selector: 'app-debug-log-overlay',
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="dbg-overlay" role="dialog" aria-label="Debug logs" (click)="close.emit()">
-      <div class="dbg-panel" (click)="$event.stopPropagation()">
+    <div class="dbg-overlay" role="dialog" aria-label="Debug logs" (click)="onBackdropClick()">
+      <div #panel class="dbg-panel" (click)="$event.stopPropagation()">
+        <div class="dbg-grip" (pointerdown)="onGripDown($event)" title="Drag to move" aria-label="Drag panel">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" fill="currentColor">
+            <circle cx="9" cy="6" r="1.4" /><circle cx="15" cy="6" r="1.4" />
+            <circle cx="9" cy="12" r="1.4" /><circle cx="15" cy="12" r="1.4" />
+            <circle cx="9" cy="18" r="1.4" /><circle cx="15" cy="18" r="1.4" />
+          </svg>
+        </div>
         <div class="dbg-bar">
           <div class="dbg-srcs">
             <button type="button" class="chip src-js" [class.on]="showJs()" (click)="showJs.set(!showJs())">JS</button>
@@ -124,6 +131,27 @@ type Line = MergedLine & { id: number };
         display: flex;
         flex-direction: column;
         overflow: hidden;
+      }
+      .dbg-grip {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 24px;
+        line-height: 24px; /* integer px — keeps the grip strip a whole-pixel height */
+        background: #2a2a2a;
+        border-bottom: 1px solid #000;
+        color: #666;
+        cursor: grab;
+        touch-action: none; /* the grip owns the gesture: a drag never scrolls the log list or the page */
+        user-select: none;
+      }
+      .dbg-grip:active {
+        cursor: grabbing;
+      }
+      .dbg-panel.dragging {
+        transition: none; /* follow the pointer exactly, no easing */
+        will-change: transform; /* promote to a compositor layer so translate moves never trigger layout */
+        user-select: none;
       }
       .dbg-bar {
         display: flex;
@@ -261,6 +289,7 @@ export class DebugLogOverlayComponent implements OnDestroy {
   private readonly levelRank: Record<LogLevel, number> = { error: 0, warn: 1, info: 2, log: 3, debug: 4 };
 
   private readonly scrollEl = viewChild<ElementRef<HTMLDivElement>>('scroll');
+  private readonly panelEl = viewChild<ElementRef<HTMLDivElement>>('panel');
   private readonly injector = inject(Injector);
 
   readonly rustAvailable = isTauri();
@@ -309,6 +338,12 @@ export class DebugLogOverlayComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.rafId) cancelAnimationFrame(this.rafId);
+    if (this.dragging) {
+      window.removeEventListener('pointermove', this.onGripMove);
+      window.removeEventListener('pointerup', this.onGripUp);
+    }
+    window.removeEventListener('pointerdown', this.clearSuppress);
   }
 
   /** Read all three sources, then append only the lines past the last one shown (stable ids → recycled
@@ -369,6 +404,120 @@ export class DebugLogOverlayComponent implements OnDestroy {
   private scrollToBottom(): void {
     const el = this.scrollEl()?.nativeElement;
     if (el) el.scrollTop = el.scrollHeight;
+  }
+
+  // ---------- Drag-to-move (compositor-only — zero reflow) ----------
+  // The grip repositions the panel by mutating `transform` only. We never touch `left`/`top`/`position`:
+  // those force layout on a large panel that also hosts a live-refreshing log list, which reflows on every
+  // pointermove and janks. `transform` is GPU-composited (no layout, no content paint) and offsetHeight-
+  // invariant, so it can't perturb any measured-height model either. Geometry is read ONCE at pointerdown
+  // (a single getBoundingClientRect); each pointermove does no layout reads and at most one transform write,
+  // coalesced through one requestAnimationFrame so several moves within a frame collapse into one compositor
+  // update. The panel stays flex-centered; the translate offsets the composited layer from there.
+  private dragging = false;
+  private moved = false;
+  private startX = 0;
+  private startY = 0;
+  /** Centered layout origin + size, captured once per drag (visual rect minus the current translate). */
+  private baseLeft = 0;
+  private baseTop = 0;
+  private baseW = 0;
+  private baseH = 0;
+  /** Translate at grab time (the panel may already be offset from a prior drag this open session). */
+  private grabTx = 0;
+  private grabTy = 0;
+  /** Current total translate applied (persists across drags until the panel is unmounted). */
+  private tx = 0;
+  private ty = 0;
+  /** Latest desired offset + the pending frame that will commit it (rAF coalescing). */
+  private pendingTx = 0;
+  private pendingTy = 0;
+  private rafId = 0;
+  /** Swallow the one backdrop click a drag synthesizes on release over the dim layer. */
+  private suppressClose = false;
+
+  onGripDown(e: PointerEvent): void {
+    if (e.pointerType === 'mouse' && e.button !== 0) return; // left-button only for mouse
+    const panel = this.panelEl()?.nativeElement;
+    if (!panel) return;
+    e.preventDefault();
+    // The single layout read of the drag: visual rect = centered layout + the current (tx, ty) translate.
+    const rect = panel.getBoundingClientRect();
+    this.baseLeft = rect.left - this.tx;
+    this.baseTop = rect.top - this.ty;
+    this.baseW = rect.width;
+    this.baseH = rect.height;
+    this.startX = e.clientX;
+    this.startY = e.clientY;
+    this.grabTx = this.tx;
+    this.grabTy = this.ty;
+    this.moved = false;
+    this.dragging = true;
+    panel.classList.add('dragging'); // will-change: transform promotes the panel to its own compositor layer
+    window.addEventListener('pointermove', this.onGripMove);
+    window.addEventListener('pointerup', this.onGripUp);
+  }
+
+  private onGripMove = (e: PointerEvent): void => {
+    if (!this.dragging) return;
+    const dx = e.clientX - this.startX;
+    const dy = e.clientY - this.startY;
+    if (!this.moved && Math.hypot(dx, dy) < 5) return; // activation threshold — keeps an inert tap inert
+    this.moved = true;
+    // Desired offset = grab offset + pointer delta, clamped so the visual position (baseLeft + offset) stays
+    // inside the viewport with an 8 px margin. No layout reads: base* are cached and innerWidth/Height are
+    // viewport metrics.
+    this.pendingTx = Math.max(
+      8 - this.baseLeft,
+      Math.min(window.innerWidth - this.baseW - 8 - this.baseLeft, this.grabTx + dx),
+    );
+    this.pendingTy = Math.max(
+      8 - this.baseTop,
+      Math.min(window.innerHeight - this.baseH - 8 - this.baseTop, this.grabTy + dy),
+    );
+    if (!this.rafId) this.rafId = requestAnimationFrame(this.applyTransform);
+  };
+
+  private applyTransform = (): void => {
+    this.rafId = 0;
+    const panel = this.panelEl()?.nativeElement;
+    if (!panel) return;
+    this.tx = this.pendingTx;
+    this.ty = this.pendingTy;
+    panel.style.transform = `translate3d(${this.tx}px, ${this.ty}px, 0)`;
+  };
+
+  private onGripUp = (): void => {
+    window.removeEventListener('pointermove', this.onGripMove);
+    window.removeEventListener('pointerup', this.onGripUp);
+    // Commit the final offset synchronously: a trailing move may have a frame scheduled that won't fire now.
+    if (this.rafId) {
+      cancelAnimationFrame(this.rafId);
+      this.applyTransform();
+    }
+    this.panelEl()?.nativeElement.classList.remove('dragging');
+    this.dragging = false;
+    if (this.moved) {
+      // A drag ending over the dim backdrop can still synthesize a click on .dbg-overlay — swallow it once,
+      // and clear on the next pointerdown anywhere so a later genuine backdrop click still closes.
+      this.suppressClose = true;
+      window.addEventListener('pointerdown', this.clearSuppress, { once: true });
+    }
+    this.moved = false;
+  };
+
+  private clearSuppress = (): void => {
+    this.suppressClose = false;
+  };
+
+  /** Backdrop click closes — unless the preceding gesture was a drag released over the dim layer. */
+  onBackdropClick(): void {
+    if (this.suppressClose) {
+      this.suppressClose = false;
+      window.removeEventListener('pointerdown', this.clearSuppress);
+      return;
+    }
+    this.close.emit();
   }
 
   toggleAuto(): void {
