@@ -97,13 +97,33 @@ export class ConversationListService {
   readonly error = this.repo.error;
   readonly openThreadId = this.repo.openThreadId;
   readonly topInserted = this.repo.topInserted;
-  /** The persisted high-water mark (the away-notification `since`). Delegated — see ThreadRepository. */
-  readonly missedCursor = this.repo.missedCursor;
+  /** The persisted high-water mark (the away-notification `since`). A METHOD delegator, NOT a `readonly =`
+   *  field like the signal delegations above — the repo exposes `missedCursor` as a method (not a bound
+   *  signal), so a field copy would capture an UNBOUND method and throw on call (it was, silently, caught by
+   *  the away-renderer's try/catch). Delegates to the repo. */
+  missedCursor(): MissedCursor | null {
+    return this.repo.missedCursor();
+  }
+
+  /** The per-thread dismiss-HWM map (sent as `threadHwms` on the away fetch). Delegates to the repo. */
+  threadHwms(): Record<number, number> {
+    return this.repo.threadHwms();
+  }
 
   /** Advance the away-HWM to `cursor` — the away-notification dismiss path (acknowledge the batch so the next
    *  background fetch's `since` gates past it). Delegates to the repo. */
   advanceMissedCursor(cursor: MissedCursor): void {
     this.repo.advanceMissedCursor(cursor);
+  }
+
+  /** Record a per-thread dismiss (advance that thread's HWM to `seq`). Delegates to the repo. */
+  recordThreadDismiss(c: MissedCursor): void {
+    this.repo.recordThreadDismiss(c);
+  }
+
+  /** Clear every per-thread dismiss-HWM (focus-regain reset). Delegates to the repo. */
+  clearThreadDismiss(): void {
+    this.repo.clearThreadDismiss();
   }
 
   /** Load (or force-refresh) the conversation list. Delegates to the repo's boot-from-cache + snapshot. */

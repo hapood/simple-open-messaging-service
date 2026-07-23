@@ -111,6 +111,14 @@ export class ThreadRepository {
    *  (the renderer reads it via {@link missedCursor}). */
   private readonly _missedCursor = signal<MissedCursor | null>(null);
 
+  /** Per-thread dismiss-HWM map (threadId → seq) for the away-notification's per-thread grouping. A dismiss
+   *  records the descriptor's `{threadId, seq}` so the next `/notifications/missed` pull counts THAT thread
+   *  from it (resets its cumulative count to 0 until newer messages); the server drops threads whose
+   *  post-dismiss count is 0. Persisted to IDB (survives a page reload mid-away-session) + cleared on
+   *  focus-regain (the Android "foreground → all per-thread HWMs reset" model) and on logout (the per-user
+   *  DB is deleted). Mirrors `SomsMessagingService.recordThreadDismiss` on Android. */
+  private readonly _threadHwms = signal<Record<number, number>>({});
+
   /** The pinned UPPER bound of the current missed-summary walk — the newest message the client knows of: the
    *  HELLO connect handshake's `latestMessage`, advanced by each live NEW_MESSAGE signal. Ephemeral (NOT
    *  persisted — re-established on every connect via HELLO). Null until HELLO lands, so boot does NOT walk. */
@@ -176,6 +184,7 @@ export class ThreadRepository {
     this.lastSeenSeq.clear();
     this.optimisticLastRead.clear();
     this._missedCursor.set(null);
+    this._threadHwms.set({});
     // Clear the native durable copy too (logout / account switch) so a different user does not inherit it.
     if (isAndroidNative()) window.SomsFcm?.setMissedCursor?.(null);
     clearTimeout(this.pullTimer);
@@ -564,6 +573,22 @@ export class ThreadRepository {
     );
   }
 
+  /** Load the persisted per-thread dismiss-HWM map from IDB. Malformed/absent → empty (defensive — never
+   *  blocks the away path). The numeric keys are JSON-encoded as strings, so coerce + validate on read. */
+  private async loadThreadHwms(): Promise<void> {
+    const raw = (await this.webdb.getMeta('threadHwms')) as Record<string, unknown> | null | undefined;
+    if (!raw || typeof raw !== 'object') {
+      this._threadHwms.set({});
+      return;
+    }
+    const out: Record<number, number> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      const tid = Number(k);
+      if (Number.isInteger(tid) && typeof v === 'number' && Number.isFinite(v)) out[tid] = v;
+    }
+    this._threadHwms.set(out);
+  }
+
   /** Persist the cursor to IDB (best-effort, fire-and-forget) AND push it to native durable storage on
    *  Android, so the background fetchers (FCM/WorkManager) can read it as the /notifications/missed `since`
    *  while the WebView is suspended or destroyed (the IDB copy dies with the WebView). One-way webview→native;
@@ -626,8 +651,9 @@ export class ThreadRepository {
     //    gated async inside establishSession. The cache-paint is NOT repeated here — load() already eager-
     //    painted from the IDB cache (and on a cold start the cache is empty, so the delta below populates).
     await this.userService.establishSession(d.userId, d.profileRev ?? 0, d.hasUrFriendReq ?? false);
-    // 2. Load the persisted missed-summary cursor (the walk's `from`).
+    // 2. Load the persisted missed-summary cursor (the walk's `from`) + the per-thread dismiss-HWM map.
     await this.loadMissedCursor();
+    await this.loadThreadHwms();
     // 3. Delta-replay the thread list: full `(0, rev]` on first connect (cursor unseeded → seed 0),
     //    incremental `(cursor, rev]` on reconnect. The server plans (last-op-wins) + hydrates.
     if (typeof d.threadRevision === 'number') {
@@ -663,6 +689,30 @@ export class ThreadRepository {
   advanceMissedCursor(cursor: MissedCursor): void {
     this._missedCursor.set(cursor);
     this.saveMissedCursor(cursor);
+  }
+
+  /** The per-thread dismiss-HWM map (the away-notification renderer sends it as `threadHwms`). */
+  threadHwms(): Record<number, number> {
+    return this._threadHwms();
+  }
+
+  /** Record a per-thread dismiss — advance that thread's HWM to `seq` (monotonic; never regresses on a
+   *  stale/out-of-order dismiss) so the next `/notifications/missed` pull counts this thread FROM it and the
+   *  server drops it from the descriptors. Merge + persist (mirrors {@link advanceMissedCursor}). */
+  recordThreadDismiss(c: { threadId: number; seq: number }): void {
+    const prev = this._threadHwms()[c.threadId];
+    if (prev !== undefined && c.seq <= prev) return;
+    const next = { ...this._threadHwms(), [c.threadId]: c.seq };
+    this._threadHwms.set(next);
+    void this.webdb.putMeta('threadHwms', next);
+  }
+
+  /** Clear every per-thread dismiss-HWM (focus-regain reset — the Android "foreground → all per-thread HWMs
+   *  reset" model; a dismissed thread re-fires next away period). No-op when already empty. */
+  clearThreadDismiss(): void {
+    if (Object.keys(this._threadHwms()).length === 0) return;
+    this._threadHwms.set({});
+    void this.webdb.putMeta('threadHwms', {});
   }
 
   /** Catch up the local message store + previews: walk the `(from, to]` double-boundary range — `from` is the

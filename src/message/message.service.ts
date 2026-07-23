@@ -575,30 +575,39 @@ export class MessageService implements OnModuleInit {
 
   /**
    * Away-notification per-thread aggregation (Query A) for `grouping:'thread'`: the threads with new LIVE
-   * messages since `sinceId`, each with its EXACT count + latest seq. Groups by thread, newest-thread-first,
-   * capped at `limit` threads (the notification-card cap). Muted threads + blocked creators + soft-deleted
-   * messages excluded. The count is a real COUNT (not seq arithmetic — soft-deletes occupy seq but must not
-   * count, federation may gap it). This is the count for threads the client has NOT dismissed (cumulative
-   * since `since`); dismissed threads override it via {@link threadCountSinceBound}. Backed by Message(id).
+   * messages since `sinceId`, each with its count + latest seq. To BOUND the scan, it first samples the
+   * `sampleLimit` (default 1000) NEWEST qualifying messages, then groups the sample by thread (newest-thread-
+   * first, capped at `threadLimit` cards). So a thread's count is its share of the recent 1000 — past that the
+   * exact total is unknown (the per-thread display caps at "999+"). Muted threads + blocked creators + soft-
+   * deleted messages excluded. The count is a real COUNT (not seq arithmetic — soft-deletes occupy seq but
+   * must not count). For threads the client has NOT dismissed (cumulative since `since`); dismissed threads
+   * override via {@link threadCountsSinceBounds}. Backed by Message(id).
    */
   async threadAwayBuckets(
     userId: number,
     sinceId: bigint,
-    limit: number,
+    threadLimit: number,
     hideCreatorIds: number[] = [],
+    sampleLimit = 1000,
   ): Promise<Map<number, { count: number; latestSeq: number }>> {
     const blockedClause = hideCreatorIds.length
       ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
       : Prisma.empty;
     const rows = await this.prisma.$queryRaw<Array<{ threadId: number; cnt: bigint; latest: number }>>`
-      SELECT m."threadId" AS "threadId", COUNT(*) AS "cnt", MAX(m."seq") AS "latest"
-      FROM "Message" m
-      JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
-      WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false AND m."isDeleted" = false
-      GROUP BY m."threadId"
-      ORDER BY MAX(m."id") DESC
-      LIMIT ${limit}
+      WITH sample AS (
+        SELECT m."threadId" AS tid, m."seq" AS seq, m."id" AS id
+        FROM "Message" m
+        JOIN "ThreadParticipant" tp
+          ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
+        WHERE m."id" > ${sinceId} ${blockedClause} AND tp."muted" = false AND m."isDeleted" = false
+        ORDER BY m."id" DESC
+        LIMIT ${sampleLimit}
+      )
+      SELECT tid AS "threadId", COUNT(*) AS "cnt", MAX(seq) AS "latest"
+      FROM sample
+      GROUP BY tid
+      ORDER BY MAX(id) DESC
+      LIMIT ${threadLimit}
     `;
     const buckets = new Map<number, { count: number; latestSeq: number }>();
     for (const r of rows) buckets.set(r.threadId, { count: Number(r.cnt), latestSeq: r.latest });
@@ -606,31 +615,38 @@ export class MessageService implements OnModuleInit {
   }
 
   /**
-   * Away-notification per-thread count (Query B) for a DISMISSED thread: the EXACT count of LIVE messages
-   * newer than `sinceSeq` (the thread's dismiss HWM) AND newer than the global `globalSinceId` (so messages
-   * from before the foreground baseline are never re-counted). The client passes its in-memory dismiss HWM
-   * for the thread in `threadHwms[tid]`; this returns the cumulative-since-dismiss count (dismiss resets it
-   * to 0 until newer messages arrive). Same muted / blocked / soft-deleted filters. Backed by Message(id, seq).
+   * Away-notification per-thread count (Query B), BATCHED for all DISMISSED threads in ONE query: for each
+   * `(threadId, sinceSeq)` pair, the EXACT count of LIVE messages newer than `sinceSeq` (the thread's dismiss
+   * HWM) AND newer than the global `globalSinceId` (so pre-foreground messages are never re-counted). The
+   * client passes its dismiss HWMs in `threadHwms`; this returns the cumulative-since-dismiss count per thread
+   * (dismiss resets it to 0 until newer messages). One UNNEST join replaces N per-thread queries. Same muted /
+   * blocked / soft-deleted filters. Backed by Message(id, seq). Empty input → empty map (no query).
    */
-  async threadCountSinceBound(
+  async threadCountsSinceBounds(
     userId: number,
     globalSinceId: bigint,
-    threadId: number,
-    sinceSeq: number,
+    pairs: Array<{ tid: number; sinceSeq: number }>,
     hideCreatorIds: number[] = [],
-  ): Promise<number> {
+  ): Promise<Map<number, number>> {
+    if (pairs.length === 0) return new Map();
     const blockedClause = hideCreatorIds.length
       ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
       : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<Array<{ cnt: bigint }>>`
-      SELECT COUNT(*) AS "cnt"
-      FROM "Message" m
+    const tids = pairs.map((p) => p.tid);
+    const seqs = pairs.map((p) => p.sinceSeq);
+    const rows = await this.prisma.$queryRaw<Array<{ tid: number; cnt: bigint }>>`
+      SELECT u.tid AS tid, COUNT(m.id) AS cnt
+      FROM UNNEST(ARRAY[${Prisma.join(tids)}]::int[], ARRAY[${Prisma.join(seqs)}]::int[]) AS u(tid, sinceseq)
+      JOIN "Message" m
+        ON m."threadId" = u.tid AND m."seq" > u.sinceseq AND m."id" > ${globalSinceId} AND m."isDeleted" = false
       JOIN "ThreadParticipant" tp
-        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL
-      WHERE m."threadId" = ${threadId} AND m."seq" > ${sinceSeq} AND m."id" > ${globalSinceId}
-            AND m."isDeleted" = false AND tp."muted" = false ${blockedClause}
+        ON tp."threadId" = m."threadId" AND tp."userId" = ${userId} AND tp."leftAt" IS NULL AND tp."muted" = false
+      WHERE TRUE ${blockedClause}
+      GROUP BY u.tid
     `;
-    return Number(rows[0]?.cnt ?? 0n);
+    const out = new Map<number, number>();
+    for (const r of rows) out.set(r.tid, Number(r.cnt));
+    return out;
   }
 
   /**

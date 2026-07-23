@@ -10,6 +10,8 @@ import { NotificationAdapter } from './notification-adapter';
 import { BrowserNotificationAdapter } from './browser-notification.adapter';
 import { TauriNotificationAdapter } from './tauri-notification.adapter';
 import { AndroidNotificationAdapter } from './android-notification.adapter';
+import { NavStateMachineService } from './nav-state.service';
+import { SOMS_NOTIF_MSG, type SwNotifMessage } from './sw-notif-protocol';
 
 /**
  * Foreground "you have unread" attention for **PC desktop + browser** — the channels that lack a
@@ -38,6 +40,7 @@ export class UnreadAttentionService {
   private readonly prefs = inject(NotificationPrefsService);
   private readonly missedSync = inject(MissedSyncService);
   private readonly popup = inject(NotifPopupService);
+  private readonly nav = inject(NavStateMachineService);
 
   /** The page's original title, captured at construction before any prefix is applied. */
   private readonly baseTitle = typeof document !== 'undefined' ? document.title : 'SOMS';
@@ -74,6 +77,14 @@ export class UnreadAttentionService {
       this.onFocusChange(document.visibilityState === 'visible'),
     );
 
+    // Control channel FROM the push service worker: a shade-notification action (per-card dismiss, body-tap
+    // deep-link) fires in the SW's `notificationclick`, which can't reach the Angular layer directly — the
+    // SW postMessages the page (spec-delivered even though ngsw, not sw-push, controls this page). Routed in
+    // {@link onSwMessage} to the per-thread HWM store (dismiss) + thread navigation (open).
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', (e) => this.onSwMessage(e));
+    }
+
     // React to unread/focus changes: apply or clear the "(N)" title prefix.
     effect(() => this.syncTitle(this.unreadTotal(), this.focused()));
 
@@ -101,15 +112,37 @@ export class UnreadAttentionService {
   }
 
   /** Tear down the away notification when the user returns to the tab: cancel any pending pull (so a
-   *  burst's trailing render can't fire AFTER focus returns), dismiss the system notification, and clear
-   *  the in-app popup. */
+   *  burst's trailing render can't fire AFTER focus returns), dismiss the system notification, clear the
+   *  in-app popup, and reset the per-thread dismiss-HWMs (the Android "foreground → all per-thread HWMs
+   *  reset" model — a dismissed thread re-fires next away period). */
   private dismissActive(): void {
     if (this.awayFlushTimer !== null) {
       clearTimeout(this.awayFlushTimer);
       this.awayFlushTimer = null;
     }
-    this.adapter.clear();
+    void this.adapter.clear();
     this.popup.clear();
+    this.convList.clearThreadDismiss();
+  }
+
+  /** Handle a postMessage from a service worker (the push SW's `notificationclick` dispatches here — the SW
+   *  can't reach the Angular `WebdbService`, so it postMessages the page). `soms-notif-dismiss` records the
+   *  per-thread HWM so the next away fetch gates that thread past the dismissed seq; `soms-notif-open`
+   *  deep-links to the tapped thread. Unknown messages are ignored (forward-compat). */
+  private onSwMessage(e: MessageEvent): void {
+    const d = (e.data ?? {}) as Partial<SwNotifMessage>;
+    if (d.type === SOMS_NOTIF_MSG.DISMISS) {
+      if (typeof d.threadId === 'number' && typeof d.seq === 'number') {
+        this.convList.recordThreadDismiss({ threadId: d.threadId, seq: d.seq });
+      }
+      return;
+    }
+    if (d.type === SOMS_NOTIF_MSG.OPEN) {
+      if (typeof d.threadId === 'number') {
+        window.focus();
+        this.nav.openChat(d.threadId);
+      }
+    }
   }
 
   /** Arm a single trailing debounced pull + render. Re-arming within the window pushes the fire out (a
@@ -122,20 +155,24 @@ export class UnreadAttentionService {
     }, UnreadAttentionService.DEBOUNCE_MS);
   }
 
-  /** Pull the current unread snapshot (the away-notification descriptors) and render each via the adapter
-   *  AND the in-app popup. Uses the away path's OWN single-flight (independent of the threadlist catch-up
-   *  path) so a threadlist pull at the same instant cannot starve the away-notification. A `kind:'clear'`
-   *  descriptor (nothing unread+unmuted) dismisses the prior notification/popup. Fire-and-forget. */
+  /** Pull the current unread snapshot (the away-notification descriptors) and render each via the adapter,
+   *  plus the in-app popup on platforms that need it. Sends the per-thread dismiss-HWM map (`threadHwms`) so
+   *  a dismissed thread's count resets server-side. Uses the away path's OWN single-flight (independent of
+   *  the threadlist catch-up path) so a threadlist pull at the same instant cannot starve the away-
+   *  notification. A `kind:'clear'` descriptor (nothing unread+unmuted) dismisses the prior notification.
+   *  Fire-and-forget. */
   private async pullAndRender(): Promise<void> {
     try {
       const notifications = await this.missedSync.fetchAwayNotifications(
         this.convList.missedCursor(),
         this.prefs.grouping(),
+        this.convList.threadHwms(),
       );
-      for (const d of notifications) this.adapter.showDescriptor(d);
-      // The in-app popup is the reliable action surface on platforms where in-page Notification buttons
-      // don't fire; show() handles `clear` (dismiss) + replace-by-tag.
-      this.popup.show(notifications);
+      await Promise.all(notifications.map((d) => this.adapter.showDescriptor(d)));
+      // The in-app popup is the action surface ONLY on platforms whose system notifications lack action
+      // buttons (the desktop Tauri bridge exposes none; Android is dormant here). Browser renders dismiss +
+      // deep-link on the SW-owned system notification, so it gets no in-app popup.
+      if (isTauri() || isAndroidNative()) this.popup.show(notifications);
     } catch {
       /* best-effort — a transient fetch failure just means no notification this cycle */
     }

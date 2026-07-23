@@ -17,7 +17,7 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * Desktop-only: Android has its own Kotlin `SomsNotify` bridge + {@link AndroidNotificationAdapter}.
  */
 export class TauriNotificationAdapter extends NotificationAdapter {
-  showDescriptor(d: NotificationDescriptor): void {
+  async showDescriptor(d: NotificationDescriptor): Promise<void> {
     if (d.kind === 'clear') return; // the bridge exposes no cancel-by-id → nothing to dismiss
     try {
       tauriSendNotification({ title: d.title, body: d.body, identifier: d.tag });
@@ -26,7 +26,7 @@ export class TauriNotificationAdapter extends NotificationAdapter {
     }
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     // The global bridge exposes no cancel-by-id, so the posted desktop notification cannot be dismissed from
     // JS. It is replaced (via the stable identifier) on the next `showDescriptor`, or auto-dismissed on tap.
   }

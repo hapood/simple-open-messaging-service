@@ -461,4 +461,55 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(item.lastReadSeq).toBe(10); // optimistic (10) wins over stale server (5)
     expect(item.unreadCount).toBe(0); // the server's transient unread=3 is masked
   });
+
+  // ── per-thread dismiss-HWM (the away-notification per-thread grouping state) ─────────────────
+
+  it('recordThreadDismiss advances a thread HWM + persists the map to IDB', async () => {
+    repo.recordThreadDismiss({ threadId: 7, seq: 3 });
+    await flush();
+    expect(repo.threadHwms()).toEqual({ 7: 3 });
+    expect(await webdb.getMeta('threadHwms')).toEqual({ 7: 3 });
+  });
+
+  it('recordThreadDismiss merges per-thread and never regresses (monotonic)', async () => {
+    repo.recordThreadDismiss({ threadId: 7, seq: 5 });
+    repo.recordThreadDismiss({ threadId: 9, seq: 2 });
+    repo.recordThreadDismiss({ threadId: 7, seq: 3 }); // stale / lower → ignored
+    await flush();
+    expect(repo.threadHwms()).toEqual({ 7: 5, 9: 2 });
+  });
+
+  it('clearThreadDismiss resets the map to empty + persists {}', async () => {
+    repo.recordThreadDismiss({ threadId: 7, seq: 5 });
+    await flush();
+    repo.clearThreadDismiss();
+    await flush();
+    expect(repo.threadHwms()).toEqual({});
+    expect(await webdb.getMeta('threadHwms')).toEqual({});
+  });
+
+  it('clearThreadDismiss is a no-op when already empty', async () => {
+    repo.clearThreadDismiss();
+    await flush();
+    expect(repo.threadHwms()).toEqual({});
+    expect(await webdb.getMeta('threadHwms')).toBeUndefined();
+  });
+
+  it('loadThreadHwms hydrates from IDB on HELLO (boot restore of a persisted map)', async () => {
+    await webdb.putMeta('threadHwms', { 7: 5, 9: 2 });
+    queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
+    emitHello({ userId: 1, threadRevision: 5 });
+    await flush(20);
+    expect(repo.threadHwms()).toEqual({ 7: 5, 9: 2 });
+  });
+
+  it('session-end reset (logout) clears the thread HWMs', async () => {
+    sessionUserId.set(1);
+    repo.recordThreadDismiss({ threadId: 7, seq: 5 });
+    await flush();
+    expect(repo.threadHwms()).toEqual({ 7: 5 });
+    sessionUserId.set(null); // logout → reset()
+    await flush(20);
+    expect(repo.threadHwms()).toEqual({});
+  });
 });

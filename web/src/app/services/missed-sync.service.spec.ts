@@ -92,10 +92,11 @@ describe('MissedSyncService', () => {
     expect(applyMissedSpy).not.toHaveBeenCalled();
   });
 
-  it('fetchAwayNotifications: POSTs {since} to /notifications/missed → returns the descriptors', async () => {
+  it('fetchAwayNotifications: POSTs {since, grouping} to /notifications/missed → returns the descriptors', async () => {
     const p = svc.fetchAwayNotifications({ threadId: 1, seq: 4 });
     const req = httpMock.expectOne('/api/v1/notifications/missed');
-    expect(req.request.body).toEqual({ since: { threadId: 1, seq: 4 } });
+    // grouping defaults to 'thread' (always sent); threadHwms omitted when not passed.
+    expect(req.request.body).toEqual({ since: { threadId: 1, seq: 4 }, grouping: 'thread' });
     req.flush({ code: 0, message: 'ok', data: { notifications: [{ tag: 'soms-away', kind: 'message-summary', body: 'x' }] } });
     const result = await p;
     expect(result.length).toBe(1);
@@ -103,10 +104,10 @@ describe('MissedSyncService', () => {
     expect(applyMissedSpy).not.toHaveBeenCalled(); // the away path does NOT cache bodies
   });
 
-  it('fetchAwayNotifications: since null → POSTs {} (no since key)', async () => {
+  it('fetchAwayNotifications: since null → POSTs {grouping} (no since key)', async () => {
     const p = svc.fetchAwayNotifications(null);
     const req = httpMock.expectOne('/api/v1/notifications/missed');
-    expect(req.request.body).toEqual({});
+    expect(req.request.body).toEqual({ grouping: 'thread' });
     req.flush({ code: 0, message: 'ok', data: { notifications: [] } });
     expect(await p).toEqual([]);
   });

@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.json.JSONObject
 
 /**
  * Encrypted-at-rest store for the state the background services (NotificationSyncWorker, RealtimeService,
@@ -45,6 +46,10 @@ object SomsSecureStore {
      *  card). Device-local (like polling/FGS); the client sends it on each /missed pull as the `grouping`
      *  field. Default "thread" (the app's shipping default). */
     private const val KEY_NOTIF_GROUPING = "notif_grouping"
+    /** Persisted per-thread dismiss-HWM map (threadId → seq) as a JSON object string. Survives process death
+     *  so a dismiss holds even when the OS kills + restarts the app mid-background-session; cleared on
+     *  foreground. In-memory cached by SomsMessagingService (the working copy); this is the durable backing. */
+    private const val KEY_NOTIF_THREAD_HWMS = "notif_thread_hwms"
     private const val KEY_MISSED_CURSOR_THREAD = "missed_cursor_thread"
     private const val KEY_MISSED_CURSOR_SEQ = "missed_cursor_seq"
 
@@ -164,6 +169,32 @@ object SomsSecureStore {
 
     fun setNotifGrouping(ctx: Context, grouping: String) {
         prefs(ctx).edit().putString(KEY_NOTIF_GROUPING, if (grouping == "all") "all" else "thread").apply()
+    }
+
+    /** The persisted per-thread dismiss-HWM map (threadId → seq), or empty when none (cleared on foreground).
+     *  Malformed JSON → empty (defensive — never blocks the notification path). */
+    fun getNotifThreadHwms(ctx: Context): Map<Int, Int> {
+        val raw = prefs(ctx).getString(KEY_NOTIF_THREAD_HWMS, null) ?: return emptyMap()
+        return try {
+            val obj = JSONObject(raw)
+            val out = HashMap<Int, Int>()
+            for (key in obj.keys()) out[key.toInt()] = obj.getInt(key)
+            out
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** Persist the full dismiss-HWM map (overwrites). Called on each dismiss (the working copy is kept in sync). */
+    fun setNotifThreadHwms(ctx: Context, hwms: Map<Int, Int>) {
+        val obj = JSONObject()
+        for ((tid, seq) in hwms) obj.put(tid.toString(), seq)
+        prefs(ctx).edit().putString(KEY_NOTIF_THREAD_HWMS, obj.toString()).apply()
+    }
+
+    /** Clear the persisted dismiss-HWM map (foreground reset). */
+    fun clearNotifThreadHwms(ctx: Context) {
+        prefs(ctx).edit().remove(KEY_NOTIF_THREAD_HWMS).apply()
     }
 
     /** Epoch ms of the last FCM availability check (token fetch). 0 = never. The Settings "FCM status"

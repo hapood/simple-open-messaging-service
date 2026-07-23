@@ -18,11 +18,11 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  * `/notifications/missed` pull).
  */
 export class AndroidNotificationAdapter extends NotificationAdapter {
-  showDescriptor(d: NotificationDescriptor): void {
+  async showDescriptor(d: NotificationDescriptor): Promise<void> {
     window.SomsNotify!.showDescriptor(JSON.stringify(d));
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     window.SomsNotify!.clear();
   }
 }

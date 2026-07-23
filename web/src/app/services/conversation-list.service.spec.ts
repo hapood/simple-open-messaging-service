@@ -73,3 +73,64 @@ describe('ConversationListService markRead flush (B1)', () => {
     expect(markRead).toHaveBeenCalledWith({ threadId: 7, lastReadSeq: 5 });
   });
 });
+
+/**
+ * The away-cursor + per-thread dismiss-HWM delegations. `missedCursor`/`threadHwms` are METHOD delegators
+ * (the repo exposes them as methods, not bound signals), so they must reach the repo on call — the legacy
+ * `readonly = this.repo.missedCursor` field-copy captured an UNBOUND method and threw (silently swallowed by
+ * the away-renderer's try/catch). This guard pins the fix.
+ */
+describe('ConversationListService (cursor + threadHwms delegation)', () => {
+  let convList: ConversationListService;
+  let missedCursor: jasmine.Spy;
+  let threadHwms: jasmine.Spy;
+  let recordThreadDismiss: jasmine.Spy;
+  let clearThreadDismiss: jasmine.Spy;
+
+  beforeEach(() => {
+    missedCursor = jasmine.createSpy('missedCursor').and.returnValue(null);
+    threadHwms = jasmine.createSpy('threadHwms').and.returnValue({ 7: 3 });
+    recordThreadDismiss = jasmine.createSpy('recordThreadDismiss');
+    clearThreadDismiss = jasmine.createSpy('clearThreadDismiss');
+    TestBed.configureTestingModule({
+      providers: [
+        provideZonelessChangeDetection(),
+        ConversationListService,
+        {
+          provide: ThreadRepository,
+          useValue: {
+            openThreadMessage$: new Subject().asObservable(),
+            items: signal([]).asReadonly(),
+            status: signal('LOADING').asReadonly(),
+            error: signal('').asReadonly(),
+            openThreadId: signal(undefined).asReadonly(),
+            topInserted: signal(null).asReadonly(),
+            setOpenThread: jasmine.createSpy('setOpenThread'),
+            missedCursor,
+            threadHwms,
+            advanceMissedCursor: jasmine.createSpy('advanceMissedCursor'),
+            recordThreadDismiss,
+            clearThreadDismiss,
+          },
+        },
+        { provide: UserService, useValue: { markRead: () => of({ code: 0 }), sessionUserId: signal<number | null>(null) } },
+        { provide: GroupService, useValue: {} },
+      ],
+    });
+    convList = TestBed.inject(ConversationListService);
+  });
+
+  it('missedCursor / threadHwms delegate to the repo (method delegators, not field-copies)', () => {
+    expect(convList.missedCursor()).toBeNull();
+    expect(missedCursor).toHaveBeenCalledTimes(1);
+    expect(convList.threadHwms()).toEqual({ 7: 3 });
+    expect(threadHwms).toHaveBeenCalledTimes(1);
+  });
+
+  it('recordThreadDismiss / clearThreadDismiss delegate to the repo', () => {
+    convList.recordThreadDismiss({ threadId: 7, seq: 9 });
+    expect(recordThreadDismiss).toHaveBeenCalledWith({ threadId: 7, seq: 9 });
+    convList.clearThreadDismiss();
+    expect(clearThreadDismiss).toHaveBeenCalledTimes(1);
+  });
+});

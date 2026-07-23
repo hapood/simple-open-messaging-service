@@ -20,7 +20,7 @@ describe('NotificationQueryService', () => {
   let attachMedia: ReturnType<typeof vi.fn>;
   let senderCountsSince: ReturnType<typeof vi.fn>;
   let threadAwayBuckets: ReturnType<typeof vi.fn>;
-  let threadCountSinceBound: ReturnType<typeof vi.fn>;
+  let threadCountsSinceBounds: ReturnType<typeof vi.fn>;
   let findNewest: ReturnType<typeof vi.fn>;
   let findPeers: ReturnType<typeof vi.fn>;
   let queryUsers: ReturnType<typeof vi.fn>;
@@ -48,7 +48,7 @@ describe('NotificationQueryService', () => {
     attachMedia = vi.fn();
     senderCountsSince = vi.fn();
     threadAwayBuckets = vi.fn();
-    threadCountSinceBound = vi.fn();
+    threadCountsSinceBounds = vi.fn();
     findNewest = vi.fn();
     findPeers = vi.fn();
     queryUsers = vi.fn();
@@ -57,7 +57,7 @@ describe('NotificationQueryService', () => {
     blockedByMe = vi.fn().mockResolvedValue(new Set<number>());
     svc = new NotificationQueryService(
       { queryParticipants: participants, findP2PPeers: findPeers } as never,
-      { countUnreadByThread: countUnread, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, threadAwayBuckets, threadCountSinceBound, findNewestForUser: findNewest } as never,
+      { countUnreadByThread: countUnread, findMessagesBySeqPairs: findMsgs, attachMediaStatus: attachMedia, senderCountsSince, threadAwayBuckets, threadCountsSinceBounds, findNewestForUser: findNewest } as never,
       { queryUsers } as never,
       { resolveGroupUsersByThreadIds: resolveGroups } as never,
       { blockedByMe } as never,
@@ -73,7 +73,12 @@ describe('NotificationQueryService', () => {
     peers: Array<{ threadId: number; userId: number }> = [],
     users: Array<{ id: number; name: string; avatar: string }> = [],
   ) {
-    participants.mockResolvedValue(threads);
+    // Honor the optional `threadId IN (...)` scope (the away-descriptor path hydrates only the visible
+    // bucket threads, not all of the user's threads) — without this the mock would leak the dropped thread.
+    participants.mockImplementation((args: { where?: { threadId?: { in?: number[] } } }) => {
+      const inIds = args?.where?.threadId?.in;
+      return Promise.resolve(inIds ? threads.filter((t) => inIds.includes(t.threadId)) : threads);
+    });
     countUnread.mockResolvedValue(new Map(Object.entries(unread).map(([k, v]) => [Number(k), v])));
     findPeers.mockResolvedValue(peers);
     queryUsers.mockResolvedValue(users);
@@ -296,8 +301,8 @@ describe('NotificationQueryService', () => {
     threadAwayBuckets.mockResolvedValue(
       new Map([[1, { count: 5, latestSeq: 9 }], [2, { count: 3, latestSeq: 8 }], [3, { count: 4, latestSeq: 11 }]]),
     );
-    // Query B (only for dismissed threads 1 + 3): thread 1 → 2 new since dismiss; thread 3 → 0 (dropped).
-    threadCountSinceBound.mockImplementation((_u, _s, tid) => Promise.resolve(tid === 1 ? 2 : 0));
+    // Query B (batched, only for dismissed threads 1 + 3): thread 1 → 2 new since dismiss; thread 3 → 0 (dropped).
+    threadCountsSinceBounds.mockResolvedValue(new Map([[1, 2], [3, 0]]));
     wire(
       [row(1, 'P2P', { lastMessageSeq: 9 }), row(2, 'P2P', { lastMessageSeq: 8 }), row(3, 'P2P', { lastMessageSeq: 11 })],
       { 1: 5, 2: 3, 3: 4 },

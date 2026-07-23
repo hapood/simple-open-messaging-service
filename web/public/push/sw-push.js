@@ -19,6 +19,20 @@ importScripts('./sw-config.js');
    *  second hardcoded copy). importScripts is synchronous + resolves relative to this SW's /push/ scope. */
   var API_PREFIX = self.__SOMS_API_PREFIX__;
 
+  /** Map a descriptor action ({id,title}) onto the Web Notifications API shape ({action,title}). The two
+   *  contracts disagree on the id key — the API keys off `action`, so passing the descriptor straight through
+   *  renders no working buttons. Inline mirror of browser-notification.adapter.ts `mapActions` (this is a
+   *  classic script with no imports — keep the two in sync). */
+  function mapActions(actions) {
+    return (actions || []).map(function (a) {
+      return { action: a.id, title: a.title };
+    });
+  }
+
+  /** The per-thread shade-notification tag prefix (soms-thread-<id>) — discriminates a deep-linkable per-
+   *  thread card from the cross-thread summary (soms-away → focus root). */
+  var SOMS_THREAD_PREFIX = 'soms-thread-';
+
   self.addEventListener('push', function (event) {
     event.waitUntil(
       (async function () {
@@ -58,7 +72,7 @@ importScripts('./sw-config.js');
               lang: d.lang,
               silent: !!d.silent,
               data: d.data,
-              actions: d.actions || [],
+              actions: mapActions(d.actions),
             });
           }
         } catch (e) {
@@ -75,11 +89,24 @@ importScripts('./sw-config.js');
     event.waitUntil(
       (async function () {
         // An action button tap (event.action). `dismiss` is a pure frontend shade-close — the notification is
-        // already closed above, so just return (never POST). Any other action (`reply`, …) reports to the
-        // server; an inline-reply action (type:'text') carries the typed text as event.reply. threadId/seq come
-        // from the descriptor's data. Best-effort — a failed POST just means the action didn't land.
+        // already closed above + the per-thread HWM is postMessaged to the page (never POSTed). Any other
+        // action (`reply`, …) reports to the server; an inline-reply action (type:'text') carries the typed
+        // text as event.reply. threadId/seq come from the descriptor's data. Best-effort — a failed POST just
+        // means the action didn't land.
         if (event.action) {
-          if (event.action === 'dismiss') return; // pure frontend — shade already closed
+          if (event.action === 'dismiss') {
+            // Pure frontend shade-close (already closed above — never POST), BUT record the per-thread HWM so
+            // the next /missed pull counts THIS thread from `seq` (it stops re-firing until newer messages
+            // arrive). The SW can't reach the Angular WebdbService, so postMessage the page (which owns the
+            // HWM store); delivered even though ngsw, not this SW, controls the page. Best-effort.
+            if (d.threadId != null && typeof d.threadId === 'number' && typeof d.seq === 'number') {
+              var dcs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+              for (var j = 0; j < dcs.length; j++) {
+                dcs[j].postMessage({ type: self.__SOMS_NOTIF_MSG__.DISMISS, threadId: d.threadId, seq: d.seq });
+              }
+            }
+            return;
+          }
           try {
             await fetch(API_PREFIX + '/notifications/action', {
               method: 'POST',
@@ -98,12 +125,19 @@ importScripts('./sw-config.js');
           }
           return; // an action handled it — don't also focus the app
         }
-        // Body tap → focus/open the app root (the coalesced summary may span several threads).
+        // Body tap: a per-thread card (soms-thread-<id>) deep-links to that thread; the cross-thread summary
+        // (soms-away) just focuses the app root (it may span several threads). Deep-link is a postMessage to
+        // the page (it owns navigation via NavStateMachineService.openChat); the window is focused here so it
+        // foregrounds either way. With no live client (tab closed — the push path), openWindow to the chat URL
+        // (parsed by NavStateMachineService.initFromUrl) for a per-thread card, else the app root.
+        var isOpen = typeof d.threadId === 'number' && tag.indexOf(SOMS_THREAD_PREFIX) === 0;
         var cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
         for (var i = 0; i < cs.length; i++) {
-          if (cs[i] && 'focus' in cs[i]) return cs[i].focus();
+          if (!cs[i] || !('focus' in cs[i])) continue;
+          if (isOpen) cs[i].postMessage({ type: self.__SOMS_NOTIF_MSG__.OPEN, threadId: d.threadId });
+          return cs[i].focus();
         }
-        return self.clients.openWindow('/');
+        return self.clients.openWindow(isOpen ? '/chat/' + d.threadId : '/');
       })(),
     );
   });

@@ -18,13 +18,14 @@ import type { NotificationDescriptor } from './notification-descriptor.model';
  *    path is dormant — Android notifications come from the native FCM/WorkManager paths).
  *
  * `showDescriptor(d)` is the single display call every adapter implements; `clear()` is a lifecycle method
- * (dismiss on focus regain). A `kind:'clear'` descriptor also dismisses (server-driven cancel).
+ * (dismiss on focus regain). A `kind:'clear'` descriptor also dismisses (server-driven cancel). Both are
+ * async — the browser adapter awaits its SW registration's `showNotification` / `getNotifications`.
  */
 export abstract class NotificationAdapter {
   /** Show / update / dismiss a notification per the server-authored descriptor. `tag` is the replace-by-id
    *  primitive (same tag replaces; unique tags stack). `kind:'clear'` cancels the tagged notification. */
-  abstract showDescriptor(d: NotificationDescriptor): void;
+  abstract showDescriptor(d: NotificationDescriptor): Promise<void>;
 
   /** Dismiss the active notification — the facade calls this when the window regains focus. */
-  abstract clear(): void;
+  abstract clear(): Promise<void>;
 }

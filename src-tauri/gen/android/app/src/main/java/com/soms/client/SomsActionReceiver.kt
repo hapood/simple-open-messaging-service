@@ -46,7 +46,7 @@ class SomsActionReceiver : BroadcastReceiver() {
                 // the tag prefix): record the thread's seq IN MEMORY — the next fetch's `threadHwms` makes the
                 // server count this thread FROM it, so dismiss resets its cumulative count to 0 until newer
                 // messages. Cancels THIS card only; no global-HWM change (the other cards stay).
-                if (tid >= 0 && seq >= 0) SomsMessagingService.recordThreadDismiss(tid, seq)
+                if (tid >= 0 && seq >= 0) SomsMessagingService.recordThreadDismiss(context, tid, seq)
             } else {
                 // all-mode dismiss: advance the GLOBAL away-HWM (so the next fetch's `since` gates past
                 // everything) + cancel the away card.

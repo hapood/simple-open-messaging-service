@@ -226,25 +226,27 @@ export class NotificationQueryService {
     const buckets = await this.messageService.threadAwayBuckets(userId, sinceId, THREAD_NOTIF_CAP, [...blocked]);
     if (buckets.size === 0) return []; // nothing new → client clears all soms-thread-* notifications
 
-    // Query B (only for threads the client dismissed — present in threadHwms): override the count with the
-    // cumulative-since-dismiss count. Threads not dismissed keep Query A's cumulative-since-foreground count.
+    // Query B (ONE batched query): for each thread the client dismissed (in threadHwms), count since its HWM.
+    // Threads not dismissed keep Query A's cumulative-since-foreground count.
     const hwms = threadHwms ?? {};
+    const dismissedPairs = [...buckets.keys()]
+      .filter((tid) => hwms[tid] != null)
+      .map((tid) => ({ tid, sinceSeq: hwms[tid] }));
+    const boundsCounts =
+      dismissedPairs.length > 0
+        ? await this.messageService.threadCountsSinceBounds(userId, sinceId, dismissedPairs, [...blocked])
+        : new Map<number, number>();
     const counts = new Map<number, number>();
     for (const [tid, { count }] of buckets) {
-      const hwm = hwms[tid];
-      counts.set(
-        tid,
-        hwm != null
-          ? await this.messageService.threadCountSinceBound(userId, sinceId, tid, hwm, [...blocked])
-          : count,
-      );
+      counts.set(tid, hwms[tid] != null ? (boundsCounts.get(tid) ?? 0) : count);
     }
 
-    // Drop threads whose final count is 0 (dismissed with no new messages) + hydrate display names.
-    const ctx = await this.loadThreadContext(userId);
-    const rows = ctx.active
-      .filter((p) => (counts.get(p.threadId) ?? 0) > 0)
-      .sort((a, b) => ctx.cmpByIdAsc(b, a)); // newest conversation first
+    // Drop count-0 (dismissed with no new) BEFORE hydrating, then hydrate names SCOPED to the visible threads
+    // only (not all the user's threads — loadThreadContext takes the id list).
+    const visibleIds = [...counts.entries()].filter(([, c]) => c > 0).map(([tid]) => tid);
+    if (visibleIds.length === 0) return [];
+    const ctx = await this.loadThreadContext(userId, visibleIds);
+    const rows = ctx.active.sort((a, b) => ctx.cmpByIdAsc(b, a)); // newest conversation first
     const items = await this.hydrateItems(userId, rows, ctx.unread, ctx.attachedByThread);
 
     return items.map((it) => {
@@ -288,9 +290,11 @@ export class NotificationQueryService {
   /**
    * The shared per-thread context both the summary walk + (historically) the descriptor fold build on: the
    * user's active threads (membership + a latest message, minus P2P-blocked latest senders) with their
-   * latest-message id (the strict-total-order key) + the id-stripped body + unread counts.
+   * latest-message id (the strict-total-order key) + the id-stripped body + unread counts. Pass `threadIds`
+   * to SCOPE every query to just those threads (the away-descriptor path hydrates only the ≤30 bucket threads,
+   * not all of the user's threads).
    */
-  private async loadThreadContext(userId: number): Promise<{
+  private async loadThreadContext(userId: number, threadIds?: number[]): Promise<{
     active: Array<{
       threadId: number;
       muted: boolean;
@@ -303,7 +307,7 @@ export class NotificationQueryService {
     cmpByIdAsc: (a: { threadId: number }, b: { threadId: number }) => number;
   }> {
     const list = await this.participantService.queryParticipants({
-      where: { userId, leftAt: null },
+      where: { userId, leftAt: null, ...(threadIds ? { threadId: { in: threadIds } } : {}) },
       orderBy: { id: 'asc' },
       include: { thread: true },
     });

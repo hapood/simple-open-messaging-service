@@ -91,41 +91,66 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  + the JS seq range 0x100+). threadId is a small DB id → no Int overflow. */
         const val THREAD_NOTIF_BASE = 0x10000
 
-        /** In-memory per-thread DISMISS HWM (the count cursor): threadId → the seq the user dismissed up to.
-         *  Advances ONLY on dismiss (→ the thread's latestSeq); the server counts a dismissed thread FROM this
-         *  (sent as `threadHwms`), so dismiss resets its cumulative count. NOT the alert cursor — see
-         *  [threadLastAlertSeq]. Ephemeral (cleared on foreground); process-static so FCM/FGS/WorkManager share
-         *  it. ConcurrentHashMap (no @Volatile — the val is final; the map is itself thread-safe). */
+        /** Per-thread DISMISS HWM (the count cursor): threadId → the seq the user dismissed up to. Advances
+         *  ONLY on dismiss (→ the thread's latestSeq); the server counts a dismissed thread FROM this (sent as
+         *  `threadHwms`), so dismiss resets its cumulative count. NOT the alert cursor — see [threadLastAlertSeq].
+         *  This is the in-memory cache over the PERSISTED copy in SomsSecureStore (so a dismiss survives a
+         *  process kill + restart mid-background-session); loaded once per process ([ensureHwmsLoaded]) and
+         *  cleared on foreground. Process-static so FCM/FGS/WorkManager share it. ConcurrentHashMap. */
         private val dismissedThreadSeq = java.util.concurrent.ConcurrentHashMap<Int, Int>()
+
+        /** Whether [dismissedThreadSeq] has been loaded from disk this process. Loaded lazily on first access
+         *  (fetchDescriptors / recordThreadDismiss) so the durable dismiss HWM survives a kill + restart.
+         *  [clearThreadDismiss] sets it true (treats a cleared state as already-loaded). */
+        @Volatile
+        private var hwmsLoaded = false
 
         /** In-memory per-thread LAST-ALERTED latestSeq (the #4 alert cursor): threadId → the latestSeq at the
          *  last notify. #4 re-alerts a card only when first seen (no entry) OR its latestSeq advanced past this.
          *  Distinct from [dismissedThreadSeq] (which moves only on dismiss) — this moves on every notify, so a
-         *  re-fetch with nothing new stays silent. Cleared together with [dismissedThreadSeq] on foreground. */
+         *  re-fetch with nothing new stays silent. IN-MEMORY ONLY (not persisted — a process restart re-alerts
+         *  the standing unread set, the 6h-poll "reminder"; persisted it would suppress that). */
         private val threadLastAlertSeq = java.util.concurrent.ConcurrentHashMap<Int, Int>()
 
         /** Derive the stable notification id for a per-thread card from its threadId. */
-        private fun threadNotifId(threadId: Int): Int = THREAD_NOTIF_BASE + threadId
+        private fun threadNotifId(threadId: Int): Int = NotifThreadLogic.notifId(THREAD_NOTIF_BASE, threadId)
 
-        /** Dismiss cursor: advances ONLY on dismiss → the thread's latestSeq (called by [SomsActionReceiver]). */
-        fun recordThreadDismiss(threadId: Int, seq: Int) { dismissedThreadSeq[threadId] = seq }
+        /** Load the persisted dismiss HWMs into the cache once per process (no-op after the first load). */
+        private fun ensureHwmsLoaded(ctx: Context) {
+            if (hwmsLoaded) return
+            dismissedThreadSeq.putAll(SomsSecureStore.getNotifThreadHwms(ctx))
+            hwmsLoaded = true
+        }
 
-        /** A snapshot of the dismiss-HWM map, serialized as `threadHwms` in the /missed body. */
-        fun threadHwmsSnapshot(): Map<Int, Int> = dismissedThreadSeq.toMap()
+        /** Dismiss cursor: advances ONLY on dismiss → the thread's latestSeq, AND persists (survives process
+         *  death). Called by [SomsActionReceiver]. */
+        fun recordThreadDismiss(ctx: Context, threadId: Int, seq: Int) {
+            ensureHwmsLoaded(ctx)
+            dismissedThreadSeq[threadId] = seq
+            SomsSecureStore.setNotifThreadHwms(ctx, dismissedThreadSeq)
+        }
+
+        /** A snapshot of the dismiss-HWM map, serialized as `threadHwms` in the /missed body. Loads the
+         *  persisted copy first (once per process). */
+        fun threadHwmsSnapshot(ctx: Context): Map<Int, Int> {
+            ensureHwmsLoaded(ctx)
+            return dismissedThreadSeq.toMap()
+        }
 
         /** #4: whether `threadId` should re-alert — first sight, or `latestSeq` advanced past the last alert. */
-        fun shouldAlertThread(threadId: Int, latestSeq: Int): Boolean {
-            val last = threadLastAlertSeq[threadId]
-            return last == null || latestSeq > last
-        }
+        fun shouldAlertThread(threadId: Int, latestSeq: Int): Boolean =
+            NotifThreadLogic.shouldAlert(threadLastAlertSeq[threadId], latestSeq)
 
         /** #4: record the latestSeq just alerted for `threadId` (advances the alert cursor on each notify). */
         fun recordThreadAlert(threadId: Int, seq: Int) { threadLastAlertSeq[threadId] = seq }
 
-        /** Clear all per-thread in-memory state (foreground — the in-app UI takes over, cards reset). */
-        fun clearThreadDismiss() {
+        /** Clear all per-thread in-memory state + the persisted dismiss HWMs (foreground — the in-app UI takes
+         *  over, cards reset). */
+        fun clearThreadDismiss(ctx: Context) {
             dismissedThreadSeq.clear()
             threadLastAlertSeq.clear()
+            hwmsLoaded = true
+            SomsSecureStore.clearNotifThreadHwms(ctx)
         }
 
         /** True while MainActivity is visible. Set from MainActivity.onResume/onStop — the
@@ -169,7 +194,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 // Per-thread dismiss HWMs (in-memory) — for each dismissed thread, the server counts FROM its
                 // HWM (cumulative since dismiss → dismiss resets the count to 0 until newer messages). Only
                 // meaningful in "thread" grouping; harmless (ignored) in "all". Declared on MissedDto.
-                val hwms = threadHwmsSnapshot()
+                val hwms = threadHwmsSnapshot(ctx)
                 if (hwms.isNotEmpty()) {
                     val obj = JSONObject()
                     for ((tid, seq) in hwms) obj.put(tid.toString(), seq)
@@ -384,7 +409,7 @@ class SomsMessagingService : FirebaseMessagingService() {
             val nm = ContextCompat.getSystemService(ctx, NotificationManager::class.java) ?: return
             nm.cancel(AWAY_NOTIF_ID)
             cancelThreadGroup(nm)
-            clearThreadDismiss()
+            clearThreadDismiss(ctx)
         }
 
         /**
