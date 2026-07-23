@@ -60,9 +60,14 @@ describe('AuthService (session-token contract, browser path)', () => {
     document.cookie = 'logged_in=; Max-Age=0; Path=/; SameSite=Strict';
   });
 
-  it('login() sends client:web + a friendly device label; on the pure-httpOnly browser path no token is held in JS', () => {
+  it('login() sends client:web + a friendly device label; on the pure-httpOnly browser path no token is held in JS', async () => {
     expect(svc.isLoggedIn()).toBe(false); // no presence cookie before login
     svc.login({ account: 'alice', password: 'pw', isKeep: false }).subscribe();
+    // login() runs through pickThen = `defer(() => pickLoginOrigin()).pipe(mergeMap(...))`. Even on the
+    // browser path pickLoginOrigin() is `Promise.resolve(apiOrigin())`, so the POST fires on the next
+    // microtask — NOT synchronously. Let that hop settle before asserting on the request (logout() and
+    // revokeSession() post directly, so they need no such wait).
+    await new Promise((r) => setTimeout(r));
 
     const req = httpMock.expectOne((r) => /\/auth\/login$/.test(r.url));
     expect(req.request.body.account).toBe('alice');

@@ -115,7 +115,9 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
         { provide: RouteService, useValue: { redirect: jasmine.createSpy('redirect'), openSettings: () => {} } },
         { provide: PushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
         { provide: WebPushService, useValue: { onLogin: jasmine.createSpy('onLogin'), unregister: jasmine.createSpy('unregister') } },
-        { provide: UserService, useValue: { clearSession: jasmine.createSpy('clearSession') } },
+        // restoreSession() now awaits userService.restoreWebdb() (opens the per-user IDB before the router
+        // resolves) — stub it as an async no-op. The IDB restore itself is covered by webdb/thread-store specs.
+        { provide: UserService, useValue: { clearSession: jasmine.createSpy('clearSession'), restoreWebdb: jasmine.createSpy('restoreWebdb').and.resolveTo(undefined) } },
       ],
     });
     svc = TestBed.inject(AuthService);
@@ -133,6 +135,10 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
    *  (it awaits `set_session_token` before the login flag flips). */
   async function passwordLogin(token: string, trustDevice: boolean): Promise<void> {
     svc.login({ account: 'alice', password: 'pw', isKeep: trustDevice, trustDevice }).subscribe();
+    // login() runs through pickThen = `defer(() => pickLoginOrigin()).pipe(mergeMap(...))` — on the Tauri
+    // path pickLoginOrigin awaits `tauriInvoke('init_pick_origin')` (the spy resolves it), so the POST fires
+    // on the next microtask, NOT synchronously. Drain once so the request is pending before expectOne.
+    await drain();
     httpMock
       .expectOne((r) => /\/auth\/login$/.test(r.url))
       .flush({ code: 0, message: 'ok', data: { session_token: token } });
@@ -167,6 +173,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // desktop user is not logged out on every restart.
       desktopGlobals({ secureSetOk: true });
       svc.login({ account: 'newbie', password: 'pw', isKeep: true, trustDevice: false }).subscribe();
+      await drain(); // login() runs through pickThen → the POST fires on the next microtask, not synchronously
       httpMock
         .expectOne((r) => /\/auth\/login$/.test(r.url))
         .flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });
@@ -214,6 +221,7 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       // Keep-but-untrusted (e.g. the register flow): isKeep true, trustDevice false → a SLIDING token that IS
       // persisted (so it survives restart) — but the keyring write fails, downgrading it to memory-only.
       svc.login({ account: 'newbie', password: 'pw', isKeep: true, trustDevice: false }).subscribe();
+      await drain(); // login() runs through pickThen → the POST fires on the next microtask, not synchronously
       httpMock
         .expectOne((r) => /\/auth\/login$/.test(r.url))
         .flush({ code: 0, message: 'ok', data: { session_token: 'st-keep' } });

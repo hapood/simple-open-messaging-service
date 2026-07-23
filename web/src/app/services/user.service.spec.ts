@@ -39,14 +39,16 @@ describe('UserService profile refresh', () => {
         provideHttpClient(),
         provideHttpClientTesting(),
         UserService,
-        // The constructor effect touches WebdbService (open/close on id change) + ensureProfile writes
-        // through to ProfileRepository — both are side effects irrelevant to the refresh contract, so
-        // stub them. sessionProfile itself is the real signal under test.
+        // The constructor effect touches WebdbService (open/close on id change) + ensureProfile writes the
+        // self-profile through to BOTH ProfileRepository and WebdbService.putMeta('selfProfile') — all side
+        // effects irrelevant to the refresh contract, so stub them. sessionProfile is the real signal under test.
         {
           provide: WebdbService,
           useValue: {
             openForUser: jasmine.createSpy('openForUser').and.resolveTo(undefined),
             closeAndDelete: jasmine.createSpy('closeAndDelete').and.resolveTo(undefined),
+            getMeta: jasmine.createSpy('getMeta').and.resolveTo(undefined),
+            putMeta: jasmine.createSpy('putMeta').and.resolveTo(undefined),
           },
         },
         {
