@@ -38,6 +38,7 @@ function makeStubs() {
     buffer,
     {} as never, // quota
     {} as never, // linkPreview
+    { emitAsync: vi.fn().mockResolvedValue(undefined), emit: vi.fn() } as never, // eventEmitter
   );
   return { svc, prisma, markDirty, flushBatch };
 }
@@ -219,6 +220,7 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
       buffer,
       {} as never, // quota
       {} as never, // linkPreview
+      { emitAsync: vi.fn().mockResolvedValue(undefined), emit: vi.fn() } as never, // eventEmitter
     );
     return { svc, markDirty };
   }

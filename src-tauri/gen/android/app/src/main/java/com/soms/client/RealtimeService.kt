@@ -412,6 +412,17 @@ class RealtimeService : Service() {
                 return
             }
 
+            // CALL_SIGNAL / CALL_EVENT: hand to the native WebRTC owner IN ADDITION to the WebView mirror
+            // below. This runs in BOTH fg and bg (above the appInForeground gate, like cacheHelloFrame) — a
+            // CALL_SIGNAL ICE candidate MUST reach the native RTCPeerConnection even while the WebView is
+            // suspended (the whole point of native-owned media: the media leg must not die when the chrome
+            // does). forwardToJs (the fg branch) mirrors the frame to the Angular call UI; CallController
+            // owns the actual peer connection. A no-op when no live call matches (CallController.onFrame
+            // drops a stray frame after the call ended).
+            if (type == "CALL_SIGNAL" || type == "CALL_EVENT") {
+                CallController.onFrame(type, data)
+            }
+
             if (SomsMessagingService.appInForeground) {
                 // Foreground: hand every event to the WebView. It dispatches via WebsocketService exactly
                 // as the sse.worker would, so all downstream consumers (chat-box, threadlist, …) are

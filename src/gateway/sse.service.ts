@@ -220,6 +220,23 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'NOTIFY', data);
   }
 
+  /** 1:1 WebRTC call LIFECYCLE notification — incoming ring / accepted / declined / cancelled / ended /
+   *  missed. This is NOT identity-only (unlike NEW_MESSAGE): a call is ephemeral coordination, not
+   *  persisted content the client pulls, so the descriptor rides INLINE. The addressed user's online
+   *  connections all receive it; the caller (CallsService) emits one frame per user. No message-cursor
+   *  id (a call event is not a resumable history cursor). */
+  onCallEvent(userId: number, data: unknown) {
+    this.pushToUser(userId, 'CALL_EVENT', data);
+  }
+
+  /** 1:1 WebRTC SIGNALING relay — SDP offer/answer, ICE candidates, renegotiation, media-state. Ephemeral
+   *  by nature: never persisted, never replayed (a missed ICE candidate is simply lost; the client
+   *  re-gathers). Carried inline for the same reason as onCallEvent. The server is a pure relay — it
+   *  never inspects or stores the WebRTC payload, only forwards it to the addressed peer. */
+  onCallSignal(userId: number, data: unknown) {
+    this.pushToUser(userId, 'CALL_SIGNAL', data);
+  }
+
   /**
    * Group-lifecycle event (joined/left/kicked/role-changed/updated). No message-cursor id (these
    * are not message-history events). Fan-out to each affected member is the caller's job — this

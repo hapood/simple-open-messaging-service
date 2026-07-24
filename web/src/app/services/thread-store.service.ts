@@ -939,6 +939,28 @@ export function rawPreview(contentType: string, content: string): string {
       return '[File]';
     case 'AUDIO':
       return '[Voice message]';
+    case 'CALL': {
+      // Status-aware label mirroring the backend's callPreviewLabel (call-content.ts) so the conversation
+      // list shows "[Missed call]" / "[Call failed]" / … exactly as the server-derived preview.
+      try {
+        switch ((JSON.parse(content) as { status?: string }).status) {
+          case 'missed':
+            return '[Missed call]';
+          case 'failed':
+            return '[Call failed]';
+          case 'unreachable':
+            return '[Call unreachable]';
+          case 'declined':
+            return '[Call declined]';
+          case 'cancelled':
+            return '[Call cancelled]';
+          default:
+            return '[Call]';
+        }
+      } catch {
+        return '[Call]';
+      }
+    }
     default:
       return content.slice(0, 200);
   }

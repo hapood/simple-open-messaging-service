@@ -6,6 +6,7 @@ import type { ChatItemData, ChatMsgData, AlbumImage } from './chat-item';
 import { FileRowComponent } from './file-row/file-row.component';
 import { InviteRowComponent } from './invite-row/invite-row.component';
 import { LinkRowComponent } from './link-row/link-row.component';
+import { CallRowComponent } from './call-row/call-row.component';
 import { MediaRowComponent } from './media-row/media-row.component';
 import { TextRowComponent } from './text-row/text-row.component';
 
@@ -94,7 +95,9 @@ export function createMsgCbElement(
           ? LinkRowComponent
           : data.contentType === 'FILE'
             ? FileRowComponent
-            : TextRowComponent;
+            : data.contentType === 'CALL'
+              ? CallRowComponent
+              : TextRowComponent;
 
   const ref = createComponent(comp, { environmentInjector: envInjector });
   ref.setInput('data', data);

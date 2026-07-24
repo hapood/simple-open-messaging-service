@@ -1,4 +1,5 @@
 import { Injectable, HttpStatus, Logger, OnModuleDestroy } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { randomUUID } from 'node:crypto';
 import { mintUlid, normalizeAccount, isValidAccount, isValidGroupAccount } from '../common/account.js';
 import { PrismaService } from '../prisma.service.js';
@@ -129,6 +130,42 @@ export interface S2SInviteAccept extends S2SOpsBase {
   group?: string; // the group's `!account` (== fedGroupAccount)
 }
 
+/** POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame. Carries the EPHEMERAL realtime call
+ *  signaling + lifecycle between two servers. The persisted CALL record is an ordinary Message that
+ *  rides the existing pull-based sync — it needs NO frame. `op` discriminates:
+ *    incoming              — the caller's server rings the callee's server
+ *    accepted/declined/    — lifecycle transitions (the callee's side acted)
+ *    cancelled/ended/missed
+ *    signal                — an SDP/ICE relay frame (opaque, never persisted)
+ *  `from` is always the RELAYING (signing) server's user → satisfies the guard's `from.domain ===
+ *  signer` binding rule. No (origin, opId) dedup table: the receiver's in-memory call state machine +
+ *  the callSid-keyed terminal bubble write (writeMsgToThread dedups on clientMessageId) make replays
+ *  idempotent — a per-frame DB write would choke ICE candidate bursts. */
+export type S2SCallOp =
+  | 'incoming'
+  | 'accepted'
+  | 'ringing'
+  | 'declined'
+  | 'cancelled'
+  | 'ended'
+  | 'missed'
+  | 'signal'
+  | 'connected';
+
+export interface S2SCallFrame extends S2SOpsBase {
+  from: S2SAddress; // sender; from.domain === signer (binding rule)
+  to: S2SAddress; // recipient; resolved to a local userId inbound
+  callSid: string; // the call's idempotency key (== the terminal CALL bubble's clientMessageId)
+  op: S2SCallOp;
+  callType: 'AUDIO' | 'VIDEO';
+  endReason?: string; // op==='ended' only → maps to the persisted CallOutcome (completed/failed)
+  kind?: string; // op==='signal' only (the SDP/ICE frame kind)
+  payload?: string; // op==='signal' only (opaque SDP/ICE — relayed verbatim, never persisted)
+  // op==='connected' only: the real media-connect epoch-ms (the connect authority — NOT set on `accepted`,
+  // which only means the callee answered / is negotiating). The origin stamps this verbatim.
+  startedAt?: number;
+}
+
 /**
  * Outbound S2S: SYNCHRONOUS inline delivery. Each send* method builds a payload, signs it
  * (SignatureService), and POSTs it to the peer's friend-op endpoint (DiscoveryService resolves the
@@ -184,6 +221,10 @@ export class FederationService implements OnModuleDestroy {
     private readonly buffer: FederationBufferService,
     private readonly quota: QuotaService,
     private readonly linkPreview: LinkPreviewService,
+    // Inbound S2S call frames are bridged to CallsService via emitAsync('call.frame.inbound') rather
+    // than a direct injection — FederationService must NOT inject CallsService (that would cycle: the
+    // calls layer injects FederationService for outbound). The event bus breaks the edge cleanly.
+    private readonly eventEmitter: EventEmitter2,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -241,15 +282,21 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** The leaver's per-author origin-seq cursor on this thread (MAX over Message). Used by
+  /** The leaver's per-author origin-seq cursor on this thread (MAX over Message ∪ PendingMedia). Used by
    *  notifyGroupLeave so the leave hint's latestSeq beats the origin's per-author pull cursor (the origin
    *  pulls → sees the leaver soft-left → dissolves the roster entry). */
   private async derivedOriginSeqCursor(threadId: number, userId: number): Promise<number> {
-    const msg = await this.prisma.message.aggregate({
-      where: { threadId, creator: userId },
-      _max: { originSeq: true },
-    });
-    return msg._max.originSeq ?? -1;
+    const [msg, pend] = await Promise.all([
+      this.prisma.message.aggregate({
+        where: { threadId, creator: userId },
+        _max: { originSeq: true },
+      }),
+      this.prisma.pendingMedia.aggregate({
+        where: { threadId, creatorId: userId },
+        _max: { originSeq: true },
+      }),
+    ]);
+    return Math.max(msg._max.originSeq ?? -1, pend._max.originSeq ?? -1);
   }
 
   /**
@@ -1000,6 +1047,42 @@ export class FederationService implements OnModuleDestroy {
     );
   }
 
+  /** POST /api/v1/s2s/call — deliver ONE ephemeral WebRTC call frame (ring / lifecycle / SDP-ICE relay)
+   *  to the peer server hosting the call's other participant. Awaitable so the caller's `initiate` can
+   *  detect a ring failure (→ the `unreachable` terminal bubble). The persisted CALL record rides the
+   *  pull-based message sync, NOT this frame. `peerDomain` is the foreign participant's home domain. */
+  async sendCallFrame(
+    params: {
+      fromLocalUserId: number;
+      to: S2SAddress;
+      callSid: string;
+      op: S2SCallOp;
+      callType: 'AUDIO' | 'VIDEO';
+      endReason?: string;
+      kind?: string;
+      payload?: string;
+      startedAt?: number;
+    },
+    peerDomain: string,
+  ): Promise<void> {
+    const from = await this.requireLocalUser(params.fromLocalUserId);
+    const frame: S2SCallFrame = {
+      id: mintUlid(),
+      origin: this.config.domain,
+      ts: Date.now(),
+      from: this.localAddress(from.account),
+      to: { account: params.to.account, domain: params.to.domain },
+      callSid: params.callSid,
+      op: params.op,
+      callType: params.callType,
+    };
+    if (params.endReason !== undefined) frame.endReason = params.endReason;
+    if (params.kind !== undefined) frame.kind = params.kind;
+    if (params.payload !== undefined) frame.payload = params.payload;
+    if (params.startedAt !== undefined) frame.startedAt = params.startedAt;
+    await this.postSigned('/api/v1/s2s/call', JSON.stringify(frame), peerDomain);
+  }
+
   // ─── Step 3: cross-server group threads (origin-hub) ────────────────────────
 
   /** Ensure an origin group thread carries its federated id + originDomain (lazy, at the first
@@ -1206,6 +1289,56 @@ export class FederationService implements OnModuleDestroy {
     await this.quota.tick(body.origin, 'requests');
     if (body.kind === 'GROUP') return this.handleGroupAccept(body);
     return this.handleFriendAccept(body);
+  }
+
+  /** Inbound POST /api/v1/s2s/call — receive ONE federated call frame. Resolves the wire identities to
+   *  LOCAL ids (the sender → a foreigner stub; the recipient → a local userId) + the LOCAL P2P thread,
+   *  then hands the frame to CallsService via `emitAsync('call.frame.inbound')` — NOT a direct injection
+   *  (the calls layer injects FederationService for outbound; a back-edge would cycle). `emitAsync` (not
+   *  `emit`) so the 202 ACK serializes BEHIND the callee-side mirror setup: the caller's first `offer`
+   *  signal must not race ahead of the mirror it addresses.
+   *
+   *  Quota: `peek 'requests'` for the initiating `incoming` op ONLY (a call is one unit; an ICE burst
+   *  must not exhaust the budget). The `tick` happens in CallsService AFTER the in-memory mirror-state
+   *  guard, so a retried `incoming` (fresh ULID) burns no quota. No (origin, opId) dedup table — the
+   *  receiver's call state machine + the callSid-keyed bubble write make replays idempotent. The
+   *  not-found / not-friends rejects use HTTP 404 (NOT in postSigned's success- or demote-sets → the
+   *  sender throws without demoting a healthy peer). */
+  async handleCallFrame(body: S2SCallFrame): Promise<void> {
+    if (body.op === 'incoming') {
+      await this.quota.peek(body.origin, 'requests');
+    }
+    if (body.op === 'signal') {
+      // Per-frame tick against the dedicated `signals` budget (a 429 here throws without demoting a
+      // healthy peer → the caller's relay fails closed; the client re-gathers ICE). No peek — the tick's
+      // atomic check+increment is authoritative.
+      await this.quota.tick(body.origin, 'signals');
+    }
+    const from = this.requireS2SAddress(body.from);
+    const to = this.requireS2SAddress(body.to);
+    const peerStubId = await this.ensureForeignUser(from.account, from.domain);
+    const localUserId = await this.findLocalUserIdByAddress(to);
+    if (localUserId === null) {
+      throw new BusinessException(
+        BusinessCode.NOT_FOUND,
+        `local user ${to.account} not found`,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    const threadId = await this.participantService.findP2PThreadBetween(localUserId, peerStubId);
+    if (threadId === null) {
+      throw new BusinessException(
+        BusinessCode.CALL_NOT_ALLOWED,
+        'no relationship with caller',
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    await this.eventEmitter.emitAsync('call.frame.inbound', {
+      localUserId,
+      peerStubId,
+      threadId,
+      frame: body,
+    });
   }
 
   /** FRIEND accept (was friend-op handleApprove): the foreign approver accepted our local user's invite.
@@ -2471,9 +2604,11 @@ export class FederationService implements OnModuleDestroy {
     // LINK thumbnails arrive inlined (base64) on the wire; decode + persist content-addressed, keeping
     // only the digest in our DB (mirrors the local send path's storage). Other types pass through.
     const storedContent = await this.linkPreview.decodeFromWire(m.contentType, m.content);
-    // The receiver's own createdAt defaults to now() — the local ARRIVAL time, which is what the chatbox
-    // displays and what orders the conversation list. The protocol never trusts the peer's clock for
-    // display; arrival time is locally monotonic and clock-skew-immune.
+    // The sender server's allocation time (payload `ts`) is stored as originServerTime (future use,
+    // never displayed). The receiver's own createdAt defaults to now() — the local ARRIVAL time, which
+    // is what the chatbox displays and what orders the conversation list. The protocol never trusts the
+    // peer's clock for display; arrival time is locally monotonic and clock-skew-immune.
+    const originTime = new Date(m.ts);
     // Allocate the RECEIVER's own per-thread seq from curSeq (same atomic path as a local send) and copy
     // the peer's originSeq verbatim — the dedup key + the value the receiver tracks as its pull cursor.
     // Wrapped in a tx so a P2002 dup-pull (same (threadId, creator, originSeq)) rolls the curSeq increment

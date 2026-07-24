@@ -1,6 +1,7 @@
 package com.soms.client
 
 import android.app.Application
+import android.content.Context
 
 /**
  * Process entry point. Initializes [com.google.firebase.FirebaseApp] from the persisted client config
@@ -23,6 +24,7 @@ import android.app.Application
 class SomsApplication : Application() {
     override fun onCreate() {
         super.onCreate()
+        appContext = this
         SomsFirebase.ensureInitialized(this)
         // Eagerly create the notification channels at process start. Channel creation is idempotent and
         // free, and Android only registers an app as notification-capable (so it shows up in the per-app
@@ -34,5 +36,15 @@ class SomsApplication : Application() {
         // them here (Google's recommended hook) also guarantees channels exist before any background path
         // (e.g. a data-only FCM that wakes SomsMessagingService without ever starting MainActivity) posts.
         SomsMessagingService.ensureChannel(this)
+    }
+
+    companion object {
+        /** The application Context, set in [onCreate] ahead of every component. Read by process-global
+         *  singletons ([CallController]) that have no caller-passed reference (they are reached from both
+         *  RealtimeService and the JS bridge in MainActivity). @Volatile: written once on the main thread,
+         *  read on the call executor / JS bridge thread. */
+        @Volatile
+        lateinit var appContext: Context
+            private set
     }
 }

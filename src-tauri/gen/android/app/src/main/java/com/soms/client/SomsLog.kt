@@ -16,9 +16,11 @@ import java.util.TimeZone
  * always-on `Log.i/Log.w` calls already in [RealtimeService] stay as-is (those are the headless service's
  * by-design surface).
  *
- * One tag prefix so the whole app's diagnostics stream under one filter — `adb logcat -s Soms:*` shows every
- * line regardless of level. The per-call `sub` arg marks the subsystem (`Rt` realtime / `Notif` notification
- * rendering / `Ui` activity lifecycle), so a line reads `Soms/Rt: …`, `Soms/Notif: …`. Keep `sub` short.
+ * One tag prefix so the whole app's diagnostics stream under one filter — every line's tag is `Soms/<sub>`
+ * (e.g. `Soms/Rt`, `Soms/SomsCall`, `Soms/Ui`), so `adb logcat | grep 'Soms/'` shows them all. Note logcat's
+ * `-s` matches the FULL tag string (no wildcard), so `-s Soms:V` does NOT catch `Soms/Rt` — grep the prefix.
+ * The per-call `sub` arg marks the subsystem (`Rt` realtime / `Notif` notification rendering / `Ui` activity
+ * lifecycle), so a line reads `Soms/Rt: …`, `Soms/Notif: …`. Keep `sub` short.
  *
  * Decision-critical lines use [i] (survives even where an OEM ROM suppresses `Log.d`); the chatty ~25s
  * liveness `ping` uses [d].

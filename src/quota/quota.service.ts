@@ -91,6 +91,10 @@ export class QuotaService {
         return overrides.dailyLargeFileLimit ?? this.cfg.dailyLargeFileLimit;
       case 'requests':
         return overrides.dailyRequestLimit ?? this.cfg.dailyRequestLimit;
+      case 'signals':
+        // Federated WebRTC signal frames (offer/answer/ICE relay). No per-node override (global only) —
+        // a dedicated budget so an ICE burst can't be starved by, or starve, the friend-op `requests` bucket.
+        return this.cfg.dailySignalLimit;
     }
   }
 
@@ -384,7 +388,12 @@ export class QuotaService {
 
 // ── types ──────────────────────────────────────────────────────────────────
 
-export type QuotaCategory = 'messages' | 'images' | 'largeFiles' | 'requests';
+export type QuotaCategory =
+  | 'messages'
+  | 'images'
+  | 'largeFiles'
+  | 'requests'
+  | 'signals';
 
 /** A per-node override set. null/absent = use the global default for that field. */
 export interface QuotaOverrides {
@@ -420,7 +429,7 @@ type PrismaTx = Pick<PrismaService, '$queryRaw'>;
 
 /** A fresh all-zero per-category count record (the default for a node with no usage row today). */
 function zeroCounts(): Record<QuotaCategory, number> {
-  return { messages: 0, images: 0, largeFiles: 0, requests: 0 };
+  return { messages: 0, images: 0, largeFiles: 0, requests: 0, signals: 0 };
 }
 
 /** Coerce a loose/partial override object into a clean QuotaOverrides (numbers-or-null, no junk). */

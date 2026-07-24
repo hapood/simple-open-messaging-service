@@ -132,6 +132,12 @@ dependencies {
     // SSE EventSource client for RealtimeService (the service that holds a live /events stream).
     // Same version as okhttp; okhttp-sse is a separate artifact.
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
+    // 1:1 WebRTC calling (CallController / CallService). stream-webrtc-android is the actively-maintained
+    // fork of org.webrtc (the legacy google-webrtc is unmaintained/missing from Maven) — same org.webrtc
+    // API surface (PeerConnectionFactory / SurfaceViewRenderer / VideoCapturer) + prebuilt .so for the ABI
+    // set kept above. minSdk 21+. On Maven Central (no repo change). The PC + media live NATIVE (the
+    // server is signaling-only); the WebView consumes CALL_EVENT/CALL_SIGNAL over the existing SSE bridge.
+    implementation("io.getstream:stream-webrtc-android:1.3.8")
     testImplementation("junit:junit:4.13.2")
     // org.json for JVM unit tests of pure JSON logic (HelloMerger) — Android's org.json is API-compatible
     // with this standalone build, so the test exercises the same put/opt/toString surface the service uses.

@@ -109,4 +109,14 @@ export enum BusinessCode {
 
   // 60xxx settings (admin-managed runtime config)
   VAPID_INVALID = 60001, // VAPID keypair failed validation (malformed / mismatched pair / bad subject)
+
+  // 70xxx 1:1 WebRTC call domain (signaling coordinator + lifecycle; media is P2P)
+  CALL_NOT_ALLOWED = 70001, // cannot call this user (not friends / no active P2P thread)
+  CALL_NOT_FOUND = 70002, // callSid unknown, or the call is no longer active (already ended)
+  CALL_NOT_PARTICIPANT = 70003, // you are neither the caller nor the callee of this call
+  CALL_BUSY = 70004, // the callee — or the caller — is already in an active call (one active call per user)
+  CALL_INVALID_TRANSITION = 70005, // this call state transition is not allowed (e.g. accept a non-ringing call)
+  CALL_PEER_UNREACHABLE = 70006, // a federated call's ring/setup failed — the peer server was unreachable / busy / rejected.
+                                  // Thrown by the caller's server when the S2S `incoming` POST fails; the `unreachable` terminal
+                                  // bubble is already written before this surfaces to the caller's client.
 }

@@ -182,6 +182,55 @@ declare global {
      *  (the current soft-keyboard height in CSS px, 0 when closed) lets the web seed the value at boot; the
      *  live source is {@link __SOMS_IME_HEIGHT__}. */
     SomsShell?: { getSafeInsets: () => string; getImeHeight?: () => number };
+    /** Kotlin `@JavascriptInterface` (MainActivity.SomsCallInterface): the COMMAND direction of the native
+     *  1:1-call bridge. On Android the RTCPeerConnection + the call lifecycle FSM live in native
+     *  (CallController); the Angular layer is the call "chrome" and drives it through these. The EVENT
+     *  direction rides the existing {@link __SOMS_EVENT__} (CALL_EVENT/CALL_SIGNAL, fanned by RealtimeService)
+     *  PLUS the {@link __SOMS_CALL_EVENT__} snapshot push (phase/mediaState transitions the native FSM owns).
+     *  Android-only; guaranteed present after the isAndroidNative() gate, so call sites use `!`. */
+    SomsCall?: {
+      initiate: (calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO') => void;
+      accept: (callSid: string) => void;
+      decline: (callSid: string) => void;
+      cancel: (callSid: string) => void;
+      end: (callSid: string, reason?: string) => void;
+      signal: (callSid: string, toUserId: number, kind: string, payload: string) => void;
+      setMuted: (muted: boolean) => void;
+      /** Synchronous JSON snapshot of the live call (CallController.snapshotJson) — the web call UI
+       *  re-derives its state from this on boot / WebView re-attach with no SSE wait. */
+      getSnapshot: () => string;
+      /** Toggle the capture between the front (self-view) + back cameras (like WhatsApp/FaceTime). A no-op
+       *  on an AUDIO call. Native (Phase 4): swaps the VideoCapturer's CameraEnumerator lens + re-binds the
+       *  local video track. */
+      switchCamera: () => void;
+      /** Camera on/off (mute video, keep audio). Disables the local video track + covers the self-view;
+       *  the remote side sees a frozen/black frame. */
+      setCameraEnabled: (enabled: boolean) => void;
+      /** Report the on-screen rects of the remote + self video "holes" (JSON `{x,y,w,h}` in CSS px) so
+       *  native positions its sibling SurfaceViewRenderer/TextureView overlays exactly over the transparent
+       *  holes the Angular layout punches (the barcode-scanner overlay technique). Called on mount, resize,
+       *  scroll, rotation; pass nulls to hide the surfaces. */
+      setVideoRect: (remote: string | null, self: string | null) => void;
+      /** Swap which video is full-bleed vs PiP (a tap on the self PiP): the local camera ↔ the peer's swap
+       *  renderers (mirrors follow). No-op on an AUDIO call. */
+      swapVideo: () => void;
+    };
+    /** Kotlin→JS push (CallController.pushSnapshot): the native call FSM's current snapshot
+     *  ({phase, callSid, …, mediaState, startedAt, muted}) whenever a transition the native layer owns
+     *  fires (media connect/disconnect/failed, mute, phase changes). Installed by {@link CallEventService};
+     *  absent on browser/desktop (no native call layer there). CallEventService merges this into its
+     *  `callState` signal alongside the SSE CALL_EVENT lifecycle frames. */
+    __SOMS_CALL_EVENT__?: (snapshot: {
+      phase: string;
+      callSid: string | null;
+      threadId: number;
+      peerUserId: number;
+      callType: 'AUDIO' | 'VIDEO';
+      isCaller: boolean;
+      mediaState: string;
+      startedAt: number;
+      muted: boolean;
+    }) => void;
     /** Kotlin→JS push (`MainActivity.pushImeHeight`): native calls this with the current IME (keyboard)
      *  height in CSS px on every keyboard open/close and per animation frame on API 30+. Installed before
      *  bootstrap by `installKeyboardInsetBridge()`; drives `KeyboardInsetService.inset`, which

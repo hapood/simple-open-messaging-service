@@ -18,7 +18,8 @@ object HelloMerger {
 
   /** Merge one inbound SSE frame into the cached HELLO; return the resulting JSONObject (the caller stores
    *  it). `cached` null + a non-HELLO frame → null (drop, no partial cache). */
-  fun merge(cached: JSONObject?, type: String, data: String): JSONObject? = try {
+  fun merge(cached: JSONObject?, type: String, data: String): JSONObject? {
+    return try {
     if (type == "HELLO") JSONObject(data)
     else {
       val c = cached ?: return null
@@ -49,5 +50,6 @@ object HelloMerger {
   } catch (_: Exception) {
     // Malformed frame — leave the cache as-is; the next HELLO reseeds it wholesale.
     cached
+  }
   }
 }

@@ -163,6 +163,23 @@ html.qr-scanning body { background-color: transparent; }
 html.qr-scanning app-root { opacity: 0; }
 html.qr-scanning .cdk-overlay-pane:not(.qr-scan-pane) { opacity: 0; }
 
+/* === Video call overlay: same transparency treatment as qr-scanning, so the native remote video shows
+ * through the transparent call chrome. CallController mounts the remote SurfaceViewRenderer as a sibling
+ * view BEHIND the WebView + sets the WebView background TRANSPARENT (the barcode-scanner overlay technique);
+ * while a VIDEO call is active, CallOverlayService adds `in-video-call` to <html>:
+ *   - body → transparent background (the native remote video is the background);
+ *   - app-root → opacity:0 (the chat UI behind the call stops occluding the video);
+ *   - every CDK overlay pane EXCEPT the call's own (.call-pane) → opacity:0, so any open dialog / snackbar
+ *     stops occluding the video.
+ * `opacity:0` — NOT `visibility:hidden` — for the same reason as qr-scanning: the Android WebView composites a
+ * visibility:hidden layer as still-opaque, so the video stays blocked. The call pane (.call-pane) is a
+ * body-level sibling of app-root (NOT a descendant), so it is unaffected by the app-root rule and keeps
+ * drawing the chrome over the live video. AUDIO calls never set this class → the opaque .call-screen bg shows
+ * (the centered avatar layout). Removed the instant the call goes idle. */
+html.in-video-call body { background-color: transparent; }
+html.in-video-call app-root { opacity: 0; }
+html.in-video-call .cdk-overlay-pane:not(.call-pane) { opacity: 0; }
+
 html,
 body {
   height: 100%;

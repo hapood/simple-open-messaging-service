@@ -77,7 +77,7 @@ export interface ChatMsgData {
   rich?: boolean;
   /** HH:mm (the date context is handled by the date separator row). */
   time: string;
-  contentType: 'PURE_TEXT' | 'INVITE' | 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'LINK';
+  contentType: 'PURE_TEXT' | 'INVITE' | 'IMAGE' | 'VIDEO' | 'FILE' | 'AUDIO' | 'LINK' | 'CALL';
   /** IMAGE/VIDEO/AUDIO: media cells (consecutive same-creator IMAGE/VIDEO merged into one album). null = non-media. */
   images: AlbumMedia[] | null;
   /** FILE: attachment metadata (url/name/size/mimeType). null = non-file. */

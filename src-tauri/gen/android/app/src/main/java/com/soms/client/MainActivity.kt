@@ -9,7 +9,9 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
+import android.app.PictureInPictureParams
 import android.util.Log
+import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
@@ -223,6 +225,28 @@ class MainActivity : TauriActivity() {
         v.evaluateJavascript("window.__SOMS_IME_HEIGHT__&&window.__SOMS_IME_HEIGHT__($imeHeightCss);", null)
     }
 
+    /** Pin the WebView renderer at the highest app-requestable priority (IMPORTANT) and keep it there even
+     *  while the app is backgrounded (waivedWhenNotVisible=false), so the renderer is effectively never
+     *  reclaimed for memory while the process lives — app resumes are seamless, with no renderer-reclaim
+     *  reload (the HELLO-replay path then only ever fires on actual process death). Applied app-wide, not
+     *  call-scoped. Trade-off, stated plainly: the renderer (~tens of MB) stays pinned whenever the app is
+     *  backgrounded, so on the low-RAM Huawei RVL-AL09 / DBY-W09 fleet this raises the app's background
+     *  footprint and can bring the costlier process-death (vs the cheaper renderer-reclaim) closer under
+     *  heavy system load — a deliberate, app-wide choice in favor of resume smoothness. Applied on every
+     *  WebView (re)creation so a recreated WebView re-acquires the policy. Guarded by RENDER_PRIORITY_POLICY
+     *  feature support (API 26+ / a Chromium WebView provider); a safe no-op on older WebView cores. UI
+     *  thread only (it touches the WebView). */
+    private fun applyCallRendererPolicy() {
+        val v = SomsBridge.webView ?: return
+        // Framework WebView.setRendererPriorityPolicy (API 26/Oreo+): keep the renderer at IMPORTANT
+        // priority even while backgrounded (waivedWhenNotVisible=false) so it isn't reclaimed for memory
+        // while the app is backgrounded — app resumes are seamless. A no-op on API < 26 (the guard).
+        // androidx.webkit does NOT expose this; it's the framework method.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            v.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
+        }
+    }
+
     override fun onWebViewCreate(webView: WebView) {
         super.onWebViewCreate(webView)
         // Enable Chrome DevTools remote inspection (edge://inspect · chrome://inspect over adb) for DEBUG
@@ -258,6 +282,14 @@ class MainActivity : TauriActivity() {
         // window.SomsNotify.show(text,replace)/clear() — exposes the Android native notification method's params
         // to JS; the web's AndroidNotificationAdapter wraps it (maps the unified `merge` → `replace`).
         webView.addJavascriptInterface(SomsNotifyInterface(this), "SomsNotify")
+        // window.SomsCall.* — the command direction of the native call bridge (initiate / accept / … /
+        // getSnapshot); the Angular CallAdapter facade calls these. The EVENT direction rides the existing
+        // window.__SOMS_EVENT__ (CALL_EVENT/CALL_SIGNAL) + CallController's window.__SOMS_CALL_EVENT__
+        // snapshot push. Added before the page boots like the other bridges.
+        webView.addJavascriptInterface(SomsCallInterface(this), "SomsCall")
+        // Pin the renderer at IMPORTANT priority even while the app is backgrounded (app-wide, on every
+        // WebView (re)creation — see applyCallRendererPolicy).
+        applyCallRendererPolicy()
         // Deliver anything that arrived before the webview was ready.
         SomsBridge.FcmToken.current?.let { emitToken(it) }
         SomsBridge.DeepLink.pendingThreadId?.let {
@@ -345,6 +377,27 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    /** Enter Picture-in-Picture when the user backgrounds (HOME) a connected VIDEO call — the native remote
+     *  video surface keeps rendering in the PiP window, so the peer's video stays visible while the user does
+     *  something else. AUDIO calls don't PiP (no video) — they background to the ongoing-call notification
+     *  instead. PiP requires API 26+; no-op below. Hiding the Angular chrome while in PiP is a follow-up. */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            && CallController.callType == "VIDEO"
+            && CallController.phase == "connected"
+        ) {
+            try {
+                val params = PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .build()
+                enterPictureInPictureMode(params)
+            } catch (e: Exception) {
+                Log.w("SomsActivity", "PiP enter failed: ${e.message}")
+            }
+        }
+    }
+
     override fun onDestroy() {
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
@@ -364,6 +417,17 @@ class MainActivity : TauriActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == REQ_POST_NOTIF) {
             SomsSecureStore.setNotifPermRequested(this, true)
+            return
+        }
+        if (requestCode == REQ_CALL_PERMS) {
+            // The deferred initiate/accept that awaited a RECORD_AUDIO (+ CAMERA for VIDEO) grant. Run it
+            // only if every requested permission was granted; otherwise drop the call (the mic/camera is
+            // unusable). pendingCallStart is one-shot — cleared here either way.
+            val granted = grantResults.isNotEmpty() && grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+            val action = pendingCallStart
+            pendingCallStart = null
+            if (granted) action?.invoke()
+            else SomsLog.w("Ui") { "call permissions denied — mic/camera unavailable, call aborted" }
         }
     }
 
@@ -439,6 +503,60 @@ class MainActivity : TauriActivity() {
         if (!SomsMessagingService.appInForeground) {
             startForegroundService(Intent(this, RealtimeService::class.java))
         }
+    }
+
+    /** Start the active-call foreground service (CallService — the process anchor + the call's audio
+     *  routing). Idempotent: starting an already-running service re-delivers onStartCommand (harmless —
+     *  acquireAudio is replace-by-token). Guarded against the Android 12+ background-service-start
+     *  restriction: a call begins from a user gesture while foregrounded (Phase 2), so this path is allowed;
+     *  the catch is belt-and-suspenders for the rare fg/bg race during the init→main window handoff, mirroring
+     *  onResume's RealtimeService start guard. Called by SomsCallInterface.initiate / accept. */
+    internal fun startCallService() {
+        try {
+            startForegroundService(Intent(this, CallService::class.java))
+        } catch (e: RuntimeException) {
+            Log.w("SomsActivity", "call service start skipped: ${e.javaClass.simpleName}: ${e.message}")
+        }
+    }
+
+    /** The deferred call-start action awaiting a RECORD_AUDIO (+ CAMERA for VIDEO) grant. One-shot: cleared
+     *  in [onRequestPermissionsResult] whether granted or not. Null when no call is pending a permission. */
+    private var pendingCallStart: (() -> Unit)? = null
+
+    /** Ensure RECORD_AUDIO (+ CAMERA for VIDEO) is granted before a call captures media; run [andThen]
+     *  (startCallService + CallController.initiate/accept) once granted. The native RTCPeerConnection is NOT
+     *  the WebView, so RustWebChromeClient.onPermissionRequest (which grants AUDIO_CAPTURE to the WebView
+     *  only) does NOT cover it — without this the mic captures SILENCE (WebRtcAudioRecord releases its
+     *  resources with no permission) and the call connects with no audio. The grant persists, so this prompts
+     *  at most once per permission. Must run on the UI thread (permission requests are Activity-scoped). */
+    internal fun ensureCallPermissions(callType: String, andThen: () -> Unit) {
+        // Request the FULL call-media permission set up front in ONE batched prompt, so the user grants once
+        // and audio + video + Bluetooth-headset routing all work afterwards — no piecemeal re-prompts. The
+        // native RTCPeerConnection is NOT the WebView, so RustWebChromeClient.onPermissionRequest
+        // (WebView-only) does not cover it; without RECORD_AUDIO the mic captures SILENCE (the call connects
+        // with no audio). CAMERA is for VIDEO calls; BLUETOOTH_CONNECT is for routing call audio to a headset
+        // (dangerous on API 31+, normal below → checkSelfPermission returns GRANTED there, so it's only added
+        // where it matters). `callType` is kept for future granularity (e.g. skip CAMERA on a pure-AUDIO
+        // flow) but the current policy is "ask for all once". UI thread (permission requests are Activity-scoped).
+        // Only the permissions the call ACTUALLY uses: RECORD_AUDIO (mic) + CAMERA (video). BLUETOOTH_CONNECT
+        // is intentionally NOT requested — it's only needed to route call audio to a BT headset, which isn't
+        // implemented yet (CallService sets MODE_IN_COMMUNICATION; no startBluetoothSco). Requesting an unused
+        // permission is premature (and it's an API 31+ perm that returns DENIED on older devices, which used
+        // to fail the whole batch). When BT-headset routing lands, request it JUST-IN-TIME on detecting a
+        // connected headset (AudioManager BluetoothHeadset profile) so the prompt only fires when relevant.
+        val perms = arrayOf(
+            Manifest.permission.RECORD_AUDIO,
+            Manifest.permission.CAMERA,
+        )
+        val needed = perms.filter {
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (needed.isEmpty()) {
+            andThen()
+            return
+        }
+        pendingCallStart = andThen
+        requestPermissions(needed.toTypedArray(), REQ_CALL_PERMS)
     }
 
     /** Next scheduled WorkManager poll time (epoch ms), or -1 if not scheduled. For the Settings display.
@@ -828,8 +946,111 @@ class MainActivity : TauriActivity() {
         }
     }
 
+    /** JS-callable surface exposed as window.SomsCall — the COMMAND direction of the native call bridge.
+     *  The web's CallAdapter facade (the mirror of NotificationAdapter) calls these; they delegate to the
+     *  process-global [CallController] (the RTCPeerConnection + lifecycle FSM owner). The EVENT direction
+     *  flows the other way: RealtimeService → CallController, and CallController.pushSnapshot evals
+     *  window.__SOMS_CALL_EVENT__ back to JS. The begin-a-call methods (initiate/accept) also start the
+     *  [CallService] FGS (the process anchor + audio routing). @JavascriptInterface runs on a background JS
+     *  thread; CallController hops to its own serial executor, and getSnapshot reads only @Volatile fields,
+     *  so no UI-thread hop is needed. */
+    private class SomsCallInterface(activity: MainActivity) {
+        private val activityRef = java.lang.ref.WeakReference(activity)
+
+        /** Caller begins a call: start the call FGS (anchor + audio), then POST /calls/initiate →
+         *  createOffer → trickle ICE (CallController.initiate). `callType` ∈ {"AUDIO","VIDEO"} (Phase 2 is
+         *  AUDIO-only; VIDEO wiring arrives in Phase 4 but the bridge accepts both). */
+        @JavascriptInterface
+        fun initiate(calleeUserId: Int, callSid: String, callType: String) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                a.ensureCallPermissions(callType) {
+                    a.startCallService()
+                    CallController.initiate(calleeUserId, callSid, callType)
+                }
+            }
+        }
+
+        /** Callee accepts the incoming ring: start the call FGS, then POST /calls/accept + create the PC
+         *  (the remote offer was applied when the CALL_SIGNAL{offer} arrived — CallController.accept). Gates
+         *  on RECORD_AUDIO (+ CAMERA if the incoming call is VIDEO) — reads CallController.callType set by the
+         *  incoming event. */
+        @JavascriptInterface
+        fun accept(callSid: String) {
+            val a = activityRef.get() ?: return
+            a.runOnUiThread {
+                a.ensureCallPermissions(CallController.callType) {
+                    a.startCallService()
+                    CallController.accept(callSid)
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun decline(callSid: String) {
+            CallController.decline(callSid)
+        }
+
+        @JavascriptInterface
+        fun cancel(callSid: String) {
+            CallController.cancel(callSid)
+        }
+
+        @JavascriptInterface
+        fun end(callSid: String, reason: String?) {
+            CallController.end(callSid, reason)
+        }
+
+        /** Relay one WebRTC frame the web layer generated (the renegotiate / media-state path — offers /
+         *  answers / ICE are posted natively by CallController's observers on Android). */
+        @JavascriptInterface
+        fun signal(callSid: String, toUserId: Int, kind: String, payload: String) {
+            CallController.signal(callSid, toUserId, kind, payload)
+        }
+
+        /** Mute/unmute the local mic (CallController toggles the audio track's enabled state). */
+        @JavascriptInterface
+        fun setMuted(muted: Boolean) {
+            CallController.setMuted(muted)
+        }
+
+        /** Flip front↔back camera (video only — WhatsApp/FaceTime "flip"). */
+        @JavascriptInterface
+        fun switchCamera() {
+            CallController.switchCamera()
+        }
+
+        /** Camera on/off (mute video, keep audio). */
+        @JavascriptInterface
+        fun setCameraEnabled(enabled: Boolean) {
+            CallController.setCameraEnabled(enabled)
+        }
+
+        /** Report the remote + self video "hole" rects (JSON `{x,y,w,h}` in CSS px) so native mounts/positions
+         *  its SurfaceViewRenderer overlays; both null detaches them (called on unmount / audio call). */
+        @JavascriptInterface
+        fun setVideoRect(remote: String?, self: String?) {
+            CallController.setVideoRect(remote, self)
+        }
+
+        /** Swap which video is full-bleed vs PiP (a tap on the self PiP) — the local camera ↔ the peer's swap
+         *  surfaces (mirrors follow). No-op on an AUDIO call. */
+        @JavascriptInterface
+        fun swapVideo() {
+            CallController.swapVideo()
+        }
+
+        /** Synchronous JSON snapshot of the live call (or `{phase:"idle"}`) — the web call UI re-derives its
+         *  state from this on boot / WebView re-attach with no SSE wait. Mirrors SomsFcm.getConnState. */
+        @JavascriptInterface
+        fun getSnapshot(): String = CallController.snapshotJson()
+    }
+
     companion object {
         private const val REQ_POST_NOTIF = 1001
+        /** Runtime-permission request for a call's mic (+ camera for VIDEO) — see ensureCallPermissions.
+         *  Distinct from REQ_POST_NOTIF so onRequestPermissionsResult routes the result to the deferred call. */
+        private const val REQ_CALL_PERMS = 1002
         private const val NOTIF_SYNC_WORK = "soms-notif-sync"
         /** FCM availability auto-check cadence (the user's "once/day" requirement). */
         private const val FCM_CHECK_INTERVAL_MS = 24L * 60 * 60 * 1000

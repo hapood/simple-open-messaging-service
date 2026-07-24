@@ -14,6 +14,17 @@
          (Android 14+/API 34). The service is bounded by Android 15's ~6h/24h dataSync time budget. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Foreground service for an active 1:1 call (CallService, phoneCall type). The phoneCall type is NOT
+         bounded by Android 15's dataSync time budget (a call may exceed 6h) and is the type the system
+         associates with an in-progress call (Telecom / call-screen integration). Declared in addition to
+         the base FOREGROUND_SERVICE. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <!-- Route call audio to a connected Bluetooth headset (AudioManager.startBluetoothSco / the device
+         module). Runtime permission on Android 12+ (API 31); declared so the call audio module can scoot. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <!-- Keep the CPU awake for the duration of an active call so the media leg isn't suspended when the
+         screen turns off. Acquired/released by CallService (PARTIAL_WAKE_LOCK). -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- Camera for the QR scanner (the phone side of QR sign-in — scan a desktop's QR to authorize it).
          Runtime permission is requested by tauri-plugin-barcode-scanner before opening the scanner view. -->
     <uses-permission android:name="android.permission.CAMERA" />
@@ -51,7 +62,8 @@
             android:launchMode="singleTask"
             android:label="@string/main_activity_title"
             android:name=".MainActivity"
-            android:exported="true">
+            android:exported="true"
+            android:supportsPictureInPicture="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -78,6 +90,18 @@
         <service
             android:name=".RealtimeService"
             android:foregroundServiceType="dataSync"
+            android:exported="false" />
+
+        <!-- The active 1:1 call. A phoneCall-type foreground service that anchors the process for the call's
+             duration (so the system keeps the WebRTC peer connection + the audio leg alive while the user
+             backgrounds into PiP or another app) and owns the call's audio routing (MODE_IN_COMMUNICATION)
+             + wake lock + the ongoing-call notification. The RTCPeerConnection + signaling logic live in
+             the process-global CallController; this service is the lifecycle/anchor wrapper. phoneCall type
+             (NOT dataSync) so it isn't bounded by Android 15's ~6h dataSync budget. Started when a call
+             begins (incoming or outgoing); tears down on end. See CallService / CallController. -->
+        <service
+            android:name=".CallService"
+            android:foregroundServiceType="phoneCall"
             android:exported="false" />
 
         <!-- Handles a notification ACTION button tap (mark-all-read / reply) — the receiver each action's

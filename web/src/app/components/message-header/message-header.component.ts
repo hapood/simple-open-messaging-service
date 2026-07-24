@@ -13,6 +13,8 @@ import { GroupService } from '../../services/group.service';
 import { ConversationListService } from '../../services/conversation-list.service';
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
+import { CallAdapterService } from '../../services/call-adapter';
+import { uuid } from '../../lib/uuid';
 
 /**
  * Chat surface header: back (mobile), the thread title (tap → peer-profile / group-info aside), and
@@ -52,6 +54,20 @@ export class MessageHeaderComponent {
   private readonly groupService = inject(GroupService);
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
+  private readonly callAdapter = inject(CallAdapterService);
+
+  /** Whether the call button shows: 1:1 calling is supported (Android native only — web/desktop calling is
+   *  deferred) AND this is a P2P thread (groups can't be called 1:1). */
+  readonly canCall = computed(() => this.callAdapter.supported && this.userMsgTrd()?.type === 'P2P');
+
+  /** Place an outgoing AUDIO call to the P2P peer. Mints a client-side callSid (the call's idempotency key +
+   *  signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which POSTs
+   *  /calls/initiate + creates the offer. */
+  placeCall(callType: 'AUDIO' | 'VIDEO'): void {
+    const peerId = this.userMsgTrd()?.peerUser?.id;
+    if (peerId === undefined) return;
+    this.callAdapter.initiate(peerId, uuid(), callType);
+  }
 
   /** In-chat search visibility is a layer of the app's virtual nav stack (see NavStateMachineService):
    *  `back` peels it before the chat, so hardware-back exits search before leaving the thread — the same

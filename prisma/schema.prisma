@@ -112,21 +112,21 @@ model PushToken {
 /// ones expire. Validated by BearerAuthService, shared by the global SessionAuthGuard and the
 /// /uploads/* media preHandler.
 model SessionToken {
-  id           Int       @id @default(autoincrement())
-  userId       Int
-  user         User      @relation(fields: [userId], references: [id])
-  tokenHash    String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
-  client       String    @db.VarChar(16) // app | web | desktop — device platform for the device-list icon/label (lifetime is driven by `trusted`, not `client`)
-  device       String?   @db.VarChar(127) // human-friendly device label the client reports at login (e.g. "Pixel 7", "Chrome · macOS")
-  userAgent    String?   @db.VarChar(255) // raw UA captured server-side from the HTTP header; parsed into browser/os for the device list
-  ip           String?   @db.VarChar(64) // sign-in IP (captured at issue time)
-  lastSeenIp   String?   @db.VarChar(64) // most-recent IP (updated on the throttled sliding touch) — the device-list "last seen" location source
-  createdAt    DateTime  @default(now())
-  expiresAt    DateTime? // null = never (trusted device); set = sliding 14-day deadline (untrusted)
-  lastSeenAt   DateTime  @default(now()) // sliding-window activity tracker (untrusted web/desktop; activity is still tracked for trusted tokens so the device list's "last active" stays fresh)
-  persistent   Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for trusted (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
-  trusted      Boolean   @default(false) // true → expiresAt NULL (permanent, revocation-only); the client must store the token in OS secure storage (native app by default; desktop via OS keyring). false → sliding 14-day deadline. The native `app` client is trusted by default at issue.
-  revokedAt    DateTime? // soft revoke (logout / logout-all / password change / admin disable)
+  id         Int       @id @default(autoincrement())
+  userId     Int
+  user       User      @relation(fields: [userId], references: [id])
+  tokenHash  String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
+  client     String    @db.VarChar(16) // app | web | desktop — device platform for the device-list icon/label (lifetime is driven by `trusted`, not `client`)
+  device     String?   @db.VarChar(127) // human-friendly device label the client reports at login (e.g. "Pixel 7", "Chrome · macOS")
+  userAgent  String?   @db.VarChar(255) // raw UA captured server-side from the HTTP header; parsed into browser/os for the device list
+  ip         String?   @db.VarChar(64) // sign-in IP (captured at issue time)
+  lastSeenIp String?   @db.VarChar(64) // most-recent IP (updated on the throttled sliding touch) — the device-list "last seen" location source
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime? // null = never (trusted device); set = sliding 14-day deadline (untrusted)
+  lastSeenAt DateTime  @default(now()) // sliding-window activity tracker (untrusted web/desktop; activity is still tracked for trusted tokens so the device list's "last active" stays fresh)
+  persistent Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for trusted (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
+  trusted    Boolean   @default(false) // true → expiresAt NULL (permanent, revocation-only); the client must store the token in OS secure storage (native app by default; desktop via OS keyring). false → sliding 14-day deadline. The native `app` client is trusted by default at issue.
+  revokedAt   DateTime? // soft revoke (logout / logout-all / password change / admin disable)
   revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable|admin_purge (observability)
 
   @@index([userId])
@@ -328,9 +328,9 @@ model MessageThread {
   // the same tx as the Message; the source of truth (Message.seq/creator/createdAt) keeps its FKs.
   // Nullable for empty threads. lastMessageSeq is the cursor, NOT the unread watermark (that's per-
   // participant on ThreadParticipant.lastReadSeq).
-  lastMessageSeq      Int?
-  lastMessagePreview  String?   @db.VarChar(255)
-  lastMessageAt       DateTime?
+  lastMessageSeq     Int?
+  lastMessagePreview String?   @db.VarChar(255)
+  lastMessageAt      DateTime?
 
   // The "!"-sigil User row carrying this GROUP thread's identity (name/avatar/bio). Non-null iff
   // type=GROUP; null for P2P. @unique → one thread per group-User. Cascade-deletes with the group-user.
@@ -356,36 +356,39 @@ enum ContentType {
   FILE
   AUDIO
   LINK
+  CALL // 1:1 WebRTC call record — SERVER-AUTHORED ONLY (CallsService writes the terminal bubble).
+       // Never client-authorable (SendMessageDto's @IsIn allowlist excludes it, like INVITE). The
+       // call's lifecycle is in-memory in CallsService; this row is the persisted terminal record.
 }
 
 model Message {
   // INTERNAL surrogate PK, NEVER exposed (omitted from HTTP/SSE/federation, which carry `seq`). A global
   // autoincrement would leak cross-conversation throughput (deltas reveal server-wide volume), so it
   // exists only as storage identity + the MediaMessage FK target.
-  id               BigInt        @id @default(autoincrement())
+  id              BigInt        @id @default(autoincrement())
   // Per-thread monotonic seq (0-indexed), allocated atomically from curSeq inside the message-create tx
   // → gapless modulo rollback/delete, no retry loop. The EXTERNAL ordering key + frontend message
   // identity (keyset cursor, read watermark); deltas reveal only THIS thread's volume. Each server
   // assigns its OWN seq; a receiver re-seqs pulled messages into its local space (see originSeq).
-  seq              Int
-  contentType      ContentType
-  content          String
-  threadId         Int
-  creator          Int
-  threadItem       MessageThread @relation(fields: [threadId], references: [id])
-  creatorItem      User          @relation("AuthoredMessages", fields: [creator], references: [id])
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  isDeleted        Boolean       @default(false)
+  seq             Int
+  contentType     ContentType
+  content         String
+  threadId        Int
+  creator         Int
+  threadItem      MessageThread @relation(fields: [threadId], references: [id])
+  creatorItem     User          @relation("AuthoredMessages", fields: [creator], references: [id])
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  isDeleted       Boolean       @default(false)
   // Client-generated UUID for send idempotency: a retried send with the same value returns the original
   // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
-  clientMessageId  String?       @unique @db.VarChar(36)
+  clientMessageId String?       @unique @db.VarChar(36)
   // The ORIGINATING server's per-thread seq — the cross-server value. Equals `seq` on the origin; a
   // receiver copies it verbatim while allocating its own local `seq` (same value on both sides). The
   // federation dedup key + per-(thread, sender) pull cursor (receiver pulls originSeq > MAX). Each side
   // keeps its own seq; no cross-server sequence-space consistency is needed. Null = legacy rows only.
-  originSeq        Int?
+  originSeq       Int?
   // The SENDER server's allocation time (copied from the pulled payload's `ts`). NEVER displayed — the
   // chatbox + conversation list use the receiver's `createdAt` (local arrival time). Stored for future
   // use (quota day-bucketing, audit). Null for locally-authored messages (their createdAt IS the origin
@@ -446,20 +449,20 @@ model MediaMessage {
 /// (+originDomain/originServerTime) is the pull dedup key (mirrors Message's unique); `content` is the
 /// pulled payload verbatim.
 model PendingMedia {
-  id               BigInt      @id @default(autoincrement())
-  threadId         Int
-  creatorId        Int // local sender userId; federated = foreign stub userId
-  contentType      ContentType
+  id              BigInt      @id @default(autoincrement())
+  threadId        Int
+  creatorId       Int // local sender userId; federated = foreign stub userId
+  contentType     ContentType
   // LOCAL: client-probed display metadata JSON ({w,h} / {w,h,duration} / {duration} / {}); the url is
   // injected at promote. FEDERATED: the pulled content verbatim (peer's server-relative shard URL +
   // metadata) — after localization the same content-addressed path serves same-origin.
-  content          String
-  digest           String?     @db.VarChar(64) // set once bytes land → links staging to MediaAsset/file
-  clientMessageId  String?     @unique @db.VarChar(36) // LOCAL idempotency (optimistic-send key)
-  originSeq        Int? // FEDERATED provenance + pull dedup (NULL for local)
-  status           String      @default("pending") @db.VarChar(12) // pending (a 'failed' state was never wired; originDomain/originServerTime/failReason dropped as unused)
-  createdAt        DateTime    @default(now())
-  updatedAt        DateTime    @updatedAt
+  content         String
+  digest          String?     @db.VarChar(64) // set once bytes land → links staging to MediaAsset/file
+  clientMessageId String?     @unique @db.VarChar(36) // LOCAL idempotency (optimistic-send key)
+  originSeq       Int? // FEDERATED provenance + pull dedup (NULL for local)
+  status          String      @default("pending") @db.VarChar(12) // pending (a 'failed' state was never wired; originDomain/originServerTime/failReason dropped as unused)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
 
   thread MessageThread @relation(fields: [threadId], references: [id])
 
@@ -483,37 +486,37 @@ enum AdminRole {
 /// Admin login authenticates the linked User's password, then issues an admin session. Admin auth stays
 /// physically isolated from user auth (separate AdminRefreshToken + adminSecret + scope:'admin').
 model Admin {
-  id            Int                 @id @default(autoincrement())
-  userId        Int                 @unique
-  user          User                @relation(fields: [userId], references: [id])
-  role          AdminRole           @default(SUPER_ADMIN)
-  enabled       Boolean             @default(true)
-  tokenVersion  Int                 @default(0) // bumping this invalidates ALL of the admin's access tokens (disable / role change)
-  lastLoginIp   String?             @db.VarChar(64)
-  lastLoginAt   DateTime?
+  id                       Int                   @id @default(autoincrement())
+  userId                   Int                   @unique
+  user                     User                  @relation(fields: [userId], references: [id])
+  role                     AdminRole             @default(SUPER_ADMIN)
+  enabled                  Boolean               @default(true)
+  tokenVersion             Int                   @default(0) // bumping this invalidates ALL of the admin's access tokens (disable / role change)
+  lastLoginIp              String?               @db.VarChar(64)
+  lastLoginAt              DateTime?
   // ── TOTP two-factor authentication (RFC 6238, Google/Microsoft Authenticator). Opt-in per admin.
   //    The secret is AES-256-GCM encrypted at rest (twoFactorSecretCipher = iv(12) ‖ tag(16) ‖ ciphertext,
   //    base64) under a key derived from SOMS_2FA_KEY — never plaintext. twoFactorLastUsedCounter is the
   //    highest TOTP step (⌊t/30s⌋) already accepted at login, guarding against same-window code replay
   //    (RFC 6238 §5.2). Enabling 2FA bumps tokenVersion so every outstanding session must re-login through
   //    the new challenge.
-  twoFactorEnabled          Boolean   @default(false)
-  twoFactorSecretCipher     String?   @db.VarChar(255)
-  twoFactorEnabledAt        DateTime?
-  twoFactorLastUsedCounter  Int?
+  twoFactorEnabled         Boolean               @default(false)
+  twoFactorSecretCipher    String?               @db.VarChar(255)
+  twoFactorEnabledAt       DateTime?
+  twoFactorLastUsedCounter Int?
   // ── WebAuthn (passkey) second factor. Opt-in per admin; multiple credentials per admin (phone +
   //    YubiKey, etc.). webauthnEnabled is a denormalized hint (= "≥1 credential exists") for the login
   //    branch + status card; the credential ROWS are the source of truth (beginAssertion re-counts to
   //    guard against a stale-true flag). Enrolling/removing a passkey does NOT bump tokenVersion
   //    (additive optional factor — does not invalidate existing sessions, unlike TOTP-enable).
-  webauthnEnabled           Boolean   @default(false)
-  createdAt     DateTime            @default(now())
-  updatedAt     DateTime            @updatedAt
-  refreshTokens AdminRefreshToken[]
-  actionLogs    AdminActionLog[]
-  twoFactorBackupCodes TwoFactorBackupCode[]
-  webauthnCredentials WebAuthnCredential[]
-  loginChallenges  AdminLoginChallenge[]
+  webauthnEnabled          Boolean               @default(false)
+  createdAt                DateTime              @default(now())
+  updatedAt                DateTime              @updatedAt
+  refreshTokens            AdminRefreshToken[]
+  actionLogs               AdminActionLog[]
+  twoFactorBackupCodes     TwoFactorBackupCode[]
+  webauthnCredentials      WebAuthnCredential[]
+  loginChallenges          AdminLoginChallenge[]
 }
 
 /// A registered WebAuthn (passkey) credential — a phishing-resistant admin second factor. credentialId +
@@ -523,18 +526,18 @@ model Admin {
 /// authenticator for the UI. This model is "passkey" vocabulary — deliberately NOT named `trusted`, to
 /// keep it distinct from SessionToken.trusted (session lifetime). See the two-"trust" rule.
 model WebAuthnCredential {
-  id            BigInt    @id @default(autoincrement())
-  adminId       Int
-  admin         Admin     @relation(fields: [adminId], references: [id])
-  credentialId  String    @unique @db.VarChar(510) // base64url(credential ID); unique per RP
-  publicKey     Bytes                                 // COSE_Key; the authenticator's public half (PUBLIC)
-  counter       Int       @default(0)                  // monotonic per-credential signature counter (clone detection)
-  transports    String?                                // JSON array: internal | hybrid | usb | ble | nfc | smart-card
-  deviceType    String?   @db.VarChar(32)              // singleDevice | multiDevice (sync'd passkey = multiDevice)
-  backed        Boolean   @default(false)              // backup-eligibility/result (true for iCloud/Google-sync'd passkeys)
-  nickname      String?   @db.VarChar(64)              // admin-assigned label ("MacBook Touch ID")
-  lastUsedAt    DateTime?
-  createdAt     DateTime  @default(now())
+  id           BigInt    @id @default(autoincrement())
+  adminId      Int
+  admin        Admin     @relation(fields: [adminId], references: [id])
+  credentialId String    @unique @db.VarChar(510) // base64url(credential ID); unique per RP
+  publicKey    Bytes // COSE_Key; the authenticator's public half (PUBLIC)
+  counter      Int       @default(0) // monotonic per-credential signature counter (clone detection)
+  transports   String? // JSON array: internal | hybrid | usb | ble | nfc | smart-card
+  deviceType   String?   @db.VarChar(32) // singleDevice | multiDevice (sync'd passkey = multiDevice)
+  backed       Boolean   @default(false) // backup-eligibility/result (true for iCloud/Google-sync'd passkeys)
+  nickname     String?   @db.VarChar(64) // admin-assigned label ("MacBook Touch ID")
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
 
   @@index([adminId])
 }
@@ -546,11 +549,11 @@ model WebAuthnCredential {
 /// verify (TOTP or passkey); a second/cross-factor consume is rejected. Mirrors the replay protection
 /// TOTP already had via twoFactorLastUsedCounter. Cascade-deletes with the admin.
 model AdminLoginChallenge {
-  jti        String   @id @db.VarChar(36)
+  jti        String    @id @db.VarChar(36)
   adminId    Int
-  admin      Admin    @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  admin      Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
   consumedAt DateTime?
-  createdAt  DateTime @default(now())
+  createdAt  DateTime  @default(now())
 
   @@index([createdAt])
 }
@@ -576,17 +579,17 @@ model TwoFactorBackupCode {
 
 /// Admin refresh token (family-based + reuse detection, mirrors RefreshToken; a separate instance avoids mixing with user sessions).
 model AdminRefreshToken {
-  id           BigInt    @id @default(autoincrement())
-  adminId      Int
-  admin        Admin     @relation(fields: [adminId], references: [id])
-  tokenHash    String    @unique
-  jti          String    @unique
-  familyId     String
-  userAgent    String?   @db.VarChar(255)
-  ip           String?   @db.VarChar(64)
-  createdAt    DateTime  @default(now())
-  expiresAt    DateTime
-  revokedAt    DateTime?
+  id        BigInt    @id @default(autoincrement())
+  adminId   Int
+  admin     Admin     @relation(fields: [adminId], references: [id])
+  tokenHash String    @unique
+  jti       String    @unique
+  familyId  String
+  userAgent String?   @db.VarChar(255)
+  ip        String?   @db.VarChar(64)
+  createdAt DateTime  @default(now())
+  expiresAt DateTime
+  revokedAt DateTime?
   revokeReason String?   @db.VarChar(32)
 
   @@index([adminId])

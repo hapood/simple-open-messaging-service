@@ -4,6 +4,7 @@ import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
 import { extractDigests } from '../upload/file-content.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
+import { parseCallContent, callPreviewLabel } from '../calls/call-content.js';
 
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
 const PREVIEW_TEXT_MAX = 200;
@@ -51,6 +52,12 @@ export function derivePreview(type: ContentType, content: string): string {
       return '[File]';
     case ContentType.AUDIO:
       return '[Voice message]';
+    case ContentType.CALL: {
+      // A call-record bubble: the status-aware label (never the raw JSON). Degrades to a generic
+      // label on a malformed payload (parseCallContent returns null).
+      const c = parseCallContent(content);
+      return c ? callPreviewLabel(c.status) : '[Call]';
+    }
     default:
       return content.slice(0, PREVIEW_TEXT_MAX);
   }

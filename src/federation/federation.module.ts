@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { KeypairService } from './keypair.service.js';
 import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
@@ -29,7 +30,17 @@ import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
  */
 @Global()
 @Module({
-  imports: [InviteModule, ThreadParticipantModule, GatewayModule, UploadModule, MessageModule, LinkPreviewModule],
+  imports: [
+    // EventEmitterModule is NOT global (only forRoot() lives in AppModule) — import it here so
+    // FederationService can emitAsync('call.frame.inbound') for the inbound S2S call bridge.
+    EventEmitterModule,
+    InviteModule,
+    ThreadParticipantModule,
+    GatewayModule,
+    UploadModule,
+    MessageModule,
+    LinkPreviewModule,
+  ],
   controllers: [WellKnownController, S2sController, S2sInitController],
   providers: [
     KeypairService,

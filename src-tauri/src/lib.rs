@@ -1539,14 +1539,10 @@ async fn report_diagnostics(
     })
     .await
     .unwrap_or_default();
-    // The Kotlin native log lives under the app-internal data dir (Android `filesDir` resolves to Tauri's
-    // `app_data_dir`). Absent on desktop + release → None → the bundle omits the native/ entry. Best-effort:
-    // a missing/unreadable file is not a diagnostics failure.
-    let native_log: Option<Vec<u8>> = app
-        .path()
-        .app_data_dir()
-        .ok()
-        .and_then(|d| fs::read(d.join("soms-native.log")).ok());
+    // The Kotlin native log is Android `Context.getFilesDir()/soms-native.log` (Tauri's `app_data_dir()` is
+    // the data ROOT, so it lives under `files/`). Absent on desktop + release → None → the bundle omits the
+    // native/ entry. Best-effort: a missing/unreadable file is not a diagnostics failure.
+    let native_log: Option<Vec<u8>> = kotlin_native_log_path(&app).and_then(|p| fs::read(p).ok());
     let bundle = build_diagnostics_bundle(&log_dir, &console, &manifest, native_log.as_deref())
         .map_err(|e| format!("build bundle: {e}"))?;
     let digest = sha256_hex(&bundle);
@@ -1627,12 +1623,7 @@ fn read_native_log(
 ) -> Result<NativeLogTail, String> {
     let path: Option<PathBuf> = match source {
         NativeLogSource::Rust => app.path().app_log_dir().ok().and_then(|d| newest_file(&d)),
-        NativeLogSource::Kotlin => app
-            .path()
-            .app_data_dir()
-            .ok()
-            .map(|d| d.join("soms-native.log"))
-            .filter(|p| p.exists()),
+        NativeLogSource::Kotlin => kotlin_native_log_path(&app),
     };
     let Some(path) = path else {
         return Ok(NativeLogTail { path: String::new(), content: String::new() });
@@ -1643,6 +1634,19 @@ fn read_native_log(
         path: path.to_string_lossy().into_owned(),
         content: last_lines(&text, tail_lines),
     })
+}
+
+/// Resolve the Kotlin `SomsLog` sink: Android `Context.getFilesDir()/soms-native.log`. Tauri's
+/// `app_data_dir()` resolves to the app's DATA ROOT (NOT `filesDir`), so the file lives under `files/`. The
+/// data root is also probed as a fallback — a future Tauri path-resolver change that shifted the base would
+/// otherwise silently empty the debug panel's Kotlin tab again (the original bug: the panel read
+/// `app_data_dir/soms-native.log` while Kotlin wrote `…/files/soms-native.log`). Returns None if neither path
+/// exists (desktop + release).
+fn kotlin_native_log_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let root = app.path().app_data_dir().ok()?;
+    [root.join("files").join("soms-native.log"), root.join("soms-native.log")]
+        .into_iter()
+        .find(|p| p.exists())
 }
 
 // --- frontend-facing commands (origin + token) --------------------------------------------

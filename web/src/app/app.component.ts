@@ -15,6 +15,8 @@ import { RouteService, PopupType } from './services/route.service';
 import { NotifPopupComponent } from './components/notif-popup/notif-popup.component';
 import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.component';
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
+import { CallEventService } from './services/call-event.service';
+import { CallOverlayService } from './services/call-overlay.service';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet, NotifPopupComponent, DebugLogFabComponent],
@@ -60,6 +62,15 @@ export class AppComponent {
     // RouteService: opens the once-per-launch shell-incompatibility dialog when the probe finds the
     // backend is too new for this shell.
     private readonly route = inject(RouteService);
+    // CallEventService: routes CALL_EVENT SSE frames + the native __SOMS_CALL_EVENT__ snapshot push into the
+    // callState signal. Eagerly constructed so an incoming ring (which can arrive at any time) is never
+    // missed — it subscribes in its constructor + installs the native snapshot hook.
+    private readonly callEvents = inject(CallEventService);
+    // CallOverlayService mounts CallScreenComponent as a body-level CDK overlay (sibling of <app-root>) +
+    // toggles the html.in-video-call transparency treatment on video calls, so the native remote video shows
+    // through the transparent chrome. Eagerly constructed so its callState effect is live for the whole
+    // session (an incoming ring can arrive at any time) — cf. the qr-scanning overlay architecture.
+    private readonly callOverlay = inject(CallOverlayService);
     // Guards the incompatibility prompt to once per app session (re-armed only by a fresh app launch).
     private incompatiblePromptShown = false;
     constructor() {

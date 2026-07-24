@@ -66,6 +66,9 @@ export interface QuotaConfig {
   dailyImageLimit: number;
   /** Video/large-file media items/day per node. */
   dailyLargeFileLimit: number;
+  /** Federated WebRTC signal frames/day per node (offer/answer/ICE relay). A dedicated budget so an ICE
+   *  burst can't starve, or be starved by, the friend-op `requests` bucket. No per-node override (global). */
+  dailySignalLimit: number;
   /** Single-image byte cap (oversized → refused at ingest). */
   maxImageBytes: number;
   /** Single-large-file byte cap (oversized → refused at ingest). */
@@ -80,6 +83,7 @@ export function loadQuotaConfig(): QuotaConfig {
     dailyLargeFileLimit: Number(
       process.env.SOMS_QUOTA_DAILY_LARGE_FILE_LIMIT ?? 50,
     ),
+    dailySignalLimit: Number(process.env.SOMS_QUOTA_DAILY_SIGNAL_LIMIT ?? 50_000),
     maxImageBytes: Number(process.env.SOMS_QUOTA_MAX_IMAGE_BYTES ?? 50 * 1024 * 1024),
     maxLargeFileBytes: Number(
       process.env.SOMS_QUOTA_MAX_LARGE_FILE_BYTES ?? 500 * 1024 * 1024,

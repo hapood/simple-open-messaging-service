@@ -23,6 +23,14 @@
         <span class="msg-subtitle" (click)="showThreadInfo()" [title]="subtitle()">{{ subtitle() }}</span>
       }
     </div>
+    @if (canCall()) {
+      <button class="icon-btn" type="button" (click)="placeCall('AUDIO')" aria-label="Call">
+        <span style="font-size: 20px; line-height: 32px">📞</span>
+      </button>
+      <button class="icon-btn" type="button" (click)="placeCall('VIDEO')" aria-label="Video call">
+        <span style="font-size: 20px; line-height: 32px">📹</span>
+      </button>
+    }
     <button
       class="icon-btn"
       cdkOverlayOrigin

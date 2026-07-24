@@ -18,6 +18,7 @@ import {
   FederationService,
   type S2SInvite,
   type S2SInviteAccept,
+  type S2SCallFrame,
   type S2SAddress,
 } from './federation.service.js';
 import { FederationBufferService } from './federation-buffer.service.js';
@@ -30,6 +31,7 @@ import { BusinessCode } from '../common/business-code.js';
  *
  * - POST /api/v1/s2s/invite — receive an invite (friend OR group, unified); FederationService.handleInvite.
  * - POST /api/v1/s2s/invite-accept — the peer accepted an invite (friend→P2P thread; group→origin records the join).
+ * - POST /api/v1/s2s/call — a federated 1:1 WebRTC call frame (ring / lifecycle / SDP-ICE relay); FederationService.handleCallFrame.
  * - GET  /api/v1/s2s/users/:account — return a local user's public profile (avatar inline as base64).
  * - GET  /api/v1/s2s/users/:account/revision — lightweight profile-revision probe (no avatar transfer).
  *
@@ -55,6 +57,15 @@ export class S2sController {
   @HttpCode(HttpStatus.ACCEPTED)
   async postInviteAccept(@Req() req: FastifyRequest): Promise<void> {
     await this.federation.handleInviteAccept(req.body as S2SInviteAccept);
+  }
+
+  @Post('call')
+  @HttpCode(HttpStatus.ACCEPTED)
+  async postCall(@Req() req: FastifyRequest): Promise<void> {
+    // handleCallFrame is awaitable + emits the frame to CallsService via emitAsync before returning,
+    // so the 202 serializes behind the callee-side mirror setup (the caller's first `offer` cannot
+    // win the race against the mirror it addresses).
+    await this.federation.handleCallFrame(req.body as S2SCallFrame);
   }
 
   @Get('users/:account')

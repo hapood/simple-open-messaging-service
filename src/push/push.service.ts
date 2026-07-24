@@ -213,6 +213,103 @@ export class PushService {
     }
   }
 
+  /**
+   * Fan out an INCOMING-CALL wake-up to a callee. Mirrors dispatchForMessage with two deliberate
+   * differences for the ringing case:
+   *  (1) NO skip-when-online — the phone must ring even when the callee's desktop has a live SSE
+   *      connection. (dispatchForMessage skips online recipients because the message body is also
+   *      delivered in-band over SSE; a ring, by contrast, must reach every device.)
+   *  (2) type = 'CALL_INCOMING' carrying { ts, callSid, callerUserId, threadId, callType } so the
+   *      client's call-handling layer (NOT the message-pull pipeline) wakes and surfaces the incoming-
+   *      call UI. FCM ttl is short (30s) — a ring is ephemeral, so a stale wake-up must not outlive it.
+   * Same FCM (data-only, high priority) + Web Push branch by subscription shape, same dead-token
+   * pruning. Fire-and-forget from CallsService; never throws (a push failure must not break ringing).
+   */
+  async dispatchForCall(
+    calleeUserId: number,
+    payload: {
+      callSid: string;
+      callerUserId: number;
+      threadId: number;
+      callType: 'AUDIO' | 'VIDEO';
+    },
+  ): Promise<void> {
+    try {
+      const tokens = await this.prisma.pushToken.findMany({
+        where: { userId: calleeUserId },
+        select: { token: true, platform: true, webP256dh: true, webAuth: true },
+      });
+      if (tokens.length === 0) return;
+
+      // Inline wake-up — the client's call layer consumes this directly (no body pull).
+      const data: Record<string, string> = {
+        type: 'CALL_INCOMING',
+        ts: String(Date.now()),
+        callSid: payload.callSid,
+        callerUserId: String(payload.callerUserId),
+        threadId: String(payload.threadId),
+        callType: payload.callType,
+      };
+
+      const dead: string[] = [];
+      // Same subscription-shape branch as dispatchForMessage.
+      const webSubs = tokens.filter((t) => !!t.webP256dh && !!t.webAuth);
+      const fcmTokens = tokens.filter((t) => !t.webP256dh || !t.webAuth);
+
+      // FCM path (ANDROID / IOS).
+      if (fcmTokens.length > 0 && this.messaging) {
+        const messages: Message[] = fcmTokens.map((t) => ({
+          token: t.token,
+          data,
+          android: { priority: 'high', ttl: 30_000 }, // 30s — a ring is ephemeral
+        }));
+        const res = await this.messaging.sendEach(messages);
+        res.responses.forEach((r, i) => {
+          if (
+            !r.success &&
+            r.error?.code === 'messaging/registration-token-not-registered'
+          ) {
+            dead.push(fcmTokens[i].token);
+          }
+        });
+        const failed = res.failureCount - dead.length;
+        if (failed > 0) {
+          this.logger.warn(`FCM sendEach (call): ${failed} transient failure(s) (not pruned)`);
+        }
+      }
+
+      // Web Push path (browser/PWA).
+      if (webSubs.length > 0 && this.settings.isWebPushConfigured) {
+        const body = JSON.stringify(data);
+        await Promise.all(
+          webSubs.map(async (s) => {
+            try {
+              await this.sendWebPush(
+                { endpoint: s.token, keys: { p256dh: s.webP256dh!, auth: s.webAuth! } },
+                body,
+              );
+            } catch (e) {
+              const code = (e as { statusCode?: number }).statusCode;
+              if (code === 404 || code === 410) {
+                dead.push(s.token);
+              } else {
+                this.logger.warn(`Web Push transient failure (call, ${code}): ${(e as Error).message}`);
+              }
+            }
+          }),
+        );
+      }
+
+      if (dead.length > 0) {
+        await this.prisma.pushToken.deleteMany({ where: { token: { in: dead } } });
+        this.logger.debug(`pruned ${dead.length} stale push subscription(s) (call)`);
+      }
+    } catch (e) {
+      // Fire-and-forget: a push failure must never break the call path.
+      this.logger.error(`push dispatchForCall failed: ${(e as Error).message}`);
+    }
+  }
+
   // ── admin surface ────────────────────────────────────────────────────────────
 
   /** FCM transport configured (GOOGLE_APPLICATION_CREDENTIALS set + firebase-admin initialized). */
