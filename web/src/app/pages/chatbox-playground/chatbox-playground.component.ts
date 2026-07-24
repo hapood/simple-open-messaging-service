@@ -12,6 +12,7 @@ import { LayoutService } from '../../services/layout.service';
 import { ThemeService } from '../../services/theme.service';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../../components/message-cards/create-item';
 import { mergeAlbumItems, absorbAlbumTail } from '../../components/message-cards/merge-items';
+import { VOICE_BAR_W, VOICE_BAR_H } from '../../components/message-cards/media-row/layout';
 import { GalleryViewerService } from '../../components/gallery-viewer/gallery-viewer.service';
 import { FileDetailService } from '../../components/file-detail-viewer/file-detail-viewer.service';
 import { ConnectionBannerComponent } from '../../components/connection-banner/connection-banner.component';
@@ -655,7 +656,7 @@ export class ChatboxPlaygroundComponent implements OnDestroy {
     const scroller = this.scroller;
     if (!scroller) return;
     const url = URL.createObjectURL(blob);
-    const imgs: AlbumImage[] = [{ kind: 'audio', src: url, w: 220, h: 52, size: blob.size, duration, name: 'voice' }];
+    const imgs: AlbumImage[] = [{ kind: 'audio', src: url, w: VOICE_BAR_W, h: VOICE_BAR_H, size: blob.size, duration, name: 'voice' }];
     this.dispatchPending(this.makeOptimisticItem('', 'AUDIO', imgs));
   }
 

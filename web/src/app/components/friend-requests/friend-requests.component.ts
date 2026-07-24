@@ -348,9 +348,10 @@ export class FriendRequestsComponent implements OnDestroy {
       },
     })
 
-    // Opening the panel counts as "seen" → acknowledge the current friend-request revision. The badge is
-    // client-derived (friendReqRev > IDB ack cursor), so advancing the cursor here clears it (a later
-    // FRIEND_REQ_REV_UPDATED re-arms). No server round-trip — the badge state is local now.
+    // Opening the panel counts as "seen" → acknowledge the current friend-request revision. markFriendReqRead
+    // optimistically clears the badge locally (friendReqAckRev → friendReqRev) AND POSTs /invite/mark-read,
+    // which advances the SERVER-side friendReqAckRev + pushes FRIEND_REQ_REV_UPDATED → clears the badge on ALL
+    // of the user's devices. A later create re-arms it.
     this.userService.markFriendReqRead()
   }
 }

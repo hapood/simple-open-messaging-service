@@ -10,8 +10,7 @@ import { WebPushService } from './web-push.service';
 import { UserService } from './user.service';
 import { ToastService } from './toast.service';
 
-const SESSION_TOKEN = 'session_token',
-  IS_KEEP_LOGIN = 'is_keep_login',
+const IS_KEEP_LOGIN = 'is_keep_login',
   // Non-httpOnly presence cookie the backend sets/clears in lockstep with the httpOnly session cookie
   // (name mirrors src/auth/media-token.ts LOGGED_IN_COOKIE). On the pure-httpOnly browser build the
   // session token is JS-unreadable, so this flag is how the SPA tells whether a session exists.
@@ -270,14 +269,12 @@ export class AuthService {
    *  flag. Wired as an APP_INITIALIZER so it completes before the router resolves — `isLoggedIn()` then
    *  reflects the restored session with no race. No-op on the pure-httpOnly browser build (the cookie
    *  carries the session; there is no JS token to restore). The token passes through JS only to reach Rust;
-   *  it is not retained. Also purges any legacy plaintext `session_token` left in localStorage by an older
-   *  desktop build (now stored in the keyring instead). */
+   *  it is not retained. */
   async restoreSession(): Promise<void> {
     // Open the per-user IDB on the persisted lastUserId FIRST (awaited) so the threadlist can eager-paint
     // the cached list before the SSE/HELLO round-trip — the DB is open before the router resolves, so the
     // list reads it on mount. No-op on a first-ever launch (no userId persisted yet).
     await this.userService.restoreWebdb();
-    try { localStorage.removeItem(SESSION_TOKEN) } catch { /* storage unavailable */ }
     if (isAndroidNative()) {
       try {
         this._canTrust = true // EncryptedSharedPreferences is always available on Android
@@ -393,10 +390,10 @@ export class AuthService {
   }
 
   /** Change password: the server invalidates ALL sessions (`invalidateAllSessions` revokes every session
-   *  token row + bumps tokenVersion) and returns a legacy access/refresh pair — but NO new session token.
-   *  The current device's session token is dead, so drop it + re-login for a fresh one. (Online clients
-   *  also receive a FORCE_LOGOUT frame, whose handler calls redoLoginAuth too — this is the immediate
-   *  path for the device that initiated the change.) */
+   *  token row + bumps tokenVersion) and returns NO new session token. The current device's session token
+   *  is dead, so drop it + re-login for a fresh one. (Online clients also receive a FORCE_LOGOUT frame,
+   *  whose handler calls redoLoginAuth too — this is the immediate path for the device that initiated
+   *  the change.) */
   changePassword(params: { oldPassword: string, newPassword: string }) {
     return this.http.post<LogoutRes>(
       `${apiPrefix()}/auth/change-password`, params

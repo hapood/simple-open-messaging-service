@@ -154,13 +154,6 @@ describe('SessionTokenService', () => {
       expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // still once
     });
 
-    it('treats a stale pre-upgrade cache entry (no sessionId) as a miss', async () => {
-      kv.get.mockResolvedValue(JSON.stringify({ userId: 7, exp: Date.now() + 3600_000 }));
-      prisma.sessionToken.findUnique.mockResolvedValue(makeRow());
-      await svc.validate('a2'.repeat(32));
-      expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // fell through to DB
-    });
-
     it('app token (expiresAt null) never expires (and never sets slid)', async () => {
       prisma.sessionToken.findUnique.mockResolvedValue(makeRow({ expiresAt: null }));
       await expect(svc.validate('b'.repeat(64))).resolves.toEqual({
@@ -227,20 +220,6 @@ describe('SessionTokenService', () => {
       await expect(svc.validate('p'.repeat(32))).resolves.toEqual(
         expect.objectContaining({ userId: 7, sessionId: 101, mustChangePassword: true }),
       );
-    });
-
-    it('treats a cached entry lacking mustChangePassword as stale and re-reads the DB (security flag)', async () => {
-      // A pre-field cache entry (or one missing the flag) MUST NOT be trusted to default — mustChangePassword
-      // is a security flag, so validate falls through and reads the authoritative value instead of guessing.
-      kv.get.mockResolvedValue(
-        JSON.stringify({ userId: 7, sessionId: 101, exp: Date.now() + 3600_000 }),
-      );
-      prisma.sessionToken.findUnique.mockResolvedValue(
-        makeRow({ user: { mustChangePassword: true } }),
-      );
-      const res = await svc.validate('q'.repeat(32));
-      expect(prisma.sessionToken.findUnique).toHaveBeenCalledTimes(1); // fell through, not trusted
-      expect(res?.mustChangePassword).toBe(true); // the authoritative DB value, not a default
     });
   });
 

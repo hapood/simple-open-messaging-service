@@ -1,14 +1,13 @@
-// Link-card message row: rides the normal chat-bubble shape (sender-grouping, shared avatar) but the
-// bubble IS a tappable card — an optional og:image strip on top, then the page title, description, and
-// site name. The bubble keeps the side bg (self green / other white); a translucent meta bar below
-// carries the page host (the credibility cue) + time. Integer-px throughout per _row-base's height
-// contract. The <button> is the card, so native chrome is reset.
+// Link-card message row (WeChat/Telegram-style): the bubble IS a tappable card with a left text
+// column (title / description / site) and a right small square thumbnail. The bubble keeps the side bg
+// (self green / other white); a translucent meta bar below carries the page host (credibility cue) +
+// time. Integer-px throughout per _row-base's height contract. The <button> is the card → chrome reset.
 @use '../row-base' as *;
 
 .msg-bubble.link {
   padding: 0;
   display: block;
-  overflow: hidden; // clip the image strip to the bubble's rounded corners
+  overflow: hidden; // clip the thumbnail's rounded corners to the bubble
 }
 
 // The <button> is the card; reset native button chrome so the card styling wins.
@@ -30,53 +29,44 @@
   outline-offset: 2px;
 }
 
-// og:image thumbnail strip — fixed integer height (object-fit cover crops any aspect). The image is a
-// same-origin CAS shard, so it renders under both web (no CSP) and Tauri (media://) img-src.
-.link-image {
-  width: 100%;
-  height: 150px; // integer px — the thumbnail strip contributes a whole-pixel height
-  background: rgba(127, 127, 127, 0.16);
-  overflow: hidden;
-}
-.link-image img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
+// Body: left text column (flex, shrinks) + right square thumbnail (fixed). WeChat/Telegram layout.
 .link-body {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
   padding: 8px 10px; // integer vertical padding
 }
 
-// Page title — bold, clamped to 2 lines.
+.link-text {
+  flex: 1 1 auto;
+  min-width: 0; // allow shrink so a long title truncates instead of stretching the card
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .link-title {
   font-size: 14px;
   line-height: 18px; // integer px
   font-weight: 600;
   color: var(--im-bubble-text);
-  margin: 0 0 2px;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-// Page description — muted, clamped to 2 lines.
 .link-desc {
   font-size: 12px;
   line-height: 15px; // integer px
   color: var(--im-bubble-text);
   opacity: 0.7;
-  margin: 0 0 6px;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
-// Site row — favicon (web only) + site name/host. The favicon is an external https URL, hidden under
-// Tauri (img-src CSP has no https:); the siteName/host text carries the identity there.
 .link-site {
   display: flex;
   align-items: center;
@@ -85,6 +75,7 @@
   line-height: 14px; // integer px
   color: var(--im-bubble-text);
   opacity: 0.7;
+  margin-top: auto; // pin the site row to the bottom of the text column
 }
 .link-favicon {
   width: 14px;
@@ -99,8 +90,25 @@
   text-overflow: ellipsis;
 }
 
-// Bottom meta bar: page host (the credibility cue, left) + send time (right). Same translucent-grey
-// chip as the invite/media meta bar so every card type shares one info-strip style.
+// Right square thumbnail (96px cover). The image is a base64 data URI → same-origin under both web and
+// Tauri's `img-src data:`. Hidden by the component (imgFailed) if it fails to decode.
+.link-image {
+  flex: 0 0 auto;
+  width: 96px;
+  height: 96px; // integer px — the thumbnail contributes a whole-pixel height
+  background: rgba(127, 127, 127, 0.16);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.link-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+// Bottom meta bar: page host (credibility cue, left) + send time (right). Same translucent-grey chip as
+// the invite/media meta bar so every card type shares one info-strip style.
 .link-meta {
   display: flex;
   align-items: center;

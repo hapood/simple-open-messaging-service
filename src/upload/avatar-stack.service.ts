@@ -219,8 +219,7 @@ export class AvatarStackService implements OnModuleInit, OnModuleDestroy {
    *  UploadService.uploadDir + the readAvatarAsWire path-slice convention. */
   private async readTileDataUri(avatarUrl: string): Promise<string | null> {
     if (!avatarUrl?.startsWith('/uploads/')) return null;
-    // Swap the representative (-512) for the -256 source (AVATAR_SIZES includes 256). Legacy flat URLs (no
-    // size suffix) pass through unchanged.
+    // Swap the representative (-512) for the -256 source (AVATAR_SIZES includes 256).
     const small = avatarUrl.replace(/-\d+\.webp$/, '-256.webp');
     try {
       const buf = await readFileAsync(join(this.upload.uploadDir, small.slice('/uploads/'.length)));

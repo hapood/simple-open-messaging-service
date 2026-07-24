@@ -87,7 +87,7 @@ export class UserController {
   @ApiResultResponse(UserResponseDto)
   async getMyProfile(@Request() req: FastifyRequest): Promise<ApiResult> {
     // findSelfProfile omits hashPwd. The friend-request badge is no longer a self-profile field — it is
-    // derived client-side from the HELLO/push-carried `friendReqRev` vs the client's IDB cursor.
+    // derived client-side from the HELLO/push-carried `friendReqRev` vs friendReqAckRev (server-state).
     const data = await this.userService.findSelfProfile(req.user.userId);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
@@ -271,8 +271,8 @@ export class UserController {
               description: gu.bio,
               domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
               ownerId: gu.group?.ownerId ?? 0,
-              createdAt: (gu.group?.createdAt ?? p.thread.createdAt).getTime(),
-              updatedAt: (gu.group?.updatedAt ?? p.thread.updatedAt).getTime(),
+              createdAt: gu.group?.createdAt ?? p.thread.createdAt,
+              updatedAt: gu.group?.updatedAt ?? p.thread.updatedAt,
             }
           : undefined;
       }
@@ -553,7 +553,7 @@ export class UserController {
     const res = await this.userService.addUser({
       account: dto.account,
       name: dto.name,
-      hashPwd: await this.authService.hashStr(dto.password),
+      hashPwd: await this.authService.hashPassword(dto.password),
     });
     if (res.status === 2) {
       return {

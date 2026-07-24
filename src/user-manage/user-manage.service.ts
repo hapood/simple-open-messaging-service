@@ -22,7 +22,7 @@ export class UserManageService implements OnModuleInit {
     cursor?: Prisma.UserWhereUniqueInput;
     where?: Prisma.UserWhereInput;
     orderBy?: Prisma.UserOrderByWithRelationInput;
-  }): Promise<Prisma.UserGetPayload<{ omit: { hashPwd: true } }>[]> {
+  }): Promise<Prisma.UserGetPayload<{ omit: { hashPwd: true, friendReqAckRev: true } }>[]> {
     const { skip, take, cursor, where, orderBy } = params;
     return this.prisma.user.findMany({
       skip,
@@ -30,7 +30,7 @@ export class UserManageService implements OnModuleInit {
       cursor,
       where,
       orderBy,
-      omit: { hashPwd: true },
+      omit: { hashPwd: true, friendReqAckRev: true },
     });
   }
 
@@ -39,7 +39,7 @@ export class UserManageService implements OnModuleInit {
   async getUserDetail(id: number) {
     const user = await this.prisma.user.findUnique({
       where: { id },
-      omit: { hashPwd: true },
+      omit: { hashPwd: true, friendReqAckRev: true },
     });
     if (!user) return null;
     const [groups, sessions, pushTokens] = await Promise.all([
@@ -109,7 +109,7 @@ export class UserManageService implements OnModuleInit {
    *  exactly once. */
   async generateInitialPassword(id: number): Promise<{ password: string }> {
     const password = randomInitialPassword();
-    const hash = await this.auth.hashStr(password);
+    const hash = await this.auth.hashPassword(password);
     await this.prisma.user.update({
       where: { id },
       data: { hashPwd: hash, mustChangePassword: true },
@@ -129,7 +129,7 @@ export class UserManageService implements OnModuleInit {
     name: string;
     password?: string;
   }): Promise<{ id: number; account: string }> {
-    const hashPwd = params.password ? await this.auth.hashStr(params.password) : null;
+    const hashPwd = params.password ? await this.auth.hashPassword(params.password) : null;
     const res = await this.userService.addUser({
       account: params.account,
       name: params.name,

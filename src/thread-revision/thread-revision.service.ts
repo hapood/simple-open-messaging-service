@@ -30,7 +30,7 @@ export class ThreadRevisionService {
       create: { userId, threadId, direction: 'ADD', revision: u.threadRevision, isDelete: false },
       update: { revision: u.threadRevision, isDelete: false },
     });
-    this.sse.onThreadRevisionUpdated(userId, { revision: u.threadRevision });
+    this.sse.onThreadRevisionUpdated(userId, { threadRevision: u.threadRevision });
   }
 
   /** Record a thread DELETE: bump threadRevision, upsert the DELETE row, mark the ADD row soft-deleted,
@@ -50,7 +50,7 @@ export class ThreadRevisionService {
       where: { userId, threadId, direction: 'ADD' },
       data: { isDelete: true },
     });
-    this.sse.onThreadRevisionUpdated(userId, { revision: u.threadRevision });
+    this.sse.onThreadRevisionUpdated(userId, { threadRevision: u.threadRevision });
   }
 
   /** Pull ADD/DELETE deltas in (fromRevision, toRevision] (from exclusive, to inclusive). The client

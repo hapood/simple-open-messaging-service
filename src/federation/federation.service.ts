@@ -3,13 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { mintUlid, normalizeAccount, isValidAccount, isValidGroupAccount } from '../common/account.js';
 import { PrismaService } from '../prisma.service.js';
 import { UploadService } from '../upload/upload.service.js';
+import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { SignatureService } from './signature.service.js';
 import { DiscoveryService } from './discovery.service.js';
 import { loadFederationConfig } from './federation.config.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
 import { QuotaService } from '../quota/quota.service.js';
-import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { InviteService } from '../invite/invite.service.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -183,6 +183,7 @@ export class FederationService implements OnModuleDestroy {
     // initialization") — breaking it is what lets `node dist/src/main.js` start.
     private readonly buffer: FederationBufferService,
     private readonly quota: QuotaService,
+    private readonly linkPreview: LinkPreviewService,
   ) {}
 
   /** The wire address of a LOCAL user: { account, domain } (domain = our real config.domain). */
@@ -240,21 +241,15 @@ export class FederationService implements OnModuleDestroy {
     }
   }
 
-  /** The leaver's per-author origin-seq cursor on this thread (MAX over Message ∪ PendingMedia). Used by
+  /** The leaver's per-author origin-seq cursor on this thread (MAX over Message). Used by
    *  notifyGroupLeave so the leave hint's latestSeq beats the origin's per-author pull cursor (the origin
    *  pulls → sees the leaver soft-left → dissolves the roster entry). */
   private async derivedOriginSeqCursor(threadId: number, userId: number): Promise<number> {
-    const [msg, pend] = await Promise.all([
-      this.prisma.message.aggregate({
-        where: { threadId, creator: userId },
-        _max: { originSeq: true },
-      }),
-      this.prisma.pendingMedia.aggregate({
-        where: { threadId, creatorId: userId },
-        _max: { originSeq: true },
-      }),
-    ]);
-    return Math.max(msg._max.originSeq ?? -1, pend._max.originSeq ?? -1);
+    const msg = await this.prisma.message.aggregate({
+      where: { threadId, creator: userId },
+      _max: { originSeq: true },
+    });
+    return msg._max.originSeq ?? -1;
   }
 
   /**
@@ -1103,12 +1098,12 @@ export class FederationService implements OnModuleDestroy {
     });
     this.sse.onNotify(
       localId,
-      serializeBody({ event: 'NOTIFY', type: 'FRIEND_REQUEST', fromUserId: foreignId, inviteId }),
+      { event: 'NOTIFY', type: 'FRIEND_REQUEST', fromUserId: foreignId, inviteId },
     );
-    // friendReqRev push (the mergeable badge signal) — MAX(updatedAt) over the local recipient's incoming
+    // friendReqRev push (the mergeable badge signal) — MAX(createdAt) over the local recipient's incoming
     // FRIEND invites, just advanced by receiveInboundFriendInvite's PENDING create.
-    void this.invite.findLatestFriendReqUpdate(localId).then((friendReqRev) =>
-      this.sse.onFriendReqRevUpdated(localId, { friendReqRev }),
+    void this.invite.friendReqState(localId).then((s) =>
+      this.sse.onFriendReqRevUpdated(localId, s),
     );
   }
 
@@ -1644,12 +1639,17 @@ export class FederationService implements OnModuleDestroy {
       take: take + 1,
     });
     const hasMore = rows.length > take;
-    const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
-      originSeq: m.originSeq ?? 0,
-      contentType: m.contentType,
-      content: m.content,
-      ts: m.createdAt.getTime(),
-    }));
+    const page = hasMore ? rows.slice(0, take) : rows;
+    const messages = await Promise.all(
+      page.map(async (m) => ({
+        originSeq: m.originSeq ?? 0,
+        contentType: m.contentType,
+        // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
+        // the bytes to render. Non-LINK is a no-op pass-through.
+        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ts: m.createdAt.getTime(),
+      })),
+    );
     const latest = await this.prisma.message.aggregate({
       where: { threadId, creator: fromId },
       _max: { originSeq: true },
@@ -1685,12 +1685,14 @@ export class FederationService implements OnModuleDestroy {
     const hasMore = rows.length > take;
     // Desc query (newest-below-beforeSeq first) → slice → reverse to oldest-first so a caller prepends.
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
-    const messages = batch.map((m) => ({
-      originSeq: m.originSeq ?? 0,
-      contentType: m.contentType,
-      content: m.content,
-      ts: m.createdAt.getTime(),
-    }));
+    const messages = await Promise.all(
+      batch.map(async (m) => ({
+        originSeq: m.originSeq ?? 0,
+        contentType: m.contentType,
+        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ts: m.createdAt.getTime(),
+      })),
+    );
     const latest = await this.prisma.message.aggregate({
       where: { threadId, creator: fromId },
       _max: { originSeq: true },
@@ -1867,12 +1869,17 @@ export class FederationService implements OnModuleDestroy {
       take: take + 1,
     });
     const hasMore = rows.length > take;
-    const messages = (hasMore ? rows.slice(0, take) : rows).map((m) => ({
-      originSeq: m.originSeq ?? 0,
-      contentType: m.contentType,
-      content: m.content,
-      ts: m.createdAt.getTime(),
-    }));
+    const page = hasMore ? rows.slice(0, take) : rows;
+    const messages = await Promise.all(
+      page.map(async (m) => ({
+        originSeq: m.originSeq ?? 0,
+        contentType: m.contentType,
+        // LINK: inline the og:image (digest → base64) — the DB stores only the digest; the peer needs
+        // the bytes to render. Non-LINK is a no-op pass-through.
+        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ts: m.createdAt.getTime(),
+      })),
+    );
     const latest = await this.prisma.message.aggregate({
       where: { threadId, creator: authorId },
       _max: { originSeq: true },
@@ -1962,12 +1969,14 @@ export class FederationService implements OnModuleDestroy {
     });
     const hasMore = rows.length > take;
     const batch = (hasMore ? rows.slice(0, take) : rows).slice().reverse();
-    const messages = batch.map((m) => ({
-      originSeq: m.originSeq ?? 0,
-      contentType: m.contentType,
-      content: m.content,
-      ts: m.createdAt.getTime(),
-    }));
+    const messages = await Promise.all(
+      batch.map(async (m) => ({
+        originSeq: m.originSeq ?? 0,
+        contentType: m.contentType,
+        content: await this.linkPreview.enrichForWire(m.contentType, m.content),
+        ts: m.createdAt.getTime(),
+      })),
+    );
     const latest = await this.prisma.message.aggregate({
       where: { threadId, creator: authorId },
       _max: { originSeq: true },
@@ -2459,11 +2468,12 @@ export class FederationService implements OnModuleDestroy {
     recipients: number[],
     m: { originSeq: number; contentType: string; content: string; ts: number },
   ): Promise<Message | null> {
-    // The sender server's allocation time (payload `ts`) is stored as originServerTime (future use,
-    // never displayed). The receiver's own createdAt defaults to now() — the local ARRIVAL time, which
-    // is what the chatbox displays and what orders the conversation list. The protocol never trusts the
-    // peer's clock for display; arrival time is locally monotonic and clock-skew-immune.
-    const originTime = new Date(m.ts);
+    // LINK thumbnails arrive inlined (base64) on the wire; decode + persist content-addressed, keeping
+    // only the digest in our DB (mirrors the local send path's storage). Other types pass through.
+    const storedContent = await this.linkPreview.decodeFromWire(m.contentType, m.content);
+    // The receiver's own createdAt defaults to now() — the local ARRIVAL time, which is what the chatbox
+    // displays and what orders the conversation list. The protocol never trusts the peer's clock for
+    // display; arrival time is locally monotonic and clock-skew-immune.
     // Allocate the RECEIVER's own per-thread seq from curSeq (same atomic path as a local send) and copy
     // the peer's originSeq verbatim — the dedup key + the value the receiver tracks as its pull cursor.
     // Wrapped in a tx so a P2002 dup-pull (same (threadId, creator, originSeq)) rolls the curSeq increment
@@ -2478,7 +2488,7 @@ export class FederationService implements OnModuleDestroy {
         const msg = await tx.message.create({
           data: {
             contentType: m.contentType as ContentType,
-            content: m.content,
+            content: storedContent,
             threadId,
             creator: creatorId,
             seq,
@@ -2533,7 +2543,7 @@ export class FederationService implements OnModuleDestroy {
       },
       data: {
         lastMessageSeq: created.seq,
-        lastMessagePreview: derivePreview(m.contentType as ContentType, m.content),
+        lastMessagePreview: derivePreview(m.contentType as ContentType, storedContent),
         lastMessageAt: arrival,
       },
     });
@@ -2552,8 +2562,7 @@ export class FederationService implements OnModuleDestroy {
       t === ContentType.IMAGE ||
       t === ContentType.FILE ||
       t === ContentType.VIDEO ||
-      t === ContentType.AUDIO ||
-      t === ContentType.LINK
+      t === ContentType.AUDIO
     );
   }
 
@@ -2584,10 +2593,7 @@ export class FederationService implements OnModuleDestroy {
     // fetchMediaChunks after the byte size is known; the dedup path below (file already local) skips
     // fetchMediaChunks entirely — counted once on first pull.
     const category: 'images' | 'largeFiles' =
-      msg.contentType === ContentType.IMAGE ||
-      msg.contentType === ContentType.LINK
-        ? 'images'
-        : 'largeFiles';
+      msg.contentType === ContentType.IMAGE ? 'images' : 'largeFiles';
     for (const { digest, ext } of extractDigestEntries(msg.content)) {
       try {
         // Dedup: if the file is already local (prior fetch or a coincidental local upload), just ensure
@@ -2636,7 +2642,7 @@ export class FederationService implements OnModuleDestroy {
 
   /** Whether every CAS digest referenced by `content` is fully local: each digest has a MediaMessage
    *  authz row for THIS message (same-origin fetch admitted) AND a MediaAsset with refs>0 (bytes on
-   *  disk). A non-media or legacy-flat message (no digest) is trivially ready. Drives the localize
+   *  disk). A non-media message (no digest) is trivially ready. Drives the localize
    *  outcome report + the MEDIA_STATUS signal, and is reused by the manual relocalize endpoint. */
   private async isMessageMediaReady(
     msgId: bigint,

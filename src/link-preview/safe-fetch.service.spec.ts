@@ -8,7 +8,7 @@ import { SafeFetchService } from './safe-fetch.service.js';
  * time IP pin + redirect re-validation are exercised by the e2e (they need a live socket).
  */
 describe('SafeFetchService SSRF guards', () => {
-  const svc = new SafeFetchService({} as never);
+  const svc = new SafeFetchService();
   const isPublic = (addr: string): boolean =>
     (svc as unknown as { isPublicIp: (a: string) => boolean }).isPublicIp(addr);
   const validate = (url: string): boolean => {

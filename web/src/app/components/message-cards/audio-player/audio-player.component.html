@@ -18,8 +18,10 @@
   </div>
   <span class="ap-dur">{{ durLabel() }}</span>
 </div>
-<!-- No controls attr — the button + progress bar are the UI. preload=metadata for a fast first play.
-     display:none audio still plays + fires events in modern engines; hidden for layout cleanliness. -->
-<audio #audio class="ap-el" [src]="src()" preload="metadata"
+<!-- No controls attr — the button + progress bar are the UI. preload="none" (NOT metadata): every visible
+     voice cell mounts one of these, and "metadata" would fire a network request per clip just to mount. The
+     duration label + progress denominator come from the `duration` INPUT (the message content), so nothing
+     needs the element's metadata until the user taps play (el.play() loads it then). -->
+<audio #audio class="ap-el" [src]="src()" preload="none"
        (timeupdate)="onTimeUpdate()" (play)="onPlay()" (pause)="onPause()"
        (ended)="onEnded()" (error)="onError()"></audio>

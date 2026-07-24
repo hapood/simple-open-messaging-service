@@ -31,6 +31,7 @@ import type { Message, ConversationItem } from '../../services/model';
 import type { CbItem } from '../../lib/chat-box/chat-box-scroller';
 import type { CbSource, CbSourceInitOpts } from '../../lib/chat-box/cb-source';
 import type { AlbumImage, ChatItemData, ChatMsgData, FileInfo, MediaStatus } from '../message-cards/chat-item';
+import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
 
 /**
  * Backend QueryMessagesDto enforces @Max(50) per request — the source owns this ceiling so the kernel's
@@ -427,8 +428,8 @@ function parseAudioContent(content: string): AlbumImage | null {
     return {
       kind: 'audio',
       src,
-      w: 220,
-      h: 52, // slim voice bar (matches layoutAlbum's audio branch + sendVoice)
+      w: VOICE_BAR_W,
+      h: VOICE_BAR_H, // slim voice bar (single source of truth with layoutAlbum's audio branch + sendVoice)
       size: Number(o.size) || 0,
       duration: Number(o.duration) || 0,
       name: typeof o.name === 'string' ? o.name : '',

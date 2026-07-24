@@ -6,7 +6,7 @@ import { PrismaService } from '../prisma.service.js';
 import { AdminRole } from '../prisma/generated/client.js';
 
 /** Admin access-token claims. `tver` mirrors the user-side tokenVersion (added Phase 1). */
-type AdminAccessPayload = { sub: number; scope?: string; tver?: number };
+type AdminAccessPayload = { sub: number; scope?: string; tver: number };
 
 /** The principal AdminJwtStrategy attaches to `req.user` — read by AdminRolesGuard + AdminAuditInterceptor. */
 export type AdminPrincipal = { adminId: number; role: AdminRole };
@@ -19,8 +19,7 @@ export type AdminPrincipal = { adminId: number; role: AdminRole };
  *
  * tver: a newly-issued admin access token carries tver = Admin.tokenVersion at issue time; bumping it
  * (disable / role change via AdminAuthService.invalidateAllAdminSessions) makes every outstanding
- * access token fail this check on its next request — immediate, no ≤15m lag. Legacy tokens (pre-Phase-1,
- * no tver) skip the check and pass through to natural expiry.
+ * access token fail this check on its next request — immediate, no ≤15m lag.
  */
 @Injectable()
 export class AdminJwtStrategy extends PassportStrategy(Strategy, 'admin-jwt') {
@@ -39,7 +38,7 @@ export class AdminJwtStrategy extends PassportStrategy(Strategy, 'admin-jwt') {
       select: { role: true, tokenVersion: true, enabled: true },
     });
     if (!admin || !admin.enabled) return null; // admin gone or disabled → reject
-    if (payload.tver !== undefined && payload.tver !== admin.tokenVersion) return null; // session revoked
+    if (payload.tver !== admin.tokenVersion) return null; // session revoked
     return { adminId: payload.sub, role: admin.role };
   }
 }

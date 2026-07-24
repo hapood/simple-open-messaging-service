@@ -74,7 +74,3 @@ export function reportGeneratedSecrets(): void {
       'set the matching env var instead (e.g. JWT_ADMIN_SECRET / SOMS_2FA_KEY).',
   );
 }
-
-/** @deprecated alias kept for the single existing call site in src/auth/constants.ts — use
- *  {@link reportGeneratedSecrets}. */
-export const reportGeneratedJwtSecrets = reportGeneratedSecrets;

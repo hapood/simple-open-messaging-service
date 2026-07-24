@@ -126,6 +126,26 @@ describe('UserService profile refresh', () => {
       localStorage.removeItem('soms.theme'); // don't pollute other test files
     }
   });
+
+  // The friend-request badge is derived from SERVER-state: friendReqRev (latest incoming-FRIEND-invite
+  // update epoch-ms, from HELLO/FRIEND_REQ_REV_UPDATED) > friendReqAckRev (the read cursor). No client IDB —
+  // both signals are fed by the server, so the badge is multi-device consistent.
+  it('friendReqBadge = friendReqRev > friendReqAckRev, cleared by markFriendReqRead (optimistic + POST)', () => {
+    expect(svc.friendReqBadge()).toBe(false); // both 0/null initially → 0 > 0 false
+
+    // HELLO/push carries the server-state pair: rev ahead of ack → badge.
+    svc.applyFriendReqRev(2000, 0);
+    expect(svc.friendReqBadge()).toBe(true);
+
+    // Opening the panel: optimistic local clear (ack → rev) + POSTs /invite/mark-read (server bumps + pushes).
+    svc.markFriendReqRead();
+    expect(svc.friendReqBadge()).toBe(false); // optimistic clear
+    httpMock.expectOne((r) => r.method === 'POST' && r.url.endsWith('/invite/mark-read')).flush({ code: 0, message: 'ok' });
+
+    // A later FRIEND_REQ_REV_UPDATED (new request, ack unchanged) re-arms it.
+    svc.applyFriendReqRev(3000, 2000);
+    expect(svc.friendReqBadge()).toBe(true);
+  });
 });
 
 describe('UserService session lifecycle (establishSession / restoreWebdb / clearSession)', () => {
@@ -175,28 +195,28 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('establishSession opens the per-user IDB on userId + sets sessionUserId + persists lastUserId', async () => {
-    await svc.establishSession(1, 0, null);
+    await svc.establishSession(1, 0, null, 0);
     expect(webdb.openForUser).toHaveBeenCalledWith('1');
     expect(svc.sessionUserId()).toBe(1);
     expect(localStorage.getItem('soms.lastUserId')).toBe('1'); // eager-paint bootstrap remembers it
   });
 
   it('establishSession is idempotent for the same user (reconnect: no re-open, badge refreshed)', async () => {
-    await svc.establishSession(1, 0, null);
+    await svc.establishSession(1, 0, null, 0);
     webdb.openForUser.calls.reset();
     // Same user (a reconnect) → short-circuit: the webdb is already open, just refresh the badge.
-    await svc.establishSession(1, 0, 1000);
+    await svc.establishSession(1, 0, 1000, 0);
     expect(webdb.openForUser).not.toHaveBeenCalled();
     expect(svc.sessionUserId()).toBe(1);
   });
 
   it('establishSession on an account switch closes the previous DB + opens the new one', async () => {
-    await svc.establishSession(1, 0, null);
+    await svc.establishSession(1, 0, null, 0);
     webdb.closeAndDelete.calls.reset();
     webdb.openForUser.calls.reset();
 
     // Switch to user 2: gateSelfProfile cache-misses (cached id:1 ≠ 2) → flush its my-profile fetch.
-    const done = svc.establishSession(2, 0, null);
+    const done = svc.establishSession(2, 0, null, 0);
     await flush();
     httpMock.expectOne(isMyProfile).flush(profile({ id: 2 }));
     await done;
@@ -208,7 +228,7 @@ describe('UserService session lifecycle (establishSession / restoreWebdb / clear
   });
 
   it('clearSession closes the DB + clears sessionUserId + clears lastUserId', async () => {
-    await svc.establishSession(1, 0, null);
+    await svc.establishSession(1, 0, null, 0);
     webdb.closeAndDelete.calls.reset();
 
     svc.clearSession();

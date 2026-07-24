@@ -1,5 +1,7 @@
 import type { ServerResponse } from 'node:http';
 
+import { serializeBody } from './serialize.interceptor.js';
+
 /**
  * Shared SSE (Server-Sent Events) connect-plumbing — the single source of truth for the wire format
  * the consumer `sse.worker.ts` parses. Used by both the chat push service (SseService) and the admin
@@ -63,7 +65,13 @@ export function initSseResponse(res: ServerResponse, origin?: string): NodeJS.Ti
 
 /** Format one SSE frame: `event: <name>\ndata: <JSON>\n\n`. No `id:` line — Last-Event-ID resume is
  *  deliberately unused (a transient drop / offline gap is reconciled by the missed-summary pull + the HELLO
- *  connect handshake, not by SSE replay), so no frame carries a resume cursor. */
+ *  connect handshake, not by SSE replay), so no frame carries a resume cursor.
+ *
+ *  The payload is normalized through `serializeBody` (Date→epoch-ms, BigInt→string) before stringifying, so
+ *  the SSE bus carries the same wire contract as the HTTP `SerializeInterceptor`. SSE bypasses that
+ *  interceptor (the response is hijacked and written to the raw ServerResponse), so without this chokepoint
+ *  a stray `Date` would silently become an ISO string and a stray `BigInt` would throw — normalizing here
+ *  makes the guarantee robust instead of relying on every caller to pre-convert. */
 export function formatSseFrame(event: string, data: unknown): string {
-  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  return `event: ${event}\ndata: ${JSON.stringify(serializeBody(data))}\n\n`;
 }

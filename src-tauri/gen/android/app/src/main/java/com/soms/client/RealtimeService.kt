@@ -482,45 +482,13 @@ class RealtimeService : Service() {
     }
 
     /** Cache HELLO / merge one incremental revision frame into the cached HELLO (the value
-     *  [SomsFcmInterface.replayHello] hands a re-attached WebView). HELLO replaces the cache wholesale; each
-     *  revision frame patches its matching field. Runs in foreground AND background (called from onEvent
-     *  before the fg/bg forwarding branch), so the cache stays fresh while the WebView is suspended.
-     *  Best-effort: a malformed frame is skipped (the next HELLO reseeds the cache). */
+     *  [SomsFcmInterface.replayHello] hands a re-attached WebView). Delegates the pure merge rules to
+     *  [HelloMerger] (JVM-testable); runs in foreground AND background (called from onEvent before the fg/bg
+     *  forwarding branch) so the cache stays fresh while the WebView is suspended. [synchronized][helloLock]
+     *  against [replayCachedHello] so a concurrent replay never sees a mid-mutation toString. */
     private fun cacheHelloFrame(type: String?, data: String) {
         val t = type ?: return
-        try {
-            if (t == "HELLO") {
-                cachedHello = data
-                return
-            }
-            // Incremental merges apply only once HELLO has seeded the cache (no partial cached handshake).
-            val prev = cachedHello ?: return
-            val cached = JSONObject(prev)
-            when (t) {
-                // The THREAD_REVISION_UPDATED push carries {revision}; HELLO's field is `threadRevision`.
-                "THREAD_REVISION_UPDATED" -> cached.put("threadRevision", JSONObject(data).opt("revision"))
-                "PROFILE_REV_UPDATED" -> cached.put("profileRev", JSONObject(data).opt("profileRev"))
-                "FRIEND_REQ_REV_UPDATED" -> {
-                    // friendReqRev is a monotonic epoch-ms — advance forward only (out-of-order guard).
-                    val inc = JSONObject(data).optLong("friendReqRev", Long.MIN_VALUE)
-                    if (inc != Long.MIN_VALUE && inc >= cached.optLong("friendReqRev", Long.MIN_VALUE)) {
-                        cached.put("friendReqRev", inc)
-                    }
-                }
-                "NEW_MESSAGE" -> {
-                    // latestMessage = {threadId, seq, ts} — last-signal-wins (a valid upper bound for the
-                    // missed walk, mirroring the client's onNewMessage `_to` advancement).
-                    val d = JSONObject(data)
-                    cached.put("latestMessage", JSONObject()
-                        .put("threadId", d.opt("threadId"))
-                        .put("seq", d.opt("seq"))
-                        .put("ts", d.opt("ts")))
-                }
-            }
-            cachedHello = cached.toString()
-        } catch (_: Exception) {
-            // Malformed frame — skip the merge; the next HELLO reseeds the cache wholesale.
-        }
+        synchronized(helloLock) { cachedHello = HelloMerger.merge(cachedHello, t, data) }
     }
 
     /** Push the native connection state to the WebView so the ConnectionBanner reflects Kotlin-owned
@@ -617,10 +585,18 @@ class RealtimeService : Service() {
         /** The last HELLO frame merged with every incremental revision frame (THREAD_REVISION_UPDATED /
          *  PROFILE_REV_UPDATED / FRIEND_REQ_REV_UPDATED / NEW_MESSAGE) — the FRESH handshake a re-attached
          *  WebView needs, since a retained open `/events` stream does NOT re-push HELLO on its own (it is
-         *  sent once per register). Process-global so [SomsFcmInterface.replayHello] can read it on the JS
-         *  bridge thread; [cacheHelloFrame] writes it on the SSE thread. Stored as the serialized JSON
-         *  string (reference writes are atomic → the bridge reads a consistent snapshot, never a torn one). */
+         *  sent once per register). Stored as a NATIVE JSONObject (deserialized once on HELLO, mutated in
+         *  place by [cacheHelloFrame], serialized once by [replayCachedHello]) — no per-frame parse/reserialize.
+         *  Process-global so the bridge reads it; @Volatile for the cross-thread ref read. */
         @Volatile
-        var cachedHello: String? = null
+        var cachedHello: JSONObject? = null
+        /** Serializes [cacheHelloFrame]'s in-place JSONObject mutations against [replayCachedHello]'s
+         *  toString, so a concurrent replay never observes a mid-mutation (torn) JSON. */
+        private val helloLock = Any()
+
+        /** Serialize the cached HELLO once (at replay time), under [helloLock] so a concurrent SSE-frame
+         *  merge can't tear it. Null when no HELLO has been cached yet (the caller then no-ops + the facade's
+         *  HELLO-timeout backstop force-reconnects for a fresh one). */
+        fun replayCachedHello(): String? = synchronized(helloLock) { cachedHello?.toString() }
     }
 }

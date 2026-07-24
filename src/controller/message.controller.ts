@@ -17,7 +17,6 @@ import { BusinessCode } from '../common/business-code.js';
 import { MessageResponseDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
-import { serializeBody } from '../common/serialize.interceptor.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { ThreadAccessGuard } from '../thread-participant/thread-access.guard.js';
 import { ResourceId } from '../common/resource-id.decorator.js';
@@ -302,7 +301,7 @@ export class MessageController {
       // for an idempotent/stale mark-read (cursor already ≥ this id).
       this.sseService.onReadCursor(
         req.user.userId,
-        serializeBody({ threadId: dto.threadId, lastReadSeq: cursor }),
+        { threadId: dto.threadId, lastReadSeq: cursor },
       );
     }
     return { code: BusinessCode.OK, message: 'successful' };
@@ -327,11 +326,11 @@ export class MessageController {
     // Sync the caller's other online devices so their list row swaps the mute icon live (no reload).
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({
+      {
         event: 'THREAD_META',
         threadId: dto.threadId,
         muted: dto.muted,
-      }),
+      },
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }
@@ -358,12 +357,12 @@ export class MessageController {
     // (pinning stamps now(); unpinning clears it).
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({
+      {
         event: 'THREAD_META',
         threadId: dto.threadId,
         pinned: dto.pinned,
         pinnedAt: updated.pinnedAt,
-      }),
+      },
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }
@@ -388,11 +387,11 @@ export class MessageController {
     );
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({
+      {
         event: 'THREAD_META',
         threadId: dto.threadId,
         clearedAt: updated.clearedAt,
-      }),
+      },
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }
@@ -416,11 +415,11 @@ export class MessageController {
     // Carry the resolved alias (null when cleared) so other devices flip their header/list title live.
     this.sseService.onThreadMeta(
       req.user.userId,
-      serializeBody({
+      {
         event: 'THREAD_META',
         threadId: dto.threadId,
         alias: updated.alias,
-      }),
+      },
     );
     return { code: BusinessCode.OK, message: 'successful' };
   }

@@ -67,7 +67,7 @@ export class UserResponseDto {
   // Note: hashPwd never appears in responses. threadRevision is NOT here either — it is pushed via the
   // SSE HELLO connect handshake (the threadlist's sole delta-replay cursor), never the profile response.
   // The friend-request badge is likewise NOT here — it is derived client-side from the HELLO/push-carried
-  // `friendReqRev` (MAX(updatedAt) over incoming FRIEND invites) vs the client's IDB cursor.
+  // `friendReqRev` (MAX(createdAt) over incoming FRIEND invites) vs friendReqAckRev (server-state).
 }
 
 export class MessageResponseDto {

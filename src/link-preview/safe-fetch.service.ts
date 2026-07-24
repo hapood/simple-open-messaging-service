@@ -6,7 +6,6 @@ import { Agent, fetch as undiciFetch, type Dispatcher } from 'undici';
  *  across versions, so derive it from the function return). */
 type UndiciResponse = Awaited<ReturnType<typeof undiciFetch>>;
 import ipaddr from 'ipaddr.js';
-import { UploadService } from '../upload/upload.service.js';
 
 /**
  * SSRF-safe outbound fetch for the link-preview feature. This is the ONLY place in the codebase that
@@ -46,13 +45,13 @@ export class SafeFetchService {
   async fetchImage(
     rawUrl: string,
   ): Promise<{ buf: Buffer; contentType: string } | null> {
-    const r = await this.safeGet(rawUrl, 'image/*', UploadService.MAX_IMAGE_BYTES);
+    const r = await this.safeGet(rawUrl, 'image/*', MAX_IMAGE_BYTES);
     if (!r) return null;
     if (!r.contentType.startsWith('image/')) return null;
     return { buf: r.body, contentType: r.contentType };
   }
 
-  /** Core SSRF-safe GET: manual redirect loop, connect-time IP pin, streaming size cap. */
+  /** Core SSRF-safe GET: manual redirect loop, connect-time IP pin (per hop), streaming size cap. */
   private async safeGet(
     rawUrl: string,
     accept: string,
@@ -67,43 +66,71 @@ export class SafeFetchService {
     try {
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
         const ips = await this.resolveAndClassify(url.hostname);
-        const dispatcher = this.pinnedDispatcher(ips);
-        let res: UndiciResponse;
-        try {
-          res = await undiciFetch(url, {
-            method: 'GET',
-            redirect: 'manual',
-            dispatcher,
-            headers: { 'User-Agent': USER_AGENT, Accept: accept },
-            signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-          });
-        } catch (e) {
-          this.logger.debug(`fetch error ${url.href}: ${(e as Error).message}`);
-          return null;
-        }
-        // 3xx: drain + follow the Location as a freshly re-validated target.
-        if (res.status >= 300 && res.status < 400) {
-          const loc = res.headers.get('location');
-          await this.drain(res);
-          if (!loc) return null;
-          try {
-            url = this.validateUrlShape(new URL(loc, url.href).href);
-          } catch {
-            return null;
-          }
+        const r = await this.fetchHop(url, ips, accept, maxBytes);
+        if (!r) return null;
+        if (r.kind === 'redirect') {
+          url = r.url;
           continue;
         }
-        if (res.status < 200 || res.status >= 300) {
-          await this.drain(res);
-          return null;
-        }
-        const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
-        const body = await this.readCapped(res.body, maxBytes);
-        return { body, finalUrl: url.href, contentType };
+        return { body: r.body, finalUrl: url.href, contentType: r.contentType };
       }
       return null; // too many redirects
     } catch {
       return null;
+    }
+  }
+
+  /** One SSRF-pinned fetch + its redirect/body decision. The pinned Agent is created here and CLOSED in
+   *  the finally — each redirect hop needs its own IP pin, so one Agent per hop; closing it releases the
+   *  keep-alive socket pool instead of leaking it across a redirect chain. */
+  private async fetchHop(
+    url: URL,
+    ips: Array<{ address: string; family: number }>,
+    accept: string,
+    maxBytes: number,
+  ): Promise<
+    | { kind: 'redirect'; url: URL }
+    | { kind: 'ok'; body: Buffer; contentType: string }
+    | null
+  > {
+    const dispatcher = this.pinnedDispatcher(ips);
+    try {
+      let res: UndiciResponse;
+      try {
+        res = await undiciFetch(url, {
+          method: 'GET',
+          redirect: 'manual',
+          dispatcher,
+          headers: { 'User-Agent': USER_AGENT, Accept: accept },
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        });
+      } catch (e) {
+        this.logger.debug(`fetch error ${url.href}: ${(e as Error).message}`);
+        return null;
+      }
+      // 3xx: drain + follow the Location as a freshly re-validated target.
+      if (res.status >= 300 && res.status < 400) {
+        const loc = res.headers.get('location');
+        await this.drain(res);
+        if (!loc) return null;
+        try {
+          return {
+            kind: 'redirect',
+            url: this.validateUrlShape(new URL(loc, url.href).href),
+          };
+        } catch {
+          return null;
+        }
+      }
+      if (res.status < 200 || res.status >= 300) {
+        await this.drain(res);
+        return null;
+      }
+      const contentType = (res.headers.get('content-type') ?? '').toLowerCase();
+      const body = await this.readCapped(res.body, maxBytes);
+      return { kind: 'ok', body, contentType };
+    } finally {
+      await dispatcher.close().catch(() => {});
     }
   }
 
@@ -232,6 +259,7 @@ const USER_AGENT = 'SOMSLinkPreview/1.0 (+link card)';
 const CONNECT_TIMEOUT_MS = 5000;
 const REQUEST_TIMEOUT_MS = 8000;
 const MAX_HTML_BYTES = 1024 * 1024; // 1 MB
+const MAX_IMAGE_BYTES = 10 * 1024 * 1024; // 10 MB og:image download cap
 const MAX_REDIRECTS = 5;
 const MAX_URL_LEN = 2048;
 

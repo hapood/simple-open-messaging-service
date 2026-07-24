@@ -24,6 +24,7 @@ import { pickStickyDateLabel, isViewportTransformEnd } from '../../lib/sticky-da
 import { HttpItemSource } from './http-item-source';
 import { MediaProbeScheduler } from './media-probe-scheduler';
 import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../message-cards/create-item';
+import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
 import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
 import { MEDIA_STATUS, type AlbumImage, type ChatItemData, type ChatMsgData, type FileInfo, type MediaStatus } from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
@@ -366,7 +367,7 @@ export class MessageThreadComponent implements OnDestroy {
     const url = URL.createObjectURL(f);
     this.blobUrls.add(url);
     const images: AlbumImage[] = [{
-      kind: 'audio', src: url, w: 220, h: 52, size: f.size, duration, name: f.name,
+      kind: 'audio', src: url, w: VOICE_BAR_W, h: VOICE_BAR_H, size: f.size, duration, name: f.name,
     }];
     const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
     this.pendingFiles.set(cid, { file: f, kind: 'audio' });

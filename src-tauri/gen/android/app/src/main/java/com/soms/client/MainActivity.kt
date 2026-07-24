@@ -576,7 +576,7 @@ class MainActivity : TauriActivity() {
          *  (the facade's HELLO-timeout backstop then force-reconnects for a fresh one). */
         @JavascriptInterface
         fun replayHello() {
-            val hello = RealtimeService.cachedHello ?: return
+            val hello = RealtimeService.replayCachedHello() ?: return
             SomsBridge.eval("window.__SOMS_EVENT__ && window.__SOMS_EVENT__('HELLO', $hello);")
         }
 

@@ -1,6 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ServerResponse } from 'node:http';
 import { initSseResponse, formatSseFrame } from './sse-stream.js';
+import { serializeBody } from './serialize.interceptor.js';
+
+/** Extract the JSON payload from one frame — the text between the `data: ` marker and the terminating `\n\n`. */
+function payloadOf(frame: string): unknown {
+  const marker = 'data: ';
+  const start = frame.indexOf(marker) + marker.length;
+  const end = frame.length - 2; // strip the terminating \n\n
+  return JSON.parse(frame.slice(start, end));
+}
 
 /**
  * Regression guard for the CORS-on-hijacked-SSE fix.
@@ -97,5 +106,59 @@ describe('formatSseFrame', () => {
     expect(formatSseFrame('NEW_MESSAGE', { hello: 'world' })).toBe(
       'event: NEW_MESSAGE\ndata: {"hello":"world"}\n\n',
     );
+  });
+
+  it('Date → epoch-ms number on the wire (NOT an ISO string)', () => {
+    // The whole point of routing frames through serializeBody: a Date must leave as a number so the SSE
+    // bus matches the HTTP SerializeInterceptor's contract. Without it, Date.prototype.toJSON would emit
+    // an ISO string and the client's `ts: number` cast would silently lie.
+    const parsed = payloadOf(formatSseFrame('HELLO', { ts: new Date(1_700_000_000_000) })) as {
+      ts: unknown;
+    };
+    expect(parsed.ts).toBe(1_700_000_000_000);
+    expect(typeof parsed.ts).toBe('number');
+  });
+
+  it('BigInt → string and does NOT throw (raw JSON.stringify would throw "Do not know how to serialize a BigInt")', () => {
+    // A stray BigInt reaching a raw JSON.stringify throws and kills the SSE writer; the chokepoint exists
+    // so a caller forgetting to pre-convert can never cause that.
+    expect(() => JSON.stringify({ id: 9_007_199_254_740_993n })).toThrow();
+    const parsed = payloadOf(formatSseFrame('NOTIFY', { id: 9_007_199_254_740_993n })) as {
+      id: string;
+    };
+    expect(parsed.id).toBe('9007199254740993');
+  });
+
+  it('nested Date / BigInt inside objects and arrays are recursively converted; null is preserved', () => {
+    expect(
+      payloadOf(
+        formatSseFrame('THREAD_META', {
+          pinnedAt: new Date(0),
+          clearedAt: null,
+          rows: [{ id: 1n, at: new Date(1_700_000_000_000) }],
+        }),
+      ),
+    ).toEqual({
+      pinnedAt: 0,
+      clearedAt: null,
+      rows: [{ id: '1', at: 1_700_000_000_000 }],
+    });
+  });
+
+  it('primitive payloads pass through unchanged (no spurious conversion)', () => {
+    expect(payloadOf(formatSseFrame('ping', {}))).toEqual({});
+    expect(payloadOf(formatSseFrame('x', { n: 1, s: 'a', b: true, nil: null }))).toEqual({
+      n: 1,
+      s: 'a',
+      b: true,
+      nil: null,
+    });
+  });
+
+  it('produces the same Date→number as the HTTP SerializeInterceptor (shared serializeBody engine)', () => {
+    // SSE and HTTP share serializeBody, so a Date yields the IDENTICAL epoch-ms on both buses.
+    const d = new Date('2026-06-24T00:00:00Z');
+    const fromFrame = payloadOf(formatSseFrame('x', { t: d })) as { t: number };
+    expect(fromFrame.t).toBe((serializeBody({ t: d }) as { t: number }).t);
   });
 });

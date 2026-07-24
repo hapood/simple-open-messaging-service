@@ -1,4 +1,4 @@
-import { reportGeneratedJwtSecrets, resolveJwtSecret } from './jwt-secret.js';
+import { reportGeneratedSecrets, resolveJwtSecret } from './jwt-secret.js';
 
 export const jwtConstants = {
   // admin-console JWT secret — the admin system is the only remaining JWT issuer (user auth is the
@@ -13,4 +13,4 @@ export const jwtConstants = {
 
 // Emit one operational warning if any secret was auto-generated this boot (no-op otherwise). Run at
 // module load so first-boot generation is reported before the app finishes bootstrapping.
-reportGeneratedJwtSecrets();
+reportGeneratedSecrets();

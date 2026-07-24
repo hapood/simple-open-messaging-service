@@ -147,6 +147,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     threadRevision?: number;
     profileRev?: number;
     friendReqRev?: number | null;
+    friendReqAckRev?: number;
   }): void {
     eventSubject.next({ event: 'HELLO', data });
   }
@@ -284,7 +285,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     emitHello({ userId: 1, threadRevision: 6 });
     await flush(20);
 
-    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0, null);
+    expect(establishSessionSpy).toHaveBeenCalledWith(1, 0, null, 0);
     expect(queryThreadDeltaSpy).toHaveBeenCalledWith({ fromRevision: 5, toRevision: 6 });
     expect(repo.items().map((t) => t.threadId).sort()).toEqual([1, 2, 3]);
     expect(cursorSignal()).toBe(6);
@@ -397,7 +398,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
     // Live delta: delete thread 1, add thread 3 (hydrated inline — no second fetch).
     queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [deleteOp(1), addOp(p2p(3, 33))] }));
-    eventSubject.next({ event: 'THREAD_REVISION_UPDATED', data: { revision: 12 } });
+    eventSubject.next({ event: 'THREAD_REVISION_UPDATED', data: { threadRevision: 12 } });
     await flush(20);
 
     expect(repo.items().map((t) => t.threadId).sort()).toEqual([2, 3]);
@@ -412,7 +413,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
   it('THREAD_REVISION_UPDATED is dropped while the cursor is unseeded (no HELLO yet)', async () => {
     // cursorSignal starts undefined — do NOT emit HELLO.
     queryThreadDeltaSpy.and.returnValue(of({ code: 0, data: [] }));
-    eventSubject.next({ event: 'THREAD_REVISION_UPDATED', data: { revision: 12 } });
+    eventSubject.next({ event: 'THREAD_REVISION_UPDATED', data: { threadRevision: 12 } });
     await flush(20);
     expect(queryThreadDeltaSpy).not.toHaveBeenCalled();
   });

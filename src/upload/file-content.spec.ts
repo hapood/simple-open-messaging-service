@@ -10,7 +10,7 @@ import {
 /** A content blob as the client forwards it (verbatim from POST /upload/file). */
 function ok(over: Partial<{ url: string; name: string; size: number; mimeType: string }> = {}) {
   return JSON.stringify({
-    url: '/uploads/1700000000000-abcdef012345.pdf',
+    url: '/uploads/shards/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.pdf',
     name: 'report.pdf',
     size: 12345,
     mimeType: 'application/pdf',
@@ -55,7 +55,7 @@ describe('resolveFileType', () => {
 describe('parseFileContent', () => {
   it('accepts a well-formed FILE content blob', () => {
     expect(parseFileContent(ok())).toEqual({
-      url: '/uploads/1700000000000-abcdef012345.pdf',
+      url: '/uploads/shards/01/23/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.pdf',
       name: 'report.pdf',
       size: 12345,
       mimeType: 'application/pdf',
@@ -94,8 +94,9 @@ describe('parseFileContent', () => {
     expect(parseFileContent(ok({ mimeType: '' }))).toBeNull();
   });
 
-  it('accepts a URL with no extension (a file stored without a safe extension)', () => {
-    expect(parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345' }))).not.toBeNull();
+  it('rejects a legacy flat (pre-CAS) upload URL — a CAS shard URL is the only accepted shape', () => {
+    expect(parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345.pdf' }))).toBeNull();
+    expect(parseFileContent(ok({ url: '/uploads/1700000000000-abcdef012345' }))).toBeNull();
   });
 
   it('rejects non-positive, non-finite, or over-capacity sizes', () => {
@@ -114,8 +115,8 @@ describe('parseFileContent', () => {
 });
 
 describe('parseLinkContent', () => {
-  // A well-formed CAS shard URL (the shape LinkPreviewService localizes og:image into).
-  const shard = `/uploads/shards/ab/cd/${'0'.repeat(64)}.webp`;
+  // The thumbnail's sha256 digest (64 hex) — the form stored in the DB; the wire inlines base64.
+  const DIGEST = '0'.repeat(64);
 
   it('accepts a bare-link card { url }', () => {
     expect(parseLinkContent(JSON.stringify({ url: 'https://example.com' }))).toEqual({
@@ -123,13 +124,13 @@ describe('parseLinkContent', () => {
     });
   });
 
-  it('accepts a full card with a localized og:image shard URL', () => {
+  it('accepts a full card with an og:image digest', () => {
     const card = {
       url: 'https://example.com/p',
       title: 'T',
       description: 'D',
       siteName: 'Ex',
-      image: shard,
+      image: DIGEST,
     };
     expect(parseLinkContent(JSON.stringify(card))).toEqual(card);
   });
@@ -148,10 +149,14 @@ describe('parseLinkContent', () => {
     expect(parseLinkContent(JSON.stringify({ url: '//example.com' }))).toBeNull(); // scheme-relative
   });
 
-  it('rejects a non-shard image (a forged external/inline image URL)', () => {
+  it('rejects a non-digest image (the DB stores a sha256 digest, not a URL or data URI)', () => {
     expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'https://evil/x.jpg' }))).toBeNull();
     expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'javascript:alert(1)' }))).toBeNull();
     expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: '/uploads/../secret' }))).toBeNull();
+    // A CAS shard URL is NOT a digest → rejected (the thumbnail is inlined, not a shard reference).
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: `/uploads/shards/ab/cd/${DIGEST}.webp` }))).toBeNull();
+    // A base64 data URI is the WIRE form, not the STORED form → rejected at store-time.
+    expect(parseLinkContent(JSON.stringify({ url: 'https://x.com', image: 'data:image/webp;base64,AAAA' }))).toBeNull();
   });
 
   it('rejects over-long display fields', () => {

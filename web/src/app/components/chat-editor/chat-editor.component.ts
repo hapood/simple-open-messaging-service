@@ -112,7 +112,7 @@ export class ChatEditorComponent {
             char: '@',
             allowSpaces: false,
             items: ({ query }) => this.filterMembers(query),
-            render: () => suggestionPopup(() => this.membersRef),
+            render: () => suggestionPopup(),
           },
         }),
       ],
@@ -229,8 +229,7 @@ function SendKeymapExtension(opts: {
  * to document.body so it escapes any overflow/transform on the host; keyboard-nav + click both call the
  * mention command with { id, label } (the atom node attrs). Returns the render() handlers Tiptap expects.
  */
-function suggestionPopup(getMembers: () => ChatMember[]) {
-  void getMembers; // members are delivered via props.items (the items() callback result); kept for symmetry/future use
+function suggestionPopup() {
   let popup: HTMLDivElement | null = null;
   let items: ChatMember[] = [];
   let selected = 0;

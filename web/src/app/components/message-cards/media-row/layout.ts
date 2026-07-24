@@ -53,6 +53,14 @@ export interface AlbumLayout {
 }
 
 export const ALBUM_W = 280;
+
+/** Voice-message bar dims — the AUDIO cell's fixed slim rect (see layoutAlbum's audio branch). Single source
+ *  of truth: the optimistic send (sendVoice) and the receive-side parse (http-item-source.parseAudioContent)
+ *  both render at exactly this size, so the optimistic↔real swap never jumps height (which would break the
+ *  virtual-scroll anchor). Integer px per the project's CSS integer-pixel rule. */
+export const VOICE_BAR_W = 220;
+export const VOICE_BAR_H = 52;
+
 const ALBUM_GAP = 2;
 /** Fallback aspect ratio (h/w) for bad w/h, 4:3 (matches historical data). */
 const DEFAULT_R = 3 / 4;
@@ -140,8 +148,8 @@ export function layoutAlbum(images: AlbumImageLike[], baseW = ALBUM_W): AlbumLay
   // integer-px height, and playback only animates a WIDTH fill (never a height change), so the kernel's
   // height-model invariant (totalH === Σ offsetHeight) holds during play.
   if (n === 1 && images[0].kind === 'audio') {
-    const totalH = 52;
-    const widthPx = Math.min(baseW, 220);
+    const totalH = VOICE_BAR_H;
+    const widthPx = Math.min(baseW, VOICE_BAR_W);
     return {
       rects: [{ xPct: 0, wPct: 100, yPx: 0, hPx: totalH }],
       totalH,

@@ -1,5 +1,6 @@
-import { ChangeDetectionStrategy, Component, computed, ElementRef, input, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, ElementRef, inject, input, signal, viewChild } from '@angular/core';
 import { formatDuration } from '../file-meta.util';
+import { AudioPlaybackCoordinator } from './audio-playback-coordinator.service';
 
 /**
  * Flat progress-bar voice player, rendered inside an AUDIO cell of {@link MediaRowComponent}.
@@ -27,6 +28,12 @@ export class AudioPlayerComponent {
   readonly duration = input(0);
 
   private readonly audioRef = viewChild<ElementRef<HTMLAudioElement>>('audio');
+  /** Pause the clip — a STABLE callback (created once) so the coordinator can identify "this player" by
+   *  reference and pause any other clip playing elsewhere in the app when this one starts. */
+  private readonly coordinator = inject(AudioPlaybackCoordinator);
+  private readonly pauseFn = (): void => {
+    this.audioRef()?.nativeElement?.pause();
+  };
 
   readonly playing = signal(false);
   /** 0..1 playback progress (driven by timeupdate). */
@@ -44,6 +51,8 @@ export class AudioPlayerComponent {
       el.pause();
       return;
     }
+    // Pause any other voice clip currently playing elsewhere in the app (single-active, WhatsApp-style).
+    this.coordinator.begin(this.pauseFn);
     // el.play() resolves on success (the 'play' event then sets `playing`); it rejects when the browser
     // blocks it (rare for a user-gesture-initiated play) or the source is unplayable → mark failed.
     void el.play().catch(() => this.failed.set(true));

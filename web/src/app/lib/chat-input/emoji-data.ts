@@ -9,10 +9,10 @@
  * compact; the platform font renders each codepoint.
  */
 export interface EmojiCategory {
-  /** Stable id (used as the tab key). */
+  /** Stable id — also the i18n key suffix: the panel resolves each tab's accessible label via
+   *  `chat.emojiTab.<id>` (transloco), so the display text is localized and this dataset carries no
+   *  English literals. */
   readonly id: string;
-  /** English display label for the tab (UI text is English — see ui-text-in-english memory). */
-  readonly label: string;
   /** Glyphs in display order. */
   readonly icons: readonly string[];
 }
@@ -20,7 +20,6 @@ export interface EmojiCategory {
 export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   {
     id: 'smileys',
-    label: 'Smileys & People',
     icons: [
       '😀', '😃', '😄', '😁', '😆', '😅', '🤣', '😂', '🙂', '🙃',
       '😉', '😊', '😇', '🥰', '😍', '🤩', '😘', '😗', '☺️', '😚',
@@ -35,7 +34,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'gestures',
-    label: 'Gestures',
     icons: [
       '👍', '👎', '👌', '🤌', '🤏', '✌️', '🤞', '🤟', '🤘', '🤙',
       '👈', '👉', '👆', '👇', '☝️', '👋', '🤚', '🖐️', '✋', '🖖',
@@ -45,7 +43,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'hearts',
-    label: 'Hearts & Symbols',
     icons: [
       '❤️', '🧡', '💛', '💚', '💙', '💜', '🖤', '🤍', '🤎', '💔',
       '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '💟', '♥️',
@@ -55,7 +52,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'animals',
-    label: 'Animals & Nature',
     icons: [
       '🐶', '🐱', '🐭', '🐹', '🐰', '🦊', '🐻', '🐼', '🐨', '🐯',
       '🦁', '🐮', '🐷', '🐽', '🐸', '🐵', '🙈', '🙉', '🙊', '🐒',
@@ -66,7 +62,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'food',
-    label: 'Food & Drink',
     icons: [
       '🍏', '🍎', '🍐', '🍊', '🍋', '🍌', '🍉', '🍇', '🍓', '🫐',
       '🍈', '🍒', '🍑', '🥭', '🍍', '🥥', '🥝', '🍅', '🍆', '🥑',
@@ -77,7 +72,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'activities',
-    label: 'Activities',
     icons: [
       '⚽', '🏀', '🏈', '⚾', '🥎', '🎾', '🏐', '🏉', '🥏', '🎱',
       '🏓', '🏸', '🥅', '🏒', '🏑', '🥍', '🏏', '⛳', '🏹', '🎣',
@@ -87,7 +81,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'travel',
-    label: 'Travel & Weather',
     icons: [
       '🚗', '🚕', '🚙', '🚌', '🚎', '🏎️', '🚓', '🚑', '🚒', '🚐',
       '🚚', '🚛', '🚜', '🛵', '🏍️', '🚲', '🛴', '🚨', '🚀', '✈️',
@@ -97,7 +90,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'objects',
-    label: 'Objects',
     icons: [
       '⌚', '📱', '💻', '⌨️', '🖥️', '🖨️', '🖱️', '💽', '💾', '💿',
       '📷', '📸', '📹', '🎥', '📺', '📻', '🎙️', '⏰', '⏱️', '🔭',
@@ -107,7 +99,6 @@ export const EMOJI_CATEGORIES: readonly EmojiCategory[] = [
   },
   {
     id: 'flags',
-    label: 'Flags',
     icons: [
       '🏳️', '🏴', '🏁', '🚩', '🏳️‍🌈', '🏳️‍⚧️', '🏴‍☠️',
       '🇨🇳', '🇭🇰', '🇹🇼', '🇯🇵', '🇰🇷', '🇺🇸', '🇬🇧', '🇨🇦', '🇦🇺',

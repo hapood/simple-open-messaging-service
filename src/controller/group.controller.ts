@@ -309,8 +309,8 @@ export class GroupController {
         // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).
         domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
         threadId,
-        createdAt: trd.createdAt.getTime(),
-        updatedAt: (gu.group?.updatedAt ?? trd.updatedAt).getTime(),
+        createdAt: trd.createdAt,
+        updatedAt: gu.group?.updatedAt ?? trd.updatedAt,
       },
     };
   }

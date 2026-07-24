@@ -37,6 +37,7 @@ function makeStubs() {
     {} as never, // threadRevisionService
     buffer,
     {} as never, // quota
+    {} as never, // linkPreview
   );
   return { svc, prisma, markDirty, flushBatch };
 }
@@ -216,6 +217,8 @@ describe('FederationService.notifyGroupLeave — mirror-leave → origin per-aut
       {} as never,
       {} as never,
       buffer,
+      {} as never, // quota
+      {} as never, // linkPreview
     );
     return { svc, markDirty };
   }

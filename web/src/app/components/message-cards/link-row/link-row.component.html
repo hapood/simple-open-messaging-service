@@ -18,20 +18,22 @@
       class="msg-bubble msg-{{ side() }} msg-{{ pos() }} link link-tappable"
       (click)="openUrl()"
     >
-      @if (imageSrc()) {
-        <div class="link-image"><img [src]="imageSrc()" alt="" loading="lazy" /></div>
-      }
       <div class="link-body">
-        <div class="link-title">{{ link().title || host() }}</div>
-        @if (link().description) {
-          <div class="link-desc">{{ link().description }}</div>
-        }
-        <div class="link-site">
-          @if (faviconSrc()) {
-            <img class="link-favicon" [src]="faviconSrc()" alt="" />
+        <div class="link-text">
+          <div class="link-title">{{ link().title || host() }}</div>
+          @if (link().description) {
+            <div class="link-desc">{{ link().description }}</div>
           }
-          <span class="link-site-name">{{ link().siteName || host() }}</span>
+          <div class="link-site">
+            @if (faviconSrc()) {
+              <img class="link-favicon" [src]="faviconSrc()" alt="" />
+            }
+            <span class="link-site-name">{{ link().siteName || host() }}</span>
+          </div>
         </div>
+        @if (imageSrc() && !imgFailed()) {
+          <div class="link-image"><img [src]="imageSrc()" alt="" loading="lazy" (error)="onImgError()" /></div>
+        }
       </div>
     </button>
     <div class="link-meta">

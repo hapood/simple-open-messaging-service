@@ -2,6 +2,7 @@ import { Injectable, OnModuleInit } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { ContentType, Message, Prisma } from '../prisma/generated/client.js';
 import { extractDigests } from '../upload/file-content.js';
+import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
 
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
@@ -65,7 +66,10 @@ export function derivePreview(type: ContentType, content: string): string {
  */
 @Injectable()
 export class MessageService implements OnModuleInit {
-  constructor(private prisma: PrismaService) {}
+  constructor(
+    private prisma: PrismaService,
+    private readonly linkPreview: LinkPreviewService,
+  ) {}
 
   async onModuleInit() {}
 
@@ -147,14 +151,13 @@ export class MessageService implements OnModuleInit {
         });
         // Per-object media authz: record the CAS digest this message references so the /uploads/shards/*
         // gate can authorize readers against thread membership (one indexed row). One message carries
-        // one media (MediaMessage is 1:1); legacy-flat URLs carry no digest and are skipped. PURE_TEXT/
+        // one media (MediaMessage is 1:1). PURE_TEXT/
         // INVITE reference no media.
         if (
           type === ContentType.IMAGE ||
           type === ContentType.FILE ||
           type === ContentType.VIDEO ||
-          type === ContentType.AUDIO ||
-          type === ContentType.LINK
+          type === ContentType.AUDIO
         ) {
           const digest = extractDigests(content)[0];
           if (digest) {
@@ -360,7 +363,7 @@ export class MessageService implements OnModuleInit {
 
   /** Attach a `mediaStatus` ('ready' | 'failed') + `sv` (status version = seq) to each message by
    *  checking, in bulk, whether every CAS digest in its content has a MediaMessage authz row for THIS
-   *  message AND a MediaAsset with refs>0 (bytes on disk). Non-media / legacy-flat messages (no digest)
+   *  message AND a MediaAsset with refs>0 (bytes on disk). Non-media messages (no digest)
    *  are trivially 'ready'. Two batch queries serve a whole page — no per-row N+1. Strips the internal
    *  id (it never reaches a client). Drives the query-messages response and the media-status probe. */
   async attachMediaStatus<T extends Message>(
@@ -393,7 +396,16 @@ export class MessageService implements OnModuleInit {
     const present = new Set(
       assetRows.filter((a) => a.refs > 0).map((a) => a.digest),
     );
-    return msgs.map((m) => {
+    // LINK thumbnails: the DB stores only the image digest; inline it as base64 for the wire (the
+    // frontend renders the card from the data URI). One read per LINK row; non-LINK is untouched.
+    const forWire = await Promise.all(
+      msgs.map(async (m) =>
+        m.contentType === ContentType.LINK
+          ? { ...m, content: await this.linkPreview.enrichForWire(m.contentType, m.content) }
+          : m,
+      ),
+    );
+    return forWire.map((m) => {
       const { id: _drop, ...rest } = m;
       const ds = byMsg.get(m.id) ?? [];
       const ready =

@@ -36,7 +36,7 @@ export interface MissedThreadItem {
         contentType: string;
         content: string;
         creator: number;
-        createdAt: number;
+        createdAt: Date;
         mediaStatus: 'ready' | 'failed';
         sv: number;
       }
@@ -145,7 +145,8 @@ export class NotificationQueryService {
 
     // "thread" grouping: ONE notification CARD per conversation with new messages since the HWM (each its own
     // descriptor → client posts a separate grouped card). `threadHwms` carries the client's per-thread dismiss
-    // cursors so a dismissed thread's count resets. Absent / "all" keeps the legacy folded per-sender body below.
+    // cursors so a dismissed thread's count resets. Absent / "all" selects the folded per-sender body below
+    // (a shipped user preference — the Settings toggle offers 'thread' vs 'all').
     if (opts.grouping === 'thread') {
       return { notifications: await this.threadDescriptors(userId, sinceId, locale, opts.threadHwms) };
     }
@@ -399,7 +400,7 @@ export class NotificationQueryService {
               contentType: m.contentType,
               content: m.content,
               creator: m.creator,
-              createdAt: m.createdAt instanceof Date ? m.createdAt.getTime() : m.createdAt,
+              createdAt: m.createdAt,
               mediaStatus: m.mediaStatus,
               sv: m.sv,
             }
@@ -423,7 +424,7 @@ type AttachedMessage = {
   contentType: string;
   content: string;
   creator: number;
-  createdAt: Date | number;
+  createdAt: Date;
   mediaStatus: 'ready' | 'failed';
   sv: number;
 };

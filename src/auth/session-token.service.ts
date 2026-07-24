@@ -111,21 +111,15 @@ export class SessionTokenService {
     if (cached !== null) {
       const entry = JSON.parse(cached) as {
         userId: number;
-        sessionId?: number;
+        sessionId: number;
         exp: number | null;
         persistent?: boolean;
-        mustChangePassword?: boolean;
+        mustChangePassword: boolean;
       };
-      // sessionId + mustChangePassword present guards a stale pre-upgrade cache shape (lacking either)
-      // → treat as a miss and fall through to the DB. An expired entry likewise falls through.
-      // mustChangePassword is a SECURITY flag (drives the global password-rotation gate), so a stale
-      // entry without it MUST re-read the authoritative value rather than guess — unlike persistent,
-      // which defaults harmlessly.
-      if (
-        entry.sessionId !== undefined &&
-        entry.mustChangePassword !== undefined &&
-        !(entry.exp !== null && entry.exp <= Date.now())
-      ) {
+      // An expired entry falls through to the DB. The cache is an in-process Map wiped on every
+      // restart (KvStoreService), so every live entry carries the full field set the writer emits —
+      // no stale pre-upgrade shape can survive a deploy.
+      if (entry.exp === null || entry.exp > Date.now()) {
         // Cache hit (within VALIDATE_CACHE_TTL_SEC) → no DB read, so no sliding write this call.
         return {
           userId: entry.userId,

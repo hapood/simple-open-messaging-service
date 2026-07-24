@@ -253,13 +253,6 @@ describe('AuthService (native trusted-device storage, bridge-mock)', () => {
       expect(svc.canTrust).toBe(true);
     });
 
-    it('restoreSession PURGES a legacy plaintext localStorage token left by an older build', async () => {
-      desktopGlobals({ keyringToken: null });
-      localStorage.setItem('session_token', 'legacy-plaintext');
-      await svc.restoreSession();
-      expect(localStorage.getItem('session_token')).toBeNull();
-    });
-
     it('restoreSession with an UNREACHABLE keyring sets canTrust false (toggle hidden → no orphan session)', async () => {
       // secure_get_token rejects → the boot probe fails → this desktop can't be trusted, so the trust
       // toggle stays hidden and the user can't request a permanent token the client then can't persist.

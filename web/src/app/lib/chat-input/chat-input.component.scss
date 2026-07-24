@@ -151,6 +151,53 @@ app-chat-input {
   &:active { background: var(--app-hover); transform: scale(0.92); }
 }
 
+// Live link-card preview — floats above the capsule (position:absolute bottom:100%, like the emoji
+// panel) while the draft is a single bare URL. WeChat/WhatsApp-style; integer-px heights.
+.ci-link-preview {
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 100%;
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--app-surface);
+  border: 1px solid var(--app-border);
+  border-radius: var(--app-radius-sm, 6px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  cursor: default;
+}
+.ci-link-preview-img {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.ci-link-preview-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ci-link-preview-title {
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--app-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ci-link-preview-site {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--app-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 // Capsule input container: emoji + editor + file.
 .ci-input-wrap {
   flex: 1 1 auto;

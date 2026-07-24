@@ -52,9 +52,8 @@ export class AuthService {
     return undefined;
   }
 
-  /** Hash a plaintext password via the shared {@link PasswordHasher} (Argon2id + pepper). The legacy name
-   *  is kept for the registration / admin-provision call sites; it is password-only by construction. */
-  async hashStr(str: string) {
+  /** Hash a plaintext password via the shared {@link PasswordHasher} (Argon2id + pepper). */
+  async hashPassword(str: string) {
     return this.passwordHasher.hash(str);
   }
 

@@ -65,6 +65,11 @@ export class LinkPreviewController {
     @Body() dto: LinkPreviewDto,
   ): Promise<ApiResult<LinkContent>> {
     const card = await this.linkPreview.buildCardContent(dto.url);
-    return { code: BusinessCode.OK, message: 'successful', data: card };
+    // buildCardContent stores the image as a digest (DB form); the composer renders from THIS response,
+    // so inline it as base64 (the wire form) — the same enrichment the query/serve paths apply.
+    const wire = JSON.parse(
+      await this.linkPreview.enrichForWire('LINK', JSON.stringify(card)),
+    ) as LinkContent;
+    return { code: BusinessCode.OK, message: 'successful', data: wire };
   }
 }

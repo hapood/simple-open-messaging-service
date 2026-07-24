@@ -210,4 +210,14 @@ export class MsgService {
       { threadId, seqs },
     )
   }
+
+  /** Resolve a URL into a link card (OG title/description/siteName + og:image as a base64 data URI) for
+   *  the composer's live preview. Server-authoritative; cached server-side so the subsequent send of the
+   *  same URL rebuilds instantly. Never errors — a failed fetch returns a bare { url } card. */
+  previewLink(url: string) {
+    return this.http.post<StandardResponse<{ url: string; title?: string; description?: string; siteName?: string; image?: string }>>(
+      `${apiPrefix()}/link-preview`,
+      { url },
+    )
+  }
 }

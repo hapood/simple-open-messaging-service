@@ -14,6 +14,7 @@ import { ThreadParticipantModule } from '../thread-participant/thread-participan
 import { GatewayModule } from '../gateway/gateway.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { MessageModule } from '../message/message.module.js';
+import { LinkPreviewModule } from '../link-preview/link-preview.module.js';
 
 /**
  * Federation (S2S). @Global so its services inject across modules (UserController, AdminController).
@@ -28,7 +29,7 @@ import { MessageModule } from '../message/message.module.js';
  */
 @Global()
 @Module({
-  imports: [InviteModule, ThreadParticipantModule, GatewayModule, UploadModule, MessageModule],
+  imports: [InviteModule, ThreadParticipantModule, GatewayModule, UploadModule, MessageModule, LinkPreviewModule],
   controllers: [WellKnownController, S2sController, S2sInitController],
   providers: [
     KeypairService,

@@ -17,7 +17,7 @@ export class UserService implements OnModuleInit {
   findUniqueUser(userWhereUniqueInput: Prisma.UserWhereUniqueInput) {
     return this.prisma.user.findUnique({
       where: userWhereUniqueInput,
-      omit: { hashPwd: true, threadRevision: true },
+      omit: { hashPwd: true, threadRevision: true, friendReqAckRev: true },
     });
   }
 
@@ -29,12 +29,12 @@ export class UserService implements OnModuleInit {
   }
 
   /** Self-profile only: omits hashPwd. (threadRevision rides the SSE HELLO handshake; the friend-request
-   *  badge is derived client-side from the HELLO/push-carried friendReqRev = MAX(updatedAt) over incoming
+   *  badge is derived client-side from the HELLO/push-carried friendReqRev = MAX(createdAt) over incoming
    *  FRIEND invites — no denormalized badge column.) */
   findSelfProfile(userId: number) {
     return this.prisma.user.findUnique({
       where: { id: userId },
-      omit: { hashPwd: true, threadRevision: true },
+      omit: { hashPwd: true, threadRevision: true, friendReqAckRev: true },
     });
   }
 
@@ -57,7 +57,7 @@ export class UserService implements OnModuleInit {
     if (data.name !== undefined) update.name = data.name;
     if (data.bio !== undefined) update.bio = data.bio;
     update.profileRev = { increment: 1 }; // identity change bumps the profile revision
-    return this.prisma.user.update({ where: { id: userId }, data: update, omit: { hashPwd: true } });
+    return this.prisma.user.update({ where: { id: userId }, data: update, omit: { hashPwd: true, friendReqAckRev: true } });
   }
 
   queryUsers(params: Prisma.UserFindManyArgs) {
@@ -65,7 +65,7 @@ export class UserService implements OnModuleInit {
     // (select + omit are mutually exclusive in Prisma); all current callers pass only `where`.
     return this.prisma.user.findMany({
       ...params,
-      omit: { hashPwd: true, threadRevision: true, ...(params.omit ?? {}) },
+      omit: { hashPwd: true, threadRevision: true, friendReqAckRev: true, ...(params.omit ?? {}) },
     });
   }
 
@@ -76,7 +76,7 @@ export class UserService implements OnModuleInit {
     q: string,
     opts: { skip?: number; take: number },
   ): Promise<{
-    list: Prisma.UserGetPayload<{ omit: { hashPwd: true } }>[];
+    list: Prisma.UserGetPayload<{ omit: { hashPwd: true, friendReqAckRev: true } }>[];
     total: number;
   }> {
     const where: Prisma.UserWhereInput = {
@@ -94,7 +94,7 @@ export class UserService implements OnModuleInit {
         skip: opts.skip,
         take: opts.take,
         orderBy: { createdAt: 'desc' },
-        omit: { hashPwd: true },
+        omit: { hashPwd: true, friendReqAckRev: true },
       }),
       this.prisma.user.count({ where }),
     ]);

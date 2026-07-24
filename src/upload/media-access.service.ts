@@ -10,9 +10,9 @@ import { PrismaService } from '../prisma.service.js';
  * row; sha256 is near-unique). Covers P2P (2 participants) and GROUP (N) uniformly via the shared
  * ThreadParticipant table. Type-agnostic by design — membership is leftAt IS NULL regardless of role.
  *
- * Avatars (/uploads/avatars/*) and legacy-flat files never reach this service: the gate calls it
- * only for /uploads/shards/ paths. Those exempt classes stay auth-n-only (avatars must render
- * cross-thread in lists/search/federation; legacy is GC-immune natural attrition).
+ * Avatars (/uploads/avatars/*) never reach this service: the gate calls it only for
+ * /uploads/shards/ paths. Avatars stay auth-n-only (they must render cross-thread in
+ * lists/search/federation).
  */
 @Injectable()
 export class MediaAccessService {

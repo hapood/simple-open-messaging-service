@@ -20,9 +20,19 @@
          capsules touch but don't overlap → each toggles the bubble exactly once → a clean union cutout.
 
          Coordinates are the UNSCALED brand path (the launcher wraps it in scale(0.82) for a padding
-         ring against the adaptive-icon mask; a notification icon should fill the viewport instead).
+         ring against the adaptive-icon mask). A notification small icon, by contrast, must FILL the
+         drawable's safe zone — the status bar renders it at ~18dp and clips the alpha to the bar tint,
+         so an underfilled glyph (the raw brand bbox is only ~61% wide / 51% tall of the 108 viewport)
+         reads as a tiny dot. The <group> below scales the unscaled brand path ×1.36 and re-centers it on
+         (54,54), landing the bbox at [9.1,98.9]×[16.6,91.4] — 83% width (the Material status-bar live
+         area) / 69% height, the limiting axis being the bubble's width. No padding ring here.
     -->
-    <path
+    <group
+        android:scaleX="1.36"
+        android:scaleY="1.36"
+        android:translateX="-19.44"
+        android:translateY="-22.84">
+        <path
         android:fillColor="#FFFFFFFF"
         android:fillType="evenOdd"
         android:pathData="
@@ -38,4 +48,5 @@
             M69 48.5 L77 48.5 L77 58.5 L69 58.5 Z
             M37.62 49.17 L46.42 56.11 L51.38 49.83 L42.58 42.89 Z
             M61.58 56.11 L70.38 49.17 L65.42 42.89 L56.62 49.83 Z" />
+    </group>
 </vector>

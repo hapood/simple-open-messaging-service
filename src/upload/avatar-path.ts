@@ -10,11 +10,10 @@ import {
  *  - {@link UploadService.saveAvatars} (writer) — imports AVATAR_SIZES/AVATAR_MAX,
  *  - the {@link IsValidAvatarPath} DTO validator (rejects /uploads/shards/ + external URLs for
  *    Group.avatar, so a group avatar can never sit under the per-object authz gate's shards/ scope),
- *  - the avatar GC (walks uploads/avatars/ + legacy-flat, groups files by <base>).
+ *  - the avatar GC (walks uploads/avatars/, groups files by <base>).
  *
- * URL shape: `/uploads/avatars/<base>-<size>.webp` (new) — and legacy `/uploads/<base>-<size>.webp`
- * (pre-folder-move) is still accepted so pre-existing avatars keep validating and the GC can reap
- * them. `<base>` = `${Date.now()}-${randomBytes(6).hex}` (hyphenated); `<size>` ∈ AVATAR_SIZES.
+ * URL shape: `/uploads/avatars/<base>-<size>.webp`. `<base>` = `${Date.now()}-${randomBytes(6).hex}`
+ * (hyphenated); `<size>` ∈ AVATAR_SIZES.
  */
 
 /** Avatar multi-size output widths (px). sharp re-encodes each; the largest is the representative URL.
@@ -32,13 +31,12 @@ export const AVATAR_FILE_RE = new RegExp(
   `^([A-Za-z0-9._-]+)-(?:${SIZE_ALT})\\.webp$`,
 );
 
-/** Matches an avatar URL: `/uploads/avatars/<base>-<size>.webp` (new) OR `/uploads/<base>-<size>.webp`
- *  (legacy flat). Captures `<base>`. The `(?:avatars/)?` optional segment + the absence of any other
- *  `/` after uploads/ means `/uploads/shards/aa/bb/<digest>.<ext>` NEVER matches (shards has extra
- *  path segments) — so a group avatar can never be pointed at gated chat media. External (`https://`)
- *  and `javascript:` URLs likewise fail. */
+/** Matches an avatar URL: `/uploads/avatars/<base>-<size>.webp`. Captures `<base>`. The literal
+ *  `avatars/` segment + the absence of any other `/` after it means `/uploads/shards/aa/bb/<digest>.<ext>`
+ *  NEVER matches (shards has extra path segments) — so a group avatar can never be pointed at gated
+ *  chat media. External (`https://`) and `javascript:` URLs likewise fail. */
 export const AVATAR_URL_RE = new RegExp(
-  `^/uploads/(?:avatars/)?([A-Za-z0-9._-]+)-(?:${SIZE_ALT})\\.webp$`,
+  `^/uploads/avatars/([A-Za-z0-9._-]+)-(?:${SIZE_ALT})\\.webp$`,
 );
 
 /** Extract the avatar `<base>` from a URL or a bare filename, or null if it is not an avatar path.

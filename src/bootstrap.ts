@@ -29,7 +29,7 @@ const MULTIPART_LIMIT = 100 * 1024 * 1024;
 
 /** Matches a CAS shard URL at the start of a request path and captures the 64-hex digest. The
  *  /uploads/ preHandler uses this to decide whether a request needs per-object authorization (a
- *  shard path → yes; avatars / legacy-flat → no, auth-n-only). No `g` flag: .exec is stateless
+ *  shard path → yes; avatars → no, auth-n-only). No `g` flag: .exec is stateless
  *  across requests, which the shared hook requires. */
 const SHARD_DIGEST_GATE_RE = /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./;
 
@@ -240,8 +240,8 @@ async function registerStaticServing(
       // Per-object authorization — chat media ONLY. A CAS shard URL (/uploads/shards/…/<sha256>.<ext>)
       // embeds the digest, so a logged-in user could otherwise read any other user's/group's media by
       // guessing/leaking the URL. Require an active thread membership for the digest. Avatars
-      // (/uploads/avatars/*) and legacy-flat files match neither the shard shape nor any MediaMessage
-      // row → they stay auth-n-only (avatars must render cross-thread; legacy is natural attrition).
+      // (/uploads/avatars/*) match neither the shard shape nor any MediaMessage
+      // row → they stay auth-n-only (avatars must render cross-thread).
       const shard = SHARD_DIGEST_GATE_RE.exec(request.url);
       if (shard) {
         const allowed = await mediaAccess.canReadDigest(principal.userId, shard[1]);

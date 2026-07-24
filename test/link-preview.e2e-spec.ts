@@ -22,16 +22,15 @@ describe('LINK message send (single instance)', () => {
   let prisma: PrismaService;
   let baseUrl: string;
 
-  // A fake card the mocked LinkPreviewService "built" — the og:image is a CAS shard URL (the shape the
-  // real service localizes into), carrying a fixed 64-hex digest extractDigests will pick up.
+  // A fake card the mocked LinkPreviewService "built" — the og:image is the thumbnail's sha256 DIGEST
+  // (the form the real service stores in the DB; the wire serializer inlines the base64 on read).
   const DIGEST = 'a'.repeat(64);
-  const SHARD_URL = `/uploads/shards/ab/cd/${DIGEST}.webp`;
   const CARD = {
     url: 'https://example.com/page',
     title: 'Example Page',
     description: 'A page about things.',
     siteName: 'Example',
-    image: SHARD_URL,
+    image: DIGEST,
   };
 
   beforeAll(async () => {
@@ -61,7 +60,7 @@ describe('LINK message send (single instance)', () => {
     await app.close();
   });
 
-  it('rebuilds the card server-side from the URL and writes a MediaMessage authz row for the og:image', async () => {
+  it('rebuilds the card server-side from the URL and stores the og:image digest (not base64) in content', async () => {
     const appLike = { baseUrl, prisma };
     const alice = await registerAndLogin(appLike, 'alice', 'Alice');
     const bob = await registerAndLogin(appLike, 'bob', 'Bob');
@@ -96,15 +95,11 @@ describe('LINK message send (single instance)', () => {
     });
     expect(msg).not.toBeNull();
     expect(msg!.contentType).toBe('LINK');
+    // The DB stores the image DIGEST (small) — NOT the base64 (the wire serializer inlines it on read).
     expect(JSON.parse(msg!.content)).toEqual(CARD);
-
-    // extractDigests found the shard URL inside the JSON → a MediaMessage authz row exists for the
-    // og:image digest, so /uploads/shards/* will admit thread readers (and the federated receiver's
-    // localizeMedia keys off this same digest).
-    const authz = await prisma.mediaMessage.findFirst({
-      where: { threadId, digest: DIGEST },
-    });
-    expect(authz).not.toBeNull();
+    expect((JSON.parse(msg!.content) as { image: string }).image).toBe(DIGEST);
+    // LINK no longer touches CAS: no MediaMessage authz row (the thumbnail is inlined, not a shard).
+    expect(await prisma.mediaMessage.count({ where: { threadId } })).toBe(0);
   });
 
   it('degrades to a bare-link card when the page has no usable metadata (no MediaMessage row)', async () => {

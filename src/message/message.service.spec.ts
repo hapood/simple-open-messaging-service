@@ -24,7 +24,7 @@ const url = (d: string): string => `/uploads/shards/${d.slice(0, 2)}/${d.slice(2
 describe('MessageService.attachMediaStatus', () => {
   it('returns [] for empty input', async () => {
     const prisma = { mediaMessage: { findMany: vi.fn() }, mediaAsset: { findMany: vi.fn() } };
-    const svc = new MessageService(prisma as never);
+    const svc = new MessageService(prisma as never, {} as never);
     expect(await svc.attachMediaStatus([])).toEqual([]);
     expect(prisma.mediaMessage.findMany).not.toHaveBeenCalled();
   });
@@ -34,7 +34,7 @@ describe('MessageService.attachMediaStatus', () => {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
       mediaAsset: { findMany: vi.fn() },
     };
-    const svc = new MessageService(prisma as never);
+    const svc = new MessageService(prisma as never, {} as never);
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, contentType: 'PURE_TEXT', content: 'hello' }),
     ]);
@@ -49,7 +49,7 @@ describe('MessageService.attachMediaStatus', () => {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]) },
       mediaAsset: { findMany: vi.fn().mockResolvedValue([{ digest: DIG, refs: 1 }]) },
     };
-    const svc = new MessageService(prisma as never);
+    const svc = new MessageService(prisma as never, {} as never);
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
     ]);
@@ -61,7 +61,7 @@ describe('MessageService.attachMediaStatus', () => {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([]) },
       mediaAsset: { findMany: vi.fn().mockResolvedValue([]) },
     };
-    const svc = new MessageService(prisma as never);
+    const svc = new MessageService(prisma as never, {} as never);
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
     ]);
@@ -73,7 +73,7 @@ describe('MessageService.attachMediaStatus', () => {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]) },
       mediaAsset: { findMany: vi.fn().mockResolvedValue([{ digest: DIG, refs: 0 }]) },
     };
-    const svc = new MessageService(prisma as never);
+    const svc = new MessageService(prisma as never, {} as never);
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }),
     ]);
@@ -85,7 +85,7 @@ describe('MessageService.attachMediaStatus', () => {
       mediaMessage: { findMany: vi.fn().mockResolvedValue([{ messageId: 1n, digest: DIG }]) },
       mediaAsset: { findMany: vi.fn().mockResolvedValue([{ digest: DIG, refs: 1 }]) },
     };
-    const svc = new MessageService(prisma as never);
+    const svc = new MessageService(prisma as never, {} as never);
     const out = await svc.attachMediaStatus([
       mk({ id: 1n, seq: 5, content: JSON.stringify({ url: url(DIG) }) }), // ready
       mk({ id: 2n, seq: 6, content: JSON.stringify({ url: url(D2) }) }), // failed (D2 absent)

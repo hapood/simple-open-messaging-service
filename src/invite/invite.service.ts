@@ -55,10 +55,10 @@ const USER_SELECT = {
  * erroring. Rows are never hard-deleted (kept as history; a future GC sweep flips stale PENDING →
  * EXPIRED). Expiry is validated at accept time only.
  *
- * The service owns DB + the derived `friendReqRev` (MAX(updatedAt) over incoming FRIEND invites — the
- * friend-request badge the client derives from HELLO/push). It is deliberately decoupled from federation
- * + SSE — the controller orchestrates S2S delivery and the live NOTIFY / FRIEND_REQ_REV_UPDATED frames
- * based on the structured results returned here.
+ * The service owns DB + the derived `friendReqRev` (MAX(createdAt) over incoming FRIEND invites — the
+ * friend-request badge the client derives from HELLO/push; creation-based so it arms ONLY on a NEW request).
+ * It is deliberately decoupled from federation + SSE — the controller orchestrates S2S delivery and the live
+ * NOTIFY / FRIEND_REQ_REV_UPDATED frames based on the structured results returned here.
  */
 @Injectable()
 export class InviteService {
@@ -123,8 +123,9 @@ export class InviteService {
             originId,
           },
         });
-        // The friend-request badge is derived (MAX(updatedAt) over incoming FRIEND invites) — creating
-        // this PENDING row advances it automatically; no denormalized badge column to arm here.
+        // The friend-request badge is derived (MAX(createdAt) over incoming FRIEND invites) — creating
+        // this PENDING row advances it automatically (accept/decline don't: createdAt is immutable); no
+        // denormalized badge column to arm here.
         return { status: 'created', inviteId: invite.id.toString() };
       } catch (e) {
         if (
@@ -223,7 +224,7 @@ export class InviteService {
     id: string;
     kind: string;
     status: string;
-    expiresAt: number;
+    expiresAt: Date;
     note: string;
     threadId: number | null;
     groupName: string;
@@ -266,7 +267,7 @@ export class InviteService {
       id: invite.id.toString(),
       kind: invite.kind,
       status: invite.status,
-      expiresAt: invite.expiresAt.getTime(),
+      expiresAt: invite.expiresAt,
       note: invite.note,
       threadId: invite.threadId,
       groupName: gu?.name ?? '',
@@ -457,26 +458,47 @@ export class InviteService {
     });
   }
 
-  /** Acknowledge the friend-request badge (the panel was opened). The badge is now client-derived from
-   *  the `friendReqRev` revision (MAX(updatedAt) over incoming FRIEND invites) vs the client's IDB cursor,
-   *  so clearing it is a CLIENT-side cursor advance — there is no server-side badge state to mutate. Kept
-   *  as a no-op endpoint for API compatibility (the client still POSTs /invite/mark-read; it harmlessly
-   *  does nothing server-side while advancing its own cursor). */
-  async markRead(_userId: number): Promise<void> {}
+  /** Acknowledge the friend-request badge (the panel was opened): advance the server-side read cursor
+   *  `friendReqAckRev` (a Date) to the current `friendReqRev` (MAX(createdAt)), clearing the badge on ALL
+   *  devices (the caller pushes the returned state via FRIEND_REQ_REV_UPDATED). Returns the post-ack wire
+   *  state (epoch-ms) so the caller can push without a re-read. */
+  async markRead(userId: number): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
+    const d = await this.latestFriendReqDate(userId);
+    const ackDate = d ?? new Date(0); // no incoming FRIEND invites → ack epoch (no badge either way)
+    await this.prisma.user.update({ where: { id: userId }, data: { friendReqAckRev: ackDate } });
+    return { friendReqRev: d ? d.getTime() : null, friendReqAckRev: ackDate.getTime() };
+  }
 
-  /** The friend-request revision: the `updatedAt` of the most-recently-mutated incoming FRIEND invite
-   *  (epoch ms), or null when the user has none. This is the monotonic, DATA-DERIVED revision the SSE HELLO
-   *  handshake + the FRIEND_REQ_REV_UPDATED push carry — the client compares it to its IDB cursor to derive
-   *  the unread badge (mirroring the threadRevision delta model), and the native layer caches+merges+replays
-   *  it across a WebView reclaim. No denormalized counter column: any incoming-friend-request mutation
-   *  (create / accept / decline / expiry) advances the row's `updatedAt`, so this MAX advances with it. */
-  async findLatestFriendReqUpdate(userId: number): Promise<number | null> {
+  /** The `createdAt` of the most-recently-CREATED incoming FRIEND invite (the raw, Date-typed derivation),
+   *  or null when the user has none. Creation-based (NOT updatedAt): the badge must arm ONLY on a NEW
+   *  request, so the derivation advances ONLY on create — accept/decline/expiry flip status (bumping
+   *  updatedAt) but must NOT re-arm the badge, hence createdAt. Monotonic + DATA-DERIVED (no counter). */
+  private async latestFriendReqDate(userId: number): Promise<Date | null> {
     const res = await this.prisma.invite.aggregate({
       where: { kind: InviteKind.FRIEND, toUserId: userId },
-      _max: { updatedAt: true },
+      _max: { createdAt: true },
     });
-    const ts = res._max.updatedAt;
-    return ts ? ts.getTime() : null;
+    return res._max.createdAt ?? null;
+  }
+
+  /** The friend-request revision as epoch-ms (the wire form), or null. */
+  async findLatestFriendReqUpdate(userId: number): Promise<number | null> {
+    const d = await this.latestFriendReqDate(userId);
+    return d ? d.getTime() : null;
+  }
+
+  /** The full friend-request badge state — `{ friendReqRev, friendReqAckRev }` (epoch-ms) — what HELLO +
+   *  the FRIEND_REQ_REV_UPDATED push carry (so the native layer merges both + the client derives
+   *  `friendReqRev > friendReqAckRev`). */
+  async friendReqState(userId: number): Promise<{ friendReqRev: number | null; friendReqAckRev: number }> {
+    const [d, user] = await Promise.all([
+      this.latestFriendReqDate(userId),
+      this.prisma.user.findUnique({ where: { id: userId }, select: { friendReqAckRev: true } }),
+    ]);
+    return {
+      friendReqRev: d ? d.getTime() : null,
+      friendReqAckRev: user?.friendReqAckRev ? user.friendReqAckRev.getTime() : 0,
+    };
   }
 
   // ─── federation inbound (called by FriendOpHandler) ──────────────────────────
@@ -510,7 +532,7 @@ export class InviteService {
           originId: params.originId,
         },
       });
-      // Creating this PENDING row advances the derived friendReqRev (MAX(updatedAt) over incoming FRIEND
+      // Creating this PENDING row advances the derived friendReqRev (MAX(createdAt) over incoming FRIEND
       // invites) — no denormalized badge column to arm.
       return invite.id.toString();
     } catch (e) {
@@ -620,11 +642,11 @@ export class InviteService {
   }
 
   /**
-   * Resolve an invite id from EITHER a BigInt invite id (local legacy) OR a group `!account` (the
-   * federated-stable card identity). The card carries the group account; the invitee's local Invite row
-   * (created by handleGroupInvite) is found by (toUserId=caller, thread.fedGroupAccount=groupAccount).
-   * `pendingOnly` — detail shows any-status (so an already-joined invite renders its final state); accept
-   * requires PENDING. Returns null if no such invite (caller throws the domain error).
+   * Find the caller's local GROUP Invite row for a group `!account` (the federated-stable card identity):
+   * matched on (toUserId=caller, kind=GROUP) for the group whose account equals groupAccount — the row
+   * handleGroupInvite created. `pendingOnly` — detail shows any-status (so an already-joined invite
+   * renders its final state); accept requires PENDING. Returns null if no such invite (caller throws
+   * the domain error).
    */
   private async findInviteIdByGroup(
     groupAccount: string,

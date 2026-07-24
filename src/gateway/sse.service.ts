@@ -92,18 +92,22 @@ export class SseService implements OnModuleDestroy {
         this.messages.findNewestForUser(userId),
         this.prisma.user.findUnique({
           where: { id: userId },
-          select: { threadRevision: true, profileRev: true },
+          select: { threadRevision: true, profileRev: true, friendReqAckRev: true },
         }),
-        // friendReqRev = MAX(updatedAt) over the user's incoming FRIEND invites (the data-derived friend-
-        // request revision; no denormalized badge column). Null when the user has never received one.
+        // friendReqRev = MAX(createdAt) over the user's incoming FRIEND invites — creation-based so the
+        // badge arms ONLY on a NEW request (accept/decline flip status/updatedAt but don't re-arm). Null
+        // when the user has never received one.
         this.prisma.invite.aggregate({
           where: { kind: InviteKind.FRIEND, toUserId: userId },
-          _max: { updatedAt: true },
+          _max: { createdAt: true },
         }),
       ]);
-      const friendReqRev = friendReqAgg._max.updatedAt
-        ? friendReqAgg._max.updatedAt.getTime()
+      const friendReqRev = friendReqAgg._max.createdAt
+        ? friendReqAgg._max.createdAt.getTime()
         : null;
+      // friendReqAckRev is a DateTime column; the wire carries it as epoch-ms (JS Number) for a clean `>`
+      // comparison vs friendReqRev. Epoch (0) when somehow absent.
+      const friendReqAckRev = user?.friendReqAckRev ? user.friendReqAckRev.getTime() : 0;
       const frame = formatSseFrame('HELLO', {
         // The caller's userId. The session token is OPAQUE (server-side lookup only), so the client cannot
         // learn its userId without an authenticated response — HELLO is it. The client opens its per-user
@@ -122,10 +126,13 @@ export class SseService implements OnModuleDestroy {
         // cached profileRev matches this (it already has the fresh name/avatar/bio). First-ever boot (no
         // cache) or a changed rev still fetches. PROFILE_REV_UPDATED advances it live (multi-device).
         profileRev: user?.profileRev ?? 0,
-        // The friend-request revision (epoch ms | null) = MAX(updatedAt) over incoming FRIEND invites. The
-        // client compares it to its IDB cursor to derive the unread badge (mirroring the threadRevision
-        // delta model); FRIEND_REQ_REV_UPDATED advances it live. Replaces the former denormalized boolean.
+        // The friend-request revision (epoch-ms | null) = MAX(createdAt) over incoming FRIEND invites. The
+        // client derives the unread badge as `friendReqRev > friendReqAckRev`; FRIEND_REQ_REV_UPDATED
+        // advances both live. Replaces the former denormalized boolean.
         friendReqRev,
+        // The friend-request read cursor (epoch-ms). markRead advances it to the current friendReqRev,
+        // clearing the badge on ALL devices (server-state, multi-device consistent).
+        friendReqAckRev,
       });
       if (!entry.res.writableEnded) entry.res.write(frame);
     } catch (e) {
@@ -284,12 +291,15 @@ export class SseService implements OnModuleDestroy {
     this.pushToUser(userId, 'PROFILE_REV_UPDATED', data);
   }
 
-  /** Friend-request revision advanced (a FRIEND invite to this user was created / accepted / declined — any
-   *  mutation of an incoming FRIEND row bumps its `updatedAt`). Carried as the new MAX(updatedAt) epoch ms
-   *  (`friendReqRev`); the client compares it to its IDB cursor to (re)derive the unread badge, and the
-   *  native layer merges it into its cached HELLO so a re-attached webview's replay is fresh. Replaces the
-   *  former denormalized `hasUrFriendReq` boolean push. */
-  onFriendReqRevUpdated(userId: number, data: { friendReqRev: number | null }) {
+  /** Friend-request badge state changed (a FRIEND invite to this user was created / accepted / declined —
+   *  any mutation of an incoming FRIEND row bumps its `updatedAt` — OR the user markRead'd, advancing the
+   *  ack cursor). Carries the FULL current state `{ friendReqRev, friendReqAckRev }` (epoch-ms); the client
+   *  derives the badge as `friendReqRev > friendReqAckRev`, and the native layer merges both into its cached
+   *  HELLO so a re-attached webview's replay is fresh. Replaces the former denormalized boolean push. */
+  onFriendReqRevUpdated(
+    userId: number,
+    data: { friendReqRev: number | null; friendReqAckRev: number },
+  ) {
     this.pushToUser(userId, 'FRIEND_REQ_REV_UPDATED', data);
   }
 

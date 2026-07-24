@@ -31,7 +31,7 @@ export const MAX_FILE_NAME_LEN = 100;
 
 /** A FILE message's stored content (JSON-stringified in Message.content). */
 export interface FileContent {
-  /** Server-relative URL of the stored file; always `/uploads/<safe-name>`. */
+  /** Server-relative CAS shard URL of the stored file (`/uploads/shards/<2hex>/<2hex>/<sha256>.<ext>`). */
   url: string;
   /** Sanitized original filename for display. */
   name: string;
@@ -71,6 +71,8 @@ export interface AudioContent {
 const MAX_LINK_TITLE_LEN = 300;
 const MAX_LINK_DESC_LEN = 500;
 const MAX_LINK_SITE_NAME_LEN = 100;
+/** A link thumbnail's content-addressed digest (sha256 hex, 64 chars) — the form stored in the DB. */
+const DIGEST_RE = /^[0-9a-f]{64}$/;
 
 /** A LINK message's stored content (JSON-stringified in Message.content) — a web link card. Built
  *  authoritatively by LinkPreviewService from an OpenGraph fetch (title/description/siteName pulled
@@ -114,27 +116,22 @@ const MIME_RE = /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/i;
 const CAS_UPLOAD_URL_RE =
   /^\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/[0-9a-f]{64}\.[A-Za-z0-9]{1,16}$/;
 
-/** Matches a legacy flat upload URL: /uploads/<flat-name> (pre-CAS files). Kept so existing FILE
- *  messages with flat URLs still validate after the CAS switch (natural attrition, no migration). */
-const FLAT_UPLOAD_URL_RE = /^\/uploads\/[A-Za-z0-9._-]+$/;
-
-/** Whether a url is an accepted server-served upload path — CAS sharded OR legacy flat. Rejects
- *  traversal ('..'), query/fragment, and any shape saveCas()/saveFile() would never emit. Shared by
- *  parseFileContent and the VIDEO/AUDIO content validators. */
+/** Whether a url is an accepted server-served upload path — a CAS shard URL. Rejects traversal
+ *  ('..'), query/fragment, and any shape saveCas() would never emit. Shared by parseFileContent and
+ *  the VIDEO/AUDIO content validators. */
 export function isUploadUrl(url: string): boolean {
   if (url.includes('..')) return false;
-  return CAS_UPLOAD_URL_RE.test(url) || FLAT_UPLOAD_URL_RE.test(url);
+  return CAS_UPLOAD_URL_RE.test(url);
 }
 
 /** Global capture of the digest inside a CAS shard URL. Used by extractDigests to pull every sha256
  *  referenced by a message's content string (IMAGE/FILE/VIDEO/AUDIO) so MediaMessage authz rows can be
- *  written at send time. Legacy flat URLs have no digest and are intentionally ignored. */
+ *  written at send time. */
 const SHARD_DIGEST_RE = /\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\./g;
 
 /** Extract every distinct CAS digest referenced by a message's raw content string. Scans the whole
  *  JSON (works for single-image `{url,...}`, FILE/VIDEO/AUDIO shapes, and future album arrays alike)
- *  and de-duplicates — one MediaMessage row per (message, digest). Returns [] for PURE_TEXT and for
- *  content that references only legacy-flat URLs (no digest → no authz row → served auth-n-only). */
+ *  and de-duplicates — one MediaMessage row per (message, digest). Returns [] for PURE_TEXT. */
 export function extractDigests(content: string): string[] {
   if (!content) return [];
   const out = new Set<string>();
@@ -144,8 +141,7 @@ export function extractDigests(content: string): string[] {
 
 /** Same scan as extractDigests, but also captures the on-disk extension — the RECEIVER uses this to
  *  fetch + localize each media asset via /get_file (the ext names the local CAS file so it serves
- *  same-origin with the right mime via @fastify/static). De-duplicated by digest (a digest has one ext).
- *  Legacy flat URLs have no digest and are ignored. */
+ *  same-origin with the right mime via @fastify/static). De-duplicated by digest (a digest has one ext). */
 const SHARD_DIGEST_EXT_RE =
   /\/uploads\/shards\/[0-9a-f]{2}\/[0-9a-f]{2}\/([0-9a-f]{64})\.([A-Za-z0-9]{1,16})/g;
 export function extractDigestEntries(
@@ -201,8 +197,8 @@ export function parseFileContent(content: string): FileContent | null {
   ) {
     return null;
   }
-  // url MUST be a server-served upload path — CAS sharded (saveCas) or legacy flat (pre-CAS).
-  // isUploadUrl rejects traversal, query/fragment, and any other shape.
+  // url MUST be a server-served CAS shard path (the only shape saveCas emits). isUploadUrl rejects
+  // traversal, query/fragment, and any other shape.
   if (!isUploadUrl(url)) return null;
   if (mimeType.length === 0) return null;
   if (!Number.isFinite(size) || size <= 0 || size > MAX_FILE_BYTES) return null;
@@ -309,7 +305,7 @@ export function parseLinkContent(content: string): LinkContent | null {
   if (title && title.length > MAX_LINK_TITLE_LEN) return null;
   if (description && description.length > MAX_LINK_DESC_LEN) return null;
   if (siteName && siteName.length > MAX_LINK_SITE_NAME_LEN) return null;
-  if (image !== undefined && (typeof image !== 'string' || !isUploadUrl(image))) return null;
+  if (image !== undefined && (typeof image !== 'string' || !DIGEST_RE.test(image))) return null;
   return {
     url,
     title: title || undefined,

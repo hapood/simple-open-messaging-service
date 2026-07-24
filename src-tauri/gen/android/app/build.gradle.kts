@@ -133,6 +133,9 @@ dependencies {
     // Same version as okhttp; okhttp-sse is a separate artifact.
     implementation("com.squareup.okhttp3:okhttp-sse:4.12.0")
     testImplementation("junit:junit:4.13.2")
+    // org.json for JVM unit tests of pure JSON logic (HelloMerger) — Android's org.json is API-compatible
+    // with this standalone build, so the test exercises the same put/opt/toString surface the service uses.
+    testImplementation("org.json:json:20240303")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }

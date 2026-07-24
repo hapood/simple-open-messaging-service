@@ -57,7 +57,7 @@ export class MediaAssetGcController {
   @HttpCode(HttpStatus.OK)
   @Post('admin/media/gc-avatars')
   @ApiOperation({
-    summary: 'Reap orphaned avatars (no longer any User/Group current avatar) from uploads/avatars + legacy flat',
+    summary: 'Reap orphaned avatars (no longer any User current avatar) from uploads/avatars',
   })
   async gcAvatars(): Promise<ApiResult> {
     const data = await this.gc.gcOrphanedAvatars();

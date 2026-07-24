@@ -421,12 +421,12 @@ export class UploadService {
   }
 
   /**
-   * Generic file save: the on-disk filename is `<ts>-<randomHex>.<ext>` (ext is sanitized from the
-   * client's original filename by parseFileExt, [a-z0-9]{1,16} only; omitted when there is no safe
-   * extension). Collision-safe / unpredictable / traversal-proof; returns { url, name, size, mimeType }
-   * as the FILE message content. The display `name` is the client's original filename, sanitized
-   * (strip directory + control chars + length cap). The url shape matches save() so parseFileContent
-   * validates it.
+   * Generic file save — content-addressed + deduped via the shared CAS pipeline (sha256 → shard path
+   * → MediaAsset ref++). The on-disk ext is sanitized from the client's original filename by
+   * parseFileExt ([a-z0-9]{1,16} only); when the filename has no safe extension it falls back to
+   * 'bin' so the shard path always carries one. Returns { url, name, size, mimeType } as the FILE
+   * message content. The display `name` is the client's original filename, sanitized (strip directory
+   * + control chars + length cap). The url shape matches save() so parseFileContent validates it.
    */
   async saveFile(
     mimetype: string,
@@ -436,8 +436,7 @@ export class UploadService {
     const ext = parseFileExt(originalName);
     // Open model: any file type is accepted, so the on-disk ext comes from the sanitized client
     // filename (there is no trustworthy magic byte for arbitrary file types). Fall back to 'bin' so
-    // the CAS path always carries an extension — served as application/octet-stream + attachment,
-    // matching the legacy no-ext behavior.
+    // the CAS path always carries an extension — served as application/octet-stream + attachment.
     const casExt = ext || 'bin';
     const { url, digest, size } = await this.saveCas(casExt, buf);
     await this.mediaAsset.upsertAndRef(digest, BigInt(size));

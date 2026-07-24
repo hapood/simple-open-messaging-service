@@ -31,6 +31,13 @@ model User {
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   isDeleted          Boolean             @default(false)
+  // Friend-request read cursor. The client derives the unread badge as friendReqRev (= MAX(updatedAt) over
+  // incoming FRIEND invites, SSE-carried) > friendReqAckRev; markRead advances this to the current
+  // friendReqRev, clearing the badge on ALL devices (server-state, multi-device consistent — the
+  // lastReadSeq-per-thread pattern applied to friend requests). DateTime (same type as the derivation) — no
+  // 2038/overflow/BigInt-serialization issue; the wire carries both as epoch-ms (JS Number). Default epoch
+  // = "never acked" (existing unread requests show the badge until the first markRead).
+  friendReqAckRev    DateTime            @default("1970-01-01T00:00:00.000Z")
   // Profile revision (name/avatar/bio). On the ORIGIN, bumped on every profile edit (authoritative).
   // On a federated STUB, remoteProfileRev holds the origin's profileRev at last localization — the
   // chat-open probe compares the two and re-pulls when the origin is newer. Null remoteProfileRev =

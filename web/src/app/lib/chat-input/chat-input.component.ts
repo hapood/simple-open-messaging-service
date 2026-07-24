@@ -12,11 +12,14 @@ import {
   viewChild,
 } from '@angular/core';
 import { OverlayModule } from '@angular/cdk/overlay';
+import { TranslocoModule } from '@jsverse/transloco';
 import { ChatEditorComponent, type ChatMember } from '../../components/chat-editor/chat-editor.component';
 import { ChatActionMenuComponent, type ChatMenuEntry } from '../../components/chat-action-menu/chat-action-menu.component';
 import { AppIconType } from '../../components/icon/icon.component';
 import { PreventFocusStealDirective } from '../../directives/prevent-focus-steal.directive';
 import { EMOJI_CATEGORIES } from './emoji-data';
+import { firstValueFrom } from 'rxjs';
+import { MsgService } from '../../services/message.service';
 
 /**
  * A structured send intent emitted by {@link ChatInputComponent}. One discriminated union (rather than three
@@ -31,10 +34,10 @@ export type ChatSendIntent =
   | { kind: 'link'; url: string }
   | { kind: 'audio'; blob: Blob; duration: number; mimeType: string };
 
-/** A category/tab shown in the emoji panel (Recents is a synthetic tab when non-empty). */
+/** A category/tab shown in the emoji panel (Recents is a synthetic tab when non-empty). The accessible
+ *  label is NOT carried here — the template resolves it via `chat.emojiTab.<id>` (transloco), keyed by `id`. */
 interface EmojiTab {
   readonly id: string;
-  readonly label: string;
   readonly icon: string;
   readonly icons: readonly string[];
 }
@@ -49,6 +52,16 @@ const RECENTS_MAX = 32;
 const BARE_URL_RE = /^https?:\/\/\S+$/i;
 function isBareUrl(text: string): boolean {
   return BARE_URL_RE.test(text);
+}
+
+/** A live link-card preview (server-built OG card) shown above the input bar while the draft is a
+ *  single bare URL. `image` is a base64 data URI (inlined on the wire). */
+interface LinkCardPreview {
+  url: string;
+  title?: string;
+  description?: string;
+  siteName?: string;
+  image?: string;
 }
 
 /** Pick the best audio MIME the current browser can RECORD. MediaRecorder output varies by engine:
@@ -125,7 +138,7 @@ function saveRecents(list: string[]): void {
  */
 @Component({
   selector: 'app-chat-input',
-  imports: [ChatEditorComponent, PreventFocusStealDirective, ChatActionMenuComponent, OverlayModule],
+  imports: [ChatEditorComponent, PreventFocusStealDirective, ChatActionMenuComponent, OverlayModule, TranslocoModule],
   templateUrl: './chat-input.component.html',
   styleUrl: './chat-input.component.scss',
   changeDetection: ChangeDetectionStrategy.OnPush,
@@ -148,12 +161,20 @@ export class ChatInputComponent implements OnDestroy {
   private readonly inputBar = viewChild<ElementRef<HTMLFormElement>>('inputBar');
   private readonly attachInput = viewChild<ElementRef<HTMLInputElement>>('attachInput');
   private readonly fileInput = viewChild<ElementRef<HTMLInputElement>>('fileInput');
+  private readonly msgService = inject(MsgService);
 
   /** The editor's current inline HTML — used only for the send-button enabled state (empty editor ⇒ ''). The
    *  actual text payload is read via `editor.getText()` at send time. */
   readonly draftHtml = signal('');
   /** Emoji panel open flag. */
   readonly emojiOpen = signal(false);
+  /** Live link-card preview when the draft is a single bare URL (WeChat/WhatsApp-style; built
+   *  server-side). Null when the draft isn't a bare URL or the fetch hasn't landed yet. The send path
+   *  reuses the server's cache so the sent card builds instantly. */
+  readonly previewCard = signal<LinkCardPreview | null>(null);
+  /** Monotonic token: a slow earlier URL's response must not overwrite a newer edit's preview. */
+  private previewSeq = 0;
+  private previewTimer?: ReturnType<typeof setTimeout>;
 
   /** Recently-used emojis (persisted across sessions via localStorage). */
   readonly recents = signal<string[]>(loadRecents());
@@ -166,12 +187,9 @@ export class ChatInputComponent implements OnDestroy {
    *  (the category's first glyph — Telegram-style) and its glyph list. */
   readonly emojiTabs = computed<EmojiTab[]>(() => {
     const rec = this.recents();
-    const recentsTab: EmojiTab[] = rec.length
-      ? [{ id: 'recent', label: 'Recent', icon: '🕐', icons: rec }]
-      : [];
+    const recentsTab: EmojiTab[] = rec.length ? [{ id: 'recent', icon: '🕐', icons: rec }] : [];
     const categoryTabs = EMOJI_CATEGORIES.map((c) => ({
       id: c.id,
-      label: c.label,
       icon: c.icons[0] ?? '',
       icons: c.icons,
     }));
@@ -190,6 +208,35 @@ export class ChatInputComponent implements OnDestroy {
   onHtml(h: string): void {
     this.draftHtml.set(h);
     this.measureBar();
+    this.scheduleLinkPreview();
+  }
+
+  /** Debounce: 400ms after the draft stops changing, if it is a single bare URL, ask the server to
+   *  build the card and show it above the bar; any non-URL draft clears the preview. The user sees the
+   *  card BEFORE they send (WeChat/WhatsApp flow). */
+  private scheduleLinkPreview(): void {
+    clearTimeout(this.previewTimer);
+    this.previewTimer = setTimeout(() => void this.fetchPreview(), 400);
+  }
+
+  private async fetchPreview(): Promise<void> {
+    const editor = this.editor();
+    const text = editor ? editor.getText().trim() : '';
+    if (!isBareUrl(text)) {
+      this.previewCard.set(null);
+      return;
+    }
+    const seq = ++this.previewSeq;
+    try {
+      const res = (await firstValueFrom(this.msgService.previewLink(text))) as {
+        code: number;
+        data?: LinkCardPreview;
+      };
+      if (seq !== this.previewSeq) return; // superseded by a newer edit — drop the stale response
+      if (res.code === 0 && res.data) this.previewCard.set(res.data);
+    } catch {
+      // network error → leave the preview as-is; never block composing
+    }
   }
 
   /** Open/close the emoji panel. Opening to the Recents tab when there are recents (WhatsApp-style). */
@@ -229,6 +276,8 @@ export class ChatInputComponent implements OnDestroy {
     if (!text) return;
     editor.clear();
     this.draftHtml.set('');
+    this.previewCard.set(null);
+    clearTimeout(this.previewTimer);
     this.measureBar();
     this.send.emit(isBareUrl(text) ? { kind: 'link', url: text } : { kind: 'text', text });
   }
@@ -286,7 +335,8 @@ export class ChatInputComponent implements OnDestroy {
   readonly recordSecs = signal(0);
   /** True when the finger has slid up past the cancel threshold (release will discard). */
   readonly recordCancelled = signal(false);
-  /** A transient error string (permission denied / unsupported) shown above the bar. */
+  /** A transient error i18n KEY (permission denied / unsupported) shown above the bar; '' ⇒ none. Holds a
+   *  transloco key — the template renders `{{ recordError() | transloco }}` — never the literal text. */
   readonly recordError = signal('');
   /** `m:ss` timer label. */
   readonly recordTimeLabel = computed(() => {
@@ -323,27 +373,29 @@ export class ChatInputComponent implements OnDestroy {
     const el = event.currentTarget as HTMLElement;
     try { el.setPointerCapture(event.pointerId); } catch { /* capture is best-effort */ }
     this.pointerStartY = event.clientY;
-    this.recordAborted = false;
+    this.recordSession++; // a fresh press invalidates any in-flight beginRecording
     this.recordCancelled.set(false);
     this.recordError.set('');
-    void this.beginRecording();
+    void this.beginRecording(this.recordSession);
   }
 
-  private async beginRecording(): Promise<void> {
+  private async beginRecording(session: number): Promise<void> {
     const mime = pickRecorderMime();
     if (!mime || typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
-      this.flashRecordError('Microphone recording is not supported in this browser.');
+      this.flashRecordError('chat.recordMicUnsupported');
       return;
     }
     let stream: MediaStream;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
-      this.flashRecordError('Microphone permission was denied.');
+      this.flashRecordError('chat.recordMicDenied');
       return;
     }
-    // The gesture ended while the permission prompt was up — release the mic and stop without emitting.
-    if (this.recordAborted) {
+    // The gesture ended (released/cancelled) or the component was destroyed while the permission prompt was
+    // up — release the mic and bail. The session counter (bumped on every gesture end) is the race-free
+    // signal that THIS press is still the live one.
+    if (this.recordSession !== session || this.destroyed) {
       stream.getTracks().forEach((t) => t.stop());
       return;
     }
@@ -357,7 +409,22 @@ export class ChatInputComponent implements OnDestroy {
     this.recordStartedAt = Date.now();
     this.recordSecs.set(0);
     this.recording.set(true);
-    rec.start();
+    try {
+      rec.start();
+    } catch {
+      // start() can throw if the stream was stopped concurrently — bail without emitting.
+      this.recorder = null;
+      this.recording.set(false);
+      stream.getTracks().forEach((t) => t.stop());
+      this.stream = null;
+      return;
+    }
+    // Close the remaining race: the gesture may have ended in the window between the post-await check above
+    // and rec.start(). If so, stop+discard now rather than running unattended until the 60s cap.
+    if (this.recordSession !== session || this.destroyed) {
+      void this.stopRecording(true);
+      return;
+    }
     this.tickTimer = setInterval(() => {
       this.recordSecs.set(Math.min(MAX_RECORD_SECS, Math.floor((Date.now() - this.recordStartedAt) / 1000)));
     }, 250);
@@ -373,13 +440,13 @@ export class ChatInputComponent implements OnDestroy {
   /** Release → send unless the gesture slid into cancel territory. */
   onMicPointerUp(event: PointerEvent): void {
     event.preventDefault();
-    if (!this.recording()) { this.recordAborted = true; return; }
+    if (!this.recording()) { this.recordSession++; return; } // ended before start → invalidate the in-flight begin
     void this.stopRecording(this.recordCancelled());
   }
 
   /** System interrupt (scroll / IME / etc.) → always cancel. */
   onMicPointerCancel(): void {
-    if (!this.recording()) { this.recordAborted = true; return; }
+    if (!this.recording()) { this.recordSession++; return; } // ended before start → invalidate the in-flight begin
     void this.stopRecording(true);
   }
 
@@ -410,18 +477,21 @@ export class ChatInputComponent implements OnDestroy {
     this.send.emit({ kind: 'audio', blob, duration, mimeType: blob.type });
   }
 
-  private flashRecordError(message: string): void {
-    this.recordError.set(message);
+  private flashRecordError(key: string): void {
+    this.recordError.set(key);
     clearTimeout(this.errorTimer);
     this.errorTimer = setTimeout(() => this.recordError.set(''), 3000);
   }
 
   ngOnDestroy(): void {
+    this.destroyed = true;
+    this.recordSession++; // invalidate any in-flight beginRecording (permission prompt resolved post-teardown)
     // Stop an in-flight recording if the component is torn down mid-press (thread switch, route leave, etc.).
     if (this.recorder) this.stopRecording(true);
     clearTimeout(this.capTimer);
     clearInterval(this.tickTimer);
     clearTimeout(this.errorTimer);
+    clearTimeout(this.previewTimer);
   }
 
   /** Move-to-front, dedup, cap at {@link RECENTS_MAX}; persist. */
