@@ -18,7 +18,7 @@ export type AdminPrincipal = { adminId: number; role: AdminRole };
  * reach admin endpoints and vice versa.
  *
  * tver: a newly-issued admin access token carries tver = Admin.tokenVersion at issue time; bumping it
- * (disable / role change via AdminAuthService.invalidateAllAdminSessions) makes every outstanding
+ * (disable / role change, in the same transaction as the guarded state change) makes every outstanding
  * access token fail this check on its next request — immediate, no ≤15m lag.
  */
 @Injectable()

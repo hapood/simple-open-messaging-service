@@ -554,7 +554,7 @@ export class AdminAuthService {
 
   /**
    * Issue an admin access token carrying tver = Admin.tokenVersion at issue time. AdminJwtStrategy
-   * verifies tver matches the current value, so bumping tokenVersion (invalidateAllAdminSessions)
+   * verifies tver matches the current value, so bumping tokenVersion (e.g. on disable / role change)
    * invalidates every outstanding access token on its next request. Mirrors the user-side access token.
    */
   async getAdminAccessToken(adminId: number) {
@@ -568,32 +568,13 @@ export class AdminAuthService {
     );
   }
 
-  /**
-   * Disable / role change / force-kick an admin: revoke every active admin refresh token AND bump
-   * tokenVersion so all access tokens fail their next tver check (immediate — no 15m lag). Mirrors the
-   * user-side AuthService.invalidateAllSessions, minus the KV-store tver cache + WS FORCE_LOGOUT (admins
-   * have no WS client and admin request volume is low, so the strategy reads tokenVersion from the DB
-   * directly).
-   */
   /** Revoke every outstanding refresh token for an admin (marks the active family revokedAt + reason).
-   *  Split out of invalidateAllAdminSessions so callers that bump tokenVersion INSIDE a transaction
-   *  (AdminManageService.disable / setRole — the last-super guard) can revoke refresh afterwards
-   *  without issuing a second write against the Admin row. */
+   *  Called by the disable / setRole flows, which bump tokenVersion INSIDE their own transaction (the
+   *  last-super guard) and invoke this separately so no second write hits the Admin row. */
   async revokeRefreshByAdmin(adminId: number, reason: string): Promise<void> {
     await this.prisma.adminRefreshToken.updateMany({
       where: { adminId, revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: reason },
-    });
-  }
-
-  /** NOT atomic across the two writes. Callers needing the tokenVersion bump inside the same
-   *  transaction as a guarded state change (the last-super guard) must bump inside their own
-   *  $transaction and call revokeRefreshByAdmin separately — see AdminManageService.guardedStateChange. */
-  async invalidateAllAdminSessions(adminId: number, reason: string): Promise<void> {
-    await this.revokeRefreshByAdmin(adminId, reason);
-    await this.prisma.admin.update({
-      where: { id: adminId },
-      data: { tokenVersion: { increment: 1 } },
     });
   }
 
