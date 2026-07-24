@@ -154,6 +154,22 @@ export class RouteService {
     }
   }
 
+  /** Full page reload that lands on `page` — used after a web-bundle swap, where the RUNNING SPA is the old
+   *  build and must be re-fetched (an in-SPA {@link redirect} would keep serving stale code). The target URL
+   *  is built through the Router (so it honors the route definitions + the app base href — no hardcoded path
+   *  to drift) and applied via `location.replace`, leaving no stale history entry to back into (mirrors
+   *  {@link redirect}'s `replaceUrl`). `location.replace` to a different path is a hard navigation, so the
+   *  freshly-swapped bundle is served on the reload. */
+  reloadTo(page: RoutePage): void {
+    const commands = this.getPageRoute(page)
+    if (!commands) {
+      console.error(`no page to reload-to [${page}]`)
+      return
+    }
+    const url = this.router.serializeUrl(this.router.createUrlTree(commands))
+    location.replace(url)
+  }
+
   /** Push a dialog onto the nav pane stack; returns a {@link DlgRef} for targeted close. The dialog's
    *  `onResult` is delivered the close result (or `undefined` on cancel / back / scope-clear). */
   popupDlg<K extends PopupType>(

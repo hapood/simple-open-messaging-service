@@ -283,8 +283,20 @@ export class ServerConfigPageComponent {
         await tauriInvoke('init_download_web', { origin: reachable });
         await setApiOrigin(primary);
         await setApiOriginSecondary(lan);
+        // Apply the server's Firebase client config to native BEFORE the reload. `SomsFcm.setFirebaseConfig`
+        // persists + (re)initializes FirebaseApp in the shell, and that state survives the webview reload
+        // (boot's PushService.init deliberately does NOT re-apply it; the cold-start `SomsApplication`
+        // reader only recovers what was already persisted). This download branch is the FIRST-RUN path, so
+        // omitting it leaves native Firebase unconfigured → no FCM token → no push until a later reconfigure.
+        // `config.reload()` is intentionally NOT called here: a full reload discards the in-memory cache, so
+        // the fresh SPA re-fetches /config on the login page regardless.
+        this.push.applyFirebaseConfig(this.firebaseConfig);
         this.phase.set('done');
-        location.reload();
+        // Reload to login, NOT the current /config URL — otherwise the booted SPA matches /config (which has
+        // no guard to leave once the origin is configured) and remounts this page, forcing a second click.
+        // reloadTo resolves the login path via the Router and `location.replace`s, so there's no stale
+        // /config history entry to back into.
+        this.route.reloadTo(RoutePage.AUTH_LOGIN);
         return;
       }
       // Up to date (or probe skipped): persist both origins and proceed in-page to login.
