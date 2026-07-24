@@ -1,4 +1,4 @@
-import { afterNextRender, Component, computed, ElementRef, inject, OnDestroy, signal, viewChild } from '@angular/core';
+import { afterNextRender, Component, computed, effect, ElementRef, inject, OnDestroy, signal, viewChild } from '@angular/core';
 import { CallEventService } from '../../services/call-event.service';
 import { CallAdapterService } from '../../services/call-adapter';
 import { assetUrl } from '../../services/runtime';
@@ -33,7 +33,10 @@ import { assetUrl } from '../../services/runtime';
   standalone: true,
   template: `
     @if (snap().phase !== 'idle') {
-      <div class="call-screen" [class.video]="isVideo()">
+      <div class="call-screen"
+           [class.video]="isVideo()"
+           [class.controls-hidden]="!controlsVisible()"
+           (pointerdown)="onScreenTap()">
         @if (isVideo()) {
           <!-- The self-view hole: native renders the LOCAL camera here (positioned top-right, the
                mainstream-app "picture-in-picture" self preview). Transparent until native attaches. -->
@@ -54,7 +57,11 @@ import { assetUrl } from '../../services/runtime';
 
         <div class="top-bar">
           <div class="name">{{ snap().peerName || '…' }}</div>
-          <div class="status">{{ statusLabel() }}</div>
+          <div class="status"
+               role="status"
+               aria-live="polite"
+               [class.reconnecting]="snap().phase === 'reconnecting'"
+          >{{ statusLabel() }}</div>
           @if (snap().phase === 'connected' || snap().phase === 'reconnecting') {
             <div class="timer">{{ timer() }}</div>
           }
@@ -119,6 +126,17 @@ import { assetUrl } from '../../services/runtime';
         justify-content: flex-end;
         padding-bottom: 48px;
       }
+      /* The chrome (name/status + controls) fades in/out on auto-hide. opacity only — no layout shift, so the
+         native video-surface rects never need re-reporting (a hidden control keeps its space, just invisible). */
+      .call-screen.video .top-bar,
+      .call-screen.video .controls {
+        transition: opacity 220ms ease;
+      }
+      .call-screen.controls-hidden .top-bar,
+      .call-screen.controls-hidden .controls {
+        opacity: 0;
+        pointer-events: none; /* a hidden control can't be tapped; a tap anywhere on the screen reveals them */
+      }
       .self-view {
         position: absolute;
         width: 120px;
@@ -177,6 +195,16 @@ import { assetUrl } from '../../services/runtime';
         line-height: 20px;
         opacity: 0.8;
         min-height: 20px;
+      }
+      /* Reconnecting is expected to recover (GATHER_CONTINUALLY + the caller's ICE restart), so a calm amber
+         pulse — not alarm-red. opacity keyframes only (no height contribution → integer-pixel-safe). */
+      .status.reconnecting {
+        color: #ffb300;
+        animation: soms-call-pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes soms-call-pulse {
+        0%, 100% { opacity: 0.5; }
+        50% { opacity: 1; }
       }
       .timer {
         font-size: 18px;
@@ -241,6 +269,14 @@ export class CallScreenComponent implements OnDestroy {
    *  then this component owns the optimistic toggle. */
   readonly cameraOn = signal(true);
 
+  /** Whether the top-bar + controls are shown. In a connected VIDEO call they auto-hide ~3s after the last
+   *  interaction for an immersive view (the native remote video fills the screen behind the transparent chrome);
+   *  any tap on the screen reveals them again. Always visible otherwise (ringing / connecting / reconnecting /
+   *  audio — the user must be able to act). */
+  readonly controlsVisible = signal(true);
+  private hideTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly HIDE_DELAY_MS = 3000;
+
   /** Self-view PiP size (CSS px) — matches the .self-view width/height; used to clamp the drag. */
   private static readonly SELF_W = 120;
   private static readonly SELF_H = 160;
@@ -266,6 +302,16 @@ export class CallScreenComponent implements OnDestroy {
       window.addEventListener('resize', this.onViewportChange);
       window.addEventListener('scroll', this.onViewportChange, true);
     });
+    // Auto-hide the chrome in a steady connected VIDEO call (immersive viewing); reveal it for every other
+    //  phase (so ringing / connecting / reconnecting keep the controls reachable). Re-arms on each phase change.
+    effect(() => {
+      const phase = this.snap().phase;
+      if (this.isVideo() && phase === 'connected') this.scheduleHide();
+      else {
+        if (this.hideTimer) clearTimeout(this.hideTimer);
+        this.controlsVisible.set(true);
+      }
+    });
   }
 
   private readonly onViewportChange = (): void => {
@@ -278,6 +324,7 @@ export class CallScreenComponent implements OnDestroy {
   /** Drag the self-view PiP. Pointer capture holds the gesture even if the finger leaves the small hole; a
    *  drag vs a tap is decided in onSelfPointerUp by total travel (< 8px = tap → swap self↔peer). */
   onSelfPointerDown(e: PointerEvent): void {
+    e.stopPropagation(); // the PiP is its own surface: a drag/tap here swaps video, not the main chrome
     this.dragging = true;
     this.dragOrigin = { px: e.clientX, py: e.clientY, left: this.selfLeft(), top: this.selfTop() };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -362,6 +409,23 @@ export class CallScreenComponent implements OnDestroy {
     return `${m}:${String(s % 60).padStart(2, '0')}`;
   });
 
+  /** Any pointer down on the call screen reveals the controls + re-arms the auto-hide. The self-PiP is
+   *  excluded (its pointerdown stops propagation — it swaps video, not chrome). */
+  onScreenTap(): void {
+    this.revealControls();
+  }
+
+  /** Show the controls now; in a connected video call, re-arm the auto-hide so they fade again after inactivity. */
+  revealControls(): void {
+    this.controlsVisible.set(true);
+    if (this.isVideo() && this.snap().phase === 'connected') this.scheduleHide();
+  }
+
+  private scheduleHide(): void {
+    if (this.hideTimer) clearTimeout(this.hideTimer);
+    this.hideTimer = setTimeout(() => this.controlsVisible.set(false), CallScreenComponent.HIDE_DELAY_MS);
+  }
+
   accept(): void {
     const sid = this.snap().callSid;
     if (sid) this.adapter.accept(sid);
@@ -392,6 +456,7 @@ export class CallScreenComponent implements OnDestroy {
 
   ngOnDestroy(): void {
     clearInterval(this.timerHandle);
+    if (this.hideTimer) clearTimeout(this.hideTimer);
     window.removeEventListener('resize', this.onViewportChange);
     window.removeEventListener('scroll', this.onViewportChange, true);
     // Detach the native video surfaces (no chrome to host them anymore).

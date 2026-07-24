@@ -74,6 +74,12 @@ object CallController {
 
     private const val TAG = "SomsCall"
 
+    /** Reconnect grace: how long "Reconnecting…" shows before the caller attempts one ICE restart, then fails.
+     *  Bounds the state so a dropped call never hangs in reconnecting — GATHER_CONTINUALLY recovers most blips
+     *  inside this window; the restart covers the stale ICE credentials a long disconnect leaves behind. */
+    private const val RECONNECT_BACKSTOP_MS = 15_000L
+    private const val RECONNECT_BACKSTOP_SHORT_MS = 10_000L
+
     /** The volatile call snapshot the JS bridge reads synchronously via [snapshotJson] (a freshly-booted /
      *  re-attached WebView re-derives the call UI from this, no SSE wait). Fields are written on
      *  [callExecutor], read on the JS bridge thread — @Volatile for the primitive ref reads. */
@@ -145,6 +151,32 @@ object CallController {
     private var savedWebViewBg: android.graphics.drawable.Drawable? = null
     /** UI-thread handler — SurfaceViewRenderer (a View) + the sibling-view tree must be touched on main. */
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    /** True once the caller has tried an ICE restart for this call, so the reconnect backstop's second firing
+     *  fails instead of restarting again (one restart attempt, then give up). Reset in [teardown]/[initiate]. */
+    @Volatile private var iceRestartTried = false
+    /** Posted on [mainHandler] when the PC goes DISCONNECTED; hops to [callExecutor]. Cancelled on CONNECTED +
+     *  [teardown]. Bounds "Reconnecting…": after the grace the caller restarts ICE once (re-arming a shorter
+     *  backstop), then the call fails. */
+    private val reconnectBackstop = Runnable {
+        callExecutor.execute {
+            if (phase != "reconnecting") return@execute // recovered, or already ended
+            if (callSid == null) return@execute
+            if (isCaller && !iceRestartTried && pc != null) {
+                iceRestartTried = true
+                SomsLog.i(TAG) { "reconnect backstop -> ICE restart (caller); re-arming short backstop" }
+                runCatching {
+                    val c = pc!!
+                    c.restartIce()
+                    c.createOffer(offerSdpObserver, iceRestartConstraints())
+                }.onFailure { SomsLog.w(TAG) { "ICE restart failed: ${it.message}" } }
+                mainHandler.postDelayed(reconnectBackstop, RECONNECT_BACKSTOP_SHORT_MS)
+            } else {
+                SomsLog.i(TAG) { "reconnect backstop -> fail (callee, or restart exhausted)" }
+                fail("failed")
+            }
+        }
+    }
 
     /** Serial executor for every PC op + REST call (see class doc). Named for logcat. */
     private val callExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
@@ -472,6 +504,7 @@ object CallController {
             SomsLog.i(TAG) { "connectionState=$s phase=$phase" }
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> {
+                    cancelReconnectBackstop()
                     if (phase != "connected") {
                         phase = "connected"
                         startedAt = System.currentTimeMillis()
@@ -481,18 +514,18 @@ object CallController {
                     callExecutor.execute { postConnected(sid) }
                 }
                 PeerConnection.PeerConnectionState.DISCONNECTED -> {
-                    // Transient (a blip / handoff). Do NOT fail immediately — GATHER_CONTINUALLY + an ICE
-                    // restart (Phase 5) recover most of these. Mark reconnecting so the UI shows it calmly.
+                    // Transient (a blip / handoff). Do NOT fail immediately — GATHER_CONTINUALLY regathers on a
+                    // network change and recovers most of these inside the backstop window; the caller's ICE
+                    // restart covers the stale-credentials case. Mark reconnecting so the UI shows it calmly,
+                    // and arm the backstop so a real drop can't hang here forever.
                     if (phase == "connected") phase = "reconnecting"
                     pushSnapshot()
+                    armReconnectBackstop()
                 }
                 PeerConnection.PeerConnectionState.FAILED -> {
                     // ICE gave up. End the call as failed (the server maps endReason=failed → the `failed`
                     // CALL bubble with duration, since we did connect).
-                    val sid = callSid ?: return
-                    phase = "ended"
-                    pushSnapshot()
-                    callExecutor.execute { postEnd(sid, "failed") }
+                    fail("failed")
                 }
                 else -> {}
             }
@@ -697,6 +730,7 @@ object CallController {
                 isCaller = true
                 phase = "calling"
                 startedAt = 0L
+                iceRestartTried = false
                 pushSnapshot()
                 val connection = createPeerConnection()
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())
@@ -779,6 +813,36 @@ object CallController {
         callExecutor.execute { teardown() }
     }
 
+    // ── reconnect backstop + failure ──────────────────────────────────────────────
+
+    private fun armReconnectBackstop() {
+        cancelReconnectBackstop()
+        mainHandler.postDelayed(reconnectBackstop, RECONNECT_BACKSTOP_MS)
+    }
+
+    private fun cancelReconnectBackstop() {
+        mainHandler.removeCallbacks(reconnectBackstop)
+    }
+
+    /** End the active call as failed/ended: cancel any pending reconnect, flip the phase, POST /calls/end, and
+     *  tear down locally (don't rely on the CALL_EVENT{ended} echo — the failure may be a dead network). Safe
+     *  from any thread; the network + PC work hops to [callExecutor]. [teardown] is idempotent if the echo
+     *  later lands. */
+    private fun fail(reason: String) {
+        cancelReconnectBackstop()
+        val sid = callSid
+        if (phase != "ended" && phase != "idle") { phase = "ended"; pushSnapshot() }
+        if (sid == null) return
+        callExecutor.execute { postEnd(sid, reason); teardown() }
+    }
+
+    /** ICE-restart renegotiation constraints: the initial offer's constraints + iceRestart=true (fresh ICE
+     *  ufrag/pwd so a new gather supersedes the stale pair). The callee answers through the normal offer→answer
+     *  path — no callee-side change. */
+    private fun iceRestartConstraints(): MediaConstraints = offerAnswerConstraints().apply {
+        mandatory.add(MediaConstraints.KeyValuePair("iceRestart", "true"))
+    }
+
     // ── teardown + REST helpers ───────────────────────────────────────────────────
 
     /** Release the PC + tracks + audio source for the current call, and stop the [CallService] anchor
@@ -820,6 +884,8 @@ object CallController {
         peerUserId = 0
         startedAt = 0L
         mediaState = "new"
+        iceRestartTried = false
+        cancelReconnectBackstop()
         pendingOffer = null
         pendingIce.clear()
         pushSnapshot()
