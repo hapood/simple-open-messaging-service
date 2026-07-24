@@ -1,6 +1,6 @@
 <div class="ap" [class.ap--failed]="failed()">
   <button type="button" class="ap-btn" (click)="toggle()"
-          [attr.aria-label]="playing() ? 'Pause' : 'Play'" [disabled]="failed()">
+          [attr.aria-label]="playing() ? 'Pause' : 'Play'" [disabled]="inert()">
     @if (playing()) {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <rect x="6" y="5" width="4" height="14" rx="1" />

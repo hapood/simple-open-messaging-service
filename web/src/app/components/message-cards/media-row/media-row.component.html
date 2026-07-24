@@ -63,7 +63,7 @@
             }
             @if (c.kind === 'audio') {
               <!-- Flat voice player — fills the cell; playback only animates a width fill (height-stable). -->
-              <app-audio-player [src]="c.src" [duration]="c.duration ?? 0" />
+              <app-audio-player [src]="c.src" [duration]="c.duration ?? 0" [status]="c.status" />
             }
             @if (c.kind !== 'audio') {
               <span class="msg-media-size">{{ c.sizeText || 'unknown size' }}</span>
