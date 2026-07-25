@@ -254,10 +254,13 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         else webView.setBackgroundColor(Color.WHITE)
     }
 
-    /** Called by CallController on a (re)created WebView: the prior surfaces (siblings of the OLD WebView's
-     *  view tree) are orphaned. Detach their sinks, release them, null the refs so [ensureRenderers] re-creates
-     *  fresh ones on the new parent (its guard would otherwise skip, leaving the rebuilt UI video-less). */
-    fun onWebViewRecreated() {
+    /** The WebView (the surface host) is GONE — either destroyed (Activity teardown) or replaced by a new one
+     *  (recreation). The prior surfaces (siblings of that WebView's view tree) are now orphaned: detach their
+     *  sinks, release them, null the refs so [ensureRenderers] re-creates fresh ones on the next host (its guard
+     *  would otherwise skip, leaving the rebuilt UI video-less). The tracks/PC are untouched — the call survives
+     *  a WebView/Activity loss; only the View surfaces are released here. Called from BOTH onWebViewCreate (the
+     *  old host is gone) + MainActivity.onDestroy (the current host is gone). */
+    fun onWebViewGone() {
         localVideoTrack?.let { lt ->
             remoteRenderer?.let { runCatching { lt.removeSink(it) } }
             selfRenderer?.let { runCatching { lt.removeSink(it) } }

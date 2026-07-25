@@ -307,9 +307,9 @@ class MainActivity : TauriActivity() {
             SomsBridge.DeepLink.pendingThreadId = null
             openThread(it)
         }
-        // The (re)created WebView's view tree is new — null the orphaned prior video surfaces so the next
+        // This (re)created WebView replaces any prior one — release its orphaned video surfaces so the next
         // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
-        CallController.onWebViewRecreated()
+        CallController.onWebViewGone()
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.
@@ -453,6 +453,12 @@ class MainActivity : TauriActivity() {
         // Drop the webview reference so a destroyed activity can be GC'd; the FCM service may keep
         // running in the process but its eval() becomes a no-op until the next activity attaches.
         SomsBridge.webView = null
+        // Release the process-global hooks bound to THIS activity so they neither fire on a dead activity (a
+        // phase change after destroy would otherwise runOnUiThread -> applyCallDisplayFlags on a gone window)
+        // nor hold orphaned video surfaces. The call itself survives (CallController + CallService FGS are
+        // process-global); only the activity-bound bindings are dropped here.
+        CallController.setPhaseListener(null)
+        CallController.onWebViewGone()
         super.onDestroy()
     }
 

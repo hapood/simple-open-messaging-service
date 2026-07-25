@@ -280,8 +280,9 @@ object CallController {
     /** The remote video's rotated frame dimensions, or null until the first frame — for PiP aspect sizing. */
     fun remoteVideoDimensions(): Pair<Int, Int>? = video.remoteDimensions()
 
-    /** Called by MainActivity.onWebViewCreate on a (re)created WebView — reset the orphaned video surfaces. */
-    fun onWebViewRecreated() = video.onWebViewRecreated()
+    /** The WebView is gone (Activity destroy or recreation) — release the orphaned video surfaces (the tracks
+     *  + PC survive; the call continues audio-only until a new WebView re-reports rects). */
+    fun onWebViewGone() = video.onWebViewGone()
 
     // ── the PC observer: ICE trickle + connection state ───────────────────────────
 
