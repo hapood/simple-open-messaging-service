@@ -3,6 +3,7 @@ import {
   Post,
   Get,
   Body,
+  Param,
   Request,
   UseGuards,
   HttpStatus,
@@ -157,6 +158,21 @@ export class CallsController {
     // half-working set. A fully-unset TURN env (dev, no coturn) returns STUN-only / empty: that is
     // the normal no-TURN mode, not an error.
     const data = buildIceServers(req.user.userId);
+    return { code: BusinessCode.OK, message: 'successful', data };
+  }
+
+  @UseGuards(ThrottleGuard)
+  @Throttle(30, 60) // fetched ~once per accept (an offline-then-online callee); low, bursty
+  @ApiBearerAuth()
+  @Get('calls/:callSid/signaling')
+  @ApiOperation({
+    summary: 'Fetch the staged setup signaling (offer/ICE) — for a peer that was offline when it trickled',
+  })
+  async signaling(
+    @Request() req: FastifyRequest,
+    @Param('callSid') callSid: string,
+  ): Promise<ApiResult> {
+    const data = await this.calls.signaling(req.user.userId, callSid);
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 }

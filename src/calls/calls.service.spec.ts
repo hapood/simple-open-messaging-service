@@ -630,6 +630,58 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
   });
 });
 
+describe('CallsService signaling store-and-forward', () => {
+  it('stages the offer + caller ICE for the callee to GET (an offline callee still gets them on accept)', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'offer', payload: 'OFFER_SDP' });
+    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_1' });
+    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_2' });
+    // The callee fetches → the offer + the caller's ICE.
+    expect(await svc.signaling(2, 'cs1')).toEqual({ offer: 'OFFER_SDP', ice: ['ICE_1', 'ICE_2'] });
+  });
+
+  it('stages the answer + callee ICE for the caller to GET', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.signal(2, { callSid: 'cs1', toUserId: 1, kind: 'answer', payload: 'ANSWER_SDP' });
+    await svc.signal(2, { callSid: 'cs1', toUserId: 1, kind: 'ice', payload: 'CALLEE_ICE' });
+    expect(await svc.signaling(1, 'cs1')).toEqual({ answer: 'ANSWER_SDP', ice: ['CALLEE_ICE'] });
+  });
+
+  it('dedupes a replayed ICE candidate (no duplicate in the staged list)', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_X' });
+    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_X' }); // retransmit
+    expect((await svc.signaling(2, 'cs1')).ice).toEqual(['ICE_X']);
+  });
+
+  it('clears the staged signaling on connect (media up → setup consumed)', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'offer', payload: 'OFFER_SDP' });
+    await svc.accept(2, 'cs1');
+    await svc.connected(1, 'cs1'); // media up
+    expect(await svc.signaling(2, 'cs1')).toEqual({ offer: null, ice: [] });
+  });
+
+  it('rejects a GET from a non-participant', async () => {
+    const { svc } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await expect(svc.signaling(99, 'cs1')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
+    );
+  });
+
+  it('rejects a GET for an unknown call', async () => {
+    const { svc } = mkService();
+    await expect(svc.signaling(2, 'nope')).rejects.toSatisfy(
+      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
+    );
+  });
+});
+
 describe('CallsService — unused CallOutcome alias keeps the import live', () => {
   it('the terminal status union is exported', () => {
     const ok: CallOutcome[] = ['completed', 'cancelled', 'declined', 'missed', 'failed', 'unreachable'];

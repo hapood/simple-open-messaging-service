@@ -59,6 +59,16 @@ interface LiveCall {
   peerAccount: string | null;
   /** The foreign participant's home domain (the S2S POST target); null for a local call. */
   peerDomain: string | null;
+  /** Server-authoritative setup signaling (store-and-forward). The caller's offer + ICE are staged for the
+   *  CALLEE to fetch; the callee's answer + ICE for the CALLER. Each server stages for its LOCAL participant
+   *  (origin for the caller, mirror for the callee), so a callee that was OFFLINE when the offer trickled over
+   *  SSE still gets it on accept via GET /calls/:sid/signaling — no client-side re-offer hack. Cleared on
+   *  `connected` (media up → setup consumed) and on release (call ends). ICE payloads are stored as the raw
+   *  client JSON strings, deduped. */
+  pendingOffer?: string;
+  pendingAnswer?: string;
+  pendingOfferIce: string[];
+  pendingAnswerIce: string[];
 }
 
 /** The payload FederationService emits on 'call.frame.inbound' (the inbound bridge — see the
@@ -174,6 +184,8 @@ export class CallsService implements OnModuleDestroy {
       origin: true, // the caller's server is always the origin (authors the terminal bubble)
       peerAccount: federated ? callee!.account : null,
       peerDomain: federated ? callee!.domain : null,
+      pendingOfferIce: [],
+      pendingAnswerIce: [],
     };
     this.activeCalls.set(call.callSid, call);
     this.activeByUser.set(callerId, call.callSid);
@@ -292,6 +304,7 @@ export class CallsService implements OnModuleDestroy {
     }
     call.state = 'connected';
     call.startedAt = Date.now();
+    this.clearStaged(call); // media is up — the setup signaling is consumed, drop the staged store
     this.clearRingTimer(callSid);
     this.notifyBoth(call, 'connected', { startedAt: call.startedAt });
   }
@@ -363,6 +376,7 @@ export class CallsService implements OnModuleDestroy {
     if (dto.toUserId !== peer) {
       throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'relay target is not the call peer');
     }
+    this.stage(call, fromUserId, dto.kind, dto.payload); // store-and-forward: a peer offline now can GET it later
     if (call.peerDomain) {
       // Federated: relay over S2S to the peer server (the foreign participant isn't on this server).
       // Fire-and-forget: a dropped ICE candidate is harmless (the client re-gathers / retries).
@@ -458,6 +472,8 @@ export class CallsService implements OnModuleDestroy {
       origin: false,
       peerAccount: frame.from.account,
       peerDomain: frame.from.domain,
+      pendingOfferIce: [],
+      pendingAnswerIce: [],
     };
     this.activeCalls.set(mirror.callSid, mirror);
     this.activeByUser.set(localUserId, mirror.callSid);
@@ -520,7 +536,9 @@ export class CallsService implements OnModuleDestroy {
     peerStubId: number,
     frame: S2SCallFrame,
   ): void {
-    if (!this.activeCalls.has(frame.callSid)) return; // race — client will retry
+    const call = this.activeCalls.get(frame.callSid);
+    if (!call) return; // race — client will retry
+    this.stage(call, peerStubId, frame.kind!, frame.payload!); // mirror stages for its local participant
     this.sse.onCallSignal(localUserId, {
       event: 'CALL_SIGNAL',
       callSid: frame.callSid,
@@ -604,6 +622,46 @@ export class CallsService implements OnModuleDestroy {
     if (this.activeByUser.get(call.callerId) === call.callSid) this.activeByUser.delete(call.callerId);
     if (this.activeByUser.get(call.calleeId) === call.callSid) this.activeByUser.delete(call.calleeId);
     this.clearRingTimer(call.callSid);
+  }
+
+  /** Stage one setup frame for the recipient to fetch (store-and-forward). The offer + the caller's ICE are
+   *  staged for the CALLEE; the answer + the callee's ICE for the CALLER — derived from the sender. ICE is
+   *  deduped by its raw payload (a retransmit / a replayed S2S frame must not duplicate). */
+  private stage(call: LiveCall, senderId: number, kind: string, payload: string): void {
+    if (kind === 'offer') {
+      call.pendingOffer = payload;
+    } else if (kind === 'answer') {
+      call.pendingAnswer = payload;
+    } else if (kind === 'ice') {
+      const list = senderId === call.callerId ? call.pendingOfferIce : call.pendingAnswerIce;
+      if (!list.includes(payload)) list.push(payload);
+    }
+  }
+
+  /** Drop the staged setup signaling (on connect — media up, setup consumed). */
+  private clearStaged(call: LiveCall): void {
+    call.pendingOffer = undefined;
+    call.pendingAnswer = undefined;
+    call.pendingOfferIce = [];
+    call.pendingAnswerIce = [];
+  }
+
+  /** The staged setup signaling for `userId` to fetch (GET /calls/:sid/signaling). The caller fetches the
+   *  answer + the callee's ICE; the callee fetches the offer + the caller's ICE. Participant-gated. */
+  async signaling(
+    userId: number,
+    callSid: string,
+  ): Promise<{ offer?: string | null; answer?: string | null; ice: string[] }> {
+    const call = this.activeCalls.get(callSid);
+    if (!call) {
+      throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no active call');
+    }
+    if (userId !== call.callerId && userId !== call.calleeId) {
+      throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'not a party to this call');
+    }
+    return userId === call.callerId
+      ? { answer: call.pendingAnswer ?? null, ice: call.pendingAnswerIce }
+      : { offer: call.pendingOffer ?? null, ice: call.pendingOfferIce };
   }
 
   /** Push a CALL_EVENT lifecycle frame to one user's online devices (SSE is per-user → all of that
