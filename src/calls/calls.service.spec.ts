@@ -136,6 +136,22 @@ describe('CallsService.initiate', () => {
     );
   });
 
+  it('glare: two CONCURRENT initiates (A→B + B→A) — exactly one wins, the other is CALL_BUSY (no TOCTOU)', async () => {
+    // The busy-check + the activeByUser reservation must be one synchronous block (no await between), else
+    // both initiates pass the check during each other's callee-fetch await + both register (glare). This
+    // fires them concurrently via Promise.allSettled so their awaits interleave.
+    const { svc } = mkService();
+    const results = await Promise.allSettled([
+      svc.initiate(1, { callSid: 'csAB', calleeUserId: 2, callType: 'AUDIO' }),
+      svc.initiate(2, { callSid: 'csBA', calleeUserId: 1, callType: 'AUDIO' }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === 'fulfilled');
+    const rejected = results.filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect(bizCode((rejected[0] as PromiseRejectedResult).reason)).toBe(BusinessCode.CALL_BUSY);
+  });
+
   it('is idempotent on callSid — a retry re-rings the still-ringing call, no new live call', async () => {
     const { svc, m } = mkService();
     await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });

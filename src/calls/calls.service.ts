@@ -163,17 +163,22 @@ export class CallsService implements OnModuleDestroy {
       throw new BusinessException(BusinessCode.CALL_NOT_ALLOWED, 'callSid conflict');
     }
 
-    // New call: neither party may already be in an active call (one active call per user).
-    if (this.activeByUser.has(callerId) || this.activeByUser.has(dto.calleeUserId)) {
-      throw new BusinessException(BusinessCode.CALL_BUSY, 'an active call already exists');
-    }
-
     // Federated? A foreigner callee is rung on ITS server via an S2S frame; a local callee is rung here.
+    // Fetched BEFORE the busy-check so the check + the activeByUser reservation below stay one synchronous
+    // block (no await between) — closes the TOCTOU race where two concurrent initiates (A→B + B→A) both
+    // pass the check during each other's await, then both register (glare: each side then sees the other's
+    // late incoming while its own outgoing screen is up).
     const callee = await this.prisma.user.findUnique({
       where: { id: dto.calleeUserId },
       select: { isForeigner: true, account: true, domain: true },
     });
     const federated = !!callee?.isForeigner;
+
+    // New call: neither party may already be in an active call (one active call per user). The check + the
+    // activeByUser.set below are SYNCHRONOUS (no await between) → atomic on the event loop → no glare race.
+    if (this.activeByUser.has(callerId) || this.activeByUser.has(dto.calleeUserId)) {
+      throw new BusinessException(BusinessCode.CALL_BUSY, 'an active call already exists');
+    }
 
     const call: LiveCall = {
       callSid: dto.callSid,
