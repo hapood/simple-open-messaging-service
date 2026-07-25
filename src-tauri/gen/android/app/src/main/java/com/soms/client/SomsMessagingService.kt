@@ -59,6 +59,25 @@ class SomsMessagingService : FirebaseMessagingService() {
                 // no body; the missed-summary is the single data source.
                 renderAwayNotification(this)
             }
+            "CALL_INCOMING" -> {
+                // The phone must ring even when the app is backgrounded / killed. The high-priority FCM grant
+                // is the exemption that lets the CallService phoneCall FGS start here. Suppress only when the
+                // app is foregrounded (the live SSE already delivered CALL_EVENT{incoming} + the in-app UI owns
+                // display — no loud system ring while the user is in the app).
+                if (appInForeground) return
+                val sid = data["callSid"] ?: return
+                // A late/duplicate push for a call already past incoming (the SSE path answered/ended it) —
+                // don't re-ring. seedIncoming is itself idempotent on the same incoming callSid; this guards
+                // the ring for a call the SSE already advanced.
+                val p = CallController.phase
+                if (CallController.callSid == sid && p != "incoming" && p != "idle") return
+                val callerUserId = data["callerUserId"]?.toIntOrNull() ?: return
+                val threadId = data["threadId"]?.toIntOrNull() ?: 0
+                val callType = data["callType"] ?: "AUDIO"
+                val callerName = data["callerName"] ?: ""
+                SomsLog.i("Notif") { "CALL_INCOMING sid=$sid from=$callerUserId type=$callType -> ring" }
+                CallService.startIncoming(this, sid, callerUserId, callerName, threadId, callType)
+            }
         }
     }
 

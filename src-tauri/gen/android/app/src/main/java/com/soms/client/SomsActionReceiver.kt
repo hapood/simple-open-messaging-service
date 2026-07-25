@@ -31,6 +31,14 @@ import java.util.concurrent.TimeUnit
 class SomsActionReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
+        // Incoming-call Decline (the CallService ringing notification's Decline button) — declines natively +
+        // stops the ring, no UI needed. Checked first: this intent carries EXTRA_CALL_DECLINE, not the
+        // message-action extras below. CallController.decline stops the ring at once + POSTs + tears down the
+        // CallService (whose foreground notification is removed when the service stops).
+        intent.getStringExtra(EXTRA_CALL_DECLINE)?.let { sid ->
+            CallController.decline(sid)
+            return
+        }
         val actionId = intent.getStringExtra(EXTRA_ACTION_ID) ?: return
         val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, SomsMessagingService.AWAY_NOTIF_ID)
@@ -95,6 +103,8 @@ class SomsActionReceiver : BroadcastReceiver() {
 
     companion object {
         const val EXTRA_ACTION_ID = "soms_action_id"
+        /** The callSid for an incoming-call Decline action (from the CallService ringing notification). */
+        const val EXTRA_CALL_DECLINE = "soms_call_decline"
         const val EXTRA_TAG = "soms_tag"
         const val EXTRA_NOTIF_ID = "soms_notif_id"
         /** #5: dismiss routes per-thread (in-memory HWM) vs all-mode (global HWM) — set explicitly by the

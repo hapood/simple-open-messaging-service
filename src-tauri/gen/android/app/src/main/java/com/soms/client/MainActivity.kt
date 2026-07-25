@@ -98,6 +98,12 @@ class MainActivity : TauriActivity() {
         intent?.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)?.let {
             SomsBridge.DeepLink.pendingThreadId = it
         }
+        // Cold-start answer: the user tapped Answer on the incoming-call notification (the FCM wake-up rang
+        // the phone; CallController is already seeded incoming). Accept natively now — the webview boots and
+        // shows the connecting UI from the snapshot.
+        if (intent?.action == CallService.ACTION_ANSWER) {
+            intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
+        }
         // Kick off the FCM token fetch, throttled to once/day (a mainland-China device without GMS shouldn't hammer
         // Google on every launch). First run (no cached token) always fetches so FCM works from session one.
         maybeFetchFcmToken()
@@ -325,6 +331,10 @@ class MainActivity : TauriActivity() {
         // Warm start: app already running, user tapped a notification. Route straight to the live
         // webview. (setIntent is unnecessary — singleTask + CLEAR_TOP keeps the back stack sane.)
         intent.getStringExtra(SomsMessagingService.EXTRA_THREAD_ID)?.let { openThread(it) }
+        // Warm-start answer: the app was already running when the user tapped Answer on the ringing notif.
+        if (intent.action == CallService.ACTION_ANSWER) {
+            intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
+        }
     }
 
     override fun onResume() {
@@ -522,6 +532,16 @@ class MainActivity : TauriActivity() {
     /** The deferred call-start action awaiting a RECORD_AUDIO (+ CAMERA for VIDEO) grant. One-shot: cleared
      *  in [onRequestPermissionsResult] whether granted or not. Null when no call is pending a permission. */
     private var pendingCallStart: (() -> Unit)? = null
+
+    /** Accept the incoming call launched from its ringing notification's Answer button / full-screen intent.
+     *  CallController was already seeded incoming by the FCM wake-up (CallService.startIncoming); accept stops
+     *  the ring + switches to comms audio + POSTs /calls/accept + builds the PC. Mic (+ camera for VIDEO) is
+     *  gated first (same path as the in-app accept button). Runs on the UI thread (onCreate/onNewIntent). */
+    private fun handleCallAnswer(sid: String) {
+        ensureCallPermissions(CallController.callType) {
+            CallController.accept(sid)
+        }
+    }
 
     /** Ensure RECORD_AUDIO (+ CAMERA for VIDEO) is granted before a call captures media; run [andThen]
      *  (startCallService + CallController.initiate/accept) once granted. The native RTCPeerConnection is NOT

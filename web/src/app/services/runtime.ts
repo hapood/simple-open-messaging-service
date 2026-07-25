@@ -230,6 +230,10 @@ declare global {
       mediaState: string;
       startedAt: number;
       muted: boolean;
+      /** The caller's display name — present only when the native side seeded it from the CALL_INCOMING FCM
+       *  push (a cold-started callee has no live SSE, so it never got CALL_EVENT{incoming}). Empty for the
+       *  foreground path (the SSE frame owns the name there). */
+      peerName?: string;
     }) => void;
     /** Kotlin→JS push (`MainActivity.pushImeHeight`): native calls this with the current IME (keyboard)
      *  height in CSS px on every keyboard open/close and per animation frame on API 30+. Installed before

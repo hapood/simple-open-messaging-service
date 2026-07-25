@@ -3,8 +3,16 @@ package com.soms.client
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.media.AudioAttributes
+import android.media.AudioManager
+import android.media.Ringtone
+import android.media.RingtoneManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.util.Log
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -94,6 +102,11 @@ object CallController {
     /** true = this side placed the call (caller); false = this side was rung (callee). */
     @Volatile var isCaller: Boolean = false
         private set
+    /** The peer's display name. Set by [seedIncoming] from the CALL_INCOMING FCM push — a cold-started callee
+     *  has no live SSE, so the web UI can't get the name from CALL_EVENT{incoming}; this carries it inline.
+     *  Empty for the foreground path (the SSE incoming frame owns the name there). Surfaced via [snapshotJson]. */
+    @Volatile var peerName: String = ""
+        private set
     /** UI phase, the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels):
      *  idle | calling | ringing | incoming | connecting | connected | reconnecting | ended. */
     @Volatile var phase: String = "idle"
@@ -177,6 +190,31 @@ object CallController {
             }
         }
     }
+
+    // ── incoming-call ring + answer-loss recovery (Phase 6) ───────────────────────
+    /** The incoming-call ringtone (the device default, on the ring stream) — plays while phase == incoming. */
+    @Volatile private var ringtone: Ringtone? = null
+    /** The incoming-call vibration (a repeating call pattern). VIBRATE is a normal permission. */
+    @Volatile private var ringVibrator: Vibrator? = null
+    /** CPU wake held for the ring's duration so an accept/decline is processed promptly even with the screen
+     *  off. Distinct from the active-call wake lock (CallService) — this one spans the RING only. */
+    @Volatile private var ringWakeLock: PowerManager.WakeLock? = null
+    /** True once the caller has received the callee's SDP answer — cancels the [acceptedTimer]. */
+    @Volatile private var answerReceived = false
+    /** Backstop for a KILLED callee: the caller's first offer (sent at initiate, over SSE) is lost if the callee
+     *  was offline when it was sent. On CALL_EVENT{accepted}, if no answer has arrived yet, arm this; on fire,
+     *  re-offer (the callee is online now — it just accepted — so the offer reaches it, and it answers).
+     *  Cancelled the instant the answer lands. PURELY ADDITIVE — it never fires in the online case (the answer
+     *  arrives in well under the timeout), so it cannot perturb the verified foreground/background flow. */
+    private val acceptedTimer = Runnable {
+        callExecutor.execute {
+            if (answerReceived || phase == "idle" || phase == "ended" || pc == null) return@execute
+            SomsLog.i(TAG) { "accepted backstop -> re-offer (callee's first offer was lost while offline)" }
+            runCatching { val c = pc!!; c.restartIce(); c.createOffer(offerSdpObserver, iceRestartConstraints()) }
+                .onFailure { SomsLog.w(TAG) { "re-offer failed: ${it.message}" } }
+        }
+    }
+    private const val ACCEPTED_TIMEOUT_MS = 5_000L
 
     /** Serial executor for every PC op + REST call (see class doc). Named for logcat. */
     private val callExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
@@ -577,6 +615,11 @@ object CallController {
                 connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
             }
             "answer" -> {
+                // The callee's answer arrived (caller side) — the first offer was NOT lost, so cancel the
+                // accepted backstop (it would otherwise re-offer needlessly). Recorded before setRemote so a
+                // setRemote failure can't leave the backstop armed to fire on a half-applied answer.
+                answerReceived = true
+                cancelAcceptedTimer()
                 SomsLog.i(TAG) { "applying remote answer → setRemoteDescription" }
                 setRemote(connection, Type.ANSWER, payload)
                 if (phase == "calling" || phase == "ringing") {
@@ -635,6 +678,11 @@ object CallController {
                 if (isCaller && (phase == "calling" || phase == "ringing")) {
                     phase = "connecting"
                     pushSnapshot()
+                    // KILLED-callee recovery: if the callee's answer hasn't arrived yet, its first offer (sent
+                    // at initiate, over SSE) was likely lost while it was offline. Arm a backstop that re-offers
+                    // if no answer lands — cancelled the instant the answer arrives (applySignal "answer").
+                    // A no-op in the online case (the answer arrives in well under the timeout).
+                    if (!answerReceived) armAcceptedTimer()
                 }
             }
             "connected" -> {
@@ -731,6 +779,8 @@ object CallController {
                 phase = "calling"
                 startedAt = 0L
                 iceRestartTried = false
+                answerReceived = false
+                peerName = ""
                 pushSnapshot()
                 val connection = createPeerConnection()
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())
@@ -744,6 +794,10 @@ object CallController {
      *  applied by [handleSignalFrame] on the offer signal — but if the offer has not arrived yet, createAnswer
      *  will run when it does; the PC must exist to receive it). */
     fun accept(sid: String) {
+        // The user answered — stop the incoming ring immediately + switch to comms audio (the active-call
+        // MODE_IN_COMMUNICATION + focus + wake, owned by CallService) + flip the notification to ongoing.
+        stopRing()
+        CallService.instance?.onAccepted()
         callExecutor.execute {
             try {
                 val origin = activeOrigin() ?: return@execute
@@ -758,24 +812,33 @@ object CallController {
         }
     }
 
-    fun decline(sid: String) = callExecutor.execute {
-        val origin = activeOrigin() ?: return@execute
-        post("$origin${SomsSecureStore.API_PREFIX}/calls/decline", JSONObject().put("callSid", sid))
-        phase = "ended"; pushSnapshot(); teardown()
+    fun decline(sid: String) {
+        stopRing() // stop the incoming ring at once — before the POST (teardown runs only after the network round-trip)
+        callExecutor.execute {
+            val origin = activeOrigin() ?: return@execute
+            post("$origin${SomsSecureStore.API_PREFIX}/calls/decline", JSONObject().put("callSid", sid))
+            phase = "ended"; pushSnapshot(); teardown()
+        }
     }
 
-    fun cancel(sid: String) = callExecutor.execute {
-        val origin = activeOrigin() ?: return@execute
-        post("$origin${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
-        phase = "ended"; pushSnapshot(); teardown()
+    fun cancel(sid: String) {
+        stopRing()
+        callExecutor.execute {
+            val origin = activeOrigin() ?: return@execute
+            post("$origin${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
+            phase = "ended"; pushSnapshot(); teardown()
+        }
     }
 
-    fun end(sid: String, reason: String?) = callExecutor.execute {
-        val origin = activeOrigin() ?: return@execute
-        val body = JSONObject().put("callSid", sid)
-        if (!reason.isNullOrBlank()) body.put("endReason", reason)
-        post("$origin${SomsSecureStore.API_PREFIX}/calls/end", body)
-        phase = "ended"; pushSnapshot(); teardown()
+    fun end(sid: String, reason: String?) {
+        stopRing()
+        callExecutor.execute {
+            val origin = activeOrigin() ?: return@execute
+            val body = JSONObject().put("callSid", sid)
+            if (!reason.isNullOrBlank()) body.put("endReason", reason)
+            post("$origin${SomsSecureStore.API_PREFIX}/calls/end", body)
+            phase = "ended"; pushSnapshot(); teardown()
+        }
     }
 
     /** Relay one WebRTC frame to the peer. The JS bridge forwards frames the Angular layer generates only on
@@ -799,6 +862,7 @@ object CallController {
         .put("callSid", callSid ?: JSONObject.NULL)
         .put("threadId", threadId)
         .put("peerUserId", peerUserId)
+        .put("peerName", peerName)
         .put("callType", callType)
         .put("isCaller", isCaller)
         .put("mediaState", mediaState)
@@ -843,6 +907,75 @@ object CallController {
         mandatory.add(MediaConstraints.KeyValuePair("iceRestart", "true"))
     }
 
+    // ── incoming-call wake-up (Phase 6) ───────────────────────────────────────────
+
+    /** Seed the incoming call from the CALL_INCOMING FCM push (the killed/backgrounded path): set the snapshot
+     *  (incl. [peerName], carried inline since a cold-started callee has no live SSE for CALL_EVENT{incoming}),
+     *  flip to the incoming phase, ack alerting (POST /calls/ringing → the caller shows "Ringing…"), and start
+     *  the ring. Idempotent: a no-op if this call is already incoming (the SSE path got there first); ignored
+     *  if a different call is active (busy). Runs on the caller thread; the ring + the ringing POST are
+     *  side-effect-safe there (POST hops to [callExecutor]). */
+    fun seedIncoming(sid: String, callerUserId: Int, name: String, tid: Int, type: String) {
+        if (phase != "idle") {
+            if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
+            return                      // a different call is live (busy) — ignore the stray push
+        }
+        callSid = sid
+        threadId = tid
+        peerUserId = callerUserId
+        peerName = name
+        callType = type
+        isCaller = false
+        phase = "incoming"
+        startedAt = 0L
+        iceRestartTried = false
+        answerReceived = false
+        pushSnapshot()
+        callExecutor.execute { postRinging(sid) } // ack alerting → the caller's UI shows "Ringing…"
+        startRing()
+    }
+
+    /** Start the incoming-call ring: ring-stream ringtone (respects ringer volume / DND) + a repeating
+     *  vibration + a PARTIAL_WAKE_LOCK (the screen may be off; the accept must land promptly). MODE_RINGTONE
+     *  so the ring stream plays correctly. Stopped by [stopRing] on accept / decline / teardown. */
+    fun startRing() {
+        val ctx = appContext ?: return
+        val am = (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
+        am.mode = AudioManager.MODE_RINGTONE
+        val uri = RingtoneManager.getActualDefaultRingtoneUri(ctx, RingtoneManager.TYPE_RINGTONE)
+        ringtone = uri?.let { RingtoneManager.getRingtone(ctx, it) }?.apply {
+            audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build()
+            play()
+        }
+        ringVibrator = (ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator).also { v ->
+            val pattern = longArrayOf(0, 1000, 1000) // on-off call pattern, repeating
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createWaveform(pattern, 0))
+            else @Suppress("DEPRECATION") v.vibrate(pattern, 0)
+        }
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        ringWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "soms:ring").also { it.acquire() }
+    }
+
+    /** Stop the ringtone + vibration + release the ring wake lock + restore MODE_NORMAL. Safe when not ringing. */
+    fun stopRing() {
+        ringtone?.runCatching { stop() }; ringtone = null
+        ringVibrator?.runCatching { cancel() }; ringVibrator = null
+        ringWakeLock?.takeIf { it.isHeld }?.runCatching { release() }; ringWakeLock = null
+        appContext?.let { (it.getSystemService(Context.AUDIO_SERVICE) as AudioManager).mode = AudioManager.MODE_NORMAL }
+    }
+
+    private fun armAcceptedTimer() {
+        mainHandler.removeCallbacks(acceptedTimer)
+        mainHandler.postDelayed(acceptedTimer, ACCEPTED_TIMEOUT_MS)
+    }
+
+    private fun cancelAcceptedTimer() {
+        mainHandler.removeCallbacks(acceptedTimer)
+    }
+
     // ── teardown + REST helpers ───────────────────────────────────────────────────
 
     /** Release the PC + tracks + audio source for the current call, and stop the [CallService] anchor
@@ -885,7 +1018,11 @@ object CallController {
         startedAt = 0L
         mediaState = "new"
         iceRestartTried = false
+        answerReceived = false
+        peerName = ""
+        stopRing()
         cancelReconnectBackstop()
+        cancelAcceptedTimer()
         pendingOffer = null
         pendingIce.clear()
         pushSnapshot()

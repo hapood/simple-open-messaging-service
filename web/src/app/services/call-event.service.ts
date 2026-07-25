@@ -87,7 +87,9 @@ export class CallEventService implements OnDestroy {
     this.callState.set(next.phase === 'ended' ? { ...IDLE_CALL } : next);
   }
 
-  /** Merge a native snapshot push, preserving the peer display info (the native snapshot omits them). */
+  /** Merge a native snapshot push. The native snapshot carries peerName ONLY when it seeded the call from the
+   *  CALL_INCOMING FCM push (cold-start path); for the foreground path peerName is empty + the SSE
+   *  CALL_EVENT{incoming} frame owns it — so prefer the native value when present, else keep the SSE-set one. */
   private applyNative(snap: {
     phase: string;
     callSid: string | null;
@@ -98,13 +100,14 @@ export class CallEventService implements OnDestroy {
     mediaState: string;
     startedAt: number;
     muted: boolean;
+    peerName?: string;
   }): void {
     const cur = this.callState();
     this.commit({
       ...cur,
       ...snap,
       phase: (snap.phase as CallPhase) ?? cur.phase,
-      peerName: cur.peerName,
+      peerName: snap.peerName || cur.peerName,
       peerAvatar: cur.peerAvatar,
     });
   }

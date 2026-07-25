@@ -229,6 +229,10 @@ export class CallsService implements OnModuleDestroy {
     void this.push.dispatchForCall(call.calleeId, {
       callSid: call.callSid,
       callerUserId: call.callerId,
+      // The caller's display name rides inline so a COLD-STARTED callee (no live SSE → it never received the
+      // CALL_EVENT{incoming} frame that carries name/avatar) can render the incoming UI with no extra fetch.
+      // Calls are ephemeral coordination, not identity-only, so this matches the CALL_EVENT payload shape.
+      callerName: caller?.name ?? '',
       threadId: call.threadId,
       callType: call.callType,
     });

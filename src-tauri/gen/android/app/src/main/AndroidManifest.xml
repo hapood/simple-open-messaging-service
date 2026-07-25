@@ -19,6 +19,13 @@
          associates with an in-progress call (Telecom / call-screen integration). Declared in addition to
          the base FOREGROUND_SERVICE. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+    <!-- Full-screen intent for the incoming-call notification (CallService.buildIncomingNotification) — shows
+         the call surface over the lock screen / the system call screen. Required on Android 14+ (API 34) to
+         honor setFullScreenIntent (else the system downgrades to heads-up); for CATEGORY_CALL notifications
+         it is auto-granted, but declaring it is best practice. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Vibrate during the incoming-call ring (CallController.startRing). Normal permission (no prompt). -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <!-- Route call audio to a connected Bluetooth headset (AudioManager.startBluetoothSco / the device
          module). Runtime permission on Android 12+ (API 31); declared so the call audio module can scoot. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
