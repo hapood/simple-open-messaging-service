@@ -4,6 +4,7 @@
 // instantiated directly (the codebase's unit-spec convention).
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CallsService } from './calls.service.js';
+import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { BusinessCode } from '../common/business-code.js';
 import { ContentType } from '../prisma/generated/client.js';
 import { parseCallContent } from './call-content.js';
@@ -50,6 +51,7 @@ function mkMocks() {
 }
 
 function mkService(m = mkMocks()) {
+  const callState = new CallStateRegistry();
   return {
     svc: new CallsService(
       m.prisma as never,
@@ -60,8 +62,10 @@ function mkService(m = mkMocks()) {
       m.fanout as never,
       m.federation as never,
       m.quota as never,
+      callState,
     ),
     m,
+    callState,
   };
 }
 
@@ -705,6 +709,32 @@ describe('CallsService signaling store-and-forward', () => {
     }
     expect(threw).not.toBeNull();
     expect(bizCode(threw)).toBe(BusinessCode.CALL_NOT_FOUND);
+  });
+});
+
+describe('CallsService active-call registry (HELLO activeCall)', () => {
+  it('initiate mirrors the call into the registry for both participants; a terminal clears it', async () => {
+    const { svc, callState } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    expect(callState.get(1)).toMatchObject({
+      callSid: 'cs1', peerUserId: 2, isCaller: true, state: 'ringing', startedAt: null,
+    });
+    expect(callState.get(2)).toMatchObject({
+      callSid: 'cs1', peerUserId: 1, isCaller: false, state: 'ringing',
+    });
+    // After the call ends, both are cleared — a reconnecting client's HELLO sees no active call.
+    await svc.decline(2, 'cs1');
+    expect(callState.get(1)).toBeNull();
+    expect(callState.get(2)).toBeNull();
+  });
+
+  it('connected updates the mirrored state to connected + stamps startedAt', async () => {
+    const { svc, callState } = mkService();
+    await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
+    await svc.accept(2, 'cs1');
+    await svc.connected(1, 'cs1');
+    expect(callState.get(1)).toMatchObject({ state: 'connected' });
+    expect(callState.get(1)?.startedAt).toBeTypeOf('number');
   });
 });
 

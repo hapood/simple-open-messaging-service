@@ -4,6 +4,7 @@ import type { ServerResponse } from 'http';
 import { initSseResponse, formatSseFrame } from '../common/sse-stream.js';
 import { PrismaService } from '../prisma.service.js';
 import { MessageService } from '../message/message.service.js';
+import { CallStateRegistry } from './call-state.registry.js';
 import { InviteKind } from '../prisma/generated/client.js';
 
 /**
@@ -52,6 +53,7 @@ export class SseService implements OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly messages: MessageService,
+    private readonly callState: CallStateRegistry,
   ) {}
 
   /**
@@ -133,6 +135,11 @@ export class SseService implements OnModuleDestroy {
         // The friend-request read cursor (epoch-ms). markRead advances it to the current friendReqRev,
         // clearing the badge on ALL devices (server-state, multi-device consistent).
         friendReqAckRev,
+        // The user's active call (or null). Lets a reconnecting / freshly-booted client reconcile: a device
+        // offline when the call's CALL_EVENT frames fired learns "I'm in a call with X" here. The native
+        // FSM (driven by CALL_EVENT) is the live authority; this is the connect-time snapshot, mirrored by
+        // CallsService. Null when no call OR after the call ended (cleared on terminal).
+        activeCall: this.callState.get(userId),
       });
       if (!entry.res.writableEnded) entry.res.write(frame);
     } catch (e) {

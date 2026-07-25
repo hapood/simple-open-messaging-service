@@ -580,21 +580,28 @@ object CallController {
      *  applied by [handleSignalFrame] on the offer signal — but if the offer has not arrived yet, createAnswer
      *  will run when it does; the PC must exist to receive it). */
     fun accept(sid: String) {
-        // The user answered — stop the incoming ring immediately + switch to comms audio (the active-call
-        // MODE_IN_COMMUNICATION + focus + wake, owned by CallService) + flip the notification to ongoing.
+        // Stop the incoming ring immediately on the user's tap (before the network round-trip — UX). Comms
+        // audio is acquired AFTER the server confirms this device is the answering one (below).
         ringer.stopRing()
-        CallService.instance?.onAccepted()
         callExecutor.execute {
             try {
                 val origin = activeOrigin() ?: return@execute
-                post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid))
+                // The server is authoritative: if the call is no longer ringing (another device already
+                // answered, or it ended), POST /calls/accept returns a non-zero code (CALL_NOT_FOUND) → `post`
+                // returns null. This is the "late" device — dismiss + tear down; don't build a PC for a call
+                // already answered elsewhere.
+                val accepted = post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid)) != null
+                if (!accepted) {
+                    SomsLog.i(TAG) { "accept rejected by server (answered/ended on another device) -> dismiss" }
+                    phase = "ended"; pushSnapshot(); teardown(); return@execute
+                }
+                CallService.instance?.onAccepted() // confirmed the answering device — switch to comms audio
                 val connection = pc ?: createPeerConnection()
                 val hadOffer = pendingOffer != null
                 flushPending(connection) // applies the buffered offer + ICE (the online case)
                 if (!hadOffer) {
                     // The SSE never delivered the offer — the callee was offline when it trickled. Pull the
-                    // authoritative staged copy from the server (CallsService signaling store) + apply it. This
-                    // replaces the old client-side re-offer hack: the server held the offer, so just fetch it.
+                    // authoritative staged copy from the server (CallsService signaling store) + apply it.
                     fetchAndApplySignaling(connection, sid)
                 }
                 phase = "connecting"

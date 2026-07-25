@@ -2,6 +2,7 @@ import { Injectable, Logger, HttpStatus, OnModuleDestroy } from '@nestjs/common'
 import { OnEvent } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma.service.js';
 import { SseService } from '../gateway/sse.service.js';
+import { CallStateRegistry } from '../gateway/call-state.registry.js';
 import { PushService } from '../push/push.service.js';
 import { ThreadParticipantService } from '../thread-participant/thread-participant.service.js';
 import { MessageService } from '../message/message.service.js';
@@ -129,6 +130,7 @@ export class CallsService implements OnModuleDestroy {
     private readonly fanout: MessageFanoutService,
     private readonly federation: FederationService,
     private readonly quota: QuotaService,
+    private readonly callState: CallStateRegistry,
   ) {}
 
   // ── initiate ──────────────────────────────────────────────────────────────────
@@ -191,6 +193,7 @@ export class CallsService implements OnModuleDestroy {
     this.activeByUser.set(callerId, call.callSid);
     this.activeByUser.set(dto.calleeUserId, call.callSid);
     this.armRingTimer(call);
+    this.syncCallState(call);
 
     if (federated) {
       // Ring the peer server. Await so a ring failure (network/trust/quota/busy) is caught here → the
@@ -305,6 +308,7 @@ export class CallsService implements OnModuleDestroy {
     call.state = 'connected';
     call.startedAt = Date.now();
     this.clearStaged(call); // media is up — the setup signaling is consumed, drop the staged store
+    this.syncCallState(call);
     this.clearRingTimer(callSid);
     this.notifyBoth(call, 'connected', { startedAt: call.startedAt });
   }
@@ -478,6 +482,7 @@ export class CallsService implements OnModuleDestroy {
     this.activeCalls.set(mirror.callSid, mirror);
     this.activeByUser.set(localUserId, mirror.callSid);
     this.armRingTimer(mirror);
+    this.syncCallState(mirror);
     // Best-effort quota tick: handleCallFrame already peek-gated the hard limit BEFORE the emitAsync.
     // A race-loss here (the budget consumed between peek and tick) must NOT unwind the ring — the caller
     // already got its 202 and the callee is ringing. Logged, never thrown.
@@ -524,6 +529,8 @@ export class CallsService implements OnModuleDestroy {
     if (call.state !== 'accepted') return; // not answered yet — race, drop
     call.state = 'connected';
     call.startedAt = frame.startedAt ?? Date.now();
+    this.clearStaged(call); // the origin clears its staged signaling on connect too
+    this.syncCallState(call);
     this.clearRingTimer(frame.callSid);
     this.emit(this.localUserId(call), 'connected', { callSid: call.callSid });
   }
@@ -617,10 +624,26 @@ export class CallsService implements OnModuleDestroy {
 
   /** Free a call's live state: drop it from activeCalls, release both users' busy slots (only if they
    *  still point at THIS call — defensive against a re-entrant edge), and disarm its ring timer. */
+  /** Mirror the call's state into the CallStateRegistry for both participants (SseService reads it for the
+   *  HELLO `activeCall` so a reconnecting / freshly-booted client reconciles). Best-effort (ringing/connected);
+   *  the native FSM driven by CALL_EVENT is the live authority — this is the connect-time snapshot. */
+  private syncCallState(call: LiveCall): void {
+    const base = {
+      callSid: call.callSid,
+      state: call.state,
+      startedAt: call.startedAt,
+      callType: call.callType,
+    };
+    this.callState.set(call.callerId, { ...base, peerUserId: call.calleeId, isCaller: true });
+    this.callState.set(call.calleeId, { ...base, peerUserId: call.callerId, isCaller: false });
+  }
+
   private release(call: LiveCall): void {
     this.activeCalls.delete(call.callSid);
     if (this.activeByUser.get(call.callerId) === call.callSid) this.activeByUser.delete(call.callerId);
     if (this.activeByUser.get(call.calleeId) === call.callSid) this.activeByUser.delete(call.calleeId);
+    this.callState.clear(call.callerId);
+    this.callState.clear(call.calleeId);
     this.clearRingTimer(call.callSid);
   }
 
