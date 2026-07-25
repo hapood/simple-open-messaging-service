@@ -61,17 +61,7 @@ object CallController {
 
     private const val TAG = "SomsCall"
 
-    /** Reconnect grace: how long "Reconnecting…" shows before the caller attempts one ICE restart, then fails.
-     *  Bounds the state so a dropped call never hangs in reconnecting — GATHER_CONTINUALLY recovers most blips
-     *  inside this window; the restart covers the stale ICE credentials a long disconnect leaves behind. */
-    private const val RECONNECT_BACKSTOP_MS = 15_000L
-    private const val RECONNECT_BACKSTOP_SHORT_MS = 10_000L
-    /** The CALLEE's reconnect backstop: the caller drives recovery (it restarts ICE; the callee cannot
-     *  initiate a restart), so the callee must outlast the caller's full restart window (BACKSTOP + SHORT +
-     *  a re-offer round-trip) before giving up — else a restart-recoverable blip ends the call when the callee
-     *  fails first (a symmetric 15s would race the caller's 15s restart). Almost never fires: the caller's
-     *  restart reconnects the callee, or the caller's eventual fail ends the call via CALL_EVENT{ended} first. */
-    private const val CALLEE_BACKSTOP_MS = 30_000L
+    // Reconnect + accepted-backstop timing + the pure FSM/backstop decisions live in [CallFsm] (unit-tested).
 
     /** The volatile call snapshot the JS bridge reads synchronously via [snapshotJson] (a freshly-booted /
      *  re-attached WebView re-derives the call UI from this, no SSE wait). Fields are written on
@@ -149,7 +139,7 @@ object CallController {
         callExecutor.execute {
             if (phase != "reconnecting") return@execute // recovered, or already ended
             if (callSid == null) return@execute
-            if (isCaller && !iceRestartTried && pc != null) {
+            if (CallFsm.shouldRestartOnReconnect(isCaller, iceRestartTried, pc != null)) {
                 iceRestartTried = true
                 SomsLog.i(TAG) { "reconnect backstop -> ICE restart (caller); re-arming short backstop" }
                 runCatching {
@@ -157,7 +147,7 @@ object CallController {
                     c.restartIce()
                     c.createOffer(offerSdpObserver, iceRestartConstraints())
                 }.onFailure { SomsLog.w(TAG) { "ICE restart failed: ${it.message}" } }
-                mainHandler.postDelayed(reconnectBackstop, RECONNECT_BACKSTOP_SHORT_MS)
+                mainHandler.postDelayed(reconnectBackstop, CallFsm.RECONNECT_BACKSTOP_SHORT_MS)
             } else {
                 SomsLog.i(TAG) { "reconnect backstop -> fail (callee, or restart exhausted)" }
                 fail("failed")
@@ -179,13 +169,12 @@ object CallController {
 
     private fun onAcceptedTimer() {
         callExecutor.execute {
-            if (answerReceived || phase == "idle" || phase == "ended" || pc == null) return@execute
+            if (!CallFsm.shouldReofferOnAcceptedTimeout(answerReceived, phase, pc != null)) return@execute
             SomsLog.i(TAG) { "accepted backstop -> re-offer (callee's first offer was lost while offline)" }
             runCatching { val c = pc!!; c.restartIce(); c.createOffer(offerSdpObserver, iceRestartConstraints()) }
                 .onFailure { SomsLog.w(TAG) { "re-offer failed: ${it.message}" } }
         }
     }
-    private const val ACCEPTED_TIMEOUT_MS = 5_000L
 
     /** Serial executor for every PC op + REST call (see class doc). Named for logcat. */
     private val callExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
@@ -475,14 +464,13 @@ object CallController {
                 callExecutor.execute { postRinging(sid) }
             }
             "ringing" -> {
-                if (isCaller && phase == "calling") {
-                    phase = "ringing"
-                    pushSnapshot()
-                }
+                val np = CallFsm.nextPhase(phase, isCaller, "ringing")
+                if (np != null) { phase = np; pushSnapshot() }
             }
             "accepted" -> {
-                if (isCaller && (phase == "calling" || phase == "ringing")) {
-                    phase = "connecting"
+                val np = CallFsm.nextPhase(phase, isCaller, "accepted")
+                if (np != null) {
+                    phase = np
                     pushSnapshot()
                     // KILLED-callee recovery: if the callee's answer hasn't arrived yet, its first offer (sent
                     // at initiate, over SSE) was likely lost while it was offline. Arm a backstop that re-offers
@@ -492,21 +480,18 @@ object CallController {
                 }
             }
             "connected" -> {
-                if (phase != "connected") {
+                if (CallFsm.nextPhase(phase, isCaller, "connected") != null) {
                     phase = "connected"
                     startedAt = obj.optLong("startedAt", System.currentTimeMillis())
                     pushSnapshot()
                 }
             }
-            "declined", "cancelled", "missed" -> {
-                phase = "ended"
-                pushSnapshot()
-                teardown()
-            }
-            "ended" -> {
-                phase = "ended"
-                pushSnapshot()
-                teardown()
+            "declined", "cancelled", "missed", "ended" -> {
+                if (CallFsm.nextPhase(phase, isCaller, type) == "ended") {
+                    phase = "ended"
+                    pushSnapshot()
+                    teardown()
+                }
             }
         }
     }
@@ -687,8 +672,7 @@ object CallController {
 
     private fun armReconnectBackstop() {
         cancelReconnectBackstop()
-        val delay = if (isCaller) RECONNECT_BACKSTOP_MS else CALLEE_BACKSTOP_MS
-        mainHandler.postDelayed(reconnectBackstop, delay)
+        mainHandler.postDelayed(reconnectBackstop, CallFsm.reconnectBackstopDelayMs(isCaller))
     }
 
     private fun cancelReconnectBackstop() {
@@ -744,7 +728,7 @@ object CallController {
 
     private fun armAcceptedTimer() {
         mainHandler.removeCallbacks(acceptedTimer)
-        mainHandler.postDelayed(acceptedTimer, ACCEPTED_TIMEOUT_MS)
+        mainHandler.postDelayed(acceptedTimer, CallFsm.ACCEPTED_TIMEOUT_MS)
     }
 
     private fun cancelAcceptedTimer() {
