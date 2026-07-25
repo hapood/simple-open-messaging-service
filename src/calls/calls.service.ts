@@ -647,11 +647,12 @@ export class CallsService implements OnModuleDestroy {
   }
 
   /** The staged setup signaling for `userId` to fetch (GET /calls/:sid/signaling). The caller fetches the
-   *  answer + the callee's ICE; the callee fetches the offer + the caller's ICE. Participant-gated. */
-  async signaling(
+   *  answer + the callee's ICE; the callee fetches the offer + the caller's ICE. Participant-gated. Sync —
+   *  it's an in-memory map read (no I/O); the controller awaits it harmlessly. */
+  signaling(
     userId: number,
     callSid: string,
-  ): Promise<{ offer?: string | null; answer?: string | null; ice: string[] }> {
+  ): { offer?: string | null; answer?: string | null; ice: string[] } {
     const call = this.activeCalls.get(callSid);
     if (!call) {
       throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no active call');

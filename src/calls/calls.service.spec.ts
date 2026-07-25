@@ -611,6 +611,22 @@ describe('CallsService federated inbound (@OnEvent call.frame.inbound)', () => {
     );
   });
 
+  it('inbound signal STAGES on the mirror for the local callee to GET (federated store-and-forward)', async () => {
+    const { svc } = mkService();
+    // mirror: localUserId=2 is the callee; peerStubId=5 is the foreign caller's stub (= callerId on the mirror).
+    await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame() });
+    await inbound(svc, {
+      localUserId: 2, peerStubId: 5,
+      frame: mkFrame({ op: 'signal', kind: 'offer', payload: 'OFFER_SDP' }),
+    });
+    await inbound(svc, {
+      localUserId: 2, peerStubId: 5,
+      frame: mkFrame({ op: 'signal', kind: 'ice', payload: 'ICE_1' }),
+    });
+    // The local callee (2) fetches → the staged offer + the caller's ICE (the mirror held them).
+    expect(svc.signaling(2, 'cs1')).toEqual({ offer: 'OFFER_SDP', ice: ['ICE_1'] });
+  });
+
   it('a terminal frame with no mirror is an idempotent no-op (no double bubble)', async () => {
     const { svc, m } = mkService();
     await inbound(svc, { localUserId: 2, peerStubId: 5, frame: mkFrame({ op: 'missed' }) });
@@ -638,7 +654,7 @@ describe('CallsService signaling store-and-forward', () => {
     await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_1' });
     await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_2' });
     // The callee fetches → the offer + the caller's ICE.
-    expect(await svc.signaling(2, 'cs1')).toEqual({ offer: 'OFFER_SDP', ice: ['ICE_1', 'ICE_2'] });
+    expect(svc.signaling(2, 'cs1')).toEqual({ offer: 'OFFER_SDP', ice: ['ICE_1', 'ICE_2'] });
   });
 
   it('stages the answer + callee ICE for the caller to GET', async () => {
@@ -646,7 +662,7 @@ describe('CallsService signaling store-and-forward', () => {
     await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
     await svc.signal(2, { callSid: 'cs1', toUserId: 1, kind: 'answer', payload: 'ANSWER_SDP' });
     await svc.signal(2, { callSid: 'cs1', toUserId: 1, kind: 'ice', payload: 'CALLEE_ICE' });
-    expect(await svc.signaling(1, 'cs1')).toEqual({ answer: 'ANSWER_SDP', ice: ['CALLEE_ICE'] });
+    expect(svc.signaling(1, 'cs1')).toEqual({ answer: 'ANSWER_SDP', ice: ['CALLEE_ICE'] });
   });
 
   it('dedupes a replayed ICE candidate (no duplicate in the staged list)', async () => {
@@ -654,7 +670,7 @@ describe('CallsService signaling store-and-forward', () => {
     await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
     await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_X' });
     await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'ice', payload: 'ICE_X' }); // retransmit
-    expect((await svc.signaling(2, 'cs1')).ice).toEqual(['ICE_X']);
+    expect(svc.signaling(2, 'cs1').ice).toEqual(['ICE_X']);
   });
 
   it('clears the staged signaling on connect (media up → setup consumed)', async () => {
@@ -663,22 +679,32 @@ describe('CallsService signaling store-and-forward', () => {
     await svc.signal(1, { callSid: 'cs1', toUserId: 2, kind: 'offer', payload: 'OFFER_SDP' });
     await svc.accept(2, 'cs1');
     await svc.connected(1, 'cs1'); // media up
-    expect(await svc.signaling(2, 'cs1')).toEqual({ offer: null, ice: [] });
+    expect(svc.signaling(2, 'cs1')).toEqual({ offer: null, ice: [] });
   });
 
   it('rejects a GET from a non-participant', async () => {
     const { svc } = mkService();
     await svc.initiate(1, { callSid: 'cs1', calleeUserId: 2, callType: 'AUDIO' });
-    await expect(svc.signaling(99, 'cs1')).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_PARTICIPANT,
-    );
+    let threw: unknown = null;
+    try {
+      svc.signaling(99, 'cs1'); // sync — throws rather than rejecting
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).not.toBeNull();
+    expect(bizCode(threw)).toBe(BusinessCode.CALL_NOT_PARTICIPANT);
   });
 
-  it('rejects a GET for an unknown call', async () => {
+  it('rejects a GET for an unknown call', () => {
     const { svc } = mkService();
-    await expect(svc.signaling(2, 'nope')).rejects.toSatisfy(
-      (e: unknown) => bizCode(e) === BusinessCode.CALL_NOT_FOUND,
-    );
+    let threw: unknown = null;
+    try {
+      svc.signaling(2, 'nope');
+    } catch (e) {
+      threw = e;
+    }
+    expect(threw).not.toBeNull();
+    expect(bizCode(threw)).toBe(BusinessCode.CALL_NOT_FOUND);
   });
 });
 
