@@ -87,6 +87,12 @@ object CallController {
      *  inside this window; the restart covers the stale ICE credentials a long disconnect leaves behind. */
     private const val RECONNECT_BACKSTOP_MS = 15_000L
     private const val RECONNECT_BACKSTOP_SHORT_MS = 10_000L
+    /** The CALLEE's reconnect backstop: the caller drives recovery (it restarts ICE; the callee cannot
+     *  initiate a restart), so the callee must outlast the caller's full restart window (BACKSTOP + SHORT +
+     *  a re-offer round-trip) before giving up — else a restart-recoverable blip ends the call when the callee
+     *  fails first (a symmetric 15s would race the caller's 15s restart). Almost never fires: the caller's
+     *  restart reconnects the callee, or the caller's eventual fail ends the call via CALL_EVENT{ended} first. */
+    private const val CALLEE_BACKSTOP_MS = 30_000L
 
     /** The volatile call snapshot the JS bridge reads synchronously via [snapshotJson] (a freshly-booted /
      *  re-attached WebView re-derives the call UI from this, no SSE wait). Fields are written on
@@ -902,7 +908,8 @@ object CallController {
 
     private fun armReconnectBackstop() {
         cancelReconnectBackstop()
-        mainHandler.postDelayed(reconnectBackstop, RECONNECT_BACKSTOP_MS)
+        val delay = if (isCaller) RECONNECT_BACKSTOP_MS else CALLEE_BACKSTOP_MS
+        mainHandler.postDelayed(reconnectBackstop, delay)
     }
 
     private fun cancelReconnectBackstop() {
