@@ -155,26 +155,9 @@ object CallController {
         }
     }
 
-    // ── answer-loss recovery (Phase 6) ────────────────────────────────────────────
-    // The incoming-call ring lives in [ringer] (CallRinger). The killed-callee re-offer backstop stays here
-    // (it is a signaling concern, not a ring mechanic).
-    /** True once the caller has received the callee's SDP answer — cancels the [acceptedTimer]. */
-    @Volatile private var answerReceived = false
-    /** Backstop for a KILLED callee: the caller's first offer (sent at initiate, over SSE) is lost if the callee
-     *  was offline when it was sent. On CALL_EVENT{accepted}, if no answer has arrived yet, arm this; on fire,
-     *  re-offer (the callee is online now — it just accepted — so the offer reaches it, and it answers).
-     *  Cancelled the instant the answer lands. PURELY ADDITIVE — it never fires in the online case (the answer
-     *  arrives in well under the timeout), so it cannot perturb the verified foreground/background flow. */
-    private val acceptedTimer = Runnable { onAcceptedTimer() }
-
-    private fun onAcceptedTimer() {
-        callExecutor.execute {
-            if (!CallFsm.shouldReofferOnAcceptedTimeout(answerReceived, phase, pc != null)) return@execute
-            SomsLog.i(TAG) { "accepted backstop -> re-offer (callee's first offer was lost while offline)" }
-            runCatching { val c = pc!!; c.restartIce(); c.createOffer(offerSdpObserver, iceRestartConstraints()) }
-                .onFailure { SomsLog.w(TAG) { "re-offer failed: ${it.message}" } }
-        }
-    }
+    // The killed-callee lost-offer case is now handled server-side: the server stages the offer + ICE
+    // (CallsService signaling store) + the callee FETCHES it on accept (fetchSignaling). No client-side
+    // re-offer backstop / acceptedTimer is needed.
 
     /** Serial executor for every PC op + REST call (see class doc). Named for logcat. */
     private val callExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
@@ -411,11 +394,6 @@ object CallController {
                 connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
             }
             "answer" -> {
-                // The callee's answer arrived (caller side) — the first offer was NOT lost, so cancel the
-                // accepted backstop (it would otherwise re-offer needlessly). Recorded before setRemote so a
-                // setRemote failure can't leave the backstop armed to fire on a half-applied answer.
-                answerReceived = true
-                cancelAcceptedTimer()
                 SomsLog.i(TAG) { "applying remote answer → setRemoteDescription" }
                 setRemote(connection, Type.ANSWER, payload)
                 if (phase == "calling" || phase == "ringing") {
@@ -441,6 +419,28 @@ object CallController {
             for (p in pendingIce) applySignal(connection, "ice", p)
             pendingIce.clear()
         }
+    }
+
+    /** Fetch the staged offer + ICE from `/calls/:sid/signaling` + apply them (the offline-callee path: the
+     *  offer was staged server-side because the callee had no live SSE when it trickled). Reuses [applySignal]
+     *  for the setRemoteDescription+createAnswer + addIceCandidate paths. A no-op if the fetch fails (the call
+     *  then times out / fails via the connection state — same as any signaling loss). */
+    private fun fetchAndApplySignaling(connection: PeerConnection, sid: String) {
+        val staged = fetchSignaling(sid) ?: return
+        val offer = staged.optString("offer", "")
+        if (offer.isEmpty()) return
+        val iceCount = staged.optJSONArray("ice")?.length() ?: 0
+        SomsLog.i(TAG) { "no buffered offer -> applied staged offer from server (+$iceCount ICE)" }
+        applySignal(connection, "offer", offer)
+        val ice = staged.optJSONArray("ice")
+        if (ice != null) for (i in 0 until ice.length()) applySignal(connection, "ice", ice.getString(i))
+    }
+
+    /** GET /calls/:callSid/signaling → the staged offer + caller ICE for the callee (the server's
+     *  store-and-forward copy). Returns null on any failure (auth/network/parse). */
+    private fun fetchSignaling(callSid: String): JSONObject? {
+        val origin = activeOrigin() ?: return null
+        return get("$origin${SomsSecureStore.API_PREFIX}/calls/$callSid/signaling")
     }
 
     /** Apply one lifecycle event to the FSM + drive the JS UI via [pushSnapshot]. The incoming/accepted/
@@ -473,11 +473,6 @@ object CallController {
                 if (np != null) {
                     phase = np
                     pushSnapshot()
-                    // KILLED-callee recovery: if the callee's answer hasn't arrived yet, its first offer (sent
-                    // at initiate, over SSE) was likely lost while it was offline. Arm a backstop that re-offers
-                    // if no answer lands — cancelled the instant the answer arrives (applySignal "answer").
-                    // A no-op in the online case (the answer arrives in well under the timeout).
-                    if (!answerReceived) armAcceptedTimer()
                 }
             }
             "connected" -> {
@@ -571,7 +566,6 @@ object CallController {
                 phase = "calling"
                 startedAt = 0L
                 iceRestartTried = false
-                answerReceived = false
                 peerName = ""
                 pushSnapshot()
                 val connection = createPeerConnection()
@@ -595,7 +589,14 @@ object CallController {
                 val origin = activeOrigin() ?: return@execute
                 post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid))
                 val connection = pc ?: createPeerConnection()
-                flushPending(connection)
+                val hadOffer = pendingOffer != null
+                flushPending(connection) // applies the buffered offer + ICE (the online case)
+                if (!hadOffer) {
+                    // The SSE never delivered the offer — the callee was offline when it trickled. Pull the
+                    // authoritative staged copy from the server (CallsService signaling store) + apply it. This
+                    // replaces the old client-side re-offer hack: the server held the offer, so just fetch it.
+                    fetchAndApplySignaling(connection, sid)
+                }
                 phase = "connecting"
                 pushSnapshot()
             } catch (e: Exception) {
@@ -721,19 +722,9 @@ object CallController {
         phase = "incoming"
         startedAt = 0L
         iceRestartTried = false
-        answerReceived = false
         pushSnapshot()
         callExecutor.execute { postRinging(sid) } // ack alerting → the caller's UI shows "Ringing…"
         ringer.startRing()
-    }
-
-    private fun armAcceptedTimer() {
-        mainHandler.removeCallbacks(acceptedTimer)
-        mainHandler.postDelayed(acceptedTimer, CallFsm.ACCEPTED_TIMEOUT_MS)
-    }
-
-    private fun cancelAcceptedTimer() {
-        mainHandler.removeCallbacks(acceptedTimer)
     }
 
     // ── teardown + REST helpers ───────────────────────────────────────────────────
@@ -761,11 +752,9 @@ object CallController {
         startedAt = 0L
         mediaState = "new"
         iceRestartTried = false
-        answerReceived = false
         peerName = ""
         ringer.stopRing()
         cancelReconnectBackstop()
-        cancelAcceptedTimer()
         pendingOffer = null
         pendingIce.clear()
         pushSnapshot()

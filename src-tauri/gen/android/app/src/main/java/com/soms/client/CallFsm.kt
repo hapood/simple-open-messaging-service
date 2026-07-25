@@ -22,10 +22,6 @@ object CallFsm {
      *  would race the caller's restart). Almost never fires: the caller's restart reconnects the callee, or the
      *  caller's eventual fail ends the call via CALL_EVENT{ended} first. */
     const val CALLEE_BACKSTOP_MS = 30_000L
-    /** Caller: how long after `accepted` with no SDP answer before it assumes its first offer was lost (the
-     *  callee was offline when it was sent) and re-offers. The online case cancels the timer long before this. */
-    const val ACCEPTED_TIMEOUT_MS = 5_000L
-
     /** The reconnect backstop's initial delay for this side. The caller restarts fast; the callee waits out the
      *  caller's full restart window. */
     fun reconnectBackstopDelayMs(isCaller: Boolean): Long =
@@ -34,11 +30,6 @@ object CallFsm {
     /** On a reconnect-backstop fire: restart ICE (caller, restart not yet tried, live PC) or give up. */
     fun shouldRestartOnReconnect(isCaller: Boolean, iceRestartTried: Boolean, hasPc: Boolean): Boolean =
         isCaller && !iceRestartTried && hasPc
-
-    /** On an accepted-backstop fire: re-offer (no answer yet + a live call). The online case cancels the timer
-     *  long before this fires, so this only runs for the killed-callee edge case. */
-    fun shouldReofferOnAcceptedTimeout(answerReceived: Boolean, phase: String, hasPc: Boolean): Boolean =
-        !answerReceived && phase != "idle" && phase != "ended" && hasPc
 
     // ── phase-transition table ───────────────────────────────────────────────────
     /** The next phase for a CALL_EVENT lifecycle type, or null if the event does not transition THIS side

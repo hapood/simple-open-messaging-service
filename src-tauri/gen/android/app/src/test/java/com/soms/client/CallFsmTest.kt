@@ -39,17 +39,6 @@ class CallFsmTest {
         assertFalse(CallFsm.shouldRestartOnReconnect(isCaller = false, iceRestartTried = false, hasPc = true))
     }
 
-    @Test
-    fun accepted_timeout_reoffers_only_with_no_answer_and_a_live_call() {
-        assertTrue(CallFsm.shouldReofferOnAcceptedTimeout(answerReceived = false, phase = "connecting", hasPc = true))
-        // The online case already has the answer → never re-offer (the timer is cancelled anyway).
-        assertFalse(CallFsm.shouldReofferOnAcceptedTimeout(answerReceived = true, phase = "connecting", hasPc = true))
-        // No live call / PC → no re-offer.
-        assertFalse(CallFsm.shouldReofferOnAcceptedTimeout(answerReceived = false, phase = "idle", hasPc = true))
-        assertFalse(CallFsm.shouldReofferOnAcceptedTimeout(answerReceived = false, phase = "ended", hasPc = true))
-        assertFalse(CallFsm.shouldReofferOnAcceptedTimeout(answerReceived = false, phase = "connecting", hasPc = false))
-    }
-
     // ── phase-transition table ──────────────────────────────────────────────────
 
     @Test
