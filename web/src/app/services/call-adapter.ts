@@ -64,8 +64,11 @@ export const IDLE_CALL: CallSnapshot = {
  * channel + the native `window.__SOMS_CALL_EVENT__` snapshot push, consumed by {@link CallEventService}.
  */
 export abstract class CallAdapter {
-  /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO. */
-  abstract initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO'): void;
+  /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO.
+   *  `peerName` + `peerAvatar` are the callee's display info — carried so the native call notification
+   *  (CallStyle Person) can show them with no extra fetch (the caller already knows the peer from the
+   *  thread). The avatar is a /uploads path the native fetches with the Bearer (like the message icon). */
+  abstract initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string): void;
   /** Callee accepts the incoming ring (POST /calls/accept + createAnswer natively). */
   abstract accept(callSid: string): void;
   abstract decline(callSid: string): void;
@@ -91,8 +94,8 @@ export abstract class CallAdapter {
 /** Android: delegates to the Kotlin `window.SomsCall` bridge. Per the native-bridge rule, runs only on
  *  Android so `window.SomsCall` is guaranteed present — call with `!`. */
 class AndroidCallAdapter extends CallAdapter {
-  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO'): void {
-    window.SomsCall!.initiate(calleeUserId, callSid, callType);
+  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string): void {
+    window.SomsCall!.initiate(calleeUserId, callSid, callType, peerName, peerAvatar);
   }
   accept(callSid: string): void {
     window.SomsCall!.accept(callSid);
@@ -167,8 +170,8 @@ export class CallAdapterService {
   /** Whether 1:1 calling is supported on this platform (Android native only, for now). */
   readonly supported = isAndroidNative();
 
-  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO'): void {
-    this.adapter.initiate(calleeUserId, callSid, callType);
+  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string): void {
+    this.adapter.initiate(calleeUserId, callSid, callType, peerName, peerAvatar);
   }
   accept(callSid: string): void {
     this.adapter.accept(callSid);

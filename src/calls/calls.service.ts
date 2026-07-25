@@ -253,6 +253,7 @@ export class CallsService implements OnModuleDestroy {
       // CALL_EVENT{incoming} frame that carries name/avatar) can render the incoming UI with no extra fetch.
       // Calls are ephemeral coordination, not identity-only, so this matches the CALL_EVENT payload shape.
       callerName: caller?.name ?? '',
+      callerAvatar: caller?.avatar ?? '',
       threadId: call.threadId,
       callType: call.callType,
     });

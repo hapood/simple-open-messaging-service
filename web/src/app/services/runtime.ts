@@ -189,7 +189,7 @@ declare global {
      *  PLUS the {@link __SOMS_CALL_EVENT__} snapshot push (phase/mediaState transitions the native FSM owns).
      *  Android-only; guaranteed present after the isAndroidNative() gate, so call sites use `!`. */
     SomsCall?: {
-      initiate: (calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO') => void;
+      initiate: (calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string) => void;
       accept: (callSid: string) => void;
       decline: (callSid: string) => void;
       cancel: (callSid: string) => void;

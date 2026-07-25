@@ -231,6 +231,7 @@ export class PushService {
       callSid: string;
       callerUserId: number;
       callerName: string;
+      callerAvatar: string;
       threadId: number;
       callType: 'AUDIO' | 'VIDEO';
     },
@@ -249,6 +250,7 @@ export class PushService {
         callSid: payload.callSid,
         callerUserId: String(payload.callerUserId),
         callerName: payload.callerName,
+        callerAvatar: payload.callerAvatar,
         threadId: String(payload.threadId),
         callType: payload.callType,
       };

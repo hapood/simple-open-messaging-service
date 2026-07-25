@@ -75,8 +75,9 @@ class SomsMessagingService : FirebaseMessagingService() {
                 val threadId = data["threadId"]?.toIntOrNull() ?: 0
                 val callType = data["callType"] ?: "AUDIO"
                 val callerName = data["callerName"] ?: ""
+                val callerAvatar = data["callerAvatar"] ?: ""
                 SomsLog.i("Notif") { "CALL_INCOMING sid=$sid from=$callerUserId type=$callType -> ring" }
-                CallService.startIncoming(this, sid, callerUserId, callerName, threadId, callType)
+                CallService.startIncoming(this, sid, callerUserId, callerName, callerAvatar, threadId, callType)
             }
         }
     }
@@ -514,7 +515,7 @@ class SomsMessagingService : FirebaseMessagingService() {
          *  (federated / attacker-controlled) host the server might emit. Auth-N only (any logged-in user can
          *  fetch any avatar / notif-icon), so the Bearer authorizes. Null on any failure (the notification
          *  renders without an icon — graceful, never blocks the away-summary). */
-        private fun fetchBitmap(ctx: Context, iconUrl: String): android.graphics.Bitmap? {
+        internal fun fetchBitmap(ctx: Context, iconUrl: String): android.graphics.Bitmap? {
             val token = SomsSecureStore.getSessionToken(ctx) ?: return null
             val origin = SomsSecureStore.getActiveOrigin(ctx) ?: return null
             val fullUrl = "$origin$iconUrl"

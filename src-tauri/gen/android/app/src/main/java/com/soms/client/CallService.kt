@@ -8,15 +8,20 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.os.Build
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.drawable.IconCompat
 
 /**
  * The active-call foreground service. Anchors the process for a call's duration (so the system keeps the
@@ -47,7 +52,12 @@ class CallService : Service() {
     private var focusRequest: AudioFocusRequest? = null
     /** The incoming caller's display name + type, captured at ACTION_INCOMING for the ringing notification. */
     @Volatile private var incomingCallerName: String = ""
+    @Volatile private var incomingCallerAvatar: String = ""
     @Volatile private var incomingCallType: String = "AUDIO"
+    /** The peer's avatar bitmap, fetched async ([loadAvatar]) for the notification Person icon. Null until
+     *  loaded — the first notification is name-only; [refreshNotification] re-posts once the icon is in. */
+    @Volatile private var avatarBitmap: Bitmap? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate() {
         super.onCreate()
@@ -62,6 +72,7 @@ class CallService : Service() {
             val sid = intent.getStringExtra(EXTRA_SID)
             if (sid.isNullOrEmpty()) { stopSelf(); return START_NOT_STICKY }
             incomingCallerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: ""
+            incomingCallerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR) ?: ""
             incomingCallType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
             // Promote to foreground FIRST (the phoneCall FGS must be foreground within ~5s of
             // startForegroundService, else the system kills it + the high-priority FCM exemption is forfeit).
@@ -73,13 +84,16 @@ class CallService : Service() {
                 sid,
                 intent.getIntExtra(EXTRA_CALLER_UID, 0),
                 incomingCallerName,
+                incomingCallerAvatar,
                 intent.getIntExtra(EXTRA_THREAD_ID, 0),
                 incomingCallType,
             )
+            loadAvatar(incomingCallerAvatar)
         } else {
             // Outgoing / re-delivered start: anchor + comms audio (the call is negotiating/active).
             startCallForeground()
             acquireAudio()
+            loadAvatar(CallController.peerAvatar)
         }
         // A system-killed call service does NOT auto-resume (no active-call recovery yet). The client re-
         // derives state from the live call only while the process lives; a process-kill ends the call (the
@@ -125,6 +139,7 @@ class CallService : Service() {
         ensureChannels()
         val person = Person.Builder()
             .setName(CallController.peerName.ifEmpty { getString(R.string.app_name) })
+            .apply { avatarBitmap?.let { setIcon(IconCompat.createWithBitmap(it)) } }
             .build()
         // Hang-up button on the ongoing notification (the AndroidX CallStyle requires a non-null hangUpIntent).
         // Routes to SomsActionReceiver → CallController.end. CallController.callSid is set by the time the
@@ -167,6 +182,7 @@ class CallService : Service() {
         )
         val caller = Person.Builder()
             .setName(incomingCallerName.ifEmpty { getString(R.string.app_name) })
+            .apply { avatarBitmap?.let { setIcon(IconCompat.createWithBitmap(it)) } }
             .build()
         return NotificationCompat.Builder(this, CHANNEL_INCOMING)
             .setSmallIcon(R.mipmap.ic_launcher)
@@ -233,6 +249,30 @@ class CallService : Service() {
     /** Lazily create the "Calls" channels: ONGOING (LOW — an active call is not a loud alert) + INCOMING
      *  (HIGH — the heads-up / full-screen ring surface; NO sound — the audible ring is the device ringtone
      *  played by CallController.startRing, so a channel sound would double up). Idempotent. */
+    /** Fetch the peer's avatar (async) for the notification Person icon. Cached in [avatarBitmap]; the
+     *  notification builders use it if loaded (else name-only). On load, [refreshNotification] re-posts the
+     *  current notification so the icon appears. Reuses SomsMessagingService.fetchBitmap (Bearer-fetch of a
+     *  /uploads path — same path as the message-notification icon). */
+    private fun loadAvatar(path: String) {
+        if (path.isEmpty()) return
+        Thread {
+            val bmp = SomsMessagingService.fetchBitmap(this, path)
+            if (bmp != null) {
+                avatarBitmap = bmp
+                mainHandler.post { refreshNotification() }
+            }
+        }.start()
+    }
+
+    /** Re-post the current notification (incoming-ring or ongoing) so the now-loaded avatar icon shows. */
+    private fun refreshNotification() {
+        when (CallController.phase) {
+            "incoming" -> CallController.callSid?.let { startIncomingForeground(it) }
+            "connecting", "connected", "reconnecting" -> startCallForeground()
+            else -> {}
+        }
+    }
+
     private fun ensureChannels() {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (mgr.getNotificationChannel(CHANNEL_ONGOING) == null) {
@@ -270,6 +310,7 @@ class CallService : Service() {
         const val EXTRA_SID = "soms_call_sid"
         private const val EXTRA_CALLER_UID = "soms_call_caller_uid"
         private const val EXTRA_CALLER_NAME = "soms_call_caller_name"
+        private const val EXTRA_CALLER_AVATAR = "soms_call_caller_avatar"
         private const val EXTRA_THREAD_ID = "soms_call_thread_id"
         private const val EXTRA_CALL_TYPE = "soms_call_type"
         private const val REQ_ANSWER = 7001
@@ -290,6 +331,7 @@ class CallService : Service() {
             sid: String,
             callerUserId: Int,
             callerName: String,
+            callerAvatar: String,
             threadId: Int,
             callType: String,
         ) {
@@ -298,6 +340,7 @@ class CallService : Service() {
                 putExtra(EXTRA_SID, sid)
                 putExtra(EXTRA_CALLER_UID, callerUserId)
                 putExtra(EXTRA_CALLER_NAME, callerName)
+                putExtra(EXTRA_CALLER_AVATAR, callerAvatar)
                 putExtra(EXTRA_THREAD_ID, threadId)
                 putExtra(EXTRA_CALL_TYPE, callType)
             }

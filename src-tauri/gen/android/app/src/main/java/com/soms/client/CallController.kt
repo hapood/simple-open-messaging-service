@@ -82,6 +82,11 @@ object CallController {
      *  Empty for the foreground path (the SSE incoming frame owns the name there). Surfaced via [snapshotJson]. */
     @Volatile var peerName: String = ""
         private set
+    /** The peer's avatar (a /uploads/avatars path) for the call-notification Person icon. Set by initiate
+     *  (the caller passes the callee's) + the incoming paths (the SSE frame's callerAvatar / the FCM push's).
+     *  Empty when none; CallService fetches it with the Bearer → Person.setIcon. */
+    @Volatile var peerAvatar: String = ""
+        private set
     /** UI phase, the merged call-FSM ∪ RTCPeerConnection state (Phase 5 refines the labels):
      *  idle | calling | ringing | incoming | connecting | connected | reconnecting | ended. */
     @Volatile var phase: String = "idle"
@@ -456,6 +461,8 @@ object CallController {
                 callSid = sid
                 threadId = obj.optInt("threadId")
                 peerUserId = obj.optInt("callerUserId")
+                peerName = obj.optString("callerName", "")
+                peerAvatar = obj.optString("callerAvatar", "")
                 callType = obj.optString("callType", "AUDIO")
                 isCaller = false
                 phase = "incoming"
@@ -551,7 +558,7 @@ object CallController {
     /** Caller starts a call. POST /calls/initiate → create the PC + offer + trickle ICE. The [CallService]
      *  FGS must already be running (started by the bridge before this) so the process is anchored + audio
      *  routing is in comms mode. */
-    fun initiate(calleeUserId: Int, sid: String, type: String) {
+    fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String) {
         callExecutor.execute {
             try {
                 val origin = activeOrigin() ?: run { SomsLog.w(TAG) { "initiate: no origin" }; return@execute }
@@ -563,10 +570,19 @@ object CallController {
                 peerUserId = calleeUserId
                 callType = type
                 isCaller = true
+                // INVARIANT: phase = "calling" (→ the outgoing UI shows) is set ONLY after /calls/initiate
+                // succeeds — NOT optimistically before the POST. This gates the outgoing UI on the server's
+                // confirmation: the server's busy-line means this user is in ≤1 call, so once the POST
+                // succeeds (this user is now busy server-side), no second incoming can ring them. If phase
+                // were set before the POST, the outgoing UI would show while the POST is in flight → an
+                // incoming arriving in that window would overwrite + leak the outgoing state (a race). The
+                // post-before-phase ordering + the server busy-line make outgoing + incoming mutually
+                // exclusive. DO NOT make this optimistic.
                 phase = "calling"
                 startedAt = 0L
                 iceRestartTried = false
-                peerName = ""
+                peerName = name
+                peerAvatar = avatar
                 pushSnapshot()
                 val connection = createPeerConnection()
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())
@@ -715,7 +731,7 @@ object CallController {
      *  the ring. Idempotent: a no-op if this call is already incoming (the SSE path got there first); ignored
      *  if a different call is active (busy). Runs on the caller thread; the ring + the ringing POST are
      *  side-effect-safe there (POST hops to [callExecutor]). */
-    fun seedIncoming(sid: String, callerUserId: Int, name: String, tid: Int, type: String) {
+    fun seedIncoming(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
         if (phase != "idle") {
             if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
             return                      // a different call is live (busy) — ignore the stray push
@@ -724,6 +740,7 @@ object CallController {
         threadId = tid
         peerUserId = callerUserId
         peerName = name
+        peerAvatar = avatar
         callType = type
         isCaller = false
         phase = "incoming"
@@ -760,6 +777,7 @@ object CallController {
         mediaState = "new"
         iceRestartTried = false
         peerName = ""
+        peerAvatar = ""
         ringer.stopRing()
         cancelReconnectBackstop()
         pendingOffer = null

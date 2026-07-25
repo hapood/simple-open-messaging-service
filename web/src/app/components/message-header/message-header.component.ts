@@ -64,9 +64,11 @@ export class MessageHeaderComponent {
    *  signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which POSTs
    *  /calls/initiate + creates the offer. */
   placeCall(callType: 'AUDIO' | 'VIDEO'): void {
-    const peerId = this.userMsgTrd()?.peerUser?.id;
-    if (peerId === undefined) return;
-    this.callAdapter.initiate(peerId, uuid(), callType);
+    const peer = this.userMsgTrd()?.peerUser;
+    if (peer?.id === undefined) return;
+    // Pass the peer's name + avatar so the native call notification (CallStyle Person) shows them — the
+    // caller already knows the peer from the thread; no extra fetch on the ringing path.
+    this.callAdapter.initiate(peer.id, uuid(), callType, peer.name ?? '', peer.avatar ?? '');
   }
 
   /** In-chat search visibility is a layer of the app's virtual nav stack (see NavStateMachineService):
