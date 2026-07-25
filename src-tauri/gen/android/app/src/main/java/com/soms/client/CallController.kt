@@ -2,23 +2,9 @@ package com.soms.client
 
 import android.content.Context
 import android.content.Intent
-import android.graphics.Color
-import android.media.AudioAttributes
-import android.media.AudioManager
-import android.media.Ringtone
-import android.media.RingtoneManager
-import android.os.Build
 import android.os.Handler
 import android.os.Looper
-import android.os.PowerManager
-import android.os.VibrationEffect
-import android.os.Vibrator
 import android.util.Log
-import android.view.HapticFeedbackConstants
-import android.view.View
-import android.view.ViewGroup
-import android.webkit.WebView
-import android.widget.FrameLayout
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -29,11 +15,8 @@ import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
 import org.webrtc.BuiltinAudioDecoderFactoryFactory
 import org.webrtc.BuiltinAudioEncoderFactoryFactory
-import org.webrtc.Camera2Enumerator
-import org.webrtc.CameraVideoCapturer
 import org.webrtc.DefaultVideoDecoderFactory
 import org.webrtc.DefaultVideoEncoderFactory
-import org.webrtc.EglBase
 import org.webrtc.IceCandidate
 import org.webrtc.IceCandidateErrorEvent
 import org.webrtc.MediaConstraints
@@ -43,12 +26,8 @@ import org.webrtc.PeerConnectionFactory
 import org.webrtc.RtpReceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
-import org.webrtc.SurfaceTextureHelper
-import org.webrtc.SurfaceViewRenderer
-import org.webrtc.SessionDescription.Type
-import org.webrtc.VideoCapturer
-import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import org.webrtc.SessionDescription.Type
 import org.webrtc.audio.JavaAudioDeviceModule
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -129,6 +108,13 @@ object CallController {
     private val appContext: Context?
         get() = SomsApplication.appContext
 
+    /** The incoming-call ring (ringtone/vibrate/wake) — extracted mechanics; the FSM owns the transitions
+     *  ([CallRinger] uses a looping MediaPlayer). */
+    private val ringer = CallRinger { appContext }
+    /** The video half — EGL/capture/tracks/the sibling-surface overlays/swap. Extracted from the FSM
+     *  ([VideoSurfaceManager]). */
+    private val video = VideoSurfaceManager { appContext }
+
     private val initLock = Any()
     private var factory: PeerConnectionFactory? = null
     private var audioDeviceModule: org.webrtc.audio.AudioDeviceModule? = null
@@ -143,32 +129,12 @@ object CallController {
     private var pendingOffer: String? = null
     private val pendingIce = mutableListOf<String>()
 
-    // ── video (Phase 4) ───────────────────────────────────────────────────────────
-    // ⚠️ RISK AREA (webrtc 1.3.8): the Camera2Enumerator / VideoSource / SurfaceViewRenderer API + the
-    // renderer init/dispose lifecycle are version-sensitive and need ON-DEVICE iteration (a clean compile
-    // does NOT prove the surface attaches or disposes without a leak). This is a best-effort write mirroring
-    // the barcode-scanner overlay + the standard webrtc-android sample — verify on a real VIDEO call.
-    /** Shared EGL base for the renderers + the capture SurfaceTextureHelper. Lazy (audio calls skip it). */
-    @Volatile private var eglBase: EglBase? = null
-    @Volatile private var videoCapturer: VideoCapturer? = null
-    @Volatile private var videoSource: VideoSource? = null
-    @Volatile private var localVideoTrack: VideoTrack? = null
-    /** The peer's inbound video track (stored in [observer.onAddTrack], sunk to a renderer by
-     *  [relinkVideoSinks] once the renderer is mounted). Held so the sink wiring survives the
-     *  track-arrives-before-renderer race. Not disposed here (the PC owns it — it's freed on connection close). */
-    @Volatile private var remoteVideoTrack: VideoTrack? = null
-    /** Self↔remote "swap" (tap the self PiP): when true the LOCAL camera renders full-bleed + the peer's in
-     *  the PiP (mirrors follow in [relinkVideoSinks]). Defaults false. */
-    @Volatile private var swapped = false
-    private var captureThreadHelper: SurfaceTextureHelper? = null
-    /** Remote video renderer — a full-bleed SIBLING of the WebView (behind it, which is transparent over the
-     *  video): the barcode-scanner overlay technique. Null until [setVideoRect] mounts it. */
-    @Volatile private var remoteRenderer: SurfaceViewRenderer? = null
-    /** Local-camera (self-view) renderer — a small positioned sibling above the WebView. */
-    @Volatile private var selfRenderer: SurfaceViewRenderer? = null
-    /** The WebView's saved background, restored on detach (the overlay sets it TRANSPARENT while video is up). */
-    private var savedWebViewBg: android.graphics.drawable.Drawable? = null
-    /** UI-thread handler — SurfaceViewRenderer (a View) + the sibling-view tree must be touched on main. */
+    // ── video ─────────────────────────────────────────────────────────────────────
+    // The EGL base, camera capture, tracks, the sibling-surface overlays, and the swap all live in
+    // [video] (VideoSurfaceManager). See that class for the ⚠️ on-device-verification note + the
+    // z-order / sink-race gotchas.
+
+    /** UI-thread handler — the reconnect + accepted backstops post here (view-tree ops live in VideoSurfaceManager). */
     private val mainHandler = Handler(Looper.getMainLooper())
 
     /** True once the caller has tried an ICE restart for this call, so the reconnect backstop's second firing
@@ -177,7 +143,9 @@ object CallController {
     /** Posted on [mainHandler] when the PC goes DISCONNECTED; hops to [callExecutor]. Cancelled on CONNECTED +
      *  [teardown]. Bounds "Reconnecting…": after the grace the caller restarts ICE once (re-arming a shorter
      *  backstop), then the call fails. */
-    private val reconnectBackstop = Runnable {
+    private val reconnectBackstop = Runnable { onReconnectBackstop() }
+
+    private fun onReconnectBackstop() {
         callExecutor.execute {
             if (phase != "reconnecting") return@execute // recovered, or already ended
             if (callSid == null) return@execute
@@ -197,14 +165,9 @@ object CallController {
         }
     }
 
-    // ── incoming-call ring + answer-loss recovery (Phase 6) ───────────────────────
-    /** The incoming-call ringtone (the device default, on the ring stream) — plays while phase == incoming. */
-    @Volatile private var ringtone: Ringtone? = null
-    /** The incoming-call vibration (a repeating call pattern). VIBRATE is a normal permission. */
-    @Volatile private var ringVibrator: Vibrator? = null
-    /** CPU wake held for the ring's duration so an accept/decline is processed promptly even with the screen
-     *  off. Distinct from the active-call wake lock (CallService) — this one spans the RING only. */
-    @Volatile private var ringWakeLock: PowerManager.WakeLock? = null
+    // ── answer-loss recovery (Phase 6) ────────────────────────────────────────────
+    // The incoming-call ring lives in [ringer] (CallRinger). The killed-callee re-offer backstop stays here
+    // (it is a signaling concern, not a ring mechanic).
     /** True once the caller has received the callee's SDP answer — cancels the [acceptedTimer]. */
     @Volatile private var answerReceived = false
     /** Backstop for a KILLED callee: the caller's first offer (sent at initiate, over SSE) is lost if the callee
@@ -212,7 +175,9 @@ object CallController {
      *  re-offer (the callee is online now — it just accepted — so the offer reaches it, and it answers).
      *  Cancelled the instant the answer lands. PURELY ADDITIVE — it never fires in the online case (the answer
      *  arrives in well under the timeout), so it cannot perturb the verified foreground/background flow. */
-    private val acceptedTimer = Runnable {
+    private val acceptedTimer = Runnable { onAcceptedTimer() }
+
+    private fun onAcceptedTimer() {
         callExecutor.execute {
             if (answerReceived || phase == "idle" || phase == "ended" || pc == null) return@execute
             SomsLog.i(TAG) { "accepted backstop -> re-offer (callee's first offer was lost while offline)" }
@@ -251,11 +216,11 @@ object CallController {
             )
             val adm = JavaAudioDeviceModule.builder(ctx).createAudioDeviceModule()
             audioDeviceModule = adm
-            // Shared EGL context for the video encode/decode factories + the capture SurfaceTextureHelper +
-            // the SurfaceViewRenderers (all created lazily; audio calls never touch video). Created here so
+            // Shared EGL context for the video encode/decode factories (owned by VideoSurfaceManager, which
+            // also uses it for the capture SurfaceTextureHelper + the SurfaceViewRenderers). Borrowed here so
             // the factories are wired at factory-build time (a PC without video factories can build a
             // VideoTrack but never encode/decode it → no frames).
-            val eglCtx = ensureEglBase().eglBaseContext
+            val eglCtx = video.eglBase().eglBaseContext
             val f = PeerConnectionFactory.builder()
                 .setAudioDeviceModule(adm)
                 .setAudioEncoderFactoryFactory(BuiltinAudioEncoderFactoryFactory())
@@ -305,214 +270,29 @@ object CallController {
         val track = f.createAudioTrack("ARDAMSa0", source)
         localAudioTrack = track
         connection.addTrack(track, listOf("ARDAMS"))
-        if (callType == "VIDEO") setupVideoCapture(connection)
+        if (callType == "VIDEO") video.setupVideoCapture(f, connection)
         return connection
     }
 
-    // ── video capture + overlay (Phase 4) ─────────────────────────────────────────
-    // See the ⚠️ RISK AREA note on the video fields — best-effort, needs on-device verification.
+    // ── video delegation (the logic lives in [video] / VideoSurfaceManager) ────────
 
-    private fun ensureEglBase(): EglBase {
-        eglBase?.let { return it }
-        val base = EglBase.create()
-        eglBase = base
-        return base
-    }
-
-    /** Create the front-camera capturer + a local VideoTrack + add it to the PC (the self-view renderer
-     *  attaches in [setVideoRect] when the WebView reports its hole rects). AUDIO calls skip this. */
-    private fun setupVideoCapture(connection: PeerConnection) {
-        val f = factory ?: return
-        val ctx = appContext ?: return
-        val base = ensureEglBase()
-        val enumerator = Camera2Enumerator(ctx)
-        val names = enumerator.deviceNames
-        var name: String? = null
-        for (n in names) if (enumerator.isFrontFacing(n)) { name = n; break }
-        if (name == null && names.isNotEmpty()) name = names[0]
-        val deviceName = name ?: run { SomsLog.w(TAG) { "no camera device" }; return }
-        val capturer = enumerator.createCapturer(deviceName, CameraEventsHandler)
-        videoCapturer = capturer
-        val helper = SurfaceTextureHelper.create("SomsCapture", base.eglBaseContext)
-        captureThreadHelper = helper
-        val source = f.createVideoSource(false /* isScreencast — camera capture, not screen */)
-        videoSource = source
-        capturer.initialize(helper, ctx, source.capturerObserver)
-        try {
-            capturer.startCapture(640, 480, 30)
-        } catch (e: Exception) {
-            SomsLog.w(TAG) { "startCapture failed: ${e.message}" }
-        }
-        val vtrack = f.createVideoTrack("ARDAMSv0", source)
-        localVideoTrack = vtrack
-        connection.addTrack(vtrack)
-        relinkVideoSinks() // the self renderer may already be mounted (ensureRenderers raced ahead) — sink now
-    }
-
-    /** Flip front↔back camera (WhatsApp/FaceTime). No-op on an AUDIO call. */
-    fun switchCamera() {
-        (videoCapturer as? CameraVideoCapturer)?.switchCamera(null)
-    }
+    /** Flip front↔back camera. No-op on an AUDIO call. */
+    fun switchCamera() = video.switchCamera()
 
     /** Camera on/off (mute video, keep audio). */
-    fun setCameraEnabled(enabled: Boolean) {
-        localVideoTrack?.setEnabled(enabled)
-    }
+    fun setCameraEnabled(enabled: Boolean) = video.setCameraEnabled(enabled)
 
-    /** Mount/position the remote + self video surfaces as siblings of the WebView, OR detach (both rects
-     *  null). `remoteRect`/`selfRect` are JSON `{x,y,w,h}` in CSS px the WebView reports; null hides them.
-     *  Runs on the UI thread (the renderers are Views + addView touches the view tree). */
-    fun setVideoRect(remoteRect: String?, selfRect: String?) {
-        mainHandler.post {
-            val v = SomsBridge.webView ?: return@post
-            if (remoteRect == null && selfRect == null) { detachVideoSurfaces(v); return@post }
-            ensureRenderers(v)
-            positionSelf(v, selfRect)
-        }
-    }
+    /** Mount/position the remote + self video surfaces, or detach (both rects null). */
+    fun setVideoRect(remoteRect: String?, selfRect: String?) = video.setVideoRect(remoteRect, selfRect)
 
-    /** Create the two SurfaceViewRenderer siblings + sink the local track to the self renderer. Idempotent.
-     *  Remote is added first (BEHIND the WebView — it is transparent over it); the self renderer is a media
-     *  overlay ABOVE the remote (so the self PiP floats over the peer's video), still below the transparent
-     *  WebView. Both renderers are SurfaceViews — separate hardware-composited layers whose RELATIVE z-order
-     *  is NOT guaranteed when both are left at the default (bottom) layer: SurfaceFlinger orders them per
-     *  device/Android version, and on newer Android (reproduced on a Huawei DBY-W09 / API 31) the full-screen
-     *  remote composited ABOVE the small self, hiding it entirely (the same two views rendered fine on an
-     *  Android 9 device). setZOrderMediaOverlay(true) on the self surface forces it above the remote media
-     *  layer regardless of version — the standard AppRTCMobile self-view pattern. Must be set BEFORE addView
-     *  (the surface is allocated on attach; the z-order is fixed then). */
-    private fun ensureRenderers(webView: WebView) {
-        if (remoteRenderer != null) return
-        val parent = webView.parent as? ViewGroup ?: return
-        val base = ensureEglBase()
-        val density = webView.context.resources.displayMetrics.density
-        val remote = SurfaceViewRenderer(webView.context).apply {
-            layoutParams = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
-        }
-        remote.init(base.eglBaseContext, null)
-        parent.addView(remote, 0) // default z-order (bottom media layer) → behind the WebView (transparent over it)
-        val self = SurfaceViewRenderer(webView.context).apply {
-            layoutParams = FrameLayout.LayoutParams((120 * density).toInt(), (160 * density).toInt())
-        }
-        self.init(base.eglBaseContext, null)
-        self.setMirror(true) // front-camera mirror, like the mainstream self-view
-        self.setZOrderMediaOverlay(true) // force the self surface above the remote media layer (version-safe)
-        parent.addView(self)
-        remoteRenderer = remote
-        selfRenderer = self
-        webView.bringToFront()
-        if (savedWebViewBg == null) { savedWebViewBg = webView.background; webView.setBackgroundColor(Color.TRANSPARENT) }
-        relinkVideoSinks() // sink local→PiP + remote→full per the swap state (whichever halves now exist)
-    }
+    /** Swap which video is full-bleed vs PiP (tap the self PiP). No-op on an AUDIO call. */
+    fun swapVideo() = video.swapVideo()
 
-    /** (Re)wire the video sinks for whichever track + renderer halves exist RIGHT NOW, honoring [swapped].
-     *  Called whenever EITHER half appears — the renderers mount in [ensureRenderers], the local track is
-     *  created in [setupVideoCapture], the remote track is signaled in [onAddTrack], and the mapping flips on
-     *  [swapVideo] — so the arrival order is irrelevant: a sink lands the instant both halves of a pair exist.
-     *  This fixes the race where ensureRenderers ran before setupVideoCapture created the local track (so
-     *  `localVideoTrack` was null → addSink was a no-op → the self renderer rendered 0 frames, observed as an
-     *  empty self-view box). Each call fully detaches then re-attaches (swap-safe; addSink is a de-duplicated
-     *  set, the remove is belt-and-braces so a flip leaves no stale mapping). Thread-safe — VideoTrack
-     *  add/removeSink + SurfaceViewRenderer.setMirror are all safe off-main. */
-    @Synchronized
-    private fun relinkVideoSinks() {
-        val local = localVideoTrack
-        val remote = remoteVideoTrack
-        val big = remoteRenderer    // full-bleed surface (behind the WebView)
-        val pip = selfRenderer      // PiP overlay surface (media-overlay)
-        // Detach both tracks from both renderers so a swap leaves no stale mapping.
-        if (local != null) { big?.let { local.removeSinkSafe(it) }; pip?.let { local.removeSinkSafe(it) } }
-        if (remote != null) { big?.let { remote.removeSinkSafe(it) }; pip?.let { remote.removeSinkSafe(it) } }
-        // Default: local→PiP (self-view), remote→big (peer full-bleed). Swapped: local→big, remote→PiP.
-        val (localTarget, remoteTarget) = if (swapped) big to pip else pip to big
-        local?.let { l -> localTarget?.let { l.addSinkSafe(it, "local") } }
-        remote?.let { r -> remoteTarget?.let { r.addSinkSafe(it, "remote") } }
-        // Mirror only the surface showing the LOCAL front camera (a mirror flips L/R; the peer's video must not).
-        big?.setMirror(swapped)     // big shows the local cam ⇔ swapped
-        pip?.setMirror(!swapped)    // pip shows the local cam ⇔ !swapped
-    }
+    /** The remote video's rotated frame dimensions, or null until the first frame — for PiP aspect sizing. */
+    fun remoteVideoDimensions(): Pair<Int, Int>? = video.remoteDimensions()
 
-    /** addSink/removeSink that LOGS a failure instead of swallowing it — a dropped sink is the difference
-     *  between live video and a black box, so a silent `runCatching {}` here cost real debug time. Never
-     *  throws (best-effort); [relinkVideoSinks]'s @Synchronized already serializes these. */
-    private fun VideoTrack.addSinkSafe(r: SurfaceViewRenderer, label: String) =
-        runCatching { addSink(r) }.onFailure { SomsLog.w(TAG, it) { "addSink $label failed" } }
-    private fun VideoTrack.removeSinkSafe(r: SurfaceViewRenderer) =
-        runCatching { removeSink(r) }.onFailure { SomsLog.w(TAG, it) { "removeSink failed" } }
-
-    /** Swap which video is full-bleed vs PiP (tap the self PiP): flips [swapped] + re-sinks so the local
-     *  camera renders full-bleed and the peer's in the PiP (mirrors follow). The surfaces + z-order stay put;
-     *  only the track→renderer mapping + the mirror flip. No-op if no video surfaces are mounted (AUDIO call).
-     *  Fires a view-level haptic (no VIBRATE permission; respects the user's system haptic setting). */
-    fun swapVideo() {
-        if (remoteRenderer == null && selfRenderer == null) return
-        swapped = !swapped
-        relinkVideoSinks()
-        mainHandler.post { SomsBridge.webView?.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY) }
-    }
-
-    /** Reposition the self renderer to the reported CSS rect (× density → device px). */
-    private fun positionSelf(webView: WebView, selfRect: String?) {
-        val r = selfRect ?: return
-        val self = selfRenderer ?: return
-        try {
-            val o = JSONObject(r)
-            val d = webView.context.resources.displayMetrics.density
-            val lp = FrameLayout.LayoutParams(
-                (o.optDouble("w", 120.0) * d).toInt(),
-                (o.optDouble("h", 160.0) * d).toInt(),
-            )
-            lp.setMargins((o.optDouble("x", 0.0) * d).toInt(), (o.optDouble("y", 0.0) * d).toInt(), 0, 0)
-            self.layoutParams = lp
-        } catch (e: Exception) {
-            SomsLog.w(TAG) { "setVideoRect parse: ${e.message}" }
-        }
-    }
-
-    /** Remove the renderers + restore the WebView background. Safe to call when not attached. */
-    private fun detachVideoSurfaces(webView: WebView) {
-        val parent = webView.parent as? ViewGroup
-        localVideoTrack?.let { lt -> selfRenderer?.let { runCatching { lt.removeSink(it) } }; remoteRenderer?.let { runCatching { lt.removeSink(it) } } }
-        remoteVideoTrack?.let { rt -> selfRenderer?.let { runCatching { rt.removeSink(it) } }; remoteRenderer?.let { runCatching { rt.removeSink(it) } } }
-        remoteRenderer?.let { runCatching { parent?.removeView(it); it.release() } }
-        selfRenderer?.let { runCatching { parent?.removeView(it); it.release() } }
-        remoteRenderer = null
-        selfRenderer = null
-        if (savedWebViewBg != null) { webView.background = savedWebViewBg; savedWebViewBg = null }
-        else webView.setBackgroundColor(Color.WHITE)
-    }
-
-    /** Called by MainActivity.onWebViewCreate on a (re)created WebView: the prior video surfaces (siblings of
-     *  the OLD WebView's view tree) are now orphaned. Detach their sinks, release them, and null the refs so
-     *  [ensureRenderers] re-creates fresh ones on the new WebView's parent (its idempotency guard would
-     *  otherwise skip re-creation, leaving the rebuilt call UI video-less). The native call + PC survive the
-     *  WebView recreation (they live here, not in the renderer). Main-thread safe. */
-    fun onWebViewRecreated() {
-        localVideoTrack?.let { lt ->
-            remoteRenderer?.let { runCatching { lt.removeSink(it) } }
-            selfRenderer?.let { runCatching { lt.removeSink(it) } }
-        }
-        remoteVideoTrack?.let { rt ->
-            remoteRenderer?.let { runCatching { rt.removeSink(it) } }
-            selfRenderer?.let { runCatching { rt.removeSink(it) } }
-        }
-        remoteRenderer?.let { runCatching { it.release() } }
-        selfRenderer?.let { runCatching { it.release() } }
-        remoteRenderer = null
-        selfRenderer = null
-        savedWebViewBg = null
-    }
-
-    /** Camera-events sink Camera2Enumerator.createCapturer requires (logs only — the call recovers via ICE /
-     *  the connection state on a camera error). */
-    private object CameraEventsHandler : CameraVideoCapturer.CameraEventsHandler {
-        override fun onCameraError(errorDescription: String?) { SomsLog.w(TAG) { "camera error: $errorDescription" } }
-        override fun onCameraDisconnected() {}
-        override fun onCameraFreezed(errorDescription: String?) { SomsLog.w(TAG) { "camera frozen: $errorDescription" } }
-        override fun onCameraOpening(cameraName: String?) {}
-        override fun onFirstFrameAvailable() {}
-        override fun onCameraClosed() {}
-    }
+    /** Called by MainActivity.onWebViewCreate on a (re)created WebView — reset the orphaned video surfaces. */
+    fun onWebViewRecreated() = video.onWebViewRecreated()
 
     // ── the PC observer: ICE trickle + connection state ───────────────────────────
 
@@ -556,8 +336,7 @@ object CallController {
             // is auto-routed by the AudioDeviceModule — no sink needed.
             val track = receiver?.track()
             if (track is VideoTrack) {
-                remoteVideoTrack = track
-                relinkVideoSinks()
+                video.onRemoteTrack(track)
             }
         }
 
@@ -823,7 +602,7 @@ object CallController {
     fun accept(sid: String) {
         // The user answered — stop the incoming ring immediately + switch to comms audio (the active-call
         // MODE_IN_COMMUNICATION + focus + wake, owned by CallService) + flip the notification to ongoing.
-        stopRing()
+        ringer.stopRing()
         CallService.instance?.onAccepted()
         callExecutor.execute {
             try {
@@ -840,7 +619,7 @@ object CallController {
     }
 
     fun decline(sid: String) {
-        stopRing() // stop the incoming ring at once — before the POST (teardown runs only after the network round-trip)
+        ringer.stopRing() // stop the incoming ring at once — before the POST (teardown runs only after the network round-trip)
         callExecutor.execute {
             val origin = activeOrigin() ?: return@execute
             post("$origin${SomsSecureStore.API_PREFIX}/calls/decline", JSONObject().put("callSid", sid))
@@ -849,7 +628,7 @@ object CallController {
     }
 
     fun cancel(sid: String) {
-        stopRing()
+        ringer.stopRing()
         callExecutor.execute {
             val origin = activeOrigin() ?: return@execute
             post("$origin${SomsSecureStore.API_PREFIX}/calls/cancel", JSONObject().put("callSid", sid))
@@ -858,7 +637,7 @@ object CallController {
     }
 
     fun end(sid: String, reason: String?) {
-        stopRing()
+        ringer.stopRing()
         callExecutor.execute {
             val origin = activeOrigin() ?: return@execute
             val body = JSONObject().put("callSid", sid)
@@ -895,7 +674,7 @@ object CallController {
         .put("mediaState", mediaState)
         .put("startedAt", startedAt)
         .put("muted", muted)
-        .put("swapped", swapped)
+        .put("swapped", video.swapped)
         .toString()
 
     /** Called by CallService.onDestroy (the FGS is being torn down): release the PC + tracks. Safe to call
@@ -960,39 +739,7 @@ object CallController {
         answerReceived = false
         pushSnapshot()
         callExecutor.execute { postRinging(sid) } // ack alerting → the caller's UI shows "Ringing…"
-        startRing()
-    }
-
-    /** Start the incoming-call ring: ring-stream ringtone (respects ringer volume / DND) + a repeating
-     *  vibration + a PARTIAL_WAKE_LOCK (the screen may be off; the accept must land promptly). MODE_RINGTONE
-     *  so the ring stream plays correctly. Stopped by [stopRing] on accept / decline / teardown. */
-    fun startRing() {
-        val ctx = appContext ?: return
-        val am = (ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager)
-        am.mode = AudioManager.MODE_RINGTONE
-        val uri = RingtoneManager.getActualDefaultRingtoneUri(ctx, RingtoneManager.TYPE_RINGTONE)
-        ringtone = uri?.let { RingtoneManager.getRingtone(ctx, it) }?.apply {
-            audioAttributes = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                .build()
-            play()
-        }
-        ringVibrator = (ctx.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator).also { v ->
-            val pattern = longArrayOf(0, 1000, 1000) // on-off call pattern, repeating
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) v.vibrate(VibrationEffect.createWaveform(pattern, 0))
-            else @Suppress("DEPRECATION") v.vibrate(pattern, 0)
-        }
-        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
-        ringWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "soms:ring").also { it.acquire() }
-    }
-
-    /** Stop the ringtone + vibration + release the ring wake lock + restore MODE_NORMAL. Safe when not ringing. */
-    fun stopRing() {
-        ringtone?.runCatching { stop() }; ringtone = null
-        ringVibrator?.runCatching { cancel() }; ringVibrator = null
-        ringWakeLock?.takeIf { it.isHeld }?.runCatching { release() }; ringWakeLock = null
-        appContext?.let { (it.getSystemService(Context.AUDIO_SERVICE) as AudioManager).mode = AudioManager.MODE_NORMAL }
+        ringer.startRing()
     }
 
     private fun armAcceptedTimer() {
@@ -1018,25 +765,8 @@ object CallController {
         localAudioTrack = null
         audioSource?.dispose()
         audioSource = null
-        // Video teardown: stop the capturer (stopCapture throws InterruptedException), dispose the video
-        // track/source/helper/capturer, and detach the overlay surfaces (view ops — hop to the UI thread).
-        try {
-            videoCapturer?.stopCapture()
-        } catch (e: Exception) {
-            SomsLog.w(TAG) { "stopCapture: ${e.message}" }
-        }
-        videoCapturer?.dispose()
-        captureThreadHelper?.dispose()
-        localVideoTrack?.dispose()
-        videoSource?.dispose()
-        videoCapturer = null
-        captureThreadHelper = null
-        localVideoTrack = null
-        remoteVideoTrack = null
-        swapped = false
-        videoSource = null
-        val webViewForDetach = SomsBridge.webView
-        mainHandler.post { webViewForDetach?.let { detachVideoSurfaces(it) } }
+        // Video teardown (capture/tracks/surfaces) lives in [video].
+        video.tearDown()
         connection?.dispose()
         appContext?.stopService(Intent(appContext, CallService::class.java))
         if (phase != "ended") phase = "idle"
@@ -1048,7 +778,7 @@ object CallController {
         iceRestartTried = false
         answerReceived = false
         peerName = ""
-        stopRing()
+        ringer.stopRing()
         cancelReconnectBackstop()
         cancelAcceptedTimer()
         pendingOffer = null
@@ -1156,10 +886,19 @@ object CallController {
         null
     }
 
+    /** Notified on a phase CHANGE (idle/incoming/…/ended) — registered by MainActivity to toggle the
+     *  show-when-locked / turn-screen-on flags so an incoming ring surfaces over the lock screen. */
+    @Volatile private var phaseListener: ((String) -> Unit)? = null
+    fun setPhaseListener(listener: ((String) -> Unit)?) { phaseListener = listener }
+    @Volatile private var lastNotifiedPhase: String = "idle"
+
     /** Push the current snapshot to the WebView so the Angular call UI (if attached) reflects a transition
      *  it can't get from the SSE path (media-state changes, phase transitions the native FSM owns). A no-op
-     *  when no WebView is attached (SomsBridge.eval is a no-op); the next getSnapshot() catches it up. */
+     *  when no WebView is attached (SomsBridge.eval is a no-op); the next getSnapshot() catches it up. Also
+     *  fires [phaseListener] on a phase change. */
     private fun pushSnapshot() {
+        val p = phase
         SomsBridge.eval("window.__SOMS_CALL_EVENT__ && window.__SOMS_CALL_EVENT__(${snapshotJson()});")
+        if (p != lastNotifiedPhase) { lastNotifiedPhase = p; phaseListener?.invoke(p) }
     }
 }

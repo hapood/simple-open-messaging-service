@@ -10,12 +10,12 @@ import android.os.Bundle
 import android.provider.Settings
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.app.PictureInPictureParams
 import android.util.Log
 import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
-import android.webkit.WebViewRenderProcessClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.NotificationManagerCompat
@@ -106,6 +106,9 @@ class MainActivity : TauriActivity() {
         if (intent?.action == CallService.ACTION_ANSWER) {
             intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
         }
+        // Reflect call-phase changes in the show-when-locked / turn-screen-on flags (lock-screen incoming UI).
+        CallController.setPhaseListener { runOnUiThread { applyCallDisplayFlags() } }
+        applyCallDisplayFlags()
         // Kick off the FCM token fetch, throttled to once/day (a mainland-China device without GMS shouldn't hammer
         // Google on every launch). First run (no cached token) always fetches so FCM works from session one.
         maybeFetchFcmToken()
@@ -304,17 +307,6 @@ class MainActivity : TauriActivity() {
             SomsBridge.DeepLink.pendingThreadId = null
             openThread(it)
         }
-        // Renderer-reclaim recovery: a crashed WebView renderer recreates the activity. Tauri re-creates the
-        // WebView (onWebViewCreate fires again), the web re-derives the live call via getSnapshot(), and the
-        // native call + audio leg survive (they live in CallController, a process-global object, NOT in the
-        // renderer). Only a real crash triggers the recreate — a low-priority kill (which applyCallRendererPolicy
-        // prevents during a call) does not.
-        webView.setWebViewRenderProcessClient { _, detail ->
-            if (detail?.didCrash() == true) {
-                SomsLog.w("SomsActivity") { "WebView renderer crashed -> recreate activity (call survives natively)" }
-                recreate()
-            }
-        }
         // The (re)created WebView's view tree is new — null the orphaned prior video surfaces so the next
         // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
         CallController.onWebViewRecreated()
@@ -380,11 +372,16 @@ class MainActivity : TauriActivity() {
         }
     }
 
-    /** The PiP aspect ratio from the current content size, clamped to the valid PiP range [1/2.39, 2.39]. */
+    /** The PiP aspect ratio: the remote video's frame dimensions if known (the PiP window should match the
+     *  video → no letterbox), else the window size until the first frame arrives. Clamped to the valid PiP
+     *  range [1/2.39, 2.39]. */
     private fun pipAspectRatio(): Rational {
-        val content = findViewById<View>(android.R.id.content)
-        val w = content?.takeIf { it.width > 0 }?.width ?: resources.displayMetrics.widthPixels
-        val h = content?.takeIf { it.height > 0 }?.height ?: resources.displayMetrics.heightPixels
+        val (w, h) = CallController.remoteVideoDimensions() ?: run {
+            val content = findViewById<View>(android.R.id.content)
+            val cw = content?.takeIf { it.width > 0 }?.width ?: resources.displayMetrics.widthPixels
+            val ch = content?.takeIf { it.height > 0 }?.height ?: resources.displayMetrics.heightPixels
+            cw to ch
+        }
         val ratio = w.toFloat() / h.toFloat()
         return when {
             ratio < 1f / 2.39f -> Rational(1, 3)
@@ -403,6 +400,7 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
+        applyCallDisplayFlags()
         // Belt-and-suspenders WebView capture for the async-creation race (see captureWebView). Usually
         // a no-op because onWebViewCreate has already set SomsBridge.webView.
         captureWebView()
@@ -448,27 +446,6 @@ class MainActivity : TauriActivity() {
             )
         } else {
             stopService(Intent(this, RealtimeService::class.java))
-        }
-    }
-
-    /** Enter Picture-in-Picture when the user backgrounds (HOME) a connected VIDEO call — the native remote
-     *  video surface keeps rendering in the PiP window, so the peer's video stays visible while the user does
-     *  something else. AUDIO calls don't PiP (no video) — they background to the ongoing-call notification
-     *  instead. PiP requires API 26+; no-op below. Hiding the Angular chrome while in PiP is a follow-up. */
-    override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-            && CallController.callType == "VIDEO"
-            && CallController.phase == "connected"
-        ) {
-            try {
-                val params = PictureInPictureParams.Builder()
-                    .setAspectRatio(Rational(16, 9))
-                    .build()
-                enterPictureInPictureMode(params)
-            } catch (e: Exception) {
-                Log.w("SomsActivity", "PiP enter failed: ${e.message}")
-            }
         }
     }
 
@@ -604,6 +581,22 @@ class MainActivity : TauriActivity() {
     private fun handleCallAnswer(sid: String) {
         ensureCallPermissions(CallController.callType) {
             CallController.accept(sid)
+        }
+    }
+
+    /** Show the call UI over the lock screen + turn the screen on while a call is live (so an incoming ring on
+     *  a locked device surfaces the call UI), and revert otherwise (the app must not pin over the lock screen
+     *  when no call is active). Call-gated (not manifest always-on) — re-evaluated on each phase change
+     *  ([CallController.setPhaseListener]) + the activity lifecycle. */
+    private fun applyCallDisplayFlags() {
+        val live = CallController.phase.let { it != "idle" && it != "ended" }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(live)
+            setTurnScreenOn(live)
+        } else {
+            val flags = WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            if (live) window.addFlags(flags) else window.clearFlags(flags)
         }
     }
 
