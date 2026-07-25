@@ -583,6 +583,7 @@ object CallController {
                 iceRestartTried = false
                 peerName = name
                 peerAvatar = avatar
+                CallService.instance?.loadAvatar(avatar) // initiate owns peerAvatar now — trigger the fetch here
                 pushSnapshot()
                 val connection = createPeerConnection()
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())

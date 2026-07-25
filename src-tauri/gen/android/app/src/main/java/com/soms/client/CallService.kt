@@ -93,7 +93,6 @@ class CallService : Service() {
             // Outgoing / re-delivered start: anchor + comms audio (the call is negotiating/active).
             startCallForeground()
             acquireAudio()
-            loadAvatar(CallController.peerAvatar)
         }
         // A system-killed call service does NOT auto-resume (no active-call recovery yet). The client re-
         // derives state from the live call only while the process lives; a process-kill ends the call (the
@@ -253,7 +252,7 @@ class CallService : Service() {
      *  notification builders use it if loaded (else name-only). On load, [refreshNotification] re-posts the
      *  current notification so the icon appears. Reuses SomsMessagingService.fetchBitmap (Bearer-fetch of a
      *  /uploads path — same path as the message-notification icon). */
-    private fun loadAvatar(path: String) {
+    internal fun loadAvatar(path: String) {
         if (path.isEmpty()) return
         Thread {
             val bmp = SomsMessagingService.fetchBitmap(this, path)
