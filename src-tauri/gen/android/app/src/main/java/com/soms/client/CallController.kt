@@ -476,6 +476,27 @@ object CallController {
         else webView.setBackgroundColor(Color.WHITE)
     }
 
+    /** Called by MainActivity.onWebViewCreate on a (re)created WebView: the prior video surfaces (siblings of
+     *  the OLD WebView's view tree) are now orphaned. Detach their sinks, release them, and null the refs so
+     *  [ensureRenderers] re-creates fresh ones on the new WebView's parent (its idempotency guard would
+     *  otherwise skip re-creation, leaving the rebuilt call UI video-less). The native call + PC survive the
+     *  WebView recreation (they live here, not in the renderer). Main-thread safe. */
+    fun onWebViewRecreated() {
+        localVideoTrack?.let { lt ->
+            remoteRenderer?.let { runCatching { lt.removeSink(it) } }
+            selfRenderer?.let { runCatching { lt.removeSink(it) } }
+        }
+        remoteVideoTrack?.let { rt ->
+            remoteRenderer?.let { runCatching { rt.removeSink(it) } }
+            selfRenderer?.let { runCatching { rt.removeSink(it) } }
+        }
+        remoteRenderer?.let { runCatching { it.release() } }
+        selfRenderer?.let { runCatching { it.release() } }
+        remoteRenderer = null
+        selfRenderer = null
+        savedWebViewBg = null
+    }
+
     /** Camera-events sink Camera2Enumerator.createCapturer requires (logs only — the call recovers via ICE /
      *  the connection state on a camera error). */
     private object CameraEventsHandler : CameraVideoCapturer.CameraEventsHandler {

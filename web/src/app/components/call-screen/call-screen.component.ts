@@ -36,6 +36,7 @@ import { assetUrl } from '../../services/runtime';
       <div class="call-screen"
            [class.video]="isVideo()"
            [class.controls-hidden]="!controlsVisible()"
+           [class.pip]="inPip()"
            (pointerdown)="onScreenTap()">
         @if (isVideo()) {
           <!-- The self-view hole: native renders the LOCAL camera here (positioned top-right, the
@@ -136,6 +137,14 @@ import { assetUrl } from '../../services/runtime';
       .call-screen.controls-hidden .controls {
         opacity: 0;
         pointer-events: none; /* a hidden control can't be tapped; a tap anywhere on the screen reveals them */
+      }
+      /* PiP: only the native remote video should fill the small window. Hide the chrome + the self-view (the
+         self surface is also detached natively via reportVideoRects passing self=null). display:none — the
+         PiP window is tiny, the chrome would be unreadable clutter; the remote video is the whole point. */
+      .call-screen.pip .top-bar,
+      .call-screen.pip .controls,
+      .call-screen.pip .self-view {
+        display: none;
       }
       .self-view {
         position: absolute;
@@ -277,6 +286,10 @@ export class CallScreenComponent implements OnDestroy {
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private static readonly HIDE_DELAY_MS = 3000;
 
+  /** True while the activity is in PiP (native pushes via __SOMS_PIP__). The chrome + self-view hide so only
+   *  the remote video shows in the PiP window; the self surface detaches (reportVideoRects passes self=null). */
+  readonly inPip = signal(false);
+
   /** Self-view PiP size (CSS px) — matches the .self-view width/height; used to clamp the drag. */
   private static readonly SELF_W = 120;
   private static readonly SELF_H = 160;
@@ -312,6 +325,12 @@ export class CallScreenComponent implements OnDestroy {
         this.controlsVisible.set(true);
       }
     });
+    // React to PiP enter/exit (native pushes via window.__SOMS_PIP__). In PiP the chrome hides + the self
+    //  surface detaches so only the remote video shows in the PiP window; on exit both restore.
+    window.__SOMS_PIP__ = (v) => {
+      this.inPip.set(v);
+      this.reportVideoRects();
+    };
   }
 
   private readonly onViewportChange = (): void => {
@@ -368,6 +387,11 @@ export class CallScreenComponent implements OnDestroy {
       return;
     }
     const remote = { x: 0, y: 0, w: window.innerWidth, h: window.innerHeight };
+    // In PiP only the remote video shows (the self PiP is hidden) → pass self=null so native detaches it.
+    if (this.inPip()) {
+      this.adapter.setVideoRect(JSON.stringify(remote), null);
+      return;
+    }
     const self = this.selfHole()?.nativeElement;
     this.adapter.setVideoRect(JSON.stringify(remote), self ? JSON.stringify(this.rectOf(self)) : null);
   }
@@ -457,6 +481,7 @@ export class CallScreenComponent implements OnDestroy {
   ngOnDestroy(): void {
     clearInterval(this.timerHandle);
     if (this.hideTimer) clearTimeout(this.hideTimer);
+    window.__SOMS_PIP__ = undefined;
     window.removeEventListener('resize', this.onViewportChange);
     window.removeEventListener('scroll', this.onViewportChange, true);
     // Detach the native video surfaces (no chrome to host them anymore).

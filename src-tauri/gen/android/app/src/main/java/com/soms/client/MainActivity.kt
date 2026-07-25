@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -14,6 +15,7 @@ import android.util.Log
 import android.util.Rational
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import android.webkit.WebViewRenderProcessClient
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
 import androidx.core.app.NotificationManagerCompat
@@ -302,6 +304,20 @@ class MainActivity : TauriActivity() {
             SomsBridge.DeepLink.pendingThreadId = null
             openThread(it)
         }
+        // Renderer-reclaim recovery: a crashed WebView renderer recreates the activity. Tauri re-creates the
+        // WebView (onWebViewCreate fires again), the web re-derives the live call via getSnapshot(), and the
+        // native call + audio leg survive (they live in CallController, a process-global object, NOT in the
+        // renderer). Only a real crash triggers the recreate — a low-priority kill (which applyCallRendererPolicy
+        // prevents during a call) does not.
+        webView.setWebViewRenderProcessClient { _, detail ->
+            if (detail?.didCrash() == true) {
+                SomsLog.w("SomsActivity") { "WebView renderer crashed -> recreate activity (call survives natively)" }
+                recreate()
+            }
+        }
+        // The (re)created WebView's view tree is new — null the orphaned prior video surfaces so the next
+        // rect report re-creates them here (ensureRenderers's guard would otherwise skip).
+        CallController.onWebViewRecreated()
     }
 
     /** Defensive fallback: locate the Tauri WebView in the window's view tree and hand it to SomsBridge.
@@ -335,6 +351,54 @@ class MainActivity : TauriActivity() {
         if (intent.action == CallService.ACTION_ANSWER) {
             intent.getStringExtra(CallService.EXTRA_SID)?.let { handleCallAnswer(it) }
         }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        // Auto-enter PiP for an active VIDEO call when the user leaves (home / recents). The native remote
+        // SurfaceViewRenderer is a sibling of the WebView, so it keeps rendering scaled into the PiP window;
+        // the Angular chrome is hidden via __SOMS_PIP__ (onPictureInPictureModeChanged). AUDIO calls do NOT
+        // PiP — they background to the ongoing-call notification (already posted by CallService).
+        if (CallController.callType != "VIDEO") return
+        val p = CallController.phase
+        if (p != "connected" && p != "reconnecting") return
+        enterVideoPiP()
+    }
+
+    /** Build + enter the PiP params for the active video call. The aspect ratio follows the current window
+     *  (clamped to the PiP range). PiP params are API 26+; older devices simply skip it. */
+    private fun enterVideoPiP() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        try {
+            val builder = PictureInPictureParams.Builder().setAspectRatio(pipAspectRatio())
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                builder.setSeamlessResizeEnabled(true) // smoother resize as the PiP window is dragged
+            }
+            enterPictureInPictureMode(builder.build())
+        } catch (e: Exception) {
+            SomsLog.w("SomsActivity") { "PiP enter failed: ${e.message}" }
+        }
+    }
+
+    /** The PiP aspect ratio from the current content size, clamped to the valid PiP range [1/2.39, 2.39]. */
+    private fun pipAspectRatio(): Rational {
+        val content = findViewById<View>(android.R.id.content)
+        val w = content?.takeIf { it.width > 0 }?.width ?: resources.displayMetrics.widthPixels
+        val h = content?.takeIf { it.height > 0 }?.height ?: resources.displayMetrics.heightPixels
+        val ratio = w.toFloat() / h.toFloat()
+        return when {
+            ratio < 1f / 2.39f -> Rational(1, 3)
+            ratio > 2.39f -> Rational(3, 1)
+            else -> Rational(w, h)
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        // Tell the web chrome it's in PiP so it hides the top-bar/controls/self-view (only the native remote
+        // video should show in the PiP window). The native surfaces are siblings of the WebView, so they keep
+        // rendering regardless; the web just stops drawing chrome over them.
+        SomsBridge.eval("window.__SOMS_PIP__ && window.__SOMS_PIP__($isInPictureInPictureMode);")
     }
 
     override fun onResume() {

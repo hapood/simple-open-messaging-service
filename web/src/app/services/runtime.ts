@@ -235,6 +235,10 @@ declare global {
        *  foreground path (the SSE frame owns the name there). */
       peerName?: string;
     }) => void;
+    /** Kotlin→JS push (MainActivity.onPictureInPictureModeChanged): fired with `true` when the activity
+     *  enters PiP (a connected VIDEO call the user backgrounded) + `false` on exit. The call chrome hides
+     *  itself in PiP (only the native remote video shows in the PiP window). Installed by CallScreenComponent. */
+    __SOMS_PIP__?: (inPip: boolean) => void;
     /** Kotlin→JS push (`MainActivity.pushImeHeight`): native calls this with the current IME (keyboard)
      *  height in CSS px on every keyboard open/close and per animation frame on API 30+. Installed before
      *  bootstrap by `installKeyboardInsetBridge()`; drives `KeyboardInsetService.inset`, which
