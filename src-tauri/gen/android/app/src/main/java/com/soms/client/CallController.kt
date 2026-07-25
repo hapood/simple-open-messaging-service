@@ -680,6 +680,7 @@ object CallController {
         .put("threadId", threadId)
         .put("peerUserId", peerUserId)
         .put("peerName", peerName)
+        .put("peerAvatar", peerAvatar)
         .put("callType", callType)
         .put("isCaller", isCaller)
         .put("mediaState", mediaState)

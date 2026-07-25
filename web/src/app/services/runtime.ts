@@ -234,6 +234,7 @@ declare global {
        *  push (a cold-started callee has no live SSE, so it never got CALL_EVENT{incoming}). Empty for the
        *  foreground path (the SSE frame owns the name there). */
       peerName?: string;
+      peerAvatar?: string;
     }) => void;
     /** Kotlin→JS push (MainActivity.onPictureInPictureModeChanged): fired with `true` when the activity
      *  enters PiP (a connected VIDEO call the user backgrounded) + `false` on exit. The call chrome hides

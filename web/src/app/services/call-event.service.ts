@@ -44,8 +44,9 @@ const PHASE_BY_EVENT: Record<string, CallPhase> = {
  *    native snapshot does NOT);
  *  - the native `window.__SOMS_CALL_EVENT__` snapshot push (authoritative for phase/mediaState/startedAt/
  *    muted — the native CallController FSM owns the RTCPeerConnection).
- * Last-write-wins per field; the native snapshot omits peerName/peerAvatar so those persist once the incoming
- * frame sets them. On Android the WebRTC signaling (CALL_SIGNAL) is handled entirely natively, so this
+ * Last-write-wins per field; peerName + peerAvatar prefer the native value when present (the caller passes
+ * the callee's at initiate; the callee's come from the FCM push / SSE frame), else keep the SSE-set one.
+ * On Android the WebRTC signaling (CALL_SIGNAL) is handled entirely natively, so this
  * service consumes CALL_EVENT only.
  *
  * `callState` is normalized to be either an ACTIVE phase or `'idle'`: a terminal ('ended') is folded to
@@ -87,9 +88,9 @@ export class CallEventService implements OnDestroy {
     this.callState.set(next.phase === 'ended' ? { ...IDLE_CALL } : next);
   }
 
-  /** Merge a native snapshot push. The native snapshot carries peerName ONLY when it seeded the call from the
-   *  CALL_INCOMING FCM push (cold-start path); for the foreground path peerName is empty + the SSE
-   *  CALL_EVENT{incoming} frame owns it — so prefer the native value when present, else keep the SSE-set one. */
+  /** Merge a native snapshot push. The native snapshot carries peerName + peerAvatar (the caller passes the
+   *  callee's at initiate; the callee gets the caller's from the CALL_INCOMING FCM push or the SSE frame) —
+   *  prefer the native value when present, else keep the SSE-set one (the foreground incoming path). */
   private applyNative(snap: {
     phase: string;
     callSid: string | null;
@@ -101,6 +102,7 @@ export class CallEventService implements OnDestroy {
     startedAt: number;
     muted: boolean;
     peerName?: string;
+    peerAvatar?: string;
   }): void {
     const cur = this.callState();
     this.commit({
@@ -108,7 +110,7 @@ export class CallEventService implements OnDestroy {
       ...snap,
       phase: (snap.phase as CallPhase) ?? cur.phase,
       peerName: snap.peerName || cur.peerName,
-      peerAvatar: cur.peerAvatar,
+      peerAvatar: snap.peerAvatar || cur.peerAvatar,
     });
   }
 
