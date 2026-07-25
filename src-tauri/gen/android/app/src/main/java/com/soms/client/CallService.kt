@@ -15,6 +15,7 @@ import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 
 /**
@@ -116,16 +117,28 @@ class CallService : Service() {
         }
     }
 
-    /** The ongoing-call notification (LOW importance — an active call is not a loud alert). */
+    /** The ongoing-call notification. NotificationCompat.CallStyle renders the system's native ongoing-call
+     *  template on API 31+ (a proper "in call" surface) and degrades to a standard ongoing notification on
+     *  older versions. The peer's name (CallController.peerName) is the displayed Person. No hang-up button
+     *  on the notification itself (the user hangs up via the in-app CallScreen / PiP) → hangUpIntent = null. */
     private fun buildOngoingNotification(): Notification {
         ensureChannels()
+        val person = Person.Builder()
+            .setName(CallController.peerName.ifEmpty { getString(R.string.app_name) })
+            .build()
+        // Hang-up button on the ongoing notification (the AndroidX CallStyle requires a non-null hangUpIntent).
+        // Routes to SomsActionReceiver → CallController.end. CallController.callSid is set by the time the
+        // ongoing notification is posted (the call is live); the empty-string guard is in the receiver.
+        val hangUpIntent = Intent(this, SomsActionReceiver::class.java).apply {
+            putExtra(SomsActionReceiver.EXTRA_CALL_END, CallController.callSid ?: "")
+        }
+        val hangUpPi = PendingIntent.getBroadcast(
+            this, REQ_HANGUP, hangUpIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         return NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle("SOMS")
-            .setContentText("Call in progress")
-            .setOngoing(true)
-            .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, hangUpPi))
             .build()
     }
 
@@ -152,18 +165,19 @@ class CallService : Service() {
             this, REQ_DECLINE, declineIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        val name = incomingCallerName.ifEmpty { getString(R.string.app_name) }
+        val caller = Person.Builder()
+            .setName(incomingCallerName.ifEmpty { getString(R.string.app_name) })
+            .build()
         return NotificationCompat.Builder(this, CHANNEL_INCOMING)
             .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(name)
-            .setContentText(if (incomingCallType == "VIDEO") "Incoming video call" else "Incoming call")
-            .setPriority(NotificationCompat.PRIORITY_MAX)
+            // forIncomingCall(person, declineIntent, answerIntent) — decline FIRST (the framework signature;
+            // a swap would put the labels on the wrong buttons since both args are PendingIntent). CallStyle
+            // sets the Answer/Decline actions, the caller display, + the full-screen promotion on API 31+.
+            // setCategory + setFullScreenIntent cover the API < 31 degrade (standard-notification path) +
+            // ensure CATEGORY_CALL for the full-screen auto-grant on API 34+.
+            .setStyle(NotificationCompat.CallStyle.forIncomingCall(caller, declinePi, answerPi))
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setOngoing(true)
-            .setContentIntent(answerPi)
             .setFullScreenIntent(answerPi, true)
-            .addAction(NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Answer", answerPi).build())
-            .addAction(NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Decline", declinePi).build())
             .build()
     }
 
@@ -260,6 +274,7 @@ class CallService : Service() {
         private const val EXTRA_CALL_TYPE = "soms_call_type"
         private const val REQ_ANSWER = 7001
         private const val REQ_DECLINE = 7002
+        private const val REQ_HANGUP = 7003
 
         /** The live service instance, for CallController to reach [onAccepted] on the accept transition.
          *  @Volatile: written on main (onCreate/onDestroy), read on the call / JS bridge threads. */

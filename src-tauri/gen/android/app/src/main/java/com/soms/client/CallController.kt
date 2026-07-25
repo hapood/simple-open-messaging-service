@@ -118,6 +118,12 @@ object CallController {
      *  [flushPending] once accept builds the PC. */
     private var pendingOffer: String? = null
     private val pendingIce = mutableListOf<String>()
+    /** Glare 兜底: a 2nd CALL_EVENT{incoming} (a different callSid) that arrived while a call was already
+     *  active (e.g., A→B ringing, B→A's incoming lands late). Queued (NOT overwriting the active call) +
+     *  promoted when the active call ends (teardown → re-handle → the incoming UI shows). Mostly dormant now
+     *  that the server's busy-check is atomic (the glare race is closed at the source); kept as client-side
+     *  defense for the residual edge. @Volatile for cross-thread visibility. */
+    @Volatile private var queuedIncoming: JSONObject? = null
 
     // ── video ─────────────────────────────────────────────────────────────────────
     // The EGL base, camera capture, tracks, the sibling-surface overlays, and the swap all live in
@@ -449,6 +455,15 @@ object CallController {
     private fun handleEventFrame(obj: JSONObject) {
         val type = obj.optString("type")
         val sid = obj.optString("callSid")
+        // Glare 兜底: a 2nd incoming (different callSid) while we're already in a call — QUEUE it (don't
+        // overwrite the active call). Checked BEFORE the "not our call" drop so the queued incoming isn't
+        // lost. Promoted when the active call ends (teardown). Dormant now that the server busy-check is
+        // atomic (glare closed at the source); kept as client-side defense.
+        if (type == "incoming" && sid.isNotEmpty() && sid != callSid && phase != "idle" && phase != "ended") {
+            queuedIncoming = obj
+            SomsLog.i(TAG) { "incoming $sid queued (already in call $callSid); promotes when it ends" }
+            return
+        }
         if (sid.isNotEmpty() && callSid != null && sid != callSid) return // not our call (stray frame)
         when (type) {
             "incoming" -> {
@@ -765,6 +780,14 @@ object CallController {
         pendingOffer = null
         pendingIce.clear()
         pushSnapshot()
+        // Glare 兜底: promote a 2nd incoming queued while the just-ended call was active — re-handle it now
+        // (phase is idle) → seeds it → the incoming UI shows. Bounded recursion: the promoted incoming seeds
+        // (phase=incoming), it doesn't teardown.
+        queuedIncoming?.let { q ->
+            queuedIncoming = null
+            SomsLog.i(TAG) { "promoting queued incoming call after the active call ended" }
+            handleEventFrame(q)
+        }
     }
 
     /** The origin native REST calls use — the ACTIVE origin (primary or the LAN secondary Kotlin switched

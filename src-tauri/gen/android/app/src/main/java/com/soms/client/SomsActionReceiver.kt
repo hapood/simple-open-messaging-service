@@ -39,6 +39,12 @@ class SomsActionReceiver : BroadcastReceiver() {
             CallController.decline(sid)
             return
         }
+        // Ongoing-call Hang up (the CallService ongoing notification's hang-up button) — ends a connected call
+        // natively, no UI needed. (Decline above is for a RINGING call; this is for an in-progress one.)
+        intent.getStringExtra(EXTRA_CALL_END)?.let { sid ->
+            if (sid.isNotEmpty()) CallController.end(sid, "completed")
+            return
+        }
         val actionId = intent.getStringExtra(EXTRA_ACTION_ID) ?: return
         val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, SomsMessagingService.AWAY_NOTIF_ID)
@@ -105,6 +111,8 @@ class SomsActionReceiver : BroadcastReceiver() {
         const val EXTRA_ACTION_ID = "soms_action_id"
         /** The callSid for an incoming-call Decline action (from the CallService ringing notification). */
         const val EXTRA_CALL_DECLINE = "soms_call_decline"
+        /** The callSid for an ongoing-call Hang-up action (the CallService ongoing notification's button). */
+        const val EXTRA_CALL_END = "soms_call_end"
         const val EXTRA_TAG = "soms_tag"
         const val EXTRA_NOTIF_ID = "soms_notif_id"
         /** #5: dismiss routes per-thread (in-memory HWM) vs all-mode (global HWM) — set explicitly by the

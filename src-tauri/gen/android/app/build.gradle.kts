@@ -115,6 +115,11 @@ rust {
 dependencies {
     implementation("androidx.webkit:webkit:1.14.0")
     implementation("androidx.appcompat:appcompat:1.7.1")
+    // Pinned explicitly (not transitive): NotificationCompat.CallStyle (the call-notification template) needs
+    // a mature core — the resolved transitive 1.9.0 is the FIRST version with CallStyle + carries an early
+    // compat-backport bug (issuetracker.google.com/issues/199294989). 1.13.0 is stable + supports Android 9
+    // (CallStyle degrades to a standard heads-up notification on API < 31).
+    implementation("androidx.core:core-ktx:1.13.0")
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
