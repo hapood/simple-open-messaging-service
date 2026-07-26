@@ -148,6 +148,8 @@ Either way, the client must wire:
   SOMS image) + set `SOMS_TURN_URLS`/`SOMS_TURN_REST_SECRET` to enable.
 - **Glare** (A calls B while B calls A): currently both fail fast with `CALL_PEER_UNREACHABLE` (safe,
   symmetric). Auto-connect-on-glare is deferred.
-- **HELLO active-call recovery**: an SSE reconnect mid-call does not yet re-inject the active call; the
-  client should re-derive state from the live call (or this is added to HELLO later).
+- ~~**HELLO active-call recovery**~~ ✅ Done: the SSE `HELLO` frame now carries `activeCall` (the user's
+  live-call summary via `CallStateRegistry` → `sse.service.ts`), and `RealtimeService.reconcileActiveCall`
+  re-seeds the incoming state for a reconnecting / freshly-booted callee that missed the `CALL_EVENT`.
+  An SSE reconnect mid-call no longer loses the active call.
 - **Federated TURN guest-credential** (callee's coturn): parked until TURN is deployed.

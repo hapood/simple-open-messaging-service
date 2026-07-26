@@ -57,9 +57,9 @@ export interface BanView {
  * observability + unban. That closes the gap where an OTP-only account (the mode-2 Android login) could be
  * locked out with no admin recourse: OTP bans now appear in the same ban list and clear with the same unban.
  *
- * Still in-process memory (single instance). Multi-instance shared storage (Redis), tiered responses
- * (CAPTCHA / delay / notify owner), and ban alerting are deferred P3 hardening — the same constraint the
- * password path already documented before this consolidation.
+ * Still in-process memory — by design: SOMS is single-instance, so multi-instance shared storage (Redis)
+ * is a non-goal, not a deferred item. Tiered responses (CAPTCHA / delay / notify owner) and ban alerting
+ * remain deferred P3 hardening.
  */
 @Injectable()
 export class BruteForceService implements OnModuleDestroy {

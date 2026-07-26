@@ -92,9 +92,10 @@ kinds store overrides differently:
 
 `QuotaService.effectiveLimit` / `effectiveCap` resolve `override ?? globalDefault` uniformly for both.
 
-**Counter store = the DB, NOT `RedisService`.** `RedisService` is a non-atomic in-process `Map` —
-unsuitable for a quota counter that must survive restart and be exact. The DB table + an atomic
-`INSERT … ON CONFLICT … DO UPDATE … RETURNING count` (see §4) is the right primitive.
+**Counter store = the DB (atomic upsert), not an in-process `Map`.** An in-process `Map` is non-atomic
+and lost on restart — unsuitable for a quota counter that must survive restart and be exact. The DB
+table + an atomic `INSERT … ON CONFLICT … DO UPDATE … RETURNING count` (see §4) is the right primitive.
+(SOMS is single-instance by design; there is no Redis layer.)
 
 ---
 

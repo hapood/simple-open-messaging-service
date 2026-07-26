@@ -634,14 +634,18 @@ A user's avatar crosses servers **inline as base64**, never by cross-origin URL 
 
 **No approve-time refresh** — `friend.approve` carries no profile and triggers no re-pull on either side. The requester's stub of the approver was created at resolve time; any profile drift (across the request→approve window or later) is caught uniformly by the chat-open probe. This keeps `approve` a pure state-confirmation and avoids a redundant avatar transfer + a nested S2S call inside the handler.
 
-Avatars are the **only media that federates in v0.1** — message-image federation (album/file photos **in chat**) is a separate, larger step (see Deferred below + `docs/roadmap/federation-quotas.md`).
+Two media paths federate. **Avatars** cross servers **inline as base64** (§10.1 — `{b64, w, h}`, CSP-safe,
+same-origin on disk after re-processing). **Message media** (album/file/video images **in chat**) federates
+via signed `Range`/206 GET `/get_file` + receiver CAS localization (Step 2 — see
+`docs/roadmap/federation-step2-design.md`); the per-node **quota** system bounds that traffic
+(`docs/roadmap/federation-quotas.md`).
 
 ### Deferred (explicit non-goals for v0.1)
 
 - **E2EE** — `content` reserved; crypto is a separate effort.
 - **Presence / typing** — ephemeral, v0.2 (lossy, carry no `id`, never retried).
 - **Read receipts across federation** — `receipt` type reserved; logic v0.2.
-- **Message media federation** — album/file images in chat are NOT replicated in v0.1; deferred to a later media step (avatars in §10.1 are the exception). The per-node **quota** system that will bound that traffic is **BUILT** (daily message/image/file count limits + size caps, admin-adjustable, applied to local + peers) — see `docs/roadmap/federation-quotas.md`; it is already live for text `messages`, image/large-file local uploads, and inbound S2S `requests`.
+- **Message media federation** — ✅ **Built in Step 2**: album/file/video images in chat federate via signed `Range`/206 GET `/get_file`, and the receiver localizes each asset through the same CAS pipeline as a local upload (`federation.service.ts` `fetchMediaChunks` / `saveCasFromStream`; avatars in §10.1 are the separate inline-base64 path). The per-node **quota** system bounds that traffic — **BUILT** (daily message/image/file count limits + size caps, admin-adjustable, applied to local + peers) — see `docs/roadmap/federation-quotas.md`; it is live for text `messages`, image/large-file local uploads, and inbound S2S `requests`.
 - **Open federation / anti-spam** — allow-list only.
 - **Bridges to Matrix / XMPP / ActivityPub** — separate adapter services.
 - **Identity portability** — `user@domain` is bound to its server in v0.1.

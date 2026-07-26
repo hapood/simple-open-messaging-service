@@ -7,9 +7,12 @@ The SOMS backend listens on `http://localhost:3000` with the global prefix `/api
 - [Common Conventions](#common-conventions)
 - [Authentication API](#authentication-api)
 - [User API](#user-api)
+- [Invite API](#invite-api)
 - [Message API](#message-api)
 - [Group API](#group-api)
-- [File API](#file-api)
+- [Calls API](#calls-api)
+- [Device & Notification API](#device--notification-api)
+- [File / Media API](#file--media-api)
 - [Admin API](#admin-api)
 - [SSE Events](#sse-events)
 
@@ -17,109 +20,87 @@ The SOMS backend listens on `http://localhost:3000` with the global prefix `/api
 
 ## Common Conventions
 
+### Authentication model
+
+SOMS authenticates users with a **single opaque session token** — there is **no access/refresh JWT pair**.
+
+- The token is returned once at login (`{ sessionToken }`) and stored sha256-hashed in the `SessionToken` table.
+- **Browser / desktop (web shell)**: the server sets it as an **httpOnly cookie** (auto-attached same-origin; JS never reads it). A non-httpOnly `logged_in` presence cookie lets the SPA observe login state.
+- **Native (`app`)**: the client sends `Authorization: Bearer <sessionToken>` (stored in OS secure storage; under Tauri the Rust transport injects it).
+- Every route is authenticated by the global `SessionAuthGuard` (`APP_GUARD`) unless it opts out with `@Public()` — registration, login, `health`, `config`, `.well-known/*`, and `s2s/*` are public.
+- There is **no token-renewal endpoint**. A long-lived token needs no rotation; a revoked/expired token yields `10007` (`SESSION_REVOKED`) and the client re-logs in. On 401 the web client navigates to login (`redoLoginAuth`).
+- **Admin** routes use a separate opaque session (`AdminSession`, own secret, `AdminAuthGuard`) — physically isolated from user sessions but sharing the `User` account namespace.
+
 ### Response Format
 
 ```ts
-interface StandardResponse<T = any> {
+interface ApiResult<T = any> {
   code: number;        // 0 = success; non-0 = business error code (segmented by domain, see below)
   message: string;
   data?: T;
-  hasMore?: boolean;   // populated for paginated endpoints: whether more data is available
+  hasMore?: boolean;   // populated for paginated endpoints
 }
 ```
 
-> The field is `code` (renamed from `status` as of P1a). Business results always use HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes for broad categories. DTO parameter validation failures are also routed through the business flow (200 + `10000`).
+> Business results always use HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes. DTO validation failures are folded into the business flow (200 + `10000`). `Date` → ms timestamp; BigInt → string (global `SerializeInterceptor`).
 
 ### Business Error Codes
 
-Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitions are in [`src/common/business-code.ts`](../../src/common/business-code.ts) `BusinessCode` enum:
+Segmented by domain prefix. Full definitions: [src/common/business-code.ts](../../src/common/business-code.ts) (`BusinessCode` enum).
 
-| Segment | Meaning | Primary codes |
+| Segment | Domain | Primary codes |
 | --- | --- | --- |
 | `0` | Success | |
-| `10xxx` | General | `10000` parameter validation / `10001` not found / `10002` already exists / `10003` unauthenticated / `10004` no permission / `10005` rate limited · IP banned / `10006` refresh reuse → forced re-login / `10007` session revoked / `10999` server error |
-| `20xxx` | Friend · thread state machine | `20001` adding self as friend / `20002` unknown state / `20003` no pending request |
-| `30xxx` | Message domain | `30001` empty content / `30002` thread not approved / `30003` no such thread |
-| `40xxx` | Group domain | `40001` not a group member / `40002` cannot invite non-friend / `40003` invalid invite token |
-
-> Examples: wrong login credentials → `code:10003`; IP ban → `code:10005` + `data.bannedUntil` (unban timestamp); duplicate registration → `code:10002`; refresh token reuse → `code:10006` (the entire family is revoked at the root, frontend forces re-login).
-> Note: The HTTP response envelope field is `code` (see table above). The `status` below still appears in the friend request internal state machine's `status 0/1/2/3/5` (the return value of `makeFriendRequest`, not directly reflected in the response `code`).
-
-### Authentication
-
-- Endpoints requiring authentication expect the request header: `Authorization: Bearer <access_token>`.
-- Registration, login, and renewal endpoints require no authentication (the frontend marks them with `Authorization: 'public'`; the interceptor lets them through).
-- `userId` is taken from the JWT `sub` and attached to `req.user.userId`; controllers use it to identify the caller.
-- **Admin endpoints** use a separate JWT (its own `adminSecret` + `scope: 'admin'` claim), guarded by `AdminAuthGuard` — physically isolated from the user system and mutually incompatible.
-
-### Data Type Conventions
-
-- `Date` is serialized as a **millisecond timestamp** (number).
-- `msgId` (message ID) is a `BigInt`, returned as a **string**.
+| `10xxx` | General | `10000` validation · `10001` not found · `10002` already exists · `10003` unauthenticated · `10004` forbidden · `10005` rate-limited/IP-banned · `10007` session revoked · `10008` quota exceeded · `10009` invalid credentials · `10010` registration disabled · `10011` login method disabled · `10012-10016` OTP/QR invalid/expired/consumed · `10017` password not set · `10018` must change password · `10019-10025` admin 2FA / WebAuthn · `10999` server error |
+| `20xxx` | Friend · Invite | `20001` friend self · `20002` friend not found · `20004` invalid target (e.g. a group account) · `20010` invite not found · `20011` invite expired · `20012` invite not yours · `20013` invite already handled |
+| `30xxx` | Message | `30001` empty content · `30002` thread not approved · `30003` thread not found |
+| `40xxx` | Group | `40002` non-friend · `40003` invalid invite token · `40004` owner must transfer · `40005` role forbidden · `40006` target not a member |
+| `50xxx` | Federation | `50011` peer daily-quota exceeded (HTTP 429) |
+| `60xxx` | Push | `60001` VAPID invalid |
+| `70xxx` | Call | `70001` not allowed (not friends) · `70002` call not found · `70003` not a participant · `70004` busy · `70005` invalid state transition |
 
 ---
 
 ## Authentication API
 
-> Controller: [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts)
+> Controllers: [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts) · [auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts) · [auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts) · Service: [src/auth/auth.service.ts](../../src/auth/auth.service.ts)
 
-### POST `/auth/login` — Login
+### POST `/auth/login` — Password login  `@Public`
 
-- **Auth**: Local (body provides `account` + `password`)
-- **Request body**: `{ account: string, password: string, device?: string }` (`device` is a frontend-generated device identifier used to distinguish sessions across multiple devices)
-- **Response `data`** (code=0): `{ access_token: string, refresh_token: string }`
-- **Errors**: wrong credentials `code:10003`; IP ban `code:10005`, `data.bannedUntil` is the unban timestamp
-- **Rate limit**: cumulative failures from the same IP >3 times bans for 30 minutes, >6 times bans for 3 hours, >9 times bans for 24 hours
+- **Body**: `{ account: string, password: string, client?: 'app'|'web'|'desktop', persistent?: boolean, trusted?: boolean, device?: string }`
+  - `client` defaults to `web`. `persistent` (default `true`) = 14-day sliding cookie vs session cookie. `trusted = client==='app' || (client==='desktop' && trusted===true)` → permanent (revocation-only) session.
+- **Behavior**: `LocalStrategy` verifies the password (argon2); on success issues a `SessionToken` and sets the session cookies (browser) / returns `{ sessionToken }` (native). Failures are counted by the shared `BruteForceService` (ip + user dims, sliding window + graduated ban ladder).
+- **Errors**: `10009` invalid credentials · `10005` banned (`data.bannedUntil`) · `10017` password not set (OTP/QR-only account) · `10018` must change password (admin-generated initial password).
 
-### POST `/auth/renew-access` — Rotate via refresh token (family-based + reuse detection)
+### POST `/auth/otp/login` — OTP login (Android app session)  `@Public`
 
-- **Auth**: None (`public`)
-- **Request body**: `{ refreshToken: string, device?: string }`
-- **Response `data`**: `{ access_token: string, refresh_token: string }` (**full rotation**: the old refresh is marked revoked `rotated`, and a new access + new refresh are issued)
-- **Errors**: `code:10006` reuse detected (the family is revoked at the root; the frontend must force re-login); `code:10003` refresh invalid/expired
-- **Rate limit**: `@Throttle(30, 60)`
+- **Body**: `{ account: string, code: string, device?: string }` — the admin-issued 6-digit one-time login code.
+- **Behavior**: verifies the `LoginCode` (argon2, single-use via updateMany guard) → issues a trusted `app` `SessionToken`.
+- **Errors**: `10012` OTP invalid · `10013` expired · `10014` consumed.
 
-> The naming is a historical artifact — despite being called `renew-access`, it actually performs a full access + refresh rotation (identical to the `renew-refresh` implementation; the dual names are kept only for compatibility).
+### POST `/auth/qr/{create,poll,scan,confirm}` — QR login  `@Public`
 
-### POST `/auth/renew-refresh` — refresh rotation (alias of `renew-access`)
+- Desktop calls `create` to render a QR; an already-logged-in device `scan`s it and the desktop `poll`s / `confirm`s to receive a session. Errors: `10015` QR invalid · `10016` expired.
 
-- **Auth**: None (`public`)
-- **Request body / response / behavior**: Identical to `renew-access` (same `rotateRefreshToken` implementation); the dual endpoints are retained only for backward compatibility.
+### POST `/auth/logout` — Logout (current session)  `@Public`
 
-### POST `/auth/logout` — Logout
-
-- **Auth**: None (`public`; the frontend marks the header `Authorization: 'public'`, refresh_token in body)
-- **Request body**: `{ refreshToken: string, accessJti?: string }`
-- **Behavior**: Marks the corresponding refresh_token as revoked (`revokeReason='logout'`); if `accessJti` is provided, the current access token is **immediately** added to the jti blacklist (TTL = remaining access lifetime), achieving instant kick-offline.
-- **Response**: `{ code: 0, message: 'success' }`
-- **Rate limit**: `@Throttle(30, 60)`
+- Revokes the current `SessionToken` (`revokeReason='logout'`) and clears the session cookies.
 
 ### POST `/auth/logout-all` — Logout all devices
 
-- **Auth**: JWT
-- **Behavior**: `invalidateAllSessions(userId, 'all_devices')` — bump `User.tokenVersion` (invalidating all of that user's access tokens immediately) + revoke all their refresh tokens + clear the access jti cache, and force-disconnect all their SSE connections via the `auth.sessions-invalidated` event.
-- **Response**: `{ code: 0, message: 'success' }`
+- `invalidateAllSessions` — revokes **all** of the user's `SessionToken`s and force-disconnects their SSE connections (`FORCE_LOGOUT`).
 
-### POST `/auth/change-password` — Change password
+### POST `/auth/change-password` · `POST /auth/set-password`
 
-- **Auth**: JWT
-- **Request body**: `{ oldPassword: string, newPassword: string }` (`newPassword` follows the same 6–20 character allowed-charset rule)
-- **Behavior**: verify old password → change password → revoke **all other** sessions of this user (the current device is re-issued a new pair of tokens)
-- **Response**: on success `data: { access_token, refresh_token }`; wrong old password `code:10000` (`VALIDATION_FAILED`, message=`old password wrong`)
-- **Rate limit**: `@Throttle(10, 60)`
+- `change-password`: `{ oldPassword, newPassword }` — verify old, rotate, revoke **every** session (the client re-logs in). `10000` message=`old password wrong` on mismatch.
+- `set-password`: forced first-time set after an admin-generated initial password (clears `mustChangePassword`); the caller is already session-authenticated.
 
-### POST `/auth/sessions` — List current user's active sessions
+### POST `/auth/sessions` · `POST /auth/revoke-session`
 
-- **Auth**: JWT
-- **Response `data`**: list of the current user's active sessions (each containing `device` / `userAgent` / `ip` / `createdAt` / `expiresAt`, etc.)
+- `sessions`: list the user's active `SessionToken`s (device / userAgent / ip / createdAt / expiresAt / lastSeenAt).
+- `revoke-session`: `{ sessionId }` revoke one of the user's sessions.
 
-### POST `/auth/revoke-session` — Revoke a single session
-
-- **Auth**: JWT
-- **Request body**: `{ jti: string, accessJti?: string }` (`jti` must belong to the current user)
-- **Behavior**: revokes the specified refresh (by `jti`); if `accessJti` is provided, also blacklists the current access.
-
-> Session hardening details (revocable access, tokenVersion, family-based refresh + reuse detection, in-process KV, WS coordination) are in [architecture.md → Authentication](../overview/architecture.md#authentication-mechanism).
+> Full session-hardening rationale (opaque token, trusted vs sliding lifetime, revocation reasons, SSE coordination) is in [architecture.md → Authentication](../overview/architecture.md#authentication-mechanism).
 
 ---
 
@@ -127,318 +108,203 @@ Segmented by domain prefix (aligned with the WhatsApp Cloud API). Full definitio
 
 > Controller: [src/controller/user.controller.ts](../../src/controller/user.controller.ts)
 
-### POST `/user/register` — Register
+### POST `/user/register`  `@Public`
 
-- **Auth**: None
-- **Request body**: `{ account: string, password: string }`
-- **Validation rules**:
-  - `account`: `^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$` (1–20 characters, at least 3 letters)
-  - `password`: 6–20 characters, allowing alphanumeric and `.@!#$%^&*()`
-- **Response `data`**: `{ id: number, account: string }`
-- **Behavior**: within a transaction, creates a `User` + `UserExtra` (name defaults to account) + `userNotiBox`; `isForeigner=false`, `domain=null`.
+- **Body**: `{ account, password, name? }`. Validation: account `^(?=[\w.-]{1,20}$)(?:[\d_.-]*[a-zA-Z]){3}[\w.-]*$`; password 6–20, allowed charset.
+- **Behavior**: creates a `User` (profile columns inline — name defaults to account); `domain='local'`, `isForeigner=false`.
+- **Errors**: `10002` already exists · `10010` registration disabled (admin-provisioned accounts only — the common mode).
 
-### POST `/user/my-profile` — Current user profile
+### POST `/user/my-profile` · `/user/update-profile` · `/user/update-avatar`
 
-- **Auth**: JWT
-- **Response `data`**: current user info (excluding password hash)
+- `my-profile`: current user info (password hash omitted).
+- `update-profile`: `{ name?, bio? }` (handle cannot change; bumps `profileRev`).
+- `update-avatar`: `multipart/form-data` `file` → `sharp` multi-size webp (32/64/128/256/512, EXIF-oriented, cover-cropped, bomb-guarded); returns `{ avatar }` (the 512px URL).
 
-### POST `/user/update-avatar` — Update avatar
+### POST `/user/query-thread/delta` — Thread-list delta
 
-- **Auth**: JWT
-- **Request body**: `multipart/form-data`, field `file` = image binary
-- **Allowed formats**: jpg / png / gif / webp (magic number second-pass validation)
-- **Behavior**: rewritten via `sharp` into multiple webp tiers 32/64/128/256/512 (EXIF-orientated, cover-cropped, EXIF/malicious chunks stripped, pixel cap to guard against decompression bombs); writes new tiers to disk → updates DB → deletes old tiers.
-- **Response `data`**: `{ avatar: string }` (full URL of the largest 512px tier; other tiers are derived by the frontend)
-- **Errors**: no file / non-image → `code:10000`
+- **Body**: `{ from: number, to: number }` (revision range). Returns ADD/DELETE deltas from `ThreadRevision` since the client's `threadRevision` cursor — the client delta-replays rather than re-fetching the whole list.
 
-### POST `/user/update-profile` — Update nickname / bio
+### POST `/user/query` · `/user/resolve` · `/user/search`
 
-- **Auth**: JWT
-- **Request body**: `{ name?: string, bio?: string }` (`account`/handle cannot be changed; `bio` ≤ 120 characters)
-- **Response `data`**: updated user info (excluding password hash)
+- `query`: `{ userIds: number[] }` (`@ArrayMaxSize(100)`) batch user lookup.
+- `resolve` / `search`: account-based / fuzzy lookup. (`10001` not found.)
 
-### POST `/user/query-thread/valid` — Valid thread list
+### POST `/user/delete-friend` · `/user/block`
 
-- **Auth**: JWT
-- **Request body**: `{ skip: number, take: number, lastId?: number, toObjType?: 'P2P'|'GROUP' }`
-- **Response `data`**: all of the current user's `APPROVED` threads; P2P includes the peer user info, GROUP includes the group info
+- `delete-friend`: `{ threadId }` unfriend (drops the P2P `ThreadParticipant` rows; `20002` if not friends).
+- `block`: `{ userId }` one-way block (creates a `UserBlock`).
 
-### POST `/user/query-thread/to-pending` — Received pending friend requests
+### POST `/user/sync-peer-profile` · `/user/peer-trust-status` · `/user/thread-info`
 
-- **Auth**: JWT
-- **Request body**: `{ beforeDate: number, take: number, skip: number }`
-- **Response `data`**: list of friend requests received by the current user in the `TO_PENDING` state
+- federated profile freshness pull, peer-trust status, and per-thread details respectively.
 
-### POST `/user/query-thread/from-pending` — Sent pending friend requests
+---
 
-- **Auth**: JWT
-- **Request body**: `{ beforeDate: number, take: number, skip: number }`
-- **Response `data`**: list of friend requests sent by the current user in the `FROM_PENDING` state
+## Invite API
 
-### POST `/user/send-friend-request` — Send friend request
+> Controller: [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) · Service: [src/invite/invite.service.ts](../../src/invite/invite.service.ts)
 
-- **Auth**: JWT
-- **Request body**: `{ userId: number }` (target user)
-- **Response `code`**: `0` request sent (covers first send / already friends / re-initiate / counterpart already requested and a direct connection is established / do not disturb); `20001` adding self as friend; `20002` unknown state-machine state
-- **Internal state machine**: `makeFriendRequest` returns status `0/1/2/3/5` driving the above behavior, not directly reflected in the response `code`
-- **See**: [architecture.md → Friend Request State Machine](../overview/architecture.md#friend-request-state-machine)
+Friend-add and group-invite are unified in the `Invite` table (`FRIEND` / `GROUP`). Invites are addressed by `inviteId` (string); rows are never hard-deleted.
 
-### POST `/user/approve-friend-request` — Accept friend request
+### POST `/invite/friend` — Send friend invite
 
-- **Auth**: JWT
-- **Request body**: `{ userId: number }` (request initiator)
-- **Behavior**: establishes a P2P thread (creating a `MessageThread` for the first time); both parties are set to `APPROVED`
-- **Errors**: `20003` no pending request from this user
+- **Body**: `{ userId: number, note?: string(≤255) }`. Upserts a `PENDING` FRIEND invite (`(from,to)` dedup). `20001` friending self · `20004` invalid target.
 
-### POST `/user/decline-friend-request` — Decline friend request
+### POST `/invite/accept` · `/invite/reject` · `/invite/revoke`
 
-- **Auth**: JWT
-- **Request body**: `{ userId: number }` (request initiator)
-- **Behavior**: declines the pending request received from the counterpart
-- **Errors**: `20003` no pending request from this user
+- **Body**: `{ inviteId }`.
+- `accept`: FRIEND → mints the `MessageThread(P2P)` + both `ThreadParticipant` rows; GROUP → adds the invitee to the group thread. `20010/20011/20013` not-found / expired / already-handled · `20012` not yours.
 
-### POST `/user/cancel-friend-request` — Retract sent friend request
+### POST `/invite/incoming` · `/invite/outgoing`
 
-- **Auth**: JWT
-- **Request body**: `{ userId: number }` (target user)
-- **Behavior**: retracts a pending request already sent by the current user
-- **Errors**: `20003` the current user has no pending request to this target
+- Lists received / sent invites (`{ status?, kind? }` filters).
 
-### POST `/user/query` — Batch query users
+### POST `/invite/detail` · `/invite/mark-read`
 
-- **Auth**: JWT
-- **Request body**: `{ userIds: number[] }` (max 100, `@ArrayMaxSize(100)`)
-- **Response `data`**: user info array (`isDeleted=false`)
-
-### POST `/user/by-uniq-name` — Query by account name
-
-- **Auth**: JWT
-- **Request body**: `{ account: string }`
-- **Response `data`**: a single user's info; not found `code:10001`
-
-### POST `/user/thread-info` — Thread details
-
-- **Auth**: JWT
-- **Request body**: `{ userThreadId: number }`
-- **Response `data`**: thread details, with the corresponding user (P2P) or group (GROUP) info
+- `detail`: `{ inviteId }` full invite + resolution to accounts.
+- `mark-read`: advances `friendReqAckRev` to clear the friend-request badge on **all** devices.
 
 ---
 
 ## Message API
 
-> Controller: [src/controller/message.controller.ts](../../src/controller/message.controller.ts)
+> Controller: [src/controller/message.controller.ts](../../src/controller/message.controller.ts) · DTO: [src/dto/message.dto.ts](../../src/dto/message.dto.ts)
 
 ### POST `/send-message` — Send message
 
-- **Auth**: JWT
-- **Request body**: `{ userThreadId: number, content: string }`
-- **Behavior**: validates the sender's thread is `APPROVED` (P2P additionally requires the peer to be `APPROVED`), writes a `Message(PURE_TEXT)`, and pushes a `NEW_MESSAGE` to the peer/group members via **SSE** (payload is the full message body; the frontend renders it on receipt)
-- **Response `data`**: contains the new message's `msgId` (string)
+- **Body**: `{ threadId: number, content: string, contentType?: 'PURE_TEXT'|'IMAGE'|'FILE'|'VIDEO'|'AUDIO'|'LINK', clientMessageId?: UUID }`.
+- **Behavior**: `ThreadAccessGuard` checks membership; allocates a per-thread `seq` atomically from `curSeq`; `MessageFanoutService` pushes `NEW_MESSAGE` (full body) to all participants + fires push for offline recipients. `clientMessageId` is the send-idempotency key (a retry returns the original message).
+- **Errors**: `30001` empty · `30002` not approved · `30003` thread not found.
 
-### POST `/query-messages` — Paginated history message query
+### POST `/send-media` — Send media (staged)
 
-- **Auth**: JWT
-- **Request body**: `{ userThreadId: number, skip: number, take: number, lastId?: number, orderBy: 'desc'|'asc' }`
-- **Behavior**: **cursor pagination** based on `MessageThread` (`lastId` + `skip` + `take`), supporting ascending/descending order
-- **Response `data`**: message array (`id` as string, `createdAt` as timestamp)
+- **Body**: `{ threadId, contentType: 'IMAGE'|'FILE'|'VIDEO'|'AUDIO', clientMessageId, ...display meta }`. Stages a `PendingMedia` row; the bytes land via `/upload` and are promoted to a `Message` once confirmed. (`/query-media-stages`, `/media-status`, `/relocalize-media` support the staging lifecycle.)
 
-### POST `/thread/by-user-id` — Query the P2P thread with a given user
+### POST `/query-messages` — Paginated history
 
-- **Auth**: JWT
-- **Request body**: `{ userId: number }`
-- **Response `data`**: the corresponding `UserMessageThread` (if it exists)
+- **Body**: `{ threadId, skip, take, lastId?, orderBy? }` — keyset cursor pagination over `(threadId, seq)`.
+
+### POST `/thread/{by-user-id, mark-read, set-muted, set-pinned, clear-history, set-alias}`
+
+- Per-`ThreadParticipant` mutations: the P2P thread lookup, read watermark advance, mute, pin, clear-history, and per-thread alias. `search-messages` does in-chat search.
 
 ---
 
 ## Group API
 
-> Controller: [src/controller/group.controller.ts](../../src/controller/group.controller.ts)
+> Controller: [src/controller/group.controller.ts](../../src/controller/group.controller.ts) · DTO: [src/dto/group.dto.ts](../../src/dto/group.dto.ts)
 
-### POST `/group/create` — Create group
+### POST `/group/create`
 
-- **Auth**: JWT
-- **Request body**: `{ groupName: string }` (max 31 characters)
-- **Behavior**: within a transaction, creates a `MessageThread(GROUP)` → `Group` (owner, threadId) → the creator's `UserMessageThread(APPROVED)` + `GroupMember`
-- **Response `data`**: `{ threadId: number, groupId: number }`
+- **Body**: `{ name, avatar?, bio?, inviteUserIds?: number[] }`. Creates `MessageThread(GROUP)` + the `!`-User group identity + `Group`; mints a `PENDING` GROUP `Invite` per listed friend (each must accept via `/invite/accept`). Returns `{ threadId }`.
 
-### POST `/group/invite` — Invite a friend to a group
+### POST `/group/invite`
 
-- **Auth**: JWT
-- **Request body**: `{ userId: number, groupId: number }`
-- **Pre-validation**: inviter is a group member, invitee is a friend (both `APPROVED`)
-- **Behavior**: writes an `INVITE` message to the P2P thread between the two, with JSON content:
-  ```json
-  {
-    "type": "GROUP_INVITE",
-    "fromUserId": 1,
-    "groupName": "Group Name",
-    "expiryDate": 1719000000000,
-    "token": "<JWT, sub=invitee, gid=group, valid 3 days>"
-  }
-  ```
+- **Body**: `{ groupId, userIds: number[] }` — mint GROUP invites for existing friends. `40002` non-friend.
 
-### POST `/group/join` — Join a group via invite token
+### POST `/group/info` · `/group/members` · `/group/sync-meta`
 
-- **Auth**: JWT
-- **Request body**: `{ token: string }`
-- **Behavior**: decodes the invite token (validates `sub` = current user, not expired) → creates `GroupMember` + `UserMessageThread(APPROVED)`
+- `info` / `members` (`{ groupId }`): group profile / roster (members rosters are returned only for groups the caller is in). `sync-meta`: federated group-identity freshness pull.
 
-### POST `/group/info` — Group info
+### POST `/group/{leave, kick, transfer, set-role, update}`
 
-- **Auth**: JWT
-- **Request body**: `{ groupId: number }`
-- **Response `data`**: group info
+- `leave` (`40004` owner must transfer first) · `kick` (`40005` forbidden, `40006` target not a member) · `transfer` (ownership) · `set-role` (ADMIN/MEMBER) · `update` (name/avatar/bio).
 
 ---
 
-## File API
+## Calls API
+
+> Controller: [src/controller/calls.controller.ts](../../src/controller/calls.controller.ts) · Service: [src/calls/calls.service.ts](../../src/calls/calls.service.ts)
+
+1:1 audio/video calls. The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On a terminal state `CallsService` authors a `ContentType.CALL` chat bubble (bilateral).
+
+- `POST /calls/initiate` `{ peerUserId, type }` → `callSid` (`70001` not friends · `70004` busy).
+- `POST /calls/{accept, ringing, connected, decline, cancel, end, signal}` drive the FSM (`70002` not found · `70003` not a participant · `70005` invalid transition).
+- `GET /calls/ice-servers` — TURN/STUN helper (TURN off by default; misconfig throws).
+- `GET /calls/:callSid/signaling` — caller-side answer fetch.
+
+See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap/android-calls-followup.md](../roadmap/android-calls-followup.md).
+
+---
+
+## Device & Notification API
+
+> Controllers: [device.controller.ts](../../src/controller/device.controller.ts) · [notification.controller.ts](../../src/controller/notification.controller.ts)
+
+- `POST /devices/register` / `DELETE /devices/register/:token` — register/unregister a push token (FCM registration token for ANDROID, Web Push subscription for WEB; a device's token is re-owned to the current user on re-register).
+- `GET /notifications/vapid-key` (`@Public`) — Web Push VAPID public key.
+- `POST /notifications/missed-summary` · `/notifications/missed` · `/notifications/action` — missed-notification catch-up (identity-only signals; the client fetches bodies) + notification action dispatch. Missed notifications carry a server-authored descriptor.
+
+---
+
+## File / Media API
 
 > Controller: [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) · Service: [src/upload/upload.service.ts](../../src/upload/upload.service.ts)
 
-### POST `/upload` — Upload image (chat album)
+### POST `/upload` — Upload (chat media / avatar)
 
-- **Auth**: JWT
-- **Request body**: `multipart/form-data`, field `file` = image binary; plus form fields `w` / `h` (width/height read by the frontend's `createImageBitmap`; the backend preserves as-is without parsing the image content)
-- **Allowed formats**: jpg / jpeg / png / gif / webp (multer `fileFilter` mimetype coarse filter + `isImage` reading the file header magic number to prevent spoofing)
-- **Size limit**: 10MB
-- **Behavior**: `multer` memoryStorage → magic number validation → write to disk at `process.cwd()/uploads/<ts>-<rand>.<ext>` → return a reachable URL
-- **Response `data`**: `{ url: string, w: number, h: number }` (`url` is of the form `/uploads/...`, served statically via `main.ts`'s `useStaticAssets`)
-- **Errors**: no file `code:10000` message=`no file`; non-genuine image `code:10000` message=`invalid image`
+- **Body**: `multipart/form-data`, field `file`; for chat media, plus `w`/`h` form fields. Allowed: jpg/png/gif/webp (magic-number validated). Size limit per type (video up to ~100 MB; `@fastify/multipart` 100 MB part cap).
+- **Behavior**: writes the bytes through the **content-addressed CAS pipeline** — `MediaAsset` (sha256 `digest` + refcount) at `uploads/shards/<dd>/<dd>/<digest>.<ext>`; avatars go through `sharp` multi-size webp instead. The returned URL embeds the digest; access is gated by `MediaAccessService` (per-object authorization via `MediaMessage` joined to `ThreadParticipant`).
+- **Response `data`**: `{ url, w, h }` (chat) or `{ avatar }` (avatar).
+- **Media serving**: `/uploads/*` is served by `@fastify/static` with a root `preHandler` that honors the httpOnly `media_token` cookie **or** a `Bearer` header (resolved by `BearerAuthService`), plus per-object CAS-shard authorization. (Avatars are public.)
 
-> Avatar uploads do not go through this endpoint; they use [`/user/update-avatar`](#post-userupdate-avatar--update-avatar) (`sharp` server-side rewrites into multiple webp tiers).
-> When switching to object storage (S3/OSS/MinIO) in production, only the `save()` / `saveAvatars()` write targets and url generation change; the API contract stays the same.
+> When switching to object storage (S3/OSS/MinIO), only the write target + URL generation change; the API contract stays the same.
 
 ---
 
 ## Admin API
 
-> Controller: [src/admin/admin.controller.ts](../../src/admin/admin.controller.ts) · Service: [src/admin/admin-auth.service.ts](../../src/admin/admin-auth.service.ts)
+> Controllers under `src/admin/` · Service: [src/admin/admin-auth.service.ts](../../src/admin/admin-auth.service.ts)
 
-Admin auth uses a **separate JWT system** (its own `adminSecret` + `scope: 'admin'` claim, guarded by
-`AdminAuthGuard`) — admin sessions/tokens stay physically isolated from user sessions. Identity,
-however, is shared: an admin is a **linked profile** on a `User` row (`Admin.userId → User.id`); the
-account name and password live on the `User`, and `/admin/login` verifies `User.hashPwd` then issues
-an admin session. One account namespace → a user and an admin can never share an account. All admin
-endpoints except `admin/login` / `admin/renew-access` require `Authorization: Bearer <admin_access_token>`.
+Admin auth is a **separate opaque session** (`AdminSession`, own `adminSecret`, `AdminAuthGuard`) — physically isolated from user sessions, but an admin is a linked profile on a `User` row (`Admin.userId → User.id`). `/admin/login` verifies `User.hashPwd` then issues an admin session. All admin routes except `admin/login` require the admin session (httpOnly admin cookie).
 
 ### Authentication
 
-#### POST `/admin/login` — Admin login
+- `POST /admin/login` `{ account, password }` → `{ sessionToken }` (sets the admin cookie); updates `Admin.lastLoginAt/lastLoginIp`. `10009` invalid credentials / disabled.
+- `POST /admin/logout` — revokes the admin session.
+- Opt-in second factors: **TOTP** (RFC 6238, AES-GCM secret + backup codes) and **WebAuthn passkeys** — enroll/verify flows under `TwoFactorController` / `WebAuthnController`.
 
-- **Auth**: None
-- **Request body**: `{ account: string, password: string }`
-- **Response `data`** (code=0): `{ access_token: string, refresh_token: string }`; also updates `Admin.lastLoginAt` / `lastLoginIp`
-- **Errors**: wrong credentials / disabled account → `code:10003` message=`invalid credentials`
+### Management
 
-#### POST `/admin/renew-access` — Admin refresh rotation
-
-- **Auth**: None
-- **Request body**: `{ refreshToken: string }`
-- **Response `data`**: `{ access_token: string, refresh_token: string }` (family-based rotation + reuse detection)
-- **Errors**: `code:10006` reuse (family revoked at the root); `code:10003` invalid
-
-#### POST `/admin/logout` — Admin logout
-
-- **Auth**: AdminJWT
-- **Request body**: `{ refreshToken: string }`
-- **Behavior**: revokes the refresh (`revokeReason='logout'`)
-
-### User Management
-
-#### POST `/admin/users` — User list
-
-- **Request body**: `{ skip?: number, take?: number, search?: string }` (`search` is a case-insensitive fuzzy match against `account`)
-- **Response `data`**: `{ list: User[], total: number }` (ordered by `createdAt desc`, with `hashPwd` stripped)
-
-#### POST `/admin/users/:id/disable` — Ban user
-
-- **Behavior**: soft delete (`isDeleted=true`) + `invalidateAllSessions(id, 'admin_disabled')` to force offline
-
-#### POST `/admin/users/:id/enable` — Unban user
-
-- **Behavior**: `isDeleted=false`
-
-#### POST `/admin/users/:id/force-logout` — Force logout
-
-- **Behavior**: `invalidateAllSessions(id, 'admin_force_logout')` (revokes all sessions of this user)
-
-#### POST `/admin/users/:id/sessions` — View a specified user's active sessions
-
-- **Response `data`**: list of that user's active sessions
-
-#### POST `/admin/users/:id/reset-password` — Reset password
-
-- **Request body**: `{ newPassword: string }` (6–20 character allowed charset)
-- **Behavior**: change password + `invalidateAllSessions(id, 'admin_reset_password')` (revokes all sessions, forces re-login)
-
-### Ban Management
-
-> Login bans (IP / account) live in an in-process dictionary inside `LocalStrategy` — **no dedicated table**.
-
-#### POST `/admin/bans` — List current login bans
-
-- **Response `data`**: list of currently effective IP / account bans
-
-#### POST `/admin/bans/unban` — Unban
-
-- **Request body**: `{ ip?: string, account?: string }` (at least one must be provided)
-
-### Audit
-
-#### POST `/admin/reuse-alerts` — refresh token reuse alerts
-
-- **Request body**: `{ take?: number }` (default 50)
-- **Response `data`**: records in `RefreshToken` where `revokeReason='reuse'` (`userId` / `familyId` / `jti` / `ip` / `userAgent` / `revokedAt`, ordered by `revokedAt desc`)
-
-#### POST `/admin/sessions` — Overview of all active user sessions system-wide
-
-- **Request body**: `{ skip?: number, take?: number, userId?: number, ip?: string }` (`ip` fuzzy match)
-- **Response `data`**: `{ list, total }`, each containing `userId` / `jti` / `device` / `userAgent` / `ip` / `createdAt` / `expiresAt` / `user{id,account}` (only non-revoked and unexpired)
-
-> This overview queries only the user session table `RefreshToken`; the admin's own active sessions live in a separate `AdminRefreshToken` table and are not listed here.
-
-#### POST `/admin/sessions/purge` — One-click purge of all active sessions
-
-- **Behavior**: finds all users that still have active sessions and calls `invalidateAllSessions(userId, 'admin_purge')` for each (forces re-login for all, access invalidated immediately)
-- **Response `data`**: `{ purgedUsers: number }`
+- `POST /admin/users` `{ skip?, take?, search? }` → `{ list, total }`.
+- `POST /admin/users/:id/{disable,enable,force-logout,sessions,reset-password}` — disable (soft-delete + invalidate sessions), enable, force logout, view sessions, reset password (all invalidate sessions).
+- `POST /admin/bans` · `/admin/bans/unban` `{ ip?, account? }` — list/unban login bans (the shared `BruteForceService`; one unban clears all account-keyed dims — password + OTP).
+- `POST /admin/sessions` `{ skip?, take?, userId?, ip? }` · `/admin/sessions/purge` — system-wide session overview / one-click purge.
+- `POST /admin/audit` — `@Audit`-tagged action log (`AdminActionLog`).
+- Federation / quota admin: `AdminFederationController` (peer trust timeline), `AdminQuotaController` (per-peer quota overrides). Diagnostics + log viewer: `AdminDiagnosticsController`, `LogViewerController` (`/admin/logs/*`).
 
 ---
 
 ## SSE Events
 
-> Endpoint: [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts) · `GET /api/v1/events` (`text/event-stream`, on the same port 3000 as HTTP)
+> Endpoint: [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts) · `GET /api/v1/events` (`text/event-stream`)
 
-### Connection and Authentication
+### Connection & HELLO
 
-```
-// The browser's native EventSource does not support custom headers, so the frontend uses @microsoft/fetch-event-source
-fetchEventSource(`${apiPrefix}/events`, { headers: { Authorization: 'Bearer <access_token>' } })
-```
+The browser opens the stream via a fetch-backed SSE client inside a Web Worker (the native EventSource API cannot set headers). The credential travels as the **httpOnly cookie** (browser) or `Authorization: Bearer` (native) — never in the URL. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-- The access_token is passed in via the `Authorization: Bearer` header (**not in the URL**). Authentication reuses the same `JwtAuthGuard` as HTTP (signature verification + expiry + jti blacklist + `tokenVersion`).
-- Authentication failure: `JwtAuthGuard` returns HTTP 401 directly (**no `AUTH` frame**); the frontend `onopen` receives subsequent retries + reopens.
-- Logout-all / password change / admin kick-offline trigger the `auth.sessions-invalidated` event → `SseService` pushes `FORCE_LOGOUT` and then disconnects all of that user's connections.
-- Heartbeat: the server sends a `: ping` comment frame every 25s; the frontend reconnects with exponential backoff (full jitter, capped at 30s) on disconnect, and after reconnecting pulls missed messages by the `newestMsgId` cursor.
+On connect the server pushes a **`HELLO`** frame with catch-up cursors: newest-message cursor, `threadRevision`, `profileRev`, `friendReqRev`, and `activeCall` (so a reconnecting/freshly-booted callee re-derives an in-flight incoming call). HELLO is load-bearing — the thread list is delta-replayed from its `threadRevision`. Heartbeat: a `: ping` comment frame every 25s.
 
-### Message Format (SSE text frames)
+### Frame format
 
 ```
 event: <EVENT_NAME>
-id: <msgId>          # only NEW_MESSAGE carries this
-data: <json>         # JSON string
+id: <seq>            # NEW_MESSAGE only
+data: <json>
 ```
 
-> Authentication is not in the frame (handled by HTTP 401), so there is no WS-era `AUTH` frame. `: connected` / `: ping` are comment lines and are not counted as events.
-
-### Event List (backend → frontend)
+### Event list (backend → frontend)
 
 | Event | Trigger | `data` | Client handling |
 | --- | --- | --- | --- |
-| `NEW_MESSAGE` | Peer/group member sent a new message | Full message body `{ threadId, id, content, contentType, createdAt, ... }` (already serialized) | Render directly (no second fetch needed) |
-| `FORCE_LOGOUT` | Logout-all / password change / admin kick-offline | `{ event:'FORCE_LOGOUT', status:0, message:<reason> }` | Disconnect + force re-login |
+| `HELLO` | connect | cursors (message / threadRevision / profileRev / friendReqRev / activeCall) | delta-replay thread list; re-derive active call |
+| `NEW_MESSAGE` | a message is sent to the user | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
+| `NOTIFY` | friend request / system notice | notification descriptor | update badge |
+| `THREAD_META` | thread mute/pin/clear/revision change | `{ threadId, ... }` | update conversation list |
+| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason | disconnect + force re-login |
 
-> Ordering and completeness: while a single connection is alive, strict ordering and completeness are guaranteed by TCP; messages during disconnect are caught up via cursor pull after reconnecting.
+> Ordering & completeness: on a live connection, strict ordering is guaranteed by TCP; messages missed during a disconnect are caught up after reconnect via the threadRevision delta + per-thread message cursors (the stream does not replay history — no `Last-Event-ID`).
 
 ### Client → Server
 
-SSE is unidirectional; **clients do not send business messages over SSE**. All writes (sending messages, invites, future typing) go through HTTP `POST`.
+SSE is unidirectional; **clients do not send business messages over SSE**. All writes (sending messages, invites, calls, future typing) go through HTTP `POST`.

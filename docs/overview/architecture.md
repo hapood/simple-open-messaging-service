@@ -19,82 +19,115 @@ This document describes the system architecture, module responsibilities, authen
 
 ```
 ┌───────────────────────────────┐        HTTP (POST)          ┌───────────────────────────────┐
-│  Angular 18 Frontend (web)    │ ───────────────────────────▶│      NestJS Backend (:3000)    │
-│  - Standalone + Signal        │◀────────────────────────────│  - Controllers (HTTP)          │
-│  - Custom Material components │        HTTP response        │  - Services (business)         │
-│  - SSE client                 │                             │  - Gateway (SSE downstream)    │
-└───────────────────────────────┘                             └──────────────┬────────────────┘
-        │                                                                      │
-        │   SSE (GET /api/v1/events, Authorization: Bearer JWT)                │ Prisma
-        └────────────────────────────────────────────────────────────────────▶│
-                                                                               ▼
-                                                                    ┌──────────────────┐
-                                                                    │   PostgreSQL     │
-                                                                    └──────────────────┘
+│  Angular web client           │ ───────────────────────────▶│      NestJS Backend (:3000)    │
+│  - Zoneless + Signals         │◀────────────────────────────│  - Fastify controllers (HTTP)  │
+│  - IndexedDB repository layer │   unified {code,message,data}│  - Services (business)         │
+│  - SSE in a Web Worker        │                             │  - Gateway (SSE downlink)      │
+└──────────────┬────────────────┘                             └──────────────┬────────────────┘
+               │                                                            │
+               │  SSE  GET /api/v1/events (httpOnly cookie / Bearer)        │ Prisma (@Global)
+               └───────────────────────────────────────────────────────────▶│
+                                                                            ▼
+                                                                 ┌──────────────────────────┐
+                                                                 │   PostgreSQL (+ Timescale)│
+                                                                 └──────────────────────────┘
 ```
 
 **Responsibility Separation Principle**
 
-- **HTTP handles "writes and queries"**: Registration, login, sending messages, querying history, creating groups, invitations, etc. all go through HTTP `POST`.
-- **SSE handles "push"**: The server pushes the **complete message body** one-way via SSE (`GET /api/v1/events`); the client renders it on receipt with no secondary fetch required. SSE is a downstream-only channel — all client→server upstream business traffic (sending messages, future typing) goes through HTTP.
+- **HTTP handles "writes and queries"**: registration, login, sending messages, querying history, creating groups, invites, calls, federation — all go through HTTP `POST` (JSON body; `multipart/form-data` for uploads).
+- **SSE handles "push"**: the server pushes **identity-only signals** and the full message body one-way via SSE (`GET /api/v1/events`). SSE is a downstream-only channel — all client→server upstream business traffic goes through HTTP.
+
+The web/admin SPAs are served by Caddy (not the app). `@fastify/static` serves only `/uploads/*` (auth-gated media). The app runs on Fastify (HTTP/1.1 plain, or HTTP/2-over-TLS when `TLS_CERT`/`TLS_KEY` are set), global prefix `/api/v1` (excluding `/.well-known/soms`).
 
 ## Backend Module Responsibilities
 
-The application root module [src/app.module.ts](../../src/app.module.ts) imports `EventEmitterModule`, `RedisModule`, `AuthModule`, `UserModule`, `GatewayModule`, `MessageModule`, `GroupModule`, `UploadModule`, and `AdminModule`; controllers are declared within their respective modules (the root module directly registers `MessageController` / `AuthController` / `UserController` / `GroupController`).
+The application root module [src/app.module.ts](../../src/app.module.ts) imports `EventEmitterModule.forRoot()` plus 23 in-project modules, and directly registers 13 controllers. Modules marked `@Global()` (7) are shared app-wide.
 
 | Module | Key Files | Responsibilities |
 | --- | --- | --- |
-| **AuthModule** | [src/auth/](../../src/auth/) | Passport `local` + `jwt` strategies, JWT dual-token generation and validation, argon2 password hashing, login-failure IP banning |
-| **UserModule** | [src/user/](../../src/user/) | User registration (transactional creation of User + UserExtra + userNotiBox), user queries, thread queries |
-| **MessageModule** | [src/message/](../../src/message/) | Message writing and paginated queries, **friend request state machine** (`makeFriendRequest` / `approveFriendRequest`) |
-| **GroupModule** | [src/group/](../../src/group/) | Group CRUD, member management, issuing and decoding group invitation JWT tokens |
-| **GatewayModule** | [src/gateway/](../../src/gateway/) | SSE downstream push (`EventsController` + `SseService`): connection registration, heartbeat, new-message push, forced logout, online connection snapshots |
-| **UploadModule** | [src/upload/](../../src/upload/) | Chat image upload (`/upload`, magic-number validation), avatar `sharp` multi-size webp rewriting |
-| **AdminModule** | [src/admin/](../../src/admin/) | Independent admin account system (`Admin` / `AdminRefreshToken`) + user/thread/ban/reuse-alert management endpoints |
-| **RedisModule** | [src/redis/](../../src/redis/) | Redis client wrapper (access jti blacklist, etc.) |
-| **PrismaService** | [src/prisma.service.ts](../../src/prisma.service.ts) | `PrismaClient` wrapper, auto-connects on `onModuleInit` |
+| **AuthModule** | [src/auth/](../../src/auth/) | Opaque **SessionToken** issue/validate (`SessionTokenService` + `BearerAuthService`), login by password / OTP / QR, argon2 hashing, shared `BruteForceService` ban engine, the global `SessionAuthGuard` (`APP_GUARD`) and `SessionCookieInterceptor` (`APP_INTERCEPTOR`) |
+| **UserModule** | [src/user/](../../src/user/) | `UserService` — profile, register, friend/block helpers, peer-trust status, federated profile sync |
+| **GatewayModule** | [src/gateway/](../../src/gateway/) | SSE downlink (`EventsController` + `SseService`): connection registry, `: ping` heartbeat, `HELLO` handshake, `NEW_MESSAGE`/`NOTIFY`/`THREAD_META` push, `FORCE_LOGOUT`; `CallStateRegistry` mirrors active-call state for the HELLO |
+| **MessageModule** | [src/message/](../../src/message/) | `MessageService` — message write (per-thread atomic `seq`) + paginated query primitives; `MessageFanoutService` (global) does unified `NEW_MESSAGE` fan-out |
+| **GroupModule** | [src/group/](../../src/group/) | `GroupService` + `RolesGuard` — group create/invite/members/leave/kick/transfer/role/update |
+| **ThreadParticipantModule** | [src/thread-participant/](../../src/thread-participant/) | `ThreadParticipantService` (raw thread-roster mutator) + `ThreadAccessGuard` (membership guard reused by message/group routes) |
+| **InviteModule** | [src/invite/](../../src/invite/) | `InviteService` — friend/group invite DB state (`Invite` table, `FRIEND`/`GROUP` kinds) + friend-request badge; delegates roster writes to ThreadParticipantService |
+| **UserBlockModule** | [src/user-block/](../../src/user-block/) | `UserBlockService` — block/unblock state consumed by message fan-out + user queries |
+| **ThreadRevisionModule** (`@Global`) | [src/thread-revision/](../../src/thread-revision/) | bumps the per-user thread-set revision on any roster mutation (the thread-list delta cursor) |
+| **UploadModule** | [src/upload/](../../src/upload/) | Media pipeline: `UploadService`, content-addressed `MediaAssetService` (sha256 CAS + refcount), `MediaAccessService` (per-object authz), `AvatarStackService` (sharp multi-size webp) |
+| **PushModule** | [src/push/](../../src/push/) | `PushService` — FCM (Android) / Web Push dispatch; skips recipients with a live SSE connection |
+| **FederationModule** (`@Global`) | [src/federation/](../../src/federation/) | Server-to-server (SOMS protocol): ed25519 keypair, RFC 9421 signatures, discovery, s2s verify, `FederationService` (message/media/roster pull + push), `WellKnownController`, `S2sController`, `S2sInitController` |
+| **QuotaModule** (`@Global`) | [src/quota/](../../src/quota/) | `QuotaService` — unified daily-quota enforcement (local node + each federated peer); DB-atomic counters |
+| **CallsModule** | [src/calls/](../../src/calls/) | `CallsService` — 1:1 audio/video call state machine (initiate/accept/ringing/connected/decline/cancel/end/signal) + inbound S2S frame bridge; server is signaling coordinator only (never media) |
+| **LinkPreviewModule** | [src/link-preview/](../../src/link-preview/) | SSRF-safe OG fetch (`SafeFetchService`) + `LinkPreviewService` (OpenGraph parse + base64 thumbnail) for `ContentType.LINK` cards |
+| **ShellModule** | [src/shell/](../../src/shell/) | `ShellService` — serves the web-shell manifest/bundle for the desktop Tauri wrapper (`/api/v1/shell/*`, incl. FCM runtime config via `compat`) |
+| **DiagnosticsModule** | [src/diagnostics/](../../src/diagnostics/) | `DiagnosticsService` + `DiagnosticsGcService` — client support-bundle list/download/GC |
+| **AdminModule** | [src/admin/](../../src/admin/) | Admin console: 13 controllers, `AdminAuthService` (opaque `AdminSession`, separate secret), TOTP 2FA, WebAuthn passkeys, dashboard, audit, manage, GC, federation/quota admin; `AdminAuditInterceptor` (`APP_INTERCEPTOR`) |
+| **LoggerModule** | [src/logger/](../../src/logger/) | `nestjs-pino` multistream (stdout + rotating file + ring buffer) + admin `LogViewerService` |
+| **KvStoreModule** (`@Global`) | [src/kv-store/](../../src/kv-store/) | In-process `Map` KV (`KvStoreService` — NOT Redis) backing the SessionToken validation cache + throttle counters |
+| **SettingsModule** (`@Global`) | [src/settings/](../../src/settings/) | `SettingsService` — runtime settings facade (VAPID, Firebase config, login mode, …) |
+| **PrismaModule** (`@Global`) | [src/prisma.service.ts](../../src/prisma.service.ts) | Single shared `PrismaClient` / `node-pg` pool; `@Global` so every module injects the same instance |
 
-> Unimported modules: Only `NotifyModule` is not yet imported into `AppModule` (`UserManageModule` has been activated by `AdminModule` for `admin/users`; `UploadModule` is already wired up, so image/avatar upload is available). See [Known Issues](#known-issues-and-improvements).
+> SOMS is **single-instance by design** — the in-process maps in `SseService`, `ThrottleGuard`, `BruteForceService`, `KvStoreService` are intentional (not a gap); there is no Redis layer, and multi-instance horizontal scaling is a non-goal.
+
+### Global providers
+
+- `APP_GUARD → SessionAuthGuard` ([src/auth/auth.module.ts](../../src/auth/auth.module.ts)) — every route is authenticated unless it opts out with `@Public()`.
+- `APP_INTERCEPTOR → SessionCookieInterceptor` — re-issues the browser session cookie on sliding.
+- `APP_INTERCEPTOR → AdminAuditInterceptor` — logs `@Audit`-tagged admin actions.
+- `useGlobalPipes(ValidationPipe)` / `useGlobalFilters(AllExceptionsFilter)` / `useGlobalInterceptors(SerializeInterceptor)` — registered in [src/bootstrap.ts](../../src/bootstrap.ts).
 
 ### Controllers Overview
 
-| Controller | File | Endpoint Prefix |
+All sit under `/api/v1` (set in `bootstrap.ts`). Most use `@Controller()` with the full path on each method.
+
+| Controller | File | Route prefix / key routes |
 | --- | --- | --- |
-| AuthController | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts) | `/auth/*` |
-| UserController | [src/controller/user.controller.ts](../../src/controller/user.controller.ts) | `/user/*` |
-| MessageController | [src/controller/message.controller.ts](../../src/controller/message.controller.ts) | `/send-message`, `/query-messages`, `/thread/by-user-id` |
-| GroupController | [src/controller/group.controller.ts](../../src/controller/group.controller.ts) | `/group/*` |
-| UploadController | [src/upload/upload.controller.ts](../../src/upload/upload.controller.ts) | `/upload` (images), `/user/update-avatar` (avatar) |
-| AdminController | [src/admin/admin.controller.ts](../../src/admin/admin.controller.ts) | `/admin/*` (independent admin JWT, `AdminAuthGuard`) |
-| EventsController | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) | `GET /events` (SSE downstream stream, reuses `JwtAuthGuard`) |
+| AuthController | [src/controller/auth.controller.ts](../../src/controller/auth.controller.ts) | `auth/login` (password), `auth/logout`, `auth/logout-all`, `auth/change-password`, `auth/set-password`, `auth/sessions`, `auth/revoke-session` |
+| AuthOtpController | [src/controller/auth-otp.controller.ts](../../src/controller/auth-otp.controller.ts) | `auth/otp/login` |
+| AuthQrController | [src/controller/auth-qr.controller.ts](../../src/controller/auth-qr.controller.ts) | `auth/qr/{create,poll,scan,confirm}` |
+| UserController | [src/controller/user.controller.ts](../../src/controller/user.controller.ts) | `user/{register,my-profile,update-avatar,update-profile,query-thread/delta,delete-friend,block,query,peer-trust-status,resolve,search,sync-peer-profile,thread-info}` |
+| MessageController | [src/controller/message.controller.ts](../../src/controller/message.controller.ts) | `send-message`, `send-media`, `query-messages`, `thread/{by-user-id,mark-read,set-muted,set-pinned,clear-history,set-alias}`, `search-messages`, `media-status` |
+| GroupController | [src/controller/group.controller.ts](../../src/controller/group.controller.ts) | `group/{create,invite,sync-meta,info,members,leave,kick,transfer,set-role,update}` |
+| InviteController | [src/controller/invite.controller.ts](../../src/controller/invite.controller.ts) | `invite/{friend,accept,reject,revoke,incoming,outgoing,detail,mark-read}` |
+| DeviceController | [src/controller/device.controller.ts](../../src/controller/device.controller.ts) | `devices/register` (POST), `devices/register/:token` (DELETE) |
+| NotificationController | [src/controller/notification.controller.ts](../../src/controller/notification.controller.ts) | `notifications/{vapid-key,missed-summary,missed,action}` |
+| CallsController | [src/controller/calls.controller.ts](../../src/controller/calls.controller.ts) | `calls/{initiate,accept,ringing,connected,decline,cancel,end,signal,ice-servers,:callSid/signaling}` |
+| ShellController | [src/shell/shell.controller.ts](../../src/shell/shell.controller.ts) | `shell/{compat,web-manifest,web-bundle}` |
+| HealthController / ConfigController | [src/controller/health.controller.ts](../../src/controller/health.controller.ts) · [src/controller/config.controller.ts](../../src/controller/config.controller.ts) | `health` / `config` (both `@Public`, GET) |
+| EventsController | [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) | `GET /events` (SSE stream) |
+
+Admin routes (`admin/*`) and federation routes (`s2s/*`, `.well-known/soms`) are registered inside their own modules; see [api.md](../api/api.md) and [federation-s2s-api.md](../api/federation-s2s-api.md).
 
 ## Frontend Structure
 
-The frontend is an Angular 18 standalone application using experimental Zoneless change detection + Signal-driven reactivity.
+The web client is an Angular (zoneless + Signal-driven) SPA. It runs in three shells — browser, Tauri desktop, and Android WebView — selected at runtime by [web/src/app/services/runtime.ts](../../web/src/app/services/runtime.ts).
 
-**Bootstrap & Global Config** [web/src/app/app.config.ts](../../web/src/app/app.config.ts)
+**Bootstrap & global config** [web/src/app/app.config.ts](../../web/src/app/app.config.ts)
 
-- `provideExperimentalZonelessChangeDetection()` — no zone.js
-- `AuthInterceptor` — HTTP interceptor, auto-injects `Bearer <access_token>`, auto-renews on 401
-- `provideRouter(routes, withComponentInputBinding())`
-- `provideHttpClient(withInterceptorsFromDi())`
+- `provideZonelessChangeDetection()` — no zone.js.
+- `provideHttpClient(withFetch(), withInterceptorsFromDi(), withInterceptors([correlationIdInterceptor, httpTraceInterceptor]))` + a `TauriHttpBackend` override (under Tauri, `/api/v1` is routed through Rust's `api_request` IPC; in the browser it delegates to the stock fetch backend).
+- `provideTransloco` (en + zh-CN), `provideServiceWorker('ngsw-worker.js')` (PWA, prod + non-Tauri), `provideAnimationsAsync()` (Angular animations retained; `motion` is used per-component for spring physics).
+- An `APP_INITIALIZER` calls `AuthService.restoreSession()` before the router resolves (restores a native trusted-device session from OS secure storage on cold start; no-op on browser).
 
-**Service Layer** [web/src/app/services/](../../web/src/app/services/)
+**Auth on the web client** — JS **never holds the credential**. The browser authenticates via the **httpOnly session cookie** (auto-attached same-origin; `SessionCookieInterceptor` re-issues it on sliding). Login state in JS is a boolean read from a non-httpOnly `logged_in` presence cookie. Under the Tauri/Android shell the Rust/Kotlin transport injects the `Authorization: Bearer` header from OS secure storage. The `AuthInterceptor` ([web/src/app/auth.interceptor.ts](../../web/src/app/auth.interceptor.ts)) attaches **no** credential — it only catches 401 and triggers re-login (`redoLoginAuth`); there is no token renewal.
 
-| Service | Responsibilities |
-| --- | --- |
-| `AuthService` | Login/logout, token storage and auto-renewal; access_token in memory (BehaviorSubject), refresh_token in storage |
-| `WebsocketService` | SSE downstream channel (`@microsoft/fetch-event-source`, filename retained): stream establishment / exponential-backoff reconnect / 401 renewal reopen / forwards `NEW_MESSAGE`·`FORCE_LOGOUT`; emits `reconnect$` on disconnect to trigger cursor-based catch-up fetch |
-| `UserService` | Registration, profile, friend requests, thread queries |
-| `MsgService` | Send messages, query history |
-| `GroupService` | Create/invite/join groups |
-| `RouteService` | Page navigation + dialog stack (dialogs are pushed onto browser history, so Back closes them) |
+**Repository layer (3-tier: UI ↔ repositories ↔ backend)** [web/src/app/services/](../../web/src/app/services/)
 
-**Component Layer** A total of 25 standalone components: 6 page components (home / login / register / forbidden / 404 / navigator) + 19 business/UI components. The highlight is `MsgGroupFactory` — a virtual-scroll engine providing message grouping + on-demand loading + height pre-computation + scroll-position maintenance. The UI is built entirely with custom Material-style components (buttons/inputs/checkboxes/dialogs/menus/progress bars/icons/avatars), with no dependency on Angular Material.
+- `WebdbService` — IndexedDB primitive, per-user DB (`soms-webdb-u<userId>`), object stores for messages / threads / avatars / profiles / meta.
+- `MessageRepository` (`message-repository.service.ts`) — sole issuer of message reads (`query-messages`) and sole consumer of the `NEW_MESSAGE` body cache; reads/writes through `WebdbService`.
+- `ThreadRepository` (`thread-store.service.ts`) — conversation/thread tier. The web client is **local-first**: on chat open it renders from IndexedDB, then reconciles with SSE + HTTP in the background (the production loading skeleton is only a cold-cache fallback).
+
+**Realtime transport** — `WebsocketService` (filename retained) is now a **facade** over three pluggable `RealtimeTransport` implementations ([realtime-transport.ts](../../web/src/app/services/realtime-transport.ts)): `WorkerSseTransport` (browser — SSE parsed inside `sse.worker.ts`, a Web Worker, off the main thread), `RustChannelSseTransport` (Tauri desktop — Rust-side supervisor), `NativeEventTransport` (Android — Kotlin `/events` bridge).
+
+**Virtual scroll kernel** — the message list is driven by `ChatBoxScroller` ([web/src/app/lib/chat-box/chat-box-scroller.ts](../../web/src/app/lib/chat-box/chat-box-scroller.ts)), a framework-agnostic, array-index + source-driven kernel with manual scrollTop compensation. It pulls data asynchronously through `HttpItemSource`.
+
+**Component layer** — ~90+ standalone components across chat surface, responsive desktop shell, mobile shell, auth, settings/profile, calls, threads/groups, media viewers, and shared primitives. The UI consumes **Angular Material** (`@angular/material` ^20) with a layer of custom Material-styled components on top.
 
 ## Unified Response Format
 
-All HTTP endpoints return the `ApiResult` envelope (since P1a the `status` field has been renamed to `code`; see [src/common/api-result.ts](../../src/common/api-result.ts)):
+All HTTP endpoints return the `ApiResult` envelope ([src/common/api-result.ts](../../src/common/api-result.ts)):
 
 ```ts
 interface ApiResult<T = any> {
@@ -105,145 +138,120 @@ interface ApiResult<T = any> {
 }
 ```
 
-Business results always return HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes for broad categories (DTO parameter validation failures are also folded into the business flow as 200 + `10000`). **Business codes are segmented by domain** (`10xxx` general / `20xxx` friend·state machine / `30xxx` message / `40xxx` group); see [api.md → Business Error Codes](../api/api.md#business-error-codes).
+Business results always return HTTP 200 + `code`; only unauthenticated (401) / not found (404) / conflict (409) / server error (500) retain HTTP status codes for broad categories (DTO validation failures are folded into the business flow as 200 + `10000`). **Business codes are segmented by domain** (`10xxx` general / `20xxx` friend·invite / `30xxx` message / `40xxx` group / `50xxx` federation / `60xxx` push / `70xxx` call); full definitions in [src/common/business-code.ts](../../src/common/business-code.ts), summarized in [api.md → Business Error Codes](../api/api.md#business-error-codes).
 
-> Serialization is handled uniformly by the global `SerializeInterceptor` ([src/common/serialize.interceptor.ts](../../src/common/serialize.interceptor.ts)): `Date → millisecond timestamp`, `BigInt → string`. P1 removed the former `Date.prototype.toJSON` global hack and the manual `convertBigIntId()`.
+> Serialization is handled uniformly by the global `SerializeInterceptor` ([src/common/serialize.interceptor.ts](../../src/common/serialize.interceptor.ts)): `Date → millisecond timestamp`, `BigInt → string`.
 
 ## Authentication Mechanism
 
-### Dual-Token Model
+### Session Token Model (single credential)
 
-| Token | Payload | Validity | Signing Secret | Frontend Storage |
-| --- | --- | --- | --- | --- |
-| access_token | `{ sub, jti, tokenVersion, device }` | 15 minutes | `JWT_ACCESS_SECRET` | Memory (BehaviorSubject, lost on refresh) |
-| refresh_token | Family-based (familyId + rotation + reuse detection) | 14 days | `JWT_REFRESH_SECRET` (separate from access) | `sessionStorage` (don't stay logged in) / `localStorage` (stay logged in) |
+SOMS uses **one opaque, per-device session credential** (`SessionToken`) — there is **no access/refresh JWT pair** for users. The plaintext token is returned once at login, stored as a sha256 hash in the `SessionToken` table, and presented by the client on every authenticated request.
 
-> ✅ P0 persisted to DB: refresh_token is stored as a sha256 hash in the `RefreshToken` table (`userId / tokenHash / device / expiresAt / revokedAt`); it survives restarts, is revocable, and rotates on renewal. Access and refresh use separate secrets (`JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET`).
+| Aspect | Detail |
+| --- | --- |
+| Token | opaque `randomBytes(32)`; sha256-hashed at rest; plaintext shown once |
+| Transport | browser/desktop: **httpOnly cookie** (auto-attached same-origin, JS-unreadable); native (`app`): **`Authorization: Bearer`** header |
+| Lifetime | **TRUSTED** device (token in OS secure storage — native app by default, or desktop opting into OS keyring): `expiresAt = NULL` (revocation-only). **UNTRUSTED** (browser, or desktop not opting in): sliding 14-day deadline, extended on use via `lastSeenAt` |
+| Revocation | a DB row flip (`revokedAt` + `revokeReason`); logout / logout-all / password-change / admin-disable / admin-purge |
+| Validation | `BearerAuthService` resolves the token; the global `SessionAuthGuard` authenticates every route unless `@Public()` |
 
-### Login Flow (Local Strategy)
+Admin auth is physically separate (its own `adminSecret`, opaque `AdminSession` rows in the `AdminSession` table) but shares the account namespace — an admin is a linked profile on a `User` row.
 
-1. `POST /auth/login` (body: `account`, `password`) → `LocalAuthGuard` → `LocalStrategy.validate()`.
-2. **IP ban check**: Looks up the in-memory `_ipBlackDict[ip]`; if not yet unbanned, the request is rejected outright.
-3. `AuthService.validateUser()`: Looks up the user, then verifies the password with `argon2.verify`.
-4. **Failure counting and banning** ([src/auth/local.strategy.ts](../../src/auth/local.strategy.ts)): Cumulative failures `>3` bans for 30 minutes, `>6` bans for 3 hours, `>9` bans for 24 hours; records older than 2 days are purged every 24 hours.
-5. On success, returns access + refresh; wrong credentials return `code:10003`; IP ban returns `code:10005` + `data.bannedUntil`.
+### Login (three methods, all platforms)
 
-### JWT Validation (Jwt Strategy)
+1. **Password** `POST /auth/login` (`{ account, password }`) → `LocalStrategy` + `PasswordHasherService` (argon2) → `BruteForceService` (shared engine: ip/user dims, sliding window + graduated ban ladder).
+2. **OTP** `POST /auth/otp/login` — admin-issued one-time login code (argon2-hashed `LoginCode`, single-use) → mints an `app` session.
+3. **QR** `POST /auth/qr/{create,poll,scan,confirm}` — desktop shows a QR; an already-logged-in device scans it to delegate login.
 
-- `JwtStrategy` extracts the token from `Authorization: Bearer <token>`, and after decoding attaches `{ userId: payload.sub }` to `req.user`.
-- Controllers access `req.user.userId` via `@Req() req`.
+On success each path issues a `SessionToken` and returns `{ sessionToken }`. Failure codes: `10003` unauthenticated, `10005` rate-limited/banned (+ `data.bannedUntil`), `10009` invalid credentials, `10012-10016` OTP/QR invalid/expired/consumed, `10017` password-not-set (OTP/QR-only account), `10018` must-change-password.
 
-### Renewal and Logout
+### Session management
 
-- `POST /auth/renew-access` / `POST /auth/renew-refresh`: The two are synonymous — a **full family-based rotation** using the refresh_token (the old refresh is marked `rotated`, and a new access + new refresh are issued); if reuse is detected, `code:10006` revokes the entire family at the root. The frontend uniformly calls only `renew-access`.
-- `POST /auth/logout` (public, refresh in body): Sets the refresh `revokeReason='logout'`; optionally pass `accessJti` to immediately add the current access to the jti blacklist.
-- `POST /auth/logout-all` / `change-password` / admin kick: `invalidateAllSessions` bumps `tokenVersion` (all access tokens immediately invalidated) + revokes all refresh tokens, and disconnects all of the user's SSE connections via the `auth.sessions-invalidated` event.
+- `POST /auth/sessions` lists the user's active sessions; `POST /auth/revoke-session` revokes one.
+- `POST /auth/logout` revokes the current session; `POST /auth/logout-all` revokes **all** of the user's sessions.
+- `POST /auth/change-password` / `set-password` rotate the password and revoke other sessions. All revocations also force-disconnect the user's SSE connections (`FORCE_LOGOUT`).
 
-### Frontend Coordination
-
-- `AuthInterceptor`: Injects the `Bearer` header for non-public requests (public paths are determined by a URL whitelist; the former `Authorization:'public'` marker is deprecated); when there is no token, it proactively drives `renewAccessToken()` (with a definite endpoint, never hanging forever); on 401, it single-flights a renew and retries once (capped, non-recursive).
-- Renewal: `AuthService.renewAccessToken()` single-flights (`shareReplay` bufferSize:1 + refCount + finalize); concurrent callers share the same in-flight request; on success it swaps in a new access + rotates refresh, on failure (`10006` / `10003`) it triggers `redoLoginAuth` to force re-login. The old 7-day timer / `renewRefreshToken` mechanism has been removed.
+There is **no renew endpoint** — a long-lived session token needs no rotation; a revoked/expired token yields `10007` (`SESSION_REVOKED`) and the client re-logs in.
 
 ## Real-time Communication (SSE Downstream)
 
-**Endpoint** [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts): `GET /api/v1/events` (`text/event-stream`, same port 3000 as HTTP). SSE is a one-way downstream channel — push-only; all client business upstream (sending messages, future typing) goes through HTTP.
+**Endpoint** [src/gateway/events.controller.ts](../../src/gateway/events.controller.ts) + [src/gateway/sse.service.ts](../../src/gateway/sse.service.ts): `GET /api/v1/events` (`text/event-stream`, same port as HTTP). SSE is a one-way downstream channel — push-only; all client upstream goes through HTTP.
 
 ### Connection Authentication
 
-Authentication reuses the same `JwtAuthGuard` as normal protected routes (signature verification + expiry + jti blacklist + `tokenVersion` revocation awareness); the token travels in the `Authorization: Bearer <access_token>` header, **never in the URL**:
+Authentication reuses the same credential as HTTP — the global `SessionAuthGuard` resolves the **session token** (cookie or `Bearer` header). `EventsController.stream()` hijacks the Fastify reply, hands the raw response to `SseService.register(userId, res)`, which writes the stream headers, flushes a leading `: connected` comment, records the connection, and starts the heartbeat. Authentication failure → HTTP 401 (no frame); the client reconnects.
 
-1. `EventsController.stream()` takes `req.user.userId` and calls `SseService.register(userId, res)`.
-2. `register`: Writes the streaming response headers (`X-Accel-Buffering: no` to prevent Nginx batching) → flushes the leading `: connected` comment frame → records into `clients[userId]` (an array; one user may have multiple connections) → starts the heartbeat.
-3. Authentication failure: `JwtAuthGuard` throws 401 directly (**no `AUTH` frame**); the frontend `onopen` handler renews and reopens on receipt.
+### HELLO handshake
 
-### Heartbeat and Liveness Detection
+On connect, `SseService` pushes a `HELLO` frame carrying the client's catch-up cursors: the user's newest-message cursor, `threadRevision` (thread-list delta cursor), `profileRev` (self-profile revision), `friendReqRev` (friend-request badge revision = MAX(createdAt) over incoming FRIEND invites), and `activeCall` (live-call summary via `CallStateRegistry`, so a reconnecting/freshly-booted callee re-derives an in-flight incoming call). HELLO is load-bearing — the thread list cannot build without its `threadRevision` (delta-replay from 0).
 
-The server writes a `: ping` comment frame every 25s (< Nginx `proxy_read_timeout` 60s). SSE is one-way with no pong; disconnection is detected via `res.write` returning `false` (peer gone / backpressure) → `res.end()` → the `close` callback cleans up the connection and heartbeat. The liveness-detection window is ≤ 25s, with `res.on('close')` as a cleanup backstop.
+### Heartbeat and Liveness
+
+The server writes a `: ping` comment frame every 25s. SSE is one-way (no pong); disconnection is detected via `res.write` returning `false` → `res.end()` → the `close` callback cleans up. Liveness window ≤ 25s.
 
 ### Push Events
 
-`SseService.onNewMessage(userId, data)` pushes the **complete message body** to all of the target user's connections (`serializeBody({ threadId, ...message })`, BigInt→string / Date→ms, same serialization as HTTP responses):
-
 ```
-event: NEW_MESSAGE
-id: <msgId>
-data: {"threadId":1,"id":"123","content":"...","createdAt":1719000000000,...}
+event: <EVENT_NAME>
+id: <msgId>          # NEW_MESSAGE only
+data: <json>
 ```
 
-The frontend can render directly on receipt, **with no secondary `query-messages` fetch**. It is invoked by `MessageController` (pushes both parties for P2P / all members for groups) after writing the message.
+| Event | Trigger | `data` | Client handling |
+| --- | --- | --- | --- |
+| `HELLO` | connect | cursors (message/threadRevision/profileRev/friendReqRev/activeCall) | delta-replay thread list; re-derive active call |
+| `NEW_MESSAGE` | a message is sent to the user | full message body `{ threadId, seq, content, contentType, createdAt, ... }` | cache in the message repository; render |
+| `NOTIFY` | friend request / system notice | notification descriptor | update badge |
+| `THREAD_META` | thread mute/pin/clear/revision change | `{ threadId, ... }` | update conversation list |
+| `FORCE_LOGOUT` | logout-all / password change / admin kick | reason | disconnect + force re-login |
 
-`FORCE_LOGOUT`: `SseService` listens for the `auth.sessions-invalidated` event (triggered by logout-all / password change / admin kick), pushes `FORCE_LOGOUT` to all of that user's connections, then disconnects immediately.
+### Reconnection Recovery
 
-### Ordering, Completeness, and Reconnection Recovery
-
-- **While alive**: On a single SSE connection, messages arrive strictly ordered and complete — guaranteed by the underlying TCP (the server's `write` order is the client's receipt order). The SSE layer needs no self-added `seq`.
-- **During disconnection**: The SSE stream does not replay history (the server does not consume `Last-Event-ID`). After a successful reconnect, the frontend emits `reconnect$`, and each thread does an HTTP incremental catch-up fetch (`refillNewer`) of missed messages using the `newestMsgId` cursor.
-- **Multiple connections**: A single user's multiple connections are each individually ordered; ordering is not guaranteed across connections.
-
-### Frontend Handling ([websocket.service.ts](../../web/src/app/services/websocket.service.ts), internally `@microsoft/fetch-event-source`)
-
-- `onopen` receives 401: Throws `AuthNeededError` → the outer loop single-flights `renewAccessToken()`; on success it reopens immediately (not counted toward backoff), on failure it triggers `redoLoginAuth`.
-- Receives `NEW_MESSAGE`: Forwards to the thread component for direct rendering (the payload is already the complete message body).
-- Receives `FORCE_LOGOUT`: `disconnect` + `redoLoginAuth`; no further reconnection.
-- Network/server errors: Exponential backoff + full jitter (`random(0, min(1000·2^attempt, 30000))`); resets to zero once successfully connected.
+The SSE stream does not replay history (no `Last-Event-ID`). After a reconnect, the client catches up via HTTP: thread-list deltas from the `threadRevision` cursor, and per-thread messages from the message repository's newest cursor. The native (Kotlin) client retains its SSE out of process and replays HELLO on wake.
 
 ## Core Business Flows
 
-### Thread Abstraction (Key Design)
+### Threads, Participants, and Invites
 
-All threads are uniformly abstracted as `MessageThread` (type `P2P` or `GROUP`). Each user holds one `UserMessageThread` per thread, and its `status` drives the thread lifecycle:
+All conversations are `MessageThread` rows (`type` `P2P` or `GROUP`). Membership is **`ThreadParticipant`** — one row per (user, thread) carrying `lastReadSeq`, `role` (GROUP only), `muted`, `pinned`, `clearedAt`, `alias`, `leftAt`. There is no longer a polymorphic `UserMessageThread` or a separate `GroupMember` table.
 
-```
-UserMessageThreadStatus:
-  FROM_PENDING  → request I sent, awaiting the other party's action
-  TO_PENDING    → request I received, awaiting my action
-  APPROVED      → thread established
-  BLOCKED       → blocked
-  DELETED       → deleted
-```
+Friend-add and group-invite are unified in the **`Invite`** table (`kind` `FRIEND` or `GROUP`, 7-day TTL, `PENDING → ACCEPTED|REJECTED|REVOKED|EXPIRED`, rows never hard-deleted):
 
-- **P2P**: The two users each hold a `UserMessageThread` with `toObjType=P2P` and `toObjId=the other user's ID`; after the friend request is approved, they share the same `MessageThread`.
-- **GROUP**: Each member holds a `UserMessageThread` with `toObjType=GROUP` and `toObjId=the group ID`.
+- **FRIEND** (`POST /invite/friend`): a `PENDING` FRIEND invite to the target. `POST /invite/accept` mints the `MessageThread(P2P)` + both `ThreadParticipant` rows. `POST /invite/{reject,revoke}` are the other terminals.
+- **GROUP** (`POST /group/invite`): a `PENDING` GROUP invite carrying the target group. `POST /invite/accept` adds the invitee as a `ThreadParticipant` of the group thread. (The legacy JWT-token-in-message invite is retired.)
 
-### Friend Request State Machine
+The friend-request badge is derived client-side from `friendReqRev > friendReqAckRev` (carried on HELLO); `POST /invite/mark-read` advances the ack.
 
-`MessageService.makeFriendRequest(from, to)` ([src/message/message.service.ts](../../src/message/message.service.ts)) branches on the other party's current `UserMessageThread` status within a transaction:
+### Thread-list versioning
 
-```
-Other party's status  Action                                               Status
-─────────────────────────────────────────────────────────────────────────────────────
-(none)                Create both records (FROM_PENDING/TO_PENDING)        0
-APPROVED              Already friends                                     1
-DELETED               Reset to pending                                    2
-FROM_PENDING          Other party requested first → establish friendship  3
-TO_PENDING/BLOCKED    No further action                                   5
-```
-
-`approveFriendRequest(from, to)`: Validates the status is `FROM_PENDING`; on first approval creates a `MessageThread(P2P)`, sets both parties' status to `APPROVED`, and binds the `threadId`.
+Every roster mutation (friend approve, group join/leave/kick, unfriend) bumps the user's `threadRevision` and writes a `ThreadRevision` (ADD/DELETE) log row. The client delta-replays via `POST /user/query-thread/delta` (revision range) — no full re-fetch.
 
 ### Message Sending
 
-`POST /send-message` (body: `userThreadId`, `content`) → `MessageService.writeMsgToThread()`:
+`POST /send-message` (`{ threadId, content, contentType?, clientMessageId? }`) → `MessageService.writeMsgToThread()`:
 
-1. Validates the sender's `UserMessageThread` is `APPROVED`.
-2. P2P: Additionally validates the other party is also `APPROVED`; writes the `Message(PURE_TEXT)`; SSE pushes to both parties.
-3. GROUP: Writes the `Message`; SSE pushes to all group members.
-4. Pushes the complete message body (`{ threadId, ...message }`, already serialized); the frontend renders directly on receipt with no secondary fetch.
+1. `ThreadAccessGuard` validates membership (P2P additionally that the peer is an active participant).
+2. Allocates a per-thread `seq` atomically (`UPDATE curSeq = curSeq + 1 RETURNING`) inside the create tx — gapless, no retry loop.
+3. `MessageFanoutService` pushes `NEW_MESSAGE` to all participants via SSE (full body) + fires push for offline recipients.
+4. `clientMessageId` is the send-idempotency key (a retry returns the original message). `contentType` spans `PURE_TEXT / IMAGE / VIDEO / FILE / AUDIO / LINK / CALL` (media sends go through `/send-media` + the CAS pipeline; `CALL` is server-authored only).
 
-### Group Creation and Invitation
+### 1:1 Calls
 
-- **Create** (`POST /group/create`): In a transaction, creates `MessageThread(GROUP)` → `Group` (owner, associated thread) → the creator's `UserMessageThread(APPROVED)` + `GroupMember`.
-- **Invite** (`POST /group/invite`): Validates that the inviter is a member and the invitee is a friend (both `APPROVED`); writes a `ContentType.INVITE` message in the two users' P2P thread whose content is JSON: `{ type: 'GROUP_INVITE', fromUserId, groupName, expiryDate, token }`. The `token` is a JWT signed with an independent secret (`{ sub: toUserId, exp, gid: groupId }`, valid for 3 days).
-- **Join** (`POST /group/join`): Decodes the invitation token → creates `GroupMember` + `UserMessageThread(APPROVED)`.
+`CallsController` (`/calls/*`) drives a state machine (initiate → ringing → connected → end; decline/cancel/signal). The server is a **signaling coordinator + lifecycle owner only** — it never touches media. On termination `CallsService` authors a terminal `ContentType.CALL` chat bubble (bilateral). Federated calls relay over signed S2S `/s2s/call`. See [docs/android-calls-client.md](../android-calls-client.md) and [docs/roadmap/android-calls-followup.md](../roadmap/android-calls-followup.md).
+
+### Federation
+
+Two SOMS instances federate over HTTPS with RFC 9421-signed S2S requests (`FederationModule`). Identity is `user@domain`; messages/media/roster propagate by light-notify + active-pull (`/get_file` for media). Trust is a domain allow-list (`FederatedPeer`); daily quotas bound the traffic (`QuotaModule`). See [federation-protocol.md](./federation-protocol.md).
 
 ## Known Issues and Improvements
 
-> Lists items found during code review that affect integration and deployment.
+> Items found during code review that affect integration and deployment. Several early items record the P0/P1 hardening of the *original* dual-JWT auth model, which has since been **entirely replaced by the single SessionToken model** above — read those as historical milestones, not the current design.
 
-1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): JWT access/refresh/admin secrets are now externalized; when not explicitly set, they are auto-generated at first startup under `./data/jwt-*.key` (no longer fail-fast; see `src/auth/jwt-secret.ts`). Group invitations switched to the `GROUP_INVITE` message type and no longer use the signing secret.
-2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): refresh_token is now persisted to the `RefreshToken` table (storing the sha256 hash); it survives restarts, is revocable (`revokedAt`), and rotates on renewal. This also fixed three bugs — `logout` (reads refresh from the body instead of the JWT payload where it was always undefined, and was made a public endpoint), `renew-access` (no longer mistakenly deletes the refresh, which would break the 7-day scheduled renewal), and `renew-refresh` (now null-checks before revoking, fixing a null-pointer 500).
-3. **`NotifyModule` not wired up**: Not yet imported into `AppModule` (Prisma already models `Notify` / `userNotiBox`, but the code does not consume them). `UserManageModule` has been activated by `AdminModule` (`admin/users`), and `UploadModule` is wired up (image/avatar upload is available).
-4. ~~**File upload**~~ ✅ Implemented: `UploadModule` ([src/upload/](../../src/upload/)) provides `/upload` (chat images, magic-number validation + 10MB limit) and `/user/update-avatar` (`sharp` multi-size webp rewriting). When switching to object storage in production, only the write target changes; the API contract stays the same.
-5. ~~**Frontend authGuard not in effect**~~ ✅ Fixed: `authGuard` / `guestGuard` are now mounted on routes (home/nav use authGuard, login/register use guestGuard).
-6. **`/user/query` privacy**: Allows batch queries of any non-deleted user's information, with no relationship-level visibility isolation.
-7. ~~**`Date.prototype.toJSON` global override**~~ ✅ Removed (P1): Replaced by the global `SerializeInterceptor` which uniformly converts `Date → ms` / `BigInt → string`, no longer polluting the prototype.
+1. ~~**Hardcoded secrets**~~ ✅ Fixed (P0): secrets externalized; auto-generated at first startup under `./data/` when unset. (The subsequent SessionToken rewrite removed the access/refresh secrets entirely for users.)
+2. ~~**refresh_token stored only in memory**~~ ✅ Fixed (P0): persisted as a sha256 hash, revocable, rotating. (Later superseded: the dual access/refresh pair was replaced by the single opaque `SessionToken`.)
+3. ~~**`NotifyModule` not wired up**~~ ✅ Resolved: `Notify` / `userNotiBox` were folded into the `User` table as inline columns (`friendReqAckRev`, etc. — see the `20260707180000_fold_user_extra_notibox` migration); there is no `NotifyModule` to wire up.
+4. ~~**File upload**~~ ✅ Implemented: `UploadModule` provides `/upload` + `/send-media` through the content-addressed (sha256 CAS, refcounted `MediaAsset`) pipeline, and `/user/update-avatar` (sharp multi-size webp). Per-user rate limiting / orphan cleanup remain a deferred hardening item.
+5. ~~**Frontend authGuard not in effect**~~ ✅ Fixed: route guards are mounted (auth/guest).
+6. **`/user/query` privacy**: allows batch queries of any non-deleted user's information with no relationship-level visibility isolation. (Open.)
+7. ~~**`Date.prototype.toJSON` global override**~~ ✅ Removed (P1): replaced by the global `SerializeInterceptor`.
