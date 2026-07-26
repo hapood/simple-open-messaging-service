@@ -57,7 +57,8 @@
     }
   },
   "home": {
-    "resizerTitle": "Drag to resize; double-click to reset"
+    "resizerTitle": "Drag to resize; double-click to reset",
+    "resizerAria": "Resize conversation list"
   },
   "auth": {
     "loginTitle": "Login to SOMS",

@@ -1,13 +1,16 @@
 <div class="shell"
-     [class.mode-desktop]="mode() === 'desktop'"
-     [class.mode-mobile]="mode() === 'mobile'"
+     [class.mode-expanded]="mode() === 'expanded'"
+     [class.mode-medium]="mode() === 'medium'"
+     [class.mode-compact]="mode() === 'compact'"
      [class.chat-open]="chatActive()"
      [class.aside-open]="asideActive()">
-  @if (mode() === 'desktop') {
+  @if (mode() === 'expanded') {
     <app-icon-rail class="rail" [onThreadListChanged]="refresh" />
     <app-chat-list-pane class="list" [style.width.px]="listWidth()" (selectThread)="openChat($event)" />
-    <div class="resizer" (mousedown)="startResize($event)" (dblclick)="resetWidth()"
-         title="Drag to resize; double-click to reset"></div>
+    <div class="resizer" role="separator" tabindex="0" aria-orientation="vertical"
+         aria-valuemin="280" aria-valuemax="480" [attr.aria-valuenow]="listWidth()"
+         (mousedown)="startResize($event)" (keydown)="onResizerKeydown($event)" (dblclick)="resetWidth()"
+         [title]="'home.resizerTitle' | transloco" [attr.aria-label]="'home.resizerAria' | transloco"></div>
   } @else {
     <div class="drawer-body">
       @if (topSection() === 'chats') {
@@ -48,9 +51,9 @@
     }
   </div>
 
-  <!-- Scrim behind the aside drawer on desktop + tablet (click → close). Mobile's aside slides over a
+  <!-- Scrim behind the aside drawer on medium + expanded (click → close). Compact's aside slides over a
        full-screen chat so no mask is needed there. -->
-  @if (mode() === 'desktop' && asideActive()) {
+  @if (mode() !== 'compact' && asideActive()) {
     <div class="drawer-mask" (click)="closeAside()" aria-hidden="true"></div>
   }
 </div>

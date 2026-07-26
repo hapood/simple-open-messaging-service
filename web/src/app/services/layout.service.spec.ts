@@ -2,7 +2,8 @@ import { TestBed } from '@angular/core/testing';
 import { provideZonelessChangeDetection } from '@angular/core';
 import { LayoutService } from './layout.service';
 
-const DESKTOP_Q = '(min-width: 1024px)';
+const MEDIUM_Q = '(min-width: 720px)';
+const EXPANDED_Q = '(min-width: 1100px)';
 
 /** Build a minimal MediaQueryList — CDK MediaMatcher only reads .matches. */
 function fakeMql(query: string, matches: boolean): MediaQueryList {
@@ -14,7 +15,7 @@ function fakeMql(query: string, matches: boolean): MediaQueryList {
   } as unknown as MediaQueryList;
 }
 
-describe('LayoutService mode (2-way, width-only)', () => {
+describe('LayoutService mode (3-way, width-only)', () => {
   let matches: Record<string, boolean>;
 
   beforeEach(() => {
@@ -34,20 +35,33 @@ describe('LayoutService mode (2-way, width-only)', () => {
     return TestBed.inject(LayoutService);
   }
 
-  it('≥1024px → desktop', () => {
-    matches[DESKTOP_Q] = true;
-    expect(svc().mode()).toBe('desktop');
+  it('≥1100px → expanded', () => {
+    matches[MEDIUM_Q] = true;
+    matches[EXPANDED_Q] = true;
+    expect(svc().mode()).toBe('expanded');
   });
 
-  it('<1024px phone → mobile', () => {
-    matches[DESKTOP_Q] = false;
-    expect(svc().mode()).toBe('mobile');
+  it('720–1099px → medium', () => {
+    matches[MEDIUM_Q] = true;
+    matches[EXPANDED_Q] = false;
+    expect(svc().mode()).toBe('medium');
   });
 
-  it('iPad Pro 1366px landscape is width-only → desktop (NOT mobile)', () => {
-    // DESKTOP_Q is pure width (≥1024px); a touch device at 1366px matches it. The pointer/hover clauses
-    // were dropped when the input-modality axis moved to InputDeviceService.
-    matches[DESKTOP_Q] = true;
-    expect(svc().mode()).toBe('desktop');
+  it('<720px → compact', () => {
+    matches[MEDIUM_Q] = false;
+    matches[EXPANDED_Q] = false;
+    expect(svc().mode()).toBe('compact');
+  });
+
+  it('expanded wins when both min-width queries match', () => {
+    matches[MEDIUM_Q] = true;
+    matches[EXPANDED_Q] = true;
+    expect(svc().mode()).toBe('expanded');
+  });
+
+  it('a wide touch device is classified by width, not input modality', () => {
+    matches[MEDIUM_Q] = true;
+    matches[EXPANDED_Q] = true;
+    expect(svc().mode()).toBe('expanded');
   });
 });

@@ -84,9 +84,9 @@ export class MessageHeaderComponent {
     this.nav.closeSearch();
   }
 
-  /** The back arrow exists only to leave the mobile full-screen chat overlay. Tablet and desktop both
+  /** The back arrow exists only to leave the compact full-screen chat overlay. Medium and expanded both
    *  render the chat inline alongside the conversation list (chat-slot is `static`), so there is no
-   *  overlay to leave — it is mobile-only. */
+   *  overlay to leave. */
   protected readonly mode = this.layout.mode;
 
   readonly title = computed(() => {

@@ -3,39 +3,45 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { BreakpointObserver } from '@angular/cdk/layout';
 import { map } from 'rxjs';
 
-// Desktop-class viewport: wide enough for the icon-rail + two-column (list | chat). PURE WIDTH — the
-// input-modality axis (physical vs soft keyboard) is owned by InputDeviceService, so a wide touch tablet
-// (iPad Pro landscape, Samsung DeX) correctly lands in desktop mode while its input bar still behaves as
-// soft-keyboard. Below 1024px the two-column gets cramped; the app falls back to the single-column mobile
-// shell (full-screen home sections + full-screen overlays).
-const DESKTOP_QUERY = '(min-width: 1024px)';
+// Window-size classes (Material adaptive-layout model), width-only:
+//   compact  < 720px  — one column; chat/details are full-screen overlays
+//   medium   720–1099 — conversation list + inline chat; no permanent icon rail
+//   expanded ≥ 1100px — icon rail + resizable conversation list + inline chat
+// Input modality remains independent in InputDeviceService: a touch tablet can use the medium/expanded
+// layout while its composer still follows soft-keyboard behavior.
+const MEDIUM_QUERY = '(min-width: 720px)';
+const EXPANDED_QUERY = '(min-width: 1100px)';
 
-export type LayoutMode = 'mobile' | 'desktop';
+export type LayoutMode = 'compact' | 'medium' | 'expanded';
 
 /**
  * Single source of truth for the LAYOUT axis — the viewport class (one column vs two), pure width. Consumed
  * by the home shell to fork the desktop / mobile view trees.
  *
- * `mode` is a 2-way computed: ≥1024px → desktop (icon-rail + resizable list + chat columns), else mobile
- * (full-screen list/secondary sections + full-screen chat/aside overlays) — width only, NO
- * pointer/hover clause. The INPUT axis (physical vs soft keyboard) lives in {@link InputDeviceService} so the
- * two concerns cannot recouple. BreakpointObserver watches matchMedia, so device rotation live-updates the
- * mode and the shell swaps in place. Initial values are synchronous so first paint is correct without a tick.
- *
- * Was 3-way with a tablet master/detail middle; collapsed to 2 — the tablet variant wasn't pulling its
- * weight, and its concerns split cleanly: the two-column aspect folds into desktop, the full-screen-overlay
- * aspect into mobile. The old 768–1280 range now straddles 1024 — its upper half is desktop, lower half mobile.
+ * BreakpointObserver watches matchMedia, so device rotation/window resize live-updates the mode and the shell
+ * swaps in place. Initial values are synchronous so first paint is correct without a tick.
  */
 @Injectable({ providedIn: 'root' })
 export class LayoutService {
   private readonly bpObserver = inject(BreakpointObserver);
 
-  readonly isDesktop = toSignal(
-    this.bpObserver.observe(DESKTOP_QUERY).pipe(map(result => result.matches)),
-    { initialValue: this.bpObserver.isMatched(DESKTOP_QUERY) },
+  readonly isAtLeastMedium = toSignal(
+    this.bpObserver.observe(MEDIUM_QUERY).pipe(map(result => result.matches)),
+    { initialValue: this.bpObserver.isMatched(MEDIUM_QUERY) },
   );
 
-  readonly mode = computed<LayoutMode>(() => this.isDesktop() ? 'desktop' : 'mobile');
+  readonly isExpanded = toSignal(
+    this.bpObserver.observe(EXPANDED_QUERY).pipe(map(result => result.matches)),
+    { initialValue: this.bpObserver.isMatched(EXPANDED_QUERY) },
+  );
+
+  /** Compatibility/readability alias for surfaces whose desktop treatment is expanded-only (wide dialogs,
+   *  the development playground, fit-dialog measurement). New adaptive shell code should prefer `mode`. */
+  readonly isDesktop = this.isExpanded;
+
+  readonly mode = computed<LayoutMode>(() =>
+    this.isExpanded() ? 'expanded' : this.isAtLeastMedium() ? 'medium' : 'compact',
+  );
 
   // ── Immunity frame ──────────────────────────────────────────────────────────
   // During a route-transition animation (the mobile chat-slot slide-in/out) the OS

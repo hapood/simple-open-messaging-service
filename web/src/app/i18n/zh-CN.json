@@ -57,7 +57,8 @@
     }
   },
   "home": {
-    "resizerTitle": "拖动以调整大小；双击恢复默认"
+    "resizerTitle": "拖动以调整大小；双击恢复默认",
+    "resizerAria": "调整会话列表宽度"
   },
   "auth": {
     "loginTitle": "登录 SOMS",

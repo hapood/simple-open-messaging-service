@@ -195,7 +195,7 @@ export class NavStateMachineService {
   }
 
   /** Reset every transient nav layer (open dialogs, the aside, in-chat search, the settings drill-down, and
-   *  the active section) but KEEP {@link chatThreadId}. Called when the viewport crosses the desktop/mobile
+   *  the active section) but KEEP {@link chatThreadId}. Called when the viewport crosses an adaptive-layout
    *  breakpoint: the section / overlay model differs per layout, so transient state that doesn't make sense
    *  in the new layout is dropped, while the open chat — the user's anchor context — survives. */
   resetTransientExceptChat(): void {

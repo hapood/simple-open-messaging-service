@@ -12,13 +12,27 @@ import { HomeHeaderComponent } from '../home-header/home-header.component';
 import { ProfileSectionComponent } from '../profile-section/profile-section.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
+import { TranslocoPipe } from '@jsverse/transloco';
 
 const LIST_WIDTH_KEY = 'soms.client.listWidth'
 const MIN_LIST = 280, MAX_LIST = 480, DEFAULT_LIST = 360
+const LIST_KEY_STEP = 16
 
-/** Mobile overlay transition state. `static` = desktop/tablet (the slot is an inline flex column / side
- *  panel, no transform); `mobile-closed` = off-screen right + hidden (the list/chat shows through);
- *  `mobile-open` = in place as a full-screen overlay. */
+/** Pure keyboard-width reducer kept outside the component so the resizer contract is regression-testable
+ *  without mounting the full authenticated shell. Returns undefined for keys the separator does not own. */
+export function nextConversationListWidth(current: number, key: string): number | undefined {
+  let candidate: number
+  if (key === 'ArrowLeft') candidate = current - LIST_KEY_STEP
+  else if (key === 'ArrowRight') candidate = current + LIST_KEY_STEP
+  else if (key === 'Home') candidate = MIN_LIST
+  else if (key === 'End') candidate = MAX_LIST
+  else return undefined
+  return Math.min(MAX_LIST, Math.max(MIN_LIST, candidate))
+}
+
+/** Compact overlay transition state. `static` = medium/expanded (inline chat / side panel, no transform);
+ *  `mobile-closed` = off-screen right + hidden; `mobile-open` = in place as a full-screen overlay. The
+ *  animation-state names stay stable to avoid a noisy motion migration while the layout vocabulary changes. */
 type OverlaySlideState = 'static' | 'mobile-closed' | 'mobile-open'
 
 /** Mobile drill-in slide for the chat and aside overlays. Replaces the old display:none↔flex flip (display
@@ -43,8 +57,8 @@ const overlaySlide = trigger('overlaySlide', [
  * The single responsive home shell. Hosts the always-mounted chat surface + the aside panel — both driven
  * by {@link NavStateMachineService} signals (NO router-outlets: the router only renders this shell for `/`
  * and `/chat/:threadId`; the state machine owns which thread/panel is shown and mirrors the URL one-way via
- * replaceState). The conversation list is always-mounted chrome (the base view on mobile; a column on
- * desktop/tablet). `icon-rail` is desktop-only; `nav-drawer` (hamburger) is tablet/mobile.
+ * replaceState). The conversation list is always-mounted chrome (the base view in compact; a column in
+ * medium/expanded). The icon rail and resizer exist only in expanded.
  *
  * Layout positioning of the chat/aside slots is CSS-driven and gated by `chat-open` / `aside-open` classes
  * derived from the nav state (e.g. the mobile chat overlay is hidden when no thread is open, so the list
@@ -52,7 +66,7 @@ const overlaySlide = trigger('overlaySlide', [
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [IconRailComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent, ProfileSectionComponent],
+  imports: [IconRailComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent, ProfileSectionComponent, TranslocoPipe],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
   animations: [overlaySlide],
@@ -64,13 +78,13 @@ export class HomeShellComponent {
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode
-  /** Active mobile/tablet home section (the account menu opens Profile or Settings). Desktop ignores it. */
+  /** Active compact/medium home section (the account menu opens Profile or Settings). Expanded ignores it. */
   readonly topSection = this.navState.topSection
 
-  /** chat-list width (desktop), persisted across sessions. */
+  /** Conversation-list width (expanded only), persisted across sessions. */
   readonly listWidth = signal<number>(this.readListWidth())
 
-  /** Chat/aside "open" classes position the mobile overlays (and toggle the desktop drawer mask). */
+  /** Chat/aside "open" classes position compact overlays and toggle medium/expanded drawers. */
   readonly chatActive = computed(() => this.navState.chatThreadId() !== undefined)
   /** A chat-scoped overlay (peer-profile / group-info) is open. */
   readonly asideActive = computed(() => this.navState.aside().length > 0)
@@ -78,16 +92,16 @@ export class HomeShellComponent {
    *  aside stack entry — drilling into a sub-page keeps the same `panel`, only the entry's `params` change. */
   readonly asidePanel = computed<AsidePanel | undefined>(() => this.navState.asideTop()?.panel)
 
-  /** Drives [@overlaySlide] on the chat-slot: only mobile animates (closed↔open); desktop/tablet stay
+  /** Drives [@overlaySlide] on the chat-slot: only compact animates (closed↔open); medium/expanded stay
    *  `static` so the inline flex column is never transformed. */
   readonly chatSlotState = computed<OverlaySlideState>(() =>
-    this.mode() === 'mobile' ? (this.chatActive() ? 'mobile-open' : 'mobile-closed') : 'static',
+    this.mode() === 'compact' ? (this.chatActive() ? 'mobile-open' : 'mobile-closed') : 'static',
   )
 
   /** Drives [@overlaySlide] on the aside-slot: the peer-profile / group-info overlay slides in from the
-   *  right on mobile (stacking above the chat at z-index 40). Desktop/tablet stay `static`. */
+   *  right in compact (stacking above the chat at z-index 40). Medium/expanded stay `static`. */
   readonly asideSlotState = computed<OverlaySlideState>(() =>
-    this.mode() === 'mobile' ? (this.asideActive() ? 'mobile-open' : 'mobile-closed') : 'static',
+    this.mode() === 'compact' ? (this.asideActive() ? 'mobile-open' : 'mobile-closed') : 'static',
   )
 
   /** Guards the breakpoint effect so the transient-state reset does NOT fire on the initial mode read. */
@@ -103,13 +117,13 @@ export class HomeShellComponent {
       const tid = this.navState.chatThreadId()
       if (tid !== undefined) {
         this.convList.open(tid)
-      } else if (this.mode() !== 'mobile') {
+      } else if (this.mode() !== 'compact') {
         this.convList.close()
       }
-      // mobile close: deferred to onSlideDone('chat', → mobile-closed) below.
+      // compact close: deferred to onSlideDone('chat', → mobile-closed) below.
     })
 
-    // Viewport crossed the desktop/mobile breakpoint: drop transient nav state (open dialogs, aside,
+    // Viewport crossed an adaptive-layout boundary: drop transient nav state (open dialogs, aside,
     // in-chat search, and the active section) — the section/overlay model differs per layout — but KEEP
     // the open chat (the user's anchor context). Skipped on the initial read (state is already default).
     effect(() => {
@@ -151,14 +165,13 @@ export class HomeShellComponent {
   /** After a group is created, refresh the shared thread list (forwarded to icon-rail / nav-drawer). */
   refresh = () => this.chatListPane()?.refresh()
 
-  // --- resizable chat-list pane (desktop only) ---
+  // --- resizable conversation-list pane (expanded only) ---
   startResize(event: MouseEvent) {
     event.preventDefault()
     const startX = event.clientX
     const startW = this.listWidth()
     const onMove = (ev: MouseEvent) => {
-      const w = Math.min(MAX_LIST, Math.max(MIN_LIST, startW + (ev.clientX - startX)))
-      this.listWidth.set(w)
+      this.listWidth.set(this.clampListWidth(startW + (ev.clientX - startX)))
     }
     const onUp = () => {
       document.removeEventListener('mousemove', onMove)
@@ -172,11 +185,23 @@ export class HomeShellComponent {
     this.listWidth.set(DEFAULT_LIST)
     this.saveListWidth(DEFAULT_LIST)
   }
+  /** Keyboard equivalent of the pointer resizer. Arrow keys adjust by one spacing step; Home/End jump to
+   *  bounds. Persist immediately because a keyboard interaction has no pointer-up commit edge. */
+  onResizerKeydown(event: KeyboardEvent) {
+    const next = nextConversationListWidth(this.listWidth(), event.key)
+    if (next === undefined) return
+    event.preventDefault()
+    this.listWidth.set(next)
+    this.saveListWidth(next)
+  }
   private readListWidth(): number {
     if (typeof localStorage === 'undefined') return DEFAULT_LIST
     const raw = localStorage.getItem(LIST_WIDTH_KEY)
     const n = raw ? parseInt(raw, 10) : DEFAULT_LIST
-    return Number.isFinite(n) ? Math.min(MAX_LIST, Math.max(MIN_LIST, n)) : DEFAULT_LIST
+    return Number.isFinite(n) ? this.clampListWidth(n) : DEFAULT_LIST
+  }
+  private clampListWidth(w: number) {
+    return Math.min(MAX_LIST, Math.max(MIN_LIST, w))
   }
   private saveListWidth(w: number) {
     if (typeof localStorage !== 'undefined') localStorage.setItem(LIST_WIDTH_KEY, String(w))

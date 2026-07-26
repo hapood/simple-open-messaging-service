@@ -188,17 +188,17 @@ export class RouteService {
 
   /**
    * Open Settings, optionally deep-linking straight to a category — e.g. the Profile section → "Manage
-   * sessions" lands on the Devices page. Desktop opens the wide two-column dialog; mobile switches to the
+   * sessions" lands on the Devices page. Expanded opens the wide two-column dialog; compact/medium switch to the
    * inline Settings section ({@link NavStateMachineService.setTopSection}) and, for a deep-link, drills
    * into the category ({@link NavStateMachineService.openSettingsCategory} — HW-back peels it: sub-page →
    * root → chats). Callers opening Settings from inside a dialog (e.g. Edit Profile) should close themselves
    * first so the Settings section isn't stacked beneath the dialog (the section sits below panes).
    */
   openSettings(category?: SettingsCategoryId): void {
-    if (this.layout.mode() === 'desktop') {
+    if (this.layout.mode() === 'expanded') {
       this.openSettingsDialog(category);
     } else {
-      // mobile: Settings is an inline secondary section, not a dialog. Switch to it and (for a deep-link)
+      // compact/medium: Settings is an inline secondary section, not a dialog. Switch to it and (for a deep-link)
       // drill straight into the category (HW-back peels it: sub-page → root → chats).
       this.nav.setTopSection('settings');
       if (category) this.nav.openSettingsCategory(category);

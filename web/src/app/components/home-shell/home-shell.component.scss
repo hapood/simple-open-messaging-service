@@ -58,8 +58,8 @@
   padding-bottom: var(--soms-safe-bottom, 0px);
 }
 
-// ── desktop: icon-rail | list (resizable) | resizer | chat | aside(side panel) ──
-.mode-desktop {
+// ── expanded: icon rail | resizable list | chat | aside overlay ──
+.mode-expanded {
   .rail { flex: 0 0 auto; }
   .list { flex: 0 0 auto; }            /* width driven by [style.width.px] */
   .resizer {
@@ -73,6 +73,11 @@
     background: var(--app-border);
     transition: background-color .15s ease;
     &:hover { background: var(--app-border-strong); }
+    &:focus-visible {
+      outline: 2px solid var(--app-focus-ring);
+      outline-offset: -2px;
+      background: var(--app-border-strong);
+    }
 
     /* Drag-handle grip: three centered dots over the divider. Decorative only — the resizer element
        itself is the mousedown hit target (see startResize in the .ts). The ::after is position:absolute,
@@ -100,7 +105,8 @@
       opacity: .6;
       transition: opacity .15s ease, color .15s ease;
     }
-    &:hover::after {
+    &:hover::after,
+    &:focus-visible::after {
       color: var(--app-brand);
       opacity: 1;
     }
@@ -125,29 +131,55 @@
     border-left: 1px solid var(--app-border);
   }
 }
-.mode-desktop.aside-open .aside-slot {
+.mode-expanded.aside-open .aside-slot {
   display: flex;
 }
 
-/* Global scrim behind the aside drawer (click → close). Per-mode z-index keeps it ABOVE the inline shell
-   content (rail/list/chat) but BELOW the aside-slot, which differs by layout:
-     desktop aside-slot z25 → mask z24
-     tablet  aside-slot z20 → mask z19
-   Mobile's aside is a full-screen slide-over, so no mask is rendered there (template gate). */
+// ── medium: conversation list | chat; aside overlays the chat ──
+.mode-medium {
+  .drawer-body {
+    flex: 0 0 clamp(300px, 36vw, 360px);
+    width: clamp(300px, 36vw, 360px);
+    border-right: 1px solid var(--app-border);
+  }
+  .chat-slot {
+    flex: 1 1 auto;
+  }
+  .aside-slot {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(400px, 56vw);
+    z-index: 25;
+    display: none;
+    overflow: hidden;
+    background: var(--app-surface);
+    box-shadow: var(--app-shadow-3);
+    border-left: 1px solid var(--app-border);
+  }
+}
+.mode-medium.aside-open .aside-slot {
+  display: flex;
+}
+
+/* Global scrim behind the medium/expanded aside drawer. Compact uses a full-screen slide-over and
+   therefore renders no mask. */
 .drawer-mask {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.4);
   animation: drawer-mask-fade 180ms ease;
 }
-.mode-desktop .drawer-mask { z-index: 24; }
+.mode-medium .drawer-mask,
+.mode-expanded .drawer-mask { z-index: 24; }
 @keyframes drawer-mask-fade {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-// ── mobile: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
-.mode-mobile {
+// ── compact: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
+.mode-compact {
   .drawer-body { flex: 1 1 auto; min-width: 0; }
   .chat-slot {
     position: fixed;
@@ -175,7 +207,7 @@
   }
 }
 
-// thread-list column (tablet/mobile): header + list stack and fill. Direct child of .shell now that
+// Conversation-list column (compact/medium): header + list stack and fill.
 // the nav-drawer is a shell-level overlay rather than the column wrapper.
 .drawer-body {
   position: relative;
@@ -205,5 +237,5 @@
 // .resizer ::after above) so the dots read against the --app-border bar; in dark, faint is already
 // legible on the bar, so no need to darken (matches the auth-brand dark-override pattern).
 :host-context([data-theme="dark"]) {
-  .mode-desktop .resizer::after { color: var(--app-text-faint); }
+  .mode-expanded .resizer::after { color: var(--app-text-faint); }
 }
