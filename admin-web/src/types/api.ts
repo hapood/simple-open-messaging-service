@@ -463,6 +463,7 @@ export interface DashboardAction {
   action: string
   targetType: string | null
   targetId: string | null
+  targetLabel: string | null
   adminId: number
   adminRole: AdminRole
   success: boolean

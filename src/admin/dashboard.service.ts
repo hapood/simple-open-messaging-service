@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma.service.js';
 import { SseService } from '../gateway/sse.service.js';
+import { AuditTargetLabelService } from './audit-target-label.service.js';
 
 /**
  * Console overview aggregator. Every metric is a cheap read so the dashboard can poll:
@@ -18,6 +19,7 @@ export class DashboardService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly sseService: SseService,
+    private readonly labels: AuditTargetLabelService,
   ) {}
 
   async summary() {
@@ -28,7 +30,7 @@ export class DashboardService {
       fedGroups,
       mediaAgg,
       reclaimable,
-      recentActions,
+      recentActionRows,
     ] = await Promise.all([
       this.sseService.snapshot(),
       this.prisma.sessionToken.count({
@@ -66,6 +68,15 @@ export class DashboardService {
       const lvl = g.trustLevel as keyof typeof federation;
       if (lvl in federation) federation[lvl] = g._count._all;
     }
+
+    // Resolve targetIds into account names — same shared resolver as the audit log, so the dashboard's
+    // recent-actions strip reads "user: alice" rather than "user: 7".
+    const labelByKey = await this.labels.resolve(recentActionRows);
+    const recentActions = recentActionRows.map((r) => ({
+      ...r,
+      targetLabel:
+        r.targetType && r.targetId ? (labelByKey.get(`${r.targetType}:${r.targetId}`) ?? null) : null,
+    }));
 
     return {
       online: { totalConnections: snap.total, uniqueUsers: snap.uniqueUsers },

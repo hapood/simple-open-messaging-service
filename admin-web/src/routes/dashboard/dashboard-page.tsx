@@ -225,9 +225,9 @@ export function DashboardPage() {
                       </span>
                     )}
                     <span className="font-mono text-xs">{a.action}</span>
-                    {a.targetId ? (
+                    {(a.targetLabel ?? a.targetId) ? (
                       <span className="truncate font-mono text-xs text-muted-foreground">
-                        {a.targetId}
+                        {a.targetLabel ?? a.targetId}
                       </span>
                     ) : null}
                     <Badge variant="outline" className="ml-auto shrink-0 text-[10px]">

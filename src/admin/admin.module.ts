@@ -22,6 +22,7 @@ import { AdminAuditInterceptor } from './admin-audit.interceptor.js';
 import { MediaAssetGcService } from './media-asset-gc.service.js';
 import { FederationSelfCheckService } from './federation-self-check.service.js';
 import { DashboardService } from './dashboard.service.js';
+import { AuditTargetLabelService } from './audit-target-label.service.js';
 import { AdminManageService } from './admin-manage.service.js';
 import { GroupManageService } from './group-manage.service.js';
 import { AdminBootstrapService } from './admin-bootstrap.service.js';
@@ -67,6 +68,7 @@ import { LogViewerController } from '../logger/log-viewer.controller.js';
     MediaAssetGcService,
     FederationSelfCheckService,
     DashboardService,
+    AuditTargetLabelService,
     AdminManageService,
     GroupManageService,
     // Self-seeds the bootstrap admin (account=admin) on every app start via OnApplicationBootstrap;
