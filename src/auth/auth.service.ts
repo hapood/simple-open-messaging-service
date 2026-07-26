@@ -180,6 +180,29 @@ export class AuthService {
     return ok;
   }
 
+  /** Admin-side single-session revoke — NOT owner-gated. Picked from the system-wide session list, this
+   *  resolves the row's userId from its id (so the SSE FORCE_LOGOUT still targets the right user),
+   *  revokes it with reason 'admin_revoke', and emits auth.session-revoked → the SSE service kicks ONLY
+   *  that device (the user's other devices stay online — the surgical counterpart to forceLogout, which
+   *  kicks every device). Returns true iff a row was actually revoked; a not-found / already-revoked id
+   *  is a no-op (no emit) so a stale list entry can't trigger a phantom logout. */
+  async revokeSessionAdmin(sessionId: number): Promise<boolean> {
+    const rec = await this.prisma.sessionToken.findFirst({
+      where: { id: sessionId, revokedAt: null },
+      select: { userId: true },
+    });
+    if (!rec) return false;
+    const ok = await this.sessionTokens.revokeById(rec.userId, sessionId, 'admin_revoke');
+    if (ok) {
+      this.eventEmitter.emit('auth.session-revoked', {
+        userId: rec.userId,
+        sessionId,
+        reason: 'admin_revoke',
+      });
+    }
+    return ok;
+  }
+
   // ── Admin session/overview reads ─────────────────────────────────────────────
   // User-side sessions live on SessionToken (the canonical credential). Admin-session reads
   // (AdminRefreshToken) live in AdminAuthService. Services return domain data; the controller wraps

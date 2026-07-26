@@ -397,6 +397,21 @@ export class AdminController {
     return this.ok(await this.authService.purgeAllSessions());
   }
 
+  @UseGuards(AdminAuthGuard, AdminRolesGuard)
+  @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
+  @Audit('session.revoke', { targetType: 'user_session', targetParam: 'id' })
+  @HttpCode(HttpStatus.OK)
+  @Post('admin/sessions/:id/revoke')
+  @ApiOperation({ summary: 'Revoke a single active user session (kicks only that device; the user stays online on every other device)' })
+  async revokeSession(@Param('id') id: string): Promise<ApiResult> {
+    // Surgical counterpart to force-logout: only the picked device is force-logged-out; the user's other
+    // sessions are untouched. Idempotent — a not-found / already-revoked id surfaces as NOT_FOUND so a
+    // stale list row doesn't masquerade as a successful revoke.
+    const ok = await this.authService.revokeSessionAdmin(Number(id));
+    if (!ok) return { code: BusinessCode.NOT_FOUND, message: 'session not found or already revoked' };
+    return this.ok();
+  }
+
   // ===== Live connection observability (SSE online stream, in-memory, read-only) =====
 
   @UseGuards(AdminAuthGuard)

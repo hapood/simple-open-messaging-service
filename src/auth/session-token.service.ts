@@ -234,7 +234,7 @@ export class SessionTokenService {
    *  id. Idempotent (a not-found / already-revoked / foreign row is a no-op). The persistent validation
    *  entry is dropped by the row's tokenHash, immediately preventing further cache authentication.
    *  Returns true iff a row was actually revoked (lets the caller distinguish "revoked" from "no-op"). */
-  async revokeById(userId: number, sessionId: number): Promise<boolean> {
+  async revokeById(userId: number, sessionId: number, reason: string = 'device_revoke'): Promise<boolean> {
     const rec = await this.prisma.sessionToken.findFirst({
       where: { id: sessionId, userId, revokedAt: null },
       select: { tokenHash: true },
@@ -242,7 +242,7 @@ export class SessionTokenService {
     if (!rec) return false;
     await this.prisma.sessionToken.update({
       where: { id: sessionId },
-      data: { revokedAt: new Date(), revokeReason: 'device_revoke' },
+      data: { revokedAt: new Date(), revokeReason: reason },
     });
     await this.kvStore.delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`).catch(() => {});
     return true;

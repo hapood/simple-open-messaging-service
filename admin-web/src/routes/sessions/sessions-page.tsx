@@ -2,9 +2,9 @@ import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Search } from 'lucide-react'
 import { toast } from 'sonner'
-import { useAllSessions, usePurgeSessions } from '@/hooks/use-sessions'
+import { useAllSessions, usePurgeSessions, useRevokeSession } from '@/hooks/use-sessions'
 import { useListParams } from '@/hooks/use-list-params'
-import { useIsSuperAdmin } from '@/hooks/use-me'
+import { useIsSuperAdmin, useIsAdminPlus } from '@/hooks/use-me'
 import { formatApiError } from '@/lib/format-error'
 import { Input } from '@/components/ui/input'
 import { Badge } from '@/components/ui/badge'
@@ -34,6 +34,7 @@ export function SessionsPage() {
   const { t } = useTranslation()
   const isSuper = useIsSuperAdmin()
   const [purgeOpen, setPurgeOpen] = useState(false)
+  const [confirmingId, setConfirmingId] = useState<number | null>(null)
   const { searchInput, setSearchInput, search, page, setPage, skip, take } = useListParams({
     pageSize: PAGE_SIZE,
   })
@@ -43,6 +44,8 @@ export function SessionsPage() {
     ip: search || undefined,
   })
   const purge = usePurgeSessions()
+  const revoke = useRevokeSession()
+  const isAdminPlus = useIsAdminPlus()
 
   const total = data?.total ?? 0
 
@@ -51,6 +54,16 @@ export function SessionsPage() {
       const r = await purge.mutateAsync()
       toast.success(t('sessions.purged', { count: r.purgedUsers }))
       setPurgeOpen(false)
+    } catch (e) {
+      toast.error(formatApiError(e))
+    }
+  }
+
+  const onRevoke = async (id: number) => {
+    try {
+      await revoke.mutateAsync(id)
+      toast.success(t('sessions.revoked'))
+      setConfirmingId(null)
     } catch (e) {
       toast.error(formatApiError(e))
     }
@@ -89,6 +102,7 @@ export function SessionsPage() {
               <TableHead>{t('sessions.col.created')}</TableHead>
               <TableHead>{t('sessions.col.lastActive')}</TableHead>
               <TableHead>{t('sessions.col.expires')}</TableHead>
+              {isAdminPlus && <TableHead className="w-20" />}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -96,7 +110,7 @@ export function SessionsPage() {
               loading={isLoading}
               error={error}
               empty={(data?.list.length ?? 0) === 0}
-              colSpan={8}
+              colSpan={isAdminPlus ? 9 : 8}
               emptyMessage={t('sessions.empty')}
             >
               {data?.list.map((s) => (
@@ -140,6 +154,39 @@ export function SessionsPage() {
                       </span>
                     )}
                   </TableCell>
+                  {isAdminPlus && (
+                    <TableCell>
+                      {confirmingId === s.id ? (
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => setConfirmingId(null)}
+                            disabled={revoke.isPending}
+                          >
+                            {t('common.cancel')}
+                          </Button>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            onClick={() => onRevoke(s.id)}
+                            disabled={revoke.isPending}
+                          >
+                            {t('sessions.confirmRevoke')}
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive"
+                          onClick={() => setConfirmingId(s.id)}
+                        >
+                          {t('sessions.revoke')}
+                        </Button>
+                      )}
+                    </TableCell>
+                  )}
                 </TableRow>
               ))}
             </TableBodyState>

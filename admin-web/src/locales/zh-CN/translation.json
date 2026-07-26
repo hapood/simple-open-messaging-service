@@ -242,6 +242,9 @@
     "purgeConfirm": "确认清理",
     "purged": "已清理全部活跃会话（{{count}} 个用户被强制重登）",
     "purgeFailed": "清理失败",
+    "revoke": "吊销",
+    "revoked": "已吊销该会话，该设备已被强制登出",
+    "confirmRevoke": "确认吊销",
     "col": {
       "user": "用户",
       "client": "客户端",
@@ -565,6 +568,10 @@
     "loadFailed": "加载失败",
     "empty": "无活跃会话",
     "appCount": "手机端会话：{{count}}",
+    "revoke": "吊销",
+    "revoked": "已吊销该会话，该设备已被强制登出",
+    "confirmRevoke": "确认吊销",
+    "canRevokeHint": "你可以强制登出其中任意一台设备。",
     "col": {
       "device": "device",
       "client": "客户端",

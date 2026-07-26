@@ -242,6 +242,9 @@
     "purgeConfirm": "Confirm Purge",
     "purged": "Purged all active sessions ({{count}} users forced to re-login)",
     "purgeFailed": "Purge failed",
+    "revoke": "Revoke",
+    "revoked": "Session revoked — that device was forced to sign out",
+    "confirmRevoke": "Confirm revoke",
     "col": {
       "user": "User",
       "client": "Client",
@@ -565,6 +568,10 @@
     "loadFailed": "Load failed",
     "empty": "No active sessions",
     "appCount": "App sessions: {{count}}",
+    "revoke": "Revoke",
+    "revoked": "Session revoked — that device was forced to sign out",
+    "confirmRevoke": "Confirm revoke",
+    "canRevokeHint": "You can force any of these devices to sign out.",
     "col": {
       "device": "device",
       "client": "Client",

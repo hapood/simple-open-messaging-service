@@ -319,6 +319,15 @@ describe('SessionTokenService', () => {
       expect(prisma.sessionToken.update).not.toHaveBeenCalled();
       expect(kv.delPersistent).not.toHaveBeenCalled();
     });
+
+    it('writes the supplied reason instead of the default device_revoke', async () => {
+      prisma.sessionToken.findFirst.mockResolvedValue({ tokenHash: 'abc' });
+      await svc.revokeById(7, 101, 'admin_revoke');
+      expect(prisma.sessionToken.update).toHaveBeenCalledWith({
+        where: { id: 101 },
+        data: { revokedAt: expect.any(Date), revokeReason: 'admin_revoke' },
+      });
+    });
   });
 
   describe('revokeAllForUser', () => {

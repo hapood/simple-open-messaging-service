@@ -127,7 +127,7 @@ model SessionToken {
   persistent   Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for trusted (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
   trusted      Boolean   @default(false) // true → expiresAt NULL (permanent, revocation-only); the client must store the token in OS secure storage (native app by default; desktop via OS keyring). false → sliding 14-day deadline. The native `app` client is trusted by default at issue.
   revokedAt    DateTime? // soft revoke (logout / logout-all / password change / admin disable)
-  revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable|admin_purge (observability)
+  revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable|admin_force_logout|admin_reinit_password|admin_purge|admin_revoke (observability)
 
   @@index([userId])
 }

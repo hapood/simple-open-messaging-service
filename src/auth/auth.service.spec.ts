@@ -159,3 +159,57 @@ describe('AuthService (session overview → SessionToken)', () => {
     expect(where.OR).toEqual([{ expiresAt: null }, { expiresAt: { gt: expect.any(Date) } }]);
   });
 });
+
+// revokeSessionAdmin — admin-side single-session revoke (NOT owner-gated). Resolves the row's userId,
+// revokes with 'admin_revoke', and emits auth.session-revoked so SSE kicks ONLY that device.
+describe('AuthService.revokeSessionAdmin (admin single revoke → SessionToken)', () => {
+  const findFirst = vi.fn();
+  const revokeById = vi.fn();
+  const emit = vi.fn();
+  const svc = new AuthService(
+    {} as never, // userService — unused
+    { sessionToken: { findFirst } } as unknown as PrismaService,
+    { emit } as never, // eventEmitter
+    { revokeById } as never, // sessionTokens
+    {} as never, // passwordHasher — unused
+  );
+
+  beforeEach(() => {
+    findFirst.mockReset();
+    revokeById.mockReset();
+    emit.mockReset();
+  });
+
+  it('revokes with reason admin_revoke and emits so only that device is kicked', async () => {
+    findFirst.mockResolvedValue({ userId: 7 });
+    revokeById.mockResolvedValue(true);
+    const ok = await svc.revokeSessionAdmin(101);
+    expect(ok).toBe(true);
+    expect(findFirst).toHaveBeenCalledWith({
+      where: { id: 101, revokedAt: null },
+      select: { userId: true },
+    });
+    expect(revokeById).toHaveBeenCalledWith(7, 101, 'admin_revoke');
+    expect(emit).toHaveBeenCalledWith('auth.session-revoked', {
+      userId: 7,
+      sessionId: 101,
+      reason: 'admin_revoke',
+    });
+  });
+
+  it('returns false and does NOT emit for an unknown / already-revoked id', async () => {
+    findFirst.mockResolvedValue(null);
+    const ok = await svc.revokeSessionAdmin(999);
+    expect(ok).toBe(false);
+    expect(revokeById).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('returns false and does NOT emit when the row is revoked mid-flight (revokeById no-op)', async () => {
+    findFirst.mockResolvedValue({ userId: 7 });
+    revokeById.mockResolvedValue(false);
+    const ok = await svc.revokeSessionAdmin(101);
+    expect(ok).toBe(false);
+    expect(emit).not.toHaveBeenCalled();
+  });
+});
