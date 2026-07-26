@@ -107,7 +107,7 @@ export function AuditPage() {
                     </div>
                   </TableCell>
                   <TableCell className="font-mono text-xs text-muted-foreground">
-                    {a.targetType ? `${a.targetType}:` : ''} {a.targetId ?? '—'}
+                    {a.targetType ? `${a.targetType}:` : ''} {a.targetLabel ?? a.targetId ?? '—'}
                   </TableCell>
                   <TableCell>
                     <Badge variant="outline" className="text-[10px]">

@@ -487,6 +487,7 @@ export interface AuditEntry {
   action: string
   targetType: string | null
   targetId: string | null
+  targetLabel: string | null
   ip: string | null
   userAgent: string | null
   route: string | null
