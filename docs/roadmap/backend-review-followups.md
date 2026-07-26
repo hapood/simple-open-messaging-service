@@ -55,30 +55,17 @@ not wrap the envelope. A handler that forgets `code`/`message` produces a malfor
 **Fix:** envelope-ize in an interceptor (wrap the raw return value, with a `@Raw()` escape hatch for
 SSE/file streams). `SerializeInterceptor` is the natural place.
 
-### Conversation-list pagination: `hasMore` + dead `lastId`
-`QueryValidThreadDto.lastId` (`src/dto/user.dto.ts`) is declared but never used, and the conversation list
-is the only offset-based list endpoint and the only one that returns **no `hasMore`** — inconsistent with
-the message/search keyset paths.
-**Fix:** return `hasMore` (take+1 trick) and either wire up `lastId` as a keyset cursor or delete it.
-
 ### Error vs success response shape
 `AllExceptionsFilter` (`src/common/exception.filter.ts`) emits `{ code, message, data: null }` with no
 `messageKey`/`hasMore`, while success responses may carry them. If the frontend ever keys off these fields,
 errors behave differently.
 **Fix:** document the asymmetry or align the shapes.
 
-### Invite model — GC sweep + GROUP follow-up (2026-07-09 invite redesign)
+### Invite model — GROUP follow-up (2026-07-09 invite redesign)
 Friend-add was rebuilt on a unified `Invite` table (`kind` FRIEND/GROUP); the `Friendship` and `Notify`
 tables were dropped (the friend-request unread badge stays as the inline `User.hasUrFriendReq`, now driven
-directly by `InviteService`). Two deferred items:
+directly by `InviteService`). One deferred item:
 
-- **Invite expiry GC sweep (TODO, low priority).** Today expiry is validated at accept time only; a
-  PENDING row past `expiresAt` stays PENDING (kept as history). The table stays small because duplicates
-  overwrite in place (partial unique indexes `invite_friend_pending_uq` / `invite_group_pending_uq` on
-  `(from,to)` / `(to,thread)`), so cleanup is low-priority. **TODO:** a periodic sweep
-  `UPDATE "Invite" SET status='EXPIRED' WHERE status='PENDING' AND "expiresAt" < now()` + recompute
-  `hasUrFriendReq`, as part of the larger garbage-collection feature (pattern: `FederationReconnectService`
-  hosted worker). No row is ever hard-deleted.
 - **GROUP live-flow switchover (TODO).** Group invites still use the legacy JWT-token-in-message mechanism
   (`group.controller.writeInvites` → `groupService.generateInviteToken` + `ContentType.INVITE`); the table
   is GROUP-ready (`InviteKind.GROUP` + the `(to,thread)` overwrite index). Migrate when the frontend group
