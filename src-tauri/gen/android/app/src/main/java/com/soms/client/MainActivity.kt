@@ -1044,12 +1044,12 @@ class MainActivity : TauriActivity() {
          *  createOffer → trickle ICE (CallController.initiate). `callType` ∈ {"AUDIO","VIDEO"} (Phase 2 is
          *  AUDIO-only; VIDEO wiring arrives in Phase 4 but the bridge accepts both). */
         @JavascriptInterface
-        fun initiate(calleeUserId: Int, callSid: String, callType: String, peerName: String, peerAvatar: String) {
+        fun initiate(calleeUserId: Int, callSid: String, callType: String, peerName: String, peerAvatar: String, peerAvatarDataUrl: String) {
             val a = activityRef.get() ?: return
             a.runOnUiThread {
                 a.ensureCallPermissions(callType) {
                     a.startCallService()
-                    CallController.initiate(calleeUserId, callSid, callType, peerName, peerAvatar)
+                    CallController.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl)
                 }
             }
         }

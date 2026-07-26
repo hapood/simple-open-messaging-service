@@ -14,6 +14,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { RouteService, PopupType } from '../../services/route.service';
 import { NavStateMachineService } from '../../services/nav-state.service';
 import { CallAdapterService } from '../../services/call-adapter';
+import { AvatarRepository } from '../../services/avatar-cache.service';
 import { uuid } from '../../lib/uuid';
 
 /**
@@ -55,20 +56,22 @@ export class MessageHeaderComponent {
   private readonly convList = inject(ConversationListService);
   private readonly routeService = inject(RouteService);
   private readonly callAdapter = inject(CallAdapterService);
+  private readonly avatarRepo = inject(AvatarRepository);
 
   /** Whether the call button shows: 1:1 calling is supported (Android native only — web/desktop calling is
    *  deferred) AND this is a P2P thread (groups can't be called 1:1). */
   readonly canCall = computed(() => this.callAdapter.supported && this.userMsgTrd()?.type === 'P2P');
 
-  /** Place an outgoing AUDIO call to the P2P peer. Mints a client-side callSid (the call's idempotency key +
-   *  signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which POSTs
-   *  /calls/initiate + creates the offer. */
-  placeCall(callType: 'AUDIO' | 'VIDEO'): void {
+  /** Place an outgoing AUDIO/VIDEO call to the P2P peer. Mints a client-side callSid (the call's idempotency
+   *  key + signaling address — a UUIDv4, accepted by CALL_SID_RE) and hands it to the native call layer, which
+   *  POSTs /calls/initiate + creates the offer. The peer's avatar is read from the IDB cache + passed as a
+   *  base64 data URL so the native call notification (CallStyle Person) decodes it directly — NO /uploads
+   *  fetch (the bytes are already on-device; the caller is in the peer's thread, so the avatar is cached). */
+  async placeCall(callType: 'AUDIO' | 'VIDEO'): Promise<void> {
     const peer = this.userMsgTrd()?.peerUser;
     if (peer?.id === undefined) return;
-    // Pass the peer's name + avatar so the native call notification (CallStyle Person) shows them — the
-    // caller already knows the peer from the thread; no extra fetch on the ringing path.
-    this.callAdapter.initiate(peer.id, uuid(), callType, peer.name ?? '', peer.avatar ?? '');
+    const avatarDataUrl = await this.avatarRepo.getCachedDataUrl(`u${peer.id}`);
+    this.callAdapter.initiate(peer.id, uuid(), callType, peer.name ?? '', peer.avatar ?? '', avatarDataUrl);
   }
 
   /** In-chat search visibility is a layer of the app's virtual nav stack (see NavStateMachineService):

@@ -35,6 +35,10 @@ export interface CallSnapshot {
   /** Display info from CALL_EVENT{incoming}; empty until then. */
   peerName: string;
   peerAvatar: string;
+  /** A finer WebRTC-negotiation step CODE ("offer-sent" / "answer-received" / …) from the native FSM — a
+   *  stable code the call UI localizes via the `call` i18n namespace (never display text). Shown when non-empty
+   *  (more detail than {@link phase}). */
+  step: string;
 }
 
 /** The no-call snapshot (the callState seed). */
@@ -51,6 +55,7 @@ export const IDLE_CALL: CallSnapshot = {
   swapped: false,
   peerName: '',
   peerAvatar: '',
+  step: '',
 };
 
 /**
@@ -65,10 +70,11 @@ export const IDLE_CALL: CallSnapshot = {
  */
 export abstract class CallAdapter {
   /** Caller begins a call (POST /calls/initiate + createOffer happen natively). `callType` ∈ AUDIO|VIDEO.
-   *  `peerName` + `peerAvatar` are the callee's display info — carried so the native call notification
-   *  (CallStyle Person) can show them with no extra fetch (the caller already knows the peer from the
-   *  thread). The avatar is a /uploads path the native fetches with the Bearer (like the message icon). */
-  abstract initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string): void;
+   *  `peerName` + `peerAvatar` (a /uploads path) are the callee's display info for the call UI.
+   *  `peerAvatarDataUrl` is the callee's avatar as a base64 data URL (read from the IDB cache by the caller)
+   *  so the native call notification (CallStyle Person) decodes it directly — NO /uploads fetch (the bytes
+   *  are on-device). Empty when uncached → the notification is name-only. */
+  abstract initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string): void;
   /** Callee accepts the incoming ring (POST /calls/accept + createAnswer natively). */
   abstract accept(callSid: string): void;
   abstract decline(callSid: string): void;
@@ -94,8 +100,8 @@ export abstract class CallAdapter {
 /** Android: delegates to the Kotlin `window.SomsCall` bridge. Per the native-bridge rule, runs only on
  *  Android so `window.SomsCall` is guaranteed present — call with `!`. */
 class AndroidCallAdapter extends CallAdapter {
-  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string): void {
-    window.SomsCall!.initiate(calleeUserId, callSid, callType, peerName, peerAvatar);
+  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string): void {
+    window.SomsCall!.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl);
   }
   accept(callSid: string): void {
     window.SomsCall!.accept(callSid);
@@ -170,8 +176,8 @@ export class CallAdapterService {
   /** Whether 1:1 calling is supported on this platform (Android native only, for now). */
   readonly supported = isAndroidNative();
 
-  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string): void {
-    this.adapter.initiate(calleeUserId, callSid, callType, peerName, peerAvatar);
+  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string): void {
+    this.adapter.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl);
   }
   accept(callSid: string): void {
     this.adapter.accept(callSid);

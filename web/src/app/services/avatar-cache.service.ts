@@ -53,6 +53,23 @@ export class AvatarRepository {
   }
 
   /**
+   * The cached avatar as a base64 data URL — IDB hit ONLY (never fetches on a miss). For handing the avatar
+   * bytes to the native layer (the outgoing-call notification) without a redundant /uploads request: the
+   * caller is already in the peer's thread, so the peer's avatar is cached here, and the native notification
+   * decodes these bytes directly instead of re-fetching. Returns '' on a miss / IDB error (the notification
+   * falls back to name-only — never blocks the call).
+   */
+  async getCachedDataUrl(identity: string): Promise<string> {
+    try {
+      const rec = await this.webdb.getAvatar(identity);
+      if (rec?.blob) return await blobToDataUrl(rec.blob);
+    } catch {
+      return ''; // IDB unavailable (prerender / no user) → graceful miss
+    }
+    return '';
+  }
+
+  /**
    * Re-fetch the avatar for `identity` from `path` and overwrite the cached blob. Called by the profile
    * layer (Phase 2) when it detects the identity's avatar path changed — the signal-driven freshness
    * path (NOT URL versioning).
@@ -81,4 +98,15 @@ export class AvatarRepository {
       return undefined;
     }
   }
+}
+
+/** Convert a Blob to a base64 data URL (FileReader.readAsDataURL). The JS bridge to native passes primitives,
+ *  not Blobs, so avatar bytes cross as a data URL string. Resolves '' on a read error (never rejects). */
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result as string);
+    r.onerror = () => resolve('');
+    r.readAsDataURL(blob);
+  });
 }

@@ -394,6 +394,7 @@ class RealtimeService : Service() {
             // while the WebView is suspended). SomsFcm.replayHello hands a re-attached WebView this merged
             // HELLO — a retained open stream does not re-push HELLO on its own.
             cacheHelloFrame(type, data)
+            if (type == "HELLO") reconcileActiveCall(data)
             // THE diagnostic line: `appInFg` here is the ground-truth branch selector. If a backgrounded
             // device shows appInFg=true, the foreground branch runs on a suspended WebView (frame vanishes,
             // no notification) — that's the bug. If appInFg=false + branch=background but no notification
@@ -500,6 +501,39 @@ class RealtimeService : Service() {
     private fun cacheHelloFrame(type: String?, data: String) {
         val t = type ?: return
         synchronized(helloLock) { cachedHello = HelloMerger.merge(cachedHello, t, data) }
+    }
+
+    /** HELLO activeCall recovery: a reconnecting / freshly-booted callee that MISSED the CALL_EVENT{incoming}
+     *  (the SSE was down when it fired) re-derives the incoming state from the HELLO's activeCall summary. If
+     *  the call is still ringing + this is the callee + the native FSM is idle, re-seed incoming (ring + notify
+     *  + arm accept) — otherwise the user could never answer a call that arrived while offline / reconnecting,
+     *  and the caller would stall on connecting with no answer. The caller (isCaller) + post-ringing states
+     *  (accepted/connected) are skipped: the caller initiates, and an already-accepted call belongs to another
+     *  device. */
+    private fun reconcileActiveCall(helloData: String) {
+        try {
+            val active = JSONObject(helloData).optJSONObject("activeCall") ?: return
+            val sid = active.optString("callSid", "")
+            val state = active.optString("state", "")
+            val peerId = active.optInt("peerUserId", 0)
+            val isCaller = active.optBoolean("isCaller", false)
+            val callType = active.optString("callType", "AUDIO")
+            if (sid.isEmpty() || peerId == 0) return
+            if (state == "ringing" && !isCaller && CallController.phase == "idle") {
+                SomsLog.i("Rt") { "HELLO activeCall: re-seeding incoming (missed CALL_EVENT) sid=$sid peer=$peerId" }
+                // name/avatar/threadId are absent from the summary → name-only notification; seedIncoming is
+                // idempotent + rings (the user missed the original ring).
+                CallController.seedIncoming(sid, peerId, "", "", 0, callType)
+                // The recovery missed the original incoming (SSE was down) → if backgrounded, ALSO post the
+                // call notification (seedIncoming rings but doesn't notify). startIncoming's seedIncoming is a
+                // no-op now (already seeded); its startIncomingForeground posts the notification.
+                if (!SomsMessagingService.appInForeground) {
+                    CallService.startIncoming(this, sid, peerId, "", "", 0, callType)
+                }
+            }
+        } catch (e: Exception) {
+            SomsLog.w("Rt") { "reconcileActiveCall failed: ${e.message}" }
+        }
     }
 
     /** Push the native connection state to the WebView so the ConnectionBanner reflects Kotlin-owned

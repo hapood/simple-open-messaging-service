@@ -1,7 +1,8 @@
 import { afterNextRender, Component, computed, effect, ElementRef, inject, OnDestroy, signal, viewChild } from '@angular/core';
+import { TranslocoService } from '@jsverse/transloco';
 import { CallEventService } from '../../services/call-event.service';
 import { CallAdapterService } from '../../services/call-adapter';
-import { assetUrl } from '../../services/runtime';
+import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
@@ -25,8 +26,9 @@ import { assetUrl } from '../../services/runtime';
  * Terminal phases are folded to 'idle' by CallEventService, so the overlay dismisses on hang-up / decline /
  * peer-end; the terminal CALL bubble in the thread is the user-visible record.
  *
- * Rendered at z-index 1200 (above the lightbox tier at 1100 — a call is the topmost surface). Hardcoded
- * English labels for Phase 3; bilingual i18n keys are a follow-up (per the UI-text convention).
+ * Rendered at z-index 1200 (above the lightbox tier at 1100 — a call is the topmost surface). The status label
+ * is bilingual via the `call` i18n namespace; the remaining template labels (buttons) are still English pending
+ * a fuller i18n pass (per the UI-text convention).
  */
 @Component({
   selector: 'app-call-screen',
@@ -69,13 +71,14 @@ import { assetUrl } from '../../services/runtime';
         </div>
 
         @if (!isVideo()) {
-          <!-- AUDIO: centered avatar. VIDEO: the avatar would sit behind the remote video, so hide it. -->
+          <!-- AUDIO: centered peer avatar. VIDEO: hidden (the avatar would sit behind the full-bleed remote
+               video). UserAvatarComponent reads the IDB cache (no /uploads fetch on every mount); its
+               initial-letter fallback covers a no-avatar / cache-miss peer. -->
           <div class="peer">
-            @if (avatarSrc()) {
-              <img class="avatar" [src]="avatarSrc()" alt="" />
-            } @else {
-              <div class="avatar avatar-fallback">{{ initial() }}</div>
-            }
+            <div class="avatar">
+              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="snap().peerName || '?'"
+                [identityId]="snap().peerUserId" [src]="snap().peerAvatar"></app-user-avatar>
+            </div>
           </div>
         }
 
@@ -105,6 +108,7 @@ import { assetUrl } from '../../services/runtime';
       </div>
     }
   `,
+  imports: [UserAvatarComponent],
   styles: [
     `
       .call-screen {
@@ -184,16 +188,6 @@ import { assetUrl } from '../../services/runtime';
       .avatar {
         width: 96px;
         height: 96px;
-        border-radius: 48px;
-        object-fit: cover;
-        background: #333;
-      }
-      .avatar-fallback {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 40px;
-        line-height: 96px;
       }
       .name {
         font-size: 22px;
@@ -267,6 +261,7 @@ import { assetUrl } from '../../services/runtime';
 export class CallScreenComponent implements OnDestroy {
   readonly events = inject(CallEventService);
   private readonly adapter = inject(CallAdapterService);
+  private readonly transloco = inject(TranslocoService);
 
   readonly snap = computed(() => this.events.callState());
 
@@ -402,24 +397,26 @@ export class CallScreenComponent implements OnDestroy {
   }
 
   readonly isVideo = computed(() => this.snap().callType === 'VIDEO');
-  readonly avatarSrc = computed(() => {
-    const a = this.snap().peerAvatar;
-    return a ? assetUrl(a) : '';
-  });
-  readonly initial = computed(() => this.snap().peerName.charAt(0).toUpperCase() || '?');
+  /** Exposed for the template (the avatar component's [type] input). */
+  readonly UserAvatarType = UserAvatarType;
 
   readonly statusLabel = computed(() => {
+    // Prefer the finer WebRTC step ("offer-sent"/"answer-received"/…) when the native FSM has set one; fall
+    // back to the coarse phase label. Both are stable codes localized via the `call` i18n namespace (the native
+    // FSM sends codes, never display text — per the UI-text bilingual convention).
+    const step = this.snap().step;
+    if (step) return this.transloco.translate(`call.${step}`);
     switch (this.snap().phase) {
       case 'incoming':
-        return 'Incoming call';
+        return this.transloco.translate('call.incoming');
       case 'calling':
-        return 'Calling…';
+        return this.transloco.translate('call.calling');
       case 'ringing':
-        return 'Ringing…';
+        return this.transloco.translate('call.ringing');
       case 'connecting':
-        return 'Connecting…';
+        return this.transloco.translate('call.connecting');
       case 'reconnecting':
-        return 'Reconnecting…';
+        return this.transloco.translate('call.reconnecting');
       default:
         return '';
     }
@@ -459,8 +456,17 @@ export class CallScreenComponent implements OnDestroy {
     if (sid) this.adapter.decline(sid);
   }
   hangUp(): void {
-    const sid = this.snap().callSid;
-    if (sid) this.adapter.end(sid, 'completed');
+    const s = this.snap();
+    const sid = s.callSid;
+    if (!sid) return;
+    // Pre-accept (the caller is still 'calling'/'ringing'): the server's /calls/end REJECTS a ringing call
+    // (CALL_NOT_FOUND), which would leave it live server-side → busy lockout + the peer's incoming UI never
+    // dismissed. /calls/cancel is the ringing-state terminal (releases both parties). Post-accept → end.
+    if (s.phase === 'calling' || s.phase === 'ringing') {
+      this.adapter.cancel(sid);
+    } else {
+      this.adapter.end(sid, 'completed');
+    }
   }
   toggleMute(): void {
     this.adapter.setMuted(!this.snap().muted);

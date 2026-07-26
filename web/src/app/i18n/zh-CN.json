@@ -1,4 +1,15 @@
 {
+  "call": {
+    "incoming": "来电",
+    "calling": "正在呼叫…",
+    "ringing": "响铃中…",
+    "connecting": "正在接通…",
+    "reconnecting": "正在重新连接…",
+    "offer-sent": "邀请已发送",
+    "offer-received": "收到邀请",
+    "answer-sent": "应答已发送",
+    "answer-received": "收到应答"
+  },
   "common": {
     "appName": "SOMS",
     "logoAria": "SOMS 标志",

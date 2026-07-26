@@ -22,6 +22,13 @@ object CallFsm {
      *  would race the caller's restart). Almost never fires: the caller's restart reconnects the callee, or the
      *  caller's eventual fail ends the call via CALL_EVENT{ended} first. */
     const val CALLEE_BACKSTOP_MS = 30_000L
+    /** Caller: how long to wait for the SSE-relayed WebRTC answer before pulling the staged copy from the server
+     *  (the caller-side twin of the callee's accept-time fetch). The SSE relay is near-instant on a healthy link,
+     *  so this fires only when the SSE path dropped the answer — a mid-call SSE reconnect during `connecting`. A
+     *  short fallback: long enough that a healthy relay (sub-second) never trips it, short enough that a
+     *  dropped-answer call still recovers well before the server's ~45s ringing/answer timeout fails it. */
+    const val ANSWER_FETCH_DELAY_MS = 3_000L
+
     /** The reconnect backstop's initial delay for this side. The caller restarts fast; the callee waits out the
      *  caller's full restart window. */
     fun reconnectBackstopDelayMs(isCaller: Boolean): Long =

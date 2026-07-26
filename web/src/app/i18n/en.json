@@ -1,4 +1,15 @@
 {
+  "call": {
+    "incoming": "Incoming call",
+    "calling": "Calling…",
+    "ringing": "Ringing…",
+    "connecting": "Connecting…",
+    "reconnecting": "Reconnecting…",
+    "offer-sent": "Offer sent",
+    "offer-received": "Offer received",
+    "answer-sent": "Answer sent",
+    "answer-received": "Answer received"
+  },
   "common": {
     "appName": "SOMS",
     "logoAria": "SOMS logo",

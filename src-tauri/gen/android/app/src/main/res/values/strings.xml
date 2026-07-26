@@ -3,6 +3,9 @@
     <string name="main_activity_title">"SOMS"</string>
     <!-- Foreground-service persistent notification (FGS-required, IMPORTANCE_LOW). -->
     <string name="notif_fgs_running">"Running in background"</string>
+    <!-- Call notification channels (immutable once created → the install-time locale's name sticks). -->
+    <string name="call_channel_incoming">"Incoming call"</string>
+    <string name="call_channel_ongoing">"Active call"</string>
     <!-- Per-thread ("thread" grouping) notification bundle summary — the collapsed header counting how many
          conversations have new messages. Android picks the plural by count + device locale. -->
     <plurals name="notif_group_summary">

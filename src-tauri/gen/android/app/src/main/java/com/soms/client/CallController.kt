@@ -95,6 +95,11 @@ object CallController {
      *  failed) — drives the reconnecting/failed UX. */
     @Volatile var mediaState: String = "new"
         private set
+    /** A finer-grained WebRTC-negotiation step CODE for the call UI ("offer-sent" / "answer-received" / …) —
+     *  more detailed than [phase]. A stable code the web localizes (call-screen.statusLabel via transloco), NOT
+     *  a display string. Empty when [phase] alone suffices (idle / incoming / connected / ended). */
+    @Volatile var step: String = ""
+        private set
     @Volatile var startedAt: Long = 0L
         private set
     @Volatile var muted: Boolean = false
@@ -103,8 +108,8 @@ object CallController {
     private val appContext: Context?
         get() = SomsApplication.appContext
 
-    /** The incoming-call ring (ringtone/vibrate/wake) — extracted mechanics; the FSM owns the transitions
-     *  ([CallRinger] uses a looping MediaPlayer). */
+    /** The incoming-call ring (vibrate/wake + MODE_RINGTONE for the channel sound) — extracted mechanics; the
+     *  FSM owns the transitions ([CallRinger] is vibration-only — the audible ring is the channel sound). */
     private val ringer = CallRinger { appContext }
     /** The video half — EGL/capture/tracks/the sibling-surface overlays/swap. Extracted from the FSM
      *  ([VideoSurfaceManager]). */
@@ -135,10 +140,24 @@ object CallController {
     /** True once the caller has tried an ICE restart for this call, so the reconnect backstop's second firing
      *  fails instead of restarting again (one restart attempt, then give up). Reset in [teardown]/[initiate]. */
     @Volatile private var iceRestartTried = false
+    /** True once the caller has applied the callee's SDP answer — the idempotency guard so the SSE relay + the
+     *  server-fetch fallback ([fetchAndApplyStaged]) delivering the SAME answer can't double-apply (a 2nd
+     *  setRemoteDescription(answer) on a stable PC errors). Set synchronously in [applySignal] before the async
+     *  setRemoteDescription, so the fetch path can't race a 2nd apply onto a pending 1st. Re-armed whenever a
+     *  fresh answer is expected: [initiate], [teardown], and [offerSdpObserver] (an ICE-restart offer expects a
+     *  new answer, so the guard must reset or the restart answer would be skipped as a "duplicate"). */
+    @Volatile private var answerApplied = false
     /** Posted on [mainHandler] when the PC goes DISCONNECTED; hops to [callExecutor]. Cancelled on CONNECTED +
      *  [teardown]. Bounds "Reconnecting…": after the grace the caller restarts ICE once (re-arming a shorter
      *  backstop), then the call fails. */
     private val reconnectBackstop = Runnable { onReconnectBackstop() }
+
+    /** Posted on [mainHandler] when the caller's `connecting` phase has not received the SSE-relayed answer
+     *  within [CallFsm.ANSWER_FETCH_DELAY_MS]; hops to [callExecutor]. Cancelled on answer-apply ([applySignal]
+     *  "answer") / CONNECTED / [teardown]. The caller-side twin of the callee's accept-time fetch — the answer
+     *  reaches the caller only via the SSE relay, so a mid-call reconnect during `connecting` needs a fetch
+     *  fallback or the call hangs until the reconnect backstop fails it. */
+    private val answerFetchBackstop = Runnable { onAnswerFetchBackstop() }
 
     private fun onReconnectBackstop() {
         callExecutor.execute {
@@ -160,9 +179,10 @@ object CallController {
         }
     }
 
-    // The killed-callee lost-offer case is now handled server-side: the server stages the offer + ICE
-    // (CallsService signaling store) + the callee FETCHES it on accept (fetchSignaling). No client-side
-    // re-offer backstop / acceptedTimer is needed.
+    // The lost-setup-signaling case is handled server-side: the server stages the offer/answer + ICE
+    // (CallsService signaling store) + each side FETCHES its half when the SSE relay dropped it — the callee on
+    // accept (no buffered offer → [fetchAndApplyStaged]), the caller via [onAnswerFetchBackstop] (no SSE answer
+    // within the connecting window). No client-side re-offer backstop is needed.
 
     /** Serial executor for every PC op + REST call (see class doc). Named for logcat. */
     private val callExecutor = Executors.newSingleThreadExecutor { r -> Thread(r, "SomsCall") }
@@ -313,6 +333,7 @@ object CallController {
             // `remoteRenderer ?: return` early-drop that previously lost the track on the race). Remote AUDIO
             // is auto-routed by the AudioDeviceModule — no sink needed.
             val track = receiver?.track()
+            SomsLog.i(TAG) { "onAddTrack: ${track?.javaClass?.simpleName} enabled=${track?.enabled()}" }
             if (track is VideoTrack) {
                 video.onRemoteTrack(track)
             }
@@ -327,6 +348,7 @@ object CallController {
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> {
                     cancelReconnectBackstop()
+                    cancelAnswerFetchBackstop()
                     if (phase != "connected") {
                         phase = "connected"
                         startedAt = System.currentTimeMillis()
@@ -363,6 +385,9 @@ object CallController {
     fun onFrame(type: String, data: String) {
         callExecutor.execute {
             try {
+                val kind = if (type == "CALL_SIGNAL") JSONObject(data).optString("kind", "")
+                    else JSONObject(data).optString("type", "")
+                SomsLog.d(TAG) { "onFrame $type kind=$kind" }
                 when (type) {
                     "CALL_SIGNAL" -> handleSignalFrame(JSONObject(data))
                     "CALL_EVENT" -> handleEventFrame(JSONObject(data))
@@ -381,7 +406,7 @@ object CallController {
         val payload = obj.optString("payload")
         if (pc == null) {
             when (kind) {
-                "offer" -> { pendingOffer = payload; SomsLog.i(TAG) { "buffered offer (pc not created yet — pre-accept)" } }
+                "offer" -> { pendingOffer = payload; SomsLog.i(TAG) { "buffered offer (pc not created yet — pre-accept)" }; setStep("offer-received") }
                 "ice" -> { pendingIce.add(payload); SomsLog.i(TAG) { "buffered ICE (${pendingIce.size}) pre-accept" } }
             }
             return
@@ -399,9 +424,16 @@ object CallController {
                 connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
             }
             "answer" -> {
+                // Idempotent: the SSE relay + the server-fetch fallback can both deliver the answer — apply it
+                // once. [answerApplied] is set synchronously BEFORE the async setRemoteDescription completes, so
+                // the fetch path can't race a 2nd apply onto a pending 1st (which would error on a stable PC).
+                cancelAnswerFetchBackstop() // the answer arrived — the fetch fallback is no longer needed
+                if (answerApplied) { SomsLog.d(TAG) { "answer already applied — skip duplicate" }; return }
+                answerApplied = true
                 SomsLog.i(TAG) { "applying remote answer → setRemoteDescription" }
                 setRemote(connection, Type.ANSWER, payload)
                 if (phase == "calling" || phase == "ringing") {
+                    step = "answer-received"
                     phase = "connecting"
                     pushSnapshot()
                 }
@@ -426,17 +458,20 @@ object CallController {
         }
     }
 
-    /** Fetch the staged offer + ICE from `/calls/:sid/signaling` + apply them (the offline-callee path: the
-     *  offer was staged server-side because the callee had no live SSE when it trickled). Reuses [applySignal]
-     *  for the setRemoteDescription+createAnswer + addIceCandidate paths. A no-op if the fetch fails (the call
-     *  then times out / fails via the connection state — same as any signaling loss). */
-    private fun fetchAndApplySignaling(connection: PeerConnection, sid: String) {
+    /** Fetch this side's staged setup signaling from `/calls/:sid/signaling` + apply it — symmetric for both
+     *  sides. The callee pulls the offer (+ caller ICE) when its SSE missed the offer (the offline-callee path);
+     *  the caller pulls the answer (+ callee ICE) when its SSE missed the answer ([onAnswerFetchBackstop]). The
+     *  server returns each party the half it needs (CallsService.signaling). Reuses [applySignal] for the
+     *  setRemoteDescription+createAnswer / addIceCandidate paths. A no-op if the fetch fails / the half is empty
+     *  (the call then times out / fails via the connection state — same as any signaling loss). */
+    private fun fetchAndApplyStaged(connection: PeerConnection, sid: String) {
         val staged = fetchSignaling(sid) ?: return
-        val offer = staged.optString("offer", "")
-        if (offer.isEmpty()) return
+        val half = if (isCaller) "answer" else "offer"
+        val sdp = staged.optString(half, "")
+        if (sdp.isEmpty()) return
         val iceCount = staged.optJSONArray("ice")?.length() ?: 0
-        SomsLog.i(TAG) { "no buffered offer -> applied staged offer from server (+$iceCount ICE)" }
-        applySignal(connection, "offer", offer)
+        SomsLog.i(TAG) { "applied staged $half from server (+$iceCount ICE)" }
+        applySignal(connection, half, sdp)
         val ice = staged.optJSONArray("ice")
         if (ice != null) for (i in 0 until ice.length()) applySignal(connection, "ice", ice.getString(i))
     }
@@ -445,7 +480,7 @@ object CallController {
      *  store-and-forward copy). Returns null on any failure (auth/network/parse). */
     private fun fetchSignaling(callSid: String): JSONObject? {
         val origin = activeOrigin() ?: return null
-        return get("$origin${SomsSecureStore.API_PREFIX}/calls/$callSid/signaling")
+        return get("$origin${SomsSecureStore.API_PREFIX}/calls/$callSid/signaling").data
     }
 
     /** Apply one lifecycle event to the FSM + drive the JS UI via [pushSnapshot]. The incoming/accepted/
@@ -457,41 +492,50 @@ object CallController {
         if (sid.isNotEmpty() && callSid != null && sid != callSid) return // not our call (stray frame)
         when (type) {
             "incoming" -> {
-                // We are the CALLEE. Seed the incoming context (the PC is created on accept).
-                callSid = sid
-                threadId = obj.optInt("threadId")
-                peerUserId = obj.optInt("callerUserId")
-                peerName = obj.optString("callerName", "")
-                peerAvatar = obj.optString("callerAvatar", "")
-                callType = obj.optString("callType", "AUDIO")
-                isCaller = false
-                phase = "incoming"
-                startedAt = 0L
-                pushSnapshot()
-                // Ack that this device is alerting the user → the caller's UI shows "Ringing…" (Phase 1).
-                callExecutor.execute { postRinging(sid) }
+                // We are the CALLEE. Seed the incoming snapshot (shared with the FCM/HELLO paths via
+                // seedIncomingState — the PC is created on accept).
+                seedIncomingState(sid, obj.optInt("callerUserId"), obj.optString("callerName", ""),
+                    obj.optString("callerAvatar", ""), obj.optInt("threadId"), obj.optString("callType", "AUDIO"))
+                // Ring + post the call notification when backgrounded. The SSE FGS (RealtimeService) is alive
+                // whenever the process lives, so CALL_EVENT{incoming} is the RELIABLE ring trigger (the FCM
+                // push is the killed-process fallback). Idempotent with the FCM/HELLO paths (a re-seed is a
+                // no-op on the same values; ringer.startRing + the notification are idempotent).
+                if (!SomsMessagingService.appInForeground) {
+                    ringer.startRing()
+                    appContext?.let {
+                        CallService.startIncoming(it, sid, peerUserId, peerName, peerAvatar, threadId, callType)
+                    }
+                }
             }
             "ringing" -> {
                 val np = CallFsm.nextPhase(phase, isCaller, "ringing")
-                if (np != null) { phase = np; pushSnapshot() }
+                if (np != null) { phase = np; step = ""; pushSnapshot() }
             }
             "accepted" -> {
                 val np = CallFsm.nextPhase(phase, isCaller, "accepted")
                 if (np != null) {
                     phase = np
                     pushSnapshot()
+                    // Caller: the WebRTC answer reaches us ONLY via the SSE CALL_SIGNAL relay (the callee has a
+                    // fetch fallback on accept; the caller had none). A mid-call SSE reconnect during `connecting`
+                    // can drop the relayed answer → the call hangs until the reconnect backstop fails it. Arm a
+                    // short fetch fallback that pulls the staged answer + the callee's ICE if the SSE answer
+                    // doesn't arrive in [CallFsm.ANSWER_FETCH_DELAY_MS] ([onAnswerFetchBackstop]).
+                    if (isCaller) armAnswerFetchBackstop()
                 }
             }
             "connected" -> {
                 if (CallFsm.nextPhase(phase, isCaller, "connected") != null) {
                     phase = "connected"
                     startedAt = obj.optLong("startedAt", System.currentTimeMillis())
+                    step = ""
                     pushSnapshot()
                 }
             }
             "declined", "cancelled", "missed", "ended" -> {
                 if (CallFsm.nextPhase(phase, isCaller, type) == "ended") {
                     phase = "ended"
+                    step = ""
                     pushSnapshot()
                     teardown()
                 }
@@ -504,7 +548,10 @@ object CallController {
     private fun offerAnswerConstraints(): MediaConstraints =
         MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", "false"))
+            // OfferToReceiveVideo: true for a VIDEO call (sendrecv — we WANT the peer's camera), false for
+            // AUDIO. Was hardcoded false (an AUDIO-only-phase leftover) → the offer was video-sendonly → the
+            // callee answered recvonly → the caller never received the peer's video (one-way video).
+            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", if (callType == "VIDEO") "true" else "false"))
         }
 
     /** setRemoteDescription wrapper that logs failure (a bad SDP usually means a signaling race; the call
@@ -523,9 +570,13 @@ object CallController {
             val connection = pc ?: return
             val sid = callSid ?: return
             if (sdp == null) return
+            // A fresh answer is expected after every offer we create (the initial offer AND an ICE-restart offer),
+            // so re-arm the answer-idempotency guard — otherwise the restart answer would be skipped as a "duplicate".
+            answerApplied = false
             SomsLog.i(TAG) { "offer created → setLocalDescription + relay" }
             connection.setLocalDescription(EmptySdpObserver, sdp)
             postSignal(sid, peerUserId, "offer", sdp.description)
+            setStep("offer-sent")
         }
         override fun onSetSuccess() {}
         override fun onCreateFailure(error: String?) { SomsLog.w(TAG) { "createOffer failed: $error" } }
@@ -540,6 +591,7 @@ object CallController {
             SomsLog.i(TAG) { "answer created → setLocalDescription + relay" }
             connection.setLocalDescription(EmptySdpObserver, sdp)
             postSignal(sid, peerUserId, "answer", sdp.description)
+            setStep("answer-sent")
         }
         override fun onSetSuccess() {}
         override fun onCreateFailure(error: String?) { SomsLog.w(TAG) { "createAnswer failed: $error" } }
@@ -558,15 +610,16 @@ object CallController {
     /** Caller starts a call. POST /calls/initiate → create the PC + offer + trickle ICE. The [CallService]
      *  FGS must already be running (started by the bridge before this) so the process is anchored + audio
      *  routing is in comms mode. */
-    fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String) {
+    fun initiate(calleeUserId: Int, sid: String, type: String, name: String, avatar: String, avatarDataUrl: String) {
         callExecutor.execute {
             try {
+                SomsLog.i(TAG) { "initiate calleeUserId=$calleeUserId sid=$sid type=$type" }
                 val origin = activeOrigin() ?: run { SomsLog.w(TAG) { "initiate: no origin" }; return@execute }
-                val res = post("$origin${SomsSecureStore.API_PREFIX}/calls/initiate",
+                val r = post("$origin${SomsSecureStore.API_PREFIX}/calls/initiate",
                     JSONObject().put("callSid", sid).put("calleeUserId", calleeUserId).put("callType", type))
-                if (res == null) return@execute
+                if (!r.ok) { SomsLog.w(TAG) { "initiate: POST /calls/initiate failed" }; return@execute }
                 callSid = sid
-                threadId = res.optInt("threadId")
+                threadId = r.data?.optInt("threadId") ?: 0
                 peerUserId = calleeUserId
                 callType = type
                 isCaller = true
@@ -581,10 +634,14 @@ object CallController {
                 phase = "calling"
                 startedAt = 0L
                 iceRestartTried = false
+                answerApplied = false
                 peerName = name
                 peerAvatar = avatar
-                CallService.instance?.loadAvatar(avatar) // initiate owns peerAvatar now — trigger the fetch here
+                // Prefer the IDB-cached bytes (data URL); fall back to the /uploads path on an IDB miss (fetch),
+                // so an uncached peer still gets an avatar instead of the app-logo fallback.
+                CallService.instance?.loadAvatar(if (avatarDataUrl.isNotEmpty()) avatarDataUrl else avatar, peerName, peerUserId)
                 pushSnapshot()
+                SomsLog.i(TAG) { "initiate: POST ok + state set → createPeerConnection + createOffer" }
                 val connection = createPeerConnection()
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())
             } catch (e: Exception) {
@@ -602,12 +659,13 @@ object CallController {
         ringer.stopRing()
         callExecutor.execute {
             try {
+                SomsLog.i(TAG) { "accept sid=$sid phase=$phase hasPc=${pc != null} hadOffer=${pendingOffer != null}" }
                 val origin = activeOrigin() ?: return@execute
                 // The server is authoritative: if the call is no longer ringing (another device already
                 // answered, or it ended), POST /calls/accept returns a non-zero code (CALL_NOT_FOUND) → `post`
                 // returns null. This is the "late" device — dismiss + tear down; don't build a PC for a call
                 // already answered elsewhere.
-                val accepted = post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid)) != null
+                val accepted = post("$origin${SomsSecureStore.API_PREFIX}/calls/accept", JSONObject().put("callSid", sid)).ok
                 if (!accepted) {
                     SomsLog.i(TAG) { "accept rejected by server (answered/ended on another device) -> dismiss" }
                     phase = "ended"; pushSnapshot(); teardown(); return@execute
@@ -619,7 +677,7 @@ object CallController {
                 if (!hadOffer) {
                     // The SSE never delivered the offer — the callee was offline when it trickled. Pull the
                     // authoritative staged copy from the server (CallsService signaling store) + apply it.
-                    fetchAndApplySignaling(connection, sid)
+                    fetchAndApplyStaged(connection, sid)
                 }
                 phase = "connecting"
                 pushSnapshot()
@@ -684,6 +742,7 @@ object CallController {
         .put("callType", callType)
         .put("isCaller", isCaller)
         .put("mediaState", mediaState)
+        .put("step", step)
         .put("startedAt", startedAt)
         .put("muted", muted)
         .put("swapped", video.swapped)
@@ -704,6 +763,29 @@ object CallController {
 
     private fun cancelReconnectBackstop() {
         mainHandler.removeCallbacks(reconnectBackstop)
+    }
+
+    private fun armAnswerFetchBackstop() {
+        cancelAnswerFetchBackstop()
+        mainHandler.postDelayed(answerFetchBackstop, CallFsm.ANSWER_FETCH_DELAY_MS)
+    }
+
+    private fun cancelAnswerFetchBackstop() {
+        mainHandler.removeCallbacks(answerFetchBackstop)
+    }
+
+    /** Caller fetch-fallback: the SSE-relayed answer did not arrive within [CallFsm.ANSWER_FETCH_DELAY_MS] (a
+     *  mid-call reconnect during `connecting` dropped it) → pull the staged answer + the callee's ICE from the
+     *  server + apply them via [fetchAndApplyStaged]. A no-op if the answer has since arrived ([answerApplied])
+     *  or the call has moved off `connecting` (connected/ended). */
+    private fun onAnswerFetchBackstop() {
+        callExecutor.execute {
+            if (phase != "connecting" || answerApplied) return@execute
+            val sid = callSid ?: return@execute
+            val connection = pc ?: return@execute
+            SomsLog.i(TAG) { "no SSE answer in ${CallFsm.ANSWER_FETCH_DELAY_MS}ms → fetch staged answer + callee ICE" }
+            fetchAndApplyStaged(connection, sid)
+        }
     }
 
     /** End the active call as failed/ended: cancel any pending reconnect, flip the phase, POST /calls/end, and
@@ -733,11 +815,12 @@ object CallController {
      *  the ring. Idempotent: a no-op if this call is already incoming (the SSE path got there first); ignored
      *  if a different call is active (busy). Runs on the caller thread; the ring + the ringing POST are
      *  side-effect-safe there (POST hops to [callExecutor]). */
-    fun seedIncoming(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
-        if (phase != "idle") {
-            if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
-            return                      // a different call is live (busy) — ignore the stray push
-        }
+    /** Seed the callee-side incoming snapshot — the shared body of the THREE incoming trigger paths: the SSE
+     *  CALL_EVENT{incoming} ([handleEventFrame]), the CALL_INCOMING FCM push ([seedIncoming]), + the HELLO
+     *  activeCall recovery ([RealtimeService.reconcileActiveCall]). Flips the FSM to 'incoming' + acks
+     *  alerting (POST /calls/ringing). Does NOT ring nor post the call notification — the foreground SSE path
+     *  skips the ring (the user is in-app); the background paths add it after this, so each owns its choice. */
+    private fun seedIncomingState(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
         callSid = sid
         threadId = tid
         peerUserId = callerUserId
@@ -747,9 +830,22 @@ object CallController {
         isCaller = false
         phase = "incoming"
         startedAt = 0L
+        step = ""
         iceRestartTried = false
         pushSnapshot()
         callExecutor.execute { postRinging(sid) } // ack alerting → the caller's UI shows "Ringing…"
+    }
+
+    /** Seed the incoming call from the CALL_INCOMING FCM push / HELLO activeCall recovery (the killed /
+     *  backgrounded paths with no live SSE): guard (idempotent — a no-op if this call is already incoming;
+     *  ignored if a different call is live), then [seedIncomingState] + start the ring. */
+    fun seedIncoming(sid: String, callerUserId: Int, name: String, avatar: String, tid: Int, type: String) {
+        if (phase != "idle") {
+            if (callSid == sid) return // already ringing this call (SSE beat the push) — no-op
+            return                      // a different call is live (busy) — ignore the stray push
+        }
+        seedIncomingState(sid, callerUserId, name, avatar, tid, type)
+        // The audible ringtone is the CHANNEL_INCOMING sound; CallRinger adds the looping vibration + wake lock.
         ringer.startRing()
     }
 
@@ -778,10 +874,12 @@ object CallController {
         startedAt = 0L
         mediaState = "new"
         iceRestartTried = false
+        answerApplied = false
         peerName = ""
         peerAvatar = ""
         ringer.stopRing()
         cancelReconnectBackstop()
+        cancelAnswerFetchBackstop()
         pendingOffer = null
         pendingIce.clear()
         pushSnapshot()
@@ -797,8 +895,9 @@ object CallController {
      *  TURN is OFF in current SOMS, so this is often empty/STUN-only — never hardcode a STUN URL). */
     private fun fetchIceServers(): List<PeerConnection.IceServer> {
         val origin = activeOrigin() ?: return emptyList()
-        val res = get("$origin${SomsSecureStore.API_PREFIX}/calls/ice-servers") ?: return emptyList()
-        val arr = res.optJSONArray("iceServers") ?: return emptyList()
+        val res = get("$origin${SomsSecureStore.API_PREFIX}/calls/ice-servers")
+        if (!res.ok) return emptyList()
+        val arr = res.data?.optJSONArray("iceServers") ?: return emptyList()
         val out = ArrayList<PeerConnection.IceServer>(arr.length())
         for (i in 0 until arr.length()) {
             val e = arr.getJSONObject(i)
@@ -846,9 +945,10 @@ object CallController {
         )
     }
 
-    /** POST JSON; returns the parsed `data` object on code 0, else null (logs the code). */
-    private fun post(url: String, body: JSONObject): JSONObject? {
-        val tok = token() ?: run { SomsLog.w(TAG) { "post $url: no token" }; return null }
+    /** POST JSON → [CallResp]: `.ok` (HTTP 2xx + code 0) = success; `.data` = the payload (null when the
+     *  endpoint returns none). Test `.ok`, not `.data != null`. */
+    private fun post(url: String, body: JSONObject): CallResp {
+        val tok = token() ?: run { SomsLog.w(TAG) { "post $url: no token" }; return CallResp(false, null) }
         val req = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $tok")
@@ -858,9 +958,9 @@ object CallController {
         return exec(req)
     }
 
-    /** GET with the bearer; returns the parsed `data` object on code 0. */
-    private fun get(url: String): JSONObject? {
-        val tok = token() ?: return null
+    /** GET with the bearer → the full result ([CallResp]). NEVER null — see [post]. */
+    private fun get(url: String): CallResp {
+        val tok = token() ?: run { SomsLog.w(TAG) { "get $url: no token" }; return CallResp(false, null) }
         val req = Request.Builder()
             .url(url)
             .addHeader("Authorization", "Bearer $tok")
@@ -869,22 +969,26 @@ object CallController {
         return exec(req)
     }
 
-    private fun exec(req: Request): JSONObject? = try {
+    /** The result of one API call: `ok` (HTTP 2xx + biz code 0) + the parsed `data` (null when the endpoint
+     *  returns no data — distinct from a failure, which is `ok=false`). */
+    private class CallResp(val ok: Boolean, val data: JSONObject?)
+
+    private fun exec(req: Request): CallResp = try {
         http.newCall(req).execute().use { resp ->
             if (!resp.isSuccessful) {
                 SomsLog.w(TAG) { "${req.method} ${req.url.encodedPath} → ${resp.code}" }
-                return null
+                return CallResp(false, null)
             }
             val envelope = JSONObject(resp.body?.string().orEmpty())
             if (envelope.optInt("code", -1) != 0) {
                 SomsLog.w(TAG) { "${req.url.encodedPath} biz code=${envelope.optInt("code")} msg=${envelope.optString("message")}" }
-                return null
+                return CallResp(false, null)
             }
-            envelope.optJSONObject("data")
+            CallResp(true, envelope.optJSONObject("data"))
         }
     } catch (e: Exception) {
         SomsLog.w(TAG) { "${req.method} ${req.url.encodedPath} failed: ${e.message}" }
-        null
+        CallResp(false, null)
     }
 
     /** Notified on a phase CHANGE (idle/incoming/…/ended) — registered by MainActivity to toggle the
@@ -892,6 +996,12 @@ object CallController {
     @Volatile private var phaseListener: ((String) -> Unit)? = null
     fun setPhaseListener(listener: ((String) -> Unit)?) { phaseListener = listener }
     @Volatile private var lastNotifiedPhase: String = "idle"
+
+    /** Set the WebRTC-negotiation [step] (shown in the call UI) + push the snapshot. */
+    private fun setStep(s: String) {
+        step = s
+        pushSnapshot()
+    }
 
     /** Push the current snapshot to the WebView so the Angular call UI (if attached) reflects a transition
      *  it can't get from the SSE path (media-state changes, phase transitions the native FSM owns). A no-op

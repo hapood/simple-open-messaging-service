@@ -13,11 +13,13 @@ import android.graphics.BitmapFactory
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.media.RingtoneManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.util.Base64
 import androidx.core.app.NotificationCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
@@ -68,31 +70,47 @@ class CallService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_INCOMING) {
-            val sid = intent.getStringExtra(EXTRA_SID)
-            if (sid.isNullOrEmpty()) { stopSelf(); return START_NOT_STICKY }
-            incomingCallerName = intent.getStringExtra(EXTRA_CALLER_NAME) ?: ""
-            incomingCallerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR) ?: ""
-            incomingCallType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
-            // Promote to foreground FIRST (the phoneCall FGS must be foreground within ~5s of
-            // startForegroundService, else the system kills it + the high-priority FCM exemption is forfeit).
-            // The incoming-ring notification (MAX, full-screen intent, Answer/Decline) IS the foreground
-            // notification. Comms audio is deferred to [onAccepted] (the ring needs MODE_RINGTONE, which
-            // CallController.startRing sets — acquiring MODE_IN_COMMUNICATION here would mis-route the ring).
-            startIncomingForeground(sid)
+        val isIncoming = intent?.action == ACTION_INCOMING
+        val sid = if (isIncoming) intent?.getStringExtra(EXTRA_SID) else null
+        // Promote to foreground FIRST. The phoneCall FGS must call startForeground within ~5s of
+        // startForegroundService or the system throws RemoteServiceException + kills the process (observed
+        // crashing the callee on Android 9). The old code returned BEFORE startForeground on an empty sid, and
+        // a throw in the notification builder would also skip it — both crashed the process. Now startForeground
+        // runs unconditionally first (the incoming-ring card for a valid incoming sid, else the ongoing-call
+        // card), with a minimal fallback notification if the builder throws, so the service ALWAYS promotes
+        // in time. The seed/loadAvatar/acquireAudio work runs after, safely past the deadline.
+        try {
+            if (isIncoming && !sid.isNullOrEmpty()) {
+                incomingCallerName = intent!!.getStringExtra(EXTRA_CALLER_NAME) ?: ""
+                incomingCallerAvatar = intent.getStringExtra(EXTRA_CALLER_AVATAR) ?: ""
+                incomingCallType = intent.getStringExtra(EXTRA_CALL_TYPE) ?: "AUDIO"
+                startIncomingForeground(sid)
+            } else {
+                startCallForeground()
+            }
+        } catch (e: Exception) {
+            SomsLog.w("SomsCall") { "startForeground threw: ${e.javaClass.simpleName}: ${e.message} → minimal fallback notif" }
+            try {
+                startForeground(NOTIF_ID, NotificationCompat.Builder(this, CHANNEL_ONGOING)
+                    .setSmallIcon(R.mipmap.ic_launcher).build())
+            } catch (_: Exception) { /* nothing more we can do */ }
+        }
+        if (isIncoming && !sid.isNullOrEmpty()) {
             CallController.seedIncoming(
                 sid,
-                intent.getIntExtra(EXTRA_CALLER_UID, 0),
+                intent!!.getIntExtra(EXTRA_CALLER_UID, 0),
                 incomingCallerName,
                 incomingCallerAvatar,
                 intent.getIntExtra(EXTRA_THREAD_ID, 0),
                 incomingCallType,
             )
-            loadAvatar(incomingCallerAvatar)
-        } else {
-            // Outgoing / re-delivered start: anchor + comms audio (the call is negotiating/active).
-            startCallForeground()
+            loadAvatar(incomingCallerAvatar, incomingCallerName, intent!!.getIntExtra(EXTRA_CALLER_UID, 0))
+        } else if (!isIncoming) {
+            // Outgoing / re-delivered start: comms audio (the call is negotiating/active).
             acquireAudio()
+        } else {
+            // An incoming start with no sid (shouldn't happen) — promoted + now stop.
+            stopSelf()
         }
         // A system-killed call service does NOT auto-resume (no active-call recovery yet). The client re-
         // derives state from the live call only while the process lives; a process-kill ends the call (the
@@ -153,6 +171,7 @@ class CallService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ONGOING)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setStyle(NotificationCompat.CallStyle.forOngoingCall(person, hangUpPi))
+            .setCategory(NotificationCompat.CATEGORY_CALL)
             .build()
     }
 
@@ -179,6 +198,19 @@ class CallService : Service() {
             this, REQ_DECLINE, declineIntent,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        // The full-screen intent launches the app to SHOW the incoming-call UI — it must NOT carry
+        // ACTION_ANSWER (firing the FSI on screen-off / lock screen would auto-accept with no user tap). A
+        // neutral launch boots MainActivity → the WebView re-derives the 'incoming' snapshot → the CallScreen
+        // renders with Accept/Decline. The Answer ACTION BUTTON (answerPi, above) is the explicit accept.
+        val showIncomingIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            action = ACTION_SHOW_INCOMING
+            putExtra(EXTRA_SID, sid)
+        }
+        val showIncomingPi = PendingIntent.getActivity(
+            this, REQ_SHOW_INCOMING, showIncomingIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val caller = Person.Builder()
             .setName(incomingCallerName.ifEmpty { getString(R.string.app_name) })
             .apply { avatarBitmap?.let { setIcon(IconCompat.createWithBitmap(it)) } }
@@ -192,7 +224,7 @@ class CallService : Service() {
             // ensure CATEGORY_CALL for the full-screen auto-grant on API 34+.
             .setStyle(NotificationCompat.CallStyle.forIncomingCall(caller, declinePi, answerPi))
             .setCategory(NotificationCompat.CATEGORY_CALL)
-            .setFullScreenIntent(answerPi, true)
+            .setFullScreenIntent(showIncomingPi, true)
             .build()
     }
 
@@ -248,19 +280,55 @@ class CallService : Service() {
     /** Lazily create the "Calls" channels: ONGOING (LOW — an active call is not a loud alert) + INCOMING
      *  (HIGH — the heads-up / full-screen ring surface; NO sound — the audible ring is the device ringtone
      *  played by CallController.startRing, so a channel sound would double up). Idempotent. */
-    /** Fetch the peer's avatar (async) for the notification Person icon. Cached in [avatarBitmap]; the
+    /** Decode the peer's avatar (async) for the notification Person icon. Cached in [avatarBitmap]; the
      *  notification builders use it if loaded (else name-only). On load, [refreshNotification] re-posts the
-     *  current notification so the icon appears. Reuses SomsMessagingService.fetchBitmap (Bearer-fetch of a
-     *  /uploads path — same path as the message-notification icon). */
-    internal fun loadAvatar(path: String) {
-        if (path.isEmpty()) return
+     *  current notification so the icon appears.
+     *
+     *  Two sources, by prefix:
+     *   - `data:image/...;base64,...` (OUTGOING): the caller passed the IDB-cached bytes via the JS bridge —
+     *     decode directly, NO /uploads fetch (the bytes are already on-device; the caller is in the peer's
+     *     thread, so the avatar is cached).
+     *   - a `/uploads` path (INCOMING): the FCM push / SSE frame carries only the path, and at a cold-start
+     *     ring the WebView (which holds the IDB cache) may not be alive — so a Bearer fetch is the only
+     *     source. Reuses SomsMessagingService.fetchBitmap (same path as the message-notification icon). */
+    internal fun loadAvatar(src: String, name: String, userId: Int) {
+        if (src.isEmpty()) {
+            // No avatar image → render an initial-letter tile (matches the in-app avatar style) instead of the
+            // app-logo fallback, so the notification Person icon shows the peer's initial.
+            avatarBitmap = LetterAvatar.render(this, name.ifEmpty { "?" }, userId)
+            mainHandler.post { refreshNotification() }
+            SomsLog.i("SomsCall") { "loadAvatar: empty src → letter avatar ($name/$userId)" }
+            return
+        }
         Thread {
-            val bmp = SomsMessagingService.fetchBitmap(this, path)
+            val isDataUrl = src.startsWith("data:")
+            val bmp = decodeAvatar(src)
+            SomsLog.i("SomsCall") {
+                "loadAvatar: isDataUrl=$isDataUrl len=${src.length} bmp=${bmp != null}${if (bmp != null) " ${bmp.width}x${bmp.height}" else ""}"
+            }
             if (bmp != null) {
                 avatarBitmap = bmp
                 mainHandler.post { refreshNotification() }
             }
         }.start()
+    }
+
+    /** Decode `src` to a bitmap by its prefix: a base64 data URL → decode (outgoing); a /uploads path →
+     *  Bearer-fetch (incoming). Null on any failure (the notification renders name-only). */
+    private fun decodeAvatar(src: String): Bitmap? {
+        return if (src.startsWith("data:")) decodeDataUrlAvatar(src) else SomsMessagingService.fetchBitmap(this, src)
+    }
+
+    /** Decode the base64 payload of a `data:` URL to a bitmap. */
+    private fun decodeDataUrlAvatar(dataUrl: String): Bitmap? {
+        return try {
+            val b64 = dataUrl.substringAfter("base64,", "")
+            if (b64.isEmpty()) return null
+            val bytes = Base64.decode(b64, Base64.DEFAULT)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        } catch (e: Exception) {
+            null
+        }
     }
 
     /** Re-post the current notification (incoming-ring or ongoing) so the now-loaded avatar icon shows. */
@@ -276,17 +344,28 @@ class CallService : Service() {
         val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (mgr.getNotificationChannel(CHANNEL_ONGOING) == null) {
             mgr.createNotificationChannel(
-                NotificationChannel(CHANNEL_ONGOING, "Calls", NotificationManager.IMPORTANCE_LOW).apply {
-                    description = "Active call"
+                NotificationChannel(CHANNEL_ONGOING, getString(R.string.call_channel_ongoing), NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Ongoing call anchor"
                 },
             )
         }
         if (mgr.getNotificationChannel(CHANNEL_INCOMING) == null) {
             mgr.createNotificationChannel(
-                NotificationChannel(CHANNEL_INCOMING, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
+                NotificationChannel(CHANNEL_INCOMING, getString(R.string.call_channel_incoming), NotificationManager.IMPORTANCE_HIGH).apply {
                     description = "Incoming call ring"
-                    setSound(null, null)
-                    enableVibration(false)
+                    // The channel carries the ringtone: an AUDIBLE sound is what makes the heads-up banner
+                    // actually pop on OEMs like Huawei EMUI (a no-sound IMPORTANCE_HIGH channel lands silently
+                    // in the shade). The system plays it when the incoming notification posts; CallRinger is
+                    // NOT used (it would double). NOTE: a channel is immutable once created, so changing this
+                    // sound requires the app be reinstalled (a fresh install) — the user clears the stale
+                    // no-sound channel that way.
+                    setSound(
+                        RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
+                        AudioAttributes.Builder()
+                            .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                            .build(),
+                    )
                 },
             )
         }
@@ -301,9 +380,11 @@ class CallService : Service() {
 
         /** Start the service in the incoming-ring mode (from the CALL_INCOMING FCM push). */
         private const val ACTION_INCOMING = "soms.action.CALL_INCOMING"
-        /** A MainActivity launch with this action answers the incoming call (the notification Answer button /
-         *  full-screen intent). */
+        /** A MainActivity launch with this action answers the incoming call (the notification Answer button). */
         const val ACTION_ANSWER = "soms.action.CALL_ANSWER"
+        /** A MainActivity launch with this action just SHOWS the incoming-call UI (the full-screen intent) —
+         *  distinct from ACTION_ANSWER so firing the FSI does NOT auto-accept. */
+        const val ACTION_SHOW_INCOMING = "soms.action.CALL_SHOW"
         /** The callSid extra shared by the service start + the notification intents (MainActivity + the
          *  decline receiver read it). Public so those callers can reference it. */
         const val EXTRA_SID = "soms_call_sid"
@@ -315,6 +396,7 @@ class CallService : Service() {
         private const val REQ_ANSWER = 7001
         private const val REQ_DECLINE = 7002
         private const val REQ_HANGUP = 7003
+        private const val REQ_SHOW_INCOMING = 7004
 
         /** The live service instance, for CallController to reach [onAccepted] on the accept transition.
          *  @Volatile: written on main (onCreate/onDestroy), read on the call / JS bridge threads. */

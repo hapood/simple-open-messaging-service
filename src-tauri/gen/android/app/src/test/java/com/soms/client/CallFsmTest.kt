@@ -28,6 +28,13 @@ class CallFsmTest {
     }
 
     @Test
+    fun caller_answer_fetch_delay_is_a_short_fallback_window() {
+        // A short fallback: long enough that a healthy SSE relay (sub-second) never trips it, short enough that a
+        // dropped-answer call recovers well before the server's ~45s ringing/answer timeout fails it.
+        assertTrue(CallFsm.ANSWER_FETCH_DELAY_MS in 1_000L..10_000L)
+    }
+
+    @Test
     fun only_caller_restarts_once_then_fails() {
         // Caller with a live PC + no prior restart → restart.
         assertTrue(CallFsm.shouldRestartOnReconnect(isCaller = true, iceRestartTried = false, hasPc = true))

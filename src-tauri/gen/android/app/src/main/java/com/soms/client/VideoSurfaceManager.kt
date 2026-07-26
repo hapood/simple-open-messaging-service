@@ -131,6 +131,7 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
     /** Store the peer's inbound video track (from the PC's onAddTrack) + sink it once the renderer mounts. The
      *  dimensions probe is attached here (once) so [remoteDimensions] is populated as soon as frames flow. */
     fun onRemoteTrack(track: VideoTrack) {
+        SomsLog.i(TAG) { "onRemoteTrack: peer video track arrived" }
         remoteVideoTrack = track
         runCatching { track.addSink(dimensionsSink) }
         relinkVideoSinks()
@@ -177,6 +178,7 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         parent.addView(self)
         remoteRenderer = remote
         selfRenderer = self
+        SomsLog.i(TAG) { "ensureRenderers: mounted remote+self SurfaceViewRenderers" }
         webView.bringToFront()
         if (savedWebViewBg == null) { savedWebViewBg = webView.background; webView.setBackgroundColor(Color.TRANSPARENT) }
         relinkVideoSinks() // sink local→PiP + remote→full per the swap state (whichever halves now exist)
@@ -197,6 +199,7 @@ class VideoSurfaceManager(private val contextProvider: () -> Context?) {
         val remote = remoteVideoTrack
         val big = remoteRenderer    // full-bleed surface (behind the WebView)
         val pip = selfRenderer      // PiP overlay surface (media-overlay)
+        SomsLog.d(TAG) { "relink: local=${local != null} remote=${remote != null} big=${big != null} pip=${pip != null} swapped=$swapped" }
         if (local != null) { big?.let { local.removeSinkSafe(it) }; pip?.let { local.removeSinkSafe(it) } }
         if (remote != null) { big?.let { remote.removeSinkSafe(it) }; pip?.let { remote.removeSinkSafe(it) } }
         // Default: local→PiP (self-view), remote→big (peer full-bleed). Swapped: local→big, remote→PiP.

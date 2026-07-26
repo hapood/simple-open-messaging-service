@@ -103,6 +103,7 @@ export class CallEventService implements OnDestroy {
     muted: boolean;
     peerName?: string;
     peerAvatar?: string;
+    step?: string;
   }): void {
     const cur = this.callState();
     this.commit({
@@ -111,6 +112,7 @@ export class CallEventService implements OnDestroy {
       phase: (snap.phase as CallPhase) ?? cur.phase,
       peerName: snap.peerName || cur.peerName,
       peerAvatar: snap.peerAvatar || cur.peerAvatar,
+      step: snap.step ?? cur.step,
     });
   }
 
