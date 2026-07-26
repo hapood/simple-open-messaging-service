@@ -788,6 +788,7 @@
   "errors": {
     "unauthenticated": "未认证",
     "parseFailed": "响应解析失败",
+    "serverError": "服务暂时不可用，请重试",
     "biz": {
       "validation": "输入有误",
       "notFound": "未找到",

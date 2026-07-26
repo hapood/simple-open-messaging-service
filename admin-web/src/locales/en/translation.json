@@ -788,6 +788,7 @@
   "errors": {
     "unauthenticated": "Unauthenticated",
     "parseFailed": "Response parse failed",
+    "serverError": "Server is having trouble — please retry",
     "biz": {
       "validation": "Invalid input",
       "notFound": "Not found",

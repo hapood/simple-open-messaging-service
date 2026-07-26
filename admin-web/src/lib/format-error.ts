@@ -73,6 +73,9 @@ function localizedBizMessage(code: number): string | null {
  */
 export function formatApiError(err: unknown): string {
   if (err instanceof ApiError) {
+    // 5xx is a server-side failure (side-effect state unknown) — surface the actionable "server trouble,
+    // retry" message rather than the generic per-code mapping (a 5xx → code 10999 "Something went wrong").
+    if (err.httpStatus >= 500) return i18n.t('errors.serverError')
     return localizedBizMessage(err.code) ?? err.message
   }
   return i18n.t('common.operationFailed')
