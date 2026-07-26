@@ -195,6 +195,7 @@ export class CallsService implements OnModuleDestroy {
       pendingAnswerIce: [],
     };
     this.activeCalls.set(call.callSid, call);
+    this.logger.debug(`[call] initiate sid=${call.callSid} caller=${callerId} callee=${dto.calleeUserId} state=ringing`);
     this.activeByUser.set(callerId, call.callSid);
     this.activeByUser.set(dto.calleeUserId, call.callSid);
     this.armRingTimer(call);
@@ -267,6 +268,10 @@ export class CallsService implements OnModuleDestroy {
    *  Fans `accepted` so the caller's UI flips to "connecting" + the callee's other devices dismiss. */
   async accept(calleeId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
+    this.logger.debug(
+      `[call] accept calleeId=${calleeId} sid=${callSid} found=${!!call}` +
+        (call ? ` state=${call.state} caller=${call.callerId} callee=${call.calleeId}` : ''),
+    );
     if (!call || call.state !== 'ringing') {
       throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no ringing call');
     }
@@ -323,6 +328,7 @@ export class CallsService implements OnModuleDestroy {
    *  Idempotent on an already-terminal call (no live entry → no-op). */
   async decline(calleeId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
+    this.logger.debug(`[call] decline calleeId=${calleeId} sid=${callSid} state=${call?.state ?? 'null'}`);
     if (!call || call.state !== 'ringing') return; // already resolved — idempotent no-op
     if (call.calleeId !== calleeId) {
       throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'only the callee can decline');
@@ -336,6 +342,7 @@ export class CallsService implements OnModuleDestroy {
    *  `cancelled` bubble on the ORIGIN. Idempotent on an already-terminal call. */
   async cancel(callerId: number, callSid: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
+    this.logger.debug(`[call] cancel callerId=${callerId} sid=${callSid} state=${call?.state ?? 'null'}`);
     if (!call || call.state !== 'ringing') return; // already resolved — idempotent no-op
     if (call.callerId !== callerId) {
       throw new BusinessException(BusinessCode.CALL_NOT_PARTICIPANT, 'only the caller can cancel');
@@ -351,6 +358,7 @@ export class CallsService implements OnModuleDestroy {
    *  a connected call → `failed` (connected-then-failed, with duration). */
   async end(userId: number, callSid: string, endReason?: string): Promise<void> {
     const call = this.activeCalls.get(callSid);
+    this.logger.debug(`[call] end userId=${userId} sid=${callSid} state=${call?.state ?? 'null'} reason=${endReason ?? ''}`);
     if (!call || (call.state !== 'accepted' && call.state !== 'connected')) {
       throw new BusinessException(BusinessCode.CALL_NOT_FOUND, 'no answered call to end');
     }
@@ -645,6 +653,7 @@ export class CallsService implements OnModuleDestroy {
   }
 
   private release(call: LiveCall): void {
+    this.logger.debug(`[call] release sid=${call.callSid} state=${call.state} caller=${call.callerId} callee=${call.calleeId}`);
     this.activeCalls.delete(call.callSid);
     if (this.activeByUser.get(call.callerId) === call.callSid) this.activeByUser.delete(call.callerId);
     if (this.activeByUser.get(call.calleeId) === call.callSid) this.activeByUser.delete(call.calleeId);
