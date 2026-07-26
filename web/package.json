@@ -7,6 +7,7 @@
     "build": "ng build",
     "prebuild": "node scripts/gen-sw-config.mjs",
     "postbuild": "node scripts/inline-sourcemaps.mjs",
+    "test:tokens": "node scripts/verify-design-tokens.mjs",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "gen:api": "openapi-typescript http://localhost:3000/api/v1/docs-json -o src/app/services/api-types.ts"

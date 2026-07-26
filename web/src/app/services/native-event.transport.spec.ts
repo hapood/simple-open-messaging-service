@@ -31,15 +31,20 @@ function recordingSink() {
   return { sink, events, states, reconnects: () => reconnects, forceLogouts: () => forceLogouts, reconnectIns: () => reconnectIns };
 }
 
-/** Install a minimal `window.SomsFcm` exposing only what the transport reads (`getConnState`) + the
- *  retry channel (`retryNow`, recorded). Returns a counter for the retry-channel assertions. */
-function installFakeFcm(connState: string): { retryNows: () => number } {
+/** Install a minimal `window.SomsFcm` exposing what the transport reads on start plus the retry channel.
+ *  `replayHello` is called whenever Kotlin reports an already-open retained stream: the fresh WebView
+ *  missed that stream's one-shot HELLO and asks native to replay its cached copy. */
+function installFakeFcm(connState: string): { retryNows: () => number; helloReplays: () => number } {
   let retryNows = 0;
-  (window as unknown as { SomsFcm: { getConnState: () => string; retryNow: () => void } }).SomsFcm = {
+  let helloReplays = 0;
+  (window as unknown as {
+    SomsFcm: { getConnState: () => string; retryNow: () => void; replayHello: () => void };
+  }).SomsFcm = {
     getConnState: () => connState,
     retryNow: () => { retryNows++; },
+    replayHello: () => { helloReplays++; },
   };
-  return { retryNows: () => retryNows };
+  return { retryNows: () => retryNows, helloReplays: () => helloReplays };
 }
 
 /** Invoke the currently-installed (or not) Kotlin push hook the way RealtimeService.forwardToJs does. */
@@ -68,10 +73,11 @@ describe('NativeEventTransport', () => {
   });
 
   it('seeds the connection banner from SomsFcm.getConnState() on start (Kotlin only pushes on transitions)', () => {
-    installFakeFcm('open');
+    const fcm = installFakeFcm('open');
     const rec = recordingSink();
     new NativeEventTransport(rec.sink).start();
     expect(rec.states).toEqual(['open']);
+    expect(fcm.helloReplays()).toBe(1);
   });
 
   it('seeds "closed" too (a truthy state) — a fresh process with no connection still pins the banner', () => {
