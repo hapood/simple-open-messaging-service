@@ -452,7 +452,7 @@ class SomsMessagingService : FirebaseMessagingService() {
                 return
             }
             val largeIcon = d.icon?.let { fetchBitmap(ctx, it) }
-                ?: LetterAvatar.render(ctx, d.title.ifEmpty { "?" }, d.title.hashCode()) // no/failed composite → letter tile
+                ?: LetterAvatar.render(ctx, d.title) // no/failed composite → letter tile (in-app palette + name hash)
             SomsLog.d("Notif") { "renderDescriptor iconUrl='${d.icon}' → ${if (d.icon != null) "composite" else "letter-fallback"}" }
             val intent = Intent(ctx, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP

@@ -104,7 +104,7 @@ class CallService : Service() {
                 intent.getIntExtra(EXTRA_THREAD_ID, 0),
                 incomingCallType,
             )
-            loadAvatar(incomingCallerAvatar, incomingCallerName, intent!!.getIntExtra(EXTRA_CALLER_UID, 0))
+            loadAvatar(incomingCallerAvatar, incomingCallerName)
         } else if (!isIncoming) {
             // Outgoing / re-delivered start: comms audio (the call is negotiating/active).
             acquireAudio()
@@ -291,19 +291,19 @@ class CallService : Service() {
      *   - a `/uploads` path (INCOMING): the FCM push / SSE frame carries only the path, and at a cold-start
      *     ring the WebView (which holds the IDB cache) may not be alive — so a Bearer fetch is the only
      *     source. Reuses SomsMessagingService.fetchBitmap (same path as the message-notification icon). */
-    internal fun loadAvatar(src: String, name: String, userId: Int) {
+    internal fun loadAvatar(src: String, name: String) {
         if (src.isEmpty()) {
-            // No avatar image → render an initial-letter tile (matches the in-app avatar style) instead of the
-            // app-logo fallback, so the notification Person icon shows the peer's initial.
-            avatarBitmap = LetterAvatar.render(this, name.ifEmpty { "?" }, userId)
+            // No avatar image → render an initial-letter tile (matches the in-app avatar color exactly — the
+            // same palette + name hash as UserAvatarComponent) instead of the app-logo fallback.
+            avatarBitmap = LetterAvatar.render(this, name)
             mainHandler.post { refreshNotification() }
-            SomsLog.i("SomsCall") { "loadAvatar: empty src → letter avatar ($name/$userId)" }
+            SomsLog.d("SomsCall") { "loadAvatar: empty src → letter avatar ($name)" }
             return
         }
         Thread {
             val isDataUrl = src.startsWith("data:")
             val bmp = decodeAvatar(src)
-            SomsLog.i("SomsCall") {
+            SomsLog.d("SomsCall") {
                 "loadAvatar: isDataUrl=$isDataUrl len=${src.length} bmp=${bmp != null}${if (bmp != null) " ${bmp.width}x${bmp.height}" else ""}"
             }
             if (bmp != null) {

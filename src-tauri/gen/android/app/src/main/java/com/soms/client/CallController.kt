@@ -298,18 +298,18 @@ object CallController {
         override fun onSignalingChange(state: PeerConnection.SignalingState?) {}
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState?) {
             // Older callback; onConnectionChange (below) is the modern source — keep this for logging.
-            SomsLog.i(TAG) { "onIceConnectionChange $state" }
+            SomsLog.d(TAG) { "onIceConnectionChange $state" }
         }
         override fun onIceConnectionReceivingChange(receiving: Boolean) {}
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState?) {
-            SomsLog.i(TAG) { "iceGathering $state" }
+            SomsLog.d(TAG) { "iceGathering $state" }
         }
 
         /** A local ICE candidate is ready → trickle it to the peer over /calls/signal. */
         override fun onIceCandidate(candidate: IceCandidate) {
             val sid = callSid ?: return
             val peer = peerUserId.takeIf { it != 0 } ?: return
-            SomsLog.i(TAG) { "local ICE candidate → relay (sdpMid=${candidate.sdpMid})" }
+            SomsLog.d(TAG) { "local ICE candidate → relay (sdpMid=${candidate.sdpMid})" }
             val payload = JSONObject()
                 .put("candidate", candidate.sdp)
                 .put("sdpMid", candidate.sdpMid ?: "")
@@ -333,7 +333,7 @@ object CallController {
             // `remoteRenderer ?: return` early-drop that previously lost the track on the race). Remote AUDIO
             // is auto-routed by the AudioDeviceModule — no sink needed.
             val track = receiver?.track()
-            SomsLog.i(TAG) { "onAddTrack: ${track?.javaClass?.simpleName} enabled=${track?.enabled()}" }
+            SomsLog.d(TAG) { "onAddTrack: ${track?.javaClass?.simpleName} enabled=${track?.enabled()}" }
             if (track is VideoTrack) {
                 video.onRemoteTrack(track)
             }
@@ -344,7 +344,7 @@ object CallController {
         override fun onConnectionChange(newState: PeerConnection.PeerConnectionState?) {
             val s = newState?.name?.lowercase() ?: return
             mediaState = s
-            SomsLog.i(TAG) { "connectionState=$s phase=$phase" }
+            SomsLog.d(TAG) { "connectionState=$s phase=$phase" }
             when (newState) {
                 PeerConnection.PeerConnectionState.CONNECTED -> {
                     cancelReconnectBackstop()
@@ -352,6 +352,7 @@ object CallController {
                     if (phase != "connected") {
                         phase = "connected"
                         startedAt = System.currentTimeMillis()
+                        SomsLog.i(TAG) { "media connected (sid=$callSid)" }
                         pushSnapshot()
                     }
                     val sid = callSid ?: return
@@ -406,8 +407,8 @@ object CallController {
         val payload = obj.optString("payload")
         if (pc == null) {
             when (kind) {
-                "offer" -> { pendingOffer = payload; SomsLog.i(TAG) { "buffered offer (pc not created yet — pre-accept)" }; setStep("offer-received") }
-                "ice" -> { pendingIce.add(payload); SomsLog.i(TAG) { "buffered ICE (${pendingIce.size}) pre-accept" } }
+                "offer" -> { pendingOffer = payload; SomsLog.d(TAG) { "buffered offer (pc not created yet — pre-accept)" }; setStep("offer-received") }
+                "ice" -> { pendingIce.add(payload); SomsLog.d(TAG) { "buffered ICE (${pendingIce.size}) pre-accept" } }
             }
             return
         }
@@ -419,7 +420,7 @@ object CallController {
     private fun applySignal(connection: PeerConnection, kind: String, payload: String) {
         when (kind) {
             "offer" -> {
-                SomsLog.i(TAG) { "applying remote offer → setRemoteDescription + createAnswer" }
+                SomsLog.d(TAG) { "applying remote offer → setRemoteDescription + createAnswer" }
                 setRemote(connection, Type.OFFER, payload)
                 connection.createAnswer(answerSdpObserver, offerAnswerConstraints())
             }
@@ -430,7 +431,7 @@ object CallController {
                 cancelAnswerFetchBackstop() // the answer arrived — the fetch fallback is no longer needed
                 if (answerApplied) { SomsLog.d(TAG) { "answer already applied — skip duplicate" }; return }
                 answerApplied = true
-                SomsLog.i(TAG) { "applying remote answer → setRemoteDescription" }
+                SomsLog.d(TAG) { "applying remote answer → setRemoteDescription" }
                 setRemote(connection, Type.ANSWER, payload)
                 if (phase == "calling" || phase == "ringing") {
                     step = "answer-received"
@@ -452,7 +453,7 @@ object CallController {
     private fun flushPending(connection: PeerConnection) {
         pendingOffer?.let { applySignal(connection, "offer", it); pendingOffer = null }
         if (pendingIce.isNotEmpty()) {
-            SomsLog.i(TAG) { "flushing ${pendingIce.size} buffered ICE candidate(s)" }
+            SomsLog.d(TAG) { "flushing ${pendingIce.size} buffered ICE candidate(s)" }
             for (p in pendingIce) applySignal(connection, "ice", p)
             pendingIce.clear()
         }
@@ -559,7 +560,7 @@ object CallController {
     private fun setRemote(connection: PeerConnection, type: Type, sdp: String) {
         connection.setRemoteDescription(object : SdpObserver {
             override fun onCreateSuccess(p0: SessionDescription?) {}
-            override fun onSetSuccess() { SomsLog.i(TAG) { "setRemoteDescription($type) ok" } }
+            override fun onSetSuccess() { SomsLog.d(TAG) { "setRemoteDescription($type) ok" } }
             override fun onCreateFailure(p0: String?) {}
             override fun onSetFailure(error: String?) { SomsLog.w(TAG) { "setRemoteDescription($type) failed: $error" } }
         }, SessionDescription(type, sdp))
@@ -573,7 +574,7 @@ object CallController {
             // A fresh answer is expected after every offer we create (the initial offer AND an ICE-restart offer),
             // so re-arm the answer-idempotency guard — otherwise the restart answer would be skipped as a "duplicate".
             answerApplied = false
-            SomsLog.i(TAG) { "offer created → setLocalDescription + relay" }
+            SomsLog.d(TAG) { "offer created → setLocalDescription + relay" }
             connection.setLocalDescription(EmptySdpObserver, sdp)
             postSignal(sid, peerUserId, "offer", sdp.description)
             setStep("offer-sent")
@@ -588,7 +589,7 @@ object CallController {
             val connection = pc ?: return
             val sid = callSid ?: return
             if (sdp == null) return
-            SomsLog.i(TAG) { "answer created → setLocalDescription + relay" }
+            SomsLog.d(TAG) { "answer created → setLocalDescription + relay" }
             connection.setLocalDescription(EmptySdpObserver, sdp)
             postSignal(sid, peerUserId, "answer", sdp.description)
             setStep("answer-sent")
@@ -639,9 +640,9 @@ object CallController {
                 peerAvatar = avatar
                 // Prefer the IDB-cached bytes (data URL); fall back to the /uploads path on an IDB miss (fetch),
                 // so an uncached peer still gets an avatar instead of the app-logo fallback.
-                CallService.instance?.loadAvatar(if (avatarDataUrl.isNotEmpty()) avatarDataUrl else avatar, peerName, peerUserId)
+                CallService.instance?.loadAvatar(if (avatarDataUrl.isNotEmpty()) avatarDataUrl else avatar, peerName)
                 pushSnapshot()
-                SomsLog.i(TAG) { "initiate: POST ok + state set → createPeerConnection + createOffer" }
+                SomsLog.d(TAG) { "initiate: POST ok + state set → createPeerConnection + createOffer" }
                 val connection = createPeerConnection()
                 connection.createOffer(offerSdpObserver, offerAnswerConstraints())
             } catch (e: Exception) {
