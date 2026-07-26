@@ -35,7 +35,9 @@ describe('Media asset garbage collection (Phase 5)', () => {
     prisma = app.get(PrismaService);
     upload = app.get(UploadService);
     gc = app.get(MediaAssetGcService);
-    await prisma.$executeRawUnsafe('TRUNCATE TABLE "MediaAsset" RESTART IDENTITY');
+    await prisma.$executeRawUnsafe(
+      'TRUNCATE TABLE "MediaAsset" RESTART IDENTITY',
+    );
   });
 
   afterAll(async () => {
@@ -43,7 +45,9 @@ describe('Media asset garbage collection (Phase 5)', () => {
   });
 
   /** Store a real shard file through CAS (refs=1); return its digest + absolute path. */
-  async function seedAsset(content: string): Promise<{ digest: string; absPath: string }> {
+  async function seedAsset(
+    content: string,
+  ): Promise<{ digest: string; absPath: string }> {
     const { url } = await upload.saveFile(
       'application/octet-stream',
       'gc.bin',
@@ -68,7 +72,9 @@ describe('Media asset garbage collection (Phase 5)', () => {
 
     expect(result.reapedRows).toBeGreaterThanOrEqual(1);
     expect(existsSync(absPath)).toBe(false); // shard file gone
-    expect(await prisma.mediaAsset.findUnique({ where: { digest } })).toBeNull(); // row gone
+    expect(
+      await prisma.mediaAsset.findUnique({ where: { digest } }),
+    ).toBeNull(); // row gone
   });
 
   it('keeps a refs>0 asset — row AND file untouched', async () => {
@@ -108,7 +114,10 @@ describe('Media asset garbage collection (Phase 5)', () => {
       update: { avatar: liveUrl },
     });
     const livePath = join(upload.uploadDir, liveUrl.slice('/uploads/'.length));
-    const orphanPath = join(upload.uploadDir, orphanUrl.slice('/uploads/'.length));
+    const orphanPath = join(
+      upload.uploadDir,
+      orphanUrl.slice('/uploads/'.length),
+    );
     expect(existsSync(livePath)).toBe(true);
     expect(existsSync(orphanPath)).toBe(true);
 
@@ -120,7 +129,9 @@ describe('Media asset garbage collection (Phase 5)', () => {
     // Cleanup the live user so repeated runs / forks stay deterministic.
     await prisma.user
       .delete({
-        where: { account_domain: { account: 'avatar-gc-live', domain: 'local' } },
+        where: {
+          account_domain: { account: 'avatar-gc-live', domain: 'local' },
+        },
       })
       .catch(() => {});
   });
@@ -129,9 +140,17 @@ describe('Media asset garbage collection (Phase 5)', () => {
   // A staged media send whose upload/localize never completed (crash/abandon) leaves a PendingMedia
   // row created BEFORE the file write. The sweep reaps it past TTL — the orphan-cleanup handle that
   // did not exist before PendingMedia. Helper: seed a thread + user for the FKs.
-  async function seedThreadAndUser(): Promise<{ threadId: number; userId: number }> {
+  async function seedThreadAndUser(): Promise<{
+    threadId: number;
+    userId: number;
+  }> {
     const user = await prisma.user.create({
-      data: { account: `gc-${randomUUID().replace(/-/g, '').slice(0, 8)}`, hashPwd: 'x', name: 'gc', isForeigner: false },
+      data: {
+        account: `gc-${randomUUID().replace(/-/g, '').slice(0, 8)}`,
+        hashPwd: 'x',
+        name: 'gc',
+        isForeigner: false,
+      },
     });
     const thread = await prisma.messageThread.create({ data: { type: 'P2P' } });
     return { threadId: thread.id, userId: user.id };
@@ -144,8 +163,12 @@ describe('Media asset garbage collection (Phase 5)', () => {
     // Staged send that never promoted: PendingMedia(pending, digest) and NO MediaMessage.
     const stage = await prisma.pendingMedia.create({
       data: {
-        threadId, creatorId: userId, contentType: 'FILE', content: '{}',
-        digest, clientMessageId: randomUUID(),
+        threadId,
+        creatorId: userId,
+        contentType: 'FILE',
+        content: '{}',
+        digest,
+        clientMessageId: randomUUID(),
       },
     });
     // Backdate past the TTL so the sweep reaps it now.
@@ -158,9 +181,15 @@ describe('Media asset garbage collection (Phase 5)', () => {
 
     expect(result.sweptRows).toBeGreaterThanOrEqual(1);
     expect(existsSync(absPath)).toBe(false); // orphan file reaped
-    expect(await prisma.mediaAsset.findUnique({ where: { digest } })).toBeNull(); // asset row gone
-    expect(await prisma.pendingMedia.findUnique({ where: { id: stage.id } })).toBeNull(); // stage gone
-    await prisma.messageThread.delete({ where: { id: threadId } }).catch(() => {});
+    expect(
+      await prisma.mediaAsset.findUnique({ where: { digest } }),
+    ).toBeNull(); // asset row gone
+    expect(
+      await prisma.pendingMedia.findUnique({ where: { id: stage.id } }),
+    ).toBeNull(); // stage gone
+    await prisma.messageThread
+      .delete({ where: { id: threadId } })
+      .catch(() => {});
     await prisma.user.delete({ where: { id: userId } }).catch(() => {});
   });
 
@@ -169,18 +198,28 @@ describe('Media asset garbage collection (Phase 5)', () => {
     const { threadId, userId } = await seedThreadAndUser();
     const stage = await prisma.pendingMedia.create({
       data: {
-        threadId, creatorId: userId, contentType: 'FILE', content: '{}',
-        digest, clientMessageId: randomUUID(),
+        threadId,
+        creatorId: userId,
+        contentType: 'FILE',
+        content: '{}',
+        digest,
+        clientMessageId: randomUUID(),
       },
     });
     // A committed message DOES reference this digest (MediaMessage row) → the file is live.
     const msg = await prisma.message.create({
       data: {
-        threadId, creator: userId, seq: 0, originSeq: 0,
-        contentType: 'FILE', content: '{}',
+        threadId,
+        creator: userId,
+        seq: 0,
+        originSeq: 0,
+        contentType: 'FILE',
+        content: '{}',
       },
     });
-    await prisma.mediaMessage.create({ data: { messageId: msg.id, threadId, digest } });
+    await prisma.mediaMessage.create({
+      data: { messageId: msg.id, threadId, digest },
+    });
     await prisma.pendingMedia.update({
       where: { id: stage.id },
       data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
@@ -190,12 +229,20 @@ describe('Media asset garbage collection (Phase 5)', () => {
 
     expect(result.sweptRows).toBeGreaterThanOrEqual(1); // the stale stage row is still swept
     expect(existsSync(absPath)).toBe(true); // but the file is KEPT (a live message references it)
-    expect(await prisma.mediaAsset.findUnique({ where: { digest } })).not.toBeNull();
-    expect(await prisma.pendingMedia.findUnique({ where: { id: stage.id } })).toBeNull();
+    expect(
+      await prisma.mediaAsset.findUnique({ where: { digest } }),
+    ).not.toBeNull();
+    expect(
+      await prisma.pendingMedia.findUnique({ where: { id: stage.id } }),
+    ).toBeNull();
     // cleanup
-    await prisma.mediaMessage.delete({ where: { messageId: msg.id } }).catch(() => {});
+    await prisma.mediaMessage
+      .delete({ where: { messageId: msg.id } })
+      .catch(() => {});
     await prisma.message.delete({ where: { id: msg.id } }).catch(() => {});
-    await prisma.messageThread.delete({ where: { id: threadId } }).catch(() => {});
+    await prisma.messageThread
+      .delete({ where: { id: threadId } })
+      .catch(() => {});
     await prisma.user.delete({ where: { id: userId } }).catch(() => {});
     await prisma.mediaAsset.delete({ where: { digest } }).catch(() => {});
     await unlink(absPath).catch(() => {});
@@ -207,8 +254,12 @@ describe('Media asset garbage collection (Phase 5)', () => {
     // Just-created stage (createdAt = now) — within TTL → must not be reaped.
     const stage = await prisma.pendingMedia.create({
       data: {
-        threadId, creatorId: userId, contentType: 'FILE', content: '{}',
-        digest, clientMessageId: randomUUID(),
+        threadId,
+        creatorId: userId,
+        contentType: 'FILE',
+        content: '{}',
+        digest,
+        clientMessageId: randomUUID(),
       },
     });
 
@@ -216,12 +267,47 @@ describe('Media asset garbage collection (Phase 5)', () => {
 
     expect(result.sweptRows).toBe(0);
     expect(existsSync(absPath)).toBe(true); // kept
-    expect(await prisma.pendingMedia.findUnique({ where: { id: stage.id } })).not.toBeNull();
+    expect(
+      await prisma.pendingMedia.findUnique({ where: { id: stage.id } }),
+    ).not.toBeNull();
     // cleanup
-    await prisma.pendingMedia.delete({ where: { id: stage.id } }).catch(() => {});
-    await prisma.messageThread.delete({ where: { id: threadId } }).catch(() => {});
+    await prisma.pendingMedia
+      .delete({ where: { id: stage.id } })
+      .catch(() => {});
+    await prisma.messageThread
+      .delete({ where: { id: threadId } })
+      .catch(() => {});
     await prisma.user.delete({ where: { id: userId } }).catch(() => {});
     await prisma.mediaAsset.delete({ where: { digest } }).catch(() => {});
     await unlink(absPath).catch(() => {});
+  });
+
+  it('gcStalePending retains recent failed stages for recovery and eventually reaps them', async () => {
+    const { threadId, userId } = await seedThreadAndUser();
+    const stage = await prisma.pendingMedia.create({
+      data: {
+        threadId,
+        creatorId: userId,
+        contentType: 'FILE',
+        content: '{}',
+        clientMessageId: randomUUID(),
+        status: 'failed',
+        failReason: 'invalid file type',
+      },
+    });
+
+    expect((await gc.gcStalePending(1, 60 * 60 * 1000)).sweptRows).toBe(0);
+    await prisma.pendingMedia.update({
+      where: { id: stage.id },
+      data: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) },
+    });
+    expect((await gc.gcStalePending(1, 60 * 60 * 1000)).sweptRows).toBe(1);
+    expect(
+      await prisma.pendingMedia.findUnique({ where: { id: stage.id } }),
+    ).toBeNull();
+    await prisma.messageThread
+      .delete({ where: { id: threadId } })
+      .catch(() => {});
+    await prisma.user.delete({ where: { id: userId } }).catch(() => {});
   });
 });

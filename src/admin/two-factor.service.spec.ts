@@ -236,14 +236,12 @@ describe('TwoFactorService', () => {
 
     const r = await svc.enableWithBackupCodes(7, 'JBSWY3DPEHPK3PXP');
     expect(r.backupCodes).toHaveLength(10);
-    // The SAME admin.update carries the enable flags AND the tokenVersion bump → atomic (no 2FA-bypassing
-    // session can exist: the moment twoFactorEnabled is true, tver is already incremented).
+    // The auth orchestration revokes all opaque sessions immediately after this atomic enrollment write.
     expect(adminUpdate).toHaveBeenCalledTimes(1);
     const data = adminUpdate.mock.calls[0][0].data as Record<string, unknown>;
     expect(data.twoFactorEnabled).toBe(true);
     expect(data.twoFactorSecretCipher).not.toBe('JBSWY3DPEHPK3PXP'); // stored encrypted, not plaintext
     expect(data.twoFactorLastUsedCounter).toBeNull();
-    expect(data.tokenVersion).toEqual({ increment: 1 });
     expect(deleteMany).toHaveBeenCalledWith({ where: { adminId: 7 } });
     expect(created).toHaveLength(10);
     expect(created.every((c) => c.adminId === 7 && c.codeHash.length > 0)).toBe(true);

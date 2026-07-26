@@ -112,21 +112,21 @@ model PushToken {
 /// ones expire. Validated by BearerAuthService, shared by the global SessionAuthGuard and the
 /// /uploads/* media preHandler.
 model SessionToken {
-  id         Int       @id @default(autoincrement())
-  userId     Int
-  user       User      @relation(fields: [userId], references: [id])
-  tokenHash  String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
-  client     String    @db.VarChar(16) // app | web | desktop — device platform for the device-list icon/label (lifetime is driven by `trusted`, not `client`)
-  device     String?   @db.VarChar(127) // human-friendly device label the client reports at login (e.g. "Pixel 7", "Chrome · macOS")
-  userAgent  String?   @db.VarChar(255) // raw UA captured server-side from the HTTP header; parsed into browser/os for the device list
-  ip         String?   @db.VarChar(64) // sign-in IP (captured at issue time)
-  lastSeenIp String?   @db.VarChar(64) // most-recent IP (updated on the throttled sliding touch) — the device-list "last seen" location source
-  createdAt  DateTime  @default(now())
-  expiresAt  DateTime? // null = never (trusted device); set = sliding 14-day deadline (untrusted)
-  lastSeenAt DateTime  @default(now()) // sliding-window activity tracker (untrusted web/desktop; activity is still tracked for trusted tokens so the device list's "last active" stays fresh)
-  persistent Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for trusted (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
-  trusted    Boolean   @default(false) // true → expiresAt NULL (permanent, revocation-only); the client must store the token in OS secure storage (native app by default; desktop via OS keyring). false → sliding 14-day deadline. The native `app` client is trusted by default at issue.
-  revokedAt   DateTime? // soft revoke (logout / logout-all / password change / admin disable)
+  id           Int       @id @default(autoincrement())
+  userId       Int
+  user         User      @relation(fields: [userId], references: [id])
+  tokenHash    String    @unique @db.VarChar(127) // sha256 hash, never the plaintext
+  client       String    @db.VarChar(16) // app | web | desktop — device platform for the device-list icon/label (lifetime is driven by `trusted`, not `client`)
+  device       String?   @db.VarChar(127) // human-friendly device label the client reports at login (e.g. "Pixel 7", "Chrome · macOS")
+  userAgent    String?   @db.VarChar(255) // raw UA captured server-side from the HTTP header; parsed into browser/os for the device list
+  ip           String?   @db.VarChar(64) // sign-in IP (captured at issue time)
+  lastSeenIp   String?   @db.VarChar(64) // most-recent IP (updated on the throttled sliding touch) — the device-list "last seen" location source
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime? // null = never (trusted device); set = sliding 14-day deadline (untrusted)
+  lastSeenAt   DateTime  @default(now()) // sliding-window activity tracker (untrusted web/desktop; activity is still tracked for trusted tokens so the device list's "last active" stays fresh)
+  persistent   Boolean   @default(true) // web/desktop cookie persistence: true=14d sliding cookie, false=session cookie (keep=false); moot for trusted (no-expiry). Server-side because the browser sends only the cookie value, not its attributes.
+  trusted      Boolean   @default(false) // true → expiresAt NULL (permanent, revocation-only); the client must store the token in OS secure storage (native app by default; desktop via OS keyring). false → sliding 14-day deadline. The native `app` client is trusted by default at issue.
+  revokedAt    DateTime? // soft revoke (logout / logout-all / password change / admin disable)
   revokeReason String?   @db.VarChar(32) // logout|device_revoke|all_devices|password_change|admin_disable|admin_purge (observability)
 
   @@index([userId])
@@ -257,7 +257,6 @@ model ThreadParticipant {
 
   @@unique([userId, threadId])
   @@index([threadId]) // roster of a conversation
-  @@index([userId]) // "my conversations"
   @@index([userId, pinned]) // pinned-first conversation list per user
 }
 
@@ -344,8 +343,6 @@ model MessageThread {
   MediaMessage      MediaMessage[] // per-object media authz index (digest → thread)
   PendingMedia      PendingMedia[] // in-flight media sends/localizes not yet committed as a Message
   ThreadRevision    ThreadRevision[] // per-user add/delete log (thread-list versioning)
-
-  @@index([groupUserId])
 }
 
 enum ContentType {
@@ -357,38 +354,38 @@ enum ContentType {
   AUDIO
   LINK
   CALL // 1:1 WebRTC call record — SERVER-AUTHORED ONLY (CallsService writes the terminal bubble).
-       // Never client-authorable (SendMessageDto's @IsIn allowlist excludes it, like INVITE). The
-       // call's lifecycle is in-memory in CallsService; this row is the persisted terminal record.
+  // Never client-authorable (SendMessageDto's @IsIn allowlist excludes it, like INVITE). The
+  // call's lifecycle is in-memory in CallsService; this row is the persisted terminal record.
 }
 
 model Message {
   // INTERNAL surrogate PK, NEVER exposed (omitted from HTTP/SSE/federation, which carry `seq`). A global
   // autoincrement would leak cross-conversation throughput (deltas reveal server-wide volume), so it
   // exists only as storage identity + the MediaMessage FK target.
-  id              BigInt        @id @default(autoincrement())
+  id               BigInt        @id @default(autoincrement())
   // Per-thread monotonic seq (0-indexed), allocated atomically from curSeq inside the message-create tx
   // → gapless modulo rollback/delete, no retry loop. The EXTERNAL ordering key + frontend message
   // identity (keyset cursor, read watermark); deltas reveal only THIS thread's volume. Each server
   // assigns its OWN seq; a receiver re-seqs pulled messages into its local space (see originSeq).
-  seq             Int
-  contentType     ContentType
-  content         String
-  threadId        Int
-  creator         Int
-  threadItem      MessageThread @relation(fields: [threadId], references: [id])
-  creatorItem     User          @relation("AuthoredMessages", fields: [creator], references: [id])
-  createdAt       DateTime      @default(now())
-  updatedAt       DateTime      @updatedAt
-  isDeleted       Boolean       @default(false)
+  seq              Int
+  contentType      ContentType
+  content          String
+  threadId         Int
+  creator          Int
+  threadItem       MessageThread @relation(fields: [threadId], references: [id])
+  creatorItem      User          @relation("AuthoredMessages", fields: [creator], references: [id])
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  isDeleted        Boolean       @default(false)
   // Client-generated UUID for send idempotency: a retried send with the same value returns the original
   // Message instead of creating a duplicate. Nullable + @unique → a partial unique index (NULLs are
   // distinct), so legacy sends that omit it coexist. See MessageService.writeMsgToThread.
-  clientMessageId String?       @unique @db.VarChar(36)
+  clientMessageId  String?       @unique @db.VarChar(36)
   // The ORIGINATING server's per-thread seq — the cross-server value. Equals `seq` on the origin; a
   // receiver copies it verbatim while allocating its own local `seq` (same value on both sides). The
   // federation dedup key + per-(thread, sender) pull cursor (receiver pulls originSeq > MAX). Each side
   // keeps its own seq; no cross-server sequence-space consistency is needed. Null = legacy rows only.
-  originSeq       Int?
+  originSeq        Int?
   // The SENDER server's allocation time (copied from the pulled payload's `ts`). NEVER displayed — the
   // chatbox + conversation list use the receiver's `createdAt` (local arrival time). Stored for future
   // use (quota day-bucketing, audit). Null for locally-authored messages (their createdAt IS the origin
@@ -402,7 +399,6 @@ model Message {
   @@index([threadId, createdAt])
   @@index([createdAt]) // cross-thread "messages since T" catch-up (POST /notifications/missed) — global time range scan
   @@index([creator])
-  @@index([threadId, creator, originSeq]) // federation pull query + MAX(cursor) derivation
 }
 
 /// Content-addressed media asset (chat images/files/video/audio). One file per sha256 digest at
@@ -441,13 +437,13 @@ model MediaMessage {
 /// In-flight media staging. A media message is NOT committed as a Message until its bytes are confirmed
 /// (uploaded locally / localized federated); until then only this row exists — no Message, no seq, nothing
 /// visible. On success it's deleted as the real Message+MediaMessage are created atomically (promote); on
-/// failure it's marked `failed` (no auto-retry). Created BEFORE the file write so a crash always leaves an
+/// failure it's marked `failed` until an explicit client retry moves it back to `pending`. Created BEFORE
+/// the file write so a crash always leaves an
 /// attributable record for the GC (stale pending row + its file/asset), never an unattributed orphan.
 ///
 /// LOCAL: clientMessageId is the optimistic-send idempotency key; `content` holds client-probed display
-/// metadata only (the CAS url is injected at promote → never client-supplied). FEDERATED: originSeq
-/// (+originDomain/originServerTime) is the pull dedup key (mirrors Message's unique); `content` is the
-/// pulled payload verbatim.
+/// metadata only (the CAS url is injected at promote → never client-supplied). The current federated
+/// localization path does not use this model; originSeq is retained for schema compatibility.
 model PendingMedia {
   id              BigInt      @id @default(autoincrement())
   threadId        Int
@@ -460,7 +456,8 @@ model PendingMedia {
   digest          String?     @db.VarChar(64) // set once bytes land → links staging to MediaAsset/file
   clientMessageId String?     @unique @db.VarChar(36) // LOCAL idempotency (optimistic-send key)
   originSeq       Int? // FEDERATED provenance + pull dedup (NULL for local)
-  status          String      @default("pending") @db.VarChar(12) // pending (a 'failed' state was never wired; originDomain/originServerTime/failReason dropped as unused)
+  status          String      @default("pending") @db.VarChar(12) // pending | failed
+  failReason      String?     @db.VarChar(255)
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
@@ -468,7 +465,7 @@ model PendingMedia {
 
   @@unique([threadId, creatorId, originSeq]) // federated dedup (NULL originSeq = local → many allowed)
   @@index([threadId])
-  @@index([status, createdAt]) // GC stale-pending sweep
+  @@index([status, createdAt]) // GC stale pending/failed sweep; retry refreshes createdAt
 }
 
 /// Admin RBAC tiers. SUPER_ADMIN = all powers (default; the seed admin keeps full access); ADMIN =
@@ -491,7 +488,6 @@ model Admin {
   user                     User                  @relation(fields: [userId], references: [id])
   role                     AdminRole             @default(SUPER_ADMIN)
   enabled                  Boolean               @default(true)
-  tokenVersion             Int                   @default(0) // bumping this invalidates ALL of the admin's access tokens (disable / role change)
   lastLoginIp              String?               @db.VarChar(64)
   lastLoginAt              DateTime?
   // ── TOTP two-factor authentication (RFC 6238, Google/Microsoft Authenticator). Opt-in per admin.
@@ -512,7 +508,7 @@ model Admin {
   webauthnEnabled          Boolean               @default(false)
   createdAt                DateTime              @default(now())
   updatedAt                DateTime              @updatedAt
-  refreshTokens            AdminRefreshToken[]
+  sessions                 AdminSession[]
   actionLogs               AdminActionLog[]
   twoFactorBackupCodes     TwoFactorBackupCode[]
   webauthnCredentials      WebAuthnCredential[]
@@ -577,23 +573,23 @@ model TwoFactorBackupCode {
   @@index([adminId, codeHash]) // O(1) consume lookup: WHERE adminId AND codeHash AND consumedAt IS NULL
 }
 
-/// Admin refresh token (family-based + reuse detection, mirrors RefreshToken; a separate instance avoids mixing with user sessions).
-model AdminRefreshToken {
-  id        BigInt    @id @default(autoincrement())
-  adminId   Int
-  admin     Admin     @relation(fields: [adminId], references: [id])
-  tokenHash String    @unique
-  jti       String    @unique
-  familyId  String
-  userAgent String?   @db.VarChar(255)
-  ip        String?   @db.VarChar(64)
-  createdAt DateTime  @default(now())
-  expiresAt DateTime
-  revokedAt DateTime?
-  revokeReason String?   @db.VarChar(32)
+/// Opaque administrator login session. Only the SHA-256 digest of the random bearer
+/// value is persisted; the plaintext exists solely in the admin-only HttpOnly cookie.
+model AdminSession {
+  id             BigInt    @id @default(autoincrement())
+  adminId        Int
+  admin          Admin     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  tokenHash      String    @unique
+  userAgent      String?   @db.VarChar(255)
+  ip             String?   @db.VarChar(64)
+  createdAt      DateTime  @default(now())
+  lastAccessedAt DateTime  @default(now())
+  expiresAt      DateTime
+  revokedAt      DateTime?
+  revokeReason   String?   @db.VarChar(32)
 
   @@index([adminId])
-  @@index([familyId])
+  @@index([expiresAt])
 }
 
 /// Append-only audit trail of admin destructive actions (who did what, from where, when, and whether it
@@ -681,7 +677,6 @@ model S2SKeyCache {
   fetchedAt DateTime @default(now())
 
   @@id([domain, keyId])
-  @@index([domain])
 }
 
 /// Inbound friend-op dedup. At-least-once delivery requires idempotent dedup by (origin, opId).

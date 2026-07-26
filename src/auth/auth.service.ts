@@ -60,8 +60,8 @@ export class AuthService {
   /**
    * Revoke every session token for the user (logout-all / password change / admin disable / admin purge)
    * + emit `auth.sessions-invalidated` so the SSE service pushes FORCE_LOGOUT and drops their live
-   * connections at once. KV-cached session validations self-expire within 60s, so a token presented
-   * after this lands is rejected on its next (re)validation.
+   * connections at once. SessionTokenService also deletes every issue-initialized validation entry,
+   * so a revoked token cannot continue authenticating from cache.
    */
   async invalidateAllSessions(userId: number, reason: string): Promise<void> {
     await this.sessionTokens.revokeAllForUser(userId, reason);
@@ -100,8 +100,8 @@ export class AuthService {
    *  which requires the old password. That closes the bypass where a logged-in user rotates a known
    *  password without proving they know the current one. Stores the hash + CLEARS mustChangePassword.
    *  Unlike changePassword, sessions are NOT invalidated — the user keeps the session they just proved
-   *  ownership of. The calling session's validate cache is BUSTED (via sessionId) so the cleared flag is
-   *  seen at once — otherwise its 60s cache entry keeps the stale flag and gates the user out post-set. */
+   *  ownership of. The calling session's validation entry is deleted (via sessionId) so the cleared
+   *  flag is seen at once on the next database-backed validation. */
   async setPassword(userId: number, newPassword: string, sessionId?: number): Promise<void> {
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
@@ -167,8 +167,8 @@ export class AuthService {
   }
 
   /** Revoke one session by its device-list row id (the "revoke this device" action). Delegates to
-   *  SessionTokenService.revokeById, which ownership-checks (id + userId + active) and drops the KV
-   *  entry so the revocation lands within the 60s cache window. Emits `auth.session-revoked` so the SSE
+   *  SessionTokenService.revokeById, which ownership-checks (id + userId + active) and drops the
+   *  persistent validation entry immediately. Emits `auth.session-revoked` so the SSE
    *  service pushes FORCE_LOGOUT to ONLY that session's connection(s) and drops them — the user's other
    *  devices stay online (unlike invalidateAllSessions, which kicks every device). Returns true iff a row
    *  was revoked (no emit on a no-op — unknown/foreign/already-revoked id). */

@@ -2,8 +2,6 @@ import i18n from '@/i18n'
 import { API_BASE, CODE } from '@/lib/constants'
 import { ApiError } from '@/lib/api-error'
 import { forceLogout } from '@/auth/force-logout'
-import { refreshOnce } from '@/auth/refresh-singleton'
-import { getAccessToken } from '@/auth/token-store'
 import type { ApiResult } from '@/types/api'
 
 // Public allowlist: no Bearer injected, no 401 retry (otherwise the refresh chain self-loops).
@@ -12,16 +10,10 @@ const PUBLIC_PATHS = [
   '/admin/login/verify',
   '/admin/webauthn/login/begin',
   '/admin/webauthn/login/finish',
-  '/admin/renew-access',
 ]
 
 function isPublic(path: string): boolean {
   return PUBLIC_PATHS.some((p) => path.endsWith(p))
-}
-
-function authHeader(): Record<string, string> {
-  const at = getAccessToken()
-  return at ? { Authorization: `Bearer ${at}` } : {}
 }
 
 /**
@@ -37,9 +29,9 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
   const hasBody = body !== undefined
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: {
       ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
-      ...(publicReq ? {} : authHeader()),
     },
     body: hasBody ? JSON.stringify(body) : undefined,
   })
@@ -47,12 +39,9 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
     .json()
     .catch(() => ({ code: -1, message: i18n.t('errors.parseFailed') }) as ApiResult<T>)
 
-  // Protected request hitting 401 (backend AdminAuthGuard truly returns 401) or
-  // business code 10003 → transparent refresh + single retry.
   if (!publicReq && (res.status === 401 || json.code === CODE.UNAUTHENTICATED)) {
-    const ok = await refreshOnce()
-    if (!ok) throw new ApiError(CODE.UNAUTHENTICATED, i18n.t('errors.unauthenticated'), res.status)
-    return request<T>(path, body)
+    forceLogout()
+    throw new ApiError(CODE.UNAUTHENTICATED, i18n.t('errors.unauthenticated'), res.status)
   }
 
   // Defensive: any path receiving 10006 forces logout.
@@ -73,7 +62,7 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
  * the admin auth chain, so they never trigger a refresh cycle.
  */
 export async function requestGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, { method: 'GET' })
+  const res = await fetch(`${API_BASE}${path}`, { method: 'GET', credentials: 'same-origin' })
   const json: ApiResult<T> = await res
     .json()
     .catch(() => ({ code: -1, message: i18n.t('errors.parseFailed') }) as ApiResult<T>)

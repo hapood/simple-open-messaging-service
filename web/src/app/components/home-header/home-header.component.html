@@ -1,6 +1,20 @@
 <div class="home-header">
-  <button class="icon-btn" (click)="toggleDrawer.emit()" [attr.aria-label]="'home.openMenuAria' | transloco">
-    <app-icon [type]="AppIconType.MENU" [style]="{width:'32px',height:'32px'}"></app-icon>
-  </button>
   <div class="title">{{ 'common.appName' | transloco }}</div>
+  <button class="icon-btn" cdkOverlayOrigin #moreTrigger="cdkOverlayOrigin"
+    (click)="toggleMenu()" [class.active]="menuOpen()"
+    aria-haspopup="menu" [attr.aria-expanded]="menuOpen()"
+    [attr.aria-label]="'nav.accountMenuAria' | transloco">
+    <span class="avatar">
+      <app-user-avatar
+        [type]="UserAvatarType.SELF"
+        [name]="sessionProfile()?.name || 'SOMS'"
+        [identityId]="sessionProfile()?.id"
+        [src]="sessionProfile()?.avatar" />
+    </span>
+    @if (friendReqBadge()) {
+      <span class="friend-badge" [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"></span>
+    }
+  </button>
+  <app-chat-action-menu [entries]="entries()" [origin]="moreTrigger" [open]="menuOpen()"
+    (select)="onSelect($event)" (closed)="closeMenu()" />
 </div>

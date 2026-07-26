@@ -35,9 +35,9 @@ export function AdminSessionsPage() {
 
   const total = data?.total ?? 0
 
-  const onRevoke = async (jti: string) => {
+  const onRevoke = async (id: string) => {
     try {
-      await revoke.mutateAsync(jti)
+      await revoke.mutateAsync(id)
       toast.success(t('adminSessions.revoked'))
     } catch (e) {
       toast.error(formatApiError(e))
@@ -82,7 +82,7 @@ export function AdminSessionsPage() {
               emptyMessage={t('adminSessions.empty')}
             >
               {data?.list.map((s) => (
-                <TableRow key={s.jti}>
+                <TableRow key={s.id}>
                   <TableCell className="font-medium">
                     <Badge variant="outline">{s.admin?.account ?? '#' + s.adminId}</Badge>
                   </TableCell>
@@ -105,7 +105,7 @@ export function AdminSessionsPage() {
                       size="sm"
                       className="text-destructive"
                       disabled={revoke.isPending}
-                      onClick={() => onRevoke(s.jti)}
+                      onClick={() => onRevoke(s.id)}
                     >
                       {t('adminSessions.revoke')}
                     </Button>

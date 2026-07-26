@@ -1,7 +1,5 @@
 import { request } from '@/api/client'
 import { API_BASE } from '@/lib/constants'
-import { getAccessToken } from '@/auth/token-store'
-import { refreshOnce } from '@/auth/refresh-singleton'
 
 /** One diagnostic-report row (the admin list view). `manifest` is the client-supplied version/platform
  *  snapshot; `createdAt` is a ms-epoch number (backend Date serialization convention). */
@@ -49,19 +47,7 @@ export function deleteDiagnosticReport(
 export async function downloadDiagnosticReport(id: number): Promise<void> {
   const url = `${API_BASE}/admin/diagnostics/${id}/download`
   // Raw authenticated GET (the unified request() client parses JSON, unsuitable for a binary stream).
-  const doFetch = (): Promise<Response> => {
-    const at = getAccessToken()
-    return fetch(url, {
-      method: 'GET',
-      headers: { ...(at ? { Authorization: `Bearer ${at}` } : {}) },
-    })
-  }
-  let res = await doFetch()
-  // Mirror request()'s 401 handling so a download on a page left open past the access-token lifetime
-  // still succeeds after a single refresh+retry.
-  if (res.status === 401 && (await refreshOnce())) {
-    res = await doFetch()
-  }
+  const res = await fetch(url, { method: 'GET', credentials: 'same-origin' })
   if (!res.ok) throw new Error(`download HTTP ${res.status}`)
   const blob = await res.blob()
   const blobUrl = URL.createObjectURL(blob)

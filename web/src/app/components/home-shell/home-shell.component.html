@@ -1,6 +1,5 @@
 <div class="shell"
      [class.mode-desktop]="mode() === 'desktop'"
-     [class.mode-tablet]="mode() === 'tablet'"
      [class.mode-mobile]="mode() === 'mobile'"
      [class.chat-open]="chatActive()"
      [class.aside-open]="asideActive()">
@@ -11,13 +10,19 @@
          title="Drag to resize; double-click to reset"></div>
   } @else {
     <div class="drawer-body">
-      <app-home-header class="header" (toggleDrawer)="nav.toggle()" />
-      <app-chat-list-pane class="list" (selectThread)="openChat($event)" />
+      @if (topSection() === 'chats') {
+        <!-- Secondary sections own their own headers; the account avatar menu is scoped to Chats and
+             opens Profile / Settings alongside the chat-list actions. -->
+        <app-home-header class="header" [onThreadListChanged]="refresh" />
+      }
+      <div class="section-content">
+        @switch (topSection()) {
+          @case ('chats') { <app-chat-list-pane class="list" (selectThread)="openChat($event)" /> }
+          @case ('settings') { <app-settings /> }
+          @case ('profile') { <app-profile-section /> }
+        }
+      </div>
     </div>
-    <!-- nav-drawer is a shell-level overlay (position:fixed host), NOT a wrapper around the list:
-         rendering it as a sibling keeps its backdrop global (full-viewport mask over the inline
-         chat too) instead of scoped to the thread-list column. -->
-    <app-nav-drawer #nav [onThreadListChanged]="refresh" />
   }
 
   <!-- primary chat surface: ChatPane is always-mounted (NO router-outlet — the NavStateMachineService
@@ -38,13 +43,14 @@
     @switch (asidePanel()) {
       @case ('profile') { <app-peer-profile /> }
       @case ('group-info') { <app-group-info /> }
-      @case ('settings') { <app-settings /> }
+      <!-- 'settings' is rendered as an inline mobile/tablet section selected from the account menu,
+           not as a chat-scoped aside overlay. -->
     }
   </div>
 
   <!-- Scrim behind the aside drawer on desktop + tablet (click → close). Mobile's aside slides over a
-       full-screen chat so no mask is needed there; the nav-drawer uses its own mat-sidenav backdrop. -->
-  @if ((mode() === 'desktop' || mode() === 'tablet') && asideActive()) {
+       full-screen chat so no mask is needed there. -->
+  @if (mode() === 'desktop' && asideActive()) {
     <div class="drawer-mask" (click)="closeAside()" aria-hidden="true"></div>
   }
 </div>

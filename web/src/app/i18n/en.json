@@ -16,6 +16,7 @@
     "ok": "OK",
     "cancel": "Cancel",
     "save": "Save",
+    "saved": "Saved",
     "back": "Back",
     "done": "Done",
     "delete": "Delete",
@@ -44,6 +45,9 @@
     "folders": "Folders",
     "logout": "Log out",
     "settings": "Settings",
+    "themeLabel": "Theme",
+    "moreAria": "More options",
+    "accountMenuAria": "Open account menu",
     "themeAria": "Theme: {{label}}",
     "languageAria": "Language: {{label}}",
     "theme": {
@@ -53,7 +57,6 @@
     }
   },
   "home": {
-    "openMenuAria": "Open menu",
     "resizerTitle": "Drag to resize; double-click to reset"
   },
   "auth": {

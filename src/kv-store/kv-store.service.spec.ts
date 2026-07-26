@@ -93,3 +93,31 @@ describe('KvStoreService KV basics', () => {
     expect(await kvStore.get('a')).toBeNull();
   });
 });
+
+describe('KvStoreService persistent entries', () => {
+  it('separates create from update and never recreates a deleted entry', async () => {
+    const kvStore = new KvStoreService();
+    await kvStore.initPersistent('session:a', 'v1', null);
+    expect(await kvStore.updatePersistent('session:a', 'v2', null)).toBe(true);
+    expect(await kvStore.getPersistent('session:a')).toBe('v2');
+
+    expect(await kvStore.delPersistent('session:a')).toBe(1);
+    expect(await kvStore.updatePersistent('session:a', 'stale', null)).toBe(false);
+    expect(await kvStore.getPersistent('session:a')).toBeNull();
+  });
+
+  it('reclaims an entry at its business expiry', async () => {
+    vi.useFakeTimers();
+    try {
+      const kvStore = new KvStoreService();
+      await kvStore.initPersistent('session:web', 'valid', Date.now() + 10_000);
+      vi.advanceTimersByTime(10_000);
+      expect(await kvStore.getPersistent('session:web')).toBeNull();
+      expect(
+        await kvStore.updatePersistent('session:web', 'stale', Date.now() + 10_000),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

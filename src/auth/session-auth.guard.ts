@@ -65,8 +65,8 @@ export class SessionAuthGuard implements CanActivate {
     // is already @Public). This is the SERVER enforcement of "can't keep using the initial password": the
     // frontend set-password screen is only the UX, this gate is the security boundary, and it is
     // login-method-agnostic (password/OTP/QR sessions all hit it). The flag rides the session-token
-    // validate cache, so a just-cleared flag (setPassword) lands within the 60s TTL — the same window the
-    // codebase already tolerates for session revocation.
+    // validation entry; setPassword deletes that entry so the cleared flag is re-read from the database
+    // on the next request.
     if (principal.mustChangePassword) {
       const isEscapeHatch = this.reflector.getAllAndOverride<boolean>(
         IS_MUST_CHANGE_PASSWORD_ESCAPE_HATCH,

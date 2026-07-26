@@ -1,7 +1,7 @@
 import { useLocation } from 'react-router-dom'
 import { useTheme } from 'next-themes'
 import { useTranslation } from 'react-i18next'
-import { Moon, Search, Sun } from 'lucide-react'
+import { Menu, Moon, Search, Sun } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { matchNav } from '@/components/layout/nav-config'
@@ -16,7 +16,7 @@ const ROLE_KEY: Record<AdminRole, 'super' | 'admin' | 'viewer'> = {
 
 /** Sticky top bar: a "section / page" breadcrumb derived from the active nav match on the left;
  *  current-admin identity chip + theme toggle on the right. */
-export function TopBar() {
+export function TopBar({ onOpenNavigation }: { onOpenNavigation: () => void }) {
   const { t } = useTranslation()
   const { pathname } = useLocation()
   const { resolvedTheme, setTheme } = useTheme()
@@ -25,12 +25,21 @@ export function TopBar() {
   const isDark = resolvedTheme === 'dark'
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b bg-background px-6 lg:px-8">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b bg-background/95 px-3 backdrop-blur sm:px-6 lg:px-8">
       <nav className="flex items-center gap-2 text-sm">
+        <Button
+          variant="ghost"
+          size="icon"
+          className="-ml-1 lg:hidden"
+          aria-label={t('topBar.openNavigation')}
+          onClick={onOpenNavigation}
+        >
+          <Menu className="size-5" />
+        </Button>
         {active ? (
           <>
-            <span className="text-muted-foreground">{t(active.group.labelKey)}</span>
-            <span className="text-muted-foreground/50">/</span>
+            <span className="hidden text-muted-foreground sm:inline">{t(active.group.labelKey)}</span>
+            <span className="hidden text-muted-foreground/50 sm:inline">/</span>
             <span className="font-medium">{t(`nav.${active.item.key}`)}</span>
           </>
         ) : (
@@ -50,8 +59,8 @@ export function TopBar() {
           <kbd className="hidden rounded border bg-muted px-1 text-[10px] md:inline">⌘K</kbd>
         </Button>
         {me.data ? (
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-muted-foreground">{me.data.name || me.data.account}</span>
+          <div className="hidden items-center gap-2 sm:flex">
+            <span className="max-w-32 truncate text-sm text-muted-foreground">{me.data.name || me.data.account}</span>
             <Badge
               variant={me.data.role === 'SUPER_ADMIN' ? 'default' : 'outline'}
               className="text-[10px]"

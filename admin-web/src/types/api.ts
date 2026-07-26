@@ -11,10 +11,7 @@ export interface ApiResult<T = unknown> {
   hasMore?: boolean
 }
 
-export interface TokenPair {
-  access_token: string
-  refresh_token: string
-}
+export interface Authenticated { authenticated: true }
 
 /** Admin login response when the account has a second factor enrolled — the password verified, but no
  *  session is issued until the challenge is confirmed (POST /admin/login/verify for TOTP/backup, or
@@ -153,10 +150,11 @@ export interface SessionListResult {
 // Admin active session entry (POST /admin/admin-sessions; joins Admin for the account; no device field)
 export interface AdminSessionListItem {
   adminId: number
-  jti: string
+  id: string
   userAgent: string | null
   ip: string | null
   createdAt: number
+  lastAccessedAt: number
   expiresAt: number
   admin: { id: number; account: string } | null
 }
@@ -616,4 +614,3 @@ export interface SaveVapidPayload {
 export interface GenerateVapidPayload {
   subject?: string
 }
-

@@ -9,7 +9,7 @@ import { ADMIN_ROLES_KEY } from './admin-roles.decorator.js';
 import { AdminRole } from '../prisma/generated/client.js';
 import { BusinessException } from '../common/business.exception.js';
 import { BusinessCode } from '../common/business-code.js';
-import type { AdminPrincipal } from './admin.jwt.strategy.js';
+import type { AdminPrincipal } from './admin-session.js';
 
 type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
 

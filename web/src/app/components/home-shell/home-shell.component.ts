@@ -3,13 +3,13 @@ import { trigger, transition, state, style, animate, type AnimationEvent } from 
 import { LayoutService } from '../../services/layout.service';
 import { NavStateMachineService, type AsidePanel } from '../../services/nav-state.service';
 import { IconRailComponent } from '../desktop/icon-rail/icon-rail.component';
-import { NavDrawerComponent } from '../nav-drawer/nav-drawer.component';
 import { ChatListPaneComponent } from '../desktop/chat-list-pane/chat-list-pane.component';
 import { ChatPaneComponent } from '../desktop/chat-pane/chat-pane.component';
 import { PeerProfileComponent } from '../peer-profile/peer-profile.component';
 import { GroupInfoComponent } from '../group-info/group-info.component';
 import { SettingsComponent } from '../settings/settings.component';
 import { HomeHeaderComponent } from '../home-header/home-header.component';
+import { ProfileSectionComponent } from '../profile-section/profile-section.component';
 import { ConversationItem } from '../../services/model';
 import { ConversationListService } from '../../services/conversation-list.service';
 
@@ -52,7 +52,7 @@ const overlaySlide = trigger('overlaySlide', [
  */
 @Component({
   selector: 'app-home-shell',
-  imports: [IconRailComponent, NavDrawerComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent],
+  imports: [IconRailComponent, ChatListPaneComponent, ChatPaneComponent, PeerProfileComponent, GroupInfoComponent, SettingsComponent, HomeHeaderComponent, ProfileSectionComponent],
   templateUrl: './home-shell.component.html',
   styleUrl: './home-shell.component.scss',
   animations: [overlaySlide],
@@ -64,12 +64,15 @@ export class HomeShellComponent {
   private readonly chatListPane = viewChild(ChatListPaneComponent)
 
   readonly mode = this.layout.mode
+  /** Active mobile/tablet home section (the account menu opens Profile or Settings). Desktop ignores it. */
+  readonly topSection = this.navState.topSection
 
   /** chat-list width (desktop), persisted across sessions. */
   readonly listWidth = signal<number>(this.readListWidth())
 
   /** Chat/aside "open" classes position the mobile overlays (and toggle the desktop drawer mask). */
   readonly chatActive = computed(() => this.navState.chatThreadId() !== undefined)
+  /** A chat-scoped overlay (peer-profile / group-info) is open. */
   readonly asideActive = computed(() => this.navState.aside().length > 0)
   /** The aside panel kind (template @switch), or undefined when no aside is open. Drawn from the topmost
    *  aside stack entry — drilling into a sub-page keeps the same `panel`, only the entry's `params` change. */
@@ -87,12 +90,15 @@ export class HomeShellComponent {
     this.mode() === 'mobile' ? (this.asideActive() ? 'mobile-open' : 'mobile-closed') : 'static',
   )
 
+  /** Guards the breakpoint effect so the transient-state reset does NOT fire on the initial mode read. */
+  private modeInitialized = false
+
   constructor() {
     // Nav state → openThreadId coordination. The state machine is the source of truth for which chat is
     // open; this effect is the single writer of openThreadId's OPEN edge (mark-read + active-row highlight
     // + the always-mounted ChatPane resolving the thread). The CLOSE edge is timing-aware: on mobile it
     // LAGS so the chat-pane keeps its data through the leave slide (the real chat slides out, then
-    // onSlideDone resets it); on desktop/tablet (no slide) it closes immediately.
+    // onSlideDone resets it); on desktop (no slide) it closes immediately.
     effect(() => {
       const tid = this.navState.chatThreadId()
       if (tid !== undefined) {
@@ -101,6 +107,15 @@ export class HomeShellComponent {
         this.convList.close()
       }
       // mobile close: deferred to onSlideDone('chat', → mobile-closed) below.
+    })
+
+    // Viewport crossed the desktop/mobile breakpoint: drop transient nav state (open dialogs, aside,
+    // in-chat search, and the active section) — the section/overlay model differs per layout — but KEEP
+    // the open chat (the user's anchor context). Skipped on the initial read (state is already default).
+    effect(() => {
+      this.mode()
+      if (!this.modeInitialized) { this.modeInitialized = true; return }
+      this.navState.resetTransientExceptChat()
     })
   }
 

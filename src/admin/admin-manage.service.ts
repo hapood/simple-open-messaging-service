@@ -95,9 +95,7 @@ export class AdminManageService {
     const outcome = await this.guardedStateChange(adminId, { kind: 'disable' });
     if (outcome.code !== BusinessCode.OK) return outcome;
     // The access token is already dead via the in-tx tokenVersion bump; refresh revocation is best-effort.
-    await this.adminAuth.revokeRefreshByAdmin(adminId, 'admin_disabled').catch(() => {
-      /* best-effort: access token already invalidated by the tokenVersion bump */
-    });
+    await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_disabled');
     return outcome;
   }
 
@@ -105,15 +103,14 @@ export class AdminManageService {
     const admin = await this.prisma.admin.findUnique({ where: { id: adminId }, select: { id: true } });
     if (!admin) return { code: BusinessCode.NOT_FOUND, message: 'admin not found' };
     await this.prisma.admin.update({ where: { id: adminId }, data: { enabled: true } });
+    await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_enabled');
     return { code: BusinessCode.OK, message: 'success' };
   }
 
   async setRole(adminId: number, dto: AdminSetRoleDto): Promise<Result> {
     const outcome = await this.guardedStateChange(adminId, { kind: 'role', role: dto.role });
     if (outcome.code !== BusinessCode.OK) return outcome;
-    await this.adminAuth.revokeRefreshByAdmin(adminId, 'admin_role_change').catch(() => {
-      /* best-effort */
-    });
+    await this.adminAuth.revokeSessionsByAdmin(adminId, 'admin_role_change');
     return outcome;
   }
 
@@ -166,10 +163,10 @@ export class AdminManageService {
 
       const data =
         change.kind === 'disable'
-          ? { enabled: false, tokenVersion: { increment: 1 } }
+          ? { enabled: false }
           : change.role === admin.role
             ? { role: change.role } // no-op role reaffirmation: no tver bump, no session kick
-            : { role: change.role, tokenVersion: { increment: 1 } };
+            : { role: change.role };
 
       await tx.admin.update({ where: { id: adminId }, data });
       return { code: BusinessCode.OK, message: 'success' };

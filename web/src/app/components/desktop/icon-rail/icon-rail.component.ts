@@ -8,13 +8,12 @@ import { ThemeService } from '../../../services/theme.service';
 import { LanguageService } from '../../../services/language.service';
 
 /**
- * Telegram-style left rail: account avatar + navigation actions (friend
- * requests / new group / folders) at the top, and the system controls (settings /
- * theme) pinned to the bottom — mirroring Telegram's drawer footer (Settings +
- * night-mode toggle in the bottom corner). Replaces the mobile home-header
- * hamburger menu on desktop. Mirrors <app-nav-drawer>: same actions and the same
- * top/bottom grouping, exposed as icon-only buttons with translated tooltips. Log
- * out lives in the profile dialog (PopupType.EDIT_PROFILE), not the rail.
+ * Telegram-style left rail (desktop): account avatar + navigation actions (friend requests / new group /
+ * folders) at the top, and the system controls (settings / theme) pinned to the bottom — mirroring
+ * Telegram's drawer footer (Settings + night-mode toggle). Mobile/tablet reach these actions via the
+ * account avatar menu (including the inline settings/profile sections); the rail is the desktop
+ * equivalent, exposed as icon-only buttons with translated tooltips. Log out lives in the profile dialog
+ * (PopupType.EDIT_PROFILE), not the rail.
  */
 @Component({
   selector: 'app-icon-rail',
@@ -29,30 +28,18 @@ import { LanguageService } from '../../../services/language.service';
         </button>
         <button class="rail-btn" (click)="friendRequests()"
           [title]="'nav.friendRequests' | transloco" [attr.aria-label]="'nav.friendRequests' | transloco">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <line x1="19" y1="8" x2="19" y2="14"/>
-            <line x1="22" y1="11" x2="16" y2="11"/>
-          </svg>
+          <app-icon [type]="AppIconType.FRIEND_REQUESTS" [style]="{ width: '24px', height: '24px' }" />
           @if (friendReqBadge()) {
             <span class="friend-badge" [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"></span>
           }
         </button>
         <button class="rail-btn" (click)="newGroup()"
           [title]="'nav.newGroup' | transloco" [attr.aria-label]="'nav.newGroup' | transloco">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
-            <circle cx="9" cy="7" r="4"/>
-            <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
-            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-          </svg>
+          <app-icon [type]="AppIconType.NEW_GROUP" [style]="{ width: '24px', height: '24px' }" />
         </button>
         <button class="rail-btn" (click)="folderEditor()"
           [title]="'nav.folders' | transloco" [attr.aria-label]="'nav.folders' | transloco">
-          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
-          </svg>
+          <app-icon [type]="AppIconType.FOLDERS" [style]="{ width: '24px', height: '24px' }" />
         </button>
       </div>
       <div class="bottom">

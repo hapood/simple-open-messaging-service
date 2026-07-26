@@ -141,37 +141,10 @@
   animation: drawer-mask-fade 180ms ease;
 }
 .mode-desktop .drawer-mask { z-index: 24; }
-.mode-tablet .drawer-mask { z-index: 19; }
 @keyframes drawer-mask-fade {
   from { opacity: 0; }
   to { opacity: 1; }
 }
-
-// ── tablet: list column | chat | aside(overlay) ──
-.mode-tablet {
-  .drawer-body {
-    flex: 0 0 38%;
-    min-width: 300px;
-    max-width: 420px;
-    /* Tablet has no .resizer, so the shell paints the 1px divider on the list column's right edge.
-       The list pane used to carry this border itself, but that doubled the desktop resizer strip
-       (1px + 4px) and pushed the grip dots 0.5px off the composite center; dividers are now
-       shell-owned. (Was on .drawer when the list lived inside app-nav-drawer; the sizing moved here
-       once the nav-drawer became a shell-level overlay sibling.) */
-    border-right: 1px solid var(--app-border);
-  }
-  .chat-slot { flex: 1 1 auto; }
-  .aside-slot {
-    position: absolute;
-    top: 0; right: 0; bottom: 0;
-    width: 340px;
-    z-index: 20;
-    background: var(--app-surface);
-    box-shadow: -2px 0 16px rgba(0, 0, 0, 0.18);
-    display: none;
-  }
-}
-.mode-tablet.aside-open .aside-slot { display: flex; }
 
 // ── mobile: list(full screen) | chat(full-screen overlay) | aside(overlay) ──
 .mode-mobile {
@@ -205,6 +178,7 @@
 // thread-list column (tablet/mobile): header + list stack and fill. Direct child of .shell now that
 // the nav-drawer is a shell-level overlay rather than the column wrapper.
 .drawer-body {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -217,7 +191,15 @@
   padding-bottom: var(--soms-safe-bottom, 0px);
 }
 .drawer-body .header { flex: 0 0 auto; }
-.drawer-body .list { flex: 1 1 auto; min-height: 0; }
+.section-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+// Each section (chat-list-pane / settings / profile-section) fills the section area and owns its scroll.
+.section-content > * { flex: 1 1 auto; min-height: 0; }
 
 // Dark theme: keep the grip dots at --app-text-faint. Light uses the darker --app-text-muted (set in the
 // .resizer ::after above) so the dots read against the --app-border bar; in dark, faint is already

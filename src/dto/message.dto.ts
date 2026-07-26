@@ -75,21 +75,30 @@ export class SendMessageDto {
  * so they never appear in (and cannot be forged via) this DTO.
  */
 export class SendMediaMetaDto {
-  @ApiProperty({ required: false, description: 'Image/video pixel width (client-probed)' })
+  @ApiProperty({
+    required: false,
+    description: 'Image/video pixel width (client-probed)',
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100000)
   w?: number;
 
-  @ApiProperty({ required: false, description: 'Image/video pixel height (client-probed)' })
+  @ApiProperty({
+    required: false,
+    description: 'Image/video pixel height (client-probed)',
+  })
   @IsOptional()
   @IsInt()
   @Min(1)
   @Max(100000)
   h?: number;
 
-  @ApiProperty({ required: false, description: 'Video/audio duration in seconds (client-probed)' })
+  @ApiProperty({
+    required: false,
+    description: 'Video/audio duration in seconds (client-probed)',
+  })
   @IsOptional()
   @IsNumber()
   @Min(0)
@@ -101,7 +110,8 @@ export class SendMediaMetaDto {
  * Stage a media send BEFORE the upload: the server creates a PendingMedia(pending) row carrying
  * clientMessageId (+ optional display meta) so a crash between staging and upload leaves an
  * attributable record. No Message or seq is created yet — the upload route promotes the stage to a
- * real Message once the bytes land. Idempotent by clientMessageId (a retried stage is a no-op).
+ * real Message once the bytes land. Reusing the id is idempotent unless retry=true explicitly moves
+ * a failed stage back to pending.
  */
 export class SendMediaDto {
   @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
@@ -112,7 +122,8 @@ export class SendMediaDto {
 
   @ApiProperty({
     enum: ['IMAGE', 'FILE', 'VIDEO', 'AUDIO'],
-    description: 'Media content type being staged (PURE_TEXT uses /send-message directly).',
+    description:
+      'Media content type being staged (PURE_TEXT uses /send-message directly).',
   })
   @IsIn(['IMAGE', 'FILE', 'VIDEO', 'AUDIO'])
   contentType!: ContentType;
@@ -126,13 +137,33 @@ export class SendMediaDto {
 
   @ApiProperty({
     required: false,
+    default: false,
+    description:
+      'Explicit retry. When true, an existing failed stage owned by this user is moved back to pending.',
+  })
+  @IsOptional()
+  @IsBoolean()
+  retry?: boolean;
+
+  @ApiProperty({
+    required: false,
     type: SendMediaMetaDto,
-    description: 'Client-probed display metadata (w/h, duration). Omitted fields are not staged.',
+    description:
+      'Client-probed display metadata (w/h, duration). Omitted fields are not staged.',
   })
   @IsOptional()
   @ValidateNested()
   @Type(() => SendMediaMetaDto)
   meta?: SendMediaMetaDto;
+}
+
+/** Query the caller's uncommitted local media sends in one conversation. */
+export class QueryMediaStagesDto {
+  @ApiProperty({ example: 12, description: 'Conversation (MessageThread) id' })
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  threadId!: number;
 }
 
 export class QueryMessagesDto {
@@ -163,7 +194,8 @@ export class QueryMessagesDto {
   @ApiProperty({
     required: false,
     example: 42,
-    description: 'Cursor row seq (keyset pagination, optional). Omit for the first page.',
+    description:
+      'Cursor row seq (keyset pagination, optional). Omit for the first page.',
   })
   @IsOptional()
   @Type(() => Number)
@@ -210,7 +242,10 @@ export class SetMutedDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({ example: true, description: 'true = mute (suppress notifications), false = unmute' })
+  @ApiProperty({
+    example: true,
+    description: 'true = mute (suppress notifications), false = unmute',
+  })
   @IsBoolean()
   muted!: boolean;
 }
@@ -223,7 +258,10 @@ export class SetPinnedDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({ example: true, description: 'true = pin to top, false = unpin' })
+  @ApiProperty({
+    example: true,
+    description: 'true = pin to top, false = unpin',
+  })
   @IsBoolean()
   pinned!: boolean;
 }
@@ -271,7 +309,10 @@ export class SearchMessagesDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({ example: 'hello', description: 'Search keyword (substring, case-insensitive)' })
+  @ApiProperty({
+    example: 'hello',
+    description: 'Search keyword (substring, case-insensitive)',
+  })
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
@@ -290,7 +331,8 @@ export class SearchMessagesDto {
   @ApiProperty({
     required: false,
     example: 42,
-    description: 'Cursor: return matches with seq < lastSeq (descending). Omit for the first page.',
+    description:
+      'Cursor: return matches with seq < lastSeq (descending). Omit for the first page.',
   })
   @IsOptional()
   @Type(() => Number)
@@ -308,7 +350,10 @@ export class RelocalizeMediaDto {
   @Min(1)
   threadId!: number;
 
-  @ApiProperty({ example: 42, description: 'Per-thread message seq to re-localize' })
+  @ApiProperty({
+    example: 42,
+    description: 'Per-thread message seq to re-localize',
+  })
   @Type(() => Number)
   @IsInt()
   @Min(1)

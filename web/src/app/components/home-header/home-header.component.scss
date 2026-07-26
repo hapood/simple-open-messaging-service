@@ -12,18 +12,48 @@
   gap: 10px;
   // Top padding = the status-bar safe-area inset, so the bar's --app-surface background extends seamlessly
   // under the status bar (edge-to-edge, no tonal strip) and the content row sits below it. --app-header-h
-  // (on .shell) already includes the inset (calc(56px + --soms-safe-top)); with border-box the content row
-  // stays exactly 56px. 0 on desktop/browser (no native injection). Right/left = 10px, bottom = 0.
+  // (on .shell) includes the inset (calc(56px + --soms-safe-top)); border-box keeps the content row 56px.
   padding: var(--soms-safe-top, 0px) 10px 0;
 }
 
-.icon-btn {
-  @include styless-button;
-}
-
 .title {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 18px;
   font-weight: 700;
   letter-spacing: 1px;
   color: var(--app-text);
+}
+
+.icon-btn {
+  position: relative;            // anchor for the .friend-badge dot
+  @include styless-button;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  padding: 4px;
+  border-radius: 8px;
+}
+.icon-btn.active { background: var(--app-hover); }
+
+.avatar {
+  display: block;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+// Unread friend-request indicator on the avatar trigger (replicates the icon-rail pattern).
+.friend-badge {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--app-danger);
+  border: 2px solid var(--app-surface);
 }

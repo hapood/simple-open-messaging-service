@@ -16,7 +16,6 @@ import { WebAuthnController } from './webauthn.controller.js';
 import { AdminAuthService } from './admin-auth.service.js';
 import { TwoFactorService } from './two-factor.service.js';
 import { WebAuthnService } from './webauthn.service.js';
-import { AdminJwtStrategy } from './admin.jwt.strategy.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
 import { AdminRolesGuard } from './admin-roles.guard.js';
 import { AdminAuditInterceptor } from './admin-audit.interceptor.js';
@@ -36,6 +35,8 @@ import { UploadModule } from '../upload/upload.module.js';
 import { KvStoreModule } from '../kv-store/kv-store.module.js';
 import { DiagnosticsModule } from '../diagnostics/diagnostics.module.js';
 import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.controller.js';
+import { LoggerModule } from '../logger/logger.module.js';
+import { LogViewerController } from '../logger/log-viewer.controller.js';
 
 @Module({
   imports: [
@@ -53,13 +54,14 @@ import { AdminDiagnosticsController } from '../diagnostics/diagnostics-admin.con
     KvStoreModule,
     // DiagnosticsService + DiagnosticsGcService back AdminDiagnosticsController (list/download/gc).
     DiagnosticsModule,
+    // LogViewerService (exported by LoggerModule) backs LogViewerController (admin log tail + history).
+    LoggerModule,
   ],
-  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController, TwoFactorController, WebAuthnController, AdminDiagnosticsController],
+  controllers: [AdminController, AdminSettingsController, AdminFederationController, AdminQuotaController, MediaAssetGcController, DashboardController, AuditController, AdminManageController, GroupManageController, TwoFactorController, WebAuthnController, AdminDiagnosticsController, LogViewerController],
   providers: [
     AdminAuthService,
     TwoFactorService,
     WebAuthnService,
-    AdminJwtStrategy,
     AdminAuthGuard,
     AdminRolesGuard,
     MediaAssetGcService,

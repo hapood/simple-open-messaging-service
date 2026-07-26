@@ -51,17 +51,13 @@ $app-gray-900: #111827;
   --app-hover:   #{$app-gray-100};   // list-item hover
   --app-active:  #{$app-gray-200};   // list-item active / selected (replaces #dddddd)
 
-  // Elevation — modal nav-drawer (mat-sidenav mode="over"). Material leaves
-  // --mat-sidenav-container-elevation-shadow at its `none` default, so an over-mode
-  // drawer gets NO shadow unless we supply one; without it the panel reads as flat,
-  // especially in dark theme. surface-elevated is the floating panel fill: identical
-  // to --app-surface in light (the shadow carries depth), and tonal-lifted with a
-  // primary tint in dark per the M3 dark-elevation overlay convention (see the dark
-  // override below + the --im-sticky-date-bg lift). The shadow is side-casting — the
-  // drawer opens from the start/left edge, so it casts to the right (mirror of the
-  // tablet aside-slot's -2px shadow in home-shell.component.scss).
+  // Elevation. --app-surface-elevated is the floating-panel fill: identical to --app-surface in light (the
+  // shadow carries depth), tonal-lifted with a primary tint in dark per the M3 dark-elevation overlay
+  // convention (see the dark override below + the --im-sticky-date-bg lift). --app-shadow-float is the
+  // drop-casting shadow for floating chrome (the bottom navigation bar); the dark override raises its
+  // alpha/spread so it registers against the deep --app-bg.
   --app-surface-elevated: var(--app-surface);
-  --app-shadow-drawer:    2px 0 16px rgba(0, 0, 0, 0.18);
+  --app-shadow-float:     0 4px 16px rgba(0, 0, 0, 0.18);
 
   // Semantic colors
   --app-danger:       #dc2626;   // error / danger (replaces #d93025 / #ba1a1a)
@@ -159,14 +155,12 @@ $app-gray-900: #111827;
   --app-hover:         #2a3942;
   --app-active:      #37424a;
 
-  // Dark elevation for the modal nav-drawer. Lift the panel fill with an 8% primary tint
-  // (M3 dark tonal elevation — the same convention as --im-sticky-date-bg) so the surface
-  // reads as a layer above the deep --app-bg, and raise the shadow's alpha/spread so the
-  // right-edge seam registers against the near-black backdrop (a 0.18 shadow disappears
-  // there). Together the tinted surface + stronger shadow restore the depth the flat
-  // --app-surface + none-shadow drawer lacked.
+  // Dark elevation. Lift the floating-panel fill with an 8% primary tint (M3 dark tonal elevation — the
+  // same convention as --im-sticky-date-bg) so the surface reads as a layer above the deep --app-bg, and
+  // raise the float shadow's alpha/spread so it registers against the near-black backdrop (a 0.18 shadow
+  // disappears there).
   --app-surface-elevated: color-mix(in srgb, var(--app-surface) 92%, var(--app-brand) 8%);
-  --app-shadow-drawer:    2px 0 24px rgba(0, 0, 0, 0.55);
+  --app-shadow-float:     0 4px 24px rgba(0, 0, 0, 0.55);
 
   // Brand & semantic, dark — the light "soft" fills (#e3f2fd / #fef2f2 / #afefc8) are near-white
   // and would glare; replace with subtle washes tinted over the dark surface.

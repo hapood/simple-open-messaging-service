@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { API_BASE } from '@/lib/constants'
-import { getAccessToken } from '@/auth/token-store'
-import { refreshOnce } from '@/auth/refresh-singleton'
+import { forceLogout } from '@/auth/force-logout'
 
 export type LogStreamState = 'connecting' | 'open' | 'reconnecting' | 'closed'
 
@@ -123,28 +122,18 @@ export function useLogStream(level: string | undefined) {
       setState('connecting')
       while (!manualClose) {
         try {
-          let token = getAccessToken()
-          if (!token) {
-            const ok = await refreshOnce()
-            if (!ok || manualClose) return
-            token = getAccessToken()
-            if (!token) return
-          }
-
           aborter = new AbortController()
           const url = `${API_BASE}/admin/logs/stream${level ? `?level=${level}` : ''}`
           const res = await fetch(url, {
             signal: aborter.signal,
-            headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' },
+            credentials: 'same-origin',
+            headers: { Accept: 'text/event-stream' },
             cache: 'no-store',
           })
 
           if (res.status === 401) {
-            // Token expired mid-session: single-flight refresh, then reopen at once (no backoff).
-            const ok = await refreshOnce()
-            if (!ok || manualClose) return
-            attempt = 0
-            continue
+            forceLogout()
+            return
           }
           if (!res.ok || !res.body) throw new Error(`SSE open failed: ${res.status}`)
 

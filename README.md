@@ -1,11 +1,16 @@
 # SOMS · Simple Open Chat Service
 
-A concise instant messaging (IM) service that provides a user system, friend/group threads, real-time message push, and file upload capabilities. The design goal is to be "easy for third-party applications to integrate".
+A self-hosted instant messaging service with accounts, friend and group threads, media messages,
+real-time delivery, push notifications, voice/video calls, administration, and server federation.
+The design goal is to remain straightforward for third-party applications to integrate.
 
-- **Backend**: NestJS 11 + Prisma 7 + PostgreSQL + SSE (Server-Sent Events, downstream push) + Passport (Local + JWT)
-- **Frontend**: Angular 18 (Standalone + Signal + experimental Zoneless), in-house Material-style component library
+- **Backend**: NestJS 11 + Prisma 7 + PostgreSQL + SSE + opaque per-device session tokens
+- **Web client**: Angular 20 (standalone components, Signals, zoneless change detection)
+- **Admin console**: React 19 + Vite
+- **Native shell**: Tauri 2, including the Android calling integration
 
-> The application codename is **SOMS** (Simple Open Message Service). The repository contains both the backend service (root directory) and the Angular frontend (`web/`).
+> The application codename is **SOMS** (Simple Open Message Service). This monorepo contains the
+> backend, user-facing web client, admin console, and Tauri native shell.
 
 ---
 
@@ -29,14 +34,16 @@ A concise instant messaging (IM) service that provides a user system, friend/gro
 
 | Module | Capabilities |
 | --- | --- |
-| Account | Registration, login, logout, JWT dual-token (access + refresh) auto-renewal, login-failure IP rate-limiting and banning |
+| Account | Password, OTP, and QR login; opaque per-device sessions; trusted devices; session revocation; brute-force protection |
 | User | Profile, search by username, batch query |
-| Friends | Send/accept friend requests (based on the `UserMessageThread` state machine), pending request list |
-| Threads | P2P threads, group threads, unified `MessageThread` abstraction |
-| Messages | Plain-text message sending, cursor-based paginated history query, real-time SSE push |
-| Groups | Create groups, invite friends to join via JWT invite links |
-| Files | Image/video/audio/general file upload (🚧 see [Project Status](#project-status)) |
-| Notifications | Notification table and notification box modeled (🚧 module not yet wired up) |
+| Friends | Local and federated friend invitations, approval, rejection, blocking, and unread badges |
+| Threads | P2P and group threads, revisions/delta sync, aliases, mute, pin, and history clearing |
+| Messages | Text and media messages, cursor pagination, search, read state, SSE delivery, and link previews |
+| Groups | Creation, membership, roles, invitations, ownership transfer, and federated groups |
+| Media | Image, video, audio, file and avatar upload; content-addressed storage and access control |
+| Notifications | In-app notifications, Web Push, FCM, missed-message summaries, and notification actions |
+| Calls | Android-native one-to-one audio/video calls with SSE signaling and optional TURN credentials |
+| Administration | RBAC, audit logs, users/groups/media, quotas, diagnostics, federation, 2FA, and WebAuthn |
 
 ## Tech Stack
 
@@ -47,49 +54,46 @@ A concise instant messaging (IM) service that provides a user system, friend/gro
 | Framework | NestJS 11 |
 | Database | PostgreSQL (Prisma 7 ORM, Rust-free client + `@prisma/adapter-pg` driver adapter) |
 | Real-time | SSE (`GET /api/v1/events`, `text/event-stream`) — a one-way downstream-only push channel |
-| Authentication | Passport `local` + `jwt`, `@nestjs/jwt`, `argon2` password hashing |
-| Utilities | `dayjs` for time, `jsonwebtoken` for group invite tokens |
+| Authentication | Passport Local + opaque database-backed session tokens + Argon2id password hashing |
+| Federation | RFC 9421-style HTTP message signatures, Ed25519 keys, discovery, quotas, and media transfer |
+| Real-time / push | SSE, Web Push, FCM, and call signaling |
 
 **Frontend**
 
 | Category | Choice |
 | --- | --- |
-| Framework | Angular 18 (Standalone Components, no NgModule) |
-| Change Detection | `provideExperimentalZonelessChangeDetection()` (no zone.js) |
+| Framework | Angular 20 (standalone components) |
+| Change Detection | Zoneless Angular change detection |
 | State | Angular Signal + RxJS |
-| UI | In-house Material Design-style components (no Angular Material dependency) |
-| Real-time | `@microsoft/fetch-event-source` (SSE client, controllable reconnection) |
+| UI | In-house components plus Angular CDK/Material primitives |
+| Real-time | Fetch-based SSE worker with reconnect and liveness handling |
 
 ## Project Structure
 
 ```
 simple-open-chat-service/
 ├── src/                      # Backend NestJS service
-│   ├── main.ts               # App entry, listens on port 3000, CORS + helmet + global ValidationPipe
+│   ├── main.ts               # App entry and Fastify adapter
+│   ├── bootstrap.ts          # HTTP plugins, validation, CORS, static/media serving
 │   ├── app.module.ts         # Root module
-│   ├── config.ts             # Global configuration (domain)
 │   ├── prisma.service.ts     # PrismaClient wrapper
-│   ├── auth/                 # Authentication: local/jwt strategies, guards, token management
-│   ├── controller/           # HTTP controllers: auth/user/message/group/file
-│   ├── message/              # Messages and friend-request state machine
-│   ├── user/                 # User queries and registration
-│   ├── group/                # Groups and invite tokens
-│   ├── gateway/              # SSE downstream push (events.controller + sse.service)
-│   ├── notify/               # Notifications (🚧 not yet wired up)
-│   ├── user-manage/          # User management (🚧 not yet wired up)
-│   └── file/                 # File upload (🚧 not yet wired up)
+│   ├── auth/                 # Session, password, OTP, QR, throttling and guards
+│   ├── controller/           # User-facing HTTP controllers
+│   ├── message/              # Messages and fan-out
+│   ├── gateway/              # Authenticated SSE downstream
+│   ├── upload/               # Media ingest, storage and access control
+│   ├── notification/         # Notification query/action logic
+│   ├── calls/                # Call lifecycle, signaling and TURN credentials
+│   ├── federation/           # Discovery, signatures, S2S protocol and delivery
+│   └── admin/                # Administration, RBAC, audit, 2FA and WebAuthn
 ├── prisma/
 │   ├── schema.prisma         # Data model definitions
 │   └── migrations/           # Database migrations
 ├── test/                     # e2e tests
 ├── web/                      # Angular frontend
-│   └── src/app/
-│       ├── app.config.ts     # Global providers (zoneless / router / http / interceptors)
-│       ├── app.routes.ts     # Routes
-│       ├── services/         # HTTP services, SSE service, routing/popup services
-│       ├── pages/            # Page components (home / login / register / ...)
-│       └── components/       # Business components + in-house Material components
-├── config.ts
+├── admin-web/                # React administration console
+├── src-tauri/                # Tauri desktop/mobile shell and Android native code
+├── deploy/                   # Public and NAS Docker Compose templates
 └── package.json
 ```
 
@@ -97,7 +101,7 @@ simple-open-chat-service/
 
 ### Prerequisites
 
-- Node.js ≥ 18 (Node 24 in the development environment)
+- Node.js 24 recommended
 - An accessible **PostgreSQL** instance
 
 ### 1. Prepare the Database Connection
@@ -116,6 +120,9 @@ npm install
 
 # Frontend
 npm install --prefix web
+
+# Admin console
+npm install --prefix admin-web
 ```
 
 ### 3. Initialize the Database
@@ -135,11 +142,14 @@ npx prisma migrate deploy
 # Backend (listens on http://localhost:3000)
 npm run start:dev
 
-# Frontend (in another terminal, default http://localhost:4200)
+# Frontend (another terminal, default http://localhost:4200)
 npm start --prefix web
+
+# Admin console (another terminal)
+npm run dev --prefix admin-web
 ```
 
-The frontend accesses the backend via `//<current-hostname>:3000` by default (see [Configuration](#configuration)).
+`npm run dev` starts the bundle watcher, API, web client, and admin console together.
 
 ## Configuration
 
@@ -147,43 +157,50 @@ The frontend accesses the backend via `//<current-hostname>:3000` by default (se
 | --- | --- | --- |
 | `.env` → `DATABASE_URL` | PostgreSQL connection string | Read by Prisma, required |
 | `.env` → `SOMS_DOMAIN` | Public domain of this service (federation identity) | Required (`@user@<domain>`, host of `/.well-known/soms`) |
-| `.env` → `APP_DOMAIN` | Service domain | Recommended reference; actually used by `config.ts`'s `server.domain` |
-| `.env` → `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET` / `JWT_ADMIN_SECRET` | JWT signing secrets | Optional; if unset, auto-generated on first startup into `./data/jwt-*.key` (no longer fail-fast) |
-| `.env` → `CORS_ORIGIN` | Allowed frontend origins (comma-separated) | Falls back to dev default `http://localhost:4200` when unset; must be explicitly configured in production |
-| `web/src/app/services/constants.ts` | `apiPrefix` | Address prefix for the frontend to reach the backend, default `//${location.hostname}:3000` |
+| `.env` → `ADMIN_BOOTSTRAP_PASSWORD` | Password used to create the first `admin` account when no administrator exists |
+| `.env` → `SOMS_TLS_MODE` | Public origin mode: `standard`, `custom`, or `disabled` |
+| `.env` → `SOMS_LAN_DOMAIN` | Optional alternate LAN hostname used by native clients |
+| `.env` → `SOMS_S2S_KEY_PATH` | Optional path for the persisted federation Ed25519 key |
+| `.env` → `SOMS_STUN_URLS` / `SOMS_TURN_*` | Optional WebRTC ICE/TURN configuration |
+| `.env` → `GOOGLE_APPLICATION_CREDENTIALS` / `FIREBASE_CLIENT_CONFIG` | Optional FCM server/client configuration |
+| `.env` → `LOG_LEVEL` / `LOG_DIR` | Structured logging level and directory |
+| `.env` → `TLS_CERT` / `TLS_KEY` | Optional direct TLS/HTTP2 mode; normally omitted behind Caddy |
 
 ## Architecture and Design
 
 See [docs/overview/architecture.md](docs/overview/architecture.md) for details. Key points:
 
-- **Unified response format**: All HTTP endpoints return `{ status, message, data? }`, where `status: 0` indicates success.
+- **Unified response format**: HTTP endpoints return `{ code, message, data? }`, where `code: 0` indicates success.
 - **Thread abstraction**: Both P2P and groups are abstracted as `MessageThread`; each user holds one `UserMessageThread` record per thread, whose `status` field drives the thread lifecycle (pending / established / blocked / deleted).
-- **HTTP handles "writes and queries", SSE handles "push"**: Message sending goes through HTTP; the server pushes the **complete message body** one-way via SSE (`GET /api/v1/events`), so the client can render it on receipt without a second fetch. SSE auth reuses the `Authorization: Bearer <access_token>` header (the same `JwtAuthGuard` as HTTP), never in the URL.
-- **Dual-token auth**: access_token (15 minutes, in memory) + refresh_token (14 days, stored), with automatic renewal on the frontend.
+- **HTTP handles writes and queries; SSE handles push**: the server pushes complete message and lifecycle events through `GET /api/v1/events`.
+- **Session authentication**: browsers use a `SameSite=Strict`, HTTP-only session cookie; native clients use the same opaque token as a Bearer credential. Untrusted sessions have a sliding 14-day deadline, while explicitly trusted native/desktop sessions remain valid until revoked.
+- **Secure by default**: a global session guard protects routes unless they explicitly opt out or use the separate admin/S2S authentication mechanism.
 
 ## API and Real-Time Communication Quick Reference
 
-See [docs/api/api.md](docs/api/api.md) for the full documentation. Except for the SSE downstream stream (`GET /api/v1/events`), all read/write endpoints use `POST`.
+See [docs/api/api.md](docs/api/api.md) for the full documentation. Business commands and queries
+primarily use `POST`; streaming, configuration, health, and selected resource endpoints use
+`GET`/`DELETE`.
 
 **HTTP (partial)**
 
 | Method | Path | Auth | Description |
 | --- | --- | --- | --- |
-| POST | `/auth/login` | Local | Login, returns dual tokens |
-| POST | `/auth/renew-access` | – | Refresh access_token |
-| POST | `/auth/renew-refresh` | – | Refresh both access + refresh |
-| POST | `/auth/logout` | JWT | Logout |
+| POST | `/auth/login` | Public | Password login, returns one per-device session token |
+| POST | `/auth/otp/login` | Public | Login with a one-time code |
+| POST | `/auth/qr/create`, `/auth/qr/poll` | Public | Create or poll a QR login challenge |
+| POST | `/auth/logout` | Public | Revoke the presented session and clear cookies |
+| POST | `/auth/logout-all` | Session | Revoke all sessions |
+| POST | `/auth/sessions`, `/revoke-session` | Session | List or revoke devices |
 | POST | `/user/register` | – | Register |
-| POST | `/user/my-profile` | JWT | Current user profile |
-| POST | `/user/send-friend-request` | JWT | Send a friend request |
-| POST | `/user/approve-friend-request` | JWT | Accept a friend request |
-| POST | `/user/query-thread/valid` | JWT | Valid thread list |
-| POST | `/user/query-thread/to-pending` | JWT | Pending friend requests |
-| POST | `/send-message` | JWT | Send a message |
-| POST | `/query-messages` | JWT | Paginated history message query |
-| POST | `/group/create` | JWT | Create a group |
-| POST | `/group/invite` | JWT | Invite a friend to a group |
-| POST | `/group/join` | JWT | Join a group via token |
+| POST | `/user/my-profile` | Session | Current user profile |
+| POST | `/invite/friend`, `/accept`, `/reject` | Session | Friend invitation lifecycle |
+| POST | `/user/query-thread/delta` | Session | Incremental thread synchronization |
+| POST | `/send-message`, `/send-media` | Session | Send text or media |
+| POST | `/query-messages`, `/search-messages` | Session | History and search |
+| POST | `/group/create`, `/invite`, `/leave` | Session | Group lifecycle |
+| POST | `/upload/*` | Session | Upload images, avatars, files, video, or audio |
+| GET | `/events` | Session | SSE event stream |
 
 **SSE Events (backend → frontend, `GET /api/v1/events`)**
 
@@ -191,8 +208,11 @@ See [docs/api/api.md](docs/api/api.md) for the full documentation. Except for th
 | --- | --- |
 | `NEW_MESSAGE` | New message notification; `data` is the complete message body (`threadId` / `id` / `content` / `createdAt`…), rendered by the frontend on receipt |
 | `FORCE_LOGOUT` | All-device logout / password change / admin force-offline; the frontend disconnects and forces a re-login |
+| `CALL_EVENT` / `CALL_SIGNAL` | Call lifecycle and WebRTC signaling |
 
-> SSE auth is not in-frame — it goes over HTTP: the `Authorization: Bearer <access_token>` header. If it expires, the connection is rejected (401) by `JwtAuthGuard`, and the frontend automatically renews and reconnects. Hence there is no `AUTH` frame as in the WebSocket era.
+> SSE authentication is part of the HTTP request: same-origin browsers send the session cookie,
+> while native/desktop clients send `Authorization: Bearer <session_token>`. Credentials are never
+> placed in the URL.
 
 ## Development Commands
 
@@ -215,6 +235,14 @@ npx prisma studio       # Visual data browser
 npm start --prefix web          # Development server (ng serve)
 npm run build --prefix web      # Production build
 npm test --prefix web           # Karma tests
+```
+
+**Admin console**
+
+```bash
+npm run dev --prefix admin-web
+npm run build --prefix admin-web
+npm test --prefix admin-web
 ```
 
 ## Deployment (Docker)
@@ -276,13 +304,11 @@ Use the slim image and run it behind your own nginx/Caddy/Traefik. The app speak
 
 ## Project Status
 
-The core flows of this project (registration/login, friends, P2P/group threads, message send/receive, and real-time push) are functional. The following parts are still under development; please note before integrating:
-
-- 🚧 **File upload**: The original `file` domain dead code was removed domain-wide in P1b (`src/controller/file.controller.ts` no longer exists); reimplementation is deferred to P3 (persist to Message + return an accessible URL).
-- 🚧 **Notification system** (`src/notify`): `NotifyModule` is written but not imported into `AppModule`; Prisma already models `Notify` / `userNotiBox`, but the code does not yet consume them.
-- 🚧 **User management** (`src/user-manage`): The service has `getUserList`, but the module is not wired up and has no controller endpoints.
-- ✅ **Hardcoded secrets** (fixed in P0): JWT access/refresh/admin signing secrets are now externalized; when not explicitly set, they are auto-generated on first startup into `./data/jwt-*.key` (no longer fail-fast). Group invites changed to the `GROUP_INVITE` message type, requiring no signing secret.
-- ✅ **Frontend route guards**: `authGuard` / `guestGuard` are mounted on routes (home/nav use authGuard, login/register use guestGuard).
+The account, friend, thread, message, group, upload, notification, administration, and federation
+flows are implemented and covered by unit and/or end-to-end tests. Android audio/video calling is
+actively evolving; see [android-calls-followup.md](docs/roadmap/android-calls-followup.md) for its
+remaining platform work. Roadmap documents describe future work and are not statements that the
+corresponding current modules are absent.
 
 ## More Documentation
 

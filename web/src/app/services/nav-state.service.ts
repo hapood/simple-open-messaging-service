@@ -1,15 +1,21 @@
 import { computed, effect, inject, Injectable, signal, type Type } from '@angular/core';
 
-/** The aside auxiliary panel kinds (the old `(aside:...)` outlet segments, now signal-driven). */
-export type AsidePanel = 'profile' | 'group-info' | 'settings';
+/** The chat-scoped aside overlay kinds — peer-profile / group-info, opened from within a chat. Single-depth
+ *  (no drill-in here); the Settings sub-page has its own {@link NavStateMachineService.settingsCategoryStack}
+ *  state, so this type is purely overlay panels. */
+export type AsidePanel = 'profile' | 'group-info';
 
-/** One entry on the aside navigation stack. The aside is now a STACK so a panel can drill into
- *  sub-pages (e.g. Settings root → a category page → a sub-category). `params` carries per-entry
- *  context the rendered component reads (e.g. `{ category: 'notifications' }` for Settings). */
+/** The active mobile home section (`'chats'` = conversation list; `'settings'` / `'profile'` are opened
+ *  from the account menu and swap the section content inline). Desktop never reads this — its icon-rail
+ *  branch is independent. NOTE: the `'profile'` here is the SELF profile section, distinct from
+ *  {@link AsidePanel}'s `'profile'` (a chat-scoped PEER profile overlay) — TypeScript keeps them apart; the
+ *  overlap is only lexical. */
+export type TopSection = 'chats' | 'settings' | 'profile';
+
+/** One entry on the aside overlay stack. Single-depth — peer-profile / group-info are root-only. */
 export interface AsideEntry {
   readonly id: number;
   readonly panel: AsidePanel;
-  readonly params?: Record<string, unknown>;
 }
 
 /** Transient pane kinds stacked above the chat/aside layers. The host template renders each by `kind`. */
@@ -29,7 +35,7 @@ export interface PaneEntry {
   /** Delivered the close result (dialog) or `undefined` (back/cancel). */
   readonly onResult?: (result: unknown) => void;
   /** Dialog-only: render the desktop centered card wider than the default 480px (e.g. a two-column
-   *  Settings dialog). Ignored on tablet/mobile (full-screen sheet). */
+   *  Settings dialog). Ignored on mobile (full-screen sheet). */
   readonly wide?: boolean;
 }
 
@@ -43,29 +49,27 @@ let nextAsideId = 0;
  * deep, so browser-back naturally exits on desktop/PWA), and mobile intercepts hardware back natively
  * and calls {@link back}.
  *
- * Layered model: `chatThreadId` (base) ← `searchOpen` ← `aside` (a stack) ← `paneStack` (topmost last).
- * {@link back} peels one layer: topmost pane → one aside entry → search → chat → nav drawer → (home:
- * returns `false`, caller exits). The aside being a stack means a panel can drill into sub-pages and back
- * pops one level. The nav drawer is a home-screen overlay (only ever open at home) peeled last, before exit.
+ * Layered model (back peels top-down): paneStack → aside → search → chat → settingsCategoryStack → topSection.
+ * `settingsCategoryStack` (the Settings drill-down) and `chatThreadId` are mutually exclusive in practice —
+ * the settings section is mobile-only and you can't be on it while a chat is open — so their relative order
+ * in `back()` never matters. `topSection` is peeled last, before exit.
  *
  * This service owns only the navigation state + the URL mirror. `ConversationListService.openThreadId`
  * remains the chat data-layer signal, coordinated by `HomeShellComponent` (which reads `chatThreadId` —
  * with the mobile close-slide lag — the way it used to read the routed thread id). All other readers
  * (ChatPane, thread-list, peer-profile, group-info) are unchanged.
  *
- * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel, the in-chat search field,
- * AND the nav drawer are session-state, NOT mirrored — they aren't deep-linkable, and an `(aside:…)` URL
- * segment would make the router try to match an auxiliary outlet we no longer have.
+ * URL mirror covers the chat thread only (`/` or `/chat/N`). The aside panel, the in-chat search field, the
+ * top-level section, and the settings category are session-state, NOT mirrored — they aren't deep-linkable,
+ * and an `(aside:…)` URL segment would make the router try to match an auxiliary outlet we no longer have.
  */
 @Injectable({ providedIn: 'root' })
 export class NavStateMachineService {
   /** The open chat thread id, or `undefined` at the conversation list (home). */
   readonly chatThreadId = signal<number | undefined>(undefined);
-  /** The aside navigation stack. Empty = closed; one entry = a panel at root depth; more = drilled-in
-   *  sub-pages (top = last entry). Renderers read the TOP entry's `panel` (and `params`). */
+  /** The aside overlay stack (peer-profile / group-info). Single-depth — 0 or 1 entry. */
   readonly aside = signal<readonly AsideEntry[]>([]);
-  /** The topmost aside entry, or `undefined` when the aside is closed. The single thing renderers +
-   *  components read (panel kind + drill-in params). */
+  /** The topmost aside entry, or `undefined` when the aside is closed. */
   readonly asideTop = computed(() => {
     const s = this.aside();
     return s.length ? s[s.length - 1] : undefined;
@@ -74,12 +78,22 @@ export class NavStateMachineService {
    *  `aside`, NOT mirrored to the URL); {@link back} peels it before the chat so hardware-back exits
    *  search before leaving the thread. */
   readonly searchOpen = signal(false);
-  /** Whether the left nav drawer is open. A home-screen session-state overlay (NOT mirrored to the URL);
-   *  {@link back} peels it at the home level so hardware-back closes the drawer before exiting the app.
-   *  Owned here — not inside MatSidenav — precisely so `back()` can see it (the bug it fixes: back used to
-   *  skip the drawer and exit the app). The drawer's `[opened]` binding mirrors this signal two-way
-   *  (`(openedChange)` writes back), so backdrop-click and ESC closes stay in sync. */
-  readonly drawerOpen = signal(false);
+  /** The active mobile home section (`'chats'` = conversation list; `'settings'` / `'profile'` are opened
+   *  from the account menu and swap the section content inline). Desktop never reads this. Switching
+   *  sections clears the aside + settings drill-down (clean slate). {@link back} peels a non-chats section
+   *  back to `'chats'` before exit. */
+  readonly topSection = signal<TopSection>('chats');
+  /** The Settings drill-down stack (mobile settings section). Each entry is an opaque category id; the
+   *  settings component owns the id→category mapping, keeping this service decoupled from the category
+   *  registry. A STACK so drill-in can be multi-level (root → category → sub-category → …) and {@link back}
+   *  pops one level at a time. Owned here — NOT on the aside stack — so the aside stays a pure chat-scoped
+   *  overlay concept. Mobile-only (desktop Settings is a dialog). */
+  readonly settingsCategoryStack = signal<readonly string[]>([]);
+  /** The active (topmost) Settings category, or `undefined` at the root list. What readers display. */
+  readonly settingsCategoryTop = computed(() => {
+    const s = this.settingsCategoryStack();
+    return s.length ? s[s.length - 1] : undefined;
+  });
   /** Transient pane stack (dialogs + overlays). Top = last entry. */
   readonly paneStack = signal<readonly PaneEntry[]>([]);
 
@@ -104,37 +118,28 @@ export class NavStateMachineService {
   // --- chat layer ---
   /** Open a chat thread. Closing a chat-scoped aside on a thread switch mirrors the old openChat (which
    *  cleared the `(aside:…)` outlet): a group-info/peer-profile panel belongs to the previous thread.
-   *  Also clears the pane stack, the in-chat search, and the nav drawer — a thread switch scopes away any
-   *  open dialog/overlay/search/drawer. */
+   *  Also clears the pane stack and the in-chat search — a thread switch scopes away any open
+   *  dialog/overlay/search. */
   openChat(threadId: number): void {
     this.closeAllPanes();
     if (this.chatThreadId() !== threadId) this.aside.set([]);
     this.searchOpen.set(false);
-    this.drawerOpen.set(false);
     this.chatThreadId.set(threadId);
   }
-  /** Leave the chat → home. Also closes the aside + search + nav drawer + clears the pane stack. */
+  /** Leave the chat → home. Also closes the aside + search and clears the pane stack. */
   closeChat(): void {
     this.closeAllPanes();
     this.chatThreadId.set(undefined);
     this.aside.set([]);
     this.searchOpen.set(false);
-    this.drawerOpen.set(false);
   }
 
   // --- aside layer ---
-  /** Open a panel at ROOT depth, replacing any current aside (preserves the old single-panel
-   *  semantics: opening profile while settings is open swaps it, doesn't stack). */
+  /** Open a chat-scoped overlay panel (peer-profile / group-info), replacing any current aside. */
   openAside(panel: AsidePanel): void {
     this.aside.set([{ id: nextAsideId++, panel }]);
   }
-  /** Drill one level deeper within the current aside (sub-page). Appends to the stack so {@link back}
-   *  peels it one level at a time. Used by Settings category rows (and later, sibling panel drill-in). */
-  pushAside(panel: AsidePanel, params?: Record<string, unknown>): void {
-    this.aside.update((s) => [...s, { id: nextAsideId++, panel, params }]);
-  }
-  /** Close the entire aside (clears every stacked entry). Bound to the desktop/tablet scrim click and
-   *  to the close affordances of panels that have no drill-in. */
+  /** Close the aside (bound to the desktop scrim click). */
   closeAside(): void {
     this.aside.set([]);
   }
@@ -147,10 +152,20 @@ export class NavStateMachineService {
     this.searchOpen.set(false);
   }
 
-  // --- nav drawer layer ---
-  openDrawer(): void { this.drawerOpen.set(true); }
-  closeDrawer(): void { this.drawerOpen.set(false); }
-  toggleDrawer(): void { this.drawerOpen.update((v) => !v); }
+  // --- settings section drill-down (mobile) ---
+  /** Drill one level deeper into Settings (pushes onto {@link settingsCategoryStack}). Multi-level: root →
+   *  category → sub-category → …; {@link back} pops one level at a time. */
+  openSettingsCategory(categoryId: string): void {
+    this.settingsCategoryStack.update((s) => [...s, categoryId]);
+  }
+
+  /** Switch the active mobile section. Clears the aside + settings drill-down so each section starts
+   *  clean. */
+  setTopSection(section: TopSection): void {
+    this.topSection.set(section);
+    this.aside.set([]);
+    this.settingsCategoryStack.set([]);
+  }
 
   // --- transient pane layer ---
   /** Push a pane; returns its id (pass to {@link closePane}). */
@@ -179,10 +194,22 @@ export class NavStateMachineService {
     for (let i = stack.length - 1; i >= 0; i--) stack[i].onResult?.(undefined);
   }
 
+  /** Reset every transient nav layer (open dialogs, the aside, in-chat search, the settings drill-down, and
+   *  the active section) but KEEP {@link chatThreadId}. Called when the viewport crosses the desktop/mobile
+   *  breakpoint: the section / overlay model differs per layout, so transient state that doesn't make sense
+   *  in the new layout is dropped, while the open chat — the user's anchor context — survives. */
+  resetTransientExceptChat(): void {
+    this.closeAllPanes();
+    this.aside.set([]);
+    this.searchOpen.set(false);
+    this.settingsCategoryStack.set([]);
+    this.topSection.set('chats');
+  }
+
   /**
-   * Peel one layer: topmost pane → aside → search → chat → nav drawer → home. Returns whether a layer was
-   * consumed. `false` (at home) means the mobile caller should exit the app; on desktop/PWA browser-back
-   * has already exited (history is flat).
+   * Peel one layer: topmost pane → aside → search → chat → settings sub-page → top section → home. Returns
+   * whether a layer was consumed. `false` (at home) means the mobile caller should exit the app; on
+   * desktop/PWA browser-back has already exited (history is flat).
    */
   back(): boolean {
     const stack = this.paneStack();
@@ -193,9 +220,8 @@ export class NavStateMachineService {
       return true;
     }
     if (this.aside().length > 0) {
-      // Peel one aside entry: a drilled-in sub-page returns to its parent; the root entry popping
-      // empties the stack and closes the aside entirely.
-      this.aside.update((s) => s.slice(0, -1));
+      // Close the chat-scoped overlay (single-depth — peeling the one entry empties the stack).
+      this.aside.set([]);
       return true;
     }
     // In-chat search is the innermost overlay (it lives in the chat header): peel it right before the
@@ -208,10 +234,15 @@ export class NavStateMachineService {
       this.closeChat();
       return true;
     }
-    // The nav drawer is a home-screen overlay — it's only ever open at home (opening a chat/aside/dialog
-    // closes it first), so it's the last layer to peel before the app exits.
-    if (this.drawerOpen()) {
-      this.drawerOpen.set(false);
+    // A drilled Settings level peels one stack entry (sub-page → its parent; the root entry popping leaves
+    // the root list, then the next back falls through to the topSection check).
+    if (this.settingsCategoryStack().length > 0) {
+      this.settingsCategoryStack.update((s) => s.slice(0, -1));
+      return true;
+    }
+    // A non-chats mobile section peels back to Chats before exit.
+    if (this.topSection() !== 'chats') {
+      this.setTopSection('chats');
       return true;
     }
     return false;

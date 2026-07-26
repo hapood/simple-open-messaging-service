@@ -295,7 +295,6 @@ export class WebAuthnService {
           data: { webauthnEnabled: false },
         });
       }
-      await tx.admin.update({ where: { id: adminId }, data: { tokenVersion: { increment: 1 } } });
     });
     return { remaining };
   }

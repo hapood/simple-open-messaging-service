@@ -7,8 +7,7 @@ import { FitDialogDirective } from './fit-dialog.directive';
 // zoneless project has no zone.js → fakeAsync/tick unavailable; use real timers + async/await waits.
 // Bindings always go through signals: under zoneless dev mode, plain properties + manual detectChanges trigger NG0100.
 
-const DESKTOP_Q = '(min-width: 1280px)';
-const WIDE_Q = '(min-width: 768px)';
+const DESKTOP_Q = '(min-width: 1024px)';
 
 /** Build a minimal usable MediaQueryList (CDK MediaMatcher only reads .matches), matching layout.service.spec. */
 function fakeMql(query: string, matches: boolean): MediaQueryList {
@@ -72,7 +71,7 @@ describe('FitDialogDirective', () => {
   }
 
   it('desktop sets minHeight floor on open, locks after settle (>= 200)', async () => {
-    matches[DESKTOP_Q] = true; matches[WIDE_Q] = true;
+    matches[DESKTOP_Q] = true;
     const f = create();
     expect(hostEl(f).style.height).toBe('200px');     // ngOnInit sets the minHeight floor immediately, no auto jump
     await fireAndSettle();
@@ -82,7 +81,7 @@ describe('FitDialogDirective', () => {
   });
 
   it('caps to maxHeight (0.8·innerHeight) when content is very tall', async () => {
-    matches[DESKTOP_Q] = true; matches[WIDE_Q] = true;
+    matches[DESKTOP_Q] = true;
     const f = create();
     f.componentInstance.contentH.set(99999);
     f.detectChanges();
@@ -92,7 +91,7 @@ describe('FitDialogDirective', () => {
   });
 
   it('after lock, content changes do not recompute (locked)', async () => {
-    matches[DESKTOP_Q] = true; matches[WIDE_Q] = true;
+    matches[DESKTOP_Q] = true;
     const f = create();
     await fireAndSettle();
     const locked = hostEl(f).style.height;
@@ -104,14 +103,14 @@ describe('FitDialogDirective', () => {
   });
 
   it('mobile/tablet (non-desktop) is entirely no-op, sets no height', async () => {
-    matches[DESKTOP_Q] = false; matches[WIDE_Q] = false;
+    matches[DESKTOP_Q] = false;
     const f = create();
     await fireAndSettle();
     expect(hostEl(f).style.height).toBe('');
   });
 
   it('custom opts override default min/max', async () => {
-    matches[DESKTOP_Q] = true; matches[WIDE_Q] = true;
+    matches[DESKTOP_Q] = true;
     const f = create();
     f.componentInstance.optsVal.set({ minHeight: 300, maxHeight: 400 });
     f.componentInstance.contentH.set(50);

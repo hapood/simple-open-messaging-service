@@ -16,6 +16,7 @@
     "ok": "确定",
     "cancel": "取消",
     "save": "保存",
+    "saved": "已保存",
     "back": "返回",
     "done": "完成",
     "delete": "删除",
@@ -44,6 +45,9 @@
     "folders": "分组",
     "logout": "退出登录",
     "settings": "设置",
+    "themeLabel": "主题",
+    "moreAria": "更多选项",
+    "accountMenuAria": "打开账户菜单",
     "themeAria": "主题：{{label}}",
     "languageAria": "语言：{{label}}",
     "theme": {
@@ -53,7 +57,6 @@
     }
   },
   "home": {
-    "openMenuAria": "打开菜单",
     "resizerTitle": "拖动以调整大小；双击恢复默认"
   },
   "auth": {

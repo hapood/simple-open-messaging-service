@@ -63,7 +63,6 @@ async function setup(o: Overrides = {}): Promise<{
     userId: 42,
     role: 'SUPER_ADMIN',
     enabled: o.adminEnabled ?? true,
-    tokenVersion: 3,
     twoFactorEnabled: o.twoFactorEnabled ?? false,
     webauthnEnabled: o.webauthnEnabled ?? false,
     twoFactorSecretCipher: o.twoFactorEnabled ? cipher : null,
@@ -88,7 +87,7 @@ async function setup(o: Overrides = {}): Promise<{
       findUnique: vi.fn(async () => (o.adminPresent === false ? null : admin)),
       update: vi.fn(async () => ({})),
     },
-    adminRefreshToken: { create: vi.fn(async (args: { data: unknown }) => ({ ...args.data, id: 1 })) },
+    adminSession: { create: vi.fn(async (args: { data: unknown }) => ({ ...args.data, id: 1 })) },
     twoFactorBackupCode: {
       // consume is now an indexed findFirst by codeHash; return the seeded row iff the HMAC matches.
       findFirst: vi.fn(
@@ -146,13 +145,12 @@ describe('AdminAuthService two-factor orchestration', () => {
 
   // ── login branching ───────────────────────────────────────────────────────────
 
-  it('issues a token pair on correct password when 2FA is NOT enabled', async () => {
+  it('issues an opaque session on correct password when 2FA is NOT enabled', async () => {
     const { svc } = await setup({ twoFactorEnabled: false });
     const r = await svc.login('admin', PASSWORD);
     expect('twoFactorRequired' in r).toBe(false);
-    expect(typeof r.access_token).toBe('string');
-    expect(typeof r.refresh_token).toBe('string');
-    expect(r.access_token.length).toBeGreaterThan(0);
+    expect(typeof r.sessionToken).toBe('string');
+    expect(r.sessionToken.length).toBeGreaterThan(32);
   });
 
   it('returns a 2FA challenge (no tokens) on correct password when 2FA IS enabled', async () => {
@@ -193,8 +191,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     const { svc, prisma, secret, challengeToken } = await setup({ twoFactorEnabled: true });
     const token = await challengeToken();
     const r = await svc.verifyLogin(token, codeFor(secret), undefined);
-    expect(typeof r.access_token).toBe('string');
-    expect(typeof r.refresh_token).toBe('string');
+    expect(typeof r.sessionToken).toBe('string');
     // The accepted step counter was written back as the replay guard.
     const update = (prisma.admin.update as ReturnType<typeof vi.fn>).mock.calls[0][0].data as Record<
       string,
@@ -225,7 +222,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     });
     const token = await challengeToken();
     const r = await svc.verifyLogin(token, undefined, 'abcd-efgh-ijkl-mnop'); // lowercase + dash → same bare
-    expect(typeof r.access_token).toBe('string');
+    expect(typeof r.sessionToken).toBe('string');
   });
 
   it('rejects an invalid/expired challenge token with TWO_FACTOR_CHALLENGE_EXPIRED', async () => {
@@ -263,7 +260,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     if ('twoFactorRequired' in r) expect(r.factors).toEqual({ totp: true, webauthn: true });
   });
 
-  it('login issues a token pair directly when no second factor is enrolled', async () => {
+  it('login issues an opaque session directly when no second factor is enrolled', async () => {
     const { svc } = await setup({}); // both flags default false
     const r = await svc.login('admin', PASSWORD);
     expect('twoFactorRequired' in r).toBe(false);
@@ -273,8 +270,7 @@ describe('AdminAuthService two-factor orchestration', () => {
     const { svc, challengeToken } = await setup({ webauthnEnabled: true });
     const challenge = await challengeToken();
     const r = await svc.verifyWebAuthnLogin(challenge, 'pending-token', {} as never, 'http://localhost:5180');
-    expect(typeof r.access_token).toBe('string');
-    expect(typeof r.refresh_token).toBe('string');
+    expect(typeof r.sessionToken).toBe('string');
   });
 
   it('verifyWebAuthnLogin rejects a failed assertion with TWO_FACTOR_INVALID, then RATE_LIMITED at the threshold', async () => {

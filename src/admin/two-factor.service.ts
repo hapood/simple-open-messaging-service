@@ -222,7 +222,6 @@ export class TwoFactorService {
           twoFactorSecretCipher: cipher,
           twoFactorEnabledAt: new Date(),
           twoFactorLastUsedCounter: null,
-          tokenVersion: { increment: 1 }, // force every existing session to re-login through 2FA (atomic w/ the enable)
         },
       });
       await tx.twoFactorBackupCode.deleteMany({ where: { adminId } });

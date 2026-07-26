@@ -18,6 +18,7 @@
     "copy": "Copy",
     "copied": "Copied",
     "copyFailed": "Copy failed",
+    "workspace": "Operations workspace",
     "client": {
       "app": "Android",
       "web": "Web",
@@ -26,7 +27,9 @@
   },
   "topBar": {
     "toggleTheme": "Toggle theme",
-    "search": "Search"
+    "search": "Search",
+    "openNavigation": "Open navigation",
+    "closeNavigation": "Close navigation"
   },
   "search": {
     "placeholder": "Search users, peers…",
@@ -56,7 +59,7 @@
     "diagnosticReports": "Diagnostic Reports",
     "logout": "Log Out",
     "group": {
-      "overview": "Overview",
+      "overview": "Common tasks",
       "access": "Access & Activity",
       "federation": "Federation",
       "system": "System",
@@ -91,10 +94,46 @@
   },
   "dashboard": {
     "title": "Dashboard",
-    "desc": "System overview at a glance.",
+    "desc": "Monitor system health and get everyday admin work done.",
     "autoRefresh": "Auto-refresh every 15s",
     "mediaSub": "{{assets}} assets · {{reclaimable}} reclaimable",
     "noRecentActions": "No admin actions recorded yet",
+    "quickActions": {
+      "title": "Quick tasks",
+      "desc": "Start with the admin tasks you use most.",
+      "users": "Manage users",
+      "usersDesc": "Find users, create accounts, or resolve access issues",
+      "connections": "View live connections",
+      "connectionsDesc": "Investigate online presence and unusual connections",
+      "selfCheck": "Run federation check",
+      "selfCheckDesc": "Verify domain, certificate, and federation reachability",
+      "settings": "System settings",
+      "settingsDesc": "Review instance configuration and runtime options"
+    },
+    "workflows": {
+      "title": "Get started",
+      "desc": "Your two most common areas of work, in one place.",
+      "health": {
+        "title": "Server health",
+        "desc": "Monitor this server and check connectivity with remote peers.",
+        "current": "Current server",
+        "currentDesc": "Live connections and status",
+        "peers": "Remote servers",
+        "peersDesc": "Review trust and health",
+        "check": "Run health check",
+        "checkDesc": "Test DNS, TLS, and connectivity"
+      },
+      "users": {
+        "title": "User management",
+        "desc": "Create accounts and quickly inspect or manage user status.",
+        "create": "Create user",
+        "createDesc": "Provision a new account now",
+        "manage": "Manage users",
+        "manageDesc": "Search, enable, or disable users",
+        "status": "View user status",
+        "statusDesc": "Inspect login and session activity"
+      }
+    },
     "tile": {
       "systemStatus": "System status",
       "onlineNow": "Online now",
@@ -233,7 +272,7 @@
   "adminSessions": {
     "title": "Admin Sessions",
     "searchPlaceholder": "Filter by IP",
-    "desc": "Active refresh sessions of admins (independent AdminRefreshToken table, physically isolated from user sessions). {{count}} total. After revocation the admin's refresh fails immediately, but their access token remains valid for 15 minutes (admins have no tokenVersion).",
+    "desc": "Active opaque administrator sessions, physically isolated from user sessions. {{count}} total. Revocation takes effect on the next request.",
     "revoke": "Revoke",
     "revoked": "Admin session revoked (its access remains valid for up to 15m)",
     "revokeFailed": "Revoke failed",

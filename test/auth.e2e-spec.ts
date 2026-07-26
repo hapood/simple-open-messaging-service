@@ -11,7 +11,7 @@ import { seedUser, seedSession } from './seed';
 
 /**
  * Session-management e2e — the device-list / revoke / logout-all surface, exercised through the real HTTP
- * layer + the SessionAuthGuard + the 60s validate cache.
+ * layer + the SessionAuthGuard + the issue-initialized validation cache.
  *
  * The login-method flows themselves (OTP replace, QR two-step) live in otp-login.e2e-spec.ts /
  * qr-login.e2e-spec.ts. This spec seeds sessions DIRECTLY (registration is closed and password login is
@@ -82,7 +82,7 @@ describe('Session management + login-policy e2e', () => {
       .send({ id: bRow.id });
     expect(revoke.body.code).toBe(0);
 
-    // B is revoked → 401. revokeById drops the KV entry by hash, so there is no 60s cache lag.
+    // B is revoked → 401. revokeById drops its persistent validation entry immediately.
     const afterB = await request(app.getHttpServer())
       .post('/api/v1/auth/sessions')
       .set('Authorization', `Bearer ${bSession}`);
@@ -121,12 +121,10 @@ describe('Session management + login-policy e2e', () => {
     expect(ownerAfter.body.code).toBe(0);
   });
 
-  it('revokes every session on logout-all (an un-cached second session then 401s)', async () => {
+  it('revokes every cached session on logout-all', async () => {
     const { id: userId } = await seedUser(app, 'revoketest');
-    // tokenA authorizes logout-all — which validates it, populating ITS 60s KV cache. tokenB is NEVER
-    // presented before the check, so its first validate after revoke is a KV cache miss → DB read → the
-    // revoked row → 401. (logout-all's revokeAllForUser does NOT drop per-token KV, so authing logout-all
-    // with a token that was already cached would mask the revocation for up to 60s.)
+    // issue() initializes both validation entries. logout-all must delete both, including tokenB,
+    // which is not the credential authorizing the operation.
     const tokenA = await seedSession(app, userId, 'app');
     const tokenB = await seedSession(app, userId, 'app');
 

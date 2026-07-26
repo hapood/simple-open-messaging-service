@@ -19,14 +19,6 @@ export class AdminLoginDto {
   password!: string;
 }
 
-/** Admin refresh input (shared by renew-access / logout). */
-export class AdminRefreshDto {
-  @ApiProperty({ example: 'eyJhbGciOiJIUzI1NiIs...', description: 'refresh token' })
-  @IsString()
-  @IsNotEmpty()
-  refreshToken!: string;
-}
-
 /** Admin 2FA login verify input. Exactly one of `code` (6-digit TOTP) or `backupCode` must be present —
  *  `challengeToken` is the value POST admin/login returned in its twoFactorRequired response. */
 export class AdminLoginVerifyDto {

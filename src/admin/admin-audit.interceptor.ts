@@ -10,7 +10,7 @@ import type { Observable } from 'rxjs';
 import type { FastifyRequest } from 'fastify';
 import { PrismaService } from '../prisma.service.js';
 import { ADMIN_AUDIT_KEY, type AdminAuditMetadata } from './audit.decorator.js';
-import type { AdminPrincipal } from './admin.jwt.strategy.js';
+import type { AdminPrincipal } from './admin-session.js';
 
 type AdminRequest = FastifyRequest & { user?: AdminPrincipal };
 

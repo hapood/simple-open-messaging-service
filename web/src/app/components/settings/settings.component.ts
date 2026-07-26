@@ -27,17 +27,19 @@ const pageSlide = trigger('pageSlide', [
 ]);
 
 /**
- * The MOBILE Settings surface — a two-tier Material settings UI rendered in the `aside` slot (category
- * list → drill into a category sub-page that slides over the root).
+ * The MOBILE Settings surface — a two-tier Material settings UI opened from the account menu and rendered
+ * inline (`topSection === 'settings'`): a category list (root) → drill into a category sub-page that slides
+ * over the root.
  *
  * The ROOT view is a category list (leading icon + title + current-value summary + chevron). Tapping a
- * category calls {@link NavStateMachineService.pushAside} with `{ category }`, stacking a new aside entry;
- * the SUB-PAGE view then slides over the root (`[@pageSlide]`) and renders the category's body-only
- * component via `*ngComponentOutlet`. The single back button → `nav.back()` pops the sub-page, or — at
- * root depth — closes the aside. Hardware-back follows the same path (it also calls `back()`).
+ * category calls {@link NavStateMachineService.openSettingsCategory} (the state machine's settings drill-down
+ * signal — NOT the aside stack, which is reserved for chat-scoped overlays); the SUB-PAGE view then slides
+ * over the root (`[@pageSlide]`) and renders the category's body-only component via `*ngComponentOutlet`. The
+ * single back button → `nav.back()` peels the sub-page back to root (or, at root, leaves the section).
+ * Hardware-back follows the same path (it also calls `back()`).
  *
- * Desktop/tablet do NOT use this component — there settings opens as a wide two-column DIALOG instead
- * (see {@link SettingsDialogComponent}); the two share the category registry ({@link buildSettingsCategories})
+ * Desktop does NOT use this component — there settings opens as a wide two-column DIALOG instead (see
+ * {@link SettingsDialogComponent}); the two share the category registry ({@link buildSettingsCategories})
  * and the body-only sub-page components, differing only in interaction (drill-in vs flat) and shell.
  */
 @Component({
@@ -77,19 +79,20 @@ export class SettingsComponent {
       .sort((a, b) => a.order - b.order),
   );
 
-  /** The active category, derived from the topmost aside entry's `params.category` (null at root). */
+  /** The active category = the top of the state machine's settings drill stack (null at root). */
   readonly activeCategory = computed<SettingsCategory | null>(() => {
-    const id = this.nav.asideTop()?.params?.['category'] as SettingsCategoryId | undefined;
+    const id = this.nav.settingsCategoryTop() as SettingsCategoryId | undefined;
     return id ? (this.categories.find((c) => c.id === id) ?? null) : null;
   });
 
-  /** Drill into a category: push a new aside entry (the sub-page slides over the root). */
+  /** Drill into a category: set the settings drill-down signal (the sub-page slides over the root). */
   openCategory(c: SettingsCategory): void {
-    this.nav.pushAside('settings', { category: c.id });
+    this.nav.openSettingsCategory(c.id);
   }
 
-  /** Back: pops the sub-page (→ root list) or, at root depth, closes the aside. Same path hardware-back
-   *  takes. */
+  /** Back: pops one Settings drill level (→ its parent, or root if at a top-level category), or at root
+   *  depth leaves the section (→ Chats). Same path hardware-back takes (both call
+   *  {@link NavStateMachineService.back}, which pops the `settingsCategoryStack` then `topSection`). */
   goBack(): void {
     this.nav.back();
   }

@@ -10,8 +10,9 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Res,
 } from '@nestjs/common';
-import type { FastifyRequest } from 'fastify';
+import type { FastifyReply, FastifyRequest } from 'fastify';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { AdminAuthService } from './admin-auth.service.js';
 import { AdminAuthGuard } from './admin-auth.guard.js';
@@ -25,7 +26,6 @@ import {
   AdminLoginVerifyDto,
   WebAuthnLoginBeginDto,
   WebAuthnLoginFinishDto,
-  AdminRefreshDto,
   AdminListUsersDto,
   AdminUnbanDto,
   AdminListSessionsDto,
@@ -44,6 +44,7 @@ import { BruteForceService } from '../auth/brute-force.service.js';
 import { UserManageService } from '../user-manage/user-manage.service.js';
 import { SseService } from '../gateway/sse.service.js';
 import { PushService } from '../push/push.service.js';
+import { ADMIN_SESSION_COOKIE, clearAdminSessionCookie, setAdminSessionCookie } from './admin-session.js';
 
 /**
  * Admin console HTTP adapter. All domain logic lives in services (AdminAuthService, AuthService,
@@ -81,12 +82,18 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin login (password → session, or 2FA challenge when enrolled)' })
   async login(
     @Body() dto: AdminLoginDto,
-    @Headers('user-agent') _userAgent: string,
+    @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     // Throws BusinessException(INVALID_CREDENTIALS | RATE_LIMITED) on failure — the global filter renders it.
     // On success returns either {access_token, refresh_token} or {twoFactorRequired, challengeToken}.
-    return this.ok(await this.adminAuthService.login(dto.account, dto.password, ip));
+    const result = await this.adminAuthService.login(dto.account, dto.password, ip, userAgent);
+    if ('sessionToken' in result) {
+      setAdminSessionCookie(reply, result.sessionToken);
+      return this.ok({ authenticated: true });
+    }
+    return this.ok(result);
   }
 
   @UseGuards(ThrottleGuard)
@@ -96,12 +103,15 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin 2FA login verify (TOTP or backup code) → session' })
   async loginVerify(
     @Body() dto: AdminLoginVerifyDto,
-    @Headers('user-agent') _userAgent: string,
+    @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
-    return this.ok(
-      await this.adminAuthService.verifyLogin(dto.challengeToken, dto.code, dto.backupCode, ip),
+    const result = await this.adminAuthService.verifyLogin(
+      dto.challengeToken, dto.code, dto.backupCode, ip, userAgent,
     );
+    setAdminSessionCookie(reply, result.sessionToken);
+    return this.ok({ authenticated: true });
   }
 
   @UseGuards(ThrottleGuard)
@@ -120,47 +130,29 @@ export class AdminController {
   @ApiOperation({ summary: 'Admin passkey login finish (assertion) → session' })
   async webauthnLoginFinish(
     @Body() dto: WebAuthnLoginFinishDto,
-    @Headers('user-agent') _userAgent: string,
+    @Headers('user-agent') userAgent: string,
     @Ip() ip: string,
+    @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
-    return this.ok(
-      await this.adminAuthService.verifyWebAuthnLogin(
+    const result = await this.adminAuthService.verifyWebAuthnLogin(
         dto.challengeToken,
         dto.pendingToken,
         dto.assertionResponse,
         ip,
-      ),
-    );
-  }
-
-  @HttpCode(HttpStatus.OK)
-  @Post('admin/renew-access')
-  @ApiOperation({ summary: 'Admin refresh rotation (family-based + reuse detection)' })
-  async renewAccess(
-    @Body() dto: AdminRefreshDto,
-    @Headers('user-agent') userAgent: string,
-    @Ip() ip: string,
-  ): Promise<ApiResult> {
-    try {
-      const { access, refresh } = await this.adminAuthService.rotateAdminRefreshToken(
-        dto.refreshToken,
-        { ip, userAgent },
+        userAgent,
       );
-      return this.ok({ access_token: access, refresh_token: refresh });
-    } catch (e) {
-      if (e === 'reuse') {
-        return { code: BusinessCode.REFRESH_REUSE_DETECTED, message: 'refresh reuse detected' };
-      }
-      return { code: BusinessCode.UNAUTHENTICATED, message: 'refresh_token invalid' };
-    }
+    setAdminSessionCookie(reply, result.sessionToken);
+    return this.ok({ authenticated: true });
   }
 
   @UseGuards(AdminAuthGuard)
   @HttpCode(HttpStatus.OK)
   @Post('admin/logout')
   @ApiOperation({ summary: 'Admin logout' })
-  async logout(@Body() dto: AdminRefreshDto): Promise<ApiResult> {
-    await this.adminAuthService.revokeAdminRefreshToken(dto.refreshToken);
+  async logout(@Req() req: FastifyRequest, @Res({ passthrough: true }) reply: FastifyReply): Promise<ApiResult> {
+    const token = req.cookies?.[ADMIN_SESSION_COOKIE];
+    if (token) await this.adminAuthService.revokeAdminSessionToken(token);
+    clearAdminSessionCookie(reply);
     return this.ok();
   }
 
@@ -438,12 +430,12 @@ export class AdminController {
 
   @UseGuards(AdminAuthGuard, AdminRolesGuard)
   @Roles(AdminRole.ADMIN, AdminRole.SUPER_ADMIN)
-  @Audit('admin_session.revoke', { targetType: 'admin_session', targetParam: 'jti' })
+  @Audit('admin_session.revoke', { targetType: 'admin_session', targetParam: 'id' })
   @HttpCode(HttpStatus.OK)
-  @Post('admin/admin-sessions/:jti/revoke')
-  @ApiOperation({ summary: 'Revoke a given admin session (by jti; its access token stays valid for up to 15m)' })
-  async revokeAdminSession(@Param('jti') jti: string): Promise<ApiResult> {
-    await this.adminAuthService.revokeAdminSession(jti);
+  @Post('admin/admin-sessions/:id/revoke')
+  @ApiOperation({ summary: 'Revoke an opaque admin session immediately' })
+  async revokeAdminSession(@Param('id') id: string): Promise<ApiResult> {
+    await this.adminAuthService.revokeAdminSession(id);
     return this.ok();
   }
 }

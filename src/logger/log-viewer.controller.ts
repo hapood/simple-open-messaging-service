@@ -9,8 +9,9 @@ import { AdminLogHistoryDto } from './log-viewer.dto.js';
 const LEVELS = ['trace', 'debug', 'info', 'warn', 'error', 'fatal'] as const;
 
 /**
- * Admin log-viewer endpoints. Both are behind AdminAuthGuard (the isolated 'admin-jwt' strategy,
- * separate secret, scope:'admin' — same protection as every other admin endpoint).
+ * Admin log-viewer endpoints. Both are behind AdminAuthGuard (opaque admin session cookie,
+ * physically isolated from user auth — same protection as every other admin endpoint). Registered in
+ * AdminModule (which imports LoggerModule for LogViewerService), mirroring AdminDiagnosticsController.
  */
 @ApiTags('admin')
 @ApiBearerAuth()

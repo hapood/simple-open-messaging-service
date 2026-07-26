@@ -2,7 +2,6 @@ import { type ReactNode, createContext, useCallback, useContext, useMemo, useSta
 import { useNavigate } from 'react-router-dom'
 import { adminLogin, adminLoginVerify, adminLogout, webAuthnLoginBegin, webAuthnLoginFinish } from '@/api/auth'
 import { startAuthentication } from '@simplewebauthn/browser'
-import { clearTokens, getRefreshToken, setAccessToken, setRefreshToken } from '@/auth/token-store'
 
 /** Password-step outcome: either fully logged in (tokens stored), or a second-factor challenge to resolve
  *  next. `factors` tells the login page which affordances to show (TOTP/backup vs passkey). */
@@ -38,17 +37,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Password verified, but a second factor is required before any session is issued.
       return { twoFactorRequired: true, challengeToken: data.challengeToken, factors: data.factors }
     }
-    setAccessToken(data.access_token)
-    setRefreshToken(data.refresh_token)
     bump()
     return { done: true }
   }, [bump])
 
   const verifyTwoFactor = useCallback(
     async (challengeToken: string, code?: string, backupCode?: string) => {
-      const data = await adminLoginVerify(challengeToken, code, backupCode)
-      setAccessToken(data.access_token)
-      setRefreshToken(data.refresh_token)
+      await adminLoginVerify(challengeToken, code, backupCode)
       bump()
     },
     [bump],
@@ -59,9 +54,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const begin = await webAuthnLoginBegin(challengeToken)
       // The browser drives the platform authenticator; the backend generated the options.
       const assertion = await startAuthentication({ optionsJSON: begin.options })
-      const data = await webAuthnLoginFinish(challengeToken, begin.pendingToken, assertion)
-      setAccessToken(data.access_token)
-      setRefreshToken(data.refresh_token)
+      await webAuthnLoginFinish(challengeToken, begin.pendingToken, assertion)
       bump()
     },
     [bump],
@@ -69,14 +62,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await adminLogout()
-    clearTokens()
     bump()
     navigate('/login', { replace: true })
   }, [bump, navigate])
 
   const value = useMemo<AuthContextValue>(
     () => ({
-      isAuthenticated: getRefreshToken() !== null,
+      isAuthenticated: window.location.pathname.endsWith('/login') ? version > 0 : true,
       login,
       verifyTwoFactor,
       verifyPasskey,

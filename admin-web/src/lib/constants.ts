@@ -30,8 +30,6 @@ export const CODE = {
   VAPID_INVALID: 60001,
 } as const
 
-// Admin refresh-token persistence key (physically isolated from the C-end 'refresh_token' to avoid same-origin key collision)
-export const ADMIN_RT_KEY = 'admin_refresh_token'
 
 // Password grammar (6-20 chars of [a-zA-Z0-9.@!#$%^&*()]); the same rule the backend enforces on every password input.
 export const PASSWORD_REGEX = /^([a-zA-Z0-9.@!#$%^&*()]){6,20}$/

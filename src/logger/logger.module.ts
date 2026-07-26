@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { LoggerModule as PinoLoggerModule } from 'nestjs-pino';
 import { LogStreamStore, logStreamStore } from './log-stream-store.js';
 import { buildLoggerParams } from './logger-config.factory.js';
-import { LogViewerController } from './log-viewer.controller.js';
 import { LogViewerService } from './log-viewer.service.js';
 
 /**
@@ -24,11 +23,12 @@ import { LogViewerService } from './log-viewer.service.js';
       useFactory: () => buildLoggerParams(),
     }),
   ],
-  controllers: [LogViewerController],
+  // The admin controller (LogViewerController) lives in AdminModule's controllers array — AdminModule
+  // imports this module to consume LogViewerService (mirrors AdminDiagnosticsController / DiagnosticsModule).
   providers: [
     LogViewerService,
     { provide: LogStreamStore, useValue: logStreamStore },
   ],
-  exports: [LogStreamStore],
+  exports: [LogStreamStore, LogViewerService],
 })
 export class LoggerModule {}

@@ -14,6 +14,7 @@ const unlinkAsync = promisify(unlink);
  *  it (and its orphan file, if any). Generous: a normal upload/localize completes in seconds; this
  *  only sweeps sends that never finished across a long window. */
 const STALE_PENDING_TTL_MS = 60 * 60 * 1000; // 1 hour
+const STALE_FAILED_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days for multi-device recovery
 
 export interface GcResult {
   /** MediaAsset rows deleted (refs <= 0). */
@@ -22,7 +23,7 @@ export interface GcResult {
   reapedFiles: number;
   /** Stale *.tmp files removed (crash leftovers from saveCas's tmp+rename). */
   sweptTmp: number;
-  /** Stale PendingMedia(pending) rows reclaimed (abandoned/crashed sends + localizations past TTL). */
+  /** Stale PendingMedia rows reclaimed (pending after 1h; failed after the recovery window). */
   sweptPending: number;
   /** Orphan shard files reaped via the stale-pending sweep (file written but the message never committed). */
   reapedPendingFiles: number;
@@ -55,7 +56,7 @@ export class MediaAssetGcService {
   ) {}
 
   /** Primary GC: reap MediaAsset rows with refs <= 0 + their shard file, sweep stale tmp, and reap
-   *  stale PendingMedia(pending) staging rows (abandoned/crashed sends + localizations past TTL) along
+   *  stale PendingMedia staging rows (abandoned pending sends and expired failed recovery records) along
    *  with any orphan file they point at. */
   async gcOrphanedAssets(): Promise<GcResult> {
     const orphans = await this.prisma.mediaAsset.findMany({
@@ -70,7 +71,10 @@ export class MediaAssetGcService {
       });
     }
     const sweptTmp = await this.sweepTmp();
-    const pending = await this.gcStalePending(STALE_PENDING_TTL_MS);
+    const pending = await this.gcStalePending(
+      STALE_PENDING_TTL_MS,
+      STALE_FAILED_TTL_MS,
+    );
     const result: GcResult = {
       reapedRows: orphans.length,
       reapedFiles,
@@ -85,8 +89,8 @@ export class MediaAssetGcService {
   }
 
   /**
-   * Reap stale PendingMedia(pending) rows — staged media sends/localizations that never committed (a
-   * crash between stage and promote, or a localize that hung) past `ttlMs`. This is the orphan-cleanup
+   * Reap stale PendingMedia rows. Pending sends use `ttlMs`; failed sends use the longer
+   * `failedTtlMs` recovery window. This is the orphan-cleanup
    * handle that did not exist before PendingMedia: the staging row, created BEFORE the file write,
    * makes an abandoned upload attributable and reclaimable instead of a mystery file on disk.
    *
@@ -97,10 +101,17 @@ export class MediaAssetGcService {
    */
   async gcStalePending(
     ttlMs: number,
+    failedTtlMs = STALE_FAILED_TTL_MS,
   ): Promise<{ sweptRows: number; reapedFiles: number }> {
     const cutoff = new Date(Date.now() - ttlMs);
+    const failedCutoff = new Date(Date.now() - failedTtlMs);
     const stale = await this.prisma.pendingMedia.findMany({
-      where: { status: 'pending', createdAt: { lt: cutoff } },
+      where: {
+        OR: [
+          { status: 'pending', createdAt: { lt: cutoff } },
+          { status: 'failed', createdAt: { lt: failedCutoff } },
+        ],
+      },
       select: { id: true, digest: true },
     });
     let reapedFiles = 0;
@@ -136,7 +147,9 @@ export class MediaAssetGcService {
   async reconcileShards(): Promise<number> {
     const shardsDir = join(this.upload.uploadDir, 'shards');
     const referenced = new Set(
-      (await this.prisma.mediaAsset.findMany({ select: { digest: true } })).map((r) => r.digest),
+      (await this.prisma.mediaAsset.findMany({ select: { digest: true } })).map(
+        (r) => r.digest,
+      ),
     );
     let reaped = 0;
     try {
@@ -248,12 +261,17 @@ export class MediaAssetGcService {
       live,
     );
 
-    this.logger.log(`gcOrphanedAvatars: swept ${swept} orphaned avatar file(s).`);
+    this.logger.log(
+      `gcOrphanedAvatars: swept ${swept} orphaned avatar file(s).`,
+    );
     return { sweptFiles: swept };
   }
 
   /** Sweep one avatar directory: unlink every `<base>-<size>.webp` whose base is not live. */
-  private async sweepAvatarDir(dir: string, live: Set<string>): Promise<number> {
+  private async sweepAvatarDir(
+    dir: string,
+    live: Set<string>,
+  ): Promise<number> {
     let swept = 0;
     try {
       for (const name of await readdirAsync(dir)) {
@@ -303,7 +321,10 @@ export class MediaAssetGcService {
           const full = join(dir, entry.name);
           if (entry.isDirectory()) {
             await sweep(full);
-          } else if (entry.name.endsWith('.tmp') || entry.name.includes('.tmp.')) {
+          } else if (
+            entry.name.endsWith('.tmp') ||
+            entry.name.includes('.tmp.')
+          ) {
             await unlinkAsync(full).catch(() => {});
             swept++;
           }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
 import { toast } from 'sonner'
 import { MoreHorizontal, Plus, Search } from 'lucide-react'
@@ -46,6 +46,7 @@ export function UsersPage() {
   const canManage = useIsAdminPlus()
   const [sessionsUser, setSessionsUser] = useState<User | null>(null)
   const [createOpen, setCreateOpen] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
   const [issueUser, setIssueUser] = useState<User | null>(null)
   const [genPwdUser, setGenPwdUser] = useState<User | null>(null)
 
@@ -63,6 +64,19 @@ export function UsersPage() {
   const enable = useEnableUser()
   const forceLogout = useForceLogoutUser()
   const batch = useBatchUsers()
+
+  useEffect(() => {
+    if (searchParams.get('create') === '1' && canManage) setCreateOpen(true)
+  }, [searchParams, canManage])
+
+  const closeCreate = () => {
+    setCreateOpen(false)
+    if (searchParams.has('create')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('create')
+      setSearchParams(next, { replace: true })
+    }
+  }
 
   const onAction = async (
     m: { mutateAsync: (id: number) => Promise<void> },
@@ -288,7 +302,7 @@ export function UsersPage() {
       </div>
 
       <SessionsDialog user={sessionsUser} onClose={() => setSessionsUser(null)} />
-      <CreateUserDialog open={createOpen} onClose={() => setCreateOpen(false)} />
+      <CreateUserDialog open={createOpen} onClose={closeCreate} />
       <IssueLoginCodeDialog
         user={issueUser ? { id: issueUser.id, account: issueUser.account } : null}
         onClose={() => setIssueUser(null)}

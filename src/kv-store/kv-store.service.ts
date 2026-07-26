@@ -6,21 +6,28 @@ import {
 } from '@nestjs/common';
 
 /**
- * In-process TTL key-value store: SessionToken validation cache (60s TTL — see SessionTokenService) +
- * fixed-window rate-limit counters (ThrottleGuard).
+ * In-process key-value storage: issue-initialized SessionToken validation entries plus TTL-backed
+ * login challenges and fixed-window rate-limit counters.
  *
  * Backed by a plain Map (NOT Redis) — single-instance only. The method names mirror Redis
  * (setex/get/del/incrWithExpire) so that going multi-instance only requires swapping this
  * implementation for ioredis; callers stay unchanged.
  *
  * Periodically cleans up expired keys (a 5-minute setInterval). Loss on restart is bounded: the
- * SessionToken cache is a read optimization only (a miss re-reads the DB, where revocation is
- * authoritative), and the rate-limit counters are best-effort — both acceptable at small scale.
+ * SessionToken cache is a read optimization only (a miss re-reads the DB without recreating the
+ * entry), and the rate-limit counters are best-effort — both acceptable at small scale.
  */
 @Injectable()
 export class KvStoreService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(KvStoreService.name);
   private readonly store = new Map<string, { val: string; expireAt: number }>();
+  /** Long-lived session validation entries. Unlike rate-limit/challenge entries, these are created only
+   * when a session is issued, updated only while that same entry still exists, and deleted on revoke.
+   * `expireAt=null` represents a trusted session whose lifetime is revocation-only. */
+  private readonly persistentStore = new Map<
+    string,
+    { val: string; expireAt: number | null }
+  >();
   private cleanupTimer: NodeJS.Timeout | undefined;
 
   async onModuleInit() {
@@ -38,6 +45,11 @@ export class KvStoreService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     for (const [k, v] of this.store) {
       if (v.expireAt <= now) this.store.delete(k);
+    }
+    for (const [k, v] of this.persistentStore) {
+      if (v.expireAt !== null && v.expireAt <= now) {
+        this.persistentStore.delete(k);
+      }
     }
   }
 
@@ -59,6 +71,52 @@ export class KvStoreService implements OnModuleInit, OnModuleDestroy {
     let n = 0;
     for (const k of keys) if (this.store.delete(k)) n++;
     return n;
+  }
+
+  /** Create or replace a persistent entry. Reserved for the authoritative resource-creation path. */
+  async initPersistent(
+    key: string,
+    val: string,
+    expireAt: number | null,
+  ): Promise<void> {
+    this.persistentStore.set(key, { val, expireAt });
+  }
+
+  /** Read a persistent entry, lazily reclaiming a naturally expired one. */
+  async getPersistent(key: string): Promise<string | null> {
+    const entry = this.persistentStore.get(key);
+    if (!entry) return null;
+    if (entry.expireAt !== null && entry.expireAt <= Date.now()) {
+      this.persistentStore.delete(key);
+      return null;
+    }
+    return entry.val;
+  }
+
+  /** Update an existing persistent entry without ever creating it. A false result means that revoke
+   * or natural expiry removed the entry while its caller was doing asynchronous work. */
+  async updatePersistent(
+    key: string,
+    val: string,
+    expireAt: number | null,
+  ): Promise<boolean> {
+    const current = this.persistentStore.get(key);
+    if (!current) return false;
+    if (current.expireAt !== null && current.expireAt <= Date.now()) {
+      this.persistentStore.delete(key);
+      return false;
+    }
+    this.persistentStore.set(key, { val, expireAt });
+    return true;
+  }
+
+  /** Delete one or more persistent entries. */
+  async delPersistent(...keys: string[]): Promise<number> {
+    let count = 0;
+    for (const key of keys) {
+      if (this.persistentStore.delete(key)) count++;
+    }
+    return count;
   }
 
   /**

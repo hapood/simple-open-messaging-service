@@ -69,21 +69,21 @@ export const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: '/dashboard', key: 'dashboard', icon: LayoutDashboard },
       { to: '/users', key: 'users', icon: Users },
-      { to: '/groups', key: 'groups', icon: Hash },
+      { to: '/federation', key: 'federation', icon: Globe },
+      { to: '/connections', key: 'connections', icon: Radio },
     ],
   },
   {
     labelKey: 'nav.group.access',
     items: [
       { to: '/sessions', key: 'sessions', icon: Monitor },
-      { to: '/connections', key: 'connections', icon: Radio },
+      { to: '/groups', key: 'groups', icon: Hash },
       { to: '/bans', key: 'bans', icon: ShieldBan },
     ],
   },
   {
     labelKey: 'nav.group.federation',
     items: [
-      { to: '/federation', key: 'federation', icon: Globe },
       { to: '/quotas', key: 'quotas', icon: Gauge },
     ],
   },

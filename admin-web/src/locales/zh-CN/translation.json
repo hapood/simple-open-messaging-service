@@ -18,6 +18,7 @@
     "copy": "复制",
     "copied": "已复制",
     "copyFailed": "复制失败",
+    "workspace": "运营工作台",
     "client": {
       "app": "安卓",
       "web": "网页",
@@ -26,7 +27,9 @@
   },
   "topBar": {
     "toggleTheme": "切换主题",
-    "search": "搜索"
+    "search": "搜索",
+    "openNavigation": "打开导航",
+    "closeNavigation": "关闭导航"
   },
   "search": {
     "placeholder": "搜索用户、节点…",
@@ -56,7 +59,7 @@
     "diagnosticReports": "诊断上报",
     "logout": "登出",
     "group": {
-      "overview": "概览",
+      "overview": "常用功能",
       "access": "访问与活动",
       "federation": "联邦",
       "system": "系统",
@@ -91,10 +94,46 @@
   },
   "dashboard": {
     "title": "仪表盘",
-    "desc": "系统概览一览。",
+    "desc": "掌握系统状态，并快速处理日常管理任务。",
     "autoRefresh": "每 15 秒自动刷新",
     "mediaSub": "{{assets}} 个资源 · {{reclaimable}} 个可回收",
     "noRecentActions": "暂无管理员操作记录",
+    "quickActions": {
+      "title": "快捷任务",
+      "desc": "从最常用的管理操作开始。",
+      "users": "管理用户",
+      "usersDesc": "查找用户、创建账号或处理访问问题",
+      "connections": "查看在线连接",
+      "connectionsDesc": "排查当前在线状态与异常连接",
+      "selfCheck": "运行联邦自检",
+      "selfCheckDesc": "验证域名、证书和联邦可达性",
+      "settings": "系统设置",
+      "settingsDesc": "检查实例配置与运行参数"
+    },
+    "workflows": {
+      "title": "开始处理",
+      "desc": "最常用的两类工作集中在这里。",
+      "health": {
+        "title": "服务器健康",
+        "desc": "查看本机运行状态，检查与对端服务器的联通情况。",
+        "current": "当前服务器",
+        "currentDesc": "在线连接与实时状态",
+        "peers": "对端服务器",
+        "peersDesc": "查看信任及健康状态",
+        "check": "运行健康检查",
+        "checkDesc": "检查 DNS、TLS 与联通性"
+      },
+      "users": {
+        "title": "用户管理",
+        "desc": "从创建账号到检查状态，快速完成用户日常管理。",
+        "create": "新建用户",
+        "createDesc": "立即创建一个新账号",
+        "manage": "管理用户",
+        "manageDesc": "搜索、启用或停用用户",
+        "status": "查看用户状态",
+        "statusDesc": "检查登录与会话情况"
+      }
+    },
     "tile": {
       "systemStatus": "系统状态",
       "onlineNow": "当前在线",
@@ -233,7 +272,7 @@
   "adminSessions": {
     "title": "管理员会话",
     "searchPlaceholder": "按 IP 筛选",
-    "desc": "管理员的活跃 refresh 会话（独立 AdminRefreshToken 表，与用户会话物理隔离）。共 {{count}} 条。吊销后该 admin 的 refresh 立即失效，但其 access 在 15m 内仍有效（admin 无 tokenVersion）。",
+    "desc": "管理员的活跃 opaque session，与普通用户会话物理隔离。共 {{count}} 条，吊销后下一次请求立即失效。",
     "revoke": "吊销",
     "revoked": "已吊销该管理员会话（其 access 15m 内仍有效）",
     "revokeFailed": "吊销失败",

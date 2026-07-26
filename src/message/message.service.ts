@@ -5,6 +5,8 @@ import { extractDigests } from '../upload/file-content.js';
 import { LinkPreviewService } from '../link-preview/link-preview.service.js';
 import { MEDIA_STATUS } from '../common/media-status.js';
 import { parseCallContent, callPreviewLabel } from '../calls/call-content.js';
+import { BusinessException } from '../common/business.exception.js';
+import { BusinessCode } from '../common/business-code.js';
 
 /** Max characters of a PURE_TEXT message kept in the denormalized last-message preview. */
 const PREVIEW_TEXT_MAX = 200;
@@ -36,7 +38,7 @@ export function derivePreview(type: ContentType, content: string): string {
       // The card title (or URL) — never the raw JSON. Degrades to a slice on a malformed payload.
       try {
         const c = JSON.parse(content) as { title?: string; url?: string };
-        const t = c.title && c.title.trim() ? c.title : c.url ?? content;
+        const t = c.title && c.title.trim() ? c.title : (c.url ?? content);
         return t.replace(/\s+/g, ' ').trim().slice(0, PREVIEW_TEXT_MAX);
       } catch {
         return content.slice(0, PREVIEW_TEXT_MAX);
@@ -221,24 +223,97 @@ export class MessageService implements OnModuleInit {
     contentType: ContentType,
     clientMessageId: string,
     meta: Record<string, unknown>,
+    retry = false,
   ): Promise<{ clientMessageId: string }> {
     const committed = await this.prisma.message.findUnique({
       where: { clientMessageId },
-      select: { seq: true },
+      select: { creator: true },
     });
-    if (committed) return { clientMessageId }; // already promoted — nothing to stage
-    await this.prisma.pendingMedia.upsert({
+    if (committed) {
+      if (committed.creator !== userId) {
+        throw new BusinessException(
+          BusinessCode.VALIDATION_FAILED,
+          'invalid clientMessageId',
+        );
+      }
+      return { clientMessageId }; // already promoted — nothing to stage
+    }
+    const existing = await this.prisma.pendingMedia.findUnique({
       where: { clientMessageId },
-      create: {
+    });
+    if (!existing) {
+      await this.prisma.pendingMedia.create({
+        data: {
+          threadId,
+          creatorId: userId,
+          contentType,
+          content: JSON.stringify(meta ?? {}),
+          clientMessageId,
+        },
+      });
+      return { clientMessageId };
+    }
+    if (
+      existing.creatorId !== userId ||
+      existing.threadId !== threadId ||
+      existing.contentType !== contentType
+    ) {
+      throw new BusinessException(
+        BusinessCode.VALIDATION_FAILED,
+        'invalid clientMessageId',
+      );
+    }
+    if (retry && existing.status === 'failed') {
+      await this.prisma.pendingMedia.updateMany({
+        where: { id: existing.id, status: 'failed' },
+        data: {
+          status: 'pending',
+          failReason: null,
+          digest: null,
+          content: JSON.stringify(meta ?? {}),
+          createdAt: new Date(),
+        },
+      });
+    }
+    return { clientMessageId };
+  }
+
+  /** Persist the terminal outcome of a local upload attempt. Ownership is part of the update predicate:
+   *  a guessed clientMessageId can never alter another user's stage. */
+  async failStaged(
+    userId: number,
+    clientMessageId: string,
+    reason: string,
+  ): Promise<void> {
+    await this.prisma.pendingMedia.updateMany({
+      where: { clientMessageId, creatorId: userId, status: 'pending' },
+      data: {
+        status: 'failed',
+        failReason: reason.slice(0, 255),
+        createdAt: new Date(),
+      },
+    });
+  }
+
+  /** Recoverable server-side state for refresh/cross-device reconciliation. */
+  async queryMediaStages(userId: number, threadId: number) {
+    return this.prisma.pendingMedia.findMany({
+      where: {
         threadId,
         creatorId: userId,
-        contentType,
-        content: JSON.stringify(meta ?? {}),
-        clientMessageId,
+        clientMessageId: { not: null },
       },
-      update: {}, // idempotent re-stage: keep the existing row's state intact
+      select: {
+        clientMessageId: true,
+        contentType: true,
+        content: true,
+        status: true,
+        failReason: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+      orderBy: { createdAt: 'asc' },
     });
-    return { clientMessageId };
   }
 
   /**
@@ -247,9 +322,17 @@ export class MessageService implements OnModuleInit {
    * (a pending row whose digest points at the file) rather than a mystery asset. Best-effort: a missing
    * or non-pending stage is a no-op (the upload still succeeded; promote will surface the state).
    */
-  async linkStagedDigest(clientMessageId: string, digest: string): Promise<void> {
+  async linkStagedDigest(
+    clientMessageId: string,
+    digest: string,
+    userId?: number,
+  ): Promise<void> {
     await this.prisma.pendingMedia.updateMany({
-      where: { clientMessageId, status: 'pending' },
+      where: {
+        clientMessageId,
+        status: 'pending',
+        ...(userId === undefined ? {} : { creatorId: userId }),
+      },
       data: { digest },
     });
   }
@@ -269,6 +352,7 @@ export class MessageService implements OnModuleInit {
   async promoteStaged(
     clientMessageId: string,
     uploadPayload: Record<string, unknown>,
+    userId?: number,
   ): Promise<Omit<Message, 'id'> | null> {
     const committed = await this.prisma.message.findUnique({
       where: { clientMessageId },
@@ -278,7 +362,12 @@ export class MessageService implements OnModuleInit {
     const stage = await this.prisma.pendingMedia.findUnique({
       where: { clientMessageId },
     });
-    if (!stage || stage.status !== 'pending') return null; // nothing to promote
+    if (
+      !stage ||
+      stage.status !== 'pending' ||
+      (userId !== undefined && stage.creatorId !== userId)
+    )
+      return null; // nothing to promote
     const meta = stage.content
       ? (JSON.parse(stage.content) as Record<string, unknown>)
       : {};
@@ -312,7 +401,10 @@ export class MessageService implements OnModuleInit {
         });
         await tx.threadParticipant.update({
           where: {
-            userId_threadId: { userId: stage.creatorId, threadId: stage.threadId },
+            userId_threadId: {
+              userId: stage.creatorId,
+              threadId: stage.threadId,
+            },
           },
           data: { lastReadSeq: seq },
         });
@@ -375,7 +467,9 @@ export class MessageService implements OnModuleInit {
    *  id (it never reaches a client). Drives the query-messages response and the media-status probe. */
   async attachMediaStatus<T extends Message>(
     msgs: T[],
-  ): Promise<(Omit<T, 'id'> & { mediaStatus: 'ready' | 'failed'; sv: number })[]> {
+  ): Promise<
+    (Omit<T, 'id'> & { mediaStatus: 'ready' | 'failed'; sv: number })[]
+  > {
     if (msgs.length === 0) return [];
     const byMsg = new Map<bigint, string[]>();
     const allDigests = new Set<string>();
@@ -408,7 +502,13 @@ export class MessageService implements OnModuleInit {
     const forWire = await Promise.all(
       msgs.map(async (m) =>
         m.contentType === ContentType.LINK
-          ? { ...m, content: await this.linkPreview.enrichForWire(m.contentType, m.content) }
+          ? {
+              ...m,
+              content: await this.linkPreview.enrichForWire(
+                m.contentType,
+                m.content,
+              ),
+            }
           : m,
       ),
     );
@@ -416,7 +516,8 @@ export class MessageService implements OnModuleInit {
       const { id: _drop, ...rest } = m;
       const ds = byMsg.get(m.id) ?? [];
       const ready =
-        ds.length === 0 || ds.every((d) => auth.has(`${m.id}:${d}`) && present.has(d));
+        ds.length === 0 ||
+        ds.every((d) => auth.has(`${m.id}:${d}`) && present.has(d));
       return {
         ...rest,
         mediaStatus: ready ? MEDIA_STATUS.READY : MEDIA_STATUS.FAILED,
@@ -438,7 +539,11 @@ export class MessageService implements OnModuleInit {
       where: { threadId, seq: { in: seqs } },
     });
     const attached = await this.attachMediaStatus(msgs);
-    return attached.map((m) => ({ seq: m.seq, status: m.mediaStatus, sv: m.sv }));
+    return attached.map((m) => ({
+      seq: m.seq,
+      status: m.mediaStatus,
+      sv: m.sv,
+    }));
   }
 
   /**
@@ -623,7 +728,9 @@ export class MessageService implements OnModuleInit {
     const blockedClause = hideCreatorIds.length
       ? Prisma.sql`AND m."creator" NOT IN (${Prisma.join(hideCreatorIds)})`
       : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<Array<{ threadId: number; cnt: bigint; latest: number }>>`
+    const rows = await this.prisma.$queryRaw<
+      Array<{ threadId: number; cnt: bigint; latest: number }>
+    >`
       WITH sample AS (
         SELECT m."threadId" AS tid, m."seq" AS seq, m."id" AS id
         FROM "Message" m
@@ -640,7 +747,8 @@ export class MessageService implements OnModuleInit {
       LIMIT ${threadLimit}
     `;
     const buckets = new Map<number, { count: number; latestSeq: number }>();
-    for (const r of rows) buckets.set(r.threadId, { count: Number(r.cnt), latestSeq: r.latest });
+    for (const r of rows)
+      buckets.set(r.threadId, { count: Number(r.cnt), latestSeq: r.latest });
     return buckets;
   }
 
@@ -664,7 +772,9 @@ export class MessageService implements OnModuleInit {
       : Prisma.empty;
     const tids = pairs.map((p) => p.tid);
     const seqs = pairs.map((p) => p.sinceSeq);
-    const rows = await this.prisma.$queryRaw<Array<{ tid: number; cnt: bigint }>>`
+    const rows = await this.prisma.$queryRaw<
+      Array<{ tid: number; cnt: bigint }>
+    >`
       SELECT u.tid AS tid, COUNT(m.id) AS cnt
       FROM UNNEST(ARRAY[${Prisma.join(tids)}]::int[], ARRAY[${Prisma.join(seqs)}]::int[]) AS u(tid, sinceseq)
       JOIN "Message" m
@@ -690,7 +800,9 @@ export class MessageService implements OnModuleInit {
   async findNewestForUser(
     userId: number,
   ): Promise<{ threadId: number; seq: number; ts: number } | null> {
-    const rows = await this.prisma.$queryRaw<Array<{ threadId: number; seq: number; createdAt: Date | string }>>`
+    const rows = await this.prisma.$queryRaw<
+      Array<{ threadId: number; seq: number; createdAt: Date | string }>
+    >`
       SELECT m."threadId" AS "threadId", m."seq" AS seq, m."createdAt" AS "createdAt"
       FROM "Message" m
       JOIN "ThreadParticipant" tp
@@ -700,7 +812,10 @@ export class MessageService implements OnModuleInit {
     `;
     const r = rows[0];
     if (!r) return null;
-    const ts = r.createdAt instanceof Date ? r.createdAt.getTime() : new Date(r.createdAt).getTime();
+    const ts =
+      r.createdAt instanceof Date
+        ? r.createdAt.getTime()
+        : new Date(r.createdAt).getTime();
     return { threadId: r.threadId, seq: r.seq, ts };
   }
 

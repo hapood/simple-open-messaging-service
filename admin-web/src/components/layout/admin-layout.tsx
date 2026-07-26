@@ -1,6 +1,6 @@
-import { type ReactNode } from 'react'
-import { NavLink } from 'react-router-dom'
-import { LogOut } from 'lucide-react'
+import { type ReactNode, useEffect, useState } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
+import { LogOut, X } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { useAuth } from '@/auth/auth-context'
 import { Button } from '@/components/ui/button'
@@ -12,9 +12,27 @@ import { CommandPalette } from '@/components/layout/command-palette'
 export function AdminLayout({ children }: { children: ReactNode }) {
   const { logout } = useAuth()
   const { t } = useTranslation()
+  const { pathname } = useLocation()
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
+
+  useEffect(() => setMobileNavOpen(false), [pathname])
+
   return (
     <div className="flex min-h-svh bg-background">
-      <aside className="flex w-56 shrink-0 flex-col border-r bg-sidebar p-4 text-sidebar-foreground">
+      {mobileNavOpen ? (
+        <button
+          type="button"
+          aria-label={t('topBar.closeNavigation')}
+          className="fixed inset-0 z-40 bg-black/40 backdrop-blur-[1px] lg:hidden"
+          onClick={() => setMobileNavOpen(false)}
+        />
+      ) : null}
+      <aside
+        className={[
+          'fixed inset-y-0 left-0 z-50 flex w-64 shrink-0 flex-col border-r bg-sidebar p-4 text-sidebar-foreground shadow-xl transition-transform lg:static lg:w-60 lg:translate-x-0 lg:shadow-none',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full',
+        ].join(' ')}
+      >
         <div className="flex items-center gap-2 px-2 py-3">
           {/* Same mark as the consumer web/app logo, recolored violet to tell the
               admin console apart at a glance. favicon.svg is the single brand
@@ -29,9 +47,21 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             aria-hidden="true"
             className="size-7 rounded-md"
           />
-          <span className="text-lg font-semibold tracking-tight">{t('common.appName')}</span>
+          <div className="min-w-0">
+            <div className="truncate text-base font-semibold tracking-tight">{t('common.appName')}</div>
+            <div className="text-[11px] text-muted-foreground">{t('common.workspace')}</div>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="ml-auto lg:hidden"
+            aria-label={t('topBar.closeNavigation')}
+            onClick={() => setMobileNavOpen(false)}
+          >
+            <X className="size-4" />
+          </Button>
         </div>
-        <nav className="flex flex-1 flex-col gap-4 overflow-y-auto">
+        <nav className="mt-2 flex flex-1 flex-col gap-5 overflow-y-auto">
           {NAV_GROUPS.filter((g) => !g.footer).map((group) => (
             <div key={group.labelKey} className="flex flex-col gap-1">
               <div className="px-3 text-xs font-medium tracking-wide text-muted-foreground uppercase">
@@ -55,9 +85,9 @@ export function AdminLayout({ children }: { children: ReactNode }) {
         </div>
       </aside>
       <div className="flex flex-1 flex-col overflow-hidden">
-        <TopBar />
+        <TopBar onOpenNavigation={() => setMobileNavOpen(true)} />
         <main className="flex-1 overflow-auto">
-          <div className="p-6 lg:px-8">{children}</div>
+          <div className="mx-auto w-full max-w-[1440px] p-4 sm:p-6 lg:px-8">{children}</div>
         </main>
       </div>
       <CommandPalette />

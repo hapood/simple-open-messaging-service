@@ -20,15 +20,32 @@ import {
   type CbItem,
   type CbScrollInfo,
 } from '../../lib/chat-box/chat-box-scroller';
-import { pickStickyDateLabel, isViewportTransformEnd } from '../../lib/sticky-date';
+import {
+  pickStickyDateLabel,
+  isViewportTransformEnd,
+} from '../../lib/sticky-date';
 import { HttpItemSource } from './http-item-source';
 import { MediaProbeScheduler } from './media-probe-scheduler';
-import { createMsgCbElement, createGhostCbElement, computeRowFlags } from '../message-cards/create-item';
+import {
+  createMsgCbElement,
+  createGhostCbElement,
+  computeRowFlags,
+} from '../message-cards/create-item';
 import { VOICE_BAR_W, VOICE_BAR_H } from '../message-cards/media-row/layout';
 import { mergeAlbumItems, absorbAlbumTail } from '../message-cards/merge-items';
-import { MEDIA_STATUS, type AlbumImage, type ChatItemData, type ChatMsgData, type FileInfo, type MediaStatus } from '../message-cards/chat-item';
+import {
+  MEDIA_STATUS,
+  type AlbumImage,
+  type ChatItemData,
+  type ChatMsgData,
+  type FileInfo,
+  type MediaStatus,
+} from '../message-cards/chat-item';
 import { MessageHeaderComponent } from '../message-header/message-header.component';
-import { ChatInputComponent, type ChatSendIntent } from '../../lib/chat-input/chat-input.component';
+import {
+  ChatInputComponent,
+  type ChatSendIntent,
+} from '../../lib/chat-input/chat-input.component';
 import { KbdOffsetDirective } from '../../directives/kbd-offset.directive';
 import { StickyDateOverlayComponent } from '../message-cards/sticky-date-overlay/sticky-date-overlay.component';
 import { uuid } from '../../lib/uuid';
@@ -64,7 +81,13 @@ import type { ConversationItem, StandardResponse } from '../../services/model';
 @Component({
   selector: 'app-message-thread',
   standalone: true,
-  imports: [MessageHeaderComponent, ChatInputComponent, KbdOffsetDirective, StickyDateOverlayComponent, TranslocoModule],
+  imports: [
+    MessageHeaderComponent,
+    ChatInputComponent,
+    KbdOffsetDirective,
+    StickyDateOverlayComponent,
+    TranslocoModule,
+  ],
   templateUrl: './friend-message.component.html',
   styleUrl: './friend-message.component.scss',
 })
@@ -78,13 +101,17 @@ export class MessageThreadComponent implements OnDestroy {
    *  discard stale emits from a superseded reset. Not emitted on teardown. */
   readonly ready = output<number>();
 
-  private readonly viewportRef = viewChild<ElementRef<HTMLDivElement>>('viewport');
-  private readonly contentRef = viewChild<ElementRef<HTMLDivElement>>('content');
+  private readonly viewportRef =
+    viewChild<ElementRef<HTMLDivElement>>('viewport');
+  private readonly contentRef =
+    viewChild<ElementRef<HTMLDivElement>>('content');
   /** The chat header element — its bottom edge is the STABLE visible-top reference for the sticky-date
    *  pill. The viewport carries the keyboard-lift `transform`, so its own `getBoundingClientRect().top`
    *  slides under the header while the keyboard is up; the header does not transform, so its bottom is the
    *  true top of the visible content (see updateStickyDate). */
-  private readonly headerRef = viewChild('msgHeader', { read: ElementRef<HTMLElement> });
+  private readonly headerRef = viewChild('msgHeader', {
+    read: ElementRef<HTMLElement>,
+  });
   private readonly envInjector = inject(EnvironmentInjector);
   private readonly msgService = inject(MsgService);
   private readonly msgRepo = inject(MessageRepository);
@@ -120,7 +147,10 @@ export class MessageThreadComponent implements OnDestroy {
   private skeletonTimer?: ReturnType<typeof setTimeout>;
   /** Scroll-driven SSE backstop for federated media status — one instance per open thread. Owns the
    *  in-flight ('downloading') seqs + the debounced/rate-limited bulk probe. See MediaProbeScheduler. */
-  private readonly probe = new MediaProbeScheduler(this.msgService, this.msgRepo);
+  private readonly probe = new MediaProbeScheduler(
+    this.msgService,
+    this.msgRepo,
+  );
 
   /** P2P block state, derived from the conv item's `blocked` field (patched live on block/unblock). When
    *  true the composer is swapped for an unblock banner — a blocked user can neither send nor be sent to. */
@@ -131,7 +161,10 @@ export class MessageThreadComponent implements OnDestroy {
   private pendingOptimistic: CbItem<ChatItemData>[] = [];
   /** Original File for each in-flight image/file send (keyed by clientMessageId), so a failed-send retry can
    *  replay the upload + send. Cleaned by sweepPendingFiles as confirms drop the pending entries. */
-  private readonly pendingFiles = new Map<string, { file: File; kind: 'image' | 'file' | 'video' | 'audio' }>();
+  private readonly pendingFiles = new Map<
+    string,
+    { file: File; kind: 'image' | 'file' | 'video' | 'audio' }
+  >();
   /** Object URLs created for optimistic FILE cards (download anchor); revoked on teardown to avoid leaks. */
   private readonly blobUrls = new Set<string>();
 
@@ -154,9 +187,16 @@ export class MessageThreadComponent implements OnDestroy {
     });
   }
 
-  private initScroller(viewport: HTMLDivElement, content: HTMLDivElement, trd: ConversationItem): void {
+  private initScroller(
+    viewport: HTMLDivElement,
+    content: HTMLDivElement,
+    trd: ConversationItem,
+  ): void {
     this.source = new HttpItemSource(
-      trd, this.msgRepo, this.userService, this.wsService,
+      trd,
+      this.msgRepo,
+      this.userService,
+      this.wsService,
       // SSE live path is SIGNAL-ONLY: onSseEvent filters by threadId and fires onSignal — the body is not
       // shaped/cached here (the conversation-list preview reads it in its own subscriber; the chatbox treats
       // the frame as "newer data exists, go pull it"). onMessageSignal pulls from the DB via getNewer /
@@ -169,7 +209,9 @@ export class MessageThreadComponent implements OnDestroy {
           // and the just-signaled live item would never mount (silent drop in the open chatbox). The seq is the
           // message's per-thread seq (== its item id); the kernel tracks the MAX seen during the init-fetch
           // window to decide whether a post-init replay is actually needed.
-          void this.scroller?.onMessageSignal(seq).catch((e) => console.error('[chat] onMessageSignal rejected', e));
+          void this.scroller
+            ?.onMessageSignal(seq)
+            .catch((e) => console.error('[chat] onMessageSignal rejected', e));
         },
         // mediaStatus change (MEDIA_STATUS SSE / scroll probe / retry ack) → re-render the one card in place.
         // updateItemData is synchronous + height-neutral, so no async/catch and no anchor shift.
@@ -183,7 +225,12 @@ export class MessageThreadComponent implements OnDestroy {
       viewport,
       content,
       source: this.source,
-      hooks: { createItem: (item, prev) => this.createItem(item, prev), createSkeleton: () => createGhostCbElement(), mergeItems: mergeAlbumItems, absorbTail: absorbAlbumTail },
+      hooks: {
+        createItem: (item, prev) => this.createItem(item, prev),
+        createSkeleton: () => createGhostCbElement(),
+        mergeItems: mergeAlbumItems,
+        absorbTail: absorbAlbumTail,
+      },
       onScroll: (info) => this.onScroll(info),
       // Immunity frame: hold the kernel's viewport reflow while a route-transition slide is in flight.
       isFrozen: () => this.layout.reflowFrozen(),
@@ -197,29 +244,37 @@ export class MessageThreadComponent implements OnDestroy {
     this.skeletonTimer = setTimeout(() => {
       if (this.initialLoading()) this.skeletonVisible.set(true);
     }, MessageThreadComponent.SKELETON_DELAY);
-    void this.scroller.init()
-      .finally(() => {
-        clearTimeout(this.skeletonTimer);
-        this.initialLoading.set(false);
-        this.skeletonVisible.set(false);
-        this.kernelReady = true;
-        this.ready.emit(trd.threadId);
-      });
+    void this.scroller.init().finally(() => {
+      clearTimeout(this.skeletonTimer);
+      this.initialLoading.set(false);
+      this.skeletonVisible.set(false);
+      this.kernelReady = true;
+      this.ready.emit(trd.threadId);
+    });
   }
 
   /** Kernel createItem hook: compute grouping flags from the older neighbor prev, wrap the real component.
    *  Passes onRetry so a failed self-send row's retry glyph calls back into retrySend (msgId = clientMessageId), and
    *  onOpenImage so clicking an image cell opens the gallery viewer. */
-  private createItem(item: CbItem<ChatItemData>, prev: CbItem<ChatItemData> | null): CbElement<ChatItemData> {
+  private createItem(
+    item: CbItem<ChatItemData>,
+    prev: CbItem<ChatItemData> | null,
+  ): CbElement<ChatItemData> {
     // Real items only — the topmost skeleton-slot decision (prev/boundary/noOlder) lives in the kernel's createVs,
     // rendered via the createSkeleton hook supplied below. createItem never branches on ghost-vs-real: that rule
     // drifted between playground and production and is what swallowed the empty-thread first message.
     const { isShowHead, isGroupStart, showDate } = computeRowFlags(item, prev);
-    if (item.data.mediaStatus === MEDIA_STATUS.DOWNLOADING) this.probe.track(item.id, true);
+    if (item.data.mediaStatus === MEDIA_STATUS.DOWNLOADING)
+      this.probe.track(item.id, true);
     return createMsgCbElement(
-      item, isShowHead, isGroupStart, showDate, this.envInjector,
+      item,
+      isShowHead,
+      isGroupStart,
+      showDate,
+      this.envInjector,
       (msgId) => this.retrySend(msgId),
-      (images, index) => this.galleryViewer.open(images, index, this.threadId() ?? 0),
+      (images, index) =>
+        this.galleryViewer.open(images, index, this.threadId() ?? 0),
       (data) => this.fileDetail.open(data, this.threadId() ?? 0),
     );
   }
@@ -247,11 +302,19 @@ export class MessageThreadComponent implements OnDestroy {
   private updateStickyDate(): void {
     const vp = this.viewportRef()?.nativeElement;
     const ct = this.contentRef()?.nativeElement;
-    if (!vp || !ct) { this.stickyDate.set(null); return; }
-    const visibleTop = this.headerRef()?.nativeElement.getBoundingClientRect().bottom
-      ?? vp.getBoundingClientRect().top;
-    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date'))
-      .map((d) => ({ top: d.getBoundingClientRect().top, label: d.textContent?.trim() ?? null }));
+    if (!vp || !ct) {
+      this.stickyDate.set(null);
+      return;
+    }
+    const visibleTop =
+      this.headerRef()?.nativeElement.getBoundingClientRect().bottom ??
+      vp.getBoundingClientRect().top;
+    const rows = Array.from(ct.querySelectorAll<HTMLElement>('.msg-date')).map(
+      (d) => ({
+        top: d.getBoundingClientRect().top,
+        label: d.textContent?.trim() ?? null,
+      }),
+    );
     this.stickyDate.set(pickStickyDateLabel(rows, visibleTop, 14));
   }
 
@@ -260,7 +323,8 @@ export class MessageThreadComponent implements OnDestroy {
    *  a keyboard open/close; this closes that gap. {@link isViewportTransformEnd} filters to the viewport's
    *  own `transform` (ignoring bubbled item transitions like `cb-move`). */
   onViewportTransitionEnd(event: TransitionEvent): void {
-    if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement)) return;
+    if (!isViewportTransformEnd(event, this.viewportRef()?.nativeElement))
+      return;
     this.updateStickyDate();
   }
 
@@ -269,11 +333,21 @@ export class MessageThreadComponent implements OnDestroy {
   /** The composer emits one structured intent; route it to the matching optimistic-send path. */
   onSendIntent(intent: ChatSendIntent): void {
     switch (intent.kind) {
-      case 'text': this.sendText(intent.text); return;
-      case 'image': void this.sendImages(intent.files); return;
-      case 'file': void this.sendFiles(intent.files); return;
-      case 'link': this.sendLink(intent.url); return;
-      case 'audio': this.sendVoice(intent.blob, intent.duration, intent.mimeType); return;
+      case 'text':
+        this.sendText(intent.text);
+        return;
+      case 'image':
+        void this.sendImages(intent.files);
+        return;
+      case 'file':
+        void this.sendFiles(intent.files);
+        return;
+      case 'link':
+        this.sendLink(intent.url);
+        return;
+      case 'audio':
+        this.sendVoice(intent.blob, intent.duration, intent.mimeType);
+        return;
     }
   }
 
@@ -293,18 +367,28 @@ export class MessageThreadComponent implements OnDestroy {
   private sendLink(url: string): void {
     if (!this.threadId()) return;
     const cid = this.newClientMessageId();
-    const item = this.makeOptimisticItem(cid, JSON.stringify({ url }), 'LINK', null, null);
+    const item = this.makeOptimisticItem(
+      cid,
+      JSON.stringify({ url }),
+      'LINK',
+      null,
+      null,
+    );
     this.dispatchPending(item);
     this.dispatchHttpSendLink(item, url);
   }
 
   private async sendImages(files: FileList): Promise<void> {
     if (!this.threadId()) return;
-    for (const f of Array.from(files).filter((f) => f.type.startsWith('image/'))) {
+    for (const f of Array.from(files).filter((f) =>
+      f.type.startsWith('image/'),
+    )) {
       const cid = this.newClientMessageId();
       const dims = await readImageDims(f);
       const dataURL = await readFileAsDataURL(f);
-      const images: AlbumImage[] = [{ kind: 'image', src: dataURL, w: dims.w, h: dims.h, size: f.size }];
+      const images: AlbumImage[] = [
+        { kind: 'image', src: dataURL, w: dims.w, h: dims.h, size: f.size },
+      ];
       const item = this.makeOptimisticItem(cid, '', 'IMAGE', images, null);
       this.pendingFiles.set(cid, { file: f, kind: 'image' });
       this.dispatchPending(item);
@@ -331,7 +415,12 @@ export class MessageThreadComponent implements OnDestroy {
     const cid = this.newClientMessageId();
     const url = URL.createObjectURL(f);
     this.blobUrls.add(url);
-    const file: FileInfo = { url, name: f.name, size: f.size, mimeType: f.type || 'application/octet-stream' };
+    const file: FileInfo = {
+      url,
+      name: f.name,
+      size: f.size,
+      mimeType: f.type || 'application/octet-stream',
+    };
     const item = this.makeOptimisticItem(cid, '', 'FILE', null, file);
     this.pendingFiles.set(cid, { file: f, kind: 'file' });
     this.dispatchPending(item);
@@ -346,10 +435,17 @@ export class MessageThreadComponent implements OnDestroy {
     const meta = await readVideoMeta(f);
     const url = URL.createObjectURL(f);
     this.blobUrls.add(url);
-    const images: AlbumImage[] = [{
-      kind: 'video', src: url, w: meta.w, h: meta.h,
-      size: f.size, duration: meta.duration, name: f.name,
-    }];
+    const images: AlbumImage[] = [
+      {
+        kind: 'video',
+        src: url,
+        w: meta.w,
+        h: meta.h,
+        size: f.size,
+        duration: meta.duration,
+        name: f.name,
+      },
+    ];
     const item = this.makeOptimisticItem(cid, '', 'VIDEO', images, null);
     this.pendingFiles.set(cid, { file: f, kind: 'video' });
     this.dispatchPending(item);
@@ -363,12 +459,22 @@ export class MessageThreadComponent implements OnDestroy {
   private sendVoice(blob: Blob, duration: number, mimeType: string): void {
     if (!this.threadId()) return;
     const cid = this.newClientMessageId();
-    const f = new File([blob], `voice.${mimeTypeToExt(mimeType)}`, { type: mimeType || 'audio/webm' });
+    const f = new File([blob], `voice.${mimeTypeToExt(mimeType)}`, {
+      type: mimeType || 'audio/webm',
+    });
     const url = URL.createObjectURL(f);
     this.blobUrls.add(url);
-    const images: AlbumImage[] = [{
-      kind: 'audio', src: url, w: VOICE_BAR_W, h: VOICE_BAR_H, size: f.size, duration, name: f.name,
-    }];
+    const images: AlbumImage[] = [
+      {
+        kind: 'audio',
+        src: url,
+        w: VOICE_BAR_W,
+        h: VOICE_BAR_H,
+        size: f.size,
+        duration,
+        name: f.name,
+      },
+    ];
     const item = this.makeOptimisticItem(cid, '', 'AUDIO', images, null);
     this.pendingFiles.set(cid, { file: f, kind: 'audio' });
     this.dispatchPending(item);
@@ -379,12 +485,19 @@ export class MessageThreadComponent implements OnDestroy {
     const cid = item.clientMessageId!;
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    firstValueFrom(this.msgService.sendMessage({
-      threadId: tid, content: item.data.text, contentType: 'PURE_TEXT', clientMessageId: cid,
-    })).then((res) => {
-      if (res.code !== 0) void this.failPending(item);
-      else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
-    }).catch(() => void this.failPending(item));
+    firstValueFrom(
+      this.msgService.sendMessage({
+        threadId: tid,
+        content: item.data.text,
+        contentType: 'PURE_TEXT',
+        clientMessageId: cid,
+      }),
+    )
+      .then((res) => {
+        if (res.code !== 0) void this.failPending(item);
+        else void this.markSent(item); // 200 → spinner→check now, decoupled from the later SSE reorder
+      })
+      .catch(() => void this.failPending(item));
   }
 
   /** LINK send: the wire content is the bare URL (the server builds the card). Same reconcile contract
@@ -393,25 +506,50 @@ export class MessageThreadComponent implements OnDestroy {
     const cid = item.clientMessageId!;
     const tid = this.threadId() ?? 0;
     if (!tid) return;
-    firstValueFrom(this.msgService.sendMessage({
-      threadId: tid, content: url, contentType: 'LINK', clientMessageId: cid,
-    })).then((res) => {
-      if (res.code !== 0) void this.failPending(item);
-      else void this.markSent(item);
-    }).catch(() => void this.failPending(item));
+    firstValueFrom(
+      this.msgService.sendMessage({
+        threadId: tid,
+        content: url,
+        contentType: 'LINK',
+        clientMessageId: cid,
+      }),
+    )
+      .then((res) => {
+        if (res.code !== 0) void this.failPending(item);
+        else void this.markSent(item);
+      })
+      .catch(() => void this.failPending(item));
   }
 
   /** Send-media-first flow: POST /send-media stages a PendingMedia (durable intent, keyed by cid),
    *  then the upload (carrying the same cid via the x-client-message-id header) writes the file and the
    *  server promotes the stage to a real Message. The NEW_MESSAGE SSE echo (matched by cid) reconciles
    *  the optimistic bubble — so on upload success there is nothing to do here. Any failure → failPending. */
-  private async uploadAndSendImage(cid: string, f: File, item: CbItem<ChatItemData>, dims: { w: number; h: number }): Promise<void> {
+  private async uploadAndSendImage(
+    cid: string,
+    f: File,
+    item: CbItem<ChatItemData>,
+    dims: { w: number; h: number },
+    retry = false,
+  ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
-      const staged = await firstValueFrom(this.msgService.sendMedia({ threadId: tid, contentType: 'IMAGE', clientMessageId: cid }));
-      if (staged.code !== 0) { await this.failPending(item); return; }
-      const up = await firstValueFrom(this.msgService.uploadMedia(f, dims.w, dims.h, cid));
+      const staged = await firstValueFrom(
+        this.msgService.sendMedia({
+          threadId: tid,
+          contentType: 'IMAGE',
+          clientMessageId: cid,
+          retry,
+        }),
+      );
+      if (staged.code !== 0) {
+        await this.failPending(item);
+        return;
+      }
+      const up = await firstValueFrom(
+        this.msgService.uploadMedia(f, dims.w, dims.h, cid),
+      );
       if (up.code !== 0) await this.failPending(item);
       else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
     } catch {
@@ -419,12 +557,27 @@ export class MessageThreadComponent implements OnDestroy {
     }
   }
 
-  private async uploadAndSendFile(cid: string, f: File, item: CbItem<ChatItemData>): Promise<void> {
+  private async uploadAndSendFile(
+    cid: string,
+    f: File,
+    item: CbItem<ChatItemData>,
+    retry = false,
+  ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
-      const staged = await firstValueFrom(this.msgService.sendMedia({ threadId: tid, contentType: 'FILE', clientMessageId: cid }));
-      if (staged.code !== 0) { await this.failPending(item); return; }
+      const staged = await firstValueFrom(
+        this.msgService.sendMedia({
+          threadId: tid,
+          contentType: 'FILE',
+          clientMessageId: cid,
+          retry,
+        }),
+      );
+      if (staged.code !== 0) {
+        await this.failPending(item);
+        return;
+      }
       const ok = await this.uploadFileResult(f, cid);
       if (!ok) await this.failPending(item);
       else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
@@ -434,15 +587,28 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async uploadAndSendVideo(
-    cid: string, f: File, item: CbItem<ChatItemData>, meta: { w: number; h: number; duration: number },
+    cid: string,
+    f: File,
+    item: CbItem<ChatItemData>,
+    meta: { w: number; h: number; duration: number },
+    retry = false,
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
-      const staged = await firstValueFrom(this.msgService.sendMedia({
-        threadId: tid, contentType: 'VIDEO', clientMessageId: cid, meta: { w: meta.w, h: meta.h, duration: meta.duration },
-      }));
-      if (staged.code !== 0) { await this.failPending(item); return; }
+      const staged = await firstValueFrom(
+        this.msgService.sendMedia({
+          threadId: tid,
+          contentType: 'VIDEO',
+          clientMessageId: cid,
+          meta: { w: meta.w, h: meta.h, duration: meta.duration },
+          retry,
+        }),
+      );
+      if (staged.code !== 0) {
+        await this.failPending(item);
+        return;
+      }
       const up = await firstValueFrom(this.msgService.uploadVideo(f, cid));
       if (up.code !== 0) await this.failPending(item);
       else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
@@ -452,15 +618,28 @@ export class MessageThreadComponent implements OnDestroy {
   }
 
   private async uploadAndSendAudio(
-    cid: string, f: File, item: CbItem<ChatItemData>, meta: { duration: number },
+    cid: string,
+    f: File,
+    item: CbItem<ChatItemData>,
+    meta: { duration: number },
+    retry = false,
   ): Promise<void> {
     const tid = this.threadId() ?? 0;
     if (!tid) return;
     try {
-      const staged = await firstValueFrom(this.msgService.sendMedia({
-        threadId: tid, contentType: 'AUDIO', clientMessageId: cid, meta: { duration: meta.duration },
-      }));
-      if (staged.code !== 0) { await this.failPending(item); return; }
+      const staged = await firstValueFrom(
+        this.msgService.sendMedia({
+          threadId: tid,
+          contentType: 'AUDIO',
+          clientMessageId: cid,
+          meta: { duration: meta.duration },
+          retry,
+        }),
+      );
+      if (staged.code !== 0) {
+        await this.failPending(item);
+        return;
+      }
       const up = await firstValueFrom(this.msgService.uploadAudio(f, cid));
       if (up.code !== 0) await this.failPending(item);
       else await this.markSent(item); // upload done → spinner→check now, decoupled from the later SSE reorder
@@ -472,7 +651,15 @@ export class MessageThreadComponent implements OnDestroy {
   /** Reduce uploadFile's event stream to its final response body (the uploaded file metadata). Null on
    *  error. `cid` promotes a staged send; on a successful response the server has already committed the
    *  Message and the SSE echo reconciles the bubble. */
-  private async uploadFileResult(f: File, cid?: string): Promise<{ url: string; name: string; size: number; mimeType: string } | null> {
+  private async uploadFileResult(
+    f: File,
+    cid?: string,
+  ): Promise<{
+    url: string;
+    name: string;
+    size: number;
+    mimeType: string;
+  } | null> {
     try {
       // uploadFile returns the {code,message,data} envelope directly (progress events were dropped —
       // they were never consumed). Stream path (Tauri desktop) or HttpClient path, same shape.
@@ -499,18 +686,41 @@ export class MessageThreadComponent implements OnDestroy {
       // uploadAndSendFile — a latent bug that re-sent them as a FILE attachment on retry.)
       switch (pending.kind) {
         case 'image':
-          void this.uploadAndSendImage(clientMessageId, pending.file, item, await readImageDims(pending.file));
+          void this.uploadAndSendImage(
+            clientMessageId,
+            pending.file,
+            item,
+            await readImageDims(pending.file),
+            true,
+          );
           break;
         case 'video':
-          void this.uploadAndSendVideo(clientMessageId, pending.file, item, await readVideoMeta(pending.file));
+          void this.uploadAndSendVideo(
+            clientMessageId,
+            pending.file,
+            item,
+            await readVideoMeta(pending.file),
+            true,
+          );
           break;
         case 'audio': {
           const meta = await readAudioMeta(pending.file);
-          void this.uploadAndSendAudio(clientMessageId, pending.file, item, meta);
+          void this.uploadAndSendAudio(
+            clientMessageId,
+            pending.file,
+            item,
+            meta,
+            true,
+          );
           break;
         }
         default:
-          void this.uploadAndSendFile(clientMessageId, pending.file, item);
+          void this.uploadAndSendFile(
+            clientMessageId,
+            pending.file,
+            item,
+            true,
+          );
           break;
       }
     } else {
@@ -597,7 +807,8 @@ export class MessageThreadComponent implements OnDestroy {
     const profile = this.userService.sessionProfile();
     const now = new Date();
     const placeholderId = this.nextOptimisticId--;
-    const stampedImages = images?.map(im => ({ ...im, msgId: placeholderId })) ?? null;
+    const stampedImages =
+      images?.map((im) => ({ ...im, msgId: placeholderId })) ?? null;
     const data: ChatMsgData = {
       type: 'msg',
       msgId: placeholderId,
@@ -606,7 +817,10 @@ export class MessageThreadComponent implements OnDestroy {
       name: profile?.name ?? 'Me',
       text,
       time: `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`,
-      contentType, images: stampedImages, file, createdAtMs: now.getTime(),
+      contentType,
+      images: stampedImages,
+      file,
+      createdAtMs: now.getTime(),
       status: 'sending',
       kind: 'pending',
     };
@@ -719,9 +933,12 @@ export class MessageThreadComponent implements OnDestroy {
     const trd = this.userMsgTrd();
     const peerId = trd?.peerUser?.id;
     if (peerId === undefined) return;
-    this.userService.setBlock({ userId: peerId, block: false }).subscribe((res) => {
-      if (res.code === 0) this.convList.applyThreadMeta(trd!.threadId, { blocked: false });
-    });
+    this.userService
+      .setBlock({ userId: peerId, block: false })
+      .subscribe((res) => {
+        if (res.code === 0)
+          this.convList.applyThreadMeta(trd!.threadId, { blocked: false });
+      });
   }
 
   ngOnDestroy(): void {
@@ -733,7 +950,8 @@ export class MessageThreadComponent implements OnDestroy {
 async function readImageDims(f: File): Promise<{ w: number; h: number }> {
   try {
     const bmp = await createImageBitmap(f);
-    const w = bmp.width, h = bmp.height;
+    const w = bmp.width,
+      h = bmp.height;
     bmp.close();
     return { w, h };
   } catch {
@@ -754,7 +972,9 @@ function readFileAsDataURL(f: File): Promise<string> {
 /** Probe a video's real dimensions + duration via <video> loadedmetadata (for the optimistic cell +
  *  the VIDEO message content). The server does NOT probe — these are client-measured, server-untrusted.
  *  0 fallbacks on failure (layoutAlbum's ratio() tolerates 0 with a 4:3 fallback). */
-function readVideoMeta(f: File): Promise<{ w: number; h: number; duration: number }> {
+function readVideoMeta(
+  f: File,
+): Promise<{ w: number; h: number; duration: number }> {
   return new Promise((resolve) => {
     const url = URL.createObjectURL(f);
     const v = document.createElement('video');
@@ -766,7 +986,10 @@ function readVideoMeta(f: File): Promise<{ w: number; h: number; duration: numbe
       URL.revokeObjectURL(url);
       resolve({ w, h, duration });
     };
-    v.onerror = () => { URL.revokeObjectURL(url); resolve({ w: 0, h: 0, duration: 0 }); };
+    v.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ w: 0, h: 0, duration: 0 });
+    };
     v.src = url;
   });
 }
@@ -792,7 +1015,10 @@ function readAudioMeta(f: File): Promise<{ duration: number }> {
       URL.revokeObjectURL(url);
       resolve({ duration });
     };
-    a.onerror = () => { URL.revokeObjectURL(url); resolve({ duration: 0 }); };
+    a.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve({ duration: 0 });
+    };
     a.src = url;
   });
 }

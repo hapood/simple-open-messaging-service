@@ -1,6 +1,6 @@
 import { Injectable, HttpStatus } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { createHash, randomUUID } from 'crypto';
+import { createHash, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma.service.js';
 import { jwtConstants } from '../auth/constants.js';
 import { normalizeAccount } from '../common/account.js';
@@ -18,17 +18,14 @@ import { type AuthenticationResponseJSON, type RegistrationResponseJSON } from '
 import { WEBAUTHN_CONFIG } from './webauthn.config.js';
 import { BusinessCode } from '../common/business-code.js';
 import { BusinessException } from '../common/business.exception.js';
+import { ADMIN_SESSION_IDLE_MS, ADMIN_SESSION_TTL_MS } from './admin-session.js';
 
 /**
  * Admin auth service: mirrors AuthService's family-based + reuse-detection algorithm. Identity (account + password)
  * lives on the linked User; this service operates on the separate Admin/AdminRefreshToken tables and signs tokens with
  * a separate adminSecret carrying scope:'admin' (physically isolated from user auth — the two never interoperate).
  */
-type AdminVerifyResult =
-  | { ok: true; adminId: number; familyId: string; jti: string }
-  | { ok: false; reason: 'invalid' | 'expired' | 'reuse' };
-
-type AdminRefreshOpts = { familyId?: string; ip?: string; userAgent?: string };
+type AdminSessionOpts = { ip?: string; userAgent?: string };
 
 /** Account-dimension progressive-ban steps for admin password login (the IP ceiling is the route @Throttle).
  *  Same shape as the user-side password path: escalating lockouts, sliding 15-min window in BruteForceService. */
@@ -45,7 +42,7 @@ const ADMIN_2FA_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }
  *  `factors` tells the client which affordances to show at the challenge step (TOTP/backup vs passkey); it
  *  leaks nothing — the password already proved identity by the time this is emitted. */
 export type AdminLoginResult =
-  | { access_token: string; refresh_token: string }
+  | { sessionToken: string }
   | {
       twoFactorRequired: true;
       challengeToken: string;
@@ -68,7 +65,7 @@ export class AdminAuthService {
    *  session yet); /admin/login/verify completes login after the TOTP/backup code. Account-dimension progressive
    *  banning lives in BruteForceService (the IP ceiling is the route @Throttle); a wrong password throws
    *  INVALID_CREDENTIALS (or RATE_LIMITED once the threshold trips). */
-  async login(account: string, password: string, ip?: string): Promise<AdminLoginResult> {
+  async login(account: string, password: string, ip?: string, userAgent?: string): Promise<AdminLoginResult> {
     const acct = normalizeAccount(account);
     // Pre-check the account-dimension lock before the (slow) argon2 verify. The IP ceiling is @Throttle(5,60).
     const ban = this.bruteForce.activeBanUntil([{ dimension: BAN_DIM_ADMIN_PWD, value: acct }]);
@@ -121,10 +118,7 @@ export class AdminAuthService {
       };
     }
     await this.completeLogin(admin.id, ip);
-    return {
-      access_token: await this.getAdminAccessToken(admin.id),
-      refresh_token: await this.getAdminRefreshToken(admin.id, { ip }),
-    };
+    return { sessionToken: await this.createAdminSession(admin.id, { ip, userAgent }) };
   }
 
   /** Complete a 2FA login: verify the challenge token, check the account lock, validate the TOTP (with the
@@ -134,7 +128,8 @@ export class AdminAuthService {
     code: string | undefined,
     backupCode: string | undefined,
     ip?: string,
-  ): Promise<{ access_token: string; refresh_token: string }> {
+    userAgent?: string,
+  ): Promise<{ sessionToken: string }> {
     const decoded = this.twoFactor.verifyChallenge(challengeToken);
     if (decoded === null) {
       throw new BusinessException(
@@ -187,10 +182,7 @@ export class AdminAuthService {
     }
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
     await this.completeLogin(admin.id, ip);
-    return {
-      access_token: await this.getAdminAccessToken(admin.id),
-      refresh_token: await this.getAdminRefreshToken(admin.id, { ip }),
-    };
+    return { sessionToken: await this.createAdminSession(admin.id, { ip, userAgent }) };
   }
 
   // ── Two-factor enrollment + management (self-service; the caller is the authenticated admin) ──────
@@ -237,9 +229,7 @@ export class AdminAuthService {
     // enableWithBackupCodes already bumped tokenVersion atomically (so no 2FA-bypassing session can exist);
     // revoke the refresh families best-effort so the re-login is immediate rather than waiting for the
     // access TTL. The admin just proved enrollment, so the forced re-login is expected.
-    await this.revokeRefreshByAdmin(adminId, '2fa_enabled').catch(() => {
-      /* best-effort: access tokens are already invalidated by the in-tx tokenVersion bump */
-    });
+    await this.revokeSessionsByAdmin(adminId, '2fa_enabled');
     return { backupCodes };
   }
 
@@ -274,6 +264,7 @@ export class AdminAuthService {
       this.failAdmin2FA(acct);
     }
     await this.twoFactor.disable(adminId);
+    await this.revokeSessionsByAdmin(adminId, '2fa_disabled');
   }
 
   /** Regenerate the backup-code set (requires a live TOTP or backup code). Returns the new codes plaintext ONCE. */
@@ -331,6 +322,7 @@ export class AdminAuthService {
     if (!admin) throw new BusinessException(BusinessCode.NOT_FOUND, 'admin not found', HttpStatus.OK);
     if (!admin.twoFactorEnabled) return; // nothing to reset
     await this.twoFactor.disable(targetAdminId);
+    await this.revokeSessionsByAdmin(targetAdminId, '2fa_reset');
   }
 
   // ── WebAuthn (passkey) login — consumed at the challenge step alongside TOTP ──────────────────
@@ -380,7 +372,8 @@ export class AdminAuthService {
     pendingToken: string,
     assertion: AuthenticationResponseJSON,
     ip?: string,
-  ): Promise<{ access_token: string; refresh_token: string }> {
+    userAgent?: string,
+  ): Promise<{ sessionToken: string }> {
     const decoded = this.twoFactor.verifyChallenge(challengeToken);
     if (decoded === null) {
       throw new BusinessException(
@@ -425,10 +418,7 @@ export class AdminAuthService {
     }
     this.bruteForce.clearFailures(BAN_DIM_ADMIN_2FA, acct);
     await this.completeLogin(adminId, ip);
-    return {
-      access_token: await this.getAdminAccessToken(adminId),
-      refresh_token: await this.getAdminRefreshToken(adminId, { ip }),
-    };
+    return { sessionToken: await this.createAdminSession(adminId, { ip, userAgent }) };
   }
 
   // ── WebAuthn enrollment + management (self-service; caller is the authenticated admin) ──────────
@@ -458,7 +448,9 @@ export class AdminAuthService {
     pendingToken: string,
     registration: RegistrationResponseJSON,
   ): Promise<{ id: string; nickname: string | null; deviceType: string | null; backed: boolean }> {
-    return this.webAuthn.completeRegistration(adminId, pendingToken, registration);
+    const result = await this.webAuthn.completeRegistration(adminId, pendingToken, registration);
+    await this.revokeSessionsByAdmin(adminId, 'webauthn_enabled');
+    return result;
   }
 
   async listWebAuthnCredentials(adminId: number): Promise<WebAuthnCredentialView[]> {
@@ -470,7 +462,9 @@ export class AdminAuthService {
   }
 
   async removeWebAuthnCredential(adminId: number, rowId: bigint): Promise<{ remaining: number }> {
-    return this.webAuthn.removeCredential(adminId, rowId);
+    const result = await this.webAuthn.removeCredential(adminId, rowId);
+    await this.revokeSessionsByAdmin(adminId, 'webauthn_removed');
+    return result;
   }
 
   /** Passkey status for the security card. */
@@ -552,109 +546,66 @@ export class AdminAuthService {
     });
   }
 
-  /**
-   * Issue an admin access token carrying tver = Admin.tokenVersion at issue time. AdminJwtStrategy
-   * verifies tver matches the current value, so bumping tokenVersion (e.g. on disable / role change)
-   * invalidates every outstanding access token on its next request. Mirrors the user-side access token.
-   */
-  async getAdminAccessToken(adminId: number) {
-    const admin = await this.prisma.admin.findUnique({
-      where: { id: adminId },
-      select: { tokenVersion: true },
-    });
-    return this.jwtService.sign(
-      { sub: adminId, tver: admin!.tokenVersion, scope: 'admin' },
-      { secret: jwtConstants.adminSecret, expiresIn: jwtConstants.accessTtl },
-    );
-  }
-
-  /** Revoke every outstanding refresh token for an admin (marks the active family revokedAt + reason).
-   *  Called by the disable / setRole flows, which bump tokenVersion INSIDE their own transaction (the
-   *  last-super guard) and invoke this separately so no second write hits the Admin row. */
-  async revokeRefreshByAdmin(adminId: number, reason: string): Promise<void> {
-    await this.prisma.adminRefreshToken.updateMany({
+  async revokeSessionsByAdmin(adminId: number, reason: string): Promise<void> {
+    await this.prisma.adminSession.updateMany({
       where: { adminId, revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: reason },
     });
   }
 
-  async getAdminRefreshToken(adminId: number, opts: AdminRefreshOpts = {}) {
-    const familyId = opts.familyId ?? randomUUID();
-    const jti = randomUUID();
-    const token = this.jwtService.sign(
-      { sub: adminId, jti, fam: familyId, scope: 'admin' },
-      { secret: jwtConstants.adminSecret, expiresIn: jwtConstants.refreshTtlDays },
-    );
-    await this.prisma.adminRefreshToken.create({
+  async createAdminSession(adminId: number, opts: AdminSessionOpts = {}): Promise<string> {
+    const token = randomBytes(32).toString('base64url');
+    await this.prisma.adminSession.create({
       data: {
         adminId,
         tokenHash: hashToken(token),
-        jti,
-        familyId,
         ip: opts.ip ?? null,
         userAgent: opts.userAgent ?? null,
-        expiresAt: new Date(Date.now() + jwtConstants.refreshTtlMs),
+        expiresAt: new Date(Date.now() + ADMIN_SESSION_TTL_MS),
       },
     });
     return token;
   }
 
-  async verifyAdminRefreshToken(token: string): Promise<AdminVerifyResult> {
-    try {
-      this.jwtService.verify(token, { secret: jwtConstants.adminSecret });
-    } catch {
-      return { ok: false, reason: 'invalid' };
-    }
-    const rec = await this.prisma.adminRefreshToken.findUnique({
+  async validateAdminSession(
+    token: string,
+    ip?: string,
+  ): Promise<{ userId: number; adminId: number; role: AdminRole; sessionId: number } | null> {
+    const rec = await this.prisma.adminSession.findUnique({
       where: { tokenHash: hashToken(token) },
       select: {
+        id: true,
         adminId: true,
-        familyId: true,
-        jti: true,
         revokedAt: true,
         expiresAt: true,
+        lastAccessedAt: true,
+        admin: { select: { userId: true, enabled: true, role: true } },
       },
     });
-    if (!rec) return { ok: false, reason: 'invalid' };
-    if (rec.revokedAt !== null) {
-      await this.revokeAdminFamily(rec.familyId, 'reuse');
-      return { ok: false, reason: 'reuse' };
+    if (
+      !rec ||
+      rec.revokedAt ||
+      rec.expiresAt <= new Date() ||
+      !rec.admin.enabled ||
+      (ADMIN_SESSION_IDLE_MS !== null &&
+        Date.now() - rec.lastAccessedAt.getTime() > ADMIN_SESSION_IDLE_MS)
+    ) return null;
+    if (Date.now() - rec.lastAccessedAt.getTime() >= 5 * 60 * 1000) {
+      await this.prisma.adminSession.updateMany({
+        where: { id: rec.id, revokedAt: null },
+        data: { lastAccessedAt: new Date(), ip: ip ?? undefined },
+      });
     }
-    if (rec.expiresAt <= new Date()) return { ok: false, reason: 'expired' };
-    return { ok: true, adminId: rec.adminId, familyId: rec.familyId, jti: rec.jti };
-  }
-
-  async rotateAdminRefreshToken(token: string, opts: AdminRefreshOpts = {}) {
-    const v = await this.verifyAdminRefreshToken(token);
-    if (v.ok === false) throw v.reason;
-    const claim = await this.prisma.adminRefreshToken.updateMany({
-      where: { tokenHash: hashToken(token), revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: 'rotated' },
-    });
-    if (claim.count === 0) {
-      await this.revokeAdminFamily(v.familyId, 'reuse');
-      throw 'reuse';
-    }
-    const refresh = await this.getAdminRefreshToken(v.adminId, {
-      familyId: v.familyId,
-      ...opts,
-    });
     return {
-      access: await this.getAdminAccessToken(v.adminId),
-      refresh,
-      adminId: v.adminId,
+      userId: rec.admin.userId,
+      adminId: rec.adminId,
+      role: rec.admin.role,
+      sessionId: Number(rec.id),
     };
   }
 
-  async revokeAdminFamily(familyId: string, reason: string) {
-    await this.prisma.adminRefreshToken.updateMany({
-      where: { familyId, revokedAt: null },
-      data: { revokedAt: new Date(), revokeReason: reason },
-    });
-  }
-
-  async revokeAdminRefreshToken(token: string) {
-    await this.prisma.adminRefreshToken.updateMany({
+  async revokeAdminSessionToken(token: string) {
+    await this.prisma.adminSession.updateMany({
       where: { tokenHash: hashToken(token), revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: 'logout' },
     });
@@ -671,35 +622,37 @@ export class AdminAuthService {
       ...(opts.ip ? { ip: { contains: opts.ip } } : {}),
     };
     const [rows, total] = await Promise.all([
-      this.prisma.adminRefreshToken.findMany({
+      this.prisma.adminSession.findMany({
         where,
         skip: opts.skip ?? 0,
         take: opts.take ?? 50,
         orderBy: { createdAt: 'desc' },
         select: {
           adminId: true,
-          jti: true,
+          id: true,
           userAgent: true,
           ip: true,
           createdAt: true,
+          lastAccessedAt: true,
           expiresAt: true,
           admin: { select: { id: true, user: { select: { account: true } } } },
         },
       }),
-      this.prisma.adminRefreshToken.count({ where }),
+      this.prisma.adminSession.count({ where }),
     ]);
     // Flatten admin.user.account → admin.account so the shape matches the user-session list.
     const list = rows.map((r) => ({
       ...r,
+      id: r.id.toString(),
       admin: { id: r.admin.id, account: r.admin.user.account },
     }));
     return { list, total };
   }
 
   /** Revoke a single admin session by jti (its access token stays valid for up to the access TTL). */
-  async revokeAdminSession(jti: string): Promise<void> {
-    await this.prisma.adminRefreshToken.updateMany({
-      where: { jti, revokedAt: null },
+  async revokeAdminSession(id: string): Promise<void> {
+    await this.prisma.adminSession.updateMany({
+      where: { id: BigInt(id), revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: 'admin_revoke' },
     });
   }

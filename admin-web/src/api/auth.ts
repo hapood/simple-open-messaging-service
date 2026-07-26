@@ -1,19 +1,19 @@
 import i18n from '@/i18n'
 import { API_BASE, CODE } from '@/lib/constants'
 import { ApiError } from '@/lib/api-error'
-import { getAccessToken, getRefreshToken } from '@/auth/token-store'
-import type { ApiResult, ChallengeRequired, TokenPair, WebAuthnLoginBegin } from '@/types/api'
+import type { ApiResult, Authenticated, ChallengeRequired, WebAuthnLoginBegin } from '@/types/api'
 
 /** Admin login outcome: a session token pair, or a 2FA challenge (password verified, awaiting the code). */
-export type AdminLoginResult = TokenPair | ChallengeRequired
+export type AdminLoginResult = Authenticated | ChallengeRequired
 
 /**
- * Public POST (no Bearer injected, no 401 retry): used by login / login-verify / renew-access.
+ * Public credentialed POST used by the login and challenge-verification steps.
  * Unwraps the ApiResult envelope; throws ApiError when code !== 0.
  */
 async function postPublic<T>(path: string, body: unknown): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
@@ -34,8 +34,8 @@ export function adminLoginVerify(
   challengeToken: string,
   code?: string,
   backupCode?: string,
-): Promise<TokenPair> {
-  return postPublic<TokenPair>('/admin/login/verify', { challengeToken, code, backupCode })
+): Promise<Authenticated> {
+  return postPublic<Authenticated>('/admin/login/verify', { challengeToken, code, backupCode })
 }
 
 /** Admin passkey login begin (public) — returns assertion options + a pending token for the challenge. */
@@ -48,8 +48,8 @@ export function webAuthnLoginFinish(
   challengeToken: string,
   pendingToken: string,
   assertionResponse: unknown,
-): Promise<TokenPair> {
-  return postPublic<TokenPair>('/admin/webauthn/login/finish', {
+): Promise<Authenticated> {
+  return postPublic<Authenticated>('/admin/webauthn/login/finish', {
     challengeToken,
     pendingToken,
     assertionResponse,
@@ -60,27 +60,16 @@ export function webAuthnLoginFinish(
  * Refresh rotation (public). Failure (10006 reuse / 10003 invalid|expired) throws
  * ApiError, caught by refresh-singleton which then forceLogout.
  */
-export function renewAccess(refreshToken: string): Promise<TokenPair> {
-  return postPublic<TokenPair>('/admin/renew-access', { refreshToken })
-}
-
 /**
  * Admin logout (requires Bearer). Uses a raw fetch with manual token injection and
  * does not go through client.request, to avoid a module cycle with the refresh
  * chain. Failure does not block local cleanup.
  */
 export async function adminLogout(): Promise<void> {
-  const rt = getRefreshToken()
-  const at = getAccessToken()
-  if (!rt) return
   try {
     await fetch(`${API_BASE}/admin/logout`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(at ? { Authorization: `Bearer ${at}` } : {}),
-      },
-      body: JSON.stringify({ refreshToken: rt }),
+      credentials: 'same-origin',
     })
   } catch {
     /* Logout request failure does not block local cleanup. */

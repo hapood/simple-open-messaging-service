@@ -10,14 +10,23 @@ import { KvStoreService } from '../kv-store/kv-store.service.js';
  *  retained) but `expiresAt` is never set. */
 const WEB_SESSION_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 /** Throttle for the activity+sliding write: refresh lastSeenAt/lastSeenIp (all clients) and extend
- *  the web/desktop deadline at most once per 5 minutes per token, so validate() never writes to the DB
- *  on every request — only on a cache miss past this interval. */
+ *  the web/desktop deadline at most once per 5 minutes per token. Persistent cache entries carry the
+ *  next touch deadline, so validate() does not write to the DB on every request. */
 const WEB_SESSION_SLIDING_TOUCH_MS = 5 * 60 * 1000;
-/** KV-cache a successful validation for 60s (parity with the access-token `tver` cache) so the hot
- *  REST path doesn't hit the DB per request. Revocation propagates within this window (revoke() dels
- *  the key for a presented token; logout-all relies on the 60s TTL — acceptable lag, matches today). */
-const VALIDATE_CACHE_TTL_SEC = 60;
 const CACHE_PREFIX = 'session:';
+
+interface SessionCacheEntry {
+  userId: number;
+  sessionId: number;
+  exp: number | null;
+  persistent: boolean;
+  mustChangePassword: boolean;
+  nextTouchAt: number;
+}
+
+function encodeCacheEntry(entry: SessionCacheEntry): string {
+  return JSON.stringify(entry);
+}
 
 /** Client kind = the device platform ('app' native / 'web' browser / 'desktop' Tauri). Persisted on the
  *  row so the device list can render an icon/label per credential. It is INFORMATIONAL only — the
@@ -35,7 +44,7 @@ function hashToken(token: string): string {
  * generalized to:
  *  - a nullable `expiresAt` (app = never; web = sliding 14d);
  *  - a `lastSeenAt` sliding-window tracker for web;
- *  - a 60s KV cache so validation is cheap on the hot path.
+ *  - an issue-initialized validation cache so the hot REST path avoids a DB read.
  *
  * Used by {@link BearerAuthService}, which is the single source of truth shared by the global
  * SessionAuthGuard and the /uploads/* media preHandler — so a session token grants identical access on
@@ -72,20 +81,40 @@ export class SessionTokenService {
     // Lifetime by trust, not platform: the native app is trusted by default; a desktop opts in; web never.
     const trusted = opts.trusted ?? (client === 'app');
     const expiresAt = trusted ? null : new Date(Date.now() + WEB_SESSION_TTL_MS);
-    await this.prisma.sessionToken.create({
+    const tokenHash = hashToken(plaintext);
+    const persistent = opts.persistent ?? true;
+    const created = await this.prisma.sessionToken.create({
       data: {
         userId,
-        tokenHash: hashToken(plaintext),
+        tokenHash,
         client,
         device: opts.device ?? null,
         userAgent: opts.userAgent ?? null,
         ip: opts.ip ?? null,
         lastSeenIp: opts.ip ?? null,
         expiresAt,
-        persistent: opts.persistent ?? true,
+        persistent,
         trusted,
       },
+      select: {
+        id: true,
+        user: { select: { mustChangePassword: true } },
+      },
     });
+    await this.kvStore
+      .initPersistent(
+        `${CACHE_PREFIX}${tokenHash}`,
+        encodeCacheEntry({
+          userId,
+          sessionId: created.id,
+          exp: expiresAt?.getTime() ?? null,
+          persistent,
+          mustChangePassword: created.user.mustChangePassword,
+          nextTouchAt: Date.now() + WEB_SESSION_SLIDING_TOUCH_MS,
+        }),
+        expiresAt?.getTime() ?? null,
+      )
+      .catch(() => {});
     return plaintext;
   }
 
@@ -93,12 +122,10 @@ export class SessionTokenService {
    * Validate a presented token. Returns `{ userId, sessionId, slid, persistent }` on success (the row
    * id lets the device list flag the requesting session as "current"; `slid` signals the untrusted
    * deadline moved this call — the auth guard uses it to re-issue the browser cookie; `persistent` is
-   * the cookie-persistence choice), or null (not-found / revoked / expired). KV-cached for 60s; on a
-   * cache miss the session's activity is refreshed — `lastSeenAt` + `lastSeenIp` update for EVERY
-   * client (so the device list's "last active" stays fresh even for no-expiry trusted tokens), and
-   * untrusted deadlines additionally slide forward. Both writes are throttled to once per
-   * {@link WEB_SESSION_SLIDING_TOUCH_MS} so validate() never writes on every request; a failed write
-   * can't invalidate an otherwise-valid token (fire-and-forget).
+   * the cookie-persistence choice), or null (not-found / revoked / expired). The cache is initialized
+   * only by issue(); validate may update an existing entry after an activity/sliding touch but never
+   * recreates a missing entry. That contract makes revoke deletion final even when a validation DB read
+   * was already in flight: its update fails instead of resurrecting the deleted cache entry.
    */
   async validate(
     raw: string,
@@ -107,25 +134,16 @@ export class SessionTokenService {
     const h = hashToken(raw);
     const key = `${CACHE_PREFIX}${h}`;
 
-    const cached = await this.kvStore.get(key).catch(() => null);
+    const cached = await this.kvStore.getPersistent(key).catch(() => null);
+    const cacheExistedAtStart = cached !== null;
     if (cached !== null) {
-      const entry = JSON.parse(cached) as {
-        userId: number;
-        sessionId: number;
-        exp: number | null;
-        persistent?: boolean;
-        mustChangePassword: boolean;
-      };
-      // An expired entry falls through to the DB. The cache is an in-process Map wiped on every
-      // restart (KvStoreService), so every live entry carries the full field set the writer emits —
-      // no stale pre-upgrade shape can survive a deploy.
-      if (entry.exp === null || entry.exp > Date.now()) {
-        // Cache hit (within VALIDATE_CACHE_TTL_SEC) → no DB read, so no sliding write this call.
+      const entry = JSON.parse(cached) as SessionCacheEntry;
+      if (entry.nextTouchAt > Date.now()) {
         return {
           userId: entry.userId,
           sessionId: entry.sessionId,
           slid: false,
-          persistent: entry.persistent ?? true,
+          persistent: entry.persistent,
           mustChangePassword: entry.mustChangePassword,
         };
       }
@@ -147,13 +165,12 @@ export class SessionTokenService {
     const exp = rec.expiresAt?.getTime() ?? null;
     if (exp !== null && exp <= Date.now()) return null;
 
-    // Activity refresh (all clients, incl. no-expiry trusted tokens — keeps the device-list "last
-    // active" fresh, i.e. the sliding-window capability is retained for trusted too) + sliding deadline
-    // (untrusted only), throttled to once per WEB_SESSION_SLIDING_TOUCH_MS. `slid` records that the
-    // untrusted deadline actually moved this call — the signal the auth guard uses to re-issue the
-    // browser cookie so its maxAge tracks the session. Trusted tokens never slide (exp === null).
+    // Activity refresh (all clients) + sliding deadline (untrusted only), throttled by nextTouchAt in
+    // the persistent cache. A cache miss (for example after a process restart) still validates against
+    // the database, but deliberately does not recreate the cache: only issue() has create semantics.
     let cachedExp = exp;
     let slid = false;
+    let nextTouchAt = Date.now() + WEB_SESSION_SLIDING_TOUCH_MS;
     if (Date.now() - rec.lastSeenAt.getTime() > WEB_SESSION_SLIDING_TOUCH_MS) {
       const data: { lastSeenAt: Date; lastSeenIp?: string; expiresAt?: Date } = {
         lastSeenAt: new Date(),
@@ -164,25 +181,39 @@ export class SessionTokenService {
         data.expiresAt = new Date(cachedExp);
         slid = true;
       }
-      this.prisma.sessionToken
-        .update({ where: { tokenHash: h }, data })
-        .catch((e) =>
-          this.logger.warn(`activity/sliding-touch write failed (non-fatal): ${String(e)}`),
-        );
+      try {
+        await this.prisma.sessionToken.update({ where: { tokenHash: h }, data });
+      } catch (e) {
+        // Authentication is still valid according to the authoritative row just read. Do not claim a
+        // slide or refresh the cookie when persistence failed; leave nextTouchAt due so a later request
+        // retries the touch.
+        this.logger.warn(`activity/sliding-touch write failed (non-fatal): ${String(e)}`);
+        cachedExp = exp;
+        slid = false;
+        nextTouchAt = Date.now();
+      }
     }
-    await this.kvStore
-      .setex(
-        key,
-        VALIDATE_CACHE_TTL_SEC,
-        JSON.stringify({
+
+    if (cacheExistedAtStart) {
+      const updated = await this.kvStore
+        .updatePersistent(
+          key,
+          encodeCacheEntry({
           userId: rec.userId,
           sessionId: rec.id,
           exp: cachedExp,
           persistent: rec.persistent,
           mustChangePassword: rec.user.mustChangePassword,
-        }),
-      )
-      .catch(() => {});
+            nextTouchAt,
+          }),
+          cachedExp,
+        )
+        .catch(() => false);
+      // A state-changing operation deleted the entry while the DB work above was in flight. Re-read
+      // authoritatively with cache-create disabled: revoke now returns null, while a non-revoking change
+      // such as setPassword returns the fresh principal instead of causing a spurious logout.
+      if (!updated) return this.validate(raw, opts);
+    }
     return { userId: rec.userId, sessionId: rec.id, slid, persistent: rec.persistent, mustChangePassword: rec.user.mustChangePassword };
   }
 
@@ -194,14 +225,14 @@ export class SessionTokenService {
       where: { tokenHash: h, revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: 'logout' },
     });
-    await this.kvStore.del(`${CACHE_PREFIX}${h}`).catch(() => {});
+    await this.kvStore.delPersistent(`${CACHE_PREFIX}${h}`).catch(() => {});
   }
 
   /** Revoke a session by its row id — the device-list "revoke this device" path, where the caller has
    *  the row id (shown in the list) but not the raw token. Ownership-checked: only a row belonging to
    *  `userId` and still active is touched, so a user can't revoke another user's session by guessing an
-   *  id. Idempotent (a not-found / already-revoked / foreign row is a no-op). The KV entry is dropped by
-   *  the row's `tokenHash` so the revocation lands within the 60s window instead of waiting for TTL.
+   *  id. Idempotent (a not-found / already-revoked / foreign row is a no-op). The persistent validation
+   *  entry is dropped by the row's tokenHash, immediately preventing further cache authentication.
    *  Returns true iff a row was actually revoked (lets the caller distinguish "revoked" from "no-op"). */
   async revokeById(userId: number, sessionId: number): Promise<boolean> {
     const rec = await this.prisma.sessionToken.findFirst({
@@ -213,19 +244,27 @@ export class SessionTokenService {
       where: { id: sessionId },
       data: { revokedAt: new Date(), revokeReason: 'device_revoke' },
     });
-    await this.kvStore.del(`${CACHE_PREFIX}${rec.tokenHash}`).catch(() => {});
+    await this.kvStore.delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`).catch(() => {});
     return true;
   }
 
-  /** Revoke ALL of the user's session tokens — called on logout-all / password change / admin disable
-   *  (invalidateAllSessions) so every device loses access in one move. Per-token KV entries are left to
-   *  expire (60s) — we can't enumerate them by userId; the live SSE connection is dropped immediately
-   *  by the `auth.sessions-invalidated` → FORCE_LOGOUT handler regardless. */
+  /** Revoke ALL of the user's session tokens and delete each corresponding persistent validation entry. */
   async revokeAllForUser(userId: number, reason = 'all_devices'): Promise<void> {
+    const sessions = await this.prisma.sessionToken.findMany({
+      where: { userId, revokedAt: null },
+      select: { tokenHash: true },
+    });
     await this.prisma.sessionToken.updateMany({
       where: { userId, revokedAt: null },
       data: { revokedAt: new Date(), revokeReason: reason },
     });
+    if (sessions.length > 0) {
+      await this.kvStore
+        .delPersistent(
+          ...sessions.map(({ tokenHash }) => `${CACHE_PREFIX}${tokenHash}`),
+        )
+        .catch(() => {});
+    }
   }
 
   /** Resolve the row id of a freshly-issued plaintext token (hashing it the same way {@link issue} does).
@@ -243,13 +282,16 @@ export class SessionTokenService {
    *  DB. Used when a mutation changes a field that lives in that cache WITHOUT invalidating the session —
    *  specifically {@link AuthService.setPassword} clearing `mustChangePassword`: unlike changePassword /
    *  generateInitialPassword (which revoke all sessions, so stale caches die with them), setPassword KEEPS
-   *  this session, so without busting the cache the cleared flag stays stale for up to 60s and gates the
-   *  user out of the app right after they set their password. One DB read (rare — only on a set-password). */
+   *  this session, so the issue-initialized entry must be removed when that flag changes. */
   async bustCacheBySessionId(sessionId: number): Promise<void> {
     const rec = await this.prisma.sessionToken.findUnique({
       where: { id: sessionId },
       select: { tokenHash: true },
     });
-    if (rec) await this.kvStore.del(`${CACHE_PREFIX}${rec.tokenHash}`).catch(() => {});
+    if (rec) {
+      await this.kvStore
+        .delPersistent(`${CACHE_PREFIX}${rec.tokenHash}`)
+        .catch(() => {});
+    }
   }
 }

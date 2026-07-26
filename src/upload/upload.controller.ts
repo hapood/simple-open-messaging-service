@@ -61,12 +61,17 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload')
-  @ApiOperation({ summary: 'Upload an image (returns url + width/height provided by the client)' })
+  @ApiOperation({
+    summary:
+      'Upload an image (returns url + width/height provided by the client)',
+  })
   @ApiConsumes('multipart/form-data')
   async upload(@Request() req: FastifyRequest): Promise<ApiResult> {
-    const img = await this.uploadService.consumeImage(req);
+    const img = await this.withStageFailure(req, () =>
+      this.uploadService.consumeImage(req),
+    );
     if (img.kind === 'rejected') {
-      return {
+      return this.failUpload(req, {
         code: BusinessCode.VALIDATION_FAILED,
         message:
           img.reason === 'no-file'
@@ -74,18 +79,25 @@ export class UploadController {
             : img.reason === 'too-large'
               ? 'file too large'
               : 'invalid image',
-      };
+      });
     }
     // Magic-number second check: reject non-genuine images (defends against forged-mimetype malicious uploads).
     if (!this.uploadService.isImage(img.mimetype, img.buffer)) {
-      return { code: BusinessCode.VALIDATION_FAILED, message: 'invalid image' };
+      return this.failUpload(req, {
+        code: BusinessCode.VALIDATION_FAILED,
+        message: 'invalid image',
+      });
     }
     const blocked = await this.tickLocal('images');
-    if (blocked) return blocked;
-    const { url, size } = await this.uploadService.save(img.mimetype, img.buffer);
+    if (blocked) return this.failUpload(req, blocked);
+    const { url, size } = await this.withStageFailure(req, () =>
+      this.uploadService.save(img.mimetype, img.buffer),
+    );
     // Promote a staged IMAGE send if this upload carries a client-message-id (the message content is
     // {url,w,h}; the staged meta for an image is empty — w/h come from consumeImage above).
-    await this.maybePromote(req, { url, w: img.w, h: img.h });
+    await this.withStageFailure(req, () =>
+      this.maybePromote(req, { url, w: img.w, h: img.h }),
+    );
     return {
       code: BusinessCode.OK,
       message: 'successful',
@@ -105,7 +117,10 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/avatar')
-  @ApiOperation({ summary: 'Upload avatar image (multi-size webp, returns representative url)' })
+  @ApiOperation({
+    summary:
+      'Upload avatar image (multi-size webp, returns representative url)',
+  })
   @ApiConsumes('multipart/form-data')
   async uploadAvatar(@Request() req: FastifyRequest): Promise<ApiResult> {
     const img = await this.uploadService.consumeImage(req);
@@ -142,12 +157,16 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/file')
-  @ApiOperation({ summary: 'Upload a generic file (returns url/name/size/mimeType)' })
+  @ApiOperation({
+    summary: 'Upload a generic file (returns url/name/size/mimeType)',
+  })
   @ApiConsumes('multipart/form-data')
   async uploadFile(@Request() req: FastifyRequest): Promise<ApiResult> {
-    const f = await this.uploadService.consumeFile(req);
+    const f = await this.withStageFailure(req, () =>
+      this.uploadService.consumeFile(req),
+    );
     if (f.kind === 'rejected') {
-      return {
+      return this.failUpload(req, {
         code: BusinessCode.VALIDATION_FAILED,
         message:
           f.reason === 'no-file'
@@ -157,18 +176,16 @@ export class UploadController {
               : f.reason === 'bad-name'
                 ? 'invalid filename'
                 : 'invalid file type',
-      };
+      });
     }
     const blocked = await this.tickLocal('largeFiles');
-    if (blocked) return blocked;
-    const data = await this.uploadService.saveFile(
-      f.mimetype,
-      f.filename,
-      f.buffer,
+    if (blocked) return this.failUpload(req, blocked);
+    const data = await this.withStageFailure(req, () =>
+      this.uploadService.saveFile(f.mimetype, f.filename, f.buffer),
     );
     // Promote a staged FILE send if a client-message-id is present (data is already the {url,name,size,
     // mimeType} FILE content shape; staged meta for a file is empty).
-    await this.maybePromote(req, data);
+    await this.withStageFailure(req, () => this.maybePromote(req, data));
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -181,27 +198,29 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/video')
-  @ApiOperation({ summary: 'Upload a video (magic-byte validated; width/height/duration probed client-side)' })
+  @ApiOperation({
+    summary:
+      'Upload a video (magic-byte validated; width/height/duration probed client-side)',
+  })
   @ApiConsumes('multipart/form-data')
   async uploadVideo(@Request() req: FastifyRequest): Promise<ApiResult> {
-    const v = await this.uploadService.consumeVideo(req);
+    const v = await this.withStageFailure(req, () =>
+      this.uploadService.consumeVideo(req),
+    );
     if (v.kind === 'rejected') {
-      return {
+      return this.failUpload(req, {
         code: BusinessCode.VALIDATION_FAILED,
         message: this.mediaRejectMessage(v.reason, 'video'),
-      };
+      });
     }
     const blocked = await this.tickLocal('largeFiles');
-    if (blocked) return blocked;
-    const data = await this.uploadService.saveMedia(
-      v.ext,
-      v.mime,
-      v.filename,
-      v.buffer,
+    if (blocked) return this.failUpload(req, blocked);
+    const data = await this.withStageFailure(req, () =>
+      this.uploadService.saveMedia(v.ext, v.mime, v.filename, v.buffer),
     );
     // Promote a staged VIDEO send if a client-message-id is present. data is {url,name,size,mimeType};
     // the staged meta {w,h,duration} is merged in at promote → the full VIDEO content shape.
-    await this.maybePromote(req, data);
+    await this.withStageFailure(req, () => this.maybePromote(req, data));
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -209,27 +228,28 @@ export class UploadController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('upload/audio')
-  @ApiOperation({ summary: 'Upload audio (magic-byte validated; duration probed client-side)' })
+  @ApiOperation({
+    summary: 'Upload audio (magic-byte validated; duration probed client-side)',
+  })
   @ApiConsumes('multipart/form-data')
   async uploadAudio(@Request() req: FastifyRequest): Promise<ApiResult> {
-    const a = await this.uploadService.consumeAudio(req);
+    const a = await this.withStageFailure(req, () =>
+      this.uploadService.consumeAudio(req),
+    );
     if (a.kind === 'rejected') {
-      return {
+      return this.failUpload(req, {
         code: BusinessCode.VALIDATION_FAILED,
         message: this.mediaRejectMessage(a.reason, 'audio'),
-      };
+      });
     }
     const blocked = await this.tickLocal('largeFiles');
-    if (blocked) return blocked;
-    const data = await this.uploadService.saveMedia(
-      a.ext,
-      a.mime,
-      a.filename,
-      a.buffer,
+    if (blocked) return this.failUpload(req, blocked);
+    const data = await this.withStageFailure(req, () =>
+      this.uploadService.saveMedia(a.ext, a.mime, a.filename, a.buffer),
     );
     // Promote a staged AUDIO send if a client-message-id is present. data is {url,name,size,mimeType};
     // the staged meta {duration} is merged in at promote → the full AUDIO content shape.
-    await this.maybePromote(req, data);
+    await this.withStageFailure(req, () => this.maybePromote(req, data));
     return { code: BusinessCode.OK, message: 'successful', data };
   }
 
@@ -242,6 +262,49 @@ export class UploadController {
     if (reason === 'too-large') return 'file too large';
     if (reason === 'bad-name') return 'invalid filename';
     return `invalid ${kind}`;
+  }
+
+  /** Persist a handled upload rejection before returning its normal business-error envelope. */
+  private async failUpload(
+    req: FastifyRequest,
+    result: ApiResult,
+  ): Promise<ApiResult> {
+    const clientMessageId = this.clientMessageId(req);
+    if (clientMessageId) {
+      await this.messageService.failStaged(
+        req.user.userId,
+        clientMessageId,
+        result.message,
+      );
+    }
+    return result;
+  }
+
+  /** Unexpected parser/storage/promote errors still become durable failures, then retain their
+   * original exception so the global filter can produce the normal system-error response. */
+  private async withStageFailure<T>(
+    req: FastifyRequest,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      const clientMessageId = this.clientMessageId(req);
+      if (clientMessageId) {
+        await this.messageService.failStaged(
+          req.user.userId,
+          clientMessageId,
+          'upload failed',
+        );
+      }
+      throw error;
+    }
+  }
+
+  private clientMessageId(req: FastifyRequest): string | undefined {
+    const raw = req.headers['x-client-message-id'];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    return typeof value === 'string' && value.length > 0 ? value : undefined;
   }
 
   /**
@@ -257,15 +320,20 @@ export class UploadController {
     req: FastifyRequest,
     contentPayload: Record<string, unknown>,
   ): Promise<void> {
-    const raw = req.headers['x-client-message-id'];
-    if (raw === undefined) return; // plain upload — no staged send to promote
-    const clientMessageId = Array.isArray(raw) ? raw[0] : raw;
-    if (typeof clientMessageId !== 'string' || clientMessageId.length === 0) return;
+    const clientMessageId = this.clientMessageId(req);
+    if (!clientMessageId) return; // plain upload — no staged send to promote
     const digest = extractDigests(String(contentPayload.url))[0];
-    if (digest) await this.messageService.linkStagedDigest(clientMessageId, digest);
+    if (digest) {
+      await this.messageService.linkStagedDigest(
+        clientMessageId,
+        digest,
+        req.user.userId,
+      );
+    }
     const promoted = await this.messageService.promoteStaged(
       clientMessageId,
       contentPayload,
+      req.user.userId,
     );
     // Fire-and-forget: promoteStaged already committed the Message (the upload response confirms that);
     // the recipient fan-out runs off the request critical path, same as the text send path.
