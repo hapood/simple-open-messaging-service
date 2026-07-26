@@ -4,11 +4,26 @@ import { ApiOperation, ApiProperty, ApiTags } from '@nestjs/swagger';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { SERVER_VERSION } from '../common/version.js';
+import { PrismaService } from '../prisma.service.js';
+
+/**
+ * Fail-fast ceiling for the `SELECT 1` reachability probe. Stays under Docker HEALTHCHECK's 5s
+ * `--timeout` so a hanging DB still returns a 200 (with `database: "down"`) in time to keep the
+ * container healthy — liveness must never restart on a dependency blip.
+ */
+const DB_PROBE_TIMEOUT_MS = 3000;
 
 /** Payload of GET /api/v1/health. */
 export class HealthResponseDto {
   @ApiProperty({ example: 'ok', description: 'Liveness marker — always "ok" on a 200 response.' })
   status!: string;
+
+  @ApiProperty({
+    example: 'up',
+    description:
+      'Database reachability as seen by this process ("up" | "down"). Probed once per call via a fail-fast SELECT 1. Reported as data only — the HTTP status stays 200 either way, so an orchestrator never restarts on a DB blip; monitoring alerts on "down".',
+  })
+  database!: 'up' | 'down';
 
   @ApiProperty({ example: '0.1.0', description: 'Server version (from package.json).' })
   version!: string;
@@ -35,26 +50,62 @@ export class HealthResponseDto {
  * welcome page) won't carry our envelope, so the client can tell "reachable but not SOMS" from
  * "reachable and correct".
  *
- * Never rate-limited: a liveness/reachability probe must return 200 whenever the process is
- * responsive, so a 429 here would make an orchestrator (Docker HEALTHCHECK) restart a perfectly
- * healthy container. The handler is zero-I/O — `SERVER_VERSION` is cached at module load, `time` is
- * `Date.now()` — so there is no load to protect and no per-probe counter cost. External flood
- * protection, if ever required, belongs at the Caddy edge (keyed on the real client IP), not an
- * in-process shared counter. No auth guard.
+ * HTTP 200 is returned UNCONDITIONALLY — even when the database is unreachable — so an orchestrator
+ * (Docker HEALTHCHECK) never restarts a perfectly-live process over a transient dependency blip. DB
+ * reachability is still surfaced, as data: `data.database` is `"up"` when a fail-fast `SELECT 1`
+ * succeeds within `DB_PROBE_TIMEOUT_MS`, and `"down"` otherwise (failure OR timeout). Monitoring
+ * alerts on `database === "down"`; the orchestrator restarts only on a wedged process (a non-200
+ * here), never on a DB hiccup. A k8s-style liveness/readiness split is deliberately NOT used: SOMS is
+ * single-instance by decision, so there is no load balancer to reroute traffic away on a readiness
+ * failure — a separate 503 probe would drive zero action.
+ *
+ * Never rate-limited: a liveness/reachability probe must return 200 whenever the process is responsive,
+ * so a 429 here would make an orchestrator restart a perfectly healthy container. One cheap `SELECT 1`
+ * per Docker 30s probe plus occasional pre-login hits is negligible DB load; external flood protection,
+ * if ever required, belongs at the Caddy edge (keyed on the real client IP), not an in-process shared
+ * counter. No auth guard.
  */
 @ApiTags('health')
 @Public()
 @Controller()
 export class HealthController {
+  constructor(private readonly prisma: PrismaService) {}
+
   @Get('health')
   @ApiOperation({
-    summary: 'Public liveness probe (unauthenticated): status, version, server time.',
+    summary: 'Public liveness probe (unauthenticated): status, DB reachability, version, server time.',
   })
-  health(): ApiResult<HealthResponseDto> {
+  async health(): Promise<ApiResult<HealthResponseDto>> {
     return {
       code: BusinessCode.OK,
       message: 'successful',
-      data: { status: 'ok', version: SERVER_VERSION, time: Date.now() },
+      data: {
+        status: 'ok',
+        database: await this.probeDatabase(),
+        version: SERVER_VERSION,
+        time: Date.now(),
+      },
     };
+  }
+
+  /** `SELECT 1` under a fail-fast timeout. Never throws — any error or timeout resolves to `"down"`. */
+  private async probeDatabase(): Promise<'up' | 'down'> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.prisma.$queryRaw`SELECT 1`,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error('database probe timed out')),
+            DB_PROBE_TIMEOUT_MS,
+          );
+        }),
+      ]);
+      return 'up';
+    } catch {
+      return 'down';
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }
