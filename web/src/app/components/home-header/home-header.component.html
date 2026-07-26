@@ -1,20 +1,33 @@
 <div class="home-header">
-  <div class="title">{{ 'common.appName' | transloco }}</div>
-  <button class="icon-btn" cdkOverlayOrigin #moreTrigger="cdkOverlayOrigin"
-    (click)="toggleMenu()" [class.active]="menuOpen()"
-    aria-haspopup="menu" [attr.aria-expanded]="menuOpen()"
-    [attr.aria-label]="'nav.accountMenuAria' | transloco">
+  <button class="icon-btn avatar-btn" (click)="openProfile()"
+    [attr.aria-label]="'nav.editProfileAria' | transloco">
     <span class="avatar">
-      <app-user-avatar
-        [type]="UserAvatarType.SELF"
-        [name]="sessionProfile()?.name || 'SOMS'"
-        [identityId]="sessionProfile()?.id"
-        [src]="sessionProfile()?.avatar" />
+      @if (sessionProfile(); as p) {
+        <app-user-avatar
+          [type]="UserAvatarType.SELF"
+          [name]="p.name"
+          [identityId]="p.id"
+          [src]="p.avatar" />
+      } @else {
+        <span class="avatar-placeholder"></span>
+      }
     </span>
-    @if (friendReqBadge()) {
-      <span class="friend-badge" [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"></span>
-    }
   </button>
-  <app-chat-action-menu [entries]="entries()" [origin]="moreTrigger" [open]="menuOpen()"
-    (select)="onSelect($event)" (closed)="closeMenu()" />
+  <div class="header-actions">
+    <button class="icon-btn friend-btn" (click)="openFriendRequests()"
+      [attr.aria-label]="'nav.friendRequests' | transloco">
+      <app-icon [type]="AppIconType.FRIEND_REQUESTS" [style]="{ width: '21px', height: '21px' }" />
+      @if (friendReqBadge()) {
+        <span class="friend-badge" [attr.aria-label]="'nav.newFriendRequestsAria' | transloco"></span>
+      }
+    </button>
+    <button class="icon-btn" cdkOverlayOrigin #moreTrigger="cdkOverlayOrigin"
+      (click)="toggleMoreMenu()" [class.active]="moreMenuOpen()"
+      aria-haspopup="menu" [attr.aria-expanded]="moreMenuOpen()"
+      [attr.aria-label]="'nav.moreAria' | transloco">
+      <app-icon [type]="AppIconType.MORE" [style]="{ width: '21px', height: '21px' }" />
+    </button>
+  </div>
+  <app-chat-action-menu [entries]="moreEntries()" [origin]="moreTrigger" [open]="moreMenuOpen()"
+    (select)="onSelect($event)" (closed)="closeMoreMenu()" />
 </div>

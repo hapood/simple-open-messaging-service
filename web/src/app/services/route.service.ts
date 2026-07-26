@@ -187,18 +187,31 @@ export class RouteService {
   }
 
   /**
+   * Open the current user's profile editor using the layout-appropriate surface. Compact keeps the
+   * full-screen inline section and its layered back behavior; medium/expanded use the shared profile
+   * dialog so the conversation list remains in place behind it.
+   */
+  openProfile(): void {
+    if (this.layout.mode() === 'compact') {
+      this.nav.setTopSection('profile');
+    } else {
+      this.popupDlg(PopupType.EDIT_PROFILE);
+    }
+  }
+
+  /**
    * Open Settings, optionally deep-linking straight to a category — e.g. the Profile section → "Manage
-   * sessions" lands on the Devices page. Expanded opens the wide two-column dialog; compact/medium switch to the
-   * inline Settings section ({@link NavStateMachineService.setTopSection}) and, for a deep-link, drills
+   * sessions" lands on the Devices page. Medium/expanded open the wide two-column dialog; compact switches to
+   * the inline Settings section ({@link NavStateMachineService.setTopSection}) and, for a deep-link, drills
    * into the category ({@link NavStateMachineService.openSettingsCategory} — HW-back peels it: sub-page →
    * root → chats). Callers opening Settings from inside a dialog (e.g. Edit Profile) should close themselves
    * first so the Settings section isn't stacked beneath the dialog (the section sits below panes).
    */
   openSettings(category?: SettingsCategoryId): void {
-    if (this.layout.mode() === 'expanded') {
+    if (this.layout.mode() !== 'compact') {
       this.openSettingsDialog(category);
     } else {
-      // compact/medium: Settings is an inline secondary section, not a dialog. Switch to it and (for a deep-link)
+      // compact: Settings is an inline secondary section, not a dialog. Switch to it and (for a deep-link)
       // drill straight into the category (HW-back peels it: sub-page → root → chats).
       this.nav.setTopSection('settings');
       if (category) this.nav.openSettingsCategory(category);
@@ -206,8 +219,8 @@ export class RouteService {
   }
 
   /**
-   * Open Settings as a wide two-column dialog — DESKTOP ONLY. Mobile/tablet do NOT use this: they switch to
-   * the inline Settings section ({@link NavStateMachineService.setTopSection}); the mode branch lives in
+   * Open Settings as a wide two-column dialog — medium/expanded only. Compact switches to the inline
+   * Settings section ({@link NavStateMachineService.setTopSection}); the mode branch lives in
    * {@link openSettings}. Pushed as a `wide` dialog pane so RootPopup renders a wider centered card on
    * desktop (the default 480px is too narrow for two columns). `initialCategoryId` selects the right-hand
    * category on open (deep-link); omit it for the default (first visible) selection. Back / hardware-back

@@ -266,6 +266,7 @@
     "create": "Create"
   },
   "chat": {
+    "clearSearch": "Clear search",
     "emptyTagline": "Select a chat to start your conversation",
     "emptyFooter": "Your messages are protected end-to-end in transit. SOMS cannot read them.",
     "searchPlaceholder": "Search by chat name",
@@ -391,6 +392,7 @@
     "invitedPartial": "Invited {{n}}; {{skipped}} couldn't be invited",
     "noInvites": "No invites sent",
     "networkError": "Network error, please retry",
+    "serverError": "Server is having trouble — please retry",
     "theGroup": "the group",
     "role": {
       "owner": "the owner",

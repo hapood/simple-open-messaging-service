@@ -1,4 +1,4 @@
-import { Component, signal, computed, inject, effect, output, DestroyRef } from '@angular/core';
+import { Component, signal, computed, inject, effect, input, output, DestroyRef } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
@@ -35,6 +35,8 @@ export class ProfileEditorComponent {
 
   readonly UserAvatarType = UserAvatarType
   readonly AppIconType = AppIconType
+  /** Inline compact pages sit beneath the native status bar; centered dialogs leave this disabled. */
+  readonly respectTopSafeArea = input(false)
 
   readonly back = output<void>()
   readonly saved = output<void>()

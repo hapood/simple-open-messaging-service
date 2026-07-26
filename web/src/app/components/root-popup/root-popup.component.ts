@@ -5,8 +5,8 @@ import { RouteService, DlgInfo } from '../../services/route.service';
 import { MaterialDialogComponent } from '../material-dialog/material-dialog.component';
 import { LayoutService } from '../../services/layout.service';
 
-// Enter/leave motion for routed popups. The layout selects a state: desktop
-// renders the centered card with a scale+fade, mobile renders a slide-up sheet
+// Enter/leave motion for routed popups. Medium/expanded render a centered card
+// with a scale+fade; compact renders a slide-up sheet.
 // (iOS feel). This is a pure rendering layer over the dlgList signal — the
 // :leave transitions keep the node mounted until the exit animation finishes,
 // so the back-button close contract in RouteService (system-back === button
@@ -45,8 +45,8 @@ const dialogAnim = trigger('dialogAnim', [
 })
 export class RootPopupComponent {
   dlgList: Signal<DlgInfo[]>
-  // desktop renders popups as a centered card; mobile as a full-screen overlay.
-  protected readonly isDesktop = inject(LayoutService).isDesktop
+  // Medium/expanded render popups as centered cards; compact uses a full-screen overlay.
+  protected readonly isCard = inject(LayoutService).isAtLeastMedium
 
   constructor(private routeService: RouteService) {
     this.dlgList = this.routeService.dlgList

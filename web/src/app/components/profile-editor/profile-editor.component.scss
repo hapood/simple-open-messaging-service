@@ -37,10 +37,28 @@
   }
 }
 
+.profile-editor.safe-area-header .msg-header {
+  height: calc(56px + var(--soms-safe-top, 0px));
+  padding-top: var(--soms-safe-top, 0px);
+}
+
 .icon-btn {
   @include styless-button;
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--app-radius-sm);
+}
+
+.icon-btn:hover {
+  background: var(--app-hover);
+}
+
+.icon-btn:focus-visible {
+  outline: 2px solid var(--app-focus-ring);
+  outline-offset: 2px;
 }
 
 // "Saved" confirmation: the check glyph + label share the Save button — seat the icon on the label's

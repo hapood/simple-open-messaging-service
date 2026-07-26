@@ -266,6 +266,7 @@
     "create": "创建"
   },
   "chat": {
+    "clearSearch": "清除搜索",
     "emptyTagline": "选择一个聊天开始对话",
     "emptyFooter": "你的消息在传输中受端到端加密保护，SOMS 无法读取。",
     "searchPlaceholder": "搜索聊天名称",
@@ -391,6 +392,7 @@
     "invitedPartial": "已邀请 {{n}} 位；{{skipped}} 位无法邀请",
     "noInvites": "未发送邀请",
     "networkError": "网络错误，请重试",
+    "serverError": "服务暂时不可用，请重试",
     "theGroup": "该群组",
     "role": {
       "owner": "群主",

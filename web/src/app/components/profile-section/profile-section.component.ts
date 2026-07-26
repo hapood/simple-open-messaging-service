@@ -17,6 +17,7 @@ import { LogoutService } from '../../services/logout.service';
   imports: [ProfileEditorComponent],
   template: `
     <app-profile-editor
+      [respectTopSafeArea]="true"
       (back)="goBack()"
       (manageSessions)="onManageSessions()"
       (logout)="onLogout()" />
