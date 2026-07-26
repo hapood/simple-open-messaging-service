@@ -87,7 +87,8 @@ export class AdminController {
     @Res({ passthrough: true }) reply: FastifyReply,
   ): Promise<ApiResult> {
     // Throws BusinessException(INVALID_CREDENTIALS | RATE_LIMITED) on failure — the global filter renders it.
-    // On success returns either {access_token, refresh_token} or {twoFactorRequired, challengeToken}.
+    // On success sets the httpOnly admin_session cookie and returns { authenticated: true };
+    // otherwise a { twoFactorRequired, challengeToken, factors } challenge.
     const result = await this.adminAuthService.login(dto.account, dto.password, ip, userAgent);
     if ('sessionToken' in result) {
       setAdminSessionCookie(reply, result.sessionToken);

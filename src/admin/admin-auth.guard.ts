@@ -9,14 +9,12 @@ export class AdminAuthGuard implements CanActivate {
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest<FastifyRequest>();
-    const origin = request.headers.origin;
-    if (origin) {
-      const forwardedProto = String(request.headers['x-forwarded-proto'] ?? request.protocol).split(',')[0];
-      const forwardedHost = String(request.headers['x-forwarded-host'] ?? request.headers.host ?? '').split(',')[0];
-      if (!forwardedHost || origin !== `${forwardedProto}://${forwardedHost}`) {
-        throw new UnauthorizedException('invalid origin');
-      }
-    }
+    // CSRF is carried by the `admin_session` cookie's SameSite=Strict: a cross-site request cannot
+    // attach it, so it arrives with no credential and is rejected at the token check below — the same
+    // posture as the global SessionAuthGuard. There is deliberately NO Origin/Host validation here: it
+    // would compare Origin against X-Forwarded-Host, which the dev vite proxy does not forward (Caddy
+    // forwards it only in prod), so it rejected every authenticated request in dev while adding nothing
+    // beyond SameSite=Strict for a cookie credential.
     const token = request.cookies?.[ADMIN_SESSION_COOKIE];
     if (!token) throw new UnauthorizedException();
     const principal = await this.auth.validateAdminSession(token, request.ip);

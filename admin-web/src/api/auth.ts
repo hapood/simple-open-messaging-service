@@ -3,7 +3,8 @@ import { API_BASE, CODE } from '@/lib/constants'
 import { ApiError } from '@/lib/api-error'
 import type { ApiResult, Authenticated, ChallengeRequired, WebAuthnLoginBegin } from '@/types/api'
 
-/** Admin login outcome: a session token pair, or a 2FA challenge (password verified, awaiting the code). */
+/** Admin login outcome: authenticated (the session is set via the httpOnly admin_session cookie, not
+ *  returned in the body), or a 2FA challenge (password verified, awaiting the code). */
 export type AdminLoginResult = Authenticated | ChallengeRequired
 
 /**
@@ -24,7 +25,8 @@ async function postPublic<T>(path: string, body: unknown): Promise<T> {
   return json.data as T
 }
 
-/** Admin login (public). Returns the token pair, or a 2FA challenge when the account is enrolled. */
+/** Admin login (public). On success the backend sets the httpOnly admin_session cookie and returns
+ *  { authenticated: true }; when 2FA is enrolled it returns the challenge instead. */
 export function adminLogin(account: string, password: string): Promise<AdminLoginResult> {
   return postPublic<AdminLoginResult>('/admin/login', { account, password })
 }
@@ -43,7 +45,8 @@ export function webAuthnLoginBegin(challengeToken: string): Promise<WebAuthnLogi
   return postPublic<WebAuthnLoginBegin>('/admin/webauthn/login/begin', { challengeToken })
 }
 
-/** Admin passkey login finish (public) — verifies the assertion → session token pair. */
+/** Admin passkey login finish (public) — verifies the assertion; the backend then sets the
+ *  admin_session cookie and returns { authenticated: true }. */
 export function webAuthnLoginFinish(
   challengeToken: string,
   pendingToken: string,
@@ -57,13 +60,10 @@ export function webAuthnLoginFinish(
 }
 
 /**
- * Refresh rotation (public). Failure (10006 reuse / 10003 invalid|expired) throws
- * ApiError, caught by refresh-singleton which then forceLogout.
- */
-/**
- * Admin logout (requires Bearer). Uses a raw fetch with manual token injection and
- * does not go through client.request, to avoid a module cycle with the refresh
- * chain. Failure does not block local cleanup.
+ * Admin logout — POST /admin/logout so the backend revokes the session and clears the httpOnly
+ * admin_session cookie. Auth rides that same cookie (credentials:'same-origin'); there is no Bearer to
+ * inject. Uses a raw fetch instead of client.request so it isn't subject to request()'s 401 →
+ * forceLogout handling. A network failure is non-fatal: the caller drops local state regardless.
  */
 export async function adminLogout(): Promise<void> {
   try {

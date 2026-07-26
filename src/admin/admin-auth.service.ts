@@ -38,9 +38,11 @@ const ADMIN_PWD_STEPS: readonly BanStep[] = [
  *  the 10^6 code space can't be exhausted once ≤5 guesses/window are allowed). */
 const ADMIN_2FA_STEPS: readonly BanStep[] = [{ count: 5, banMs: 30 * 60 * 1000 }];
 
-/** Login outcome: either the token pair, or a second-factor challenge (password verified → no tokens yet).
- *  `factors` tells the client which affordances to show at the challenge step (TOTP/backup vs passkey); it
- *  leaks nothing — the password already proved identity by the time this is emitted. */
+/** Login outcome: an authenticated session — the opaque session token is delivered via the httpOnly
+ *  admin_session cookie (set by the controller, never the response body) — or a second-factor challenge
+ *  (password verified → no session yet). `factors` tells the client which affordances to show at the
+ *  challenge step (TOTP/backup vs passkey); it leaks nothing — the password already proved identity by
+ *  the time this is emitted. */
 export type AdminLoginResult =
   | { sessionToken: string }
   | {

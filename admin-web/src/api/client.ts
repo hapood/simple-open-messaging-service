@@ -4,7 +4,8 @@ import { ApiError } from '@/lib/api-error'
 import { forceLogout } from '@/auth/force-logout'
 import type { ApiResult } from '@/types/api'
 
-// Public allowlist: no Bearer injected, no 401 retry (otherwise the refresh chain self-loops).
+// Public allowlist: login + 2FA challenge steps bypass the 401 → forceLogout handling below, so an
+// unauthenticated response to these doesn't bounce back to /login and self-loop.
 const PUBLIC_PATHS = [
   '/admin/login',
   '/admin/login/verify',
@@ -17,9 +18,11 @@ function isPublic(path: string): boolean {
 }
 
 /**
- * Unified request: injects Bearer, unwraps the ApiResult envelope, and on 401 or
- * business code 10003 performs a single-flight refresh then retries once.
- * 10006 (reuse) → forceLogout. Public requests do not participate in retry.
+ * Unified request: the httpOnly `admin_session` cookie is the credential (auto-attached same-origin
+ * via credentials:'same-origin'; there is no Bearer header and no refresh step). Unwraps the ApiResult
+ * envelope; on 401 / code 10003 (unauthenticated) or 10006 (reuse) it force-logs-out and throws.
+ * Public requests (login + challenge steps) bypass that so an unauthenticated response there doesn't
+ * loop back to /login.
  */
 export async function request<T>(path: string, body?: unknown): Promise<T> {
   const publicReq = isPublic(path)
@@ -57,9 +60,8 @@ export async function request<T>(path: string, body?: unknown): Promise<T> {
 }
 
 /**
- * Public GET (e.g. GET /config) — no Bearer injected, no 401/refresh retry, no body.
- * Unwraps the same ApiResult envelope as {@link request}. Public reads are not part of
- * the admin auth chain, so they never trigger a refresh cycle.
+ * Public GET (e.g. GET /config) — no body, and no 401 → forceLogout handling (public reads are not
+ * part of the admin session chain). Unwraps the same ApiResult envelope as {@link request}.
  */
 export async function requestGet<T>(path: string): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, { method: 'GET', credentials: 'same-origin' })
