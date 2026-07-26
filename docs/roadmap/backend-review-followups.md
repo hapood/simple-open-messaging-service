@@ -50,16 +50,60 @@ Each entry lists the problem, where it lives (`file:line`), why it matters, and 
 
 ### Response envelope enforced by infrastructure
 `ApiResult<T>` (`src/common/api-result.ts`) is the standard shape, but every handler **hand-builds**
-`{ code, message, data }`. The global `SerializeInterceptor` only does BigInt/Date serialization; it does
-not wrap the envelope. A handler that forgets `code`/`message` produces a malformed body.
-**Fix:** envelope-ize in an interceptor (wrap the raw return value, with a `@Raw()` escape hatch for
-SSE/file streams). `SerializeInterceptor` is the natural place.
+`{ code, message, data }`. The global `SerializeInterceptor` (`src/common/serialize.interceptor.ts`,
+registered in `src/bootstrap.ts`) only does BigInt/Date serialization; it does not wrap the envelope. A
+handler that forgets `code`/`message` produces a malformed body, and success vs error shapes are built in
+two different places (handlers vs `AllExceptionsFilter`).
+
+**Approach — planned; execute AFTER the auth/threadlist WIP lands.** This refactor touches ~40 handlers and
+overlaps that rewrite heavily, so doing it on the current dirty tree causes merge pain and rework.
+
+1. **Fold envelope-wrapping into `SerializeInterceptor`** (it already runs on every response). Pipeline
+   order: escape-hatch check → carrier unwrap → wrap raw data → existing `serializeBody` (BigInt/Date).
+   - **Success**: handler returns the raw payload (`return user`); the interceptor emits
+     `{ code: BusinessCode.OK, message: 'successful', data }`.
+   - **Business failure**: handler `throw new BusinessException(code, msg, httpStatus?)`. `AllExceptionsFilter`
+     (`src/common/exception.filter.ts`) already renders exceptions as `{ code, message, data: null }`, so
+     success and error shapes are finally built one place each and align. Wire-compatible: a thrown
+     `BusinessException` at the default HTTP 200 emits the exact body a `return { code: nonzero }` does
+     today, so the `return`→`throw` conversion is behavior-preserving.
+   - **Extra fields** (`hasMore` on paginated lists, `messageKey` on some successes): a branded carrier —
+     `envelope(data, { hasMore?, messageKey? })` — the interceptor recognizes by brand, unwraps, and merges.
+     `hasMore` is runtime-computed, so it cannot be a static decorator.
+2. **`@Raw()` escape hatch** (class- or method-level `SetMetadata`, read by the interceptor like `@Public()`)
+   for every handler that must NOT be enveloped:
+   - **S2S controllers** (`src/federation/s2s.controller.ts`) — class-level; they deliberately return inline
+     `{ code, message, data }` / raw GET payloads because HTTP status drives sender retry. Without `@Raw()`
+     they get double-wrapped (`{ code:0, data: { code, ... } }`) — the canonical trap.
+   - **SSE** (`src/gateway/events.controller.ts`, `reply.hijack()`).
+   - **Static/stream serving** — shell `web-bundle`/`web-manifest`/`compat` (`src/shell/shell.controller.ts`),
+     `.well-known/soms` (`src/federation/well-known.controller.ts`), anything writing a buffer/string.
+   - This audit is the bulk of the work: **missing one `@Raw()` = malformed response.**
+3. **Gradual, compat-layer migration** (no flag-day):
+   - Land the interceptor in a mode that ALSO passes through a pre-built `ApiResult` (detected via an
+     explicit `__apiResult: true` brand stamped on legacy returns) without re-wrapping. Existing handlers
+     keep working unchanged.
+   - Migrate per-module: `return { code:0, ..., data }` → `return data`; `return { code: nonzero }` →
+     `throw new BusinessException(...)`. The brand makes detection unambiguous, avoiding a shape-heuristic
+     false-positive on a domain payload that happens to carry `code`+`data`.
+   - Once every handler is migrated, delete the passthrough branch + the brand; the interceptor then
+     always wraps.
+4. **Bonus**: supersedes the "Error vs success response shape" item below — both sides become
+   `{ code, message, data }` via filter/interceptor respectively.
+
+**Verification**: unit-test the interceptor directly — raw payload → wrapped envelope; `@Raw()` → untouched;
+`ApiEnvelope` carrier → merged `hasMore`/`messageKey`; branded `ApiResult` (migration phase) → passthrough,
+no double-wrap; `throw new BusinessException` → `{ code, message, data: null }` via the filter. The existing
+e2e suite must stay green (wire format unchanged), with an explicit assertion that an S2S response is NOT
+double-wrapped.
 
 ### Error vs success response shape
 `AllExceptionsFilter` (`src/common/exception.filter.ts`) emits `{ code, message, data: null }` with no
 `messageKey`/`hasMore`, while success responses may carry them. If the frontend ever keys off these fields,
 errors behave differently.
-**Fix:** document the asymmetry or align the shapes.
+**Fix:** document the asymmetry or align the shapes. **Resolved by** the response-envelope interceptor
+above — once that lands, both success and error bodies are `{ code, message, data }` built by the
+interceptor and `AllExceptionsFilter` respectively; drop this item then.
 
 ### Invite model — GROUP follow-up (2026-07-09 invite redesign)
 Friend-add was rebuilt on a unified `Invite` table (`kind` FRIEND/GROUP); the `Friendship` and `Notify`
