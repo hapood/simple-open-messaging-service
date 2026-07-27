@@ -1,6 +1,0 @@
-# This image COPYs nothing (it's a system-deps + Rust builder; the project is bind-mounted at
-# runtime). Exclude the heavy, irrelevant trees from the docker build context so `docker build`
-# doesn't ship gigabytes to the daemon.
-target/
-gen/
-node_modules/

@@ -1,4 +1,6 @@
-@if (showImage()) {
+@if (loading()) {
+  <span class="avatar-placeholder" aria-hidden="true"></span>
+} @else if (showImage()) {
   <img class="ua img" [src]="imgSrc()" (error)="imgFailed.set(true)" role="img"
     [attr.aria-label]="name() + ' avatar'" />
 } @else if (isGroup()) {
@@ -16,7 +18,7 @@
   </svg>
 } @else {
   <svg class="ua" viewBox="0 0 100 100" width="100%" height="100%" role="img" [attr.aria-label]="name() + ' avatar'">
-    <rect x="0" y="0" width="100" height="100" rx="20" [attr.fill]="bg()" />
+    <rect x="0" y="0" width="100" height="100" rx="20" [style.fill]="bg()" />
     <text x="50" y="50" text-anchor="middle" dominant-baseline="central">{{ initial() }}</text>
   </svg>
 }

@@ -2,15 +2,12 @@
   <button class="icon-btn avatar-btn" (click)="openProfile()"
     [attr.aria-label]="'nav.editProfileAria' | transloco">
     <span class="avatar">
-      @if (sessionProfile(); as p) {
-        <app-user-avatar
-          [type]="UserAvatarType.SELF"
-          [name]="p.name"
-          [identityId]="p.id"
-          [src]="p.avatar" />
-      } @else {
-        <span class="avatar-placeholder"></span>
-      }
+      <app-user-avatar
+        [type]="UserAvatarType.SELF"
+        [loading]="!sessionProfile()"
+        [name]="sessionProfile()?.name"
+        [identityId]="sessionProfile()?.id"
+        [src]="sessionProfile()?.avatar" />
     </span>
   </button>
   <div class="header-actions">

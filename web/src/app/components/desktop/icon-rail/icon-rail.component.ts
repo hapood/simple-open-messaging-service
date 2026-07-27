@@ -23,12 +23,8 @@ import { LanguageService } from '../../../services/language.service';
       <div class="top">
         <button class="rail-btn avatar" (click)="editProfile()"
           [title]="'nav.editProfileAria' | transloco" [attr.aria-label]="'nav.editProfileAria' | transloco">
-          @if (sessionProfile(); as p) {
-            <app-user-avatar [type]="UserAvatarType.SELF" [name]="p.name"
-              [identityId]="p.id" [src]="p.avatar" />
-          } @else {
-            <span class="avatar-placeholder"></span>
-          }
+          <app-user-avatar [type]="UserAvatarType.SELF" [loading]="!sessionProfile()"
+            [name]="sessionProfile()?.name" [identityId]="sessionProfile()?.id" [src]="sessionProfile()?.avatar" />
         </button>
         <button class="rail-btn" (click)="friendRequests()"
           [title]="'nav.friendRequests' | transloco" [attr.aria-label]="'nav.friendRequests' | transloco">

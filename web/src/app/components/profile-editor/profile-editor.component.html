@@ -17,12 +17,8 @@
   <div class="body">
     <div class="avatar-wrap">
       <div class="avatar">
-        @if (sessionProfile(); as p) {
-          <app-user-avatar [type]="UserAvatarType.SELF"
-            [name]="name() || p.account" [identityId]="p.id" [src]="p.avatar" />
-        } @else {
-          <span class="avatar-placeholder"></span>
-        }
+        <app-user-avatar [type]="UserAvatarType.SELF" [loading]="!sessionProfile()"
+          [name]="name() || sessionProfile()?.account" [identityId]="sessionProfile()?.id" [src]="sessionProfile()?.avatar" />
         <button class="avatar-edit" type="button" (click)="fileInput.click()"
           [disabled]="uploading()" [attr.aria-label]="'profile.changeAvatarAria' | transloco">
           @if (uploading()) {

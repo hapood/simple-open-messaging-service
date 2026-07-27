@@ -22,7 +22,6 @@ import { AvatarRepository } from '../../services/avatar-cache.service'
  * hit the bytes come straight from IDB. A local preview (`blob:`/`data:`/absolute `src`) passes through
  * unchanged (new-group / edit-profile in-progress uploads).
  */
-const SELF_COLOR = '#2196f3'; // brand blue — the logo / --app-brand background color
 const PALETTE = [
   '#E53935', '#D81B60', '#8E24AA', '#5E35B1',
   '#3949AB', '#1E88E5', '#039BE5', '#00ACC1',
@@ -40,7 +39,7 @@ export class UserAvatarComponent {
   private readonly avatarRepo = inject(AvatarRepository);
 
   readonly type = input<UserAvatarType>(UserAvatarType.OTHER)
-  readonly name = input<string>('')
+  readonly name = input<string | undefined | null>('')
   /** Optional real avatar image URL. A server path (`/uploads/...`) is read from the DB by {@link identityId};
    *  a local preview (`blob:`/`data:`/absolute) passes through directly. Empty → initial-letter fallback. */
   readonly src = input<string | undefined | null>(undefined)
@@ -49,6 +48,10 @@ export class UserAvatarComponent {
    *  `!account` (an invite card) the account string is accepted too. Required for a server-path avatar;
    *  unused for local previews. */
   readonly identityId = input<number | string | undefined | null>(undefined)
+  /** Unresolved identity → render the glass shimmer placeholder so no avatar content (and no
+   *  misleading initial) paints until the backing profile/session is ready. Callers pass
+   *  `!sessionProfile()` while the source signal is still loading. */
+  readonly loading = input(false)
   readonly UserAvatarType = UserAvatarType
 
   /** Image load failure (corrupt/404) → fall back to the initial letter. Reset on src/identity change to retry the new image. */
@@ -133,7 +136,7 @@ export class UserAvatarComponent {
   /** Background fill: SELF = brand blue; everyone else = a name-hashed palette slot (deterministic,
    *  stable per name). */
   readonly bg = computed(() => {
-    if (this.type() === UserAvatarType.SELF) return SELF_COLOR
+    if (this.type() === UserAvatarType.SELF) return 'var(--app-brand)' // brand blue, single-sourced from --app-brand via [style.fill]
     return PALETTE[this.hashName() % PALETTE.length]
   })
 
