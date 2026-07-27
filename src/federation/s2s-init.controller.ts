@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import {
   Controller,
   Post,
@@ -28,6 +29,7 @@ import { FederationService } from './federation.service.js';
  * so the content-digest matches what the sender signed.
  */
 @Public()
+@Raw()
 @Controller('s2s')
 export class S2sInitController {
   constructor(

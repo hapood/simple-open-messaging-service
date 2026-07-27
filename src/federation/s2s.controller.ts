@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import {
   Controller,
   Get,
@@ -39,6 +40,7 @@ import { BusinessCode } from '../common/business-code.js';
  * is discovered lazily via rejection-on-send in Step 2.
  */
 @Public()
+@Raw()
 @Controller('s2s')
 @UseGuards(S2sSignatureGuard)
 export class S2sController {

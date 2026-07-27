@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import { Body, Controller, Get, Post, Query, Req, Res, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply, FastifyRequest } from 'fastify';
@@ -31,6 +32,7 @@ export class LogViewerController {
    * `level` filters inclusively (a selected level shows itself + every more-severe level); omitted/invalid
    * → all levels.
    */
+  @Raw()
   @Get('stream')
   @ApiOperation({ summary: 'Admin live log tail (SSE)' })
   stream(

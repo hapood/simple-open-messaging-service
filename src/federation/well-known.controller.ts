@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import { Controller, Get } from '@nestjs/common';
 import { SERVER_VERSION } from '../common/version.js';
 import { KeypairService } from './keypair.service.js';
@@ -16,6 +17,7 @@ import { loadFederationConfig } from './federation.config.js';
  * `keys` is a list (JWKS-style) so future rotation can publish two keyIds simultaneously (§5.1).
  */
 @Public()
+@Raw()
 @Controller('.well-known')
 export class WellKnownController {
   private readonly config = loadFederationConfig();

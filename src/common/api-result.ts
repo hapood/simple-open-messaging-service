@@ -80,3 +80,37 @@ export function ApiResultResponse<T>(model: Type<T>, isArray = false) {
     }),
   );
 }
+
+/**
+ * Branded carrier for handlers that need to set envelope fields beyond `data` (`messageKey` / `hasMore`).
+ * Built by {@link envelope} and recognized by `SerializeInterceptor` (via {@link isApiEnvelope}), which
+ * unwraps it into `{ code: 0, message: 'successful', data, messageKey?, hasMore? }`. The `Symbol` brand
+ * means no plain domain object can be mistaken for a carrier (unlike a shape heuristic). Used by handlers
+ * whose data alone does not carry the i18n key / pagination flag (e.g. the friend-request `messageKey`
+ * variants, the paginated message endpoints' `hasMore`).
+ */
+export const API_ENVELOPE = Symbol('apiEnvelope');
+
+export interface ApiEnvelope<T = unknown> {
+  readonly [API_ENVELOPE]: true;
+  data: T;
+  messageKey?: string;
+  hasMore?: boolean;
+}
+
+/** Wrap `data` for the interceptor, attaching optional envelope-level `messageKey` / `hasMore`. */
+export function envelope<T>(
+  data: T,
+  opts?: { messageKey?: string; hasMore?: boolean },
+): ApiEnvelope<T> {
+  return { [API_ENVELOPE]: true, data, ...opts };
+}
+
+/** Type guard: true when `value` is an {@link envelope} carrier (carries the `API_ENVELOPE` brand). */
+export function isApiEnvelope(value: unknown): value is ApiEnvelope {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as Record<symbol, unknown>)[API_ENVELOPE] === true
+  );
+}

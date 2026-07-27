@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { serializeBody } from './serialize.interceptor.js';
+import { of } from 'rxjs';
+import type { CallHandler, ExecutionContext } from '@nestjs/common';
+import type { Reflector } from '@nestjs/core';
+import { SerializeInterceptor, serializeBody } from './serialize.interceptor.js';
+import { envelope, type ApiResult } from './api-result.js';
+import { BusinessCode } from './business-code.js';
 
 describe('serializeBody', () => {
   it('BigInt → string', () => {
@@ -80,5 +85,84 @@ describe('serializeBody', () => {
 
     const m = new Map([['k', 1n]]);
     expect(serializeBody(m)).toBe(m);
+  });
+});
+
+/** Build an interceptor whose Reflector returns a fixed `isRaw` for any handler/class scan. */
+function makeInterceptor(isRaw: boolean): SerializeInterceptor {
+  const reflector = { getAllAndOverride: () => isRaw } as unknown as Reflector;
+  return new SerializeInterceptor(reflector);
+}
+
+/** A stub ExecutionContext — getHandler/getClass values are irrelevant since Reflector is stubbed. */
+const ctx = {
+  getHandler: () => ({}),
+  getClass: () => ({}),
+} as unknown as ExecutionContext;
+
+/** Run the interceptor against `data` and return the synchronous mapped output. */
+function run(ic: SerializeInterceptor, data: unknown): unknown {
+  let out: unknown;
+  ic
+    .intercept(ctx, { handle: () => of(data) } as CallHandler)
+    .subscribe((v) => (out = v));
+  return out;
+}
+
+/**
+ * SerializeInterceptor now wraps the ApiResult envelope around raw handler returns. Phase A behavior:
+ * raw payload → wrapped; pre-built envelope literal → passed through (compat, no double-wrap); `envelope()`
+ * carrier → unwrapped + merged; `@Raw` → no wrap (serializeBody only).
+ */
+describe('SerializeInterceptor — envelope wrapping', () => {
+  it('wraps raw payload data in the ApiResult envelope', () => {
+    const out = run(makeInterceptor(false), { id: 7, name: 'x' }) as ApiResult;
+    expect(out.code).toBe(BusinessCode.OK);
+    expect(out.message).toBe('successful');
+    expect(out.data).toEqual({ id: 7, name: 'x' });
+  });
+
+  it('passes a pre-built envelope through unchanged (compat — no double-wrap)', () => {
+    const prebuilt = {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: { a: 1 },
+      hasMore: false,
+    };
+    expect(run(makeInterceptor(false), prebuilt)).toEqual(prebuilt);
+  });
+
+  it('unwraps an envelope() carrier, merging messageKey/hasMore', () => {
+    const out = run(
+      makeInterceptor(false),
+      envelope({ a: 1 }, { messageKey: 'friend.msg.sent', hasMore: true }),
+    ) as ApiResult;
+    expect(out.code).toBe(BusinessCode.OK);
+    expect(out.message).toBe('successful');
+    expect(out.data).toEqual({ a: 1 });
+    expect(out.messageKey).toBe('friend.msg.sent');
+    expect(out.hasMore).toBe(true);
+  });
+
+  it('does NOT wrap a @Raw handler return — serializeBody only', () => {
+    // Absent code/message = no envelope; BigInt → string proves serializeBody still ran.
+    const out = run(makeInterceptor(true), { domain: 'x', count: BigInt(5) }) as Record<
+      string,
+      unknown
+    >;
+    expect(out.code).toBeUndefined();
+    expect(out.message).toBeUndefined();
+    expect(out.domain).toBe('x');
+    expect(out.count).toBe('5');
+  });
+
+  it('serializes BigInt/Date inside a wrapped envelope', () => {
+    const out = run(makeInterceptor(false), { id: BigInt(9), at: new Date(0) }) as ApiResult;
+    expect((out.data as Record<string, unknown>).id).toBe('9');
+    expect((out.data as Record<string, unknown>).at).toBe(0);
+  });
+
+  it('returns undefined unchanged (e.g. a void 204 handler)', () => {
+    expect(run(makeInterceptor(false), undefined)).toBeUndefined();
   });
 });

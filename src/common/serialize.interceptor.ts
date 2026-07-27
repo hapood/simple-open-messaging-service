@@ -4,8 +4,12 @@ import {
   ExecutionContext,
   CallHandler,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { map } from 'rxjs/operators';
 import { Observable } from 'rxjs';
+import { BusinessCode } from './business-code.js';
+import { API_ENVELOPE, isApiEnvelope, type ApiEnvelope } from './api-result.js';
+import { IS_RAW } from './raw.decorator.js';
 
 /**
  * Recursively serializes the response body: `BigInt → string`, `Date → millisecond timestamp (number)`.
@@ -64,13 +68,66 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
 }
 
 /**
- * Global response serialization interceptor: wraps every HTTP response body with `serializeBody`.
- * Registered in `main.ts` via `useGlobalInterceptors`, like ValidationPipe / AllExceptionsFilter.
- * (The exception filter bypasses the interceptor chain, but its response body contains only { code, message } primitives, so no conversion is needed.)
+ * Build the `ApiResult` envelope for a handler's raw return value:
+ *  - an `envelope()` carrier → unwrapped to `{ code: 0, message: 'successful', data, messageKey?, hasMore? }`;
+ *  - a pre-built envelope (a legacy `{ code, message, data }` literal) → passed through verbatim (compat);
+ *  - anything else (raw `data`) → wrapped as `{ code: 0, message: 'successful', data }`.
+ *
+ * The compat branch lets handlers migrate from hand-built literals to raw-`data` returns incrementally with
+ * no wire change; it is removed once every handler returns raw data. The carrier branch serves the few
+ * endpoints whose data alone does not carry `messageKey` / `hasMore`.
+ */
+function envelopeFor(data: unknown): unknown {
+  // A void/null return (e.g. a handler that sent via @Res or has no payload) is passed through unwrapped —
+  // wrapping it would change the wire body for those routes, which Phase A forbids (wire-identical).
+  if (data === undefined || data === null) return data;
+  if (isApiEnvelope(data)) {
+    const carrier = data as ApiEnvelope;
+    return {
+      code: BusinessCode.OK,
+      message: 'successful',
+      data: carrier.data,
+      messageKey: carrier.messageKey,
+      hasMore: carrier.hasMore,
+    };
+  }
+  if (isPreBuiltEnvelope(data)) return data;
+  return { code: BusinessCode.OK, message: 'successful', data };
+}
+
+/** Compat detector: a handler-returned object that is ALREADY an `{ code, message, … }` envelope. */
+function isPreBuiltEnvelope(data: unknown): boolean {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    typeof (data as { code?: unknown }).code === 'number' &&
+    typeof (data as { message?: unknown }).message === 'string'
+  );
+}
+
+// Keep the unused `API_ENVELOPE` import off the dead-code list — it documents that the carrier brand lives in
+// api-result.ts (the `Symbol` is read transitively via `isApiEnvelope`, which a bundler may not see).
+void API_ENVELOPE;
+
+/**
+ * Global response interceptor. For each response:
+ *  1. if the handler/controller is `@Raw()`, serialize its raw return as-is (no envelope);
+ *  2. otherwise wrap (or pass through / unwrap per {@link envelopeFor}), then run {@link serializeBody}.
+ *
+ * Registered in `src/bootstrap.ts` via `useGlobalInterceptors`. (The exception filter bypasses the interceptor
+ * chain, but its response body contains only `{ code, message, data }` primitives, so no conversion is needed.)
  */
 @Injectable()
 export class SerializeInterceptor implements NestInterceptor {
-  intercept(_context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    return next.handle().pipe(map((data) => serializeBody(data)));
+  constructor(private readonly reflector: Reflector) {}
+
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const isRaw = this.reflector.getAllAndOverride<boolean>(IS_RAW, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+    return next.handle().pipe(
+      map((data) => serializeBody(isRaw ? data : envelopeFor(data))),
+    );
   }
 }

@@ -2,6 +2,7 @@ import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import type { FastifyReply } from 'fastify';
 import { Public } from '../common/public.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import { ApiResult } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
 import { Throttle, ThrottleGuard } from '../auth/throttle.guard.js';
@@ -53,6 +54,7 @@ export class ShellController {
     return { code: BusinessCode.OK, message: 'successful', data: this.shell.manifest() };
   }
 
+  @Raw()
   @Get('web-bundle')
   @Throttle(10, 60) // the MB-scale download: 10/min/IP is the bandwidth-amplification ceiling
   @ApiOperation({

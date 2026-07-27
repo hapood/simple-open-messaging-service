@@ -1,5 +1,6 @@
 import { Controller, Get, Req, Res, UseGuards } from '@nestjs/common';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { Raw } from '../common/raw.decorator.js';
 import { SseService } from './sse.service.js';
 
 /**
@@ -16,6 +17,7 @@ import { SseService } from './sse.service.js';
  * When a controller manipulates reply directly, NestJS automatically skips SerializeInterceptor's response mapping
  * (officially documented), so no change to the global interceptor is needed.
  */
+@Raw()
 @Controller('events')
 export class EventsController {
   constructor(private readonly sseService: SseService) {}

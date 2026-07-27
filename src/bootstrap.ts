@@ -1,4 +1,5 @@
 import { ValidationPipe, RequestMethod } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import type {
   FastifyAdapter,
@@ -148,7 +149,7 @@ export async function configureApp(
     }),
   );
   app.useGlobalFilters(new AllExceptionsFilter());
-  app.useGlobalInterceptors(new SerializeInterceptor());
+  app.useGlobalInterceptors(new SerializeInterceptor(app.get(Reflector)));
 
   // Global route prefix. All HTTP endpoints (incl. SSE /events) live under /api/v1 (must be set
   // before Swagger createDocument so doc paths include it). The interactive docs mount at

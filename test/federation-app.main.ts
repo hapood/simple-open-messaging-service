@@ -13,6 +13,7 @@
 import 'dotenv/config';
 import { Controller, Get, Query } from '@nestjs/common';
 import { Public } from '../src/common/public.decorator.js';
+import { Raw } from '../src/common/raw.decorator.js';
 import { Test } from '@nestjs/testing';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from '../src/app.module.js';
@@ -33,6 +34,7 @@ import { TestDiscoveryService, makeInMemoryKeypair } from './federation-harness.
  * DiscoveryService are @Global-exported by FederationModule, so they inject here. See design-review B3.
  */
 @Public() // opts out of the global JwtAuthGuard — this is a test-only probe (no JWT; it signs the upstream S2S call itself).
+@Raw() // returns a non-envelope {status, body} (mirrors the upstream S2S response) — must bypass envelope wrapping.
 @Controller('test')
 class TestS2sHookController {
   constructor(

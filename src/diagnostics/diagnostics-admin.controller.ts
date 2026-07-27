@@ -1,4 +1,5 @@
 import { Public } from '../common/public.decorator.js';
+import { Raw } from '../common/raw.decorator.js';
 import {
   Controller,
   Post,
@@ -53,6 +54,7 @@ export class AdminDiagnosticsController {
     };
   }
 
+  @Raw()
   @Get('admin/diagnostics/:id/download')
   @ApiOperation({ summary: 'Download a diagnostic bundle (.tar.gz)' })
   async download(@Param('id') id: string, @Res() reply: FastifyReply): Promise<void> {
