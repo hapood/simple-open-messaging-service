@@ -70,12 +70,12 @@ function serializeImpl(value: unknown, seen: WeakSet<object>): unknown {
 /**
  * Build the `ApiResult` envelope for a handler's raw return value:
  *  - an `envelope()` carrier → unwrapped to `{ code: 0, message: 'successful', data, messageKey?, hasMore? }`;
- *  - a pre-built envelope (a legacy `{ code, message, data }` literal) → passed through verbatim (compat);
  *  - anything else (raw `data`) → wrapped as `{ code: 0, message: 'successful', data }`.
  *
- * The compat branch lets handlers migrate from hand-built literals to raw-`data` returns incrementally with
- * no wire change; it is removed once every handler returns raw data. The carrier branch serves the few
- * endpoints whose data alone does not carry `messageKey` / `hasMore`.
+ * The carrier branch serves the few endpoints whose data alone does not carry `messageKey` / `hasMore`.
+ * Every handler now returns raw data / void / throws, so there is no pre-built-envelope passthrough — a
+ * `{code,message,…}` object is wrapped as `data` like anything else (the compat shim that let handlers
+ * migrate incrementally was removed once the last hand-built literal was gone).
  */
 function envelopeFor(data: unknown): unknown {
   if (isApiEnvelope(data)) {
@@ -88,21 +88,10 @@ function envelopeFor(data: unknown): unknown {
       hasMore: carrier.hasMore,
     };
   }
-  if (isPreBuiltEnvelope(data)) return data;
   // Raw payload → wrap. A void return (undefined) wraps to { code, message } — JSON omits the undefined
   // `data`, yielding the success-ack shape — so a no-data handler can simply return nothing. @Raw handlers
   // bypass this entirely (serializeBody on their raw return).
   return { code: BusinessCode.OK, message: 'successful', data };
-}
-
-/** Compat detector: a handler-returned object that is ALREADY an `{ code, message, … }` envelope. */
-function isPreBuiltEnvelope(data: unknown): boolean {
-  return (
-    typeof data === 'object' &&
-    data !== null &&
-    typeof (data as { code?: unknown }).code === 'number' &&
-    typeof (data as { message?: unknown }).message === 'string'
-  );
 }
 
 // Keep the unused `API_ENVELOPE` import off the dead-code list — it documents that the carrier brand lives in

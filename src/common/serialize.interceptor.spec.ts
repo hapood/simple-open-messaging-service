@@ -110,9 +110,9 @@ function run(ic: SerializeInterceptor, data: unknown): unknown {
 }
 
 /**
- * SerializeInterceptor now wraps the ApiResult envelope around raw handler returns. Phase A behavior:
- * raw payload → wrapped; pre-built envelope literal → passed through (compat, no double-wrap); `envelope()`
- * carrier → unwrapped + merged; `@Raw` → no wrap (serializeBody only).
+ * SerializeInterceptor wraps the ApiResult envelope around raw handler returns: raw payload → wrapped;
+ * `envelope()` carrier → unwrapped + merged; `@Raw` → no wrap (serializeBody only). Every handler now
+ * returns raw data, so there is no pre-built-envelope passthrough (Phase C dropped the compat shim).
  */
 describe('SerializeInterceptor — envelope wrapping', () => {
   it('wraps raw payload data in the ApiResult envelope', () => {
@@ -122,14 +122,13 @@ describe('SerializeInterceptor — envelope wrapping', () => {
     expect(out.data).toEqual({ id: 7, name: 'x' });
   });
 
-  it('passes a pre-built envelope through unchanged (compat — no double-wrap)', () => {
-    const prebuilt = {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { a: 1 },
-      hasMore: false,
-    };
-    expect(run(makeInterceptor(false), prebuilt)).toEqual(prebuilt);
+  it('wraps a {code,message,…} object as raw data — no pre-built-envelope special-case (always wrap)', () => {
+    // Phase C dropped the compat shim; a {code,message} object is now wrapped as `data` like anything
+    // else. No handler returns this shape anymore, so it never double-wraps in practice.
+    const out = run(makeInterceptor(false), { code: 0, message: 'x', extra: 1 }) as ApiResult;
+    expect(out.code).toBe(BusinessCode.OK);
+    expect(out.message).toBe('successful');
+    expect(out.data).toEqual({ code: 0, message: 'x', extra: 1 });
   });
 
   it('unwraps an envelope() carrier, merging messageKey/hasMore', () => {
