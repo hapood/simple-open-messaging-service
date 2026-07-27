@@ -1,4 +1,6 @@
 import { afterNextRender, Component, computed, effect, ElementRef, inject, OnDestroy, signal, viewChild } from '@angular/core';
+import { MatIconModule } from '@angular/material/icon';
+import { TranslocoModule } from '@jsverse/transloco';
 import { TranslocoService } from '@jsverse/transloco';
 import { CallEventService } from '../../services/call-event.service';
 import { CallAdapterService } from '../../services/call-adapter';
@@ -53,12 +55,15 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
                (pointercancel)="onSelfPointerUp($event)"
                #selfHole>
             @if (!cameraOn()) {
-              <span class="self-off">Camera off</span>
+              <span class="self-off">{{ 'call.cameraOff' | transloco }}</span>
             }
           </div>
         }
 
         <div class="top-bar">
+          <div class="call-kind">
+            {{ (isVideo() ? 'call.videoCall' : 'call.audioCall') | transloco }}
+          </div>
           <div class="name">{{ snap().peerName || '…' }}</div>
           <div class="status"
                role="status"
@@ -85,30 +90,52 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         <div class="controls">
           @switch (snap().phase) {
             @case ('incoming') {
-              <button class="btn decline" type="button" (click)="decline()">Decline</button>
-              <button class="btn accept" type="button" (click)="accept()">Accept</button>
+              <button class="call-action decline" type="button" (click)="decline()"
+                      [attr.aria-label]="'call.decline' | transloco">
+                <span class="action-icon"><mat-icon>call_end</mat-icon></span>
+                <span class="action-label">{{ 'call.decline' | transloco }}</span>
+              </button>
+              <button class="call-action accept" type="button" (click)="accept()"
+                      [attr.aria-label]="'call.accept' | transloco">
+                <span class="action-icon"><mat-icon>call</mat-icon></span>
+                <span class="action-label">{{ 'call.accept' | transloco }}</span>
+              </button>
             }
             @default {
-              <button class="btn mute" [class.on]="snap().muted" type="button" (click)="toggleMute()">
-                {{ snap().muted ? 'Unmute' : 'Mute' }}
+              <button class="call-action mute" [class.on]="snap().muted" type="button" (click)="toggleMute()"
+                      [attr.aria-label]="(snap().muted ? 'call.unmute' : 'call.mute') | transloco">
+                <span class="action-icon"><mat-icon>{{ snap().muted ? 'mic_off' : 'mic' }}</mat-icon></span>
+                <span class="action-label">{{ (snap().muted ? 'call.unmute' : 'call.mute') | transloco }}</span>
               </button>
               @if (isVideo()) {
                 <button
-                  class="btn cam"
+                  class="call-action cam"
                   [class.on]="!cameraOn()"
                   type="button"
                   (click)="toggleCamera()"
-                >{{ cameraOn() ? 'Cam off' : 'Cam on' }}</button>
-                <button class="btn switch" type="button" (click)="switchCamera()">Flip</button>
+                  [attr.aria-label]="(cameraOn() ? 'call.cameraOff' : 'call.cameraOn') | transloco"
+                >
+                  <span class="action-icon"><mat-icon>{{ cameraOn() ? 'videocam' : 'videocam_off' }}</mat-icon></span>
+                  <span class="action-label">{{ (cameraOn() ? 'call.cameraOff' : 'call.cameraOn') | transloco }}</span>
+                </button>
+                <button class="call-action switch" type="button" (click)="switchCamera()"
+                        [attr.aria-label]="'call.switchCamera' | transloco">
+                  <span class="action-icon"><mat-icon>cameraswitch</mat-icon></span>
+                  <span class="action-label">{{ 'call.switchCamera' | transloco }}</span>
+                </button>
               }
-              <button class="btn end" type="button" (click)="hangUp()">End</button>
+              <button class="call-action end" type="button" (click)="hangUp()"
+                      [attr.aria-label]="'call.end' | transloco">
+                <span class="action-icon"><mat-icon>call_end</mat-icon></span>
+                <span class="action-label">{{ 'call.end' | transloco }}</span>
+              </button>
             }
           }
         </div>
       </div>
     }
   `,
-  imports: [UserAvatarComponent],
+  imports: [MatIconModule, TranslocoModule, UserAvatarComponent],
   styles: [
     `
       .call-screen {
@@ -119,8 +146,15 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 24px;
-        background: #0b0b0f;
+        gap: 28px;
+        padding:
+          calc(24px + var(--soms-safe-top, 0px))
+          24px
+          calc(32px + var(--soms-safe-bottom, 0px));
+        box-sizing: border-box;
+        background:
+          radial-gradient(circle at 50% 22%, rgba(255, 255, 255, 0.1), transparent 34%),
+          #111216;
         color: #fff;
       }
       /* VIDEO: full-bleed + transparent so the native remote SurfaceViewRenderer (a sibling view BEHIND the
@@ -129,7 +163,7 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
       .call-screen.video {
         background: transparent;
         justify-content: flex-end;
-        padding-bottom: 48px;
+        padding-bottom: calc(32px + var(--soms-safe-bottom, 0px));
       }
       /* The chrome (name/status + controls) fades in/out on auto-hide. opacity only — no layout shift, so the
          native video-surface rects never need re-reporting (a hidden control keeps its space, just invisible). */
@@ -178,6 +212,17 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         flex-direction: column;
         align-items: center;
         gap: 4px;
+        text-align: center;
+        text-shadow: 0 1px 5px rgba(0, 0, 0, 0.35);
+      }
+      .call-kind {
+        margin-bottom: 4px;
+        font-size: 12px;
+        line-height: 16px;
+        font-weight: 600;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        opacity: 0.62;
       }
       .peer {
         display: flex;
@@ -186,12 +231,20 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         gap: 12px;
       }
       .avatar {
-        width: 96px;
-        height: 96px;
+        width: 120px;
+        height: 120px;
+        border-radius: 24px;
+        overflow: hidden;
+        box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
       }
       .name {
-        font-size: 22px;
-        line-height: 28px;
+        max-width: min(360px, calc(100vw - 48px));
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 600;
       }
       .status {
         font-size: 15px;
@@ -216,44 +269,101 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
       }
       .controls {
         display: flex;
-        gap: 16px;
+        align-items: flex-start;
+        gap: clamp(12px, 4vw, 24px);
         flex-wrap: wrap;
         justify-content: center;
-      }
-      .btn {
-        min-width: 72px;
-        height: 56px;
-        padding: 0 20px;
-        border: none;
+        width: min(100%, 440px);
+        padding: 18px 16px;
+        box-sizing: border-box;
+        border: 1px solid rgba(255, 255, 255, 0.1);
         border-radius: 28px;
-        font-size: 15px;
-        line-height: 20px;
+        background: rgba(22, 23, 28, 0.78);
+        box-shadow: 0 14px 40px rgba(0, 0, 0, 0.28);
+        backdrop-filter: blur(18px);
+        -webkit-backdrop-filter: blur(18px);
+      }
+      .call-action {
+        width: 72px;
+        min-height: 76px;
+        padding: 0;
+        border: none;
+        display: inline-flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+        background: transparent;
         color: #fff;
         cursor: pointer;
+        -webkit-tap-highlight-color: transparent;
       }
-      .accept {
+      .action-icon {
+        width: 52px;
+        height: 52px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.14);
+        transition: transform 120ms ease, background-color 120ms ease;
+      }
+      .action-icon mat-icon {
+        width: 24px;
+        height: 24px;
+        font-size: 24px;
+      }
+      .action-label {
+        max-width: 76px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12px;
+        line-height: 16px;
+        opacity: 0.84;
+      }
+      .call-action:hover .action-icon {
+        background: rgba(255, 255, 255, 0.22);
+      }
+      .call-action:active .action-icon {
+        transform: scale(0.94);
+      }
+      .call-action:focus-visible {
+        outline: none;
+      }
+      .call-action:focus-visible .action-icon {
+        outline: 2px solid #fff;
+        outline-offset: 3px;
+      }
+      .accept .action-icon {
         background: #2e7d32;
       }
-      .decline {
-        background: #c62828;
+      .decline .action-icon,
+      .end .action-icon {
+        background: #d32f2f;
       }
-      .mute {
-        background: #555;
+      .mute.on .action-icon,
+      .cam.on .action-icon {
+        background: #fff;
+        color: #16171b;
       }
-      .mute.on {
-        background: #ff9800;
+      @media (max-width: 359px) {
+        .controls {
+          gap: 8px;
+          padding-inline: 8px;
+        }
+        .call-action {
+          width: 64px;
+        }
       }
-      .cam {
-        background: #555;
-      }
-      .cam.on {
-        background: #ff9800;
-      }
-      .switch {
-        background: #555;
-      }
-      .end {
-        background: #c62828;
+      @media (prefers-reduced-motion: reduce) {
+        .call-screen.video .top-bar,
+        .call-screen.video .controls,
+        .action-icon {
+          transition: none;
+        }
+        .status.reconnecting {
+          animation: none;
+        }
       }
     `,
   ],
