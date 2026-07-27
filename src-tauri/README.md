@@ -14,19 +14,37 @@ remote backend over the network instead of being served same-origin by NestJS.
 
 ## Android build (primary client target)
 
-The Android APK is built via `src-tauri/Makefile` (docker-based, Linux host). Run `make help` for the
-full surface; the build-type taxonomy (all land in `dist/android/`):
+The Android APK is built via `src-tauri/Makefile` directly on a Linux host (no Docker — it uses the
+host's own JDK / Android SDK / NDK / Rust toolchain). Run `make help` for the full surface; the
+build-type taxonomy (all land in `dist/android/`):
 
 | Command | Output |
 |---|---|
 | `make apk` | release APKs → `dist/android/soms-<ver>-<abi>.apk` (release-signed when `keystore.properties` present) |
 | `make apk-debug` | debug APKs (stable debug key, no minify — fastest iteration) |
-| `make apk-dev DEV_URL=http://host:4200` | debug APK loading a frontend dev server at runtime |
 | `make install` / `make run` | `adb install -r` (+ launch) the newest APK |
 
 Artifacts land under `dist/<platform>/` (`dist/android/` and `dist/macos/` now; `dist/{linux,windows}/`
-slot in when those desktop hosts are wired). The builder image (`make image`, one-time ~20 min) bakes the JDK / Android SDK /
-NDK / Rust toolchain + pre-fetched crates, so warm `make apk*` runs need no network.
+slot in when those desktop hosts are wired). The build runs natively, so the cargo (`~/.cargo`) and
+gradle (`~/.gradle`) caches persist across runs; the first build after a `Cargo.lock` change fetches
+crates (set `HTTP_PROXY`/`HTTPS_PROXY` or a `~/.cargo/config.toml` mirror if behind a proxy), and later
+warm builds need no network. Gradle is Java and ignores the `*_proxy` env vars; if your shell has a
+proxy, apply it to Gradle via a `~/.gradle/init.d/` init script that reads `$HTTPS_PROXY` (the host is
+set up this way) — the Makefile hardcodes no proxy.
+
+### Android one-time host prerequisites
+
+The build runs on the host, so the toolchain must be installed locally (all on `PATH`):
+
+```bash
+rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
+# JDK 17, Android SDK (ANDROID_HOME), NDK r27b (27.1.12297006) — via Android Studio or sdkmanager
+cargo install tauri-cli --version 2.11.4 --locked        # PIN to web/package.json @tauri-apps/cli
+npm --prefix web install                                  # so beforeBuildCommand (ng build) works
+```
+
+`tauri-cli` here is the `cargo tauri` binary. Pin it to `2.11.4` to match `web/package.json`'s
+`@tauri-apps/cli` — the same version-drift guard the Makefile's host-toolchain check enforces.
 
 ### `gen/android` is tracked; signing keys are secrets
 
@@ -72,7 +90,7 @@ npm --prefix web install                                    # so beforeBuildComm
 
 `tauri-cli` here is the `cargo tauri` binary (NOT the `src-tauri/tauri.js` node shim, which is
 Android-gradle-only). Pin it to `^2.11.4` to match `web/package.json`'s `@tauri-apps/cli` — the same
-version-drift guard the Android builder image follows.
+version-drift guard the Android host-toolchain check enforces.
 
 ## Linux / Windows desktop build (future — not wired)
 

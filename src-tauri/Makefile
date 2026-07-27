@@ -1,19 +1,17 @@
-# SOMS native client builder — Android (LINUX host, docker-based) + macOS (native Mac host). Sits next
-# to the Dockerfile it builds and produces signed Android APKs on a Linux (Ubuntu/Debian) host; macOS
-# .app/.dmg are built natively on a Mac (macOS can't be cross-built on Linux — needs hdiutil/codesign +
-# the macOS SDK). Windows / Linux-desktop artifacts are NOT built here — each needs its own native host;
-# they slot into dist/<platform>/ later.
+# SOMS native client builder — Android (native LINUX host) + macOS (native Mac host). Produces signed
+# Android APKs directly on a Linux (Ubuntu/Debian) host using its own JDK / Android SDK / NDK / Rust
+# toolchain; macOS .app/.dmg are built natively on a Mac (macOS can't be cross-built on Linux — needs
+# hdiutil/codesign + the macOS SDK). Windows / Linux-desktop artifacts are NOT built here — each needs
+# its own native host; they slot into dist/<platform>/ later.
 #
-#   make image      — (re)build the self-contained builder image (one-time, ~20 min cold).
 # Build types (all land in dist/android/ as soms-<ver>[-debug]-<abi>.apk; future: apk-aab/AAB):
 #   make apk        — RELEASE APKs, per-ABI + universal (release-signed via gen/android keystore.properties).
 #   make apk-debug  — DEBUG APKs (stable debug key, no minify, dev web build w/ sourcemaps — fastest iteration).
 #   make install    — adb install -r the newest built APK (dist/android/ preferred) onto a device.
 #   make run        — install + launch the app on the connected device.
-#   make shell      — interactive shell in the builder (debugging).
-#   make clean      — drop generated Android build outputs (keeps the gradle cache volume warm).
+#   make clean      — drop generated Android build outputs (the ~/.gradle cache persists).
 #   make help       — this list.
-# macOS desktop (native Mac host — no Docker):
+# macOS desktop (native Mac host):
 #   make macos      — universal RELEASE .app + .dmg into dist/macos/ (ad-hoc signed; APPLE_SIGNING_IDENTITY for real).
 #   make macos-run  — open the newest built SOMS.app.
 #   make dev        — cargo tauri dev (hot-reload; beforeDevCommand runs ng serve on :4200).
@@ -33,23 +31,32 @@
 #   cd src-tauri && make apk       # from inside src-tauri
 #   make -f src-tauri/Makefile apk # explicit path
 #
-# Proxy: HTTP_PROXY / HTTPS_PROXY / NO_PROXY from your shell are forwarded to docker as-is — set
-# them if you're behind a proxy, leave unset to go direct. Once `make image` and the first `make apk`
-# have warmed the caches, later `make apk` runs need NO network at all (proxy or not).
+# Caching: cargo (~/.cargo) and gradle (~/.gradle) caches live on the host and persist across builds;
+# rust target/ is in the repo (incremental). The FIRST build after a Cargo.lock change fetches crates
+# (set HTTP_PROXY/HTTPS_PROXY or a ~/.cargo/config.toml mirror if you're behind a proxy); later warm
+# builds need no network.
 #
-# Host prerequisites: Docker (hard), Node (for the frontend `npm run build` in ../web).
+# Host prerequisites (all on PATH): Rust toolchain + 4 android targets (rustup target add
+# aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android), Android SDK
+# with NDK r27b (27.1.12297006) — ANDROID_HOME set, JDK 17, tauri-cli 2.11.4 (cargo install tauri-cli),
+# Node (for the frontend `npm run build` in ../web), and adb (for `make install`/`run`).
 
 # Anchor every path to this Makefile's own location so it runs identically regardless of CWD:
 # MAKE_DIR = the directory holding this file (.../src-tauri/), ROOT = the repo root.
 MAKE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 ROOT     := $(abspath $(MAKE_DIR)..)
 
-# Builder image. Its baked tauri-cli (Dockerfile TAURI_CLI_VERSION) MUST match web/package.json's
-# @tauri-apps/cli — move them together or the container CLI and the host `tauri dev` CLI diverge.
-IMAGE      := soms-android-build:24.04
-GRADLE_VOL := soms-gradle
-CARGO_VOL  := soms-cargo
-WORK       := /work
+# LOCAL host toolchain (the build runs natively — no container). ANDROID_HOME is the SDK root; override
+# if yours lives elsewhere. The NDK is auto-detected under $ANDROID_HOME/ndk/<ver> (override
+# ANDROID_NDK_HOME). JAVA_HOME is derived from `java` on PATH. tauri-cli (cargo install tauri-cli
+# 2.11.4) MUST match web/package.json's @tauri-apps/cli — move them together or `tauri dev` and the
+# build CLI diverge. All exported so every recipe shell — and the gradle/cargo subprocesses — see them.
+ANDROID_HOME     ?= $(HOME)/Android/Sdk
+ANDROID_NDK_HOME ?= $(firstword $(wildcard $(ANDROID_HOME)/ndk/*))
+ANDROID_NDK_ROOT ?= $(ANDROID_NDK_HOME)
+ANDROID_SDK_ROOT ?= $(ANDROID_HOME)
+JAVA_HOME        ?= $(shell dirname $$(dirname $$(readlink -f $$(command -v java))))
+export ANDROID_HOME ANDROID_SDK_ROOT ANDROID_NDK_HOME ANDROID_NDK_ROOT JAVA_HOME
 
 # Per-ABI variants built by the default `make apk`. The universal variant bundles EXACTLY these
 # (repeated --target), so this list is the single knob for the whole variant set — override e.g.
@@ -79,33 +86,12 @@ RAW_APK_DIR := $(ROOT)/src-tauri/gen/android/app/build/outputs/apk
 # Used by install/run to locate the newest APK across raw output AND dist/.
 APK_FIND := find $(RAW_APK_DIR) $(DIST_DIR) -name '*.apk'
 
-# Forward the host proxy env to docker. The bare `--build-arg HTTP_PROXY` / `-e HTTP_PROXY` forms
-# pull the value from the local environment (empty if unset, = direct). `--network host` lets a
-# localhost proxy (e.g. 127.0.0.1:7892) be reached from the build/run container.
-PROXY_BUILD_ARGS := --network host --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY
-PROXY_RUN_FLAGS  := --network host -e HTTP_PROXY -e HTTPS_PROXY -e http_proxy -e https_proxy -e NO_PROXY -e no_proxy
-# Clear any stale JAVA_TOOL_OPTIONS baked into an older image (gradle is Java and ignores HTTP_PROXY;
-# without this it could try a dead proxy). A no-op on a clean image.
-CLEAR_JAVA_PROXY := -e JAVA_TOOL_OPTIONS=
+# Caching & proxying are native now: cargo (~/.cargo) + gradle (~/.gradle) caches persist on the host;
+# set HTTP_PROXY/HTTPS_PROXY or a ~/.cargo/config.toml mirror in your shell if behind a proxy.
 
-# Mount the cargo registry cache (CARGO_HOME=/cargo, baked in the image) on a named volume so the
-# registry index + downloaded .crate sources PERSIST across the ephemeral --rm runs. Without this,
-# every `make apk` re-fetches the index + any crate whose version changed since the image was built —
-# the image's baked /cargo is seeded into the volume on first attach (Docker named-volume init), then
-# updated in place. THIS is what makes a warm `make apk` genuinely network-free: the image alone can't,
-# because --rm discards each run's fetches. Mirrors the soms-gradle volume. Only the FIRST build after
-# a Cargo.lock change touches the network — set HTTP_PROXY=http://localhost:7892 (or your mirror) for
-# that one; later warm builds need neither proxy nor network.
-DOCKER_RUN := docker run --rm --user "$$(id -u):$$(id -g)" -e HOME=/tmp \
-              $(PROXY_RUN_FLAGS) $(CLEAR_JAVA_PROXY) \
-              -v "$(ROOT):$(WORK)" -v $(CARGO_VOL):/cargo -v $(GRADLE_VOL):/opt/gradle -w $(WORK)
-
-.PHONY: help image apk apk-debug shell install run clean macos macos-run dev
+.PHONY: help apk apk-debug install run clean macos macos-run dev
 help:  ## show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[36m%-12s\033[0m %s\n",$$1,$$2}' $(MAKEFILE_LIST)
-
-image:  ## (re)build the builder image (standard sources; reuses host proxy if set)
-	docker build -t $(IMAGE) $(PROXY_BUILD_ARGS) $(MAKE_DIR)
 
 # apk_abis <apk-path> -> prints the native ABIs actually bundled inside an APK, read from its
 # lib/<abi>/ entries (e.g. "x86_64", or "arm64-v8a armeabi-v7a"). Recipe-side (no $(shell)) so it
@@ -128,29 +114,38 @@ endef
 # Shared variant-builder body for apk/apk-debug. $(1) = buildtype (release|debug). For each variant
 # in VARIANTS it runs one tauri build (universal = --target repeated over MULTI_ABIS), then copies
 # the newest APK of this buildtype from the raw gradle output into dist/ as
-# soms-<version>[-debug]-<tag>.apk. Rust targets are cached in the image, so a warm run is just N
+# soms-<version>[-debug]-<tag>.apk. Rust targets are cached in target/, so a warm run is just N
 # gradle assembles. NOTE: no `@` after `;` — `@` is only a make quiet-prefix at line start; mid-line
 # it is passed to the shell as a literal and fails with "command not found".
 define do_build
 	@# Single source of truth gate: tauri.conf.json version (VERSION) must equal Cargo.toml [package]
 	@# version (CARGO_VER). Drift => the APK's embedded version disagrees with the Rust crate version.
 	@if [ "$(VERSION)" != "$(CARGO_VER)" ]; then echo "✗ version drift: tauri.conf.json=$(VERSION) vs Cargo.toml=$(CARGO_VER) — set both (tauri.conf.json is the SoT)."; exit 1; fi
+	@# Host toolchain gate (the build runs natively — no container). Fail fast with the exact install
+	@# command rather than letting gradle/NDK fail opaquely. Mirrors do_macos's rust-target check.
+	@command -v cargo >/dev/null 2>&1 || { echo "✗ cargo not on PATH — install the Rust toolchain (https://rustup.rs)."; exit 1; }
+	@cargo tauri --version >/dev/null 2>&1 || { echo "✗ tauri-cli not installed — run: cargo install tauri-cli --version 2.11.4 --locked"; exit 1; }
+	@test -d "$(ANDROID_HOME)" || { echo "✗ ANDROID_HOME not found ($(ANDROID_HOME)) — install the Android SDK and set ANDROID_HOME."; exit 1; }
+	@test -n "$(ANDROID_NDK_HOME)" -a -d "$(ANDROID_NDK_HOME)" || { echo "✗ NDK not found under $(ANDROID_HOME)/ndk/ — run: sdkmanager \"ndk;27.1.12297006\" (or set ANDROID_NDK_HOME)."; exit 1; }
+	@for t in aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android; do \
+	  rustup target list --installed 2>/dev/null | grep -qx "$$t" || { echo "✗ missing rust target $$t — run: rustup target add $$t"; exit 1; }; \
+	done
 	@# Frontend build (host-side): the merged SPA (frontendDist → web/dist/web/browser). The APK bundles
-	@# it as the baseline; OTA bundle updates are downloaded + sha256-verified at runtime (built +
-	@# packaged server-side by scripts/package-web-bundle.mjs in the Docker image, served from
-	@# app_data_dir/web/<active>/ via Context::set_assets). Run on the HOST (the builder container has only
-	@# bare nodejs), then blank beforeBuildCommand in-container (cargo line below) so tauri doesn't re-run
-	@# npm. tauri.conf.json stays the spec. Debug builds compile the SPA in the Angular "development"
-	@# configuration (sourcemaps on, unminified) so the webview JS is debuggable; release uses "production".
+	@# it as the baseline; OTA bundle updates are downloaded + sha256-verified at runtime (packaged
+	@# server-side by scripts/package-web-bundle.mjs, served from app_data_dir/web/<active>/ via
+	@# Context::set_assets). Build it on the host first, then blank beforeBuildCommand (cargo line below)
+	@# so tauri doesn't re-run npm. tauri.conf.json stays the spec. Debug builds compile the SPA in the
+	@# Angular "development" configuration (sourcemaps on, unminified) so the webview JS is debuggable;
+	@# release uses "production".
 	$(if $(filter 1,$(WEB_BUILD)),npm --prefix $(ROOT)/web run build -- --configuration $(if $(filter debug,$(1)),development,production))
-	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore) +
-	@# host-mounted, so it persists across --rm builds and pins the debug signature (no more
-	@# uninstall-per-rebuild). No-op once present.
+	@# Stable debug keystore (one-time): gitignored in-tree (gen/android/.gitignore: *.keystore), so it
+	@# persists across builds and pins the debug signature (no more uninstall-per-rebuild). No-op once
+	@# present.
 	@ks=$(MAKE_DIR)gen/android/debug.keystore; \
 	if [ ! -f "$$ks" ]; then \
 	  echo "  generating stable debug keystore (one-time): gen/android/debug.keystore"; \
-	  $(DOCKER_RUN) $(IMAGE) keytool -genkeypair -v \
-	    -keystore $(WORK)/src-tauri/gen/android/debug.keystore \
+	  keytool -genkeypair -v \
+	    -keystore $(MAKE_DIR)gen/android/debug.keystore \
 	    -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
 	    -storepass android -keypass android \
 	    -dname "CN=Android Debug,O=Android,C=US" >/dev/null; \
@@ -167,7 +162,7 @@ define do_build
 	    *) echo "  ✗ unknown variant: $$v"; exit 1;; \
 	  esac; \
 	  echo "▶ building [$(1)] $$tag"; \
-	  $(DOCKER_RUN) $(IMAGE) cargo tauri android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}' >/dev/null; \
+	  cargo tauri android build --apk $$dbflag $$targs --config '{"build":{"beforeBuildCommand":""}}' >/dev/null; \
 	  built=$$(find $(RAW_APK_DIR) -name '*$(1).apk' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
 	  test -n "$$built" || { echo "  ✗ no APK produced for $$tag"; exit 1; }; \
 	  out=$(DIST_DIR)/soms-$(VERSION)$$dsuffix-$$tag.apk; \
@@ -183,9 +178,6 @@ apk:  ## build per-ABI + universal RELEASE APKs into dist/android/. ABI=aarch64 
 apk-debug:  ## build DEBUG variants (debug-signed, no minify — fastest iteration).
 	$(call do_build,debug)
 
-shell:  ## interactive shell in the builder
-	$(DOCKER_RUN) -it $(IMAGE) bash
-
 install:  ## adb install -r the newest built APK (dist/android/ preferred) onto a connected device
 	@APK=$$($(APK_FIND) -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-); \
 	test -n "$$APK" || { echo "No APK found — run 'make apk' first."; exit 1; }; \
@@ -195,7 +187,7 @@ run: install  ## install then launch the app on the connected device
 	@adb shell monkey -p com.soms.client -c android.intent.category.LAUNCHER 1 >/dev/null \
 		&& echo "✓ launched com.soms.client"
 
-clean:  ## drop generated Android build outputs (keeps the gradle cache volume warm)
+clean:  ## drop generated Android build outputs (the ~/.gradle cache persists)
 	@# Also clear app/src/main/jniLibs: tauri symlinks target/<abi>/libsoms_client_lib.so there per build,
 	@# so ABIs from prior multi-arch builds linger across a single-arch `make apk ABI=…`. Harmless (gradle's
 	@# --target filters at packaging — verified the APK reads ABIs:[arm64-v8a] despite stale siblings) but
@@ -207,14 +199,14 @@ clean:  ## drop generated Android build outputs (keeps the gradle cache volume w
 # Universal binary (Intel x86_64 + Apple Silicon aarch64) via `--target universal-apple-darwin`
 # (Tauri compiles each arch then lipo-merges into ONE .app + .dmg). Requires both Apple rust targets
 # (rustup target add aarch64-apple-darwin x86_64-apple-darwin) + Xcode Command Line Tools. Runs straight
-# on the host — no container (unlike the Android path), so beforeBuildCommand (ng build) runs natively.
+# on the host, so beforeBuildCommand (ng build) runs natively.
 #
 # Signing: config defaults to ad-hoc ("-" — launches locally + on Apple Silicon, no Apple cert needed).
 # Real distribution just exports APPLE_SIGNING_IDENTITY="Developer ID Application: …", which OVERRIDES
 # the config value (Tauri env-vars ref). Notarization additionally needs APPLE_ID + APPLE_PASSWORD +
 # APPLE_TEAM_ID — intentionally NOT set for personal/local use.
 #
-# macOS find is BSD and lacks -printf (the Android recipes use GNU find inside their Linux container);
+# macOS find is BSD and lacks -printf (the Android recipes use GNU find on this Linux host);
 # artifact discovery here uses `ls -t` instead — safe because bundle filenames have no spaces.
 MAC_DIST_DIR := $(MAKE_DIR)dist/macos
 MAC_BUNDLE   := $(MAKE_DIR)target/universal-apple-darwin/release/bundle
@@ -232,8 +224,8 @@ define do_macos
 	@# Notarization additionally needs APPLE_ID + APPLE_PASSWORD + APPLE_TEAM_ID — unset for local use.
 	@if [ -n "$$APPLE_SIGNING_IDENTITY" ]; then echo "▶ macOS universal · signing with APPLE_SIGNING_IDENTITY ($$APPLE_SIGNING_IDENTITY)"; \
 	 else echo "▶ macOS universal · ad-hoc signing (signingIdentity \"-\" — local/personal use)"; fi
-	@# beforeBuildCommand (npm --prefix web run build) runs natively on this host, so (unlike the Android
-	@# container) we let Tauri run it directly — EXCEPT WEB_BUILD=0 blanks it (dev: web served live).
+	@# beforeBuildCommand (npm --prefix web run build) runs natively on this host, so we let Tauri run it
+	@# directly — EXCEPT WEB_BUILD=0 blanks it (dev: web served live).
 	@cfg=; [ "$(WEB_BUILD)" != 1 ] && cfg='--config {"build":{"beforeBuildCommand":""}}'; \
 	cargo tauri build --target universal-apple-darwin $$cfg
 	@mkdir -p $(MAC_DIST_DIR); set -e; \
