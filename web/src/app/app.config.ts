@@ -8,6 +8,7 @@ import { provideServiceWorker } from '@angular/service-worker';
 import { CspSafeIcuTranspiler } from './i18n/csp-safe-icu.transpiler';
 import { AuthInterceptor } from './auth.interceptor';
 import { httpTraceInterceptor } from './http-trace.interceptor';
+import { httpResilienceInterceptor, HTTP_RETRY_CONFIG, DEFAULT_HTTP_RETRY_CONFIG } from './http-resilience.interceptor';
 import { correlationIdInterceptor } from './correlation-id.interceptor';
 import { GlobalErrorHandler } from './global-error.handler';
 import { AuthService } from './services/auth.service';
@@ -78,9 +79,11 @@ export const appConfig: ApplicationConfig = {
       // network → error, 4xx → warn; the cancel/abort trace stays dev-only inside the file). Runs INNER
       // to AuthInterceptor, so it logs first then rethrows and the 401 re-login side-effect still fires.
       // See http-trace.interceptor.ts.
-      withInterceptors([correlationIdInterceptor, httpTraceInterceptor]),
+      withInterceptors([correlationIdInterceptor, httpTraceInterceptor, httpResilienceInterceptor]),
     ),
     { provide: HttpBackend, useClass: TauriHttpBackend },
+    // 429 burst rate-limit backoff-retry + 5xx/network degraded-notice (see http-resilience.interceptor.ts).
+    { provide: HTTP_RETRY_CONFIG, useValue: DEFAULT_HTTP_RETRY_CONFIG },
     provideAnimationsAsync(),
     // Global Material snackbar defaults. The library default IS bottom-center, but the container sits flush
     // at the viewport edge (8px margin) — so every snackbar overlapped the Android gesture/nav bar and read
