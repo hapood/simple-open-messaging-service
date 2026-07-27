@@ -91,7 +91,7 @@ export class GroupController {
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @Post('group/create')
-  @ApiOperation({ summary: 'Create a group and invite the given friends (invite token per friend)' })
+  @ApiOperation({ summary: 'Create a group and invite the given friends (Invite row + card per friend)' })
   @ApiResultResponse(CreateGroupResponseDto)
   async createNewGroup(
     @Request() req: FastifyRequest,
@@ -233,7 +233,7 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @ResourceId<InviteGroupDto>('groupId')
   @Post('group/invite')
-  @ApiOperation({ summary: 'Invite friends to the group (invite token written to each P2P thread)' })
+  @ApiOperation({ summary: 'Invite friends to an existing group (Invite row + card per friend)' })
   async inviteUsers(
     @Request() req: FastifyRequest,
     @Body() dto: InviteGroupDto,

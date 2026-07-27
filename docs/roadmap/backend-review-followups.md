@@ -45,6 +45,14 @@ Each entry lists the problem, where it lives (`file:line`), why it matters, and 
   `database === "down"`. A k8s liveness/readiness split was deliberately NOT adopted: SOMS is
   single-instance by decision (no LB to reroute on a readiness failure). Covered by
   `src/controller/health.controller.spec.ts` and `test/health.e2e-spec.ts`.
+- **Invite GROUP live-flow switchover (P2).** Group invites were the last holdout on the legacy JWT-token-
+  in-message mechanism (`generateInviteToken` + `ContentType.INVITE` carrying the token); friend-add had
+  already moved to the unified `Invite` table. Done: `generateInviteToken` is gone; `writeInvites`
+  (src/controller/group.controller.ts) writes an `InviteKind.GROUP` row via `createGroupInvite` (local) /
+  `federationService.sendInvite({kind:'GROUP'})` (federated); the `ContentType.INVITE` message is now a
+  display card (group account/name/avatar, not a token); the invitee resolves + accepts via `/invite/detail`
+  + `/invite/accept`. Frontend renders it (invite-row card + invite-detail dialog). The two stale
+  `@ApiOperation` summaries that still said "invite token" have been reworded.
 
 ## P2 — consistency & maintainability
 
@@ -104,17 +112,6 @@ errors behave differently.
 **Fix:** document the asymmetry or align the shapes. **Resolved by** the response-envelope interceptor
 above — once that lands, both success and error bodies are `{ code, message, data }` built by the
 interceptor and `AllExceptionsFilter` respectively; drop this item then.
-
-### Invite model — GROUP follow-up (2026-07-09 invite redesign)
-Friend-add was rebuilt on a unified `Invite` table (`kind` FRIEND/GROUP); the `Friendship` and `Notify`
-tables were dropped (the friend-request unread badge stays as the inline `User.hasUrFriendReq`, now driven
-directly by `InviteService`). One deferred item:
-
-- **GROUP live-flow switchover (TODO).** Group invites still use the legacy JWT-token-in-message mechanism
-  (`group.controller.writeInvites` → `groupService.generateInviteToken` + `ContentType.INVITE`); the table
-  is GROUP-ready (`InviteKind.GROUP` + the `(to,thread)` overwrite index). Migrate when the frontend group
-  display is built — card carries inviter + group name/avatar + invite id; validity fetched on dlg-open
-  via a new `/invite/detail { inviteId }`; only owner/admin may invite.
 
 ## P3 — hygiene & minor
 
