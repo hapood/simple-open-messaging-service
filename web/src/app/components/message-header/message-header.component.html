@@ -33,27 +33,29 @@
         <span class="msg-subtitle" [title]="subtitle()">{{ subtitle() }}</span>
       }
     </div>
-    @if (canCall()) {
-      <button class="icon-btn" type="button" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
-        <app-icon [type]="AppIconType.PHONE" [style]="{ width: '22px', height: '22px' }"></app-icon>
+    <div class="msg-actions">
+      @if (canCall()) {
+        <button class="icon-btn" type="button" (click)="placeCall()" [attr.aria-label]="'chat.callAria' | transloco">
+          <app-icon [type]="AppIconType.PHONE" [style]="{ width: '22px', height: '22px' }"></app-icon>
+        </button>
+      }
+      <button
+        class="icon-btn"
+        cdkOverlayOrigin
+        #moreTrigger="cdkOverlayOrigin"
+        (click)="toggleMenu()"
+        [class.active]="menuOpen()"
+        [attr.aria-label]="'nav.moreAria' | transloco"
+      >
+        <app-icon [type]="AppIconType.MORE" [style]="{ width: '24px', height: '24px' }"></app-icon>
       </button>
-    }
-    <button
-      class="icon-btn"
-      cdkOverlayOrigin
-      #moreTrigger="cdkOverlayOrigin"
-      (click)="toggleMenu()"
-      [class.active]="menuOpen()"
-      [attr.aria-label]="'nav.moreAria' | transloco"
-    >
-      <app-icon [type]="AppIconType.MORE" [style]="{ width: '24px', height: '24px' }"></app-icon>
-    </button>
-    <app-chat-action-menu
-      [entries]="entries()"
-      [origin]="moreTrigger"
-      [open]="menuOpen()"
-      (select)="onSelect($event)"
-      (closed)="closeMenu()"
-    />
+      <app-chat-action-menu
+        [entries]="entries()"
+        [origin]="moreTrigger"
+        [open]="menuOpen()"
+        (select)="onSelect($event)"
+        (closed)="closeMenu()"
+      />
+    </div>
   }
 </div>

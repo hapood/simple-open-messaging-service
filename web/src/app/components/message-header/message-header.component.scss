@@ -96,6 +96,13 @@
   flex: 0 0 auto;
 }
 
+.msg-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 // align-self:flex-start defeats the column's default align-items:stretch — otherwise a short name
 // ("Mom") stretches the box across the whole .msg-title column (~260px), making the entire header
 // middle one phantom hover-dim + click target. max-width:100% then caps a long name at the column
