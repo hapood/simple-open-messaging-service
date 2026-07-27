@@ -383,7 +383,9 @@
     "emptyTitle": "No chats yet",
     "emptySub": "Add a friend to start your first conversation.",
     "addFriend": "Add friend",
-    "muted": "Muted"
+    "muted": "Muted",
+    "pinned": "Pinned",
+    "unreadCount": "{{count}} unread"
   },
   "errors": {
     "removedFromGroup": "You were removed from {{group}}",

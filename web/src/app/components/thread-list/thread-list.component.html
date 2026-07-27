@@ -22,59 +22,46 @@
         }
       } @else {
         @for (thread of filteredThreadList(); track thread.id) {
-          <div class="thread-item" [attr.data-flip-key]="thread.threadId" [ngClass]="{ active: thread.threadId === openThreadId() }" (click)="onUsrTrdClick(thread)">
-            @if (thread.type === 'P2P') {
-              <div class="thread-avatar">
-                <app-user-avatar [type]="UserAvatarType.OTHER" [name]="displayName(thread)"
-                  [identityId]="thread.peerUser.id" [src]="thread.peerUser.avatar"></app-user-avatar>
-              </div>
-              <div class="thread-info">
-                <div class="thread-row">
-                  <span class="thread-name">{{ displayName(thread) }}</span>
-                  @if (thread.peerUser.isForeigner) {
-                    <app-federated-badge [domain]="thread.peerUser.domain"></app-federated-badge>
-                  }
-                  @if (thread.muted) {
-                    <span class="thread-muted" [title]="'threadList.muted' | transloco">
-                      <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
-                    </span>
-                  }
-                  <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
-                </div>
-                <div class="thread-row">
-                  <span class="thread-msg">{{ previewText(thread) }}</span>
-                  @if (thread.unreadCount > 0) {
-                    <span class="unread-badge">{{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}</span>
-                  }
-                </div>
-              </div>
-            } @else {
-              <div class="thread-avatar">
-                <app-user-avatar [type]="UserAvatarType.GROUP" [name]="displayName(thread)"
-                  [identityId]="thread.group.id" [src]="thread.group.avatar"></app-user-avatar>
-              </div>
-              <div class="thread-info">
-                <div class="thread-row">
-                  <span class="thread-name">{{ displayName(thread) }}</span>
-                  @if (thread.group.domain) {
-                    <app-federated-badge [domain]="thread.group.domain"></app-federated-badge>
-                  }
-                  @if (thread.muted) {
-                    <span class="thread-muted" [title]="'threadList.muted' | transloco">
-                      <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
-                    </span>
-                  }
-                  <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
-                </div>
-                <div class="thread-row">
-                  <span class="thread-msg">{{ previewText(thread) }}</span>
-                  @if (thread.unreadCount > 0) {
-                    <span class="unread-badge">{{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}</span>
-                  }
-                </div>
-              </div>
-            }
-          </div>
+          <button type="button" class="thread-item"
+            [attr.data-flip-key]="thread.threadId"
+            [class.active]="thread.threadId === openThreadId()"
+            [class.unread]="thread.unreadCount > 0"
+            [class.muted]="thread.muted"
+            [attr.aria-current]="thread.threadId === openThreadId() ? 'true' : null"
+            [attr.aria-label]="accessibleLabel(thread)"
+            (click)="onUsrTrdClick(thread)">
+            <span class="thread-avatar">
+              <app-user-avatar [type]="avatarType(thread)" [name]="displayName(thread)"
+                [identityId]="avatarIdentityId(thread)" [src]="avatarSrc(thread)"></app-user-avatar>
+            </span>
+            <span class="thread-info">
+              <span class="thread-row">
+                <span class="thread-name">{{ displayName(thread) }}</span>
+                @if (federatedDomain(thread); as domain) {
+                  <app-federated-badge [domain]="domain"></app-federated-badge>
+                }
+                @if (thread.pinned) {
+                  <span class="thread-status-icon" [title]="'threadList.pinned' | transloco" aria-hidden="true">
+                    <app-icon [type]="AppIconType.PIN" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                  </span>
+                }
+                @if (thread.muted) {
+                  <span class="thread-status-icon" [title]="'threadList.muted' | transloco" aria-hidden="true">
+                    <app-icon [type]="AppIconType.MUTE" [style]="{ width: '14px', height: '14px' }"></app-icon>
+                  </span>
+                }
+                <span class="thread-time">{{ fmtTime(thread.lastMessageAt) }}</span>
+              </span>
+              <span class="thread-row">
+                <span class="thread-msg">{{ previewText(thread) }}</span>
+                @if (thread.unreadCount > 0) {
+                  <span class="unread-badge" aria-hidden="true">
+                    {{ thread.unreadCount > 99 ? '99+' : thread.unreadCount }}
+                  </span>
+                }
+              </span>
+            </span>
+          </button>
         }
       }
     }

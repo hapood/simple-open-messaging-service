@@ -383,7 +383,9 @@
     "emptyTitle": "暂无聊天",
     "emptySub": "添加好友，开始你的第一次对话。",
     "addFriend": "添加好友",
-    "muted": "已静音"
+    "muted": "已静音",
+    "pinned": "已置顶",
+    "unreadCount": "{{count}} 条未读"
   },
   "errors": {
     "removedFromGroup": "你已被移出 {{group}}",

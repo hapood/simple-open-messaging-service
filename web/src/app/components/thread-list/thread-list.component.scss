@@ -7,17 +7,50 @@
 }
 
 .thread-item {
+  position: relative;
+  width: 100%;
   height: 72px;
+  flex: 0 0 72px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
   padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
+
+  &:hover {
+    background: var(--app-hover);
+  }
+
+  &:active {
+    background: var(--app-pressed);
+  }
+
   &.active {
-    background: var(--app-active);
+    background: var(--app-selected);
+  }
+
+  &:focus-visible {
+    z-index: 1;
+    outline: 2px solid var(--app-focus-ring);
+    outline-offset: -2px;
+  }
+
+  &.unread .thread-name {
+    font-weight: var(--app-font-weight-bold);
+  }
+
+  &.unread .thread-time {
+    color: var(--app-brand);
+    font-weight: var(--app-font-weight-semibold);
   }
 
   .thread-avatar {
+    display: block;
     width: 54px;
     height: 54px;
     flex-grow: 0;
@@ -25,13 +58,13 @@
   }
 
   .thread-info {
+    display: flex;
     flex: 1;
     min-width: 0;
     padding-left: 8px;
     border-bottom: 1px solid var(--app-border);
     height: 100%;
     justify-content: center;
-    display: flex;
     flex-direction: column;
     box-sizing: border-box;
 
@@ -50,12 +83,18 @@
       flex: 1 1 auto;
       min-width: 0;
       font-size: 16px;
-      font-weight: 600;
+      font-weight: var(--app-font-weight-semibold);
       color: var(--app-text);
       line-height: 16px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    app-federated-badge {
+      flex: 0 1 auto;
+      min-width: 0;
+      max-width: 40%;
     }
 
     .thread-time {
@@ -69,7 +108,7 @@
     // Telegram / WeChat convention (mute reads as "quiet", not "alert" — danger red is reserved for
     // block/report/delete). Integer 16px line-height keeps the row's measured height whole (CLAUDE.md
     // integer-pixel rule); the 14px icon sits inside that line box without growing it.
-    .thread-muted {
+    .thread-status-icon {
       flex: 0 0 auto;
       display: inline-flex;
       align-items: center;
@@ -93,8 +132,8 @@
       height: 20px;
       padding: 0 6px;
       border-radius: 10px;
-      background: var(--app-brand, #2196f3);
-      color: #fff;
+      background: var(--app-brand);
+      color: var(--app-on-brand);
       font-size: 12px;
       font-weight: 600;
       line-height: 20px;
@@ -102,6 +141,13 @@
       box-sizing: border-box;
     }
   }
+}
+
+.thread-item.muted .unread-badge {
+  background: var(--app-bg-muted);
+  color: var(--app-text-muted);
+  border: 1px solid var(--app-border-strong);
+  line-height: 18px;
 }
 
 // ── FLIP list animation (driven by lib/flip-list.ts, mirrors the kernel's cb-move) ─────────────
@@ -203,6 +249,10 @@
   to   { background-position: -200% 0; }
 }
 @media (prefers-reduced-motion: reduce) {
+  .thread-item.tl-flip-move,
+  .thread-item.tl-flip-enter {
+    animation: none;
+  }
   .tl-sk-avatar::after,
   .tl-sk-bar::after { animation: none; }
 }

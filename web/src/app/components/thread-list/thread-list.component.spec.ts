@@ -9,6 +9,7 @@ import { ConversationListService } from '../../services/conversation-list.servic
 import { ConversationLoadStatus } from '../../services/thread-store.service';
 import { ConversationItem } from '../../services/model';
 import { InlineTranslocoLoader } from '../../i18n/transloco.loader';
+import { provideHttpClient } from '@angular/common/http';
 
 /**
  * ThreadListComponent is a thin view over the shared ConversationListService. This spec covers the
@@ -43,6 +44,7 @@ describe('ThreadListComponent', () => {
       imports: [ThreadListComponent],
       providers: [
         provideZonelessChangeDetection(),
+        provideHttpClient(),
         provideTransloco({
           config: {
             availableLangs: [{ id: 'en', label: 'English' }, { id: 'zh-CN', label: 'Simplified Chinese' }],
@@ -77,6 +79,11 @@ describe('ThreadListComponent', () => {
   function p2p(threadId: number, peerId: number, name = `User ${peerId}`): ConversationItem {
     return {
       threadId, id: threadId, type: 'P2P',
+      unreadCount: 0,
+      muted: false,
+      pinned: false,
+      lastMessageAt: null,
+      lastMessagePreview: null,
       peerUser: { id: peerId, account: `u${peerId}`, name } as ConversationItem['peerUser'],
     } as ConversationItem;
   }
@@ -126,5 +133,41 @@ describe('ThreadListComponent', () => {
   it('openFriendRequests opens the friend-requests popup', () => {
     comp.openFriendRequests();
     expect(popupSpy).toHaveBeenCalledWith(PopupType.FRIEND_REQUESTS);
+  });
+
+  it('renders each conversation as a native button with current and accessible state', async () => {
+    const thread = {
+      ...p2p(1, 11, 'A very long conversation name'),
+      unreadCount: 120,
+      muted: true,
+      pinned: true,
+      lastMessagePreview: 'Latest message',
+    };
+    items.set([thread]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+
+    const row = fixture.nativeElement.querySelector('.thread-item') as HTMLButtonElement;
+    expect(row.tagName).toBe('BUTTON');
+    expect(row.type).toBe('button');
+    expect(row.getAttribute('aria-label')).toContain('A very long conversation name');
+    expect(row.getAttribute('aria-label')).toContain('120');
+    expect(row.getAttribute('aria-label')?.split(', ')).toHaveSize(5);
+    expect(row.querySelector('.unread-badge')?.textContent?.trim()).toBe('99+');
+  });
+
+  it('native row activation emits the selected conversation', async () => {
+    const thread = p2p(1, 11);
+    items.set([thread]);
+    status.set(ConversationLoadStatus.READY);
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const selected: ConversationItem[] = [];
+    comp.onSelect.subscribe((item) => selected.push(item));
+
+    (fixture.nativeElement.querySelector('.thread-item') as HTMLButtonElement).click();
+
+    expect(selected).toEqual([thread]);
   });
 });

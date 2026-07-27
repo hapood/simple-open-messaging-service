@@ -1,5 +1,4 @@
 import { Component, input, computed, EventEmitter, Output, inject, OnInit, ElementRef, effect } from '@angular/core';
-import { NgClass } from '@angular/common';
 import { TranslocoService, TranslocoPipe } from '@jsverse/transloco';
 import { RouteService, PopupType } from '../../services/route.service'
 import { ConversationListService, ConversationLoadStatus } from '../../services/conversation-list.service'
@@ -21,7 +20,7 @@ import { playFlipList, snapshotFlipRects } from '../../lib/flip-list'
  */
 @Component({
     selector: 'app-thread-list',
-    imports: [UserAvatarComponent, IconComponent, NgClass, EmptyStateComponent, TranslocoPipe, FederatedBadgeComponent],
+    imports: [UserAvatarComponent, IconComponent, EmptyStateComponent, TranslocoPipe, FederatedBadgeComponent],
     templateUrl: './thread-list.component.html',
     styleUrl: './thread-list.component.scss'
 })
@@ -129,6 +128,38 @@ export class ThreadListComponent implements OnInit {
   fmtTime = (ms: number | null | undefined): string => {
     this.language.lang()
     return formatListTime(ms, this.transloco)
+  }
+
+  avatarType(t: ConversationItem): UserAvatarType {
+    return t.type === 'P2P' ? UserAvatarType.OTHER : UserAvatarType.GROUP
+  }
+
+  avatarIdentityId(t: ConversationItem): number {
+    return t.type === 'P2P' ? t.peerUser.id : t.group.id
+  }
+
+  avatarSrc(t: ConversationItem): string | null | undefined {
+    return t.type === 'P2P' ? t.peerUser.avatar : t.group.avatar
+  }
+
+  federatedDomain(t: ConversationItem): string | undefined {
+    if (t.type === 'P2P') return t.peerUser.isForeigner ? t.peerUser.domain : undefined
+    return t.group.domain ?? undefined
+  }
+
+  /** One concise announcement for screen readers; visible badges/icons remain aria-hidden to avoid repetition. */
+  accessibleLabel(t: ConversationItem): string {
+    const parts = [
+      this.displayName(t),
+      this.previewText(t),
+      this.fmtTime(t.lastMessageAt),
+    ]
+    if (t.unreadCount > 0) {
+      parts.push(this.transloco.translate('threadList.unreadCount', { count: t.unreadCount }))
+    }
+    if (t.muted) parts.push(this.transloco.translate('threadList.muted'))
+    if (t.pinned) parts.push(this.transloco.translate('threadList.pinned'))
+    return parts.filter(Boolean).join(', ')
   }
 
   genThreadList() {
