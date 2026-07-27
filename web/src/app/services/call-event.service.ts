@@ -1,7 +1,12 @@
 import { Injectable, OnDestroy, inject, signal } from '@angular/core';
 import { Subject, Subscription, filter } from 'rxjs';
 import { WebsocketService } from './websocket.service';
-import { CallAdapterService, IDLE_CALL, type CallPhase, type CallSnapshot } from './call-adapter';
+import {
+  CallAdapterService,
+  IDLE_CALL,
+  type CallPhase,
+  type CallSnapshot,
+} from './call-adapter';
 
 /**
  * The payload shape of a CALL_EVENT SSE frame (docs/android-calls-client.md §1). `type` is the lifecycle
@@ -101,11 +106,15 @@ export class CallEventService implements OnDestroy {
     mediaState: string;
     startedAt: number;
     muted: boolean;
+    cameraEnabled?: boolean;
+    remoteCameraEnabled?: boolean;
+    videoUpgradeState?: 'idle' | 'upgrading' | 'failed';
     peerName?: string;
     peerAvatar?: string;
     step?: string;
   }): void {
     const cur = this.callState();
+    const legacyVideo = snap.callType === 'VIDEO';
     this.commit({
       ...cur,
       ...snap,
@@ -113,6 +122,11 @@ export class CallEventService implements OnDestroy {
       peerName: snap.peerName || cur.peerName,
       peerAvatar: snap.peerAvatar || cur.peerAvatar,
       step: snap.step ?? cur.step,
+      cameraEnabled:
+        snap.cameraEnabled ?? (legacyVideo ? true : cur.cameraEnabled),
+      remoteCameraEnabled:
+        snap.remoteCameraEnabled ??
+        (legacyVideo ? true : cur.remoteCameraEnabled),
     });
   }
 
@@ -128,6 +142,8 @@ export class CallEventService implements OnDestroy {
         threadId: p.threadId ?? cur.threadId,
         peerUserId: p.callerUserId ?? cur.peerUserId,
         callType: p.callType ?? cur.callType,
+        cameraEnabled: p.callType === 'VIDEO',
+        remoteCameraEnabled: p.callType === 'VIDEO',
         isCaller: false,
         peerName: p.callerName ?? '',
         peerAvatar: p.callerAvatar ?? '',
@@ -144,7 +160,9 @@ export class CallEventService implements OnDestroy {
     this.commit({
       ...cur,
       phase,
-      ...(p.type === 'connected' && p.startedAt ? { startedAt: p.startedAt } : {}),
+      ...(p.type === 'connected' && p.startedAt
+        ? { startedAt: p.startedAt }
+        : {}),
     });
   }
 

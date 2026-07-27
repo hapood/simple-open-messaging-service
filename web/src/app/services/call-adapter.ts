@@ -29,6 +29,15 @@ export interface CallSnapshot {
   /** Connect epoch-ms (0 until connected) — the timer starts here (== POST /calls/connected). */
   startedAt: number;
   muted: boolean;
+  /** Whether this side is currently capturing/sending camera video. Turning it off never downgrades a
+   *  VIDEO call back to AUDIO; it only pauses the local video track. */
+  cameraEnabled: boolean;
+  /** Whether the peer currently has a camera track enabled. Used to render an intentional avatar state
+   *  instead of making a missing remote frame look like a broken black screen. */
+  remoteCameraEnabled: boolean;
+  /** AUDIO→VIDEO is the only media-type transition. `upgrading` keeps the audio UI stable while camera
+   *  permission + SDP renegotiation run; `failed` leaves the audio call intact and allows retry. */
+  videoUpgradeState: 'idle' | 'upgrading' | 'failed';
   /** Self↔peer swapped (tap the PiP): true = local camera full-bleed, peer in the PiP. In the snapshot so a
    *  WebView recreate mid-call re-derives the swap state (native owns it; the UI is disposable chrome). */
   swapped: boolean;
@@ -52,6 +61,9 @@ export const IDLE_CALL: CallSnapshot = {
   mediaState: 'new',
   startedAt: 0,
   muted: false,
+  cameraEnabled: false,
+  remoteCameraEnabled: false,
+  videoUpgradeState: 'idle',
   swapped: false,
   peerName: '',
   peerAvatar: '',
@@ -74,7 +86,14 @@ export abstract class CallAdapter {
    *  `peerAvatarDataUrl` is the callee's avatar as a base64 data URL (read from the IDB cache by the caller)
    *  so the native call notification (CallStyle Person) decodes it directly — NO /uploads fetch (the bytes
    *  are on-device). Empty when uncached → the notification is name-only. */
-  abstract initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string): void;
+  abstract initiate(
+    calleeUserId: number,
+    callSid: string,
+    callType: 'AUDIO' | 'VIDEO',
+    peerName: string,
+    peerAvatar: string,
+    peerAvatarDataUrl: string,
+  ): void;
   /** Callee accepts the incoming ring (POST /calls/accept + createAnswer natively). */
   abstract accept(callSid: string): void;
   abstract decline(callSid: string): void;
@@ -83,6 +102,8 @@ export abstract class CallAdapter {
   abstract end(callSid: string, reason?: string): void;
   /** Mute/unmute the local mic. */
   abstract setMuted(muted: boolean): void;
+  /** Upgrade an established AUDIO call to VIDEO. The transition is one-way for the call lifetime. */
+  abstract upgradeToVideo(): void;
   /** Toggle the capture between front (self-view) + back cameras (WhatsApp/FaceTime). AUDIO call: no-op. */
   abstract switchCamera(): void;
   /** Camera on/off (mute video, keep audio). */
@@ -100,8 +121,22 @@ export abstract class CallAdapter {
 /** Android: delegates to the Kotlin `window.SomsCall` bridge. Per the native-bridge rule, runs only on
  *  Android so `window.SomsCall` is guaranteed present — call with `!`. */
 class AndroidCallAdapter extends CallAdapter {
-  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string): void {
-    window.SomsCall!.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl);
+  initiate(
+    calleeUserId: number,
+    callSid: string,
+    callType: 'AUDIO' | 'VIDEO',
+    peerName: string,
+    peerAvatar: string,
+    peerAvatarDataUrl: string,
+  ): void {
+    window.SomsCall!.initiate(
+      calleeUserId,
+      callSid,
+      callType,
+      peerName,
+      peerAvatar,
+      peerAvatarDataUrl,
+    );
   }
   accept(callSid: string): void {
     window.SomsCall!.accept(callSid);
@@ -117,6 +152,9 @@ class AndroidCallAdapter extends CallAdapter {
   }
   setMuted(muted: boolean): void {
     window.SomsCall!.setMuted(muted);
+  }
+  upgradeToVideo(): void {
+    window.SomsCall!.upgradeToVideo?.();
   }
   switchCamera(): void {
     window.SomsCall!.switchCamera();
@@ -134,7 +172,14 @@ class AndroidCallAdapter extends CallAdapter {
     // Merge the native JSON over the idle defaults so a partial/older snapshot can't drop required fields.
     const raw = window.SomsCall!.getSnapshot();
     try {
-      return { ...IDLE_CALL, ...(JSON.parse(raw) as Partial<CallSnapshot>) };
+      const parsed = JSON.parse(raw) as Partial<CallSnapshot>;
+      const legacyVideo = parsed.callType === 'VIDEO';
+      return {
+        ...IDLE_CALL,
+        ...parsed,
+        cameraEnabled: parsed.cameraEnabled ?? legacyVideo,
+        remoteCameraEnabled: parsed.remoteCameraEnabled ?? legacyVideo,
+      };
     } catch {
       return { ...IDLE_CALL };
     }
@@ -150,6 +195,7 @@ class UnsupportedCallAdapter extends CallAdapter {
   cancel(): void {}
   end(): void {}
   setMuted(): void {}
+  upgradeToVideo(): void {}
   switchCamera(): void {}
   setCameraEnabled(): void {}
   setVideoRect(): void {}
@@ -176,8 +222,22 @@ export class CallAdapterService {
   /** Whether 1:1 calling is supported on this platform (Android native only, for now). */
   readonly supported = isAndroidNative();
 
-  initiate(calleeUserId: number, callSid: string, callType: 'AUDIO' | 'VIDEO', peerName: string, peerAvatar: string, peerAvatarDataUrl: string): void {
-    this.adapter.initiate(calleeUserId, callSid, callType, peerName, peerAvatar, peerAvatarDataUrl);
+  initiate(
+    calleeUserId: number,
+    callSid: string,
+    callType: 'AUDIO' | 'VIDEO',
+    peerName: string,
+    peerAvatar: string,
+    peerAvatarDataUrl: string,
+  ): void {
+    this.adapter.initiate(
+      calleeUserId,
+      callSid,
+      callType,
+      peerName,
+      peerAvatar,
+      peerAvatarDataUrl,
+    );
   }
   accept(callSid: string): void {
     this.adapter.accept(callSid);
@@ -193,6 +253,9 @@ export class CallAdapterService {
   }
   setMuted(muted: boolean): void {
     this.adapter.setMuted(muted);
+  }
+  upgradeToVideo(): void {
+    this.adapter.upgradeToVideo();
   }
   switchCamera(): void {
     this.adapter.switchCamera();

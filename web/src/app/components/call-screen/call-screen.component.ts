@@ -1,10 +1,23 @@
-import { afterNextRender, Component, computed, effect, ElementRef, inject, OnDestroy, signal, viewChild } from '@angular/core';
+import {
+  afterNextRender,
+  Component,
+  computed,
+  effect,
+  ElementRef,
+  inject,
+  OnDestroy,
+  signal,
+  viewChild,
+} from '@angular/core';
 import { MatIconModule } from '@angular/material/icon';
 import { TranslocoModule } from '@jsverse/transloco';
 import { TranslocoService } from '@jsverse/transloco';
 import { CallEventService } from '../../services/call-event.service';
 import { CallAdapterService } from '../../services/call-adapter';
-import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.component';
+import {
+  UserAvatarComponent,
+  UserAvatarType,
+} from '../user-avatar/user-avatar.component';
 
 /**
  * The 1:1 call UI — a fullscreen overlay mounted at the app root (AppComponent), shown whenever a call is
@@ -37,24 +50,45 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
   standalone: true,
   template: `
     @if (snap().phase !== 'idle') {
-      <div class="call-screen"
-           [class.video]="isVideo()"
-           [class.controls-hidden]="!controlsVisible()"
-           [class.pip]="inPip()"
-           (pointerdown)="onScreenTap()">
+      <div
+        class="call-screen"
+        [class.video]="isVideo()"
+        [class.controls-hidden]="!controlsVisible()"
+        [class.pip]="inPip()"
+        (pointerdown)="onScreenTap()"
+      >
         @if (isVideo()) {
+          @if (!snap().remoteCameraEnabled) {
+            <div class="remote-camera-off">
+              <div class="remote-avatar">
+                <app-user-avatar
+                  [type]="UserAvatarType.OTHER"
+                  [name]="snap().peerName || '?'"
+                  [identityId]="snap().peerUserId"
+                  [src]="snap().peerAvatar"
+                ></app-user-avatar>
+              </div>
+              <span>{{
+                'call.peerCameraOff'
+                  | transloco: { name: snap().peerName || '…' }
+              }}</span>
+            </div>
+          }
           <!-- The self-view hole: native renders the LOCAL camera here (positioned top-right, the
                mainstream-app "picture-in-picture" self preview). Transparent until native attaches. -->
-          <div class="self-view"
-               [class.off]="!cameraOn()"
-               [style.left.px]="selfLeft()"
-               [style.top.px]="selfTop()"
-               (pointerdown)="onSelfPointerDown($event)"
-               (pointermove)="onSelfPointerMove($event)"
-               (pointerup)="onSelfPointerUp($event)"
-               (pointercancel)="onSelfPointerUp($event)"
-               #selfHole>
-            @if (!cameraOn()) {
+          <div
+            class="self-view"
+            [class.off]="!snap().cameraEnabled"
+            [style.left.px]="selfLeft()"
+            [style.top.px]="selfTop()"
+            (pointerdown)="onSelfPointerDown($event)"
+            (pointermove)="onSelfPointerMove($event)"
+            (pointerup)="onSelfPointerUp($event)"
+            (pointercancel)="onSelfPointerUp($event)"
+            #selfHole
+          >
+            @if (!snap().cameraEnabled) {
+              <mat-icon class="self-off-icon">videocam_off</mat-icon>
               <span class="self-off">{{ 'call.cameraOff' | transloco }}</span>
             }
           </div>
@@ -65,12 +99,17 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
             {{ (isVideo() ? 'call.videoCall' : 'call.audioCall') | transloco }}
           </div>
           <div class="name">{{ snap().peerName || '…' }}</div>
-          <div class="status"
-               role="status"
-               aria-live="polite"
-               [class.reconnecting]="snap().phase === 'reconnecting'"
-          >{{ statusLabel() }}</div>
-          @if (snap().phase === 'connected' || snap().phase === 'reconnecting') {
+          <div
+            class="status"
+            role="status"
+            aria-live="polite"
+            [class.reconnecting]="snap().phase === 'reconnecting'"
+          >
+            {{ statusLabel() }}
+          </div>
+          @if (
+            snap().phase === 'connected' || snap().phase === 'reconnecting'
+          ) {
             <div class="timer">{{ timer() }}</div>
           }
         </div>
@@ -81,8 +120,12 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
                initial-letter fallback covers a no-avatar / cache-miss peer. -->
           <div class="peer">
             <div class="avatar">
-              <app-user-avatar [type]="UserAvatarType.OTHER" [name]="snap().peerName || '?'"
-                [identityId]="snap().peerUserId" [src]="snap().peerAvatar"></app-user-avatar>
+              <app-user-avatar
+                [type]="UserAvatarType.OTHER"
+                [name]="snap().peerName || '?'"
+                [identityId]="snap().peerUserId"
+                [src]="snap().peerAvatar"
+              ></app-user-avatar>
             </div>
           </div>
         }
@@ -90,42 +133,120 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         <div class="controls">
           @switch (snap().phase) {
             @case ('incoming') {
-              <button class="call-action decline" type="button" (click)="decline()"
-                      [attr.aria-label]="'call.decline' | transloco">
+              <button
+                class="call-action decline"
+                type="button"
+                (click)="decline()"
+                [attr.aria-label]="'call.decline' | transloco"
+              >
                 <span class="action-icon"><mat-icon>call_end</mat-icon></span>
-                <span class="action-label">{{ 'call.decline' | transloco }}</span>
+                <span class="action-label">{{
+                  'call.decline' | transloco
+                }}</span>
               </button>
-              <button class="call-action accept" type="button" (click)="accept()"
-                      [attr.aria-label]="'call.accept' | transloco">
+              <button
+                class="call-action accept"
+                type="button"
+                (click)="accept()"
+                [attr.aria-label]="'call.accept' | transloco"
+              >
                 <span class="action-icon"><mat-icon>call</mat-icon></span>
-                <span class="action-label">{{ 'call.accept' | transloco }}</span>
+                <span class="action-label">{{
+                  'call.accept' | transloco
+                }}</span>
               </button>
             }
             @default {
-              <button class="call-action mute" [class.on]="snap().muted" type="button" (click)="toggleMute()"
-                      [attr.aria-label]="(snap().muted ? 'call.unmute' : 'call.mute') | transloco">
-                <span class="action-icon"><mat-icon>{{ snap().muted ? 'mic_off' : 'mic' }}</mat-icon></span>
-                <span class="action-label">{{ (snap().muted ? 'call.unmute' : 'call.mute') | transloco }}</span>
+              <button
+                class="call-action mute"
+                [class.on]="snap().muted"
+                type="button"
+                (click)="toggleMute()"
+                [attr.aria-label]="
+                  (snap().muted ? 'call.unmute' : 'call.mute') | transloco
+                "
+              >
+                <span class="action-icon"
+                  ><mat-icon>{{
+                    snap().muted ? 'mic_off' : 'mic'
+                  }}</mat-icon></span
+                >
+                <span class="action-label">{{
+                  (snap().muted ? 'call.unmute' : 'call.mute') | transloco
+                }}</span>
               </button>
+              @if (!isVideo() && canUpgradeVideo()) {
+                <button
+                  class="call-action upgrade"
+                  type="button"
+                  [disabled]="snap().videoUpgradeState === 'upgrading'"
+                  (click)="upgradeToVideo()"
+                  [attr.aria-label]="
+                    (snap().videoUpgradeState === 'upgrading'
+                      ? 'call.startingVideo'
+                      : 'call.startVideo'
+                    ) | transloco
+                  "
+                >
+                  <span class="action-icon">
+                    @if (snap().videoUpgradeState === 'upgrading') {
+                      <span class="upgrade-spinner" aria-hidden="true"></span>
+                    } @else {
+                      <mat-icon>videocam</mat-icon>
+                    }
+                  </span>
+                  <span class="action-label">
+                    {{
+                      (snap().videoUpgradeState === 'upgrading'
+                        ? 'call.startingVideo'
+                        : 'call.startVideo'
+                      ) | transloco
+                    }}
+                  </span>
+                </button>
+              }
               @if (isVideo()) {
                 <button
                   class="call-action cam"
-                  [class.on]="!cameraOn()"
+                  [class.on]="!snap().cameraEnabled"
                   type="button"
                   (click)="toggleCamera()"
-                  [attr.aria-label]="(cameraOn() ? 'call.cameraOff' : 'call.cameraOn') | transloco"
+                  [attr.aria-label]="
+                    (snap().cameraEnabled ? 'call.cameraOff' : 'call.cameraOn')
+                      | transloco
+                  "
                 >
-                  <span class="action-icon"><mat-icon>{{ cameraOn() ? 'videocam' : 'videocam_off' }}</mat-icon></span>
-                  <span class="action-label">{{ (cameraOn() ? 'call.cameraOff' : 'call.cameraOn') | transloco }}</span>
+                  <span class="action-icon"
+                    ><mat-icon>{{
+                      snap().cameraEnabled ? 'videocam' : 'videocam_off'
+                    }}</mat-icon></span
+                  >
+                  <span class="action-label">{{
+                    (snap().cameraEnabled ? 'call.cameraOff' : 'call.cameraOn')
+                      | transloco
+                  }}</span>
                 </button>
-                <button class="call-action switch" type="button" (click)="switchCamera()"
-                        [attr.aria-label]="'call.switchCamera' | transloco">
-                  <span class="action-icon"><mat-icon>cameraswitch</mat-icon></span>
-                  <span class="action-label">{{ 'call.switchCamera' | transloco }}</span>
+                <button
+                  class="call-action switch"
+                  type="button"
+                  [disabled]="!snap().cameraEnabled"
+                  (click)="switchCamera()"
+                  [attr.aria-label]="'call.switchCamera' | transloco"
+                >
+                  <span class="action-icon"
+                    ><mat-icon>cameraswitch</mat-icon></span
+                  >
+                  <span class="action-label">{{
+                    'call.switchCamera' | transloco
+                  }}</span>
                 </button>
               }
-              <button class="call-action end" type="button" (click)="hangUp()"
-                      [attr.aria-label]="'call.end' | transloco">
+              <button
+                class="call-action end"
+                type="button"
+                (click)="hangUp()"
+                [attr.aria-label]="'call.end' | transloco"
+              >
                 <span class="action-icon"><mat-icon>call_end</mat-icon></span>
                 <span class="action-label">{{ 'call.end' | transloco }}</span>
               </button>
@@ -147,13 +268,14 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         align-items: center;
         justify-content: center;
         gap: 28px;
-        padding:
-          calc(24px + var(--soms-safe-top, 0px))
-          24px
+        padding: calc(24px + var(--soms-safe-top, 0px)) 24px
           calc(32px + var(--soms-safe-bottom, 0px));
         box-sizing: border-box;
-        background:
-          radial-gradient(circle at 50% 22%, rgba(255, 255, 255, 0.1), transparent 34%),
+        background: radial-gradient(
+            circle at 50% 22%,
+            rgba(255, 255, 255, 0.1),
+            transparent 34%
+          ),
           #111216;
         color: #fff;
       }
@@ -197,15 +319,45 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
       }
       .self-view.off {
         display: flex;
+        flex-direction: column;
         align-items: center;
         justify-content: center;
         /* Camera off → the native track is disabled (frozen/black surface); an opaque bg so the label reads. */
         background: rgba(0, 0, 0, 0.6);
       }
+      .self-off-icon {
+        margin-bottom: 4px;
+        opacity: 0.82;
+      }
       .self-off {
         font-size: 12px;
         line-height: 16px;
         opacity: 0.8;
+      }
+      .remote-camera-off {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 20px;
+        background: radial-gradient(
+            circle at 50% 38%,
+            rgba(255, 255, 255, 0.09),
+            transparent 28%
+          ),
+          #111216;
+        color: rgba(255, 255, 255, 0.78);
+        font-size: 14px;
+        line-height: 20px;
+      }
+      .remote-avatar {
+        width: 112px;
+        height: 112px;
+        overflow: hidden;
+        border-radius: 28px;
+        box-shadow: 0 16px 44px rgba(0, 0, 0, 0.32);
       }
       .top-bar {
         display: flex;
@@ -259,8 +411,13 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         animation: soms-call-pulse 1.4s ease-in-out infinite;
       }
       @keyframes soms-call-pulse {
-        0%, 100% { opacity: 0.5; }
-        50% { opacity: 1; }
+        0%,
+        100% {
+          opacity: 0.5;
+        }
+        50% {
+          opacity: 1;
+        }
       }
       .timer {
         font-size: 18px;
@@ -297,6 +454,10 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         cursor: pointer;
         -webkit-tap-highlight-color: transparent;
       }
+      .call-action:disabled {
+        cursor: default;
+        opacity: 0.64;
+      }
       .action-icon {
         width: 52px;
         height: 52px;
@@ -305,7 +466,9 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         justify-content: center;
         border-radius: 50%;
         background: rgba(255, 255, 255, 0.14);
-        transition: transform 120ms ease, background-color 120ms ease;
+        transition:
+          transform 120ms ease,
+          background-color 120ms ease;
       }
       .action-icon mat-icon {
         width: 24px;
@@ -346,6 +509,24 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         background: #fff;
         color: #16171b;
       }
+      .upgrade .action-icon {
+        background: #fff;
+        color: #16171b;
+      }
+      .upgrade-spinner {
+        width: 20px;
+        height: 20px;
+        box-sizing: border-box;
+        border: 2px solid rgba(22, 23, 27, 0.28);
+        border-top-color: #16171b;
+        border-radius: 50%;
+        animation: soms-call-spin 700ms linear infinite;
+      }
+      @keyframes soms-call-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
       @media (max-width: 359px) {
         .controls {
           gap: 8px;
@@ -364,6 +545,9 @@ import { UserAvatarComponent, UserAvatarType } from '../user-avatar/user-avatar.
         .status.reconnecting {
           animation: none;
         }
+        .upgrade-spinner {
+          animation: none;
+        }
       }
     `,
   ],
@@ -377,11 +561,10 @@ export class CallScreenComponent implements OnDestroy {
 
   /** A 1s ticking clock so the connected timer updates; read by `timer()`. Cleared in ngOnDestroy. */
   private readonly now = signal(Date.now());
-  private readonly timerHandle = setInterval(() => this.now.set(Date.now()), 1000);
-
-  /** Local camera on/off (video only). Mirrored from the native FSM once setVideoRect reports back; until
-   *  then this component owns the optimistic toggle. */
-  readonly cameraOn = signal(true);
+  private readonly timerHandle = setInterval(
+    () => this.now.set(Date.now()),
+    1000,
+  );
 
   /** Whether the top-bar + controls are shown. In a connected VIDEO call they auto-hide ~3s after the last
    *  interaction for an immersive view (the native remote video fills the screen behind the transparent chrome);
@@ -400,7 +583,11 @@ export class CallScreenComponent implements OnDestroy {
   private static readonly SELF_H = 160;
   /** Self-view position (CSS px, viewport-relative) — draggable; the native surface follows via reportVideoRects.
    *  Seeded top-right; clamped to the viewport on drag + resize. */
-  readonly selfLeft = signal(typeof window !== 'undefined' ? window.innerWidth - CallScreenComponent.SELF_W - 16 : 0);
+  readonly selfLeft = signal(
+    typeof window !== 'undefined'
+      ? window.innerWidth - CallScreenComponent.SELF_W - 16
+      : 0,
+  );
   readonly selfTop = signal(64);
   private dragging = false;
   private dragOrigin = { px: 0, py: 0, left: 0, top: 0 };
@@ -430,6 +617,12 @@ export class CallScreenComponent implements OnDestroy {
         this.controlsVisible.set(true);
       }
     });
+    // AUDIO→VIDEO changes the rendered holes without remounting this component. Report after Angular has
+    // created the self-view element so the media owner can attach both video renderers immediately.
+    effect(() => {
+      this.isVideo();
+      requestAnimationFrame(() => this.reportVideoRects());
+    });
     // React to PiP enter/exit (native pushes via window.__SOMS_PIP__). In PiP the chrome hides + the self
     //  surface detaches so only the remote video shows in the PiP window; on exit both restore.
     window.__SOMS_PIP__ = (v) => {
@@ -440,8 +633,20 @@ export class CallScreenComponent implements OnDestroy {
 
   private readonly onViewportChange = (): void => {
     // Re-clamp the self-view into the (possibly resized) viewport, then re-report so the native surface tracks.
-    this.selfLeft.set(this.clamp(this.selfLeft(), 0, window.innerWidth - CallScreenComponent.SELF_W));
-    this.selfTop.set(this.clamp(this.selfTop(), 0, window.innerHeight - CallScreenComponent.SELF_H));
+    this.selfLeft.set(
+      this.clamp(
+        this.selfLeft(),
+        0,
+        window.innerWidth - CallScreenComponent.SELF_W,
+      ),
+    );
+    this.selfTop.set(
+      this.clamp(
+        this.selfTop(),
+        0,
+        window.innerHeight - CallScreenComponent.SELF_H,
+      ),
+    );
     this.reportVideoRects();
   };
 
@@ -450,21 +655,41 @@ export class CallScreenComponent implements OnDestroy {
   onSelfPointerDown(e: PointerEvent): void {
     e.stopPropagation(); // the PiP is its own surface: a drag/tap here swaps video, not the main chrome
     this.dragging = true;
-    this.dragOrigin = { px: e.clientX, py: e.clientY, left: this.selfLeft(), top: this.selfTop() };
+    this.dragOrigin = {
+      px: e.clientX,
+      py: e.clientY,
+      left: this.selfLeft(),
+      top: this.selfTop(),
+    };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   }
 
   onSelfPointerMove(e: PointerEvent): void {
     if (!this.dragging) return;
-    this.selfLeft.set(this.clamp(this.dragOrigin.left + (e.clientX - this.dragOrigin.px), 0, window.innerWidth - CallScreenComponent.SELF_W));
-    this.selfTop.set(this.clamp(this.dragOrigin.top + (e.clientY - this.dragOrigin.py), 0, window.innerHeight - CallScreenComponent.SELF_H));
+    this.selfLeft.set(
+      this.clamp(
+        this.dragOrigin.left + (e.clientX - this.dragOrigin.px),
+        0,
+        window.innerWidth - CallScreenComponent.SELF_W,
+      ),
+    );
+    this.selfTop.set(
+      this.clamp(
+        this.dragOrigin.top + (e.clientY - this.dragOrigin.py),
+        0,
+        window.innerHeight - CallScreenComponent.SELF_H,
+      ),
+    );
     this.scheduleRectReport();
   }
 
   onSelfPointerUp(e: PointerEvent): void {
     if (!this.dragging) return;
     this.dragging = false;
-    const moved = Math.hypot(e.clientX - this.dragOrigin.px, e.clientY - this.dragOrigin.py);
+    const moved = Math.hypot(
+      e.clientX - this.dragOrigin.px,
+      e.clientY - this.dragOrigin.py,
+    );
     if (moved < 8) this.adapter.swapVideo(); // a tap (not a drag) → swap which video is full-bleed vs PiP
     this.reportVideoRects();
   }
@@ -498,15 +723,32 @@ export class CallScreenComponent implements OnDestroy {
       return;
     }
     const self = this.selfHole()?.nativeElement;
-    this.adapter.setVideoRect(JSON.stringify(remote), self ? JSON.stringify(this.rectOf(self)) : null);
+    this.adapter.setVideoRect(
+      JSON.stringify(remote),
+      self ? JSON.stringify(this.rectOf(self)) : null,
+    );
   }
 
-  private rectOf(el: HTMLElement): { x: number; y: number; w: number; h: number } {
+  private rectOf(el: HTMLElement): {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  } {
     const r = el.getBoundingClientRect();
-    return { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) };
+    return {
+      x: Math.round(r.left),
+      y: Math.round(r.top),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+    };
   }
 
   readonly isVideo = computed(() => this.snap().callType === 'VIDEO');
+  readonly canUpgradeVideo = computed(
+    () =>
+      this.snap().phase === 'connected' || this.snap().phase === 'reconnecting',
+  );
   /** Exposed for the template (the avatar component's [type] input). */
   readonly UserAvatarType = UserAvatarType;
 
@@ -514,6 +756,12 @@ export class CallScreenComponent implements OnDestroy {
     // Prefer the finer WebRTC step ("offer-sent"/"answer-received"/…) when the native FSM has set one; fall
     // back to the coarse phase label. Both are stable codes localized via the `call` i18n namespace (the native
     // FSM sends codes, never display text — per the UI-text bilingual convention).
+    if (this.snap().videoUpgradeState === 'upgrading') {
+      return this.transloco.translate('call.startingVideo');
+    }
+    if (this.snap().videoUpgradeState === 'failed') {
+      return this.transloco.translate('call.videoUpgradeFailed');
+    }
     const step = this.snap().step;
     if (step) return this.transloco.translate(`call.${step}`);
     switch (this.snap().phase) {
@@ -549,12 +797,16 @@ export class CallScreenComponent implements OnDestroy {
   /** Show the controls now; in a connected video call, re-arm the auto-hide so they fade again after inactivity. */
   revealControls(): void {
     this.controlsVisible.set(true);
-    if (this.isVideo() && this.snap().phase === 'connected') this.scheduleHide();
+    if (this.isVideo() && this.snap().phase === 'connected')
+      this.scheduleHide();
   }
 
   private scheduleHide(): void {
     if (this.hideTimer) clearTimeout(this.hideTimer);
-    this.hideTimer = setTimeout(() => this.controlsVisible.set(false), CallScreenComponent.HIDE_DELAY_MS);
+    this.hideTimer = setTimeout(
+      () => this.controlsVisible.set(false),
+      CallScreenComponent.HIDE_DELAY_MS,
+    );
   }
 
   accept(): void {
@@ -582,11 +834,21 @@ export class CallScreenComponent implements OnDestroy {
     this.adapter.setMuted(!this.snap().muted);
   }
 
+  /** One-way AUDIO→VIDEO transition. The media adapter owns permission + SDP renegotiation; audio remains
+   *  connected throughout, and a failed upgrade can be retried without disturbing the call. */
+  upgradeToVideo(): void {
+    if (
+      !this.isVideo() &&
+      this.canUpgradeVideo() &&
+      this.snap().videoUpgradeState !== 'upgrading'
+    ) {
+      this.adapter.upgradeToVideo();
+    }
+  }
+
   /** Camera on/off (video only): toggles the local video track natively + the self-view placeholder state. */
   toggleCamera(): void {
-    const next = !this.cameraOn();
-    this.cameraOn.set(next);
-    this.adapter.setCameraEnabled(next);
+    this.adapter.setCameraEnabled(!this.snap().cameraEnabled);
   }
 
   /** Switch the capture between the front (self-view) + back cameras (WhatsApp/FaceTime "flip"). */

@@ -202,6 +202,9 @@ declare global {
       end: (callSid: string, reason?: string) => void;
       signal: (callSid: string, toUserId: number, kind: string, payload: string) => void;
       setMuted: (muted: boolean) => void;
+      /** One-way AUDIO→VIDEO upgrade on the existing RTCPeerConnection. Permission and SDP renegotiation
+       *  are native-owned; failure leaves the audio leg connected. */
+      upgradeToVideo?: () => void;
       /** Synchronous JSON snapshot of the live call (CallController.snapshotJson) — the web call UI
        *  re-derives its state from this on boot / WebView re-attach with no SSE wait. */
       getSnapshot: () => string;
