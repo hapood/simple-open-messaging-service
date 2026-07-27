@@ -83,7 +83,7 @@
 }
 
 .msg-col {
-  max-width: min(72%, 520px);
+  max-width: min(76%, 560px);
   display: flex;
   flex-direction: column;
   &.msg-self {
@@ -102,10 +102,24 @@
   margin-left: 48px;
 }
 .msg-row.msg-self .msg-col {
-  margin-right: 8px;
+  margin-right: 0;
 }
 .msg-row.msg-self:not(.msg-has-avatar) .msg-col {
-  margin-right: 48px;
+  margin-right: 0;
+}
+.msg-row.msg-self .msg-avatar {
+  display: none;
+}
+:host-context([data-show-self-avatar='true']) {
+  .msg-row.msg-self .msg-col {
+    margin-right: 8px;
+  }
+  .msg-row.msg-self:not(.msg-has-avatar) .msg-col {
+    margin-right: 48px;
+  }
+  .msg-row.msg-self .msg-avatar {
+    display: block;
+  }
 }
 
 .msg-name {
@@ -116,15 +130,14 @@
   margin: 0 0 2px;
 }
 
-// Bubble (WhatsApp: light-green/white + rounded corners + bottom-right timestamp per row).
-// Uniform 3px corner radius for every bubble — the leading msg-head and the in-group msg-body share it, so a sender's
-// consecutive run reads as one continuous rounded block (only the avatar, name label, and tail nub distinguish the head).
+// Modern tonal bubbles. Consecutive rows keep the outside corners round and tighten the sender-facing
+// corners, making a run read as a group without a triangular tail.
 .msg-bubble {
   position: relative;
   min-height: 40px;
   box-sizing: border-box;
   padding: 6px 10px;
-  border-radius: 3px;
+  border-radius: 16px;
   max-width: 100%;
   display: flex;
   align-items: center;
@@ -137,32 +150,15 @@
     background: var(--im-bubble-other);
     color: var(--im-bubble-text);
   }
-  // msg-head = the FIRST bubble of each sender's consecutive run (shows avatar + name + tail). It reuses the base 3px
-  // radius with no corner override; the tail nub below is the only visual distinction from the follow-up bodies.
-  &.msg-head {
-    // Tail tip: a 45°-rotated small square straddling the bubble edge (half-in/half-out, same color) — the inner
-    // half is covered by the bubble, the outer half becomes the triangular tail, blending seamlessly (the
-    // border-triangle technique tends to leave gaps at the corners).
-    &::before {
-      content: '';
-      position: absolute;
-      width: 8px;
-      height: 8px;
-      transform: rotate(45deg);
-    }
-    &.msg-other::before {
-      // ◀ avatar on the left: the tail probes left (the other party's group-start has a name; the tail shifts down
-      // slightly to avoid it)
-      top: 8px;
-      left: -4px;
-      background: var(--im-bubble-other);
-    }
-    &.msg-self::before {
-      // ▶ avatar on the right: the tail probes right (self has no name; shift down to the avatar's vertical center 40/2−5)
-      top: 15px;
-      right: -4px;
-      background: var(--im-bubble-self);
-    }
+  &.msg-other.msg-head { border-top-left-radius: 6px; }
+  &.msg-other.msg-body {
+    border-top-left-radius: 6px;
+    border-bottom-left-radius: 6px;
+  }
+  &.msg-self.msg-head { border-top-right-radius: 6px; }
+  &.msg-self.msg-body {
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
   }
 }
 

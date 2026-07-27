@@ -478,6 +478,8 @@
     "themeSystem": "System",
     "themeLight": "Light",
     "themeDark": "Dark",
+    "showSelfAvatar": "Show my avatar",
+    "showSelfAvatarDesc": "Show your avatar beside the first message in each group.",
     "language": "Language",
     "push": "Push",
     "notifications": "Notifications",

@@ -17,6 +17,7 @@ import { DebugLogFabComponent } from './components/debug-log/debug-log-fab.compo
 import { emitTauriEvent, isTauri, isAndroid } from './services/runtime';
 import { CallEventService } from './services/call-event.service';
 import { CallOverlayService } from './services/call-overlay.service';
+import { ChatAppearanceService } from './services/chat-appearance.service';
 @Component({
     selector: 'app-root',
     imports: [RouterOutlet, NotifPopupComponent, DebugLogFabComponent],
@@ -27,6 +28,8 @@ export class AppComponent {
     // Eagerly instantiate so their effects + listeners are live for the whole session.
     private readonly theme = inject(ThemeService);
     private readonly language = inject(LanguageService);
+    // Reflect device-local chat display preferences for the virtual-scroll kernel's detached rows.
+    private readonly chatAppearance = inject(ChatAppearanceService);
     // UpdateService subscribes to SwUpdate.versionUpdates (a hot stream) — eagerly constructed so a
     // VERSION_READY emitted before the home shell mounts is not missed.
     private readonly updates = inject(UpdateService);

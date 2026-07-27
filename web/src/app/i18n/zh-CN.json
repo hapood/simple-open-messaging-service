@@ -478,6 +478,8 @@
     "themeSystem": "跟随系统",
     "themeLight": "浅色",
     "themeDark": "深色",
+    "showSelfAvatar": "显示自己的消息头像",
+    "showSelfAvatarDesc": "在每组自己发送的首条消息旁显示头像。",
     "language": "语言",
     "push": "推送",
     "notifications": "通知",
