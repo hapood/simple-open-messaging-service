@@ -5,17 +5,16 @@
 
 app-chat-input {
   display: block;
+  container-type: inline-size;
 }
 
-// WhatsApp-style capsule: [emoji + editor + file] inside a pill, with a round send key outside.
+// Full-width surface; the actual controls below are capped and centered independently.
 .ci-input-bar {
   position: relative; // anchor for .ci-emoji-panel (bottom:100%); the backdrop is now a sibling, not a child
   z-index: 4; // lift the bar (+ its panel, a stacking-context child) above the sibling .ci-backdrop (z-index:3)
   min-height: 63px;
   box-sizing: border-box;
-  display: flex;
-  align-items: flex-end; // auto-grow multiline keeps the send key pinned to the bottom
-  gap: 8px;
+  display: block;
   // Keyboard lift is a compositor-only transform (NOT padding/margin): the bar translates up by
   // --kbd-lift-effective alongside the scroller, so neither the flex column nor the virtual-scroll kernel
   // reflows on each frame (transform leaves clientHeight/scrollHeight/scrollTop untouched). --kbd-lift is
@@ -35,8 +34,16 @@ app-chat-input {
   // strip). The keyboard region itself is covered by the translated bar + the IME, so there is no gap.
   // --soms-safe-bottom is 0 on desktop/browser, so this resolves to the base 8px there.
   padding: 8px 12px calc(8px + var(--soms-safe-bottom, 0px));
-  background: var(--app-bg-muted);
+  background: var(--app-surface);
   border-top: 1px solid var(--app-border);
+}
+
+.ci-controls {
+  width: min(100%, 800px);
+  margin-inline: auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 // Full-screen transparent backdrop: closes the emoji panel on any outside click. z-index below the panel (4).
@@ -54,11 +61,10 @@ app-chat-input {
 // rule; line-height is a length.
 .ci-emoji-panel {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: max(12px, calc((100% - 800px) / 2));
   bottom: 100%;
   margin-bottom: 4px;
-  max-width: 360px; // cap on wide/desktop viewports — full-width is mobile-only; anchored left near the emoji button (WhatsApp/Telegram style). left+right+max-width: right is ignored past the cap, so the panel hugs the left.
+  width: min(360px, calc(100% - 24px));
   height: 320px; // fixed panel height (tabs + scrollable grid)
   box-sizing: border-box;
   display: flex;
@@ -155,8 +161,8 @@ app-chat-input {
 // panel) while the draft is a single bare URL. WeChat/WhatsApp-style; integer-px heights.
 .ci-link-preview {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: max(12px, calc((100% - 800px) / 2));
+  right: max(12px, calc((100% - 800px) / 2));
   bottom: 100%;
   margin-bottom: 4px;
   display: flex;
@@ -198,19 +204,22 @@ app-chat-input {
   text-overflow: ellipsis;
 }
 
-// Capsule input container: emoji + editor + file.
+// Capsule input container: attachment + editor + emoji.
 .ci-input-wrap {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   align-items: flex-end;
   gap: 2px;
-  padding: 4px 4px 4px 6px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
+  padding: 4px;
+  background: var(--app-bg-muted);
+  border: 1px solid transparent;
   border-radius: var(--app-radius-pill);
-  transition: border-color 0.12s;
-  &:focus-within { border-color: var(--app-brand); }
+  transition: background 0.12s, box-shadow 0.12s;
+  &:focus-within {
+    background: var(--app-surface-elevated);
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--app-brand) 24%, transparent);
+  }
 }
 
 // Icon buttons inside the capsule (emoji / file).
@@ -230,13 +239,13 @@ app-chat-input {
   &:hover { background: var(--app-hover); color: var(--app-text); }
 }
 
-// The Tiptap editor host. The editable child (.cb-editor .ProseMirror in chat-editor.component.scss) caps at
-// 2 lines (42px) + this host's 7px×2 padding ⇒ a 56px ceiling; beyond it the child scrolls internally.
+// The editor is one line by default and grows to five. Container-wide chat panes opt into a two-line
+// resting height and six-line ceiling below.
 .ci-input {
   flex: 1 1 auto;
   min-width: 0;
   min-height: 36px;
-  max-height: 56px; // 2 lines (42px ProseMirror) + 14px vertical padding
+  max-height: 119px; // 5 × 21px lines + 14px vertical padding
   box-sizing: border-box;
   padding: 7px 6px;
   overflow-y: auto;
@@ -244,29 +253,40 @@ app-chat-input {
   &::-webkit-scrollbar { display: none; }
 }
 
-// Round send key outside the capsule: paper-plane when there is draft text (send text), camera when empty
-// (open the image picker). Always brand-colored; disabled (opacity) while a send/upload is in flight.
+// Empty state is neutral (voice is secondary); a sendable draft promotes the same key to brand emphasis.
 .ci-send {
   flex: 0 0 auto;
-  width: 46px;
-  height: 46px;
+  width: 44px;
+  height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
   border: none;
   border-radius: var(--app-radius-pill);
-  background: var(--app-brand);
-  color: #fff;
+  background: var(--app-bg-muted);
+  color: var(--app-text-muted);
   cursor: pointer;
   transition: background 0.12s, transform 0.1s;
-  &:hover { background: var(--app-brand-hover); }
+  &:hover { background: var(--app-hover); color: var(--app-text); }
   &:active { transform: scale(0.94); }
   &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+.ci-send.ci-send--has-draft {
+  background: var(--app-brand);
+  color: #fff;
+  &:hover { background: var(--app-brand-hover); color: #fff; }
 }
 
 // Mic-button states (the empty-draft send key). Recording ⇒ brand red; slide-up cancel ⇒ muted grey.
 .ci-send.ci-send-recording { background: #e53935; }
 .ci-send.ci-send-cancelled { background: var(--app-text-muted); }
+
+@container (min-width: 720px) {
+  .ci-input {
+    min-height: 56px;  // 2 × 21px lines + 14px padding
+    max-height: 140px; // 6 × 21px lines + 14px padding
+  }
+}
 
 // Attachment popover trigger — active while the menu is open (mirrors the hover affordance).
 .ci-input-ico.active { background: var(--app-hover); color: var(--app-text); }
@@ -276,8 +296,8 @@ app-chat-input {
 // as the emoji panel. Integer-px height + length line-height per the project's CSS integer-pixel rule.
 .ci-record {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: max(12px, calc((100% - 800px) / 2));
+  right: max(12px, calc((100% - 800px) / 2));
   bottom: 100%;
   margin-bottom: 4px;
   height: 36px;
@@ -319,8 +339,8 @@ app-chat-input {
 }
 .ci-record-error {
   position: absolute;
-  left: 8px;
-  right: 8px;
+  left: max(12px, calc((100% - 800px) / 2));
+  right: max(12px, calc((100% - 800px) / 2));
   bottom: 100%;
   margin-bottom: 4px;
   height: 32px;
