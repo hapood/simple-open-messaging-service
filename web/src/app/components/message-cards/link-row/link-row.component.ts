@@ -1,4 +1,4 @@
-import { Component, computed, input, signal } from '@angular/core';
+import { Component, computed, input, output, signal } from '@angular/core';
 import { TranslocoPipe } from '@jsverse/transloco';
 import type { ChatMsgData } from '../chat-item';
 import { DateRowComponent } from '../date-row/date-row.component';
@@ -57,6 +57,10 @@ export class LinkRowComponent {
   readonly isSending = computed(
     () => this.data().isSelf && this.data().status === 'sending',
   );
+  readonly isFailed = computed(
+    () => this.data().isSelf && this.data().status === 'failed',
+  );
+  readonly retry = output<number>();
 
   /** The parsed card payload, derived from `data().text` so an in-place update re-parses automatically:
    *  the optimistic bare `{ url }` card is swapped for the server-built rich card (title/image/...) via

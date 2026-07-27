@@ -220,13 +220,13 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 14px;
-  height: 14px;
+  width: 16px;
+  height: 16px;
   color: var(--im-time);
   &::before {
     content: '';
-    width: 13px;
-    height: 13px;
+    width: 15px;
+    height: 15px;
     flex: none;
     background-color: currentColor;
     mask-position: center;
@@ -251,8 +251,7 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
   }
   // Failed send: a retry arrow in the same bottom-right slot as sending/sent — persistent until the user retries (no
   // auto-fade) and interactive. Colored danger-red so it reads as an error affordance, not a status tick. The ::after
-  // extender enlarges the tap target around the compact glyph without disturbing the cluster layout (absolute, out of
-  // flow) — clicks on the pseudo hit the span, so a ~13px icon stays comfortably tappable.
+  // extender enlarges the tap target around the compact glyph without disturbing the cluster layout.
   &.msg-status--failed {
     color: var(--im-danger, #e53935);
     cursor: pointer;
@@ -263,7 +262,12 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
     &::after {
       content: '';
       position: absolute;
-      inset: -7px;     // expand the clickable box to ~28px without affecting flex layout (visual glyph stays 13px)
+      inset: -12px; // 16px status + 12px per side = 40px hit area; absolute, so layout height is unchanged
+    }
+    &:focus-visible {
+      outline: 2px solid var(--im-danger, #e53935);
+      outline-offset: 3px;
+      border-radius: 50%;
     }
   }
 }
@@ -324,6 +328,6 @@ $msg-retry: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' vi
 // Subtle dim while a self message is still in flight (status === 'sending'); clears on confirm. The whole bubble dims
 // uniformly (text + meta); the animated spinner remains visible enough as the progress affordance.
 .msg-bubble.msg-sending {
-  opacity: 0.72;
+  opacity: 0.88;
   transition: opacity 0.2s ease-out;
 }

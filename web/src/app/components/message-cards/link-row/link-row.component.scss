@@ -10,19 +10,29 @@
   overflow: hidden; // clip the thumbnail's rounded corners to the bubble
 }
 
+.link-shell {
+  position: relative;
+  width: 280px;
+  max-width: 100%;
+  transition: opacity 0.2s ease-out;
+  &.msg-sending { opacity: 0.88; }
+}
+
 // The <button> is the card; reset native button chrome so the card styling wins.
 .link-tappable {
   border: none;
   font: inherit;
   color: inherit;
   cursor: pointer;
-  width: 280px; // FIXED card width — a stable card, not a content-sized bubble (see invite-row rationale)
+  width: 100%;
   max-width: 100%;
   padding: 0;
   display: block;
   text-align: left; // reset UA button center-align so every line is left-aligned
   border-radius: inherit;
   outline: none;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
 }
 .link-tappable:focus-visible {
   outline: 2px solid var(--app-brand, #2196f3);
@@ -123,7 +133,7 @@
   color: var(--im-bubble-text);
   font-size: 11px;
   line-height: 14px; // integer px
-  border-radius: 0 0 var(--app-radius-sm, 6px) var(--app-radius-sm, 6px); // square top, rounded bottom
+  border-radius: 0 0 16px 16px;
 }
 .link-host {
   flex: 1 1 auto;

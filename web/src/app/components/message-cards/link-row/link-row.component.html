@@ -13,29 +13,42 @@
     @if (showName()) {
       <div class="msg-name msg-{{ side() }}">{{ data().name || ('common.unknown' | transloco) }}</div>
     }
-    <button
-      type="button"
-      class="msg-bubble msg-{{ side() }} msg-{{ pos() }} link link-tappable"
-      (click)="openUrl()"
-    >
-      <div class="link-body">
-        <div class="link-text">
-          <div class="link-title">{{ link().title || host() }}</div>
-          @if (link().description) {
-            <div class="link-desc">{{ link().description }}</div>
-          }
-          <div class="link-site">
-            @if (faviconSrc()) {
-              <img class="link-favicon" [src]="faviconSrc()" alt="" />
+    <div class="link-shell" [class.msg-sending]="isSending()">
+      <button
+        type="button"
+        class="msg-bubble msg-{{ side() }} msg-{{ pos() }} link link-tappable"
+        (click)="openUrl()"
+      >
+        <div class="link-body">
+          <div class="link-text">
+            <div class="link-title">{{ link().title || host() }}</div>
+            @if (link().description) {
+              <div class="link-desc">{{ link().description }}</div>
             }
-            <span class="link-site-name">{{ link().siteName || host() }}</span>
+            <div class="link-site">
+              @if (faviconSrc()) {
+                <img class="link-favicon" [src]="faviconSrc()" alt="" />
+              }
+              <span class="link-site-name">{{ link().siteName || host() }}</span>
+            </div>
           </div>
+          @if (imageSrc() && !imgFailed()) {
+            <div class="link-image"><img [src]="imageSrc()" alt="" loading="lazy" (error)="onImgError()" /></div>
+          }
         </div>
-        @if (imageSrc() && !imgFailed()) {
-          <div class="link-image"><img [src]="imageSrc()" alt="" loading="lazy" (error)="onImgError()" /></div>
+      </button>
+      @if (statusTick()) {
+        @if (isFailed()) {
+          <span class="msg-status msg-status--failed" role="button" tabindex="0"
+                [attr.aria-label]="'chat.retrySendAria' | transloco"
+                (click)="retry.emit(data().msgId)"
+                (keydown.enter)="retry.emit(data().msgId)"
+                (keydown.space)="$event.preventDefault(); retry.emit(data().msgId)"></span>
+        } @else {
+          <span class="msg-status msg-status--{{ data().status }}" aria-hidden="true"></span>
         }
-      </div>
-    </button>
+      }
+    </div>
     <div class="link-meta">
       <span class="link-host">{{ host() }}</span>
       <span class="link-meta-time">{{ data().time }}</span>

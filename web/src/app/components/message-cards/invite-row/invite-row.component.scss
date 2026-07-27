@@ -141,7 +141,7 @@
   color: var(--im-bubble-text);
   font-size: 11px;
   line-height: 14px;
-  border-radius: 0 0 var(--app-radius-sm, 6px) var(--app-radius-sm, 6px);  // square top corners; bottom corners stay rounded
+  border-radius: 0 0 16px 16px;
 }
 .invite-meta-time {
   flex: 0 0 auto;
