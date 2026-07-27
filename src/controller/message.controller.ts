@@ -12,8 +12,9 @@ import type { FastifyRequest } from 'fastify';
 import { MessageService } from '../message/message.service.js';
 import { ContentType, Prisma } from '../prisma/generated/client.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { ApiResultResponse, envelope } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { MessageResponseDto } from '../dto/response.dto.js';
 import { UserIdDto } from '../dto/user.dto.js';
 import { SseService } from '../gateway/sse.service.js';
@@ -68,16 +69,13 @@ export class MessageController {
   @Post('send-message')
   @ApiOperation({ summary: 'Send a message (unified for P2P and group)' })
   @ApiResultResponse(MessageResponseDto)
-  async sendMessage(
-    @Request() req: FastifyRequest,
-    @Body() dto: SendMessageDto,
-  ): Promise<ApiResult> {
+  async sendMessage(@Request() req: FastifyRequest, @Body() dto: SendMessageDto) {
     // Membership is resolved by ThreadAccessGuard (throws THREAD_NOT_FOUND for non-participants);
     // req.threadAccess.participant is the caller's row. A missing/empty content string is already
     // rejected by SendMessageDto's @IsNotEmpty/@MaxLength via ValidationPipe (HTTP 200 + code 10000);
     // this check only catches whitespace-only bodies (business code MESSAGE_EMPTY).
     if (!dto.content?.trim()) {
-      return { code: BusinessCode.MESSAGE_EMPTY, message: 'no content' };
+      throw new BusinessException(BusinessCode.MESSAGE_EMPTY, 'no content');
     }
     const contentType = dto.contentType ?? ContentType.PURE_TEXT;
     // Media content (FILE/VIDEO/AUDIO) is a server-trust contract: the client only forwards what
@@ -86,22 +84,13 @@ export class MessageController {
     // oversized value can never be stored (and later rendered into a link). PURE_TEXT/IMAGE keep
     // their existing verbatim storage.
     if (contentType === ContentType.FILE && !parseFileContent(dto.content)) {
-      return {
-        code: BusinessCode.VALIDATION_FAILED,
-        message: 'invalid file content',
-      };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid file content');
     }
     if (contentType === ContentType.VIDEO && !parseVideoContent(dto.content)) {
-      return {
-        code: BusinessCode.VALIDATION_FAILED,
-        message: 'invalid video content',
-      };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid video content');
     }
     if (contentType === ContentType.AUDIO && !parseAudioContent(dto.content)) {
-      return {
-        code: BusinessCode.VALIDATION_FAILED,
-        message: 'invalid audio content',
-      };
+      throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid audio content');
     }
     // LINK: the client sends only the URL. The card is rebuilt server-side (SSRF-safe OG fetch +
     // og:image localization into CAS) so the metadata is server-authoritative and unforgable, then
@@ -111,10 +100,7 @@ export class MessageController {
         await this.linkPreview.buildCardContent(dto.content),
       );
       if (!parseLinkContent(dto.content)) {
-        return {
-          code: BusinessCode.VALIDATION_FAILED,
-          message: 'invalid link content',
-        };
+        throw new BusinessException(BusinessCode.VALIDATION_FAILED, 'invalid link content');
       }
     }
     // Daily quota (local aggregate budget — one bucket shared by all local users). A TEXT send consumes
@@ -126,15 +112,12 @@ export class MessageController {
     ) {
       const q = await this.quota.tryTickLocal('messages');
       if (q.exceeded) {
-        return {
-          code: BusinessCode.QUOTA_EXCEEDED,
-          message: `daily message quota reached (${q.limit}); resets in ${q.retryAfter}s`,
-          data: {
-            category: 'messages',
-            limit: q.limit,
-            retryAfter: q.retryAfter,
-          },
-        };
+        throw new BusinessException(
+          BusinessCode.QUOTA_EXCEEDED,
+          `daily message quota reached (${q.limit}); resets in ${q.retryAfter}s`,
+          HttpStatus.OK,
+          { category: 'messages', limit: q.limit, retryAfter: q.retryAfter },
+        );
       }
     }
     const data = await this.messageService.writeMsgToThread(
@@ -149,7 +132,7 @@ export class MessageController {
     // reconciles by seq/id, so an SSE frame landing after the 200 is harmless. The staged-media promote
     // path uses the same dispatch, so text and media fan out identically.
     void this.fanout.dispatch(data);
-    return { code: BusinessCode.OK, message: 'successful', data };
+    return data;
   }
 
   /**
@@ -173,10 +156,7 @@ export class MessageController {
     summary: 'Stage a media message (before upload); promoted on POST /upload*',
   })
   @ApiResultResponse(MessageResponseDto)
-  async sendMedia(
-    @Request() req: FastifyRequest,
-    @Body() dto: SendMediaDto,
-  ): Promise<ApiResult> {
+  async sendMedia(@Request() req: FastifyRequest, @Body() dto: SendMediaDto) {
     const meta: Record<string, unknown> = {};
     if (dto.meta?.w !== undefined) meta.w = dto.meta.w;
     if (dto.meta?.h !== undefined) meta.h = dto.meta.h;
@@ -189,11 +169,7 @@ export class MessageController {
       meta,
       dto.retry === true,
     );
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { clientMessageId: dto.clientMessageId },
-    };
+    return { clientMessageId: dto.clientMessageId };
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -205,15 +181,8 @@ export class MessageController {
     summary:
       'Query the current user’s uncommitted media-send states in a conversation',
   })
-  async queryMediaStages(
-    @Request() req: FastifyRequest,
-    @Body() dto: QueryMediaStagesDto,
-  ): Promise<ApiResult> {
-    const data = await this.messageService.queryMediaStages(
-      req.user.userId,
-      dto.threadId,
-    );
-    return { code: BusinessCode.OK, message: 'successful', data };
+  async queryMediaStages(@Request() req: FastifyRequest, @Body() dto: QueryMediaStagesDto) {
+    return this.messageService.queryMediaStages(req.user.userId, dto.threadId);
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -225,10 +194,7 @@ export class MessageController {
     summary: 'Query conversation history messages (cursor pagination)',
   })
   @ApiResultResponse(MessageResponseDto, true)
-  async queryMessages(
-    @Request() req: FastifyRequest,
-    @Body() dto: QueryMessagesDto,
-  ): Promise<ApiResult> {
+  async queryMessages(@Request() req: FastifyRequest, @Body() dto: QueryMessagesDto) {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants) — the same
     // IDOR fix as send, now declarative. The participant row is on req.threadAccess.participant.
     // take+1 trick: fetch one extra row to decide hasMore, then truncate `data` back to `take` rows.
@@ -255,14 +221,10 @@ export class MessageController {
       const blocked = await this.userBlockService.blockedByMe(req.user.userId);
       if (blocked.size > 0) filters.hideCreatorIds = [...blocked];
     }
-    const rows = await this.messageService.queryMessages(
-      dto.threadId,
-      newParams,
-      filters,
-    );
+    const rows = await this.messageService.queryMessages(dto.threadId, newParams, filters);
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
-    return { code: BusinessCode.OK, message: 'successful', data, hasMore };
+    return envelope(data, { hasMore });
   }
 
   @ApiBearerAuth()
@@ -271,10 +233,7 @@ export class MessageController {
   @ApiOperation({
     summary: 'Look up the P2P thread by peer userId (friends only)',
   })
-  async getThreadByUserId(
-    @Request() req: FastifyRequest,
-    @Body() dto: UserIdDto,
-  ): Promise<ApiResult> {
+  async getThreadByUserId(@Request() req: FastifyRequest, @Body() dto: UserIdDto) {
     // A friend relationship == an active P2P thread shared by both. No thread → THREAD_NOT_FOUND,
     // deliberately non-leaking (a caller cannot probe a pending invite or prior relationship), the
     // same policy ThreadAccessGuard enforces.
@@ -283,12 +242,12 @@ export class MessageController {
       dto.userId,
     );
     if (threadId === null) {
-      return {
-        code: BusinessCode.THREAD_NOT_FOUND,
-        message: `no relationship with user [${dto.userId}]`,
-      };
+      throw new BusinessException(
+        BusinessCode.THREAD_NOT_FOUND,
+        `no relationship with user [${dto.userId}]`,
+      );
     }
-    return { code: BusinessCode.OK, message: 'successful', data: { threadId } };
+    return { threadId };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -300,10 +259,7 @@ export class MessageController {
   @ApiOperation({
     summary: 'Mark a conversation read (advances the per-user read cursor)',
   })
-  async markRead(
-    @Request() req: FastifyRequest,
-    @Body() dto: MarkReadDto,
-  ): Promise<ApiResult> {
+  async markRead(@Request() req: FastifyRequest, @Body() dto: MarkReadDto): Promise<void> {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants); the
     // participant row is on req.threadAccess.participant.
     // Resolve the cursor to advance to. With an explicit id, validate it belongs to this thread
@@ -318,10 +274,10 @@ export class MessageController {
       );
       // findMessageBySeq is scoped by (threadId, seq), so null means no such message in THIS thread.
       if (msg === null) {
-        return {
-          code: BusinessCode.NOT_FOUND,
-          message: `no such message in thread [${dto.threadId}]`,
-        };
+        throw new BusinessException(
+          BusinessCode.NOT_FOUND,
+          `no such message in thread [${dto.threadId}]`,
+        );
       }
       cursor = msg.seq;
     } else {
@@ -329,7 +285,7 @@ export class MessageController {
       const last = thread?.lastMessageSeq ?? null;
       if (last === null) {
         // Empty thread — nothing to mark read.
-        return { code: BusinessCode.OK, message: 'successful' };
+        return;
       }
       cursor = last;
     }
@@ -348,7 +304,6 @@ export class MessageController {
         lastReadSeq: cursor,
       });
     }
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -361,22 +316,14 @@ export class MessageController {
     summary:
       'Mute / unmute a conversation (suppresses notifications, not delivery)',
   })
-  async setMuted(
-    @Request() req: FastifyRequest,
-    @Body() dto: SetMutedDto,
-  ): Promise<ApiResult> {
-    await this.participantService.setMuted(
-      req.user.userId,
-      dto.threadId,
-      dto.muted,
-    );
+  async setMuted(@Request() req: FastifyRequest, @Body() dto: SetMutedDto): Promise<void> {
+    await this.participantService.setMuted(req.user.userId, dto.threadId, dto.muted);
     // Sync the caller's other online devices so their list row swaps the mute icon live (no reload).
     this.sseService.onThreadMeta(req.user.userId, {
       event: 'THREAD_META',
       threadId: dto.threadId,
       muted: dto.muted,
     });
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -388,10 +335,7 @@ export class MessageController {
   @ApiOperation({
     summary: 'Pin / unpin a conversation (pinned-first ordering)',
   })
-  async setPinned(
-    @Request() req: FastifyRequest,
-    @Body() dto: SetPinnedDto,
-  ): Promise<ApiResult> {
+  async setPinned(@Request() req: FastifyRequest, @Body() dto: SetPinnedDto): Promise<void> {
     const updated = await this.participantService.setPinned(
       req.user.userId,
       dto.threadId,
@@ -405,7 +349,6 @@ export class MessageController {
       pinned: dto.pinned,
       pinnedAt: updated.pinnedAt,
     });
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -418,20 +361,13 @@ export class MessageController {
     summary:
       'Clear chat history for me (hides all messages up to now; peer copy untouched)',
   })
-  async clearHistory(
-    @Request() req: FastifyRequest,
-    @Body() dto: ClearHistoryDto,
-  ): Promise<ApiResult> {
-    const updated = await this.participantService.clearHistory(
-      req.user.userId,
-      dto.threadId,
-    );
+  async clearHistory(@Request() req: FastifyRequest, @Body() dto: ClearHistoryDto): Promise<void> {
+    const updated = await this.participantService.clearHistory(req.user.userId, dto.threadId);
     this.sseService.onThreadMeta(req.user.userId, {
       event: 'THREAD_META',
       threadId: dto.threadId,
       clearedAt: updated.clearedAt,
     });
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -444,10 +380,7 @@ export class MessageController {
     summary:
       'Set a per-user alias/remark for a conversation (overrides the displayed name for the caller)',
   })
-  async setAlias(
-    @Request() req: FastifyRequest,
-    @Body() dto: SetAliasDto,
-  ): Promise<ApiResult> {
+  async setAlias(@Request() req: FastifyRequest, @Body() dto: SetAliasDto): Promise<void> {
     const updated = await this.participantService.setAlias(
       req.user.userId,
       dto.threadId,
@@ -459,7 +392,6 @@ export class MessageController {
       threadId: dto.threadId,
       alias: updated.alias,
     });
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -472,7 +404,7 @@ export class MessageController {
     summary:
       'Search a conversation by substring (returns lightweight match ids for kernel jump)',
   })
-  async searchMessages(@Body() dto: SearchMessagesDto): Promise<ApiResult> {
+  async searchMessages(@Body() dto: SearchMessagesDto) {
     // Membership is resolved by ThreadAccessGuard (THREAD_NOT_FOUND for non-participants). The match
     // list excludes blocked/muted indirectly: blocked creators' messages are already hidden at the
     // source by the send fan-out, and clearedAt only affects the user's own view — search returns the
@@ -487,7 +419,7 @@ export class MessageController {
     );
     const hasMore = rows.length > dto.take;
     const data = hasMore ? rows.slice(0, dto.take) : rows;
-    return { code: BusinessCode.OK, message: 'successful', data, hasMore };
+    return envelope(data, { hasMore });
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -500,10 +432,7 @@ export class MessageController {
     summary:
       'Manually re-run federated media localize for one message (retry after a localize failure)',
   })
-  async relocalizeMedia(
-    @Request() req: FastifyRequest,
-    @Body() dto: RelocalizeMediaDto,
-  ): Promise<ApiResult> {
+  async relocalizeMedia(@Request() req: FastifyRequest, @Body() dto: RelocalizeMediaDto) {
     // ThreadAccessGuard resolved membership + scoped threadId; localizeMediaForMessage re-validates
     // (threadId, seq) exists and re-runs the idempotent localize path. localizeMedia pushes the terminal
     // MEDIA_STATUS itself, so this returns the outcome for the caller's optimistic flip.
@@ -511,7 +440,7 @@ export class MessageController {
       req.threadAccess.threadId,
       dto.seq,
     );
-    return { code: BusinessCode.OK, message: 'successful', data: { status } };
+    return { status };
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -523,13 +452,10 @@ export class MessageController {
     summary:
       'Bulk-probe federated media localize status (scroll backstop for missed MEDIA_STATUS frames)',
   })
-  async mediaStatus(@Body() dto: MediaStatusDto): Promise<ApiResult> {
+  async mediaStatus(@Body() dto: MediaStatusDto) {
     // No ThrottleGuard: a cheap read (two batched queries), fired only on scroll when the viewport
     // exposes non-ready media. ThreadAccessGuard scopes threadId; missing seqs are omitted.
-    const statuses = await this.messageService.queryMediaStatus(
-      dto.threadId,
-      dto.seqs,
-    );
-    return { code: BusinessCode.OK, message: 'successful', data: { statuses } };
+    const statuses = await this.messageService.queryMediaStatus(dto.threadId, dto.seqs);
+    return { statuses };
   }
 }
