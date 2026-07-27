@@ -83,11 +83,13 @@ export class MessageHeaderComponent {
   }
 
   /** Unread messages in every conversation except the one currently open. Compact chat headers surface
-   *  this beside Back so leaving the thread has useful context, matching the common mobile messenger pattern. */
+   *  this beside Back so leaving the thread has useful context, matching the common mobile messenger pattern.
+   *  Reads `unreadCount` (server-authoritative — own messages are 0, so a sent group-invite never inflates
+   *  this total) and excludes the canonical open-thread signal (not the input — robust to input staleness). */
   readonly otherUnreadCount = computed(() => {
-    const currentId = this.userMsgTrd()?.threadId;
+    const openId = this.convList.openThreadId();
     return this.convList.items().reduce(
-      (sum, item) => sum + (item.threadId === currentId ? 0 : Math.max(0, item.unreadCount ?? 0)),
+      (sum, item) => sum + (item.threadId === openId ? 0 : Math.max(0, item.unreadCount ?? 0)),
       0,
     );
   });

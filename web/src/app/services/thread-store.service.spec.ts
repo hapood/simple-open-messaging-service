@@ -12,9 +12,9 @@ import { MsgService } from './message.service';
 import { WebsocketService } from './websocket.service';
 import { ConversationItem, Message, User } from './model';
 
-/** Flush the microtask + macrotask queue so the async boot (IDB reads + Observable awaits + the 500ms
+/** Flush the microtask + macrotask queue so the async boot (IDB reads + Observable awaits + the 200ms
  *  debounce) settles. A 0ms flush advances the task queue enough for IDB + Observable microtasks; the
- *  missed-summary walk needs PULL_DEBOUNCE_MS (500). */
+ *  missed-summary walk needs PULL_DEBOUNCE_MS (200). */
 function flush(ms = 0): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -249,7 +249,7 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(missed.fetchMissedSummary).not.toHaveBeenCalled();
   });
 
-  // HELLO's latestMessage sets the walk's `to` → after the 500ms debounce, pullMissed walks `(from, to]`
+  // HELLO's latestMessage sets the walk's `to` → after the 200ms debounce, pullMissed walks `(from, to]`
   // (from = the persisted HWM, null on first boot), caches bodies, advances the HWM to `to`.
   it('HELLO latestMessage → debounced (from,to] walk → HWM persists to `to`', async () => {
     const missed = TestBed.inject(MissedSyncService) as unknown as { fetchMissedSummary: jasmine.Spy };
@@ -314,18 +314,18 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
 
   // ── live NEW_MESSAGE (identity-only signal — no body) ─────────────────────────────────────────
 
-  it('onNewMessage bumps unread (closed thread) and reorders to the tier head', async () => {
+  it('onNewMessage reorders to the tier head but does not bump unread (server-authoritative)', async () => {
     await populate([p2p(1, 11, { lastMessageAt: 100 }), p2p(2, 22, { lastMessageAt: 200 })]);
 
     eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 100, ts: 300 } });
     await flush();
 
     const items = repo.items();
-    expect(items[0].threadId).toBe(1); // bumped to the head of the unpinned tier (lastMessageAt 300)
-    expect(items[0].unreadCount).toBe(1);
-    // Write-through: the IDB record carries the new unread.
+    expect(items[0].threadId).toBe(1); // moved to the head of the unpinned tier (lastMessageAt 300)
+    // unreadCount is NOT bumped — it is server-authoritative, applied by the missed-summary pull.
+    expect(items[0].unreadCount).toBe(0);
     const rec = await (await webdb.db()).get('threads', 1);
-    expect(rec?.unreadCount).toBe(1);
+    expect(rec?.unreadCount).toBe(0);
   });
 
   it('onNewMessage does not badge the open thread', async () => {
@@ -336,14 +336,16 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     expect(repo.items()[0].unreadCount).toBe(0);
   });
 
-  it('onNewMessage dedupes a redelivered frame (same seq)', async () => {
-    await populate([p2p(1, 11)]);
-    const frame = { threadId: 1, seq: 100, ts: 300 };
-    eventSubject.next({ event: 'NEW_MESSAGE', data: frame });
+  it('onNewMessage discards an out-of-order/redelivered seq (per-thread HWM guard)', async () => {
+    await populate([p2p(1, 11, { lastMessageAt: 100 })]);
+    // A newer seq advances lastMessageAt...
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 100, ts: 300 } });
     await flush();
-    eventSubject.next({ event: 'NEW_MESSAGE', data: frame }); // redelivery
+    expect(repo.items()[0].lastMessageAt).toBe(300);
+    // ...an older seq is discarded by the HWM guard — no regression of recency.
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 50, ts: 999 } });
     await flush();
-    expect(repo.items()[0].unreadCount).toBe(1); // bumped once, not twice
+    expect(repo.items()[0].lastMessageAt).toBe(300);
   });
 
   // ── mutations (each writes through to IDB + emits a fine-grained signal update) ───────────────
@@ -456,11 +458,32 @@ describe('ThreadRepository (eager cache-paint + HELLO delta-refresh)', () => {
     repo.noteOptimisticRead(1, 10); // local truth ahead of the server
     // A NEW_MESSAGE advances `to` + schedules the debounced missed-summary walk.
     eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 12, ts: 1000 } });
-    await flush(700); // past the 500ms pull debounce
+    await flush(300); // past the 200ms pull debounce
 
     const item = repo.items().find((t) => t.threadId === 1)!;
     expect(item.lastReadSeq).toBe(10); // optimistic (10) wins over stale server (5)
     expect(item.unreadCount).toBe(0); // the server's transient unread=3 is masked
+  });
+
+  it('the missed-summary pull applies the authoritative per-thread unreadCount', async () => {
+    // No optimistic read in flight → the summary's unreadCount is applied as-is: the server-authoritative
+    // value (0 for the caller's own messages — the send tx advanced lastReadSeq; the real count otherwise).
+    const fetchSpy = (TestBed.inject(MissedSyncService) as unknown as {
+      fetchMissedSummary: jasmine.Spy;
+    }).fetchMissedSummary;
+    fetchSpy.and.resolveTo({
+      items: [{
+        threadId: 1, type: 'P2P', displayName: 'A', unreadCount: 7, muted: false, lastReadSeq: 3,
+        senderAvatarUrl: '', senderUserId: 11, latestMessage: null,
+      }],
+      hasMore: false, nextCursor: null,
+    });
+    await populate([p2p(1, 11, { lastReadSeq: 3, unreadCount: 0 })]);
+    eventSubject.next({ event: 'NEW_MESSAGE', data: { threadId: 1, seq: 12, ts: 1000 } });
+    await flush(300); // past the 200ms pull debounce
+
+    const item = repo.items().find((t) => t.threadId === 1)!;
+    expect(item.unreadCount).toBe(7); // authoritative server value applied
   });
 
   // ── per-thread dismiss-HWM (the away-notification per-thread grouping state) ─────────────────

@@ -420,23 +420,32 @@ export class ThreadRepository {
     }
   }
 
-  /** Merge the missed-summary's authoritative per-thread `lastReadSeq` into the list items (reconciled with the
-   *  optimistic override). The summary is the freshest per-thread read state (it runs on every SSE signal), so
-   *  this keeps each item's lastReadSeq current without a full snapshot refresh. Does not own unreadCount — the
-   *  snapshot + live bumps do; {@link reconcileItem} masks the transient regression while optimistic leads. */
+  /** Merge the missed-summary's authoritative per-thread `lastReadSeq` AND `unreadCount` into the list items
+   *  (reconciled with the optimistic override). The summary is the freshest per-thread read state (it runs on
+   *  every SSE signal), so this keeps each item's `lastReadSeq` + `unreadCount` current without a full snapshot
+   *  refresh. `unreadCount` is owned here: 0 for the caller's own messages (the send tx advanced `lastReadSeq`)
+   *  and the real count for incoming; {@link reconcileItem} masks it to 0 while an optimistic read leads. */
   private mergeSummaryReadState(items: MissedThreadItem[]): void {
     if (items.length === 0) return;
-    const serverByThread = new Map<number, number | null>();
-    for (const i of items) serverByThread.set(i.threadId, i.lastReadSeq);
+    const serverLrs = new Map<number, number | null>();
+    const serverUnread = new Map<number, number>();
+    for (const i of items) {
+      serverLrs.set(i.threadId, i.lastReadSeq);
+      serverUnread.set(i.threadId, i.unreadCount);
+    }
     let changed = false;
     const updated = this._items().map((it) => {
-      const serverLrs = serverByThread.get(it.threadId);
-      if (serverLrs === undefined) return it;
-      const next = this.reconcileItem({ ...it, lastReadSeq: serverLrs });
+      if (!serverLrs.has(it.threadId)) return it;
+      // Route through reconcileItem so an in-flight optimistic read still masks the badge to 0.
+      const next = this.reconcileItem({
+        ...it,
+        lastReadSeq: serverLrs.get(it.threadId)!,
+        unreadCount: serverUnread.get(it.threadId)!,
+      });
       if (next.lastReadSeq !== it.lastReadSeq || next.unreadCount !== it.unreadCount) changed = true;
       return next;
     });
-    this.pruneOptimistic(serverByThread); // drop overrides the server just confirmed
+    this.pruneOptimistic(serverLrs); // drop overrides the server just confirmed
     if (changed) {
       this._items.set(updated);
       void this.persistThreads(updated);
@@ -537,12 +546,13 @@ export class ThreadRepository {
 
   /**
    * Apply an inbound NEW_MESSAGE identity signal `{ threadId, seq, ts }` (no body — the body is pulled by
-   * the chat-box via queryMessages; the threadlist carries no preview). Advances the missed bound T + the
-   * thread's `lastMessageAt` (re-sort) and bumps unread unless it is the open thread. The signal carries no
-   * creator, so own-message suppression relies on the open-thread rule (the sender is normally viewing the
-   * thread they just sent to); the snapshot reconciles any rare cross-device own-message false badge. A
-   * redelivered/out-of-order seq is discarded by the per-thread HWM guard. If the thread isn't in the list
-   * yet (a brand-new conversation), reloads to fetch it.
+   * the chat-box via queryMessages; the threadlist carries no preview). Advances the missed-summary walk
+   * bound `to` + the thread's `lastMessageAt` (re-sort) and, for the open thread, emits so the facade can
+   * advance the read watermark. Does NOT touch `unreadCount`: the count is server-authoritative, applied by
+   * {@link mergeSummaryReadState} when the debounced missed-summary pull lands (the summary carries the
+   * correct per-thread unread — 0 for the caller's own messages, since the send tx advanced `lastReadSeq`;
+   * the real count for incoming). A redelivered/out-of-order seq is discarded by the per-thread HWM guard.
+   * If the thread isn't in the list yet (a brand-new conversation), reloads to fetch it.
    */
   onNewMessage(msg: { threadId: number; seq: number; ts: number }): void {
     // High-water-mark guard: discard a redelivered/out-of-order event whose seq isn't strictly newer.
@@ -550,7 +560,8 @@ export class ThreadRepository {
     if (prev !== undefined && msg.seq <= prev) return;
     this.lastSeenSeq.set(msg.threadId, msg.seq);
     // The body isn't in the identity signal — advance `to` to this signal + schedule a debounced missed-
-    // summary walk to fetch the body (the unread bump + reorder below are instant from the signal itself).
+    // summary walk. That walk is what applies the authoritative unread count; only the `lastMessageAt`
+    // re-sort below is instant from the signal itself.
     this.setToAndPull({ threadId: msg.threadId, seq: msg.seq });
 
     const open = this._openThreadId();
@@ -561,8 +572,9 @@ export class ThreadRepository {
       if (idx === -1) return list;
       existed = true;
       const item = list[idx];
-      const unread = open === msg.threadId ? item.unreadCount : (item.unreadCount ?? 0) + 1;
-      changed = { ...item, unreadCount: unread, lastMessageAt: msg.ts };
+      // No live unread bump — `unreadCount` is server-authoritative (set by mergeSummaryReadState on the
+      // missed-summary pull). Only advance recency so the thread re-sorts toward the top.
+      changed = { ...item, lastMessageAt: msg.ts };
       const next = list.slice();
       next[idx] = changed;
       next.sort(byPinRank);
@@ -617,7 +629,7 @@ export class ThreadRepository {
    *  The trailing edge fires `PULL_DEBOUNCE_MS` after the LAST signal; `PULL_MAX_WAIT_MS` is the hard
    *  ceiling so a SUSTAINED burst (a flood where a new signal lands inside the debounce window every
    *  time) still refreshes the preview within the bound instead of re-arming forever and starving it. */
-  private static readonly PULL_DEBOUNCE_MS = 500;
+  private static readonly PULL_DEBOUNCE_MS = 200;
   private static readonly PULL_MAX_WAIT_MS = 3000;
   private pullTimer?: ReturnType<typeof setTimeout>;
   /** Epoch-ms the current debounce window opened (0 = no window armed). Lets a mid-window [schedulePull]
