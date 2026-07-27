@@ -13,8 +13,9 @@ import { MessageService } from '../message/message.service.js';
 import { MessageFanoutService } from '../message/message-fanout.service.js';
 import { ContentType, GroupRole } from '../prisma/generated/client.js';
 import { ThrottleGuard, Throttle } from '../auth/throttle.guard.js';
-import { ApiResult, ApiResultResponse } from '../common/api-result.js';
+import { ApiResultResponse } from '../common/api-result.js';
 import { BusinessCode } from '../common/business-code.js';
+import { BusinessException } from '../common/business.exception.js';
 import { serializeBody } from '../common/serialize.interceptor.js';
 import { GroupService } from '../group/group.service.js';
 import { InviteService } from '../invite/invite.service.js';
@@ -40,7 +41,6 @@ import {
 import {
   CreateGroupResponseDto,
   GroupResponseDto,
-  GroupMemberDto,
 } from '../dto/response.dto.js';
 
 /** Privilege rank for roster display ordering: OWNER, then ADMIN, then MEMBER. */
@@ -93,10 +93,7 @@ export class GroupController {
   @Post('group/create')
   @ApiOperation({ summary: 'Create a group and invite the given friends (Invite row + card per friend)' })
   @ApiResultResponse(CreateGroupResponseDto)
-  async createNewGroup(
-    @Request() req: FastifyRequest,
-    @Body() dto: CreateGroupDto,
-  ): Promise<ApiResult> {
+  async createNewGroup(@Request() req: FastifyRequest, @Body() dto: CreateGroupDto) {
     const owner = req.user.userId;
     const grp = await this.groupService.createNewGroup({
       name: dto.name,
@@ -113,11 +110,7 @@ export class GroupController {
       dto.inviteUserIds ?? [],
     );
     // groupId === threadId now (Group.id is gone; the wire keeps the `groupId` name for frontend compat).
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { threadId: grp.threadId, groupId: grp.threadId, invited, skipped },
-    };
+    return { threadId: grp.threadId, groupId: grp.threadId, invited, skipped };
   }
 
   /**
@@ -234,10 +227,7 @@ export class GroupController {
   @ResourceId<InviteGroupDto>('groupId')
   @Post('group/invite')
   @ApiOperation({ summary: 'Invite friends to an existing group (Invite row + card per friend)' })
-  async inviteUsers(
-    @Request() req: FastifyRequest,
-    @Body() dto: InviteGroupDto,
-  ): Promise<ApiResult> {
+  async inviteUsers(@Request() req: FastifyRequest, @Body() dto: InviteGroupDto) {
     const threadId = req.threadAccess!.threadId;
     const inviter = req.user.userId;
     // Load the group's `!`-User for name/avatar to embed in the invite cards.
@@ -254,11 +244,7 @@ export class GroupController {
       },
       dto.userIds,
     );
-    return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: { invited, skipped },
-    };
+    return { invited, skipped };
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -267,7 +253,7 @@ export class GroupController {
   @ResourceId<GroupIdDto>('groupId')
   @Post('group/sync-meta')
   @ApiOperation({ summary: 'Refresh a federated group meta (roster + identity) if stale (chat-open hook)' })
-  async syncGroupMeta(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async syncGroupMeta(@Request() req: FastifyRequest): Promise<void> {
     // Chat-open hook: lazily pull the group meta from the origin when the mirror's revision is stale
     // (same shape as sync-peer-profile). A local group / when we are the origin is a no-op.
     void this.federationService.syncGroupMetaIfStale(req.threadAccess!.threadId);
@@ -276,7 +262,6 @@ export class GroupController {
     // any hint dropped by the debounce / a transiently-lost push is recovered on open. Fire-and-forget so
     // opening never blocks on a slow origin; storePulledMessage SSE-fans the new messages. No-op for origin/local.
     void this.federationService.syncGroupMessagesOnOpen(req.threadAccess!.threadId);
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThreadAccessGuard)
@@ -286,7 +271,7 @@ export class GroupController {
   @Post('group/info')
   @ApiOperation({ summary: 'Group info (members only)' })
   @ApiResultResponse(GroupResponseDto)
-  async getGroupInfo(@Request() req: FastifyRequest): Promise<ApiResult> {
+  async getGroupInfo(@Request() req: FastifyRequest) {
     // Membership already enforced by ThreadAccessGuard. Build GroupResponseDto from the `!`-User
     // (identity) + the Group row (ownerId + updatedAt). The roster is NOT loaded here — it has its own
     // /group/members endpoint; group info carries only identity + owner + revision timestamps.
@@ -294,24 +279,20 @@ export class GroupController {
     const trd = await this.groupService.findGroupByThreadId(threadId);
     const gu = trd?.groupUser;
     if (!trd || !gu) {
-      return { code: BusinessCode.NOT_FOUND, message: 'group not found' };
+      throw new BusinessException(BusinessCode.NOT_FOUND, 'group not found');
     }
     return {
-      code: BusinessCode.OK,
-      message: 'successful',
-      data: {
-        id: threadId,
-        name: gu.name,
-        ownerId: gu.group?.ownerId ?? 0,
-        avatar: gu.avatar,
-        description: gu.bio,
-        // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group so the
-        // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).
-        domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
-        threadId,
-        createdAt: trd.createdAt,
-        updatedAt: gu.group?.updatedAt ?? trd.updatedAt,
-      },
+      id: threadId,
+      name: gu.name,
+      ownerId: gu.group?.ownerId ?? 0,
+      avatar: gu.avatar,
+      description: gu.bio,
+      // groupUser.domain uses 'local' as the origin sentinel; expose '' for a local-origin group so the
+      // client federated-badge self-hides (parity with UserResponseDto.domain for a local peer).
+      domain: !gu.domain || gu.domain === 'local' ? '' : gu.domain,
+      threadId,
+      createdAt: trd.createdAt,
+      updatedAt: gu.group?.updatedAt ?? trd.updatedAt,
     };
   }
 
@@ -319,7 +300,7 @@ export class GroupController {
   @HttpCode(HttpStatus.OK)
   @Post('group/members')
   @ApiOperation({ summary: 'Batch fetch group rosters (members only; caller membership filtered)' })
-  async getMembers(@Request() req: FastifyRequest, @Body() dto: GroupMembersBatchDto): Promise<ApiResult> {
+  async getMembers(@Request() req: FastifyRequest, @Body() dto: GroupMembersBatchDto) {
     const me = req.user.userId;
     const rows = await this.participantService.getRosters(dto.threadIds);
     // Group by threadId; keep only threads where the caller is an active member (roster contains me).
@@ -329,7 +310,7 @@ export class GroupController {
       if (arr) arr.push(r);
       else byThread.set(r.threadId, [r]);
     }
-    const data = [...byThread.entries()]
+    return [...byThread.entries()]
       .filter(([, members]) => members.some((m) => m.userId === me))
       .map(([threadId, members]) => {
         const mapped = members.map((r) => ({
@@ -354,7 +335,6 @@ export class GroupController {
         );
         return { threadId, members: serializeBody(mapped) };
       });
-    return { code: BusinessCode.OK, message: 'successful', data };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard)
@@ -364,7 +344,7 @@ export class GroupController {
   @ResourceId<GroupIdDto>('groupId')
   @Post('group/leave')
   @ApiOperation({ summary: 'Leave a group (owner must transfer first)' })
-  async leaveGroup(@Request() req: FastifyRequest, @Body() _dto: GroupIdDto): Promise<ApiResult> {
+  async leaveGroup(@Request() req: FastifyRequest, @Body() _dto: GroupIdDto): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     const { participant } = req.threadAccess!;
     await this.groupService.leaveGroup({
@@ -379,7 +359,6 @@ export class GroupController {
     // dissolves the leaver from its canonical roster). No-op for a local group / when we ARE the origin.
     // Best-effort + fire-and-forget (mirrors notifyOnSend on the send path).
     void this.federationService.notifyGroupLeave(threadId, req.user.userId);
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -390,10 +369,7 @@ export class GroupController {
   @ResourceId<KickGroupDto>('groupId')
   @Post('group/kick')
   @ApiOperation({ summary: 'Kick a member (owner/admin, must outrank target)' })
-  async kickMember(
-    @Request() req: FastifyRequest,
-    @Body() dto: KickGroupDto,
-  ): Promise<ApiResult> {
+  async kickMember(@Request() req: FastifyRequest, @Body() dto: KickGroupDto): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     const { participant } = req.threadAccess!;
     await this.groupService.kickMember({
@@ -407,7 +383,6 @@ export class GroupController {
       {},
       [dto.userId], // the kicked user may no longer be "active" after the soft-leave
     );
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -418,10 +393,7 @@ export class GroupController {
   @ResourceId<TransferGroupDto>('groupId')
   @Post('group/transfer')
   @ApiOperation({ summary: 'Transfer ownership to a member (owner only)' })
-  async transferOwnership(
-    @Request() req: FastifyRequest,
-    @Body() dto: TransferGroupDto,
-  ): Promise<ApiResult> {
+  async transferOwnership(@Request() req: FastifyRequest, @Body() dto: TransferGroupDto): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     await this.groupService.transferOwnership({
       threadId,
@@ -431,7 +403,6 @@ export class GroupController {
     // Signal-only: members pull the fresh roster (GroupService.transferOwnership bumped rosterRev +
     // flipped ownerId). The former two GROUP_ROLE_CHANGED events collapse into one roster-refresh signal.
     await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -442,10 +413,7 @@ export class GroupController {
   @ResourceId<SetRoleGroupDto>('groupId')
   @Post('group/set-role')
   @ApiOperation({ summary: "Set a member's role to ADMIN/MEMBER (owner only)" })
-  async setRole(
-    @Request() req: FastifyRequest,
-    @Body() dto: SetRoleGroupDto,
-  ): Promise<ApiResult> {
+  async setRole(@Request() req: FastifyRequest, @Body() dto: SetRoleGroupDto): Promise<void> {
     const threadId = req.threadAccess!.threadId;
     await this.groupService.setRole({
       threadId,
@@ -454,7 +422,6 @@ export class GroupController {
       operatorUserId: req.user.userId,
     });
     await this.fanoutGroup(threadId, GROUP_SSE.GROUP_ROSTER_UPDATED, {});
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 
   @UseGuards(ThrottleGuard, ThreadAccessGuard, RolesGuard)
@@ -465,12 +432,9 @@ export class GroupController {
   @ResourceId<UpdateGroupDto>('groupId')
   @Post('group/update')
   @ApiOperation({ summary: 'Update group name/avatar (admin+)' })
-  async updateGroup(
-    @Request() req: FastifyRequest,
-    @Body() dto: UpdateGroupDto,
-  ): Promise<ApiResult> {
+  async updateGroup(@Request() req: FastifyRequest, @Body() dto: UpdateGroupDto): Promise<void> {
     const threadId = req.threadAccess!.threadId;
-    const updated = await this.groupService.updateGroup({
+    await this.groupService.updateGroup({
       threadId,
       name: dto.name,
       description: dto.description,
@@ -479,6 +443,5 @@ export class GroupController {
     // updated is the `!`-User row; description lives in User.bio. Signal-only: the client receives
     // { threadId } and HTTP-pulls /group/info to refresh (GroupService.updateGroup bumped profileRev).
     await this.fanoutGroup(threadId, GROUP_SSE.GROUP_UPDATED, {});
-    return { code: BusinessCode.OK, message: 'successful' };
   }
 }
